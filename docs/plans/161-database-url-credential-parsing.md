@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-14
 plan: 161
 title: DATABASE_URL credential handling — a `/` in the password silently killed every backup
-scope: Fix the live backup outage caused by an un-encoded `/` in the worker DB password, and close the failure CLASS behind it: a credential spliced into a URL string without encoding, then parsed by consumers of differing strictness. Covers the consumer (`flows/backup.py` uses `urlparse`, unlike every other consumer), the producer (`docker/entrypoint.sh` builds the URL by sed-substituting the raw password), and the alert that reported it 24h late and then once every 5 minutes. Relocating the backup target off the boot disk stays a Plan 158 follow-on; verifying dump restorability is a named follow-on.
+scope: Fix the live backup outage caused by an un-encoded `/` in the worker DB password, and close the failure CLASS behind it: a credential spliced into a URL string without encoding, then parsed by consumers of differing strictness. Covers the consumer (`flows/backup.py` uses `urlparse`, unlike every other consumer), BOTH producer sites (`docker/entrypoint.sh` sed-substitutes the raw password; `docker-compose.yml:54` splices the raw OWNER password into `prefect-server`'s DB URL and never touches our entrypoint), and the alert that reported it 24h late and then once every 5 minutes. Relocating the backup target off the boot disk stays a Plan 158 follow-on; verifying dump restorability is a named follow-on.
 depends_on: []
 blocks: []
 supersedes: []
@@ -45,20 +45,47 @@ quote(password) -> port: 5432   host: postgres
 **This is our own change, not upstream drift.**
 
 **Why only backups.** `flows/backup.py:58` is the **only** `DATABASE_URL` consumer that uses `urlparse`. Every
-other consumer goes through SQLAlchemy (`db/engine.py:9` → `create_engine`), whose URL regex captures the
+other consumer goes through SQLAlchemy (`db/engine.py:9` reads the env, `:10` calls `sa.create_engine`), whose URL regex captures the
 password as `[^@]*` and therefore tolerates an un-encoded `/`. So the whole pipeline — forecast cycle, both BAFU
 collectors, ingest — stayed green while backups were dead. **The system looked perfectly healthy.**
 
 ### The class, not just the instance
 
-The producer splices the raw password into a URL with `sed` (`docker/entrypoint.sh:22`, and identically for
-Prefect at `:27`):
+There are **two physical producer locations carrying three URL constructions**, not one *(terminology per Codex: `entrypoint.sh:22` and `:27` are two constructions in one location, plus `docker-compose.yml:54`; `:27` was not overlooked, it is grouped into Site A)*.
+
+**Site A — the entrypoint sed.** `docker/entrypoint.sh:22` splices the raw password into the URL with `sed` (and
+identically for Prefect at `:27`):
 
 ```sh
 export DATABASE_URL=$(echo "${DATABASE_URL_TEMPLATE}" | sed "s|://\([^@]*\)@|://\1:${DB_PASSWORD}@|")
 ```
 
-Two distinct hazards, only one of which has fired:
+**Site B — the `prefect-server` inline command in compose.** `docker-compose.yml:54`:
+
+```yaml
+export PREFECT_API_DATABASE_CONNECTION_URL=\"postgresql+asyncpg://${DB_USER:-sapphire}:$$(cat /run/secrets/db_password)@postgres:5432/prefect\" &&
+```
+
+This site was missed by an earlier draft and matters for three grounded reasons:
+
+- **It never runs our entrypoint.** `prefect-server` uses the stock `prefecthq/prefect:3-python3.11` image
+  (`docker-compose.yml:51`, inline `command:` at `:52-55`); nothing in `docker/entrypoint.sh` executes for it, so a
+  fix confined to Site A leaves this URL raw.
+- **It is the OWNER credential.** It reads `/run/secrets/db_password` (`docker-compose.yml:69`) — the same
+  secret as `POSTGRES_PASSWORD_FILE` (`:22`), i.e. the superuser, not a per-service Plan-147 role. Blast radius
+  on breakage is larger than the worker credential that actually fired.
+- **The entrypoint's Prefect branch is currently dead.** `entrypoint.sh:26-27` only fires when
+  `PREFECT_API_DATABASE_CONNECTION_URL` is already set, and no compose file sets it as a template (`grep -n
+  'PREFECT_API_DATABASE_CONNECTION_URL' docker-compose*.yml` matches only `:54`). So Site B is the **only live**
+  producer of the Prefect DB URL today.
+
+Site B carries hazards 1 and 3 below in full. It does **not** carry hazard 2 (sed) — there is no sed — and,
+correcting a review claim: it is **not** a shell/command-injection vector either. POSIX shell does not re-parse
+the result of a command substitution for quotes, backticks, or further expansion, and `$$(cat ...)` sits inside
+double quotes, so a password containing `` ` `` or `"` is inserted literally. It is a URL-encoding bug, same
+class as Site A, not a worse one.
+
+Three distinct hazards, only one of which has fired:
 
 1. **URL ambiguity (fired).** The password is never percent-encoded, so any of `/ @ # ?` makes the resulting URL
    ambiguous to a conforming RFC-3986 parser. Strict parsers (`urlparse`) break; lenient ones (SQLAlchemy)
@@ -67,24 +94,42 @@ Two distinct hazards, only one of which has fired:
    *replacement*. A password containing `&` would expand to the whole matched text; one containing `|` would
    corrupt the expression itself. The current password (specials: `+ / =`) contains none of these — **but the
    next rotation is one `&` away from breaking every container at once**, not just backups.
+3. **Percent-sign decode ambiguity (silent, hits every consumer).** Every consumer decodes percent-escapes in the
+   password — `unquote()` in today's `backup.py:65,68`, and SQLAlchemy's own decoding for everyone else. A raw
+   (un-encoded) `%` followed by two hex digits is therefore silently *decoded* into a different password. Verified
+   in this repo's environment:
 
-### Two further defects the incident exposed
+   ```
+   make_url("postgresql://u:ab%41cd@h:5432/db").password  -> 'abAcd'      # wrong, silently
+   make_url("postgresql://u:ab%2541cd@h:5432/db").password -> 'ab%41cd'   # correct, once producer-encoded
+   ```
 
-3. **The failure was reported ~24h late.** Nothing alerts on a Prefect **flow-run failure**; the only signal was
-   backup *staleness* crossing a 26h threshold (`watchdog.py:760`). The flow failed at 02:00:00 and the first
-   alert fired the next morning.
-4. **Then it alerted every 5 minutes.** `watchdog.py:761` states the intent plainly — *"For simplicity, alert
-   every tick on backup staleness"* — so a single stale backup produces ~288 Slack messages/day. The state field
-   `last_backup_alert_iso` is written (`:771`) but never used to suppress. Alert fatigue is itself an outage
-   risk: the July blackout was missed for 14 days.
+   This is **not** fixed by swapping `urlparse` for `make_url` (T1) — both decode identically. It is closed only
+   when the producer percent-encodes (T2), i.e. when consumers decode only what was actually encoded. Same
+   verification confirms `quote(pw, safe="")` at the producer + `make_url` at the consumer round-trips `@`, `/`,
+   `%41`, `%zz` and a trailing `%` exactly.
 
-5. **The password prefix leaked into logs.** `'0r'` — the first two characters of the live worker password — is
+### Three further defects the incident exposed
+
+4. **The failure was reported ~24h late.** Nothing alerts on a Prefect **flow-run failure**; the only signal was
+   backup *staleness* crossing a 26h threshold (`watchdog.py:500`, `BACKUP_STALE_THRESHOLD`). The flow failed at
+   02:00:00 and the first alert fired the next morning.
+5. **Then it alerted every 5 minutes.** `watchdog.py:510-513` states the intent plainly — *"For simplicity, alert
+   every tick on backup staleness"* — so a single stale backup produces ~288 Slack messages/day (`log.warning` +
+   unconditional `slack_poster` at `:514-517`). The state field `last_backup_alert_iso` (`:109`, loaded `:124`,
+   dumped `:138`) is **written** at `:520` but **never consulted for deduplication or control flow** — it is loaded (`:124`) and re-serialized (`:138`), so "read nowhere" would be literally false; it is inert, which is why deleting or repurposing it is safe. Alert fatigue
+   is itself an outage risk: the July blackout was missed for 14 days.
+
+6. **The password prefix leaked into logs.** `'0r'` — the first two characters of the live worker password — is
    now in the Prefect flow-run state message and the worker logs.
 
 ## Goal
 
-A credential containing any legal character cannot break any consumer, and a backup that fails is visible within
-minutes and reported once.
+A credential containing any legal character cannot break **or be silently altered by** any consumer, and a backup
+that fails is visible within minutes and reported once.
+
+Note the coupling: hazards 1 and 2 are consumer- and producer-side respectively, but hazard 3 is only closed by
+producer-encoding + consumer-decoding *as a pair*. **T1 alone does not reach this Goal** — see D1.
 
 ## Non-goals
 
@@ -97,15 +142,29 @@ minutes and reported once.
 
 ## Open decisions (owner)
 
-- **D1 — how far to fix.** (a) Consumer only: `backup.py` → `make_url`. Fixes the live outage, minimal risk,
-  leaves hazard 2 live. (b) Consumer + producer: also percent-encode at composition. **Recommended (b)** — (a)
-  leaves a rotation-triggered total outage armed. T1 is separable and shippable first either way.
-- **D2 — how the producer should encode.** Percent-encoding the password means the URL carries `%XX`; SQLAlchemy
-  decodes automatically and `backup.py` (post-T1) reads the decoded value. This changes the URL for **every**
-  service at once, so it needs an atomic deploy plus a consumer audit. Alternative considered: stop building a
-  URL at all and pass discrete `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` to the backup path, sidestepping parsing —
-  cleaner for `pg_dump`, but does not help the other consumers.
-- **D3 — flow-failure alerting.** Defect 3 argues for alerting on any Prefect flow-run failure. That overlaps the
+- **D1 — how far to fix.** (a) Consumer only: `backup.py` → `make_url`. Fixes the live outage, minimal risk, but
+  leaves hazards 2 **and 3** live. (b) Consumer + producer: also percent-encode at composition. **Recommended
+  (b).** Be explicit about what (a) does *not* buy: it restores backups today, but a `&` rotation still breaks
+  every container (hazard 2), and a password containing a literal `%HH` (valid-hex) sequence is still silently mis-decoded by every
+  consumer including post-T1 `backup.py` (hazard 3, verified above — `make_url` decodes `%XX` exactly as
+  `unquote` does). **Only T1+T2 together meet the stated Goal**; T1 alone is a partial fix, chosen for speed. T1
+  is separable and shippable first either way.
+- **D2 — how the producer should encode.** Options:
+  - **(a) Percent-encode the password into the URL** (`quote(pw, safe="")` at composition). SQLAlchemy decodes
+    automatically and `backup.py` (post-T1) reads the decoded value. This changes the URL for **every** service at
+    once, so it needs an atomic deploy plus the consumer audit in T2.
+  - **(b) Discrete `PG*` vars instead of a URL, everywhere.** Rejected: the SQLAlchemy consumers all want a URL,
+    so this is a large refactor with no gain for them.
+  - **(c) Combined — discrete `PG*` vars for the backup/`pg_dump` path only, percent-encoding for the rest.**
+    `pg_dump` reads `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE` natively with **zero URL parsing**, and
+    host/port/user/db are already plain non-secret literals in the compose templates. Benefit: takes the one
+    component actually on fire out of the URL hazard class *by construction* rather than by parser choice, and
+    out of T2's consumer audit. Cost: an entrypoint + compose change, hence a deploy, whereas T1 is pure code and
+    shippable now — so T1 is still the fastest path to restoring backups even under (c). T2's producer-side
+    encoding ships regardless, for the SQLAlchemy consumers. Owner picks (a) or (a)+(c); if (c) is chosen, T1's
+    `make_url` swap is superseded for `backup.py` and its red-first test is rewritten against the `PG*` path
+    (same assertions, no URL). Implementation detail deliberately left to build time.
+- **D3 — flow-failure alerting.** Defect 4 argues for alerting on any Prefect flow-run failure. That overlaps the
   dead-man's-switch work (Plan 158 D11) and may belong there rather than here.
 
 ## Tasks
@@ -116,59 +175,167 @@ minutes and reported once.
 
 Replace `urlparse` with `sqlalchemy.engine.make_url` — the parser already used by `db/engine.py` and therefore
 the one every other consumer is validated against. `make_url` returns the password already decoded, so the
-existing `unquote(...)` calls (`:66`, `:69`) must be **removed**, not kept — leaving them would corrupt any
-password containing a literal `%`.
+existing `unquote(...)` calls (`flows/backup.py:65`, `:68`) must be **removed**, not kept — double-decoding would
+corrupt any password containing an encoded `%`.
 
-**Red-first (the point of the task):** a test building a connection URL whose password contains `/` (and, as
-separate cases, `@`, `%`, `+`) and asserting `pg_dump` is invoked with `--host=postgres --port=5432
---username=sapphire_worker --dbname=sapphire` and `PGPASSWORD` equal to the **exact original password**. Must be
-proven to fail against current `backup.py` with the `/` case reproducing `ValueError: Port could not be cast`.
+**T1 does not close hazard 3.** `make_url` decodes `%XX` exactly as `unquote` does (verified above), so a
+password carrying a *raw* `%HH` sequence such as `%41` is still silently mis-read after T1 — and a sequence decoding to a non-UTF-8 byte (e.g. `%cd`) becomes an **undecodable replacement character**, a third corruption mode. A lone `%`, a trailing `%`, `%4` or `%zz` are preserved unchanged. Only T2's producer-side encoding fixes that.
+The `%` case in the test below therefore asserts the *post-T2* contract and must be written against a
+**producer-encoded** URL; a raw-`%` URL is expected to decode "wrong" until T2 lands, and the test must say so
+rather than pretending T1 fixed it.
+
+**⛔ `@` MUST NOT be a T1 red case — `make_url` REGRESSES it** *(Codex blocker, verified empirically in this
+repo's env)*. `urlparse` splits userinfo at the **last** `@` and so preserves a raw `@` in a password;
+SQLAlchemy's `[^@]*` password grammar splits at the **first** one and silently truncates:
+
+| password  | `urlparse`            | `make_url`   |
+|-----------|-----------------------|--------------|
+| `ab/cd`   | **raises** (this bug) | `'ab/cd'` ✅ |
+| `ab@cd`   | `'ab@cd'` ✅          | **`'ab'`** ❌ silent |
+| `ab%41cd` | `'ab%41cd'` ✅        | `'abAcd'` ❌ silent |
+| `ab%cd`   | `'ab%cd'` ✅          | `'ab\ufffd'` ❌ undecodable |
+| `ab%zzcd`, `abcd%`, `ab%4` | preserved | preserved (not `%HH`) |
+
+So T1 in isolation would trade a **loud crash** for a **silent wrong password** (an auth failure, not a
+traceback) for any password containing `@`. It is safe *today* only because generated credentials are base64
+(alphabet `A–Za–z0–9+/=`, no `@`) — but that is a property of the current generator, not a guarantee, and a
+human-set password would arm it.
+**Therefore:** the T1 red case is **`/` only**. `@` and raw `%HH` become **T1+T2 integration** cases asserted
+against a *producer-encoded* URL, where `quote(pw, safe="")` + `make_url` round-trips all of
+`/ @ %41 %cd %zz` and a trailing `%` exactly (verified). Ship T1 and T2 atomically, or accept the documented
+`@` regression window in between.
+
+**Red-first (the point of the task):** a test building a connection URL whose password contains `/` and
+asserting `pg_dump` is invoked with `--host=postgres --port=5432 --username=sapphire_worker
+--dbname=sapphire` and `PGPASSWORD` equal to the **exact original password**. Must be proven to fail against
+current `backup.py`, reproducing `ValueError: Port could not be cast`. `+` and *encoded* `%` are **regression**
+cases (they already pass today), not red cases — label them as such so a green run is not mistaken for proof.
 
 **Verify:** `uv run pytest tests/unit/flows/test_backup.py -q`; full suite; ruff; pyright ratchet.
 
 ### T2 — the producer must not splice a raw secret into a URL (Repo, gated on D1/D2)
 
-*In:* `docker/entrypoint.sh:19-28`. *Out:* which secret file is read (Plan 147 Slice D), the drop-to-app-user step.
+*In:* **both** producer sites — `docker/entrypoint.sh:19-28` (Site A) **and** `docker-compose.yml:52-55`, the
+`prefect-server` inline command (Site B). *Out:* which secret file is read (Plan 147 Slice D), the
+drop-to-app-user step, and the choice of stock image for `prefect-server`.
 
 Percent-encode the password before it enters the URL, and compose without a sed *replacement* (so no `&`/`\`/`|`
-interpretation) — e.g. build the string in the shell from an encoded value rather than substituting into a
-pattern. Applies to **both** `DATABASE_URL` (`:22`) and `PREFECT_API_DATABASE_CONNECTION_URL` (`:27`).
+interpretation) — build the string from an encoded value rather than substituting into a pattern.
 
-**Consumer audit is part of this task, not an afterthought:** every `os.environ["DATABASE_URL"]` reader
-(`db/engine.py:9`, `flows/onboard.py:132`, `flows/collect_bafu_forecasts.py:138`,
-`flows/collect_bafu_observations.py:117`, `flows/run_forecast_cycle.py:1625`, `flows/ingest_observations.py:422`,
-`flows/compute_skills.py:283,349`, `flows/onboard_model.py:709`, `flows/train_models.py:310`,
-`flows/run_hindcast.py:176`, `flows/ingest_recap_reanalysis.py:413`, `flows/ingest_weather_history.py:393`,
-`flows/backup.py:57`, `tools/observation_coverage_summary.py:149`, `cli/import_basin_package.py`) must be shown
-to decode percent-encoding, i.e. to route through SQLAlchemy or `make_url`. Any that does not is a T2 blocker.
+**Use a real encoder, not a hand-rolled one.** A bespoke `sed`/`awk` percent-encoder over a secret is the same
+ad-hoc string surgery that produced hazards 1 and 2; do not write one. `python3` is present in both runtime
+images — the app image is `python:3.14.6-slim` (`Dockerfile:42`) and `prefect-server` runs
+`prefecthq/prefect:3-python3.11` (`docker-compose.yml:51`) — so use `urllib.parse.quote(..., safe="")`, the
+exact primitive D2(a) cites, e.g.:
 
-**Red-first:** a shell-level test that composition with a password containing `& | \ / @ %` yields a URL which
-`make_url` parses back to **exactly** that password. Prove it fails against the current `sed` line — the `&` case
-should visibly corrupt.
+```sh
+DB_PASSWORD_ENC=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${DB_PASSWORD}")
+```
 
-**Verify:** `shellcheck` + `bash -n` on the entrypoint; the composition test; a container smoke test that every
-service still connects.
+Prefer passing the secret as an `argv` element (as above) or on stdin — never interpolate it into the `-c`
+program text, which would reintroduce a string-splicing hazard one layer down.
 
-**Deploy note:** this changes the URL for all services simultaneously. It must ship as one deploy with a
-post-deploy check that each service connects, and a rollback to the previous image.
+- **Site A** applies to both `DATABASE_URL` (`entrypoint.sh:22`) and `PREFECT_API_DATABASE_CONNECTION_URL`
+  (`:27`), even though the latter branch is currently dead (see "The class, not just the instance").
+- **Site B** must encode the `cat`-ed secret the same way inside its own `sh -c`, since it never reaches our
+  entrypoint. If routing `prefect-server` through `docker/entrypoint.sh` proves cleaner than duplicating the
+  encoder in compose, that is acceptable and preferable — it collapses the two sites into one — but it changes
+  the service's entrypoint/image wiring and must be smoke-tested, so it is the implementer's call at build time.
+
+**Consumer audit is part of this task, not an afterthought.** Enumerate the consumers **at implementation time
+with grep** — do not trust a list pinned in this doc (line numbers rot; an earlier draft of this plan cited
+`run_forecast_cycle.py:1625`, which is an unrelated `SAPPHIRE_REQUIRE_NWP` check — the real read is at `:1563`).
+The grep must cover **the compose files too**, not just Python packages — Site B is exactly the site a
+`src/ tools/ cli/ flows/`-only grep misses:
+
+```sh
+grep -rn 'DATABASE_URL' src/ tools/ cli/ flows/ 2>/dev/null
+grep -rn "os\.environ\[.DATABASE_URL.\]\|os\.getenv(.DATABASE_URL." src/
+grep -rn 'DATABASE_URL\|CONNECTION_URL\|/run/secrets/' docker-compose*.yml docker/
+```
+
+Every hit must be shown to decode percent-encoding, i.e. to route through SQLAlchemy (`db/engine.py` →
+`create_engine`) or `make_url`. Any hit that hand-parses the URL is a **T2 blocker**. (At drafting time the audit
+found ~15 readers across `db/engine.py`, the `flows/*` modules, `tools/observation_coverage_summary.py` and
+`cli/import_basin_package.py`; all but `flows/backup.py` route through SQLAlchemy. Treat that as a prior to
+re-verify, not as the checklist.) If D2 option (c) is taken, `flows/backup.py` leaves this audit entirely.
+
+**⛔ Red-first, corrected** *(Codex blocker — the drafted test would not have proven producer encoding)*. The
+weakness: a combined `& | \ / @ %` credential is red today **because of `@` alone**, so an implementation that
+encoded only `@` and left `/` raw would turn it green while fixing nothing. `make_url` *accepts* a raw `/`, and a
+lone/non-hex `%` is unchanged — neither can carry the proof. Do **not** claim Site B's `/` fails under
+`make_url`; it fails only under `urlparse`.
+
+The test must therefore:
+1. Include a literal **`%41`** in the password (the one character class that is silently *mis-decoded* rather
+   than rejected), alongside `& | \ / @` and a trailing `%`.
+2. Assert the emitted userinfo is **exactly `quote(password, safe="")`** — a direct assertion on the encoding,
+   not an indirect one via a parser that may tolerate the un-encoded form.
+3. Additionally assert `make_url(url).password == password` (round-trip), which the encoded form satisfies for
+   every case in the T1 table.
+4. **Execute the real composition** — the actual `docker/entrypoint.sh` lines and the actual `sh -c` string
+   extracted from `docker-compose.yml` — never a re-implementation of them in the test. A test that duplicates
+   the producer logic proves only that the duplicate agrees with itself.
+
+Prove each fails today: Site A's `&` case visibly corrupts via the sed replacement; both sites' `%41` case
+decodes to `A`; and per-character assertions make it impossible to pass by encoding a proper subset.
+
+**Verify:** `shellcheck` + `bash -n` on the entrypoint; the composition test for both sites; a container smoke
+test that every service still connects — explicitly including `prefect-server` reaching its `prefect` database,
+since Site B is the only live producer of that URL.
+
+**Deploy note:** this changes the URL for all services simultaneously, now including `prefect-server`. It must
+ship as one deploy with a post-deploy check that each service connects, and a rollback to the previous image.
+Trade-off accepted: folding Site B in widens the T2 blast radius from the app containers to the Prefect server
+itself, so the smoke test above is a gate, not a formality. The alternative — deferring Site B — was rejected
+because it would leave the owner credential in exactly the hazard class this plan exists to close.
 
 ### T3 — a stale backup must alert once, not 288 times a day (Repo)
 
-*In:* `src/sapphire_flow/ops/watchdog.py:750-771`. *Out:* the 26h threshold, the check itself.
+*In:* `src/sapphire_flow/ops/watchdog.py:498-520` (the backup-staleness block) plus the `WatchdogState` fields at
+`:104-142`. *Out:* the 26h threshold, the staleness check itself (`newest_backup_mtime`, `:499-500`).
 
-Use the already-persisted `last_backup_alert_iso` (`:164`, `:771`) to suppress repeats — alert on transition into
-stale, then at a defined re-notify interval, and once on recovery. Match whatever hysteresis the BAFU checks
-already use rather than inventing a second convention.
+**Reuse the existing counter-based convention — do not invent a timestamp scheme.** The repo's hysteresis
+convention is a `consecutive_*_failures: int` on `WatchdogState` fed to the *generic*
+`should_alert_health(prev_failures, current_ok, current_fail)` — already reused verbatim for the health probe and
+both BAFU checks (forecasts and observations), with a comment at the BAFU forecast call site stating outright
+that "the decision function is generic, not health-specific". `last_backup_alert_iso` is **not** part of that
+convention: it is written in the staleness block and read nowhere.
 
-**Red-first:** a test driving several consecutive stale ticks and asserting exactly one alert plus the defined
-re-notify, and a recovery alert on the transition back. Must fail against current code, which alerts every tick.
+(Line numbers deliberately omitted below — this section is rationale, not a scope boundary, and this same plan
+warns in T2 that pinned line numbers rot. Refer to the symbols by name; the In/Out citations above mark scope.)
+
+Therefore:
+
+1. Add `consecutive_backup_failures: int = 0` to `WatchdogState`, with the same `raw.get(..., 0)`
+   backward-compatible `load`/`dump` treatment as the BAFU counters.
+2. Drive the backup alert through `should_alert_health(...)`, mirroring the BAFU forecast call site — first stale
+   tick, periodic re-notify, and **one recovery alert** on the transition back (which today does not exist at all).
+3. Delete `last_backup_alert_iso` rather than building on it. Removal is state-file safe: `load` reads keys via
+   `raw.get`, so a stale key in an existing state file is simply ignored.
+
+**Re-notify cadence — a real trade-off, stated not hidden.** `ALERT_REPEAT_EVERY = 6` means "every 6th
+consecutive failure ≈ 30 min at the 5-minute tick". Applied unchanged to a *daily* backup that is stale for a
+day, that is ~48 messages/day — a 6× improvement on today's ~288, but not the "once" in this task's title. To
+keep exactly one convention while making the cadence proportionate to a daily check, add a **keyword-only**
+`repeat_every: int = ALERT_REPEAT_EVERY` parameter to `should_alert_health` and pass a backup-specific constant
+(e.g. `BACKUP_ALERT_REPEAT_EVERY = 288` ≈ once per 24h at a 5-minute tick). Defaulting the parameter leaves the
+health and both BAFU call sites bit-identical. If the owner prefers zero signature change, fall back to
+`ALERT_REPEAT_EVERY` and accept ~48/day — but say so explicitly rather than letting the title over-promise.
+
+**Red-first:** a test driving several consecutive stale ticks through `run_once` with state persisted between
+calls (as production does) and asserting exactly one alert plus the configured re-notify, and a recovery alert on
+the transition back to fresh. Must fail against current code, which alerts unconditionally on **every** tick and
+never alerts on recovery. Also assert that a `WatchdogState` loaded from a pre-existing state
+file (no `consecutive_backup_failures` key) defaults to 0 rather than raising.
 
 **Verify:** `uv run pytest tests/unit/ops/test_watchdog.py -q`.
 
 ## Exit gates
 
-Full `uv run pytest`, `ruff format --check` + `ruff check`, pyright ratchet, `shellcheck` + `bash -n` for T2 —
-and each of T1/T2/T3's locking tests **proven red** against current committed code.
+Full `uv run pytest`, `ruff format --check` + `ruff check`, pyright ratchet, `shellcheck` + `bash -n` for T2's
+Site A plus `docker compose config -q` for Site B — and each of T1/T2/T3's locking tests **proven red** against
+current committed code.
 
 ## Acceptance (host, after deploy)
 
@@ -178,7 +345,7 @@ absence of alerts, which is exactly the evidence that failed us in July.
 
 ## Follow-ons
 
-- **Rotate the worker DB password** — its first two characters are in the logs (defect 5). Do this *after* T1/T2,
+- **Rotate the worker DB password** — its first two characters are in the logs (defect 6). Do this *after* T1/T2,
   so the rotation lands on code that tolerates any character.
 - Relocate the backup target off the boot disk (Plan 158 follow-on).
 - Verify dump restorability as part of the backup flow.
