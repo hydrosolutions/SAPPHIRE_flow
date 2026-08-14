@@ -371,6 +371,36 @@ class TestCollisionSemantics:
         with pytest.raises(ConfigurationError, match="slope"):
             project_declared_static_attributes(attributes, {"slope"})
 
+    def test_both_keys_present_and_both_null_resolves_to_missing_not_a_collision(
+        self,
+    ) -> None:
+        """Fixer round (independent Codex review, major finding): two
+        present keys that are BOTH missing (None/NaN) carry no genuine,
+        differing information -- they are not a "conflicting values"
+        collision, they simply mean the static is missing for this
+        station. Must not raise, and must be reported as unavailable via
+        `available_declared_static_keys` (the compatibility boundary),
+        not via a `ConfigurationError`."""
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": None,
+            f"{CARAVAN_PREFIX}slope": None,
+        }
+        projected = project_declared_static_attributes(attributes, {"slope"})
+        assert "slope" not in projected
+
+        available = available_declared_static_keys(
+            attributes, {"slope"}, station_code="2009"
+        )
+        assert available == frozenset()
+
+    def test_both_keys_present_one_null_one_nan_resolves_to_missing(self) -> None:
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": None,
+            f"{CARAVAN_PREFIX}slope": math.nan,
+        }
+        projected = project_declared_static_attributes(attributes, {"slope"})
+        assert "slope" not in projected
+
     def test_equal_strings_do_not_pass_the_collision_guard(self) -> None:
         """`_values_agree` must require both operands to be NUMERIC, not
         merely equal -- two equal strings are not a legitimate agreement
@@ -520,6 +550,26 @@ class TestVerifyStaticCoverage:
         }
         gaps = verify_static_coverage(basins_by_code, {"slope"})
         assert gaps == ()
+
+    def test_both_keys_present_and_both_null_is_a_plain_missing_gap_not_a_collision(
+        self,
+    ) -> None:
+        """Fixer round (independent Codex review, major finding): two
+        present-but-null keys must NOT poison the exit gate into reporting
+        `collision_error` (which, before the fix, marked EVERY declared
+        static for the station missing, not just the affected one) -- it
+        is exactly as if the static were simply absent."""
+        basins_by_code = {
+            "2009": {
+                f"{CARAVAN_PREFIX}area": 250.0,
+                f"{CARAVAN_PREFIX}slp_dg_sav": None,
+                f"{CARAVAN_PREFIX}slope": None,
+            }
+        }
+        gaps = verify_static_coverage(basins_by_code, {"area", "slope"})
+        assert len(gaps) == 1
+        assert gaps[0].missing_statics == frozenset({"slope"})
+        assert gaps[0].collision_error is None
 
 
 def _model(

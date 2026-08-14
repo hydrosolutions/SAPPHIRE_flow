@@ -218,6 +218,17 @@ def _resolve_declared_value(
     therefore participates in the agreement check); usability (finite,
     non-boolean, non-null) is checked only AFTER any multi-key collision
     has already been resolved or ruled out.
+
+    Fixer round (major finding, independent Codex review): "both keys
+    present" is NOT itself a collision when every present value is
+    independently missing (`is_missing_static_value`) -- two keys that
+    agree by both being ``None``/``NaN`` carry no genuine, differing
+    information to disagree about. That case falls through to
+    :data:`_NO_CANDIDATE` (mirroring the no-present-keys case) instead of
+    raising. The existing "one null, one genuinely valid" raise (per
+    :func:`_values_agree`, which itself rejects a null/NaN operand via
+    `_is_finite_numeric`) is unchanged -- only the all-present-and-all-
+    missing case is exempted from the collision check.
     """
     primary_key, secondary_key = _collision_keys(name)
     present_keys = [
@@ -226,6 +237,8 @@ def _resolve_declared_value(
         if key is not None and key in attributes
     ]
     if not present_keys:
+        return _NO_CANDIDATE
+    if all(is_missing_static_value(attributes[key]) for key in present_keys):
         return _NO_CANDIDATE
     first_key = present_keys[0]
     value = attributes[first_key]

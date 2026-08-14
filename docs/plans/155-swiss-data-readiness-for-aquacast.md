@@ -479,6 +479,40 @@ pre-fix code for the right reason (fix stashed, test kept, run RED, fix restored
 Exit gates re-run and green: `ruff check` + `ruff format --check` clean; pyright ratchet 428 ≤
 baseline 459 (unchanged); full `caravan`-scoped unit + DB-backed integration suite (97 passed).
 
+### Fixer round 5 (2026-08-14) — an independent Codex diff review's MAJOR addressed
+
+An independent Codex pass over round 4's committed diff found one major: the collision guard's
+"both present ⇒ must agree" rule (round 4's fix) treated two present keys that are BOTH
+`None`/`NaN` as a *conflict*, not as "this static is simply missing" — raising
+`ConfigurationError` with the factually wrong message `"resolves to differing values ... (None)
+and ... (None)"`. This is reachable whenever a delivered Caravan package carries both the raw
+HydroATLAS column and the bare canonical-name column for an aliased static, and neither has data
+for a given basin — distinct from round 4's tested "one null, one valid" case. Left uncaught, it
+would crash `onboard_model()`'s Step 1 (`resolve_available_static_keys_for_stations` has no
+`try/except` around it) and, via `verify_static_coverage`, mark **every** declared static for the
+station missing (`collision_error`) rather than just the one affected static.
+
+- **MAJOR fixed — "both present" no longer implies a collision when both present values are
+  independently missing.** `_resolve_declared_value` now short-circuits with a
+  `all(is_missing_static_value(...) for key in present_keys)` check, immediately after the
+  presence check and before the agreement loop: if every present candidate is itself missing, the
+  function falls through to `_NO_CANDIDATE` — mirroring the no-present-keys case — instead of
+  entering the agreement loop at all. The existing "one null, one genuinely valid" raise (round
+  4's fix, via `_values_agree`/`_is_finite_numeric`) is unchanged; only the all-present-and-all-
+  missing case is now exempted. Locked directly in
+  `tests/unit/services/test_caravan_statics.py::TestCollisionSemantics::
+  test_both_keys_present_and_both_null_resolves_to_missing_not_a_collision` (plus a one-null-
+  one-NaN variant) and `TestVerifyStaticCoverage::
+  test_both_keys_present_and_both_null_is_a_plain_missing_gap_not_a_collision` (asserts the exit
+  gate reports a plain `missing_statics` gap for only the affected static, with
+  `collision_error is None`, not a whole-station collision blowout) — proved RED against round 4's
+  code (fix stashed, tests kept, all 3 failed with the wrong-message `ConfigurationError` /
+  everything-missing shape, restored).
+
+Test soundness: proved (fix stashed, the 3 new locking tests run RED against the pre-fix code,
+fix restored). Exit gates re-run and green: `ruff check` + `ruff format --check` clean; pyright
+0 errors on the changed file; `tests/unit/services/test_caravan_statics.py` (52 passed).
+
 ## Implementation notes (read before writing code)
 
 **Source data:** `/Users/bea/Downloads/data.parquet` — 296 rows x 216 cols, `gauge_id` =
