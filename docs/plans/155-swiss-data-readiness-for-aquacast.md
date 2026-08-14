@@ -444,15 +444,16 @@ execution, not accepted on report.
   (without the fix, both threads observed no conflict and either could silently win with no trace,
   failing the "exactly one raises" assertion).
 - **MAJOR fixed — the "all fifty" test now genuinely covers 50 names, not 25.** The prior test
-  exercised 21 aliases + 4 direct-name samples. A committed golden list
-  (`tests/unit/services/test_caravan_statics.py::PT_FIFTY_STATICS`) combines `CARAVAN_ALIAS`'s 21
-  confirmed aliased names with the 7 real "colliding" direct names this plan already names (`area`,
-  `p_mean`, `frac_snow`, `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`) and 22
-  clearly-labelled placeholder direct names (the real remaining ~22 names live in the external,
-  un-vendored `cmal_pool_PT` artifact, not this repo) — asserted `== 50` unique names, each given a
-  distinct value, with a new converse test proving a single missing name among the previously-untested
-  25 is caught. Proved RED (a synthetic gap in a placeholder name was invisible to the old 25-name
-  test).
+  exercised 21 aliases + 4 direct-name samples. **SUPERSEDED 2026-08-14 — the golden list is no
+  longer synthetic.** An interim version padded the 28 confirmed names with 22 placeholder
+  `direct_static_NN` entries because "the real list lives in the external artifact, not this repo";
+  that premise no longer holds. PT's **real** contract is now **vendored** at
+  `tests/fixtures/reference/cmal_pool_PT_static_features.json` (from
+  `cmal_pool_PT/config.yaml :: static_features`), and `PT_FIFTY_STATICS` reads it. The raw list is
+  asserted to be 50 entries **and** 50 unique (asserting the frozenset alone would let a 51-entry
+  fixture with one duplicate read as "exactly fifty"), the converse test **derives** a real direct
+  name rather than hard-coding a placeholder, and the 50 are additionally verified to split exactly
+  21 aliased / 29 direct and to resolve to **distinct** keys.
 - **minor fixed — `network` is no longer a caller-suppliable parameter.** `import_caravan_attributes`
   hardcodes `"bafu"` — Caravan's CAMELS-CH parser only ever understands a `caravan_camels_ch_*` gauge
   id, so a non-"bafu" `network` argument could previously attach Swiss attributes to an unrelated

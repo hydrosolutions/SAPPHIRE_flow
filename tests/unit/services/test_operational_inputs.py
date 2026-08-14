@@ -555,6 +555,25 @@ class TestAssembleStationOperationalInputsResolvesCaravanStatics:
         assert inputs.data.static is not None
         assert inputs.data.static["area"][0] == 250.0
 
+    def _native_model_declaring_other_statics(self) -> object:
+        """A NATIVE co-assignment declaring a DIFFERENT static, so it cannot
+        trip the differing-regimes guard on `area` -- it exists only to make
+        `static_naming_models` non-empty while omitting the invoked model."""
+
+        class _OtherNative(_SmallModelRequirements):
+            data_requirements = _SmallModelRequirements.data_requirements.__class__(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"precipitation", "temperature"}),
+                future_dynamic_features=frozenset({"precipitation", "temperature"}),
+                static_features=frozenset({"slope"}),
+                supported_time_steps=frozenset({timedelta(hours=1)}),
+                lookback_steps=10,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        return _OtherNative()
+
     def test_a_static_naming_models_list_omitting_the_model_still_resolves(
         self,
     ) -> None:
@@ -606,6 +625,68 @@ class TestAssembleStationOperationalInputsResolvesCaravanStatics:
             # discharge). The invoked model is now always part of the
             # resolution set, so the leak is structurally impossible.
             static_naming_models=[],
+        )
+
+        assert result is not None
+        inputs, _ = result
+        assert inputs.data.static is not None
+        assert inputs.data.static["area"][0] == 250.0
+
+    def test_a_non_empty_list_of_foreign_models_still_resolves(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        basin_id = BasinId(uuid4())
+        model = self._caravan_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, state_age_hours=1.0)
+        )
+        station_store.store_station(
+            make_station_config(station_id=sid, basin_id=basin_id)
+        )
+        basin_store.store_basin(
+            Basin(
+                id=basin_id,
+                code="B-001",
+                name="Basin B-001",
+                geometry=None,
+                area_km2=100.0,
+                attributes={
+                    "area": 100.0,  # CAMELS-CH's own bare "area" (must not win)
+                    f"{CARAVAN_PREFIX}area": 250.0,
+                },
+                band_geometries=None,
+                created_at=_ISSUE,
+                network="bafu",
+            )
+        )
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=model,
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=reanalysis,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=120,
+            time_step=timedelta(hours=1),
+            # Round-3 review (MAJOR): a list that OMITS the invoked model used to
+            # make the resolver see no CARAVAN declaration and hand this model
+            # the raw bare `area` (100.0 -- CAMELS-CH's, which rescales every
+            # discharge). The invoked model is now always part of the
+            # resolution set, so the leak is structurally impossible.
+            # Review MINOR: the empty-list case alone would also pass a
+            # weaker `static_naming_models or [model]` implementation.
+            # A NON-EMPTY list that omits the invoked model discriminates:
+            # `or` keeps the foreign list and drops the CARAVAN model.
+            static_naming_models=[self._native_model_declaring_other_statics()],
         )
 
         assert result is not None

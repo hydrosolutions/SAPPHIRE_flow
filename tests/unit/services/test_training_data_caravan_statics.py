@@ -6,9 +6,13 @@ isolation."""
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import CARAVAN_PREFIX
 from sapphire_flow.services.training_data import assemble_station_training_data
 from sapphire_flow.types.basin import Basin
@@ -171,3 +175,54 @@ class TestAssembleStationTrainingDataResolvesCaravanStatics:
         )
 
         assert result is None
+
+
+class TestTrainingCollisionNamesTheStation:
+    """Review MINOR: `services/training_data.py` forwards `station_code`
+    into `available_declared_static_keys` so a T2 collision identifies the
+    station. Without a test at THIS boundary, reverting that one argument
+    would leave every other test green while the operator loses the only
+    field that says WHICH station is inconsistent -- T2 requires the error
+    to name "station, alias, canonical name and both values".
+    """
+
+    def test_a_collision_reports_the_station_code_not_unknown(self) -> None:
+        station_id = StationId(uuid4())
+        basin_id = BasinId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+
+        station = make_station_config(station_id=station_id, basin_id=basin_id)
+        station_store.store_station(station)
+        obs_store.store_observations(
+            make_observations(
+                n=10, station_id=station_id, start=_START, rng=random.Random(1)
+            )
+        )
+
+        # An internally inconsistent package: BOTH the raw HydroATLAS code
+        # and the canonical Caravan name for `slope`, with DIFFERING finite
+        # values -- exactly T2's collision case.
+        basin = _basin_with_caravan_and_camels_ch_attributes(basin_id)
+        attributes = dict(basin.attributes or {})
+        attributes["caravan:slp_dg_sav"] = 12.5
+        attributes["caravan:slope"] = 99.0
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(replace(basin, attributes=attributes))
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            assemble_station_training_data(
+                station_id=station_id,
+                model=_caravan_declaring_model(),
+                period_start=_START,
+                period_end=_END,
+                time_step=_STEP,
+                forcing_source=FakeWeatherReanalysisSource([]),
+                obs_store=obs_store,
+                basin_store=basin_store,
+                station_store=station_store,
+            )
+
+        message = str(excinfo.value)
+        assert "<unknown>" not in message
+        assert station.code in message

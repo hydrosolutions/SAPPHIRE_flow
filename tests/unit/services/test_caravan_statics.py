@@ -206,9 +206,10 @@ _PT_STATICS_FIXTURE = (
     / "reference"
     / "cmal_pool_PT_static_features.json"
 )
-PT_FIFTY_STATICS: frozenset[str] = frozenset(
-    json.loads(_PT_STATICS_FIXTURE.read_text())["static_features"]
-)
+_PT_STATICS_RAW: list[str] = json.loads(_PT_STATICS_FIXTURE.read_text())[
+    "static_features"
+]
+PT_FIFTY_STATICS: frozenset[str] = frozenset(_PT_STATICS_RAW)
 
 
 class TestExitGateAllFiftyResolve:
@@ -843,6 +844,13 @@ class TestVendoredContractMatchesTheAliasMap:
     declared names onto one source column would silently feed a model the
     same value twice.
     """
+
+    def test_the_vendored_list_is_fifty_entries_with_no_duplicates(self) -> None:
+        """Assert the RAW list, not the frozenset: collapsing to a set first
+        would let a 51-entry fixture containing one duplicate still read as
+        "exactly fifty" (review MINOR)."""
+        assert len(_PT_STATICS_RAW) == 50
+        assert len(set(_PT_STATICS_RAW)) == 50
 
     def test_the_contract_splits_exactly_twentyone_aliased_and_twentynine_direct(
         self,
