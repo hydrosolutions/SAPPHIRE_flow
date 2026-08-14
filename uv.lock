@@ -1045,8 +1045,8 @@ wheels = [
 
 [[package]]
 name = "forecastinterface"
-version = "0.1.17"
-source = { git = "https://github.com/hydrosolutions/ForecastInterface.git?rev=v0.1.17#303aa422da45e293070ef1522251c782bbbf2b7b" }
+version = "0.1.19"
+source = { git = "https://github.com/hydrosolutions/ForecastInterface.git?rev=v0.1.19#5eab82a9abeb8fb27f6ea08632d68b953c3755a2" }
 dependencies = [
     { name = "polars" },
     { name = "pydantic" },
@@ -3729,7 +3729,7 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.721"
+version = "0.1.724"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -3802,7 +3802,7 @@ requires-dist = [
     { name = "exactextract", specifier = ">=0.3" },
     { name = "fastapi", specifier = ">=0.135.2" },
     { name = "fastexcel", specifier = ">=0.20.2" },
-    { name = "forecastinterface", git = "https://github.com/hydrosolutions/ForecastInterface.git?rev=v0.1.17" },
+    { name = "forecastinterface", git = "https://github.com/hydrosolutions/ForecastInterface.git?rev=v0.1.19" },
     { name = "geoalchemy2", specifier = ">=0.18.4" },
     { name = "geopandas", specifier = ">=1.1.3" },
     { name = "h5netcdf", specifier = ">=1.8.1" },
