@@ -158,7 +158,17 @@ producer-encoding + consumer-decoding *as a pair*. **T1 alone does not reach thi
   consumer including post-T1 `backup.py` (hazard 3, verified above — `make_url` decodes `%XX` exactly as
   `unquote` does). **Only T1+T2 together meet the stated Goal**; T1 alone is a partial fix, chosen for speed. T1
   is separable and shippable first either way.
-- **D2 — how the producer should encode.** Options:
+- **D2 — how the producer should encode. ✅ DECIDED (owner, 2026-08-14): (a)+(c) — "construct, don't splice".**
+  `pg_dump` moves to discrete `PG*` vars (no URL at all), and **every remaining URL is CONSTRUCTED with
+  SQLAlchemy's `URL.create()`**, never assembled by string interpolation — in Python, replacing the `sed` at Site
+  A and the inline `cat` at Site B. Rationale: parser choice only decides *which* passwords break; the defect is
+  that we **build** credential URLs by splicing, creating an encode/decode contract both ends must honour
+  perfectly forever. `URL.create()` removes the contract by construction — you cannot forget to encode because
+  you never write the string. Verified in this repo's env: `URL.create()` → `render_as_string()` → `make_url()`
+  round-trips `/`, `@`, `%41`, `a&b|c\d`, `p@ss/w%rd=+` and `x"y\`z$(id)` **all exactly**, and its default
+  rendering is `postgresql+psycopg://u:***@h:5432/d` — i.e. **it would also have prevented the `'0r'` leak**
+  (defect 6). Original options retained below for the record.
+- **D2 (original framing).** Options:
   - **(a) Percent-encode the password into the URL** (`quote(pw, safe="")` at composition). SQLAlchemy decodes
     automatically and `backup.py` (post-T1) reads the decoded value. This changes the URL for **every** service at
     once, so it needs an atomic deploy plus the consumer audit in T2.
@@ -232,28 +242,34 @@ cases (they already pass today), not red cases — label them as such so a green
 `prefect-server` inline command (Site B). *Out:* which secret file is read (Plan 147 Slice D), the
 drop-to-app-user step, and the choice of stock image for `prefect-server`.
 
-Percent-encode the password before it enters the URL, and compose without a sed *replacement* (so no `&`/`\`/`|`
-interpretation) — build the string from an encoded value rather than substituting into a pattern.
+**Approach (per the D2 decision): construct, never splice.**
 
-**Use a real encoder, not a hand-rolled one.** A bespoke `sed`/`awk` percent-encoder over a secret is the same
-ad-hoc string surgery that produced hazards 1 and 2; do not write one. `python3` is present in both runtime
-images — the app image is `python:3.14.6-slim` (`Dockerfile:42`) and `prefect-server` runs
-`prefecthq/prefect:3-python3.11` (`docker-compose.yml:51`) — so use `urllib.parse.quote(..., safe="")`, the
-exact primitive D2(a) cites, e.g.:
+1. **`pg_dump` takes `PG*`, not a URL.** `dump_database_task` receives `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/
+   `PGDATABASE` and parses **nothing**. This supersedes T1's `make_url` swap for `backup.py` and takes the one
+   component that actually caught fire out of the hazard class permanently — including the `@` regression T1
+   knowingly accepted. T1's red-first `/` test is rewritten against the `PG*` path with the same assertions.
+2. **Every remaining URL is built with `sqlalchemy.engine.URL.create()`** from typed parts
+   (`drivername, username, password, host, port, database`) and rendered with
+   `render_as_string(hide_password=False)` **only** at the point of use. No `sed`, no `printf`, no f-string
+   assembly of a credential URL anywhere.
+3. **Composition moves into Python.** The `sed` at Site A cannot be made safe by escaping — `&`, `\` and the `|`
+   delimiter are all special in a replacement. Both runtime images ship Python (app: `python:3.14.6-slim`,
+   `Dockerfile:42`; Prefect: `prefecthq/prefect:3-python3.11`, `docker-compose.yml:51`), so use it. **Pass the
+   secret as an `argv` element or on stdin — never interpolate it into the `-c` program text**, which would
+   reintroduce string-splicing one layer down.
+4. **Site B (`prefect-server`) is the one place a URL string is genuinely unavoidable** — it is a stock image
+   consuming `PREFECT_API_DATABASE_CONNECTION_URL`. Build that string with `URL.create()` too, in a `python -c`
+   replacing the inline `cat` splice.
+5. **Never log a rendered URL.** `URL.render_as_string()` defaults to `hide_password=True`; rely on that default
+   and pass `hide_password=False` only where the value is consumed, never where it is logged. This closes defect
+   6 (the `'0r'` prefix reaching a Prefect state message).
 
-```sh
-DB_PASSWORD_ENC=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "${DB_PASSWORD}")
-```
+**Belt-and-braces, explicitly NOT the fix:** generating secrets as **URL-safe** base64 (`-_` for `+/`) is worth
+doing separately, but it would merely have hidden this bug, and cannot constrain a human-set password — so it
+must not substitute for the above. Tracked as a follow-on, not part of T2's acceptance.
 
-Prefer passing the secret as an `argv` element (as above) or on stdin — never interpolate it into the `-c`
-program text, which would reintroduce a string-splicing hazard one layer down.
-
-- **Site A** applies to both `DATABASE_URL` (`entrypoint.sh:22`) and `PREFECT_API_DATABASE_CONNECTION_URL`
-  (`:27`), even though the latter branch is currently dead (see "The class, not just the instance").
-- **Site B** must encode the `cat`-ed secret the same way inside its own `sh -c`, since it never reaches our
-  entrypoint. If routing `prefect-server` through `docker/entrypoint.sh` proves cleaner than duplicating the
-  encoder in compose, that is acceptable and preferable — it collapses the two sites into one — but it changes
-  the service's entrypoint/image wiring and must be smoke-tested, so it is the implementer's call at build time.
+**Round-trip guard:** assert at composition time that parsing the constructed URL back yields the **exact**
+original secret; fail loudly rather than starting a service with a silently-altered credential.
 
 **Consumer audit is part of this task, not an afterthought.** Enumerate the consumers **at implementation time
 with grep** — do not trust a list pinned in this doc (line numbers rot; an earlier draft of this plan cited
