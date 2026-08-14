@@ -4,7 +4,9 @@ static resolution rule (D15) and the alias projection (G8).
 
 from __future__ import annotations
 
+import json
 import math
+import pathlib
 import uuid
 from datetime import UTC, datetime
 
@@ -187,39 +189,25 @@ class TestFrameResolvesAllDeclaredStatics:
         assert missing == frozenset()
 
 
-# Plan 155 fixer round (major finding): the previous "all fifty" test
-# actually exercised only 25 names (21 aliases + 4 direct samples), so a
-# broken/omitted implementation covering any of the OTHER 25 direct PT
-# statics would still have passed it. This is a committed, minimal golden
-# list standing in for PT's real 50-static declared contract (Plan 152
-# T0.0's verified `config.yaml`: "statics: 50 -- the pooled-big set of 51
-# minus degree_of_regulation"). The real declared name list lives in the
-# external `cmal_pool_PT` artifact, not this repo, so this fixture
-# combines what IS independently confirmed here --
-# `CARAVAN_ALIAS`'s 21 real aliased names (T1b, verified against the
-# modeller's own `static_attributes.md`) and the 7 real "colliding" direct
-# names Plan 155 names explicitly (`area`, `p_mean`, `frac_snow`,
-# `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`,
-# docs/plans/155:404) -- with clearly-labelled placeholder direct names
-# for the remainder, so the test still proves "exactly 50, each
-# independently resolved" without misrepresenting an un-vendored external
-# contract as verified.
-_CONFIRMED_DIRECT_STATICS: frozenset[str] = frozenset(
-    {
-        "area",
-        "p_mean",
-        "frac_snow",
-        "high_prec_freq",
-        "high_prec_dur",
-        "low_prec_freq",
-        "low_prec_dur",
-    }
+# PT's REAL 50-static declared contract, vendored from the artifact
+# (`cmal_pool_PT/config.yaml :: static_features`) into
+# `tests/fixtures/reference/cmal_pool_PT_static_features.json` on
+# 2026-08-14. This REPLACES an earlier golden list that padded 28 confirmed
+# names with 22 invented `direct_static_NN` placeholders: that list could
+# not fail against a broken resolver for any of PT's real direct names, so
+# it proved cardinality rather than the contract (round-3 review, MAJOR).
+#
+# The vendored list independently CONFIRMS `CARAVAN_ALIAS`: the 50 names
+# split exactly 21 aliased / 29 direct against it, which is the split T1b
+# derived separately from the modeller's `static_attributes.md`.
+_PT_STATICS_FIXTURE = (
+    pathlib.Path(__file__).parents[2]
+    / "fixtures"
+    / "reference"
+    / "cmal_pool_PT_static_features.json"
 )
-_PLACEHOLDER_DIRECT_STATICS: frozenset[str] = frozenset(
-    f"direct_static_{i:02d}" for i in range(22)
-)
-PT_FIFTY_STATICS: frozenset[str] = (
-    frozenset(CARAVAN_ALIAS) | _CONFIRMED_DIRECT_STATICS | _PLACEHOLDER_DIRECT_STATICS
+PT_FIFTY_STATICS: frozenset[str] = frozenset(
+    json.loads(_PT_STATICS_FIXTURE.read_text())["static_features"]
 )
 
 
@@ -268,10 +256,13 @@ class TestExitGateAllFiftyResolve:
         flagged: a coverage bug affecting one of the 25 PREVIOUSLY
         untested direct names must be reported, not silently pass."""
         declared = PT_FIFTY_STATICS
+        # A REAL direct (non-aliased) name of PT's contract, derived rather
+        # than hard-coded so this test follows the vendored fixture instead
+        # of a placeholder that could silently vanish.
+        omitted = sorted(declared - frozenset(CARAVAN_ALIAS))[0]
         attributes: dict[str, float] = {}
         for index, name in enumerate(sorted(declared)):
-            if name == "direct_static_07":
-                # deliberately omitted -- one of the 25 the old test never reached
+            if name == omitted:
                 continue
             raw = CARAVAN_ALIAS.get(name, name)
             attributes[f"{CARAVAN_PREFIX}{raw}"] = float(index) + 0.1
@@ -279,7 +270,7 @@ class TestExitGateAllFiftyResolve:
         gaps = verify_static_coverage({"2009": attributes}, declared)
 
         assert len(gaps) == 1
-        assert gaps[0].missing_statics == frozenset({"direct_static_07"})
+        assert gaps[0].missing_statics == frozenset({omitted})
 
 
 class TestMissingCaravanSourceIsNotABareFallback:
@@ -793,3 +784,74 @@ class TestResolveAvailableStaticKeysForStations:
         )
 
         assert available[station_id] == frozenset()
+
+
+class TestAdmissibilityIsSharedAcrossBoundaries:
+    """Round-3 review (MINOR): compatibility/frame and the exit gate must
+    agree on whether a VALUE is usable, not merely on which KEY to read.
+    `is_missing_static_value` rejects only None/NaN, so an infinity, string
+    or bool under a `caravan:` key used to be reported "available" and
+    projected into a model's static frame while `verify_static_coverage`
+    rejected it. `area` is one of PT's 50, so a non-finite value there
+    corrupts the m3/s <-> mm/day conversion.
+    """
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [math.inf, -math.inf, "12.5", True],
+        ids=["inf", "-inf", "str", "bool"],
+    )
+    def test_a_non_finite_value_is_neither_available_nor_projected(
+        self, bad_value: object
+    ) -> None:
+        attributes = {f"{CARAVAN_PREFIX}area": bad_value}
+
+        assert (
+            available_declared_static_keys(attributes, ["area"], station_code="2009")
+            == frozenset()
+        )
+
+        projected = project_declared_static_attributes(
+            attributes, ["area"], station_code="2009"
+        )
+        assert projected.get("area") is None
+
+        gaps = verify_static_coverage({"2009": attributes}, ["area"])
+        assert gaps and gaps[0].missing_statics == frozenset({"area"})
+
+    def test_a_finite_value_still_resolves(self) -> None:
+        attributes = {f"{CARAVAN_PREFIX}area": 500.0}
+        assert available_declared_static_keys(
+            attributes, ["area"], station_code="2009"
+        ) == frozenset({"area"})
+        assert (
+            project_declared_static_attributes(
+                attributes, ["area"], station_code="2009"
+            )["area"]
+            == 500.0
+        )
+        assert verify_static_coverage({"2009": attributes}, ["area"]) == ()
+
+
+class TestVendoredContractMatchesTheAliasMap:
+    """The vendored fixture makes PT's REAL contract checkable in-repo.
+    Two facts worth locking, both verified against the delivered parquet
+    on 2026-08-14: the 50 names split exactly 21 aliased / 29 direct
+    against `CARAVAN_ALIAS` (an independent confirmation of the map that
+    T1b derived from the modeller's `static_attributes.md`), and every one
+    of the 50 resolves to a DISTINCT key -- an alias collapsing two
+    declared names onto one source column would silently feed a model the
+    same value twice.
+    """
+
+    def test_the_contract_splits_exactly_twentyone_aliased_and_twentynine_direct(
+        self,
+    ) -> None:
+        aliased = PT_FIFTY_STATICS & frozenset(CARAVAN_ALIAS)
+        assert len(PT_FIFTY_STATICS) == 50
+        assert len(aliased) == 21
+        assert len(PT_FIFTY_STATICS - aliased) == 29
+
+    def test_every_declared_static_resolves_to_a_distinct_key(self) -> None:
+        keys = [resolve_caravan_static_key(n) for n in PT_FIFTY_STATICS]
+        assert len(set(keys)) == len(keys)

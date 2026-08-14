@@ -252,7 +252,15 @@ def _resolve_declared_value(
                 f"{other_key!r} ({other_value!r}) -- refusing to "
                 "silently pick one (Plan 155 T2 collision semantics)"
             )
-    return _NO_CANDIDATE if is_missing_static_value(value) else value
+    # Round-3 review (MINOR): admissibility must match what T1's exit gate
+    # enforces, or compatibility/frame and coverage disagree about the SAME
+    # value -- `is_missing_static_value` rejects only None/NaN, so an
+    # infinity, string or bool under a `caravan:` key was reported
+    # "available" and projected straight into a model's static frame while
+    # `verify_static_coverage` would have rejected it. `area` is among the
+    # 50, so a non-finite value there corrupts the m3/s <-> mm/day
+    # conversion. One admissibility rule everywhere.
+    return _NO_CANDIDATE if not _is_finite_numeric(value) else value
 
 
 def available_declared_static_keys(

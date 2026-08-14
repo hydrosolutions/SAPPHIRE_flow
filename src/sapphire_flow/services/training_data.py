@@ -251,7 +251,9 @@ def assemble_station_training_data(
             # today's raw-key-set/frame behaviour byte-for-byte.
             if declared_names:
                 available = (
-                    available_declared_static_keys(basin.attributes, declared_names)
+                    available_declared_static_keys(
+                        basin.attributes, declared_names, station_code=station.code
+                    )
                     if static_naming is StaticNaming.CARAVAN
                     else non_null_static_keys(basin.attributes)
                 )

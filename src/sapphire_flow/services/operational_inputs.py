@@ -569,13 +569,22 @@ def assemble_station_operational_inputs(
             # model's resolution with the other. Defaults to ``[model]``
             # when the caller has no broader assignment set (e.g. the GROUP
             # path, which only ever assembles for one model).
+            # Round-3 review (MAJOR): the invoked ``model`` is ALWAYS part
+            # of the resolution set, never merely the fallback when the
+            # caller passes nothing. A ``static_naming_models`` that omitted
+            # it -- ``[]``, or a list built from a different assignment set
+            # -- made ``resolve_shared_static_frame`` see no CARAVAN
+            # declaration and hand this model the raw bare attributes, i.e.
+            # CAMELS-CH's ``area``, which rescales every discharge. Uniting
+            # rather than replacing makes that leak structurally impossible
+            # instead of relying on every caller to pass a correct list; a
+            # genuine regime disagreement still raises via the
+            # differing-regimes guard inside the resolver.
             static_df = pl.DataFrame(
                 [
                     resolve_shared_static_frame(
                         basin.attributes,
-                        static_naming_models
-                        if static_naming_models is not None
-                        else [model],
+                        [model, *(static_naming_models or ())],
                         station_code=station_config.code,
                     )
                 ]
