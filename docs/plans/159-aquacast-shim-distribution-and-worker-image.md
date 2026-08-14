@@ -2,8 +2,8 @@
 status: DRAFT
 created: 2026-08-13
 plan: 159
-title: aquacast shim distribution + forecast-cycle worker image — the EXTERNAL half of packaging
-scope: Build the `sapphire-aquacast` shim distribution (a zero-argument entry-point class per trained config, owning the mm/day↔m³/s unit boundary and the mean_temperature↔temperature name boundary) and the worker image that carries it, so an aquacast model is discoverable and unit-correct in production. Split out of Plan 157 on 2026-08-13 because it is an EXTERNAL-REPO deliverable — this repo cannot build, install or test it, and attempting to do so from an `/implement`-driven plan produced two tests that could not fail. Blocked on the real distribution existing, which is itself gated on Plan 152/155 and the modeller's 5-day-horizon variant.
+title: aquacast shim (in-repo optional extra) + forecast-cycle worker image
+scope: Build the aquacast shim — a zero-argument entry-point class per trained config, owning the mm/day↔m³/s unit boundary and the mean_temperature↔temperature name boundary — plus the worker image that carries it, so an aquacast model is discoverable and unit-correct in production. **RESCOPED 2026-08-14 (owner): the shim lives IN THIS REPO as an optional extra, not as a separate `sapphire-aquacast` distribution.** It was split out of Plan 157 on 2026-08-13 on the assumption it had to be external; that assumption is what made it untestable, and it no longer holds.
 depends_on: [152, 155, 157]
 blocks: [152]
 supersedes: []
@@ -11,19 +11,47 @@ supersedes: []
 
 # Plan 159 — aquacast shim distribution + worker image
 
-## ⚠️ Read this first: `/implement` CANNOT drive this plan from this repo
+## D17 — the shim lives IN THIS REPO (owner, 2026-08-14)
 
-This is the lesson Plan 157 paid for. Its T1/T2 asked this repo to build and test a distribution that
-lives outside it; `/implement` could not comply and produced:
+**Decision: an optional extra in `SAPPHIRE_flow`, not a separate `sapphire-aquacast` distribution.**
 
-- a shim test that **monkeypatched `importlib.metadata.entry_points`** with a fabricated class — green
-  whether or not the real package existed;
-- a "cold-start `discover_models()` in the deployed worker" test that ran on the **host interpreter**,
-  unable to detect the exact failure it existed to catch.
+**Why the original split no longer holds.** Plan 157's expensive lesson was that *this repo cannot
+build or test a distribution that lives outside it* — `/implement` produced a shim test that
+monkeypatched `importlib.metadata.entry_points` with a fabricated class (green whether or not the
+package existed) and a "cold-start `discover_models()`" test that ran on the host interpreter. Both
+were deleted. **That lesson is an argument against externality, not against the shim.** In-repo, both
+tests become real: the entry point is genuinely installed, and `discover_models()` genuinely resolves
+it. The standing warning survives in weaker form — *never assert on a fabricated entry point* — but
+`/implement` CAN drive this plan now.
 
-Both were deleted. **The acceptance criteria below are therefore explicitly two-sided**: what the
-external repo must ship, and what *this* repo can genuinely verify. Do not run `/implement` against
-this plan expecting it to produce the distribution.
+**Why not the alternatives** (weighed 2026-08-14, verified against the cloned aquacast):
+- *Entry points inside aquacast itself* — fewest moving parts, but it exports **our** deployment
+  concerns (SAP3's zero-arg plugin convention, our canonical names and units) into a general-purpose
+  research library with other consumers, and every trained config would need declaring in the
+  modeller's repo.
+- *Teach `discover_models` to construct with arguments* — changes the plugin contract for every
+  model, and the config→model binding still has to come from somewhere.
+
+**Honest scoping note.** Only two of the four mismatches actually *force* a shim: zero-argument
+construction (`AquacastModel.__init__` requires a `template` — verified at
+`aquacast/operational/model.py:446`) and discovery (**aquacast declares no entry points at all** —
+verified). The unit and name boundaries are **ownership choices, not necessities**: SAP3 *does* have
+`area` (it is one of PT's 50 statics, merged in Plan 155), so the area-dependent `mm/day ↔ m³/s`
+conversion could live in our FI adapter. Keeping it in the shim keeps
+`adapters/forecast_interface.py` — the single SAP3↔FI boundary — free of per-model special cases.
+That is the real argument; "impossible in SAP3" is not.
+
+### Consequences of D17 (verified 2026-08-14)
+- **This introduces the repo's FIRST `[project.optional-dependencies]` extra.** aquacast pulls
+  `torch==2.9.*`, `flashrnn`, `laplace-torch`, `curvlinops-for-pytorch`, `scikit-learn`, `scipy`,
+  `matplotlib` — the base install, and the `default`/`ingest` workers, must **not** pull it.
+- **aquacast is a PRIVATE repo**, so the build needs the same BuildKit-secret + scoped
+  git-credential-rewrite pattern already used for `recap-dg-client` (`Dockerfile:23-31`), with its
+  own token.
+- **Python is fine:** `torch 2.9.1` ships `cp314` wheels and our image is `python:3.14.6-slim`;
+  aquacast needs `>=3.12`, we declare `>=3.12`. Checked, because a missing wheel here would have
+  killed the in-repo approach outright.
+- **FI must be v0.1.19** (T0) — aquacast pins it.
 
 ## Objective
 
@@ -54,7 +82,7 @@ aquacast declares `mean_temperature`; SAP3's canonical names are `{"precipitatio
 (`config/deployment.py:132`). Same class as G9, same owner: expose canonical `temperature` outward,
 translate internally.
 
-### G10 — an external distribution is invisible in the production image
+### G10 — the shim is invisible in the production image unless the extra is installed
 `discover_models()` sees only **installed** entry points; the runtime image runs
 `uv sync --frozen --no-dev` against **this repo's** lockfile (`Dockerfile:32`) and copies only that
 virtualenv (`:82`).
@@ -93,7 +121,7 @@ So the bump is low-risk: three additive changes plus one narrowing we already sa
 
 ## Tasks
 
-### T1 — the `sapphire-aquacast` distribution (EXTERNAL REPO)
+### T1 — the aquacast shim (IN THIS REPO, optional extra — see D17)
 One zero-argument entry-point class per trained config, binding `ModelTemplate.from_yaml(...)` +
 device at construction and declaring the `model_tier` / `alert_eligibility` attributes
 `_assert_model_classification_declared` requires (`services/model_registry.py:61-76`). Config ships
@@ -104,15 +132,20 @@ as package data (Plan 152 D1).
   audit precipitation and expose canonical `MM` if it declares `MM_PER_DAY`.
 - **names (G15)** — expose canonical `temperature`, translate internally to `mean_temperature`.
 
-**Acceptance — in the EXTERNAL repo:** a **numeric** area-aware round trip (a known `mm/day` at a
-known `area` arrives as the correct `m³/s`). **Asserting that `fi_unit_to_canonical` merely succeeds
-proves nothing** — `M3_PER_S` and `MM` already map; that test passes on day one. This is the exact
-trap that produced two unsound tests in Plan 156.
+**Acceptance — a NUMERIC area-aware round trip**: a known `mm/day` at a known `area` arrives as the
+correct `m³/s`, asserted on the value. **Asserting that `fi_unit_to_canonical` merely succeeds proves
+nothing** — `M3_PER_S` and `MM` already map, so that test passes on day one. This is the exact trap
+that produced two unsound tests in Plan 156.
 
-**Acceptance — in THIS repo, once the package is installable:** with the real distribution installed,
-`discover_models()` **returns** the aquacast model (a positive assertion — post-156 a broken shim is
-silently skipped, so "it constructs" is not "it is registered"), and compatibility reports **zero**
-missing forcing for a target station.
+**Acceptance — discovery, with the extra installed:** `discover_models()` **returns** the aquacast
+model. This must be a **positive** assertion: post-156 a broken or unrepresentable model is *silently
+skipped* per entry point (`services/model_registry.py:96`), so "it constructs" is not "it is
+registered". Compatibility must also report **zero** missing statics for a Swiss target station —
+which is now meaningful, because Plan 155 merged the resolution that makes it pass.
+
+**These tests are real in-repo (D17)**: the entry point is genuinely installed and genuinely
+resolved. Never substitute a monkeypatched `importlib.metadata.entry_points` with a fabricated class
+— that is the Plan 157 test that could not fail.
 
 ### T2 — the worker image (this repo, but only once T1 exists)
 Per Plan 157 D13, the aquacast image **is the forecast-cycle worker image** — a superset of the
