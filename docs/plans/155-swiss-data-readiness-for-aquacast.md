@@ -16,8 +16,17 @@ supersedes: []
 
 **Fixer round 3 (2026-08-14)** addressed round-2's BLOCKER (manifest-scoped exit gate) and its 4
 majors (atomicity, compatibility/frame resolver divergence, test surface, docs) — see that section
-below for detail. Committed locally on `feat/plan-155-caravan-statics` (hold-at-PR); an independent
-review round has **not** yet run over this commit — do not treat it as merge-ready without one.
+below for detail. Committed on `feat/plan-155-caravan-statics` (hold-at-PR).
+
+**Independent review status — 2026-08-14: THREE passes have run, the last a GO/NO-GO over the whole
+branch.** The round-3 fixes came back **no blockers, no majors** (4 minors, all closed in `2ab2dc8`).
+The GO/NO-GO found **no code blocker**, and specifically confirmed the two things that most needed an
+outside check: the diff is **inert for existing NATIVE models** (training and hindcast paths
+unprojected, FI naming survives adaptation, the forecast cycle supplies every assigned model), and
+**neither accepted deferral is PR-blocking** — the unbound gate sets and the unpersisted provenance
+gate the later *real operational import*, not the merge of a currently-unused capability. Its NO-GO
+was **staleness only**: the branch had fallen behind `origin/main`, and this paragraph still claimed
+no review had run. Both are now addressed.
 
 **T1 + T2 IMPLEMENTED (2026-08-13) — then REVIEWED and found NOT MERGEABLE.** The inventory below
 is accurate and useful; **its two DEVIATION claims are SUPERSEDED** by the review section that
@@ -348,6 +357,96 @@ design**. Fix:
 - **MINOR** — `docs/touchpoint-maps.md:482` still documents a caller-supplied `prefix` parameter that
   round 2 removed; it contradicts line 659 and the shipped signature.
 
+## Round-3 review — loop reported CONVERGED (0/0), independent Codex disagrees (2026-08-14)
+
+The workflow converged after 3 rounds (5 fixer commits, HEAD `9fe14b7`, full suite **3410 passed**).
+An independent Codex pass over the FINAL state returned **not mergeable**. Note `codexFailedRounds: 1`
+— one of the loop's own rounds ran without its Codex pass, and rounds 4-5 landed *after* the
+implementer wrote its report, so its evidence covers `bc8f5d1`, not HEAD. **Every item below was
+checked against the code; two of Codex's severities are corrected.**
+
+### ✅ Verified genuinely fixed (by execution)
+- **D15/D16 resolution** — CARAVAN + missing `caravan:area` → `None`, never the leaked `123.0`;
+  NATIVE unchanged; CARAVAN + present → Caravan's value; differing co-assigned regimes raise.
+- **The T1 exit gate** — now manifest-scoped, and **its locking test discriminates**: reverting
+  `manifest_unmatched` → `unmatched` makes `test_an_out_of_manifest_unmatched_code_does_not_raise`
+  **fail** while `test_a_manifest_unmatched_code_raises` still passes. `run_operational_caravan_import`
+  requires both gate parameters, so the always-skip path is closed by the signature.
+- **Atomicity** — `require_real_transaction` refuses AUTOCOMMIT before any read or write.
+
+### ⬇️ Codex's BLOCKER — real, but NOT live; downgrade to MAJOR (hardening)
+An empty/omitting `static_naming_models` makes `resolve_shared_static_frame` see no Caravan
+declarations and return raw attributes — executed: `[]` yields `area=123.0` where `[caravan_model]`
+yields `500.0` (`services/operational_inputs.py:574`). **But the invariant holds by construction at
+the only caller**: `first_model = models.get(assembly_assignment.model_id)` (`:2076`, guarded at
+`:2077`) and `assigned_models` is every resolving model of the same `sorted_assignments` (`:2093`),
+so the invoked model is always in the list. It is a **service-contract gap reachable only by a future
+caller**, not a live data-corruption path. Fix cheaply: have the service reject a
+`static_naming_models` that omits the invoked model.
+
+### ✅ Codex's MAJORs — both real, and both now CLOSABLE
+They share one root: **no caller supplies the AUTHENTIC manifest and the AUTHENTIC 50 statics.**
+`expected_codes`/`required_static_names` need only be non-empty, and the "all fifty" test uses
+**22 invented placeholder names** — the test's own comment concedes it is "a committed, minimal
+golden list standing in for PT's real 50-static declared contract" because "the real declared name
+list lives in the external `cmal_pool_PT` artifact, not this repo".
+
+**That premise no longer holds — the real list was extracted this session:**
+`cmal_pool_PT/config.yaml` → `static_features`, **exactly 50 names**, splitting **21 aliased / 29
+direct** against `CARAVAN_ALIAS` — an independent confirmation that the 21-entry alias map is right.
+**Commit those 50 as a fixture** and the vacuous-test major closes and the exit gate becomes real
+rather than nominal.
+
+### MINORs
+- **Value admissibility is not shared.** `_resolve_declared_value` rejects only missing values, so an
+  infinity/string/bool under a `caravan:` key is "available" and gets projected, while
+  `verify_static_coverage` would reject it as non-finite. Compatibility, frame and coverage agree on
+  *key selection* but not on *validity* (`services/caravan_statics.py:241,283,507`). Matters because
+  `area` is among the statics.
+- **`services/training_data.py:253`** omits `station_code`, so a T2 collision reports
+  `station '<unknown>'` — contrary to T2's "naming station, alias, canonical name and both values".
+
+## Round-3 findings — DRIVEN DIRECTLY, four fixes + the contract vendored (2026-08-14)
+
+Applied by hand rather than via another `/implement` cycle (the loop had just declared convergence
+while these were open, so a fourth run risked repeating that). **Every fix has a locking test proven
+to FAIL against the pre-fix code**, by reverting the fix and re-running.
+
+1. **PT's REAL 50-static contract is now VENDORED** —
+   `tests/fixtures/reference/cmal_pool_PT_static_features.json`, extracted from the artifact's
+   `config.yaml :: static_features`. This replaces a golden list that padded 28 confirmed names with
+   **22 invented `direct_static_NN` placeholders**, which proved cardinality rather than the
+   contract. The test now follows the fixture, and the "one missing direct static" case **derives** a
+   real direct name instead of hard-coding a placeholder that could vanish silently.
+2. **The `static_naming_models` bypass is closed structurally** (`services/operational_inputs.py`) —
+   the invoked `model` is now always part of the resolution set (`[model, *(static_naming_models or
+   ())]`) rather than being *replaced* by the caller's list. An `[]` or a list built from a different
+   assignment set previously made the resolver see no CARAVAN declaration and hand the model raw bare
+   `area`. Uniting beats raising here: it cannot fail closed on a legitimate caller, and a genuine
+   regime disagreement still raises via the existing differing-regimes guard.
+3. **Admissibility is now shared** (`services/caravan_statics.py::_resolve_declared_value`) — it
+   applies `_is_finite_numeric`, so an infinity/string/bool under a `caravan:` key is no longer
+   reported "available" and projected while `verify_static_coverage` would reject it. `area` is among
+   the 50, so a non-finite value there corrupted the `m3/s <-> mm/day` conversion.
+4. **`services/training_data.py` threads `station_code`** into `available_declared_static_keys`, so a
+   T2 collision names the station instead of reporting `'<unknown>'`. All call sites now pass it.
+
+### ✅ End-to-end confirmation the vendored contract unlocked
+Run against the delivered parquet: **all 50 of PT's declared statics resolve to a column the file
+actually ships** (50/50, none unresolvable), splitting exactly **21 aliased / 29 direct** against
+`CARAVAN_ALIAS` — an independent confirmation of the alias map T1b derived separately from the
+modeller's `static_attributes.md`. Both facts are locked as tests, including that the 50 resolve to
+**distinct** keys (an alias collapsing two declared names onto one column would feed a model the same
+value twice).
+
+### ⚠️ DELIBERATELY NOT FIXED — the gate's sets are still caller-supplied
+Codex's remaining MAJOR stands: `expected_codes` / `required_static_names` need only be non-empty,
+so a caller passing 147 stations or one static still "passes". **Not fixed here because the
+authoritative runtime source of the 50 is the model's own `data_requirements.static_features`, and
+the operational caller that would supply it does not exist yet** — the plan's standing "real import
+not yet run" follow-on. The substantive half is closed: the *tests* now pin the real contract instead
+of placeholders. **Binding the operational entrypoint to the model's declared statics and the frozen
+T0a manifest belongs with that follow-on**, and should be done before the first real import.
 ### Fixer round 3 (2026-08-14) — round-2's BLOCKER + 4 majors addressed
 
 - **BLOCKER fixed — the T1 exit gate is now manifest-scoped, never parquet-scoped.**

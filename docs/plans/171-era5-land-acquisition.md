@@ -22,6 +22,46 @@ Implements milestone **M-A4** (`docs/design/dhm-precipitation-milestones.md:177`
 Unblocked: a bounding-box request needs no station coordinates. Builds on Plan 170's
 `scripts/dhm_precip/` package.
 
+**Post-implementation review, fixer round 2026-08-13.** A multi-model review (Claude design +
+independent Codex, repo-grounded) of the committed implementation raised 2 blockers and 11 majors
+(plus minors). All blockers and majors are resolved:
+- Raw (2a) and final (D9) schema validation now check EXACT grid point count/spacing/endpoints (not
+  a tolerance band — a spatial subset used to pass), duplicate/cardinality-checked timestamps, dims
+  order, `float32` dtype, required attrs, infinity rejection, and (new: `validate_output_encoding`,
+  checked on the reopened file only) on-disk compression/chunks/fill-value/time-units encoding.
+- Every exception crossing the `CdsClient` seam (D12) is sanitized (secret-redacted) AT THE SEAM in
+  `_download_with_retry`, not only at `main()`'s logging call site — closing the gap where a hostile
+  or merely careless client implementation could still leak a credential into a raised exception.
+- `RealCdsClient` now pins `cdsapi.Client(retry_max=1)` — the library's own `robust()`/download-resume
+  retry loop (default 500 attempts, real uninjectable `time.sleep(120)`) otherwise silently bypassed
+  the outer, bounded, injected-sleep retry contract.
+- `deaccumulate_precipitation`'s boundary-context check no longer conflates a per-cell NaN (D9's
+  explicitly-permitted sea/non-land mask) with a genuinely missing predecessor stamp.
+- Missing/invalid CDS configuration is classified as `Era5CredentialsError` (exit 2) directly, not
+  through the generic keyword classifier's unclassified-failure fallback (exit 3); manifest/provenance
+  reads and writes, and the checksum/publish primitives, wrap `OSError` as `Era5StorageError` (exit 5);
+  `main()` also catches a bare `OSError` as a backstop.
+- `--window`'s CLI grammar is a full-match parser (an hour suffix or trailing junk is rejected, not
+  silently widened to the whole month/year); `--stage transform`'s year-scoping now derives from EVERY
+  resolved window (any granularity), and an out-of-range resolved year is rejected rather than a
+  silent no-op.
+- `transform_identity`'s `output_encoding` and the actual `to_netcdf` encoding are now the SAME
+  `_OUTPUT_ENCODING_SPEC` dict (compression, chunks, fill value, time units/dtype) — previously the
+  identity carried only zlib/complevel; `conservation_tolerance_m` is now also part of the identity.
+- The acquisition-wide `dataset` is now immutable: `acquire_window` rejects reusing an existing
+  manifest under a different dataset, and `transform_year` rejects any consumed raw record whose
+  `dataset` disagrees with the manifest's.
+- 3a's `diagnose_accumulation_convention` is now wired to a `--stage diagnose` CLI path (against an
+  already-acquired raw window) instead of being reachable only from synthetic-fixture unit tests, and
+  its tolerance now matches D7's own packing tolerance (was 10x looser).
+- `transform_year` now rejects a `--provenance` that disagrees with the acquisition manifest's
+  recorded `operator_provenance`, instead of silently ignoring the parameter.
+- D6 post-condition 1b (the post-clamp per-accumulation-day/cell accounting equation) is now asserted
+  in code (`_assert_post_clamp_accounting`), not just totalled into the manifest's aggregate fields.
+- A manifest-write failure during a REVISION (a previous good product already exists) now restores the
+  previous good product before re-raising, rather than leaving the new product published with a stale
+  manifest entry (D5); orphaned backups are recovered on the next run's startup.
+
 ## Problem
 
 M-A6 — the point of Track A — compares DHM gauges against ERA5-Land. Nothing can start until the

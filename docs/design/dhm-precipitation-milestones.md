@@ -213,6 +213,31 @@ current endpoint, dataset name and licence-acceptance step rather than assuming.
 **Exit:** deaccumulated hourly ERA5-Land precipitation over the study box, stored locally, regenerable
 from a committed request script, with the CDS dataset identifier and request parameters recorded.
 
+**Code COMPLETE 2026-08-13 (Plan 171)**: `scripts/dhm_precip/era5_request.py` (D2 request builder, the
+observed-payload literal), `era5_manifest.py` (D5 identities, atomic writer, D11 provenance), the
+`era5_acquire.py`/`era5_transform.py` drivers, `era5_deaccumulate.py` (D6's accumulation-day rule,
+red-first against a naive-global-diff candidate), and the `acquire_era5.py` CLI (D14 gate: 92 unit
+tests, `ruff check`/`format` clean, `pyright scripts/dhm_precip/` 0 errors, `pyright src/` ratchet
+clean). **Pending the operator steps that follow the code (2b, 4b)**: the real October-2021 sample
+acquisition and the full 2020–2025 acquisition + transform — both require a credentialed human and are
+explicitly out of a subagent's scope (plan `## Human prerequisites`); P0 (CDS account + licence
+acceptance) is done, and `data/dhm_precip/era5_land_provenance.json` (D15) is in place.
+
+**Fixer round 2026-08-13 (post-review)**: a multi-model review (Claude + independent Codex) found
+blockers/majors in the first pass — raw/final schema validation was tolerance-based rather than exact
+(a spatial subset or duplicated timestamps could pass as the full product); a hostile `CdsClient`
+implementation could still leak credentials into a raised exception; `cdsapi.Client()`'s own retry loop
+(500 attempts, real `time.sleep`) silently bypassed the injected, bounded outer retry; masked
+(sea/non-land) NaN cells were wrongly treated as missing boundary context; `diagnose_accumulation_convention`
+(3a) had no operator-invocable path. All are now fixed: `--stage diagnose` wires the convention
+diagnostic to an already-acquired raw window (operator runs it against the real 2b sample before 4b);
+every exception crossing the `CdsClient` seam is sanitized at the seam, not just logged; `RealCdsClient`
+pins `retry_max=1` so the outer driver is the sole retry owner; D9's raw/final schema checks are exact
+(grid count/spacing/order, time uniqueness, dtype, attrs, on-disk encoding via `validate_output_encoding`);
+D6 post-condition 1b (per-day/cell post-clamp accounting) is asserted in code; a manifest-write failure
+mid-revision restores the previous good product (D5); the acquisition-wide dataset is now immutable once
+a manifest exists. See `docs/plans/171-era5-land-acquisition.md` for the full finding list and fixes.
+
 ### M-A5 · Point extraction at station locations
 **Depends: M-D2, M-A4.** *(M-A4 needs no coordinates; only the extraction does.)*
 
@@ -306,6 +331,36 @@ evidence supports it, including "no operational use".
 **Exit:** written recommendation; owner decision.
 
 ---
+
+## Working on this track — the research data is gitignored, so a worktree starts empty
+
+**A git worktree carries no gitignored files.** `data/` is gitignored (`.gitignore:21`), so a fresh
+worktree has none of this track's inputs and the failures look like regressions when they are not.
+
+**First thing after creating a worktree for this track:**
+
+```bash
+mkdir -p <worktree>/data/dhm_precip
+cp /path/to/SAPPHIRE_flow/data/dhm_precip/* <worktree>/data/dhm_precip/
+```
+
+That is the workbook, `station_coordinates.csv`, and `era5_land_provenance.json` (Plan 171's D15
+operator provenance — **JSON**, the authoritative schema).
+
+**What it looks like when you forget.** The M-A1 reproduction gate fails with
+`coordinate table not found or not a file: data/dhm_precip/station_coordinates.csv` and exit code 2.
+That is **D12 behaving correctly** — a missing coordinate table is a typed loader error, never a
+silent skip — but it reads as a code regression until you notice the message.
+
+**Related trap when reporting coverage.** A full `uv run pytest` reports **7 skipped**; those are all
+Plan 170's M-A1 reproduction gate, which skips when `DHM_PRECIP_XLSX` is unset (its *only* permitted
+skip condition, so CI stays green without the workbook). A full-suite pass therefore **does not**
+exercise the reproduction gate. Run it explicitly with the workbook before claiming it green:
+
+```bash
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
+  uv run pytest tests/integration/test_dhm_precip_reproduction.py
+```
 
 ## Track I — implementation
 
