@@ -24,6 +24,7 @@ from sapphire_flow.services.caravan_statics import (
     StaticCoverageGap,
     verify_static_coverage,
 )
+from sapphire_flow.store._helpers import require_real_transaction
 from sapphire_flow.types.caravan_attributes import (
     CaravanImportProvenance,
     CaravanImportResult,
@@ -81,22 +82,52 @@ def import_caravan_attributes(
     exit gate is neither enforced nor genuinely tested -- no production
     caller invokes it") makes T1's exit gate the OPERATIONAL import's own
     gate rather than an optional, disconnected script: when given, EVERY
-    manifest station must end up matched, basin-bound, and resolving all
-    of `required_static_names` to finite values via
-    `services/caravan_statics.py::verify_static_coverage` (which is itself
-    collision-aware -- Plan 155 fixer round: the old exit-gate check
-    "does not run collision resolution"). Any shortfall -- an unmatched
-    code, a station without a basin, a manifest station missing from the
-    parquet, or a per-station coverage gap -- raises `ConfigurationError`
-    BEFORE returning, naming every failure. This function does not manage
-    its own transaction (the caller's connection does); raising here, in
-    the middle of the per-row merge loop having already run, relies on the
-    caller's transaction being rolled back on an unhandled exception (the
-    standard `engine.begin()` / this repo's test `db_connection` fixture
-    pattern) -- the writes already issued to `merge_namespaced_attributes`
-    are not durably committed unless the caller commits after this
-    function returns successfully.
+    **manifest** (`expected_codes`) station must end up matched,
+    basin-bound, and resolving all of `required_static_names` to finite
+    values via `services/caravan_statics.py::verify_static_coverage`
+    (which is itself collision-aware -- Plan 155 fixer round: the old
+    exit-gate check "does not run collision resolution"). Any shortfall --
+    an unmatched manifest code, a manifest station without a basin, a
+    manifest station missing from the parquet, or a per-manifest-station
+    coverage gap -- raises `ConfigurationError` naming every failure.
+
+    Round-2 review BLOCKER: the gate is **manifest-scoped, never
+    parquet-scoped**. The delivered parquet legitimately covers hundreds of
+    Swiss gauges beyond our own configured stations (Plan 155 T0a: the real
+    parquet holds 296 codes against 169 configured stations, 148 overlap --
+    the other 148 rows are permanently out of scope BY DESIGN, not a
+    failure). A source-only code that matches no configured station, or a
+    configured station outside `expected_codes`, is reported via
+    `unmatched_codes`/`stations_without_basin` but is **never fatal**. Only
+    a station IN `expected_codes` failing to match/bind/cover gates the
+    exit -- so `required_static_names` REQUIRES `expected_codes` be given
+    alongside it (raises immediately, before any read or write, if only
+    one of the two is supplied): omitting `expected_codes` would silently
+    make the "gate" validate nothing (every parquet row that happens to
+    match is "coverage", with no denominator), while resolving it against
+    the raw parquet (the pre-round-2 behaviour) makes the gate raise on
+    every run, since real data always carries out-of-scope rows.
+
+    Round-2 review MAJOR (atomicity): `require_real_transaction`
+    (`store/_helpers.py`, the same guard `import_basin_package` uses)
+    refuses to run at all -- before issuing a single write -- unless
+    `basin_store`'s connection is genuinely inside a non-AUTOCOMMIT
+    transaction, so a mid-loop gate failure rolls back every write already
+    issued instead of leaving a partially-applied import on production's
+    AUTOCOMMIT connection.
     """
+    if required_static_names is not None and expected_codes is None:
+        raise ConfigurationError(
+            "import_caravan_attributes: required_static_names was supplied "
+            "without expected_codes -- Plan 155's T1 exit gate is scoped to "
+            "the T0a MANIFEST, not the source parquet, so it needs the "
+            "manifest to gate against (Plan 155 round-2 review BLOCKER: "
+            "gating against the raw parquet either always raises on the "
+            "permanently out-of-scope rows a real Caravan delivery carries, "
+            "or -- omitted entirely -- silently validates nothing)"
+        )
+    require_real_transaction(basin_store.connection, caller="import_caravan_attributes")
+
     rows = load_caravan_attribute_rows(path)
 
     matched: set[str] = set()
@@ -125,27 +156,39 @@ def import_caravan_attributes(
 
     coverage_gaps: tuple[StaticCoverageGap, ...] = ()
     if required_static_names is not None:
+        # expected_codes is guaranteed not-None here (checked above).
+        manifest = frozenset(expected_codes)  # type: ignore[arg-type]
+        manifest_unmatched = unmatched & manifest
+        manifest_no_basin = no_basin & manifest
+        manifest_codes_matched = sorted(matched_basin_ids.keys() & manifest)
         coverage_gaps = tuple(
             gap
-            for code in sorted(matched_basin_ids)
+            for code in manifest_codes_matched
             for basin in (basin_store.fetch_basin(matched_basin_ids[code]),)
             for gap in verify_static_coverage(
                 {code: basin.attributes if basin is not None else None},
                 required_static_names,
             )
         )
-        if unmatched or no_basin or missing_from_manifest or coverage_gaps:
+        gate_failed = bool(
+            manifest_unmatched
+            or manifest_no_basin
+            or missing_from_manifest
+            or coverage_gaps
+        )
+        if gate_failed:
             gap_report = [
                 (g.station_code, sorted(g.missing_statics), g.collision_error)
                 for g in coverage_gaps
             ]
             raise ConfigurationError(
-                "Plan 155 T1 exit gate failed -- every manifest station must "
-                f"match, bind to a basin, and resolve all "
+                "Plan 155 T1 exit gate failed -- every MANIFEST station "
+                f"must match, bind to a basin, and resolve all "
                 f"{len(required_static_names)} declared statics to finite "
-                "values: "
-                f"unmatched={sorted(unmatched)}, "
-                f"stations_without_basin={sorted(no_basin)}, "
+                "values (source-only codes outside the manifest are never "
+                "fatal): "
+                f"unmatched={sorted(manifest_unmatched)}, "
+                f"stations_without_basin={sorted(manifest_no_basin)}, "
                 f"missing_from_manifest={sorted(missing_from_manifest)}, "
                 f"coverage_gaps={gap_report}"
             )

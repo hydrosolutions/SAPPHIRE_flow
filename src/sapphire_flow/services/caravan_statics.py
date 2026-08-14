@@ -52,6 +52,9 @@ from sapphire_flow.types.enums import StaticNaming
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    from sapphire_flow.protocols.stores import BasinStore, StationStore
+    from sapphire_flow.types.ids import StationId
+
 CARAVAN_PREFIX: Final[str] = "caravan:"
 
 # Canonical Caravan/PT static name -> raw parquet column (a HydroATLAS code
@@ -160,16 +163,68 @@ def declared_static_naming(model: object) -> StaticNaming:
     )
 
 
+_NO_CANDIDATE: Final[object] = object()
+
+
+def _resolve_declared_value(
+    attributes: Mapping[str, Any],
+    name: str,
+    *,
+    station_code: str | None = None,
+) -> Any:
+    """THE single collision-aware resolver for one declared static name,
+    shared by :func:`available_declared_static_keys` (the compatibility-KEY
+    boundary), :func:`project_declared_static_attributes` (the frame
+    boundary) and, transitively, :func:`verify_static_coverage` (T1's exit
+    gate). Plan 155 round-2 review MAJOR: a resolver duplicated per
+    boundary had drifted -- compatibility checked only the PRIMARY key
+    (:func:`resolve_caravan_static_key`) while the frame accepted the
+    SECONDARY key alone too (:func:`_collision_keys`), so a station could
+    pass one boundary and raise (or fail) at the other for the identical
+    name. One function now serves all three call sites, so they can never
+    again disagree.
+
+    Returns :data:`_NO_CANDIDATE` when neither the primary nor (for an
+    aliased name) the secondary key is present; raises
+    :class:`ConfigurationError` when BOTH are present with differing (or
+    equal-infinite) values, per T2's collision semantics.
+    """
+    primary_key, secondary_key = _collision_keys(name)
+    candidate_keys = [
+        key
+        for key in (primary_key, secondary_key)
+        if key is not None and not is_missing_static_value(attributes.get(key))
+    ]
+    if not candidate_keys:
+        return _NO_CANDIDATE
+    first_key = candidate_keys[0]
+    value = attributes[first_key]
+    for other_key in candidate_keys[1:]:
+        other_value = attributes[other_key]
+        if not _values_agree(value, other_value):
+            station = station_code or "<unknown>"
+            raise ConfigurationError(
+                f"station {station!r}: static {name!r} resolves to "
+                f"differing values from {first_key!r} ({value!r}) and "
+                f"{other_key!r} ({other_value!r}) -- refusing to "
+                "silently pick one (Plan 155 T2 collision semantics)"
+            )
+    return value
+
+
 def available_declared_static_keys(
     attributes: Mapping[str, Any] | None,
     declared_names: Iterable[str],
 ) -> frozenset[str]:
     """The subset of ``declared_names`` that resolve to a present, non-null
-    value in ``attributes`` via :func:`resolve_caravan_static_key`. Used at
-    the COMPATIBILITY boundary (onboarding's raw-key-set check, and
-    training's own missing-static gate) ahead of building any frame --
-    Plan 155 T2's "the projection must cover the compatibility path, not
-    just the frame".
+    value in ``attributes`` via :func:`_resolve_declared_value` -- the SAME
+    collision-aware resolver the frame boundary uses (round-2 review
+    MAJOR: this used to check only the primary key, disagreeing with the
+    frame whenever a package carried only the secondary/canonical-name
+    key). Used at the COMPATIBILITY boundary (onboarding's raw-key-set
+    check, and training's own missing-static gate) ahead of building any
+    frame -- Plan 155 T2's "the projection must cover the compatibility
+    path, not just the frame".
 
     D16: callers must invoke this ONLY for a ``StaticNaming.CARAVAN``
     model, and must NOT union its result with the model's raw (bare) key
@@ -180,8 +235,56 @@ def available_declared_static_keys(
     return frozenset(
         name
         for name in declared_names
-        if not is_missing_static_value(attributes.get(resolve_caravan_static_key(name)))
+        if _resolve_declared_value(attributes, name) is not _NO_CANDIDATE
     )
+
+
+def resolve_available_static_keys_for_stations(
+    model: object,
+    station_ids: Iterable[StationId],
+    *,
+    station_store: StationStore,
+    basin_store: BasinStore,
+) -> dict[StationId, frozenset[str]]:
+    """The D16 compatibility-KEY-SET resolution loop, shared by BOTH
+    real-boundary callers that used to duplicate it byte-for-byte
+    (`flows/onboard_model.py::_validate_compatibility_task` and
+    `services/model_onboarding.py::onboard_model`'s own Step 1) -- Plan
+    155 round-2 review MAJOR ("test surface"): the duplicated inline logic
+    was untested at ITS boundary in `model_onboarding.py` and had no
+    single source of truth to diverge from. One function now serves both
+    Prefect-task and plain-Python compatibility callers, and is directly
+    testable in isolation.
+
+    For each station: with no bound basin, the available set is empty;
+    otherwise resolves through :func:`available_declared_static_keys` (no
+    bare-key union) for a ``StaticNaming.CARAVAN``-declaring model, or the
+    raw non-null key set (``types/basin.py::non_null_static_keys``,
+    today's unprojected behaviour) for a ``NATIVE`` one.
+    """
+    from typing import cast
+
+    from sapphire_flow.types.basin import non_null_static_keys
+
+    declared_names = cast(
+        "frozenset[str]",
+        model.data_requirements.static_features,  # type: ignore[attr-defined]
+    )
+    static_naming = declared_static_naming(model)
+    available: dict[StationId, frozenset[str]] = {}
+    for sid in station_ids:
+        station = station_store.fetch_station(sid)
+        if station is None or station.basin_id is None:
+            available[sid] = frozenset()
+            continue
+        basin = basin_store.fetch_basin(station.basin_id)
+        attrs = basin.attributes if basin is not None else None
+        available[sid] = (
+            available_declared_static_keys(attrs, declared_names)
+            if static_naming is StaticNaming.CARAVAN
+            else non_null_static_keys(attrs)
+        )
+    return available
 
 
 def project_declared_static_attributes(
@@ -193,7 +296,7 @@ def project_declared_static_attributes(
     """Build the model-facing static projection: every ORIGINAL key of
     ``attributes`` is preserved untouched, and each name in
     ``declared_names`` additionally resolves through
-    :func:`resolve_caravan_static_key` into a BARE column under that exact
+    :func:`_resolve_declared_value` into a BARE column under that exact
     declared name -- so an unmodified ``_static_inputs``
     (``adapters/forecast_interface.py``) finds a column named exactly what
     the model declared, populated with CARAVAN's value (D15: no bare
@@ -224,29 +327,12 @@ def project_declared_static_attributes(
         return {}
     projected: dict[str, Any] = dict(attributes)
     for name in declared_names:
-        primary_key, secondary_key = _collision_keys(name)
-        candidate_keys = [
-            key
-            for key in (primary_key, secondary_key)
-            if key is not None and not is_missing_static_value(attributes.get(key))
-        ]
-        if not candidate_keys:
+        value = _resolve_declared_value(attributes, name, station_code=station_code)
+        if value is _NO_CANDIDATE:
             # No caravan: source at all -- missing, not a stale bare
             # fallback. The caller's own compatibility gate reports this.
             projected.pop(name, None)
             continue
-        first_key = candidate_keys[0]
-        value = attributes[first_key]
-        for other_key in candidate_keys[1:]:
-            other_value = attributes[other_key]
-            if not _values_agree(value, other_value):
-                station = station_code or "<unknown>"
-                raise ConfigurationError(
-                    f"station {station!r}: static {name!r} resolves to "
-                    f"differing values from {first_key!r} ({value!r}) and "
-                    f"{other_key!r} ({other_value!r}) -- refusing to "
-                    "silently pick one (Plan 155 T2 collision semantics)"
-                )
         projected[name] = value
     return projected
 

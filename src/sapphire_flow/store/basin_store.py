@@ -26,6 +26,15 @@ class PgBasinStore:
     def __init__(self, conn: sa.Connection) -> None:
         self._conn = conn
 
+    @property
+    def connection(self) -> sa.Connection:
+        """Read-only access to the underlying connection -- needed by
+        multi-statement callers that must verify they are running inside a
+        real transaction before writing (Plan 155:
+        `store/caravan_import.py::import_caravan_attributes`,
+        `store/_helpers.py::require_real_transaction`)."""
+        return self._conn
+
     def fetch_basin(self, basin_id: BasinId) -> Basin | None:
         row = (
             self._conn.execute(sa.select(basins).where(basins.c.id == basin_id))

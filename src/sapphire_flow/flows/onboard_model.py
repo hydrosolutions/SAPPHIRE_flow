@@ -21,8 +21,7 @@ from sapphire_flow.protocols.forecast_model import (
     StationForecastModel,
 )
 from sapphire_flow.services.caravan_statics import (
-    available_declared_static_keys,
-    declared_static_naming,
+    resolve_available_static_keys_for_stations,
 )
 from sapphire_flow.services.model_onboarding import (
     assert_model_conforms,
@@ -44,12 +43,10 @@ from sapphire_flow.services.training_data import (
     assemble_group_training_data,
     assemble_station_training_data,
 )
-from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import (
     AuditEventType,
     ModelArtifactStatus,
     OnboardingOutcome,
-    StaticNaming,
 )
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.model_onboarding import (
@@ -262,30 +259,23 @@ def _validate_compatibility_task(
     parameter_store: object,
     deployment_config: object,
 ) -> CompatibilityReport:
-    # Plan 155 T2 (G8) + D16: a Caravan-DECLARING model's own static names
-    # (e.g. PT's "area") never appear bare in `basin.attributes` -- they
-    # live `caravan:`-namespaced (D15) -- so its available set must resolve
-    # through the alias/direct rule instead of (never in addition to) the
-    # raw bare key set. D16: which rule applies is the MODEL's own
-    # declaration (`static_naming`); a NATIVE model (the default -- every
-    # incumbent) keeps today's raw-key-set behaviour byte-for-byte.
-    declared_names: frozenset[str] = model.data_requirements.static_features  # type: ignore[attr-defined]
-    static_naming = declared_static_naming(model)
-    avail_static_by_station: dict[StationId, frozenset[str]] = {}
-    for sid in unit.station_ids:
-        station = station_store.fetch_station(sid)  # type: ignore[union-attr]
-        has_basin = station is not None and station.basin_id is not None
-        if has_basin and basin_store is not None:
-            basin = basin_store.fetch_basin(station.basin_id)  # type: ignore[union-attr]
-            attrs = basin.attributes if basin is not None else None
-            if static_naming is StaticNaming.CARAVAN:
-                avail_static_by_station[sid] = available_declared_static_keys(
-                    attrs, declared_names
-                )
-            else:
-                avail_static_by_station[sid] = non_null_static_keys(attrs)
-        else:
-            avail_static_by_station[sid] = frozenset()
+    # Plan 155 T2 (G8) + D16, round-2 review MAJOR ("test surface"): this
+    # loop used to be duplicated byte-for-byte in
+    # `services/model_onboarding.py::onboard_model`'s own Step 1, with no
+    # single source of truth to diverge from and no direct test at either
+    # boundary. `resolve_available_static_keys_for_stations` is now the
+    # ONE implementation both callers share.
+    if basin_store is None:
+        avail_static_by_station: dict[StationId, frozenset[str]] = {
+            sid: frozenset() for sid in unit.station_ids
+        }
+    else:
+        avail_static_by_station = resolve_available_static_keys_for_stations(
+            model,
+            unit.station_ids,
+            station_store=station_store,  # type: ignore[arg-type]
+            basin_store=basin_store,  # type: ignore[arg-type]
+        )
 
     canonical_units = {
         parameter.name: parameter.unit

@@ -14,6 +14,11 @@ supersedes: []
 ## Status
 **READY** (owner, 2026-08-13). Split out of **Plan 152** (tasks T1, T1b, T1c) on 2026-08-12.
 
+**Fixer round 3 (2026-08-14)** addressed round-2's BLOCKER (manifest-scoped exit gate) and its 4
+majors (atomicity, compatibility/frame resolver divergence, test surface, docs) — see that section
+below for detail. Committed locally on `feat/plan-155-caravan-statics` (hold-at-PR); an independent
+review round has **not** yet run over this commit — do not treat it as merge-ready without one.
+
 **T1 + T2 IMPLEMENTED (2026-08-13) — then REVIEWED and found NOT MERGEABLE.** The inventory below
 is accurate and useful; **its two DEVIATION claims are SUPERSEDED** by the review section that
 follows. Specifically: the collision guard is **not** "forward-compatible defensive code", it is
@@ -342,6 +347,53 @@ design**. Fix:
   boundary, so removing a production wiring call could leave the suite green.
 - **MINOR** — `docs/touchpoint-maps.md:482` still documents a caller-supplied `prefix` parameter that
   round 2 removed; it contradicts line 659 and the shipped signature.
+
+### Fixer round 3 (2026-08-14) — round-2's BLOCKER + 4 majors addressed
+
+- **BLOCKER fixed — the T1 exit gate is now manifest-scoped, never parquet-scoped.**
+  `import_caravan_attributes` intersects `unmatched`/`no_basin`/coverage checks with the caller's
+  `expected_codes` MANIFEST before deciding whether to raise; a parquet row with no configured
+  station (out-of-scope, e.g. 148 of the real delivery's 296) is reported but never fatal.
+  `required_static_names` without `expected_codes` now raises `ConfigurationError` immediately,
+  before any read or write, closing the "always-skip" accidental-no-op path. Locked in
+  `tests/integration/store/test_caravan_import.py` (`test_an_out_of_manifest_unmatched_code_does_not_raise`,
+  `test_a_manifest_unmatched_code_raises`, `test_required_static_names_without_expected_codes_raises_immediately`)
+  — proved RED against the pre-fix code (stashed, ran, confirmed genuine assertion failures, restored).
+- **MAJOR fixed — atomicity.** `store/_helpers.py::require_real_transaction` (extracted from
+  `basin_importer.py`'s own guard, now shared by both) refuses to run `import_caravan_attributes` at
+  all — before the parquet is even read — unless `basin_store.connection` (a new public
+  `PgBasinStore.connection` property) is inside a real, non-AUTOCOMMIT, already-open transaction.
+  `TestTransactionGuard` (mirroring `test_basin_importer_persistence.py`'s own) and
+  `test_exit_gate_failure_after_a_successful_merge_rolls_back_on_caller_rollback` (mirroring
+  `TestPackageAtomicity`) prove both the refusal and the end-to-end rollback. Proved RED
+  (stash/run/restore).
+- **MAJOR fixed — compatibility/frame resolver divergence.** `available_declared_static_keys` and
+  `project_declared_static_attributes` now share one collision-aware resolver
+  (`_resolve_declared_value`), so a station carrying only the secondary (bare-Caravan-name) key for
+  an aliased static resolves identically at both boundaries. Locked directly
+  (`test_agrees_with_the_frame_when_only_the_secondary_key_is_present`), proved RED.
+- **MAJOR partially addressed — test surface.** New direct-boundary tests reach
+  `services/hindcast.py::_load_static_attributes` (new file, `test_hindcast_caravan_statics.py`) and
+  `services/operational_inputs.py::assemble_station_operational_inputs` (including the
+  `static_naming_models` fallback-chain differing-regime raise). The duplicated D16 compatibility
+  loop in `flows/onboard_model.py::_validate_compatibility_task` and
+  `services/model_onboarding.py::onboard_model`'s Step 1 was extracted to one shared function
+  (`services/caravan_statics.py::resolve_available_static_keys_for_stations`), removing the
+  divergence risk and adding direct unit coverage of the extracted logic. **Not fully closed**: no
+  test reaches the real, full `onboard_model()`/`model_onboarding.py` pipeline end-to-end (the
+  extracted-and-shared function is unit-tested instead — a deliberate scope call given the pipeline's
+  heavy fixture cost), and no test reaches `adapters/forecast_interface.py::_static_inputs` directly
+  (covered only transitively via `assemble_station_operational_inputs`/`assemble_station_training_data`
+  producing an already-resolved frame). Residual risk for a future pass.
+- **MINOR fixed** — `docs/touchpoint-maps.md`'s stale `prefix`-parameter reference corrected, plus new
+  bullets documenting the shared resolver and the manifest-scoped exit gate as contracts that must
+  not change silently.
+
+Exit gates: `ruff check` + `ruff format --check` clean on every changed file (12 pre-existing
+alembic-migration `E501`s untouched); pyright ratchet 428 ≤ baseline 459 (one transient new error in
+the extracted `resolve_available_static_keys_for_stations`, fixed via `typing.cast` before the final
+run); full unit suite (2753 passed) and full integration suite (591 passed, 7 pre-existing skips)
+green.
 
 ## Implementation notes (read before writing code)
 

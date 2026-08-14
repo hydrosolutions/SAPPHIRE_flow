@@ -9,6 +9,7 @@ import pytest
 from structlog.testing import capture_logs
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.services.caravan_statics import CARAVAN_PREFIX
 from sapphire_flow.services.operational_inputs import (
     _aggregate_nwp_records_to_time_step,
     _AggregatedNwpPoint,
@@ -19,15 +20,17 @@ from sapphire_flow.services.operational_inputs import (
     build_superset_requirements,
     load_warm_up_state,
 )
+from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleMode,
     SpatialRepresentation,
+    StaticNaming,
     WarmUpSource,
     WeatherSourceRole,
     WeatherSourceStatus,
 )
-from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.ids import BasinId, ModelId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.weather import WeatherForecastRecord
 from tests.conftest import (
@@ -461,6 +464,151 @@ class TestAssembleStationOperationalInputs:
         assert result is not None
         inputs, _ = result
         assert inputs.data.past_dynamic.is_empty()
+
+
+class TestAssembleStationOperationalInputsResolvesCaravanStatics:
+    """Plan 155 round-2 review MAJOR ("test surface"): no Caravan test
+    reached the real `assemble_station_operational_inputs` boundary --
+    locked directly here, including the fallback-chain `static_naming_models`
+    per-model scoping (`services/caravan_statics.py::resolve_shared_static_frame`)
+    the fixer round added."""
+
+    def _caravan_model(self) -> object:
+        class _CaravanModel(_SmallModelRequirements):
+            static_naming = StaticNaming.CARAVAN
+            data_requirements = _SmallModelRequirements.data_requirements.__class__(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"precipitation", "temperature"}),
+                future_dynamic_features=frozenset({"precipitation", "temperature"}),
+                static_features=frozenset({"area"}),
+                supported_time_steps=frozenset({timedelta(hours=1)}),
+                lookback_steps=10,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        return _CaravanModel()
+
+    def _native_model_declaring_area(self) -> object:
+        class _NativeModel(_SmallModelRequirements):
+            # No `static_naming` declared -- defaults to StaticNaming.NATIVE.
+            data_requirements = _SmallModelRequirements.data_requirements.__class__(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"precipitation", "temperature"}),
+                future_dynamic_features=frozenset({"precipitation", "temperature"}),
+                static_features=frozenset({"area"}),
+                supported_time_steps=frozenset({timedelta(hours=1)}),
+                lookback_steps=10,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        return _NativeModel()
+
+    def test_caravan_declaring_model_resolves_caravans_value(self) -> None:
+        sid = StationId(uuid4())
+        basin_id = BasinId(uuid4())
+        model = self._caravan_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, state_age_hours=1.0)
+        )
+        station_store.store_station(
+            make_station_config(station_id=sid, basin_id=basin_id)
+        )
+        basin_store.store_basin(
+            Basin(
+                id=basin_id,
+                code="B-001",
+                name="Basin B-001",
+                geometry=None,
+                area_km2=100.0,
+                attributes={
+                    "area": 100.0,  # CAMELS-CH's own bare "area" (must not win)
+                    f"{CARAVAN_PREFIX}area": 250.0,
+                },
+                band_geometries=None,
+                created_at=_ISSUE,
+                network="bafu",
+            )
+        )
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=model,
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=reanalysis,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=120,
+            time_step=timedelta(hours=1),
+        )
+
+        assert result is not None
+        inputs, _ = result
+        assert inputs.data.static is not None
+        assert inputs.data.static["area"][0] == 250.0
+
+    def test_co_assigned_models_under_differing_regimes_raise(self) -> None:
+        """The fallback-chain gap the fixer round found: a shared frame
+        must not resolve one co-assigned model's declared name under
+        another's `static_naming` regime -- there is no single correct
+        shared value for `area` here."""
+        sid = StationId(uuid4())
+        basin_id = BasinId(uuid4())
+        caravan_model = self._caravan_model()
+        native_model = self._native_model_declaring_area()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, state_age_hours=1.0)
+        )
+        station_store.store_station(
+            make_station_config(station_id=sid, basin_id=basin_id)
+        )
+        basin_store.store_basin(
+            Basin(
+                id=basin_id,
+                code="B-001",
+                name="Basin B-001",
+                geometry=None,
+                area_km2=100.0,
+                attributes={"area": 100.0, f"{CARAVAN_PREFIX}area": 250.0},
+                band_geometries=None,
+                created_at=_ISSUE,
+                network="bafu",
+            )
+        )
+        # Both co-assigned models declare "area" -- the NATIVE one wants
+        # the bare CAMELS-CH value, the CARAVAN one wants Caravan's.
+        requirements_override = build_superset_requirements(
+            [caravan_model.data_requirements, native_model.data_requirements]  # type: ignore[attr-defined]
+        )
+
+        with pytest.raises(ConfigurationError, match="area"):
+            assemble_station_operational_inputs(
+                station_id=sid,
+                model=caravan_model,
+                model_id=_MODEL_ID,
+                issue_time=_ISSUE,
+                cycle_time=_CYCLE,
+                nwp_source=_NWP_SOURCE,
+                forcing_source=reanalysis,
+                weather_forecast_store=nwp_store,
+                obs_store=obs_store,
+                station_store=station_store,
+                basin_store=basin_store,
+                model_state_store=state_store,
+                clock=_clock,
+                forecast_horizon_steps=120,
+                time_step=timedelta(hours=1),
+                requirements_override=requirements_override,
+                static_naming_models=[caravan_model, native_model],
+            )
 
 
 class TestLoadWarmUpState:

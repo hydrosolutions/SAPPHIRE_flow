@@ -29,7 +29,7 @@ AUTOCOMMIT (verified against a live Postgres: a `begin()`/execute/execute
 (fails)/`rollback()` sequence on an AUTOCOMMIT-isolation connection leaves
 the first statement's row committed). `import_basin_package` therefore
 REFUSES to run at all unless `conn` is demonstrably inside a real,
-non-AUTOCOMMIT transaction (`_require_real_transaction` below) — a
+non-AUTOCOMMIT transaction (`store/_helpers.py::require_real_transaction`) — a
 mid-pipeline failure on a connection that passes this guard genuinely rolls
 back the whole package, because ordinary Postgres transactions (opened via
 `engine.connect()` + `conn.begin()`, or `engine.begin()`) are atomic across
@@ -57,6 +57,7 @@ from sapphire_flow.db.metadata import (
     stations,
 )
 from sapphire_flow.exceptions import BasinPackageRejectedError
+from sapphire_flow.store._helpers import require_real_transaction
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.recap_gateway_polygon_store import RecapGatewayPolygonStore
 from sapphire_flow.store.station_store import PgStationStore
@@ -160,7 +161,7 @@ def import_basin_package(
     never "locked" by a run that persisted nothing (fixer round, blocker,
     2026-07-23).
     """
-    _require_real_transaction(conn)
+    require_real_transaction(conn, caller="import_basin_package")
     package_id = PackageId(loaded.manifest.package_id)
 
     # Finding 1(a): BIND the acceptance report to the EXACT loaded package.
@@ -505,37 +506,6 @@ def _reject_correction_station_migration(
             f"{[str(s) for s in bound_station_ids]} — a correction may not change "
             "the basin's station identity; refusing to silently migrate it (an "
             "operator-approved migration is out of Phase-2 scope)"
-        )
-
-
-def _require_real_transaction(conn: sa.Connection) -> None:
-    """Blocker fixer round: refuse to run the multi-statement package
-    pipeline unless ``conn`` is genuinely inside a non-AUTOCOMMIT
-    transaction. Verified empirically against a live Postgres connection:
-    on an ``isolation_level="AUTOCOMMIT"`` connection (production's
-    ``flows/_db.py::setup_production_stores``), even an EXPLICIT
-    ``conn.begin()`` does not make subsequent statements roll back together
-    — a statement executed before a later failure stays committed after
-    ``rollback()``. A connection that passes both checks below (no
-    AUTOCOMMIT execution option, and an active transaction already open) DOES
-    roll back correctly, because ordinary Postgres transactions are atomic
-    by construction — see module docstring "Transaction contract"."""
-    if conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
-        raise RuntimeError(
-            "import_basin_package refuses to run on an AUTOCOMMIT-isolation "
-            "connection — each statement in the package pipeline would "
-            "commit independently, so a mid-pipeline failure could leave "
-            "provenance/basin/version/§5a writes partially applied. Acquire "
-            "a connection via engine.connect() (not the shared production "
-            "AUTOCOMMIT connection) and wrap the call in conn.begin(), or "
-            "use engine.begin() directly."
-        )
-    if not conn.in_transaction():
-        raise RuntimeError(
-            "import_basin_package requires an already-open transaction on "
-            "conn (call conn.begin() — or use engine.begin() — before "
-            "invoking) so a mid-pipeline failure rolls back the whole "
-            "package instead of leaving partial writes."
         )
 
 

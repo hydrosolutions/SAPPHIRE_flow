@@ -476,6 +476,7 @@ class TestImportCaravanAttributesRequiredStaticNames:
                 path,
                 station_store=station_store,
                 basin_store=basin_store,
+                expected_codes=frozenset({"2009"}),
                 required_static_names=frozenset({"area", "slope"}),
             )
 
@@ -503,9 +504,16 @@ class TestImportCaravanAttributesRequiredStaticNames:
                 required_static_names=frozenset({"area", "slope"}),
             )
 
-    def test_an_unmatched_code_raises_even_with_full_coverage_elsewhere(
+    def test_an_out_of_manifest_unmatched_code_does_not_raise(
         self, db_connection: sa.Connection, tmp_path
     ) -> None:
+        """Plan 155 round-2 review BLOCKER, locked directly: "the T1 exit
+        gate is unusable in both directions -- unmatched collects every
+        parquet row with no configured station", so a real-shaped delivery
+        (out-of-scope Swiss codes the parquet legitimately carries beyond
+        our own configured stations) always raised, even on a flawless
+        manifest import. Code "9999" is unmatched (no configured station)
+        and NOT in `expected_codes` -- it must be reported, never fatal."""
         station_store = PgStationStore(db_connection)
         basin_store = PgBasinStore(db_connection)
         basin = _make_basin(code="2009")
@@ -521,6 +529,45 @@ class TestImportCaravanAttributesRequiredStaticNames:
                     "area": 250.0,
                     "slp_dg_sav": 12.5,
                 },
+                # Out-of-scope: not a configured station, not in the manifest.
+                {"gauge_id": "caravan_camels_ch_9999", "area": 1.0},
+            ],
+        )
+
+        result = import_caravan_attributes(
+            path,
+            station_store=station_store,
+            basin_store=basin_store,
+            expected_codes=frozenset({"2009"}),
+            required_static_names=frozenset({"area", "slope"}),
+        )
+
+        assert result.matched_codes == frozenset({"2009"})
+        assert result.unmatched_codes == frozenset({"9999"})
+
+    def test_a_manifest_unmatched_code_raises(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        """The converse of the above: an unmatched code that IS in the
+        manifest (a T0a station with no configured station-store row at
+        all) must still gate the exit -- manifest-scoping narrows what is
+        fatal, it does not disable the gate for the manifest itself."""
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+        path = _write_parquet(
+            tmp_path,
+            [
+                {
+                    "gauge_id": "caravan_camels_ch_2009",
+                    "area": 250.0,
+                    "slp_dg_sav": 12.5,
+                },
+                # "9999" is in the manifest but has no configured station.
                 {"gauge_id": "caravan_camels_ch_9999", "area": 1.0},
             ],
         )
@@ -530,8 +577,41 @@ class TestImportCaravanAttributesRequiredStaticNames:
                 path,
                 station_store=station_store,
                 basin_store=basin_store,
+                expected_codes=frozenset({"2009", "9999"}),
                 required_static_names=frozenset({"area", "slope"}),
             )
+
+    def test_required_static_names_without_expected_codes_raises_immediately(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        """Plan 155 round-2 review fix (2): "make the operational entrypoint
+        require expected_codes + required_static_names, so the always-skip
+        path cannot be taken by accident" -- supplying one without the
+        other is a caller error, not a silently-disabled gate."""
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+        path = _write_parquet(
+            tmp_path,
+            [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0, "slp_dg_sav": 12.5}],
+        )
+
+        with pytest.raises(ConfigurationError, match="expected_codes"):
+            import_caravan_attributes(
+                path,
+                station_store=station_store,
+                basin_store=basin_store,
+                required_static_names=frozenset({"area", "slope"}),
+            )
+
+        # Guard fires before any write -- the incumbent basin is untouched.
+        fetched = basin_store.fetch_basin(basin.id)
+        assert fetched is not None
+        assert "caravan:area" not in fetched.attributes
 
     def test_no_required_static_names_never_raises_on_a_gap(
         self, db_connection: sa.Connection, tmp_path
@@ -555,3 +635,111 @@ class TestImportCaravanAttributesRequiredStaticNames:
         )
 
         assert result.matched_codes == frozenset({"2009"})
+
+    def test_exit_gate_failure_after_a_successful_merge_rolls_back_on_caller_rollback(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        """Plan 155 round-2 review MAJOR (atomicity), mirroring
+        `test_basin_importer_persistence.py::TestPackageAtomicity`: a
+        mid-loop write (station "2009", full coverage) happens BEFORE the
+        exit-gate check for station "2010" (missing "slope") raises. Once
+        the caller rolls back, on a real transaction, NEITHER station's
+        `caravan:` keys may survive -- proving the "one import, all-or-
+        nothing" contract end to end, not just that the exception fired."""
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+        basin_2009 = _make_basin(code="2009")
+        basin_2010 = _make_basin(code="2010")
+        basin_store.store_basin(basin_2009)
+        basin_store.store_basin(basin_2010)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin_2009.id)
+        )
+        station_store.store_station(
+            make_station_config(
+                station_id=StationId(uuid.uuid4()),
+                code="2010",
+                network="bafu",
+                basin_id=basin_2010.id,
+            )
+        )
+        path = _write_parquet(
+            tmp_path,
+            [
+                {
+                    "gauge_id": "caravan_camels_ch_2009",
+                    "area": 250.0,
+                    "slp_dg_sav": 12.5,
+                },
+                # "2010" is missing "slp_dg_sav" -- fails the exit gate.
+                {"gauge_id": "caravan_camels_ch_2010", "area": 1.0},
+            ],
+        )
+
+        savepoint = db_connection.begin_nested()
+        with pytest.raises(ConfigurationError, match="exit gate failed"):
+            import_caravan_attributes(
+                path,
+                station_store=station_store,
+                basin_store=basin_store,
+                expected_codes=frozenset({"2009", "2010"}),
+                required_static_names=frozenset({"area", "slope"}),
+            )
+        savepoint.rollback()
+
+        fetched_2009 = basin_store.fetch_basin(basin_2009.id)
+        fetched_2010 = basin_store.fetch_basin(basin_2010.id)
+        assert fetched_2009 is not None
+        assert fetched_2010 is not None
+        assert "caravan:area" not in fetched_2009.attributes
+        assert "caravan:area" not in fetched_2010.attributes
+
+
+class TestTransactionGuard:
+    """Plan 155 round-2 review MAJOR: "the repo's production connection is
+    AUTOCOMMIT, so a gate failure can leave a partially applied import ...
+    the canonical basin importer explicitly refuses this transaction
+    shape; this one does not." Mirrors
+    `test_basin_importer_persistence.py::TestTransactionGuard` via the
+    shared `store/_helpers.py::require_real_transaction`."""
+
+    def test_autocommit_connection_refused_before_any_write(
+        self, db_engine: sa.Engine, tmp_path
+    ) -> None:
+        conn = db_engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            basin_store = PgBasinStore(conn)
+            station_store = PgStationStore(conn)
+            # No basin/station seeded at all: the guard must fire before
+            # the parquet is even read or any store is queried, so nothing
+            # needs cleanup afterwards on this shared, real-commit engine.
+            path = _write_parquet(
+                tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+            )
+
+            with pytest.raises(RuntimeError, match="AUTOCOMMIT"):
+                import_caravan_attributes(
+                    path, station_store=station_store, basin_store=basin_store
+                )
+        finally:
+            conn.close()
+
+    def test_connection_with_no_open_transaction_refused(
+        self, db_engine: sa.Engine, tmp_path
+    ) -> None:
+        conn = db_engine.connect()
+        try:
+            assert not conn.in_transaction()
+            basin_store = PgBasinStore(conn)
+            station_store = PgStationStore(conn)
+            path = _write_parquet(
+                tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+            )
+
+            with pytest.raises(RuntimeError, match="transaction"):
+                import_caravan_attributes(
+                    path, station_store=station_store, basin_store=basin_store
+                )
+        finally:
+            conn.rollback()
+            conn.close()

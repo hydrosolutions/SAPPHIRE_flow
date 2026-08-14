@@ -5,6 +5,8 @@ static resolution rule (D15) and the alias projection (G8).
 from __future__ import annotations
 
 import math
+import uuid
+from datetime import UTC, datetime
 
 import polars as pl
 import pytest
@@ -16,13 +18,17 @@ from sapphire_flow.services.caravan_statics import (
     available_declared_static_keys,
     declared_static_naming,
     project_declared_static_attributes,
+    resolve_available_static_keys_for_stations,
     resolve_caravan_static_key,
     resolve_shared_static_frame,
     verify_static_coverage,
 )
-from sapphire_flow.types.basin import non_null_static_keys
+from sapphire_flow.types.basin import Basin, non_null_static_keys
 from sapphire_flow.types.enums import EnsembleMode, SpatialRepresentation, StaticNaming
+from sapphire_flow.types.ids import BasinId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
+from tests.conftest import make_station_config
+from tests.fakes.fake_stores import FakeBasinStore, FakeStationStore
 
 
 class TestResolveCaravanStaticKey:
@@ -137,6 +143,27 @@ class TestAvailableDeclaredStaticKeys:
         attributes = {f"{CARAVAN_PREFIX}area": None}
         available = available_declared_static_keys(attributes, frozenset({"area"}))
         assert "area" not in available
+
+    def test_agrees_with_the_frame_when_only_the_secondary_key_is_present(
+        self,
+    ) -> None:
+        """Plan 155 round-2 review MAJOR, locked directly: "compatibility
+        and frame resolution disagree -- available_declared_static_keys
+        checks only the primary raw-code key while
+        project_declared_static_attributes will accept the secondary
+        canonical key alone". A package carrying ONLY Caravan's own bare
+        canonical name for an aliased static (no raw HydroATLAS code at
+        all) must be reported AVAILABLE here, matching the frame -- one
+        resolver now serves both boundaries."""
+        # "slope" is aliased to "slp_dg_sav"; only the bare secondary key
+        # (`caravan:slope`) is present, never the primary `caravan:slp_dg_sav`.
+        attributes = {f"{CARAVAN_PREFIX}slope": 12.5}
+
+        available = available_declared_static_keys(attributes, frozenset({"slope"}))
+        projected = project_declared_static_attributes(attributes, {"slope"})
+
+        assert "slope" in available
+        assert projected["slope"] == 12.5
 
 
 class TestFrameResolvesAllDeclaredStatics:
@@ -475,3 +502,96 @@ class TestResolveSharedStaticFrame:
         )
         assert resolve_shared_static_frame(None, [caravan_model]) == {}
         assert resolve_shared_static_frame({}, [caravan_model]) == {}
+
+
+def _basin_for_resolution_test(basin_id: BasinId) -> Basin:
+    return Basin(
+        id=basin_id,
+        code="B-001",
+        name="Basin B-001",
+        geometry=None,
+        area_km2=100.0,
+        attributes={
+            "area": 999.0,  # CAMELS-CH's own bare "area" (must not win under CARAVAN)
+            f"{CARAVAN_PREFIX}area": 250.0,
+            f"{CARAVAN_PREFIX}slp_dg_sav": 12.5,
+        },
+        band_geometries=None,
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
+        network="bafu",
+    )
+
+
+class TestResolveAvailableStaticKeysForStations:
+    """Plan 155 round-2 review MAJOR ("test surface"): the D16 compatibility
+    resolution loop used to be duplicated byte-for-byte in
+    `flows/onboard_model.py::_validate_compatibility_task` AND
+    `services/model_onboarding.py::onboard_model`'s own Step 1, with no
+    single source of truth to diverge from and no direct test of either.
+    Both now call this one function -- locked directly here."""
+
+    def test_caravan_model_resolves_through_the_alias_no_bare_fallback(self) -> None:
+        station_id = StationId(uuid.uuid4())
+        basin_id = BasinId(uuid.uuid4())
+        station_store = FakeStationStore()
+        station_store.store_station(
+            make_station_config(station_id=station_id, basin_id=basin_id)
+        )
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(_basin_for_resolution_test(basin_id))
+        model = _model(
+            static_features=frozenset({"area", "slope"}),
+            static_naming=StaticNaming.CARAVAN,
+        )
+
+        available = resolve_available_static_keys_for_stations(
+            model,
+            [station_id],
+            station_store=station_store,
+            basin_store=basin_store,
+        )
+
+        assert available[station_id] == frozenset({"area", "slope"})
+
+    def test_native_model_gets_the_raw_bare_key_set(self) -> None:
+        station_id = StationId(uuid.uuid4())
+        basin_id = BasinId(uuid.uuid4())
+        station_store = FakeStationStore()
+        station_store.store_station(
+            make_station_config(station_id=station_id, basin_id=basin_id)
+        )
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(_basin_for_resolution_test(basin_id))
+        model = _model(static_features=frozenset({"area", "slope"}))  # NATIVE default
+
+        available = resolve_available_static_keys_for_stations(
+            model,
+            [station_id],
+            station_store=station_store,
+            basin_store=basin_store,
+        )
+
+        # NATIVE gets the RAW key set (today's behaviour) -- "slope" is
+        # simply not a key present in attributes at all under that name.
+        assert available[station_id] == frozenset(
+            {"area", f"{CARAVAN_PREFIX}area", f"{CARAVAN_PREFIX}slp_dg_sav"}
+        )
+        assert "slope" not in available[station_id]
+
+    def test_station_with_no_basin_resolves_to_an_empty_set(self) -> None:
+        station_id = StationId(uuid.uuid4())
+        station_store = FakeStationStore()
+        station_store.store_station(
+            make_station_config(station_id=station_id, basin_id=None)
+        )
+        basin_store = FakeBasinStore()
+        model = _model(static_features=frozenset({"area"}))
+
+        available = resolve_available_static_keys_for_stations(
+            model,
+            [station_id],
+            station_store=station_store,
+            basin_store=basin_store,
+        )
+
+        assert available[station_id] == frozenset()
