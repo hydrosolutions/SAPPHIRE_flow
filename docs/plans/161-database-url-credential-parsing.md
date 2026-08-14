@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-14
 plan: 161
 title: DATABASE_URL credential handling — a `/` in the password silently killed every backup
@@ -12,7 +12,7 @@ supersedes: []
 # Plan 161 — DATABASE_URL credential handling
 
 ## Status
-**DRAFT** (2026-08-14). Operational reliability (category **A**). Fixes a **live, ongoing** backup outage:
+**READY** (2026-08-14) — **build scope is T1 ONLY.** Operational reliability (category **A**). Fixes a **live, ongoing** backup outage:
 **the mac-mini has had no successful database backup since 2026-08-13 02:01 UTC.**
 
 ## Problem
@@ -142,7 +142,16 @@ producer-encoding + consumer-decoding *as a pair*. **T1 alone does not reach thi
 
 ## Open decisions (owner)
 
-- **D1 — how far to fix.** (a) Consumer only: `backup.py` → `make_url`. Fixes the live outage, minimal risk, but
+- **D1 — how far to fix. ✅ DECIDED (owner, 2026-08-14): ship T1 now.** Backups have been dead since
+  2026-08-13 02:01 and a restart-requiring macOS update (Tahoe 26.6.1) is pending on the host, so the most
+  recent restorable dump ages by a day every day. Restoring backups today outweighs closing the whole class in
+  one atomic deploy. **Accepted with an explicit, bounded risk:** T1 alone arms the `@` regression documented in
+  T1 below (`make_url` silently truncates a password at the first `@`). This cannot fire against the **current**
+  credentials, which are generated base64 (alphabet `A–Za–z0–9+/=`, no `@`) — **so T1 carries a hard
+  precondition: verify no live DB secret contains `@` before deploying, and do not set a manual password until
+  T2 lands.** T2 remains specified and is the actual fix for the class; T3 is independent. Original options
+  retained below for the record.
+- **D1 (original framing).** (a) Consumer only: `backup.py` → `make_url`. Fixes the live outage, minimal risk, but
   leaves hazards 2 **and 3** live. (b) Consumer + producer: also percent-encode at composition. **Recommended
   (b).** Be explicit about what (a) does *not* buy: it restores backups today, but a `&` rotation still breaks
   every container (hazard 2), and a password containing a literal `%HH` (valid-hex) sequence is still silently mis-decoded by every
@@ -168,6 +177,10 @@ producer-encoding + consumer-decoding *as a pair*. **T1 alone does not reach thi
   dead-man's-switch work (Plan 158 D11) and may belong there rather than here.
 
 ## Tasks
+
+> **Build scope 2026-08-14: T1 only.** T2 is blocked on **D2** (encode-in-place vs `PG*` for the backup path) and
+> needs its own deploy; T3 is independent and can follow. Do not build T2/T3 in the T1 change.
+
 
 ### T1 — `backup.py` must parse the URL the way the rest of the codebase does (Repo)
 
