@@ -210,6 +210,48 @@ rather than nominal.
 - **`services/training_data.py:253`** omits `station_code`, so a T2 collision reports
   `station '<unknown>'` — contrary to T2's "naming station, alias, canonical name and both values".
 
+## Round-3 findings — DRIVEN DIRECTLY, four fixes + the contract vendored (2026-08-14)
+
+Applied by hand rather than via another `/implement` cycle (the loop had just declared convergence
+while these were open, so a fourth run risked repeating that). **Every fix has a locking test proven
+to FAIL against the pre-fix code**, by reverting the fix and re-running.
+
+1. **PT's REAL 50-static contract is now VENDORED** —
+   `tests/fixtures/reference/cmal_pool_PT_static_features.json`, extracted from the artifact's
+   `config.yaml :: static_features`. This replaces a golden list that padded 28 confirmed names with
+   **22 invented `direct_static_NN` placeholders**, which proved cardinality rather than the
+   contract. The test now follows the fixture, and the "one missing direct static" case **derives** a
+   real direct name instead of hard-coding a placeholder that could vanish silently.
+2. **The `static_naming_models` bypass is closed structurally** (`services/operational_inputs.py`) —
+   the invoked `model` is now always part of the resolution set (`[model, *(static_naming_models or
+   ())]`) rather than being *replaced* by the caller's list. An `[]` or a list built from a different
+   assignment set previously made the resolver see no CARAVAN declaration and hand the model raw bare
+   `area`. Uniting beats raising here: it cannot fail closed on a legitimate caller, and a genuine
+   regime disagreement still raises via the existing differing-regimes guard.
+3. **Admissibility is now shared** (`services/caravan_statics.py::_resolve_declared_value`) — it
+   applies `_is_finite_numeric`, so an infinity/string/bool under a `caravan:` key is no longer
+   reported "available" and projected while `verify_static_coverage` would reject it. `area` is among
+   the 50, so a non-finite value there corrupted the `m3/s <-> mm/day` conversion.
+4. **`services/training_data.py` threads `station_code`** into `available_declared_static_keys`, so a
+   T2 collision names the station instead of reporting `'<unknown>'`. All call sites now pass it.
+
+### ✅ End-to-end confirmation the vendored contract unlocked
+Run against the delivered parquet: **all 50 of PT's declared statics resolve to a column the file
+actually ships** (50/50, none unresolvable), splitting exactly **21 aliased / 29 direct** against
+`CARAVAN_ALIAS` — an independent confirmation of the alias map T1b derived separately from the
+modeller's `static_attributes.md`. Both facts are locked as tests, including that the 50 resolve to
+**distinct** keys (an alias collapsing two declared names onto one column would feed a model the same
+value twice).
+
+### ⚠️ DELIBERATELY NOT FIXED — the gate's sets are still caller-supplied
+Codex's remaining MAJOR stands: `expected_codes` / `required_static_names` need only be non-empty,
+so a caller passing 147 stations or one static still "passes". **Not fixed here because the
+authoritative runtime source of the 50 is the model's own `data_requirements.static_features`, and
+the operational caller that would supply it does not exist yet** — the plan's standing "real import
+not yet run" follow-on. The substantive half is closed: the *tests* now pin the real contract instead
+of placeholders. **Binding the operational entrypoint to the model's declared statics and the frozen
+T0a manifest belongs with that follow-on**, and should be done before the first real import.
+
 ## Implementation notes (read before writing code)
 
 **Source data:** `/Users/bea/Downloads/data.parquet` — 296 rows x 216 cols, `gauge_id` =
