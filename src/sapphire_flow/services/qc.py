@@ -96,15 +96,29 @@ def _apply_frozen_sensor(
 ) -> dict[ObservationId, QcFlag]:
     tolerance = thresholds["tolerance"]
     min_consecutive = int(thresholds["min_consecutive"])
+    # D8 (Plan 172, M-I1): a value at or below this threshold never starts
+    # or extends a frozen run — lets precipitation ignore normal dry
+    # spells while still catching a stuck sensor. Absent from `thresholds`
+    # (the key does not exist in the dict), every value is eligible again —
+    # today's behaviour exactly (D8's backwards-compatibility requirement).
+    exclude_at_or_below = thresholds.get("exclude_at_or_below")
+
+    def _effective(value: float | None) -> float | None:
+        if value is None:
+            return None
+        if exclude_at_or_below is not None and value <= exclude_at_or_below:
+            return None
+        return value
+
     flags: dict[ObservationId, QcFlag] = {}
 
     # Track run start index and reference value
     run_start = 0
-    ref_val = group[0].value if group else None
+    ref_val = _effective(group[0].value) if group else None
 
     for i in range(1, len(group)):
-        val = group[i].value
-        prev_val = group[i - 1].value
+        val = _effective(group[i].value)
+        prev_val = _effective(group[i - 1].value)
         if val is None or prev_val is None:
             run_start = i
             ref_val = val
@@ -123,7 +137,7 @@ def _apply_frozen_sensor(
                 if group[j].value is not None:
                     flags[group[j].id] = QcFlag(
                         rule_id=rule.rule_id,
-                        rule_version=_RULE_VERSION,
+                        rule_version=rule.rule_version,
                         status=QcStatus.QC_SUSPECT,
                         detail=(
                             f"frozen sensor: {run_length} consecutive values "

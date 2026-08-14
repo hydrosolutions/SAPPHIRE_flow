@@ -24,11 +24,14 @@ class TestView:
 
 
 class TestAxisStatus:
-    def test_has_exactly_the_three_documented_values(self) -> None:
+    def test_has_exactly_the_four_documented_values(self) -> None:
+        # NORMALIZED added by Plan 172 (M-A2) — the canonical hourly axis
+        # is neither a raw diagnostic nor a provisional statistic.
         assert {member.value for member in AxisStatus} == {
             "AXIS_INDEPENDENT",
             "RAW_AXIS_DIAGNOSTIC",
             "RAW_PROVISIONAL",
+            "NORMALIZED",
         }
 
 

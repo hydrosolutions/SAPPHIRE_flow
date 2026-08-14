@@ -29,6 +29,11 @@ class AxisStatus(StrEnum):
     AXIS_INDEPENDENT = "AXIS_INDEPENDENT"
     RAW_AXIS_DIAGNOSTIC = "RAW_AXIS_DIAGNOSTIC"
     RAW_PROVISIONAL = "RAW_PROVISIONAL"
+    NORMALIZED = "NORMALIZED"
+    """Plan 172 (M-A2) — the canonical gap-explicit hourly axis and its
+    provenance record. Neither RAW nor ON_GRID's other statuses can
+    represent a reindexed dataset (it is neither a raw diagnostic nor a
+    provisional statistic — it IS the axis)."""
 
 
 class Grain(StrEnum):
@@ -96,6 +101,21 @@ class ViewCounts:
     source_timestamp_rows: int
     station_timestamp_cells: int
     non_null_observations: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class NormalisationProvenance:
+    """D3/D6 (Plan 172, Phase 2a) — accompanies the normalised hourly axis
+    (M-A2). The two off-grid count grains are the RAW view's own D3 numbers
+    (never re-derived here); `period_ending` records M-D3's answer as a
+    stated fact, with its source, never as an assumption."""
+
+    off_grid_source_timestamp_rows: int
+    """D3 grain: workbook rows whose minute != on_grid_minute."""
+    off_grid_non_null_observations: int
+    """D3 grain: non-null cells within those off-grid rows."""
+    period_ending: bool
+    period_ending_source: str
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

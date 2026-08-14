@@ -176,6 +176,113 @@ class TestFrozenSensor:
         assert all(result[o.id] == [] for o in obs)
 
 
+class TestFrozenSensorExclusion:
+    """M-I1 (Plan 172, D8) — `exclude_at_or_below` lets precipitation's
+    frozen_sensor ignore normal dry spells while still catching a stuck
+    sensor. D8: absent from thresholds, behaviour is unchanged (D8's
+    backwards-compatibility case)."""
+
+    def test_nonzero_120_hour_run_is_flagged_even_with_exclusion_present(
+        self,
+    ) -> None:
+        checker = Stage1QualityChecker()
+        # Sindhuli Madhi's stuck-high signature: ~72 mm pinned for 120 hours.
+        obs = [_make_obs(72.0, i) for i in range(120)]
+        rs = _rule_set(
+            _rule(
+                "frozen_sensor",
+                {
+                    "tolerance": 0.5,
+                    "min_consecutive": 12,
+                    "exclude_at_or_below": 0.0,
+                },
+            )
+        )
+        result = checker.check(obs, rs, [], [])
+        # By the 12th observation the run has reached min_consecutive and
+        # every observation in it (and every subsequent one) is flagged.
+        assert all(result[o.id] for o in obs[11:])
+
+    def test_50_day_zero_run_is_not_flagged_when_excluded(self) -> None:
+        checker = Stage1QualityChecker()
+        n_hours = 50 * 24
+        obs = [_make_obs(0.0, i) for i in range(n_hours)]
+        rs = _rule_set(
+            _rule(
+                "frozen_sensor",
+                {
+                    "tolerance": 1e-9,
+                    "min_consecutive": 12,
+                    "exclude_at_or_below": 0.0,
+                },
+            )
+        )
+        result = checker.check(obs, rs, [], [])
+        assert all(result[o.id] == [] for o in obs)
+
+    def test_existing_discharge_case_unchanged_when_threshold_absent(
+        self,
+    ) -> None:
+        # D8: identical to test_frozen_values_suspect above, with no
+        # `exclude_at_or_below` key at all — today's behaviour exactly.
+        checker = Stage1QualityChecker()
+        obs = [_make_obs(10.0, i) for i in range(4)]
+        rs = _rule_set(
+            _rule("frozen_sensor", {"tolerance": 0.01, "min_consecutive": 3})
+        )
+        result = checker.check(obs, rs, [], [])
+        flagged = [o for o in obs if result[o.id]]
+        assert len(flagged) >= 3
+        for o in flagged:
+            assert result[o.id][0].status == QcStatus.QC_SUSPECT
+            assert result[o.id][0].rule_id == "frozen_sensor"
+
+    def test_zero_does_not_extend_a_preceding_nonzero_run(self) -> None:
+        # A single 0.0 between two non-zero blocks must break the run (D8:
+        # "never start or extend") rather than being silently bridged.
+        checker = Stage1QualityChecker()
+        values = [10.0] * 5 + [0.0] + [10.0] * 5
+        obs = [_make_obs(v, i) for i, v in enumerate(values)]
+        rs = _rule_set(
+            _rule(
+                "frozen_sensor",
+                {
+                    "tolerance": 0.01,
+                    "min_consecutive": 5,
+                    "exclude_at_or_below": 0.0,
+                },
+            )
+        )
+        result = checker.check(obs, rs, [], [])
+        # Neither 5-length block alone reaches min_consecutive=5... it does
+        # reach exactly 5, so both blocks flag on their own, but the 0.0
+        # itself must never be flagged and must not fuse the two blocks
+        # into one continuous 11-long run.
+        assert result[obs[5].id] == []
+
+
+class TestFrozenSensorRuleVersion:
+    """D8b — the flag must carry `rule.rule_version`, not the module's
+    hard-coded constant, so a flag can record which rule variant produced
+    it."""
+
+    def test_emits_the_rules_own_rule_version(self) -> None:
+        checker = Stage1QualityChecker()
+        obs = [_make_obs(10.0, i) for i in range(4)]
+        rule = QcRuleParams(
+            rule_id="frozen_sensor",
+            rule_version="2.1.0-precip-exclusion",
+            parameter=_PARAM,
+            time_step=_STEP,
+            thresholds={"tolerance": 0.01, "min_consecutive": 3},
+        )
+        rs = _rule_set(rule)
+        result = checker.check(obs, rs, [], [])
+        flags = [f for o in obs for f in result[o.id]]
+        assert flags
+        assert all(f.rule_version == "2.1.0-precip-exclusion" for f in flags)
+
+
 class TestSpike:
     def test_absolute_max_delta_detects_spike(self) -> None:
         checker = Stage1QualityChecker()
