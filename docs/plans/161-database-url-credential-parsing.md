@@ -319,6 +319,18 @@ Trade-off accepted: folding Site B in widens the T2 blast radius from the app co
 itself, so the smoke test above is a gate, not a formality. The alternative — deferring Site B — was rejected
 because it would leave the owner credential in exactly the hazard class this plan exists to close.
 
+**T2 pickups from the T1 PR review (Codex APPROVE, 2 minors — deliberately NOT fixed in T1):**
+- `_to_libpq_url` (`flows/backup.py:18`) is now **semantically redundant** — `make_url` accepts SQLAlchemy driver
+  suffixes natively, so the regex normalisation is dead weight (plus five tests and a cross-reference at
+  `docker/bootstrap-roles.sh:27`). Not fixed in T1 because **T2 deletes this whole code path** when `pg_dump`
+  moves to `PG*`; churning it now would cost a version bump, a full gate run and another review round while
+  backups are down.
+- `TestPgDumpArgConstruction` (`tests/unit/flows/test_backup.py:113`) calls `make_url` **directly**, so despite
+  its name it does not exercise production argv construction. Pre-existing (it previously called
+  `urlparse`+`unquote` the same way) and *not* a weakening — the new locking tests do cover the production path —
+  but the description is misleading. **T2 must either drive these through `dump_database_task.fn` or extract a
+  real argument-builder helper**, since T2 rewrites argv construction anyway.
+
 ### T3 — a stale backup must alert once, not 288 times a day (Repo)
 
 *In:* `src/sapphire_flow/ops/watchdog.py:498-520` (the backup-staleness block) plus the `WatchdogState` fields at
