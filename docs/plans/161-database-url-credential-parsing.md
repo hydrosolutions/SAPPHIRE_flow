@@ -398,31 +398,70 @@ first (the `/` password) masked the second.
   would come back missing auth state, and nothing would say so. A partial backup that calls itself a backup is
   worse than a failed one.
 
-**Fix:** a dedicated **read-only** role `sapphire_backup`, granted the built-in **`pg_read_all_data`** (confirmed
-available — PostgreSQL **16.4**, role present). `pg_read_all_data` confers SELECT on every table, which is
-exactly what `pg_dump`'s `LOCK TABLE … IN ACCESS SHARE MODE` requires, and nothing more.
+**Fix:** a dedicated **read-only** role `sapphire_backup` granted the built-in **`pg_read_all_data`**.
 
-*In:* `docker/bootstrap-roles.sql` (add the role beside `sapphire_api`/`sapphire_worker`, same
-`format(...%L)` + `\gexec` idempotent CREATE-or-ALTER-PASSWORD shape — **do not invent a second convention**),
-`docker/bootstrap-roles.sh` (`SAPPHIRE_BACKUP_DB_PASSWORD_FILE` + a `-v backup_password=` binding),
-`docker-compose.yml` (new `sapphire_backup_db_password` secret; mount to the `init` service and to whichever
-service runs the backup). *Out:* the existing api/worker grant layout — it is correct.
+**⛔ B1 (review blocker, VERIFIED — the first draft of this fix would NOT have worked).** `pg_read_all_data` is a
+**role membership**, and both existing roles are created *and re-converged* as **`NOINHERIT`**
+(`bootstrap-roles.sql:36,47` and `:70-71`). A `sapphire_backup` copied from that shape would hold the membership
+but **not** its privileges — a session must `SET ROLE` to use them, and `pg_dump` does not. The backup would fail
+with the *same* `permission denied` we are fixing. **Fix:** grant the membership as **inheritable per-membership**
+(PostgreSQL 16 supports `GRANT pg_read_all_data TO sapphire_backup WITH INHERIT TRUE`), so the role attribute
+stays `NOINHERIT` — consistent with the convention — while this one membership is usable. **Acceptance must be a
+real login as `sapphire_backup` performing a SELECT on `access_tokens`, NOT a catalog membership check** — a
+`pg_auth_members` row proves nothing here.
 
-**⚠️ D4 (OWNER DECISION) — where does the backup run?** The role is read-only, but it can still read
-`access_tokens`. Mounting its secret into the general `prefect-worker` means that container holds a
-read-everything credential, which weakens (does not void) Slice D's containment.
-- **(a) Mount into the existing `prefect-worker`.** Cheapest, no topology change. The worker can then read auth
-  tokens — read-only, but a real widening of blast radius if that container is compromised.
-- **(b) A dedicated backup worker/work-pool.** *(Recommended.)* The read-all credential never sits in the
-  general worker. There is precedent in the existing topology — `prefect-worker-ingest` already exists as a
-  second pool — so this is a known shape, not a new pattern. Cost: one more container for a nightly job.
-- **(c) A one-shot container invoked by a scheduled host job** rather than a Prefect deployment. Smallest
-  running footprint, but loses Prefect's run history and the state we currently use to *detect* failure — which
-  is precisely the visibility this plan exists to add. Not recommended.
+**B2 — the privilege claim was too broad; bound it with asserted assumptions instead.** `pg_read_all_data` gives
+table/view/sequence reads and schema `USAGE` (enough for `pg_dump`'s `ACCESS SHARE` lock and the 2 sequences), but
+it does **not** confer database `CONNECT`, large-object access, or `BYPASSRLS`. Measured on the live DB
+(2026-08-14): **RLS tables = 0, large objects = 0, sequences = 2.** So it is sufficient *today*.
+**Therefore:** grant `CONNECT` on `sapphire` explicitly, and add a **preflight that fails the backup loudly** if
+`pg_class.relrowsecurity` count > 0 or `pg_largeobject_metadata` is non-empty. Without that, the day someone adds
+an RLS policy the dump silently becomes partial — the exact failure mode this task exists to prevent.
+Note also that `pg_read_all_data` is **cluster-wide** for any database the login can enter, and the bootstrap
+already documents that revoking a named role cannot override `PUBLIC` connectivity
+(`bootstrap-roles.sql:91-112`) — so restrict `sapphire_backup`'s connectivity to the other databases deliberately.
 
-**Red-first:** a test asserting the backup path resolves the **backup** credential, not the worker's.
-**Host acceptance:** `backup-database` reaches `COMPLETED` **and** the produced dump passes
-`pg_restore --list` (the check that validated both of today's safety dumps).
+**M1 — the role must join the CONVERGENCE block, and ORDER MATTERS.** The existing block strips attributes,
+memberships and stale ACLs from pre-existing roles (`bootstrap-roles.sql:53-102`), including a blanket
+`REVOKE %I FROM %I` over `pg_auth_members` for the named roles (`:78-82`). Add `sapphire_backup` to attribute
+normalisation and cleanup, then **re-grant its `pg_read_all_data` membership and `CONNECT` AFTER the cleanup** —
+otherwise **every deploy would strip the privilege** and backups would break again on the next `up --build`.
+
+*In:* `docker/bootstrap-roles.sql`, `docker/bootstrap-roles.sh` (`SAPPHIRE_BACKUP_DB_PASSWORD_FILE` +
+`-v backup_password=`), `docker-compose.yml` (new `sapphire_backup_db_password` secret, mounted to `init` and to
+whichever service runs the backup). *Out:* the api/worker grant layout — it is correct.
+
+**⚠️ D4 (OWNER DECISION) — where does the backup run?** The role is read-only but can still read `access_tokens`,
+so mounting its secret into the general `prefect-worker` widens that container's blast radius.
+- **(a) Existing `prefect-worker`.** Cheapest, no topology change; the worker gains a read-everything credential.
+- **(b) Dedicated backup worker/pool.** *(Recommended.)* `prefect-worker-ingest` is precedent for a second pool.
+  **M3 — but it is NOT self-wiring, and the plan understated this.** Workers select their pool via their
+  `command` (`docker-compose.yml:80-83`, `:149-152`) and deployment registration happens in `init` **before**
+  either worker starts (`:288-293`). So (b) requires, explicitly: the new service, **creation of the `backup`
+  pool before registration**, deployment routing to it, the backup volume, secret mounts, environment, network,
+  resource limits and `depends_on: init`. Merely starting another worker is insufficient.
+- **(c) Host-scheduled one-shot.** Smallest footprint, but loses the Prefect run history we now rely on to detect
+  failure. Not recommended.
+**D4 must be decided before READY** — it changes T4's file list.
+
+**M4 — restore ordering is missing, and it is the part that matters in an emergency.** `pg_dump` does **not** back
+up cluster roles, yet the dump references object owners and app-role ACLs, and the bootstrap assumes migrations
+already created every table (`bootstrap-roles.sql:3-6`). Document *and rehearse*: create roles/owner → restore
+into an empty database → re-run role bootstrap to converge grants. Do **not** run migrations into the target
+first unless the procedure explicitly handles collisions.
+
+**M5 — rotation/rollout ordering.** The bootstrap re-runs `ALTER ROLE … PASSWORD` on every deploy
+(`bootstrap-roles.sql:8-11`), but a container may hold a `DATABASE_URL` assembled at startup. Decide whether the
+backup reads its secret **per run** or the backup service must be recreated after rotation, and test both
+old-password rejection and new-password success. Provision the secret **before** `init` starts, and ensure the
+backup service cannot start until role creation succeeded.
+
+**Red-first (M2 — the drafted tests could pass vacuously):** setting `DATABASE_URL` to a backup URL proves
+nothing. **Set conflicting worker and backup credentials, capture `pg_dump`'s argv/environment, and prove the
+backup identity wins.**
+**Host acceptance (M3 — `pg_restore --list` is necessary but NOT sufficient):** it proves the archive's TOC is
+readable, not that protected tables, sequences or ACL-dependent objects restore. Add a **scratch-database restore
+rehearsal** verifying representative rows from a protected table (e.g. `access_tokens`) and sequence state.
 
 Composes with T2: this credential reaches `pg_dump` as `PG*` env vars and is therefore never parsed.
 
@@ -439,24 +478,49 @@ dumps exist on the host). After T1, `pg_dump` runs, creates the file, fails — 
 network, permissions).
 
 **The root problem is inferring success from the filesystem.** A monitor that accepts any file named `*.dump`
-cannot distinguish a backup from a `touch`. Fix in three parts, cheapest first:
+cannot distinguish a backup from a `touch`. Fix in three parts:
 
-1. **Producer cleans up.** `dump_database_task` must delete `dump_file` before re-raising, so a failed run
-   leaves **no** artifact. (`flows/backup.py`, the `returncode != 0` branch.)
-2. **Producer asserts success.** Emit a `pipeline_health` record on completion — **the pattern already in this
-   repo**: `bafu_forecast_freshness` / `bafu_observation_freshness` are emitted by their flows and probed via
-   `/health/detail?check_type=…`. A backup record follows the same shape, so the watchdog stops guessing from
-   file metadata and reads an assertion from the thing that actually did the work. This also covers "the flow
-   never ran at all" — no record → stale — which the file check gets right only by accident.
-3. **Monitor rejects non-viable dumps** (defence in depth, since the file is the artifact people restore from):
-   at minimum size > 0; ideally the newest dump passes `pg_restore --list`. The watchdog runs on the **host**,
-   which has no `pg_restore` — it would need `docker run --rm postgres:16 pg_restore --list`, which is what I
-   used to validate today's dumps. If that coupling is judged too heavy, size > 0 plus part 2 is acceptable;
-   **say which was chosen and why, rather than letting part 3 quietly become "size > 0".**
+**1. ⛔ B4 — ATOMIC PUBLICATION, not delete-on-failure** *(review blocker: the drafted fix does not close the
+hole)*. Deleting `dump_file` in the `returncode != 0` branch cannot run when the container is **SIGKILL**ed or
+**OOM-killed**, and misses exceptions from `subprocess.run` itself, from post-dump filesystem operations, or from
+the cleanup path. **Fix:** `pg_dump` writes to a **uniquely named temporary file that does NOT match the
+watchdog's `*.dump` glob**, on the same filesystem; then validate it; then set permissions; then **atomically
+rename** it to the final `sapphire_*.dump`. Best-effort deletion belongs in a `finally`. **A crash remnant must
+never match the glob** — that is what makes the guarantee hold under kill -9, which no cleanup code can.
 
-**Red-first:** (a) a `pg_dump` failure leaves **no** file behind; (b) a 0-byte — and a truncated — `*.dump` does
-**not** satisfy the freshness check; (c) a successful run emits exactly one backup health record. All three must
-be proven to fail against current code.
+**2. ⛔ B5 — the health record needs a WRITE PATH and non-best-effort semantics** *(review blocker)*. Two defects
+in the drafted version: (i) the cited BAFU pattern deliberately treats store setup/append failure as
+**best-effort** (`flows/collect_bafu_forecasts.py:126-142`, `:164-218`) — fine for a collector, **not** for a
+signal we intend to treat as *proof of backup success*; (ii) the backup identity is **read-only**, and only
+`sapphire_worker` currently holds `INSERT` on `pipeline_health` (`bootstrap-roles.sql:161`), so the backup
+**cannot write the record at all** as specified. **Fix:** define a narrow append-only write path — either
+`INSERT`-only on `pipeline_health` for the backup identity, or a separate monitor-writer credential. For backups,
+**failure to append must FAIL the run** (a silent-success record is the very thing under repair). Emit **only
+after** validation and atomic publication.
+
+**3. Monitor rejects non-viable artifacts.** **M6 — T5 must define the watchdog predicate and its state
+transitions**, which the draft did not: how the latest successful record is fetched, how it is **bound to the
+artifact that still exists on disk**, and when recovery is permitted. Required tests: stale → repeated-stale →
+recovered → stale. **An invalid or partial artifact must never cause recovery or reset alert state.**
+**M7 — the schema/API wiring is absent** and must be enumerated: the new `PipelineCheckType`, the
+`PipelineHealthRecord`, the store append, `/health/detail` exposure, watchdog parsing, and failure semantics.
+Note the host watchdog has **no `pg_restore`** (it would need `docker run --rm postgres:16 …`); with atomic
+publication plus part 2, a size/existence check is defensible — **state the choice explicitly rather than letting
+part 3 quietly become "size > 0".**
+
+**Red-first (M2 — several drafted tests could pass vacuously):**
+- A cleanup test passes today if the fake subprocess never creates a file — **the fake must write partial content
+  before failing.**
+- The "truncated file" case **contradicts** a size-only check (a truncated file is non-empty). Pick the policy —
+  archive validation, atomic publication, or health-record↔artifact binding — and test *that*.
+- The health test must inject a recording fake and prove **zero** records on every failure path, and exactly one
+  correctly-typed record only **after** the final archive exists.
+
+**Minors:** record **completion** time (not run-start, unlike the BAFU example at
+`collect_bafu_forecasts.py:530-573`), and include final filename, byte size and preferably a digest in the detail;
+add **bounded cleanup of stale temporary files**, since retention only considers finalised `sapphire_*.dump`
+(`flows/backup.py:96-107`); and update the docs/comments that currently state there are exactly **two** scoped
+roles/secrets (`bootstrap-roles.sql:13-20`, `bootstrap-roles.sh:7-9`, `docker-compose.yml:361-366`).
 
 **Follow-on, not in scope:** only the `sapphire` database is dumped. The separate `prefect` database (flow run
 history, deployment state) has **no backup at all** — worth a decision of its own.
