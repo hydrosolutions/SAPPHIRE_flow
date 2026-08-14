@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import sqlalchemy as sa
 from geoalchemy2 import Geometry
@@ -11,9 +11,12 @@ from geoalchemy2.shape import from_shape, to_shape
 from sqlalchemy.dialects.postgresql import JSONB
 
 from sapphire_flow.db.metadata import basin_versions, basins
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.basin import Basin, BasinCorrectionResult
 from sapphire_flow.types.ids import BasinId, BasinVersionId, PackageId
+
+_CARAVAN_PREFIX: Final[str] = "caravan:"
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
@@ -22,6 +25,15 @@ if TYPE_CHECKING:
 class PgBasinStore:
     def __init__(self, conn: sa.Connection) -> None:
         self._conn = conn
+
+    @property
+    def connection(self) -> sa.Connection:
+        """Read-only access to the underlying connection -- needed by
+        multi-statement callers that must verify they are running inside a
+        real transaction before writing (Plan 155:
+        `store/caravan_import.py::import_caravan_attributes`,
+        `store/_helpers.py::require_real_transaction`)."""
+        return self._conn
 
     def fetch_basin(self, basin_id: BasinId) -> Basin | None:
         row = (
@@ -131,6 +143,109 @@ class PgBasinStore:
         # Exactly one execute() call — the whole pair is ONE statement.
         self._conn.execute(stmt)
         return basin.id
+
+    def merge_namespaced_attributes(
+        self,
+        basin_id: BasinId,
+        *,
+        attributes: dict[str, Any],
+    ) -> None:
+        """Plan 155 T1b's dedicated ADDITIVE operation: union ``attributes``
+        into ``basins.attributes`` via a JSONB merge (``||``) -- no new
+        ``basin_versions`` row, no ``material_change`` flag, no
+        affected-artifact set. This is deliberately NOT
+        ``update_basin_from_package`` (the correction branch), which
+        replaces attributes/geometry/area wholesale and always flags
+        incumbent artifacts -- exactly what an additive attribute merge
+        must not do.
+
+        Structurally guarded: every key in ``attributes`` must carry the
+        ``"caravan:"`` prefix (D15), hardcoded -- NOT a caller-supplied
+        parameter (Plan 155 fixer round minor finding: an exposed
+        ``prefix`` argument let a caller pass ``prefix=""`` and defeat the
+        guard for every key, including a bare ``"area"``). This makes the
+        operation structurally incapable of modifying an existing
+        (non-namespaced) attribute even by mistake, which is what makes
+        skipping the supersede/flag machinery sound in the first place.
+
+        Plan 155 fixer round (major finding): a changed re-import must not
+        silently overwrite an existing namespaced value via the JSONB
+        ``||`` merge with no trace. Fetches the basin's CURRENT attributes
+        first; a key already present with a DIFFERING value raises
+        ``ConfigurationError`` naming every conflicting key (existing vs.
+        incoming) rather than merging over it -- an identical replay (same
+        value) is still a no-op success. This is deliberately NOT a full
+        immutable-provenance/lineage system (a durable, persisted
+        source-version record and artifact invalidation on a genuine
+        source revision remain out of scope for this additive path -- see
+        the plan's T1 deviation note); it closes the SILENT half of the
+        finding: any content change is now a loud failure, never an
+        untraced overwrite.
+
+        Plan 155 fixer round (major finding, check/update race): the
+        read-then-compare-then-write shape above is a classic TOCTOU --
+        without a row lock, two concurrent imports can both read the SAME
+        "no existing key" snapshot before either has written, so both
+        conclude there is no conflict and the second's JSONB ``||`` write
+        silently wins over the first's, even though the two committed
+        DIFFERENT values for the same key. ``SELECT ... FOR UPDATE`` locks
+        this basin's row for the remainder of the caller's transaction, so
+        a second concurrent caller's own ``SELECT ... FOR UPDATE`` blocks
+        until the first commits (or rolls back) -- it then re-reads the
+        NOW-current attributes (reflecting the first caller's write, if
+        any) before comparing, so the conflict this function promises to
+        catch is actually observed rather than raced past. This relies on
+        the caller running inside a real, already-open transaction (see
+        `store/_helpers.py::require_real_transaction`, which every
+        production caller of this method is gated behind via
+        `store/caravan_import.py::import_caravan_attributes`) -- on an
+        AUTOCOMMIT connection the lock is released the instant the SELECT
+        statement completes, before the UPDATE, and offers no protection.
+        """
+        bad_keys = sorted(k for k in attributes if not k.startswith(_CARAVAN_PREFIX))
+        if bad_keys:
+            raise ValueError(
+                f"merge_namespaced_attributes refuses key(s) without the "
+                f"{_CARAVAN_PREFIX!r} prefix: {bad_keys} -- this additive path is "
+                "guarded to be structurally incapable of touching an "
+                "existing (non-namespaced) attribute"
+            )
+        current = (
+            self._conn.execute(
+                sa.select(basins.c.attributes)
+                .where(basins.c.id == basin_id)
+                .with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise ValueError(f"merge_namespaced_attributes: basin {basin_id} not found")
+        current_attrs: dict[str, Any] = current["attributes"] or {}
+        conflicts = {
+            key: (current_attrs[key], value)
+            for key, value in attributes.items()
+            if key in current_attrs and current_attrs[key] != value
+        }
+        if conflicts:
+            raise ConfigurationError(
+                f"merge_namespaced_attributes: basin {basin_id} already carries "
+                f"differing value(s) for {sorted(conflicts)} -- refusing a "
+                "silent overwrite on a changed re-import; existing -> incoming: "
+                f"{conflicts}"
+            )
+        result = self._conn.execute(
+            sa.update(basins)
+            .where(basins.c.id == basin_id)
+            .values(
+                attributes=sa.func.coalesce(
+                    basins.c.attributes, sa.cast(sa.literal("{}"), JSONB)
+                ).op("||")(sa.literal(attributes, type_=JSONB))
+            )
+            .returning(basins.c.id)
+        )
+        if result.first() is None:
+            raise ValueError(f"merge_namespaced_attributes: basin {basin_id} not found")
 
     def update_basin_from_package(
         self,

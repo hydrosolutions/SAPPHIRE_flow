@@ -14,6 +14,83 @@ supersedes: []
 ## Status
 **READY** (owner, 2026-08-13). Split out of **Plan 152** (tasks T1, T1b, T1c) on 2026-08-12.
 
+**Fixer round 3 (2026-08-14)** addressed round-2's BLOCKER (manifest-scoped exit gate) and its 4
+majors (atomicity, compatibility/frame resolver divergence, test surface, docs) — see that section
+below for detail. Committed on `feat/plan-155-caravan-statics` (hold-at-PR).
+
+**Independent review status — 2026-08-14: THREE passes have run, the last a GO/NO-GO over the whole
+branch.** The round-3 fixes came back **no blockers, no majors** (4 minors, all closed in `2ab2dc8`).
+The GO/NO-GO found **no code blocker**, and specifically confirmed the two things that most needed an
+outside check: the diff is **inert for existing NATIVE models** (training and hindcast paths
+unprojected, FI naming survives adaptation, the forecast cycle supplies every assigned model), and
+**neither accepted deferral is PR-blocking** — the unbound gate sets and the unpersisted provenance
+gate the later *real operational import*, not the merge of a currently-unused capability. Its NO-GO
+was **staleness only**: the branch had fallen behind `origin/main`, and this paragraph still claimed
+no review had run. Both are now addressed.
+
+**T1 + T2 IMPLEMENTED (2026-08-13) — then REVIEWED and found NOT MERGEABLE.** The inventory below
+is accurate and useful; **its two DEVIATION claims are SUPERSEDED** by the review section that
+follows. Specifically: the collision guard is **not** "forward-compatible defensive code", it is
+**dead by construction** (a single-valued resolver can never trip it), and the narrowing rationale
+**conflates two distinct collision cases** — bare-CAMELS-CH-vs-Caravan (which D15 settles: Caravan
+wins) and raw-code-vs-canonical-name *within* the Caravan namespace (which the plan requires to fail
+loudly and which remains undetected). **D16 now supplies the missing piece the implementation guessed
+at.** Read the review section before the deviations.
+
+- **T1/T1b** — `adapters/caravan_attributes.py` (pure parquet parsing, sanitises
+  NaN/Inf to `None`), `store/basin_store.py::PgBasinStore.merge_namespaced_attributes`
+  (the dedicated additive operation T1b calls for — JSONB `||` merge, no new
+  `basin_versions` row, no `material_change`, guarded to reject any key without the
+  `caravan:` prefix), and `store/caravan_import.py::import_caravan_attributes`
+  (end-to-end orchestration joining on `(network, code)` identity).
+- **T2** — `services/caravan_statics.py`: `resolve_caravan_static_key` (D15's rule),
+  `available_declared_static_keys` (the compatibility-boundary projection),
+  `project_declared_static_attributes` (the frame-boundary projection, additive —
+  original keys untouched, model-declared bare names added/overridden). Wired into
+  all five call sites that used to read `basin.attributes`/`non_null_static_keys`
+  directly: `flows/onboard_model.py::_validate_compatibility_task`,
+  `services/model_onboarding.py::onboard_model`'s own compatibility step,
+  `services/training_data.py::assemble_station_training_data` (both the missing-static
+  gate and the frame build), `services/hindcast.py::_load_static_attributes`,
+  `services/operational_inputs.py::assemble_station_operational_inputs`. No change to
+  `adapters/forecast_interface.py` (confirmed, per the plan's design constraint).
+- **T1's PROVENANCE fields (structured table in "Provenance of the Swiss parquet")
+  are captured as a returned `CaravanImportProvenance` dataclass, NOT persisted into
+  `basin_static_packages`** (deviation — see below).
+- **DEVIATION — T2 "collision semantics" narrowed.** The plan's "Define alias
+  collision semantics" text ("conflicting values fail loudly") reads, taken literally
+  across ALL of PT's 50 statics, as being in tension with T1's own red test (resolving
+  `area` must succeed and return Caravan's value, not raise) — CAMELS-CH's bare `area`
+  and Caravan's `caravan:area` will differ for essentially every station, so a
+  blanket "raise on any bare-name disagreement" rule would make `area` (and the other
+  6 colliding names) permanently unresolvable, contradicting the plan's own exit gate.
+  Implemented instead: `project_declared_static_attributes` always resolves a
+  model-DECLARED name from its `caravan:` source (D15's explicit "no bare fallback" —
+  Caravan wins, full stop, for names the model itself asks for); the collision guard
+  is kept only for the ambiguity a fixed, one-way `CARAVAN_ALIAS` table cannot itself
+  rule out (two different `caravan:` source keys resolving to the same declared name
+  with differing values) — currently unreachable given the map's shape, so it is
+  forward-compatible defensive code, not a tested behaviour. Flagging for owner
+  confirmation rather than silently picking an interpretation.
+- **DEVIATION — provenance not persisted to `basin_static_packages`.** The plan's
+  provenance table (`source_datasets[].name/version/purpose`, `extractor_name`,
+  `extractor_version`) is designed around `PackageManifest`/the full basin-PACKAGE
+  write pipeline (`store/basin_importer.py::import_basin_package`) — geometry,
+  correction branch, `material_change`, immutable fingerprint. T1b's additive merge is
+  deliberately NOT that pipeline (see `merge_namespaced_attributes`'s docstring), so
+  there is no natural `package_id`/`basin_static_packages` row for it to write without
+  either (a) reusing `basin_static_packages` for a shape it wasn't designed for, or
+  (b) building new schema — neither of which the plan's T1/T2 exit gates require.
+  `import_caravan_attributes` returns a `CaravanImportProvenance` (source dataset name/
+  version/purpose, extractor name/version) as a value the CALLER is responsible for
+  recording; persisting it durably is follow-on work, natural to fold into T0b/T1c.
+- **T0b, T3 remain out of scope for this pass**, per plan.
+- **Real import not yet run.** `import_caravan_attributes` is built and tested against
+  fixtures; running it against the real `/Users/bea/Downloads/data.parquet` over the
+  live 148-station T0a manifest — and asking the modeller for the confirmed Caravan
+  release version before doing so (plan's own guidance) — is an operational step for
+  after this PR merges, not part of this implementation.
+
 **Implementation scope on flipping READY = T1 + T2 only.** T0a is **done** (result below). **T3 is
 DEFERRED and must NOT be implemented in this pass:** it depends on Plan 130 (READY but
 *unimplemented*) for the MeteoSwiss reanalysis tail, and it edits
@@ -107,8 +184,127 @@ The 21-entry alias table matches the plan; prefix-only storage is guarded; the d
 helper test is genuinely non-coincidental; and the flow/training positive tests do fail under the old
 raw-key behaviour. Full suite, ruff and the pyright ratchet all pass.
 
-**Status: hold at branch, do NOT open a PR.** The blocker needs the Caravan-declaring-model decision
-first.
+**Status (superseded by the two fixer rounds below): hold at branch, do NOT open a PR.** The blocker
+needs the Caravan-declaring-model decision first.
+
+### Fixer round (2026-08-13) — BLOCKER + MAJORs addressed per D16
+
+Implemented D16 (the model declares `static_naming`, `types/enums.py::StaticNaming`, default
+`NATIVE`) and re-fixed T2's collision guard and T1's exit-gate checkability:
+
+- **BLOCKER fixed at both boundaries.** `project_declared_static_attributes` now explicitly `pop`s
+  a stale bare legacy key when its `caravan:` source is absent (was `continue`, leaving it standing).
+  All five call sites (`flows/onboard_model.py`, `services/model_onboarding.py`,
+  `services/training_data.py`, `services/hindcast.py`, `services/operational_inputs.py`) now branch on
+  `declared_static_naming(model)`: a `CARAVAN`-declaring model resolves ONLY through the alias/direct
+  rule (no union with the raw bare key set); a `NATIVE` model (every incumbent, unchanged) keeps the
+  pre-155 raw-key-set/frame behaviour byte-for-byte. Proved sound by reverting each fix in place,
+  confirming the new locking tests fail RED for the right reason, then restoring (not committed).
+- **T2 collision guard fixed.** `project_declared_static_attributes` now checks BOTH an aliased name's
+  raw-HydroATLAS-code key and its bare Caravan-name key (`_collision_keys`) when a delivered package
+  carries both; equal FINITE values resolve silently, differing values or equal infinities raise
+  `ConfigurationError` naming station, both keys and both values (`_values_agree`).
+- **T1 exit gate made checkable.** `services/caravan_statics.py::verify_static_coverage` implements
+  "every station resolves all of a model's declared statics to non-null, FINITE values" (`math.
+  isfinite`, not just `is_missing_static_value`) as a reusable function over a `{station_code:
+  attributes}` manifest, returning per-station `StaticCoverageGap`s.
+- **Provenance/manifest gaps partially closed.** `import_caravan_attributes` gained
+  `source_dataset_version` (threads the modeller-confirmed release into `CaravanImportProvenance`,
+  previously unreachable) and `expected_codes` (`CaravanImportResult.missing_from_manifest` surfaces a
+  T0a-manifest station absent from the parquet entirely — previously invisible to `matched_codes`/
+  `unmatched_codes`, which only ever see codes the parquet contains). Durable persistence of
+  provenance into `basin_static_packages` remains deliberately out of scope (needs new schema — see
+  the original T1 deviation note above; still natural to fold into T0b/T1c).
+- **Real import still not run** — same operational follow-on as before (ask the modeller for the
+  confirmed Caravan release first).
+
+Exit gates: ruff check + format, pyright ratchet (no new errors vs baseline), and the full `caravan`
+test suite (unit + DB-backed integration) green.
+
+### Fixer round 2 (2026-08-13) — real-FI-boundary BLOCKER + fallback-chain superset MAJOR addressed
+
+An independent Codex pass over that round found the D16 fix itself incomplete at the REAL production
+boundary, plus a new gap the round didn't examine. Addressed:
+
+- **BLOCKER fixed — `static_naming` now survives `ForecastInterfaceAdapter`.** Discovery wraps every
+  real FI model in `ForecastInterfaceAdapter` (`adapters/forecast_interface.py`), which forwards
+  NOTHING by default (no `__getattr__` passthrough — see its `config_hash` property). Codex traced the
+  path and found "raw model = caravan, adapted model = native": every one of the five D16 call sites
+  branches on `declared_static_naming(model)`, but `model` downstream is always the ADAPTED instance,
+  so a real Caravan-declaring FI model silently resolved as NATIVE. `services/model_registry.py`'s
+  `_assert_model_classification_declared` — already the place `model_tier`/`alert_eligibility` are
+  copied from the raw model onto the adapted one at discovery time — now copies `static_naming`
+  identically. Locking test builds a real `_CaravanFakeFIModel` satisfying the FI Protocol, wraps it
+  through the real `discover_models()` path (not a bare fake), and asserts the RETURNED adapted
+  instance resolves `CARAVAN` (`tests/unit/services/test_model_registry.py::
+  test_static_naming_survives_the_fi_adapter_boundary`).
+- **MAJOR fixed — malformed `static_naming` now raises instead of silently downgrading.**
+  `declared_static_naming` used `isinstance(..., StaticNaming) else NATIVE`, so a plausible near-miss
+  (the plain string `"caravan"`) silently defaulted to NATIVE — and a test explicitly locked that
+  silent-failure shape. A sentinel now distinguishes ABSENT (defaults to NATIVE, unchanged) from
+  PRESENT-but-invalid (raises `ConfigurationError`, matching `_declared_model_tier`/`_declared_
+  alert_eligibility`'s own pattern). The old locking test was inverted to assert the raise; a
+  `static_naming = None` case is covered too.
+- **MAJOR fixed — the fallback-chain/superset gap the first fixer round didn't examine.**
+  `assemble_station_operational_inputs` shares ONE static frame across every model assigned to a
+  station (`requirements_override` unions `static_features` across the whole fallback chain —
+  `flows/run_forecast_cycle.py`), but the round-1 fix gated Caravan resolution on a single
+  representative model (`first_model`) while resolving against that cross-model superset — silently
+  handing a co-assigned model's Caravan-declared name the OTHER model's derivation for the identical
+  bare name (`area` again: CAMELS-CH's value handed to a Caravan-declaring model, or vice versa).
+  New `services/caravan_statics.py::resolve_shared_static_frame` scopes resolution PER assigned model:
+  a name only a CARAVAN-declaring model asks for is projected through the alias/direct rule; a name
+  only a NATIVE model asks for is left untouched; the SAME bare name declared under DIFFERING regimes
+  by two co-assigned models raises `ConfigurationError` naming the station and the name(s) rather than
+  silently resolving one value for both. `run_forecast_cycle.py` now threads `assigned_models` through
+  as `static_naming_models`; `assemble_station_operational_inputs` defaults to `[model]` when the
+  caller has no broader assignment set (the GROUP path). This is currently LATENT (no model in `src/`
+  declares `StaticNaming.CARAVAN` yet) but is the designed, expected shape once PT is deployed
+  alongside a NATIVE fallback per the project's linreg>ML>conceptual priority pattern.
+- **MAJOR fixed — T1's exit gate wired into the import itself, made sound.** `verify_static_coverage`
+  previously looked up only the primary key directly (bypassing T2's collision resolution entirely)
+  and accepted `bool`/`str` as "finite" (`isinstance(True, int)` is `True` in Python). It now resolves
+  through `project_declared_static_attributes` (collision-aware; a `ConfigurationError` from a raw
+  collision is surfaced as a per-station `StaticCoverageGap.collision_error`, not swallowed) and a
+  dedicated `_is_finite_numeric` that explicitly rejects `bool`/`str`. `import_caravan_attributes`
+  gained an opt-in `required_static_names` parameter: when supplied, every manifest station must
+  match, bind to a basin, AND clear `verify_static_coverage` before the function returns —
+  `ConfigurationError` naming every shortfall — making the exit gate the operational import's own
+  gate rather than a disconnected script. (No production caller exists yet because the real Caravan
+  import itself has not run — same operational follow-on as before; the modeller's confirmed release
+  is still pending. `required_static_names` is deliberately a parameter, not a hardcoded 50-name
+  constant baked into this module, since the concrete PT static-name set is aquacast's own contract,
+  not this module's.)
+- **MAJOR fixed — changed-value re-import is now a loud failure, not a silent overwrite.**
+  `merge_namespaced_attributes` used JSONB `||`, which silently prefers the incoming value on a
+  changed re-import with no trace. It now fetches the basin's current attributes first; a key already
+  present with a DIFFERING value raises `ConfigurationError` naming every conflict (existing vs.
+  incoming) BEFORE any write is issued — an identical-value replay is still a no-op success. A
+  durable, persisted source-version record and artifact-invalidation-on-genuine-revision remain
+  deliberately out of scope (needs new schema — the plan's T1 deviation note; still natural to fold
+  into T0b/T1c); this closes the SILENT half of the finding at the per-key level.
+  `CaravanImportProvenance` also gained `content_fingerprint` (a stable SHA-256 of the parsed parquet
+  rows), a durable content identity distinguishing "identical replay" from "genuinely different source
+  data" ahead of any persisted lineage table existing.
+- **minor fixed — the `prefix` bypass.** `merge_namespaced_attributes`'s `prefix` parameter is gone;
+  the `"caravan:"` guard is hardcoded, so there is no longer any argument a caller could pass to
+  defeat it (previously `prefix=""` made every key, including a bare `"area"`, pass the check).
+
+Test soundness: every new/changed locking test above was proved to fail against the pre-fix code for
+the right reason (fix stashed, test kept, run RED, fix restored) — see the fixer's own record for the
+exact commands; not re-narrated here to avoid the doc drifting from what was actually run.
+
+Exit gates re-run and green: ruff check + format, pyright ratchet (no new errors vs baseline), and the
+full `caravan`-scoped unit + DB-backed integration test suite (including the new tests above).
+
+**Status: fixer round 2 complete, but NOT ready for PR — this section previously claimed otherwise
+and was wrong.** An independent round-2 review (see "Round-2 review" above) found the loop **stalled**
+with **1 blocker + 4 majors** outstanding. What round 2 genuinely closed is the D15/D16 no-bare-fallback
+blocker — verified by execution, including the co-assigned-differing-regimes case. What remains open is
+the **T1 exit gate**, which is unusable in both directions (it raises on the 148 permanently
+out-of-scope source rows, or validates nothing at all), plus atomicity under AUTOCOMMIT, the
+compatibility-vs-frame resolver divergence, and the thin test surface. **Read the round-2 section for
+the specified fix before making any change.**
 
 ## Round-2 review — D16 BLOCKER fixed; a NEW blocker, loop STALLED (2026-08-13)
 
@@ -251,6 +447,171 @@ the operational caller that would supply it does not exist yet** — the plan's 
 not yet run" follow-on. The substantive half is closed: the *tests* now pin the real contract instead
 of placeholders. **Binding the operational entrypoint to the model's declared statics and the frozen
 T0a manifest belongs with that follow-on**, and should be done before the first real import.
+### Fixer round 3 (2026-08-14) — round-2's BLOCKER + 4 majors addressed
+
+- **BLOCKER fixed — the T1 exit gate is now manifest-scoped, never parquet-scoped.**
+  `import_caravan_attributes` intersects `unmatched`/`no_basin`/coverage checks with the caller's
+  `expected_codes` MANIFEST before deciding whether to raise; a parquet row with no configured
+  station (out-of-scope, e.g. 148 of the real delivery's 296) is reported but never fatal.
+  `required_static_names` without `expected_codes` now raises `ConfigurationError` immediately,
+  before any read or write, closing the "always-skip" accidental-no-op path. Locked in
+  `tests/integration/store/test_caravan_import.py` (`test_an_out_of_manifest_unmatched_code_does_not_raise`,
+  `test_a_manifest_unmatched_code_raises`, `test_required_static_names_without_expected_codes_raises_immediately`)
+  — proved RED against the pre-fix code (stashed, ran, confirmed genuine assertion failures, restored).
+- **MAJOR fixed — atomicity.** `store/_helpers.py::require_real_transaction` (extracted from
+  `basin_importer.py`'s own guard, now shared by both) refuses to run `import_caravan_attributes` at
+  all — before the parquet is even read — unless `basin_store.connection` (a new public
+  `PgBasinStore.connection` property) is inside a real, non-AUTOCOMMIT, already-open transaction.
+  `TestTransactionGuard` (mirroring `test_basin_importer_persistence.py`'s own) and
+  `test_exit_gate_failure_after_a_successful_merge_rolls_back_on_caller_rollback` (mirroring
+  `TestPackageAtomicity`) prove both the refusal and the end-to-end rollback. Proved RED
+  (stash/run/restore).
+- **MAJOR fixed — compatibility/frame resolver divergence.** `available_declared_static_keys` and
+  `project_declared_static_attributes` now share one collision-aware resolver
+  (`_resolve_declared_value`), so a station carrying only the secondary (bare-Caravan-name) key for
+  an aliased static resolves identically at both boundaries. Locked directly
+  (`test_agrees_with_the_frame_when_only_the_secondary_key_is_present`), proved RED.
+- **MAJOR partially addressed — test surface.** New direct-boundary tests reach
+  `services/hindcast.py::_load_static_attributes` (new file, `test_hindcast_caravan_statics.py`) and
+  `services/operational_inputs.py::assemble_station_operational_inputs` (including the
+  `static_naming_models` fallback-chain differing-regime raise). The duplicated D16 compatibility
+  loop in `flows/onboard_model.py::_validate_compatibility_task` and
+  `services/model_onboarding.py::onboard_model`'s Step 1 was extracted to one shared function
+  (`services/caravan_statics.py::resolve_available_static_keys_for_stations`), removing the
+  divergence risk and adding direct unit coverage of the extracted logic. **Not fully closed**: no
+  test reaches the real, full `onboard_model()`/`model_onboarding.py` pipeline end-to-end (the
+  extracted-and-shared function is unit-tested instead — a deliberate scope call given the pipeline's
+  heavy fixture cost), and no test reaches `adapters/forecast_interface.py::_static_inputs` directly
+  (covered only transitively via `assemble_station_operational_inputs`/`assemble_station_training_data`
+  producing an already-resolved frame). Residual risk for a future pass.
+- **MINOR fixed** — `docs/touchpoint-maps.md`'s stale `prefix`-parameter reference corrected, plus new
+  bullets documenting the shared resolver and the manifest-scoped exit gate as contracts that must
+  not change silently.
+
+Exit gates: `ruff check` + `ruff format --check` clean on every changed file (12 pre-existing
+alembic-migration `E501`s untouched); pyright ratchet 428 ≤ baseline 459 (one transient new error in
+the extracted `resolve_available_static_keys_for_stations`, fixed via `typing.cast` before the final
+run); full unit suite (2753 passed) and full integration suite (591 passed, 7 pre-existing skips)
+green.
+
+### Fixer round 4 (2026-08-14) — an independent Codex diff review's BLOCKER + 3 majors addressed
+
+An independent Codex pass over round 3's committed diff found the round-2 "make the operational
+entrypoint require `expected_codes` + `required_static_names`" fix item was never actually
+implemented (round 3 only closed the manifest-scoping half), plus 3 majors and 2 minors. Verified by
+execution, not accepted on report.
+
+- **BLOCKER fixed — the operational exit gate is no longer optional or bypassable.**
+  `import_caravan_attributes` still defaults both gate parameters to `None` and accepts empty
+  frozensets, so calling it with both omitted (or both empty) wrote data and returned success with no
+  validation at all — a test explicitly locked that silent-success shape. Rather than tighten the
+  flexible internal function (several of ITS OWN tests deliberately omit/narrow these parameters to
+  exercise the reporting-only paths in isolation — `unmatched_codes`/`stations_without_basin`/
+  `missing_from_manifest` without raising), a new `run_operational_caravan_import` is now THE
+  production entrypoint: `expected_codes`/`required_static_names` are ordinary no-default
+  keyword-only parameters (omitting either is a `TypeError` at the call site — Python itself refuses
+  the "both omitted" bypass) and additionally checked non-empty at runtime before any read or write
+  (closing the "empty sets validate nothing" variant of the same bypass). `import_caravan_attributes`
+  stays as the documented, explicitly-internal building block; do not call it directly from a
+  production flow. Locked in `tests/integration/store/test_caravan_import.py::
+  TestRunOperationalCaravanImport` (5 tests: both TypeError-on-omission cases, both
+  ConfigurationError-on-empty cases, and a full round-trip proving the gate still passes/fails
+  correctly through the wrapper) — proved RED against the pre-fix code (stashed, ran, confirmed the
+  silent-success test as the failure signature, restored).
+- **MAJOR fixed — the collision guard now enforces "both present ⇒ both finite numeric ⇒ equal", not
+  "filter nulls first, then maybe compare".** `_resolve_declared_value` used to filter out a
+  missing/null candidate BEFORE checking whether both the primary and secondary key existed, so a
+  delivered-but-null primary value alongside a valid secondary value silently resolved to the non-null
+  one instead of raising — exactly the silent pick T2's guard exists to forbid. Presence is now
+  `key in attributes` (a delivered-but-null column still counts as present and participates in the
+  agreement check); usability is checked only after any collision is resolved or ruled out.
+  `_values_agree` additionally requires BOTH operands to pass `_is_finite_numeric` (numeric,
+  non-boolean, finite) before comparing equality, so two equal strings or a `True == 1` bool/int pair
+  no longer silently "agree" (only finiteness of a float was checked before). Locked directly in
+  `tests/unit/services/test_caravan_statics.py::TestCollisionSemantics` (null/valid, NaN/valid,
+  string/string, bool/int) — proved RED.
+- **MAJOR fixed — the changed-value replay guard's check/update race.** `merge_namespaced_attributes`
+  read current attributes with a plain `SELECT`, then wrote unconditionally: two concurrent imports
+  could both observe "no existing key" and the second's write would silently win. The `SELECT` is now
+  `SELECT ... FOR UPDATE`, locking the basin row for the remainder of the caller's transaction, so a
+  concurrent second caller blocks until the first commits, then re-reads the NOW-current row before
+  comparing. Locked with a REAL two-connection concurrency test
+  (`tests/integration/store/test_caravan_import.py::TestMergeNamespacedAttributesConcurrency`,
+  mirroring `test_station_group_store.py`'s own pattern): two threads, each on its own connection,
+  attempt DIFFERING values for the same new key synchronized via a barrier — exactly one wins, the
+  other raises `ConfigurationError`, and the persisted value matches only the winner. Proved RED
+  (without the fix, both threads observed no conflict and either could silently win with no trace,
+  failing the "exactly one raises" assertion).
+- **MAJOR fixed — the "all fifty" test now genuinely covers 50 names, not 25.** The prior test
+  exercised 21 aliases + 4 direct-name samples. **SUPERSEDED 2026-08-14 — the golden list is no
+  longer synthetic.** An interim version padded the 28 confirmed names with 22 placeholder
+  `direct_static_NN` entries because "the real list lives in the external artifact, not this repo";
+  that premise no longer holds. PT's **real** contract is now **vendored** at
+  `tests/fixtures/reference/cmal_pool_PT_static_features.json` (from
+  `cmal_pool_PT/config.yaml :: static_features`), and `PT_FIFTY_STATICS` reads it. The raw list is
+  asserted to be 50 entries **and** 50 unique (asserting the frozenset alone would let a 51-entry
+  fixture with one duplicate read as "exactly fifty"), the converse test **derives** a real direct
+  name rather than hard-coding a placeholder, and the 50 are additionally verified to split exactly
+  21 aliased / 29 direct and to resolve to **distinct** keys.
+- **minor fixed — `network` is no longer a caller-suppliable parameter.** `import_caravan_attributes`
+  hardcodes `"bafu"` — Caravan's CAMELS-CH parser only ever understands a `caravan_camels_ch_*` gauge
+  id, so a non-"bafu" `network` argument could previously attach Swiss attributes to an unrelated
+  station sharing the same code.
+- **minor fixed — compatibility-time collision errors now name the real station.**
+  `available_declared_static_keys` takes an optional `station_code`, forwarded from
+  `resolve_available_static_keys_for_stations`'s per-station loop (`station.code`), so a conflicting
+  alias at onboarding no longer reports `<unknown>`. Locked directly
+  (`test_a_compatibility_time_collision_names_the_station`).
+- **minor NOT fixed — real production-wiring end-to-end coverage (deliberate scope call, unchanged
+  from round 3).** The review flagged that `services/model_onboarding.py:1269` and
+  `flows/run_forecast_cycle.py:2146` are not exercised by a full plain-Python `onboard_model()` /
+  fallback-chain forecast-cycle test, so deleting either one-line wiring call could leave the existing
+  suite green. Both call sites forward into the SAME already-directly-tested shared function
+  (`resolve_available_static_keys_for_stations` / `resolve_shared_static_frame`), which narrows the
+  actual blast radius of an accidental deletion to "the wiring call itself", not the resolution logic.
+  Building a full `onboard_model()` or `run_forecast_cycle.py` end-to-end test carries the heavy
+  fixture cost round 3 already declined to pay for the identical reason. Left as documented residual
+  risk rather than attempted here — flag if a future change touches either call site.
+
+Test soundness: every locking test above for a correctness/bug fix was proved to fail against the
+pre-fix code for the right reason (fix stashed, test kept, run RED, fix restored).
+
+Exit gates re-run and green: `ruff check` + `ruff format --check` clean; pyright ratchet 428 ≤
+baseline 459 (unchanged); full `caravan`-scoped unit + DB-backed integration suite (97 passed).
+
+### Fixer round 5 (2026-08-14) — an independent Codex diff review's MAJOR addressed
+
+An independent Codex pass over round 4's committed diff found one major: the collision guard's
+"both present ⇒ must agree" rule (round 4's fix) treated two present keys that are BOTH
+`None`/`NaN` as a *conflict*, not as "this static is simply missing" — raising
+`ConfigurationError` with the factually wrong message `"resolves to differing values ... (None)
+and ... (None)"`. This is reachable whenever a delivered Caravan package carries both the raw
+HydroATLAS column and the bare canonical-name column for an aliased static, and neither has data
+for a given basin — distinct from round 4's tested "one null, one valid" case. Left uncaught, it
+would crash `onboard_model()`'s Step 1 (`resolve_available_static_keys_for_stations` has no
+`try/except` around it) and, via `verify_static_coverage`, mark **every** declared static for the
+station missing (`collision_error`) rather than just the one affected static.
+
+- **MAJOR fixed — "both present" no longer implies a collision when both present values are
+  independently missing.** `_resolve_declared_value` now short-circuits with a
+  `all(is_missing_static_value(...) for key in present_keys)` check, immediately after the
+  presence check and before the agreement loop: if every present candidate is itself missing, the
+  function falls through to `_NO_CANDIDATE` — mirroring the no-present-keys case — instead of
+  entering the agreement loop at all. The existing "one null, one genuinely valid" raise (round
+  4's fix, via `_values_agree`/`_is_finite_numeric`) is unchanged; only the all-present-and-all-
+  missing case is now exempted. Locked directly in
+  `tests/unit/services/test_caravan_statics.py::TestCollisionSemantics::
+  test_both_keys_present_and_both_null_resolves_to_missing_not_a_collision` (plus a one-null-
+  one-NaN variant) and `TestVerifyStaticCoverage::
+  test_both_keys_present_and_both_null_is_a_plain_missing_gap_not_a_collision` (asserts the exit
+  gate reports a plain `missing_statics` gap for only the affected static, with
+  `collision_error is None`, not a whole-station collision blowout) — proved RED against round 4's
+  code (fix stashed, tests kept, all 3 failed with the wrong-message `ConfigurationError` /
+  everything-missing shape, restored).
+
+Test soundness: proved (fix stashed, the 3 new locking tests run RED against the pre-fix code,
+fix restored). Exit gates re-run and green: `ruff check` + `ruff format --check` clean; pyright
+0 errors on the changed file; `tests/unit/services/test_caravan_statics.py` (52 passed).
 
 ## Implementation notes (read before writing code)
 

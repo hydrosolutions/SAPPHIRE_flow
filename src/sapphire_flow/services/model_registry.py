@@ -9,6 +9,7 @@ from sapphire_flow.exceptions import (
     ConfigurationError,
     UnsupportedModelRequirementError,
 )
+from sapphire_flow.services.caravan_statics import declared_static_naming
 from sapphire_flow.types.enums import AlertEligibility, ModelTier
 from sapphire_flow.types.ids import ALERT_ELIGIBILITIES, MODEL_TIERS
 from sapphire_flow.types.model import ModelRecord, ModelRegistryEntry
@@ -63,10 +64,29 @@ def _assert_model_classification_declared(
     raw_model: object,
     adapted_model: object,
 ) -> None:
+    """Read classification declarations off the RAW model and copy them
+    onto the ADAPTED model, once, at discovery time.
+
+    Plan 155 D16 fixer round (blocker finding — Codex traced the path and
+    found "raw model = caravan, adapted model = native"): a real FI model
+    is wrapped by `ForecastInterfaceAdapter`
+    (`adapters/forecast_interface.py`) before anything downstream ever
+    sees it, and that adapter forwards NOTHING by default (see its
+    `config_hash` property's own docstring — "this class has no
+    `__getattr__` passthrough"). `model_tier`/`alert_eligibility` already
+    survive this by being copied here, onto the adapted instance, exactly
+    once; `static_naming` (`types/enums.py::StaticNaming`,
+    `services/caravan_statics.py::declared_static_naming`) gets the
+    identical treatment so every one of the five Plan 155 call sites that
+    branch on `declared_static_naming(model)` sees the RAW model's own
+    declaration, not the adapter's un-forwarded default.
+    """
     tier = _declared_model_tier(model_id, raw_model)
     eligibility = _declared_alert_eligibility(model_id, raw_model)
+    static_naming = declared_static_naming(raw_model)
     adapted_model.model_tier = tier  # type: ignore[attr-defined]
     adapted_model.alert_eligibility = eligibility  # type: ignore[attr-defined]
+    adapted_model.static_naming = static_naming  # type: ignore[attr-defined]
 
 
 def discover_models() -> dict[ModelId, ForecastModel]:

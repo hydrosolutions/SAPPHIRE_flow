@@ -926,6 +926,56 @@ class Basin:
 
 Module: `types/basin.py`
 
+**Namespaced attribute sources (Plan 155 D15).** `attributes` may hold keys from
+more than one source. A second source is namespaced under a `<source>:` prefix
+(e.g. `caravan:` for Caravan's CAMELS-CH attributes) rather than merged bare —
+a colon cannot appear in a canonical (HydroATLAS-coded or classic-CAMELS) attribute
+name, so collision with the FIRST source is structurally impossible. Resolution
+into a model's own declared name is additive and model-scoped
+(`services/caravan_statics.py::project_declared_static_attributes`) — never a
+blanket unprefixed merge, which would silently change an INCUMBENT model's inputs.
+See Plan 155 for the full rule and `store/basin_store.py::PgBasinStore
+.merge_namespaced_attributes` for the write-side guard.
+
+**Whether resolution applies at all is the MODEL's own declaration (Plan 155
+D16, post-implementation-review fix).** `types/enums.py::StaticNaming`
+(`NATIVE` | `CARAVAN`) is a class attribute a model declares exactly like
+`model_tier` / `alert_eligibility` (`services/model_registry.py`), read via
+`services/caravan_statics.py::declared_static_naming`. `NATIVE` is the
+default — every incumbent model that does not declare `static_naming` keeps
+today's raw-bare-key behaviour byte-for-byte, with NO union against the
+`caravan:` namespace. Only a model that declares `StaticNaming.CARAVAN` gets
+D15's strict no-bare-fallback resolution. This exists because inference from
+the alias table cannot work: 29 of PT's 50 statics are DIRECT names (e.g.
+`area`), textually indistinguishable from an incumbent's own same-named bare
+attribute — only the model itself can say which regime it wants.
+`project_declared_static_attributes` additionally enforces T2's collision
+semantics for an ALIASED name that ships both its raw HydroATLAS code and its
+bare Caravan name: equal FINITE values resolve silently, differing values (or
+equal infinities) raise `ConfigurationError` naming station, both keys and
+both values.
+
+**`static_naming` must be forwarded across the FI adapter boundary (Plan 155
+fixer round 2).** `adapters/forecast_interface.py::ForecastInterfaceAdapter`
+does not forward arbitrary attributes from the wrapped model; discovery
+(`services/model_registry.py::_assert_model_classification_declared`) copies
+`static_naming` from the RAW model onto the ADAPTED instance once, at
+discovery time — the same place `model_tier`/`alert_eligibility` already
+survive this boundary. A present-but-invalid `static_naming` (not a
+`StaticNaming` member) raises `ConfigurationError` rather than silently
+defaulting to `NATIVE`; only a genuinely absent declaration defaults.
+
+**A shared static frame across co-assigned models resolves per-model, not
+per-representative.** `services/operational_inputs.py::
+assemble_station_operational_inputs`'s `requirements_override` fallback-chain
+path can union `static_features` across every model assigned to a station;
+`services/caravan_statics.py::resolve_shared_static_frame` scopes Caravan
+resolution to only the names a `CARAVAN`-declaring co-assigned model itself
+declares, leaves names exclusively declared by `NATIVE` co-assignments
+untouched, and raises `ConfigurationError` if two co-assigned models declare
+the identical bare name under differing `StaticNaming` regimes — there is no
+single correct shared value for that case.
+
 ### Alert
 
 ```python
