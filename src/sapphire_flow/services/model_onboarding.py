@@ -18,7 +18,9 @@ from sapphire_flow.exceptions import (
     StoreError,
     TenantIsolationError,
 )
-from sapphire_flow.types.basin import non_null_static_keys
+from sapphire_flow.services.caravan_statics import (
+    resolve_available_static_keys_for_stations,
+)
 from sapphire_flow.types.enums import (
     ArtifactScope,
     AuditEventType,
@@ -1258,16 +1260,18 @@ def onboard_model(
                 )
 
         # Step 1: Compatibility check
-        avail_static: dict[StationId, frozenset[str]] = {}
-        for sid in unit.station_ids:
-            station = station_store.fetch_station(sid)
-            if station is not None and station.basin_id is not None:
-                basin = basin_store.fetch_basin(station.basin_id)
-                avail_static[sid] = non_null_static_keys(
-                    basin.attributes if basin is not None else None
-                )
-            else:
-                avail_static[sid] = frozenset()
+        # Plan 155 T2 (G8) + D16, round-2 review MAJOR ("test surface"):
+        # this loop used to be duplicated byte-for-byte in
+        # `flows/onboard_model.py::_validate_compatibility_task`, with no
+        # single source of truth to diverge from. Both callers now share
+        # ONE implementation (`services/caravan_statics.py::
+        # resolve_available_static_keys_for_stations`).
+        avail_static = resolve_available_static_keys_for_stations(
+            model,
+            unit.station_ids,
+            station_store=station_store,
+            basin_store=basin_store,
+        )
 
         compat = validate_compatibility_for_unit(
             model_id=model_id,

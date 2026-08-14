@@ -2139,6 +2139,11 @@ def run_forecast_cycle_flow(
                     forecast_horizon_steps=forecast_horizon_steps,
                     time_step=time_step,
                     requirements_override=superset_reqs,
+                    # Plan 155 fixer round (major finding): the shared static
+                    # frame must resolve PER assigned model, not just
+                    # ``first_model`` -- ``superset_reqs.static_features`` is
+                    # already the union across ``assigned_models``.
+                    static_naming_models=assigned_models,
                 )
             except Exception as exc:
                 log.warning("forecast_cycle.input_assembly_failed", error=str(exc))

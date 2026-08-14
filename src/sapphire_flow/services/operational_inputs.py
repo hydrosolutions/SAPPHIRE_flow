@@ -8,6 +8,7 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleMode, QcStatus, WarmUpSource
@@ -18,7 +19,7 @@ from sapphire_flow.types.model import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import timedelta
 
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -398,6 +399,7 @@ def assemble_station_operational_inputs(
     forecast_horizon_steps: int,
     time_step: timedelta,
     requirements_override: ModelDataRequirements | None = None,
+    static_naming_models: Sequence[object] | None = None,
 ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
     now = clock()
     # When a station is assigned models with heterogeneous requirements, the
@@ -553,7 +555,40 @@ def assemble_station_operational_inputs(
     if station_config is not None and station_config.basin_id is not None:
         basin = basin_store.fetch_basin(station_config.basin_id)
         if basin is not None and basin.attributes:
-            static_df = pl.DataFrame([basin.attributes])
+            # Plan 155 T2 (G8) + D16, fixer round (major finding): the
+            # frame is shared across EVERY model assigned to this station
+            # (``reqs.static_features`` is a cross-model UNION when a
+            # ``requirements_override`` superset is supplied -- see
+            # ``flows/run_forecast_cycle.py::build_superset_requirements``),
+            # so resolution must be scoped PER assigned model, not gated on
+            # ``model`` alone (a single representative, e.g. the
+            # highest-priority assignment) -- see
+            # ``services/caravan_statics.py::resolve_shared_static_frame``
+            # for why: a bare-name collision between a CARAVAN-declaring and
+            # a NATIVE co-assignment must raise, not silently share one
+            # model's resolution with the other. Defaults to ``[model]``
+            # when the caller has no broader assignment set (e.g. the GROUP
+            # path, which only ever assembles for one model).
+            # Round-3 review (MAJOR): the invoked ``model`` is ALWAYS part
+            # of the resolution set, never merely the fallback when the
+            # caller passes nothing. A ``static_naming_models`` that omitted
+            # it -- ``[]``, or a list built from a different assignment set
+            # -- made ``resolve_shared_static_frame`` see no CARAVAN
+            # declaration and hand this model the raw bare attributes, i.e.
+            # CAMELS-CH's ``area``, which rescales every discharge. Uniting
+            # rather than replacing makes that leak structurally impossible
+            # instead of relying on every caller to pass a correct list; a
+            # genuine regime disagreement still raises via the
+            # differing-regimes guard inside the resolver.
+            static_df = pl.DataFrame(
+                [
+                    resolve_shared_static_frame(
+                        basin.attributes,
+                        [model, *(static_naming_models or ())],
+                        station_code=station_config.code,
+                    )
+                ]
+            )
 
     # --- warm-up state ---
     # ``clock=lambda: now`` reuses the SAME instant already computed above

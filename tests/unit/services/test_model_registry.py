@@ -322,3 +322,122 @@ class TestDiscoverModels:
         assert ModelId("good_model_before") in result
         assert ModelId("good_model_after") in result
         assert ModelId("bad_multi_resolution_model") not in result
+
+    def test_static_naming_survives_the_fi_adapter_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 155 fixer round (blocker finding — Codex traced the path
+        and found "raw model = caravan, adapted model = native").
+        `discover_models()` wraps every REAL FI model in
+        `ForecastInterfaceAdapter` (`adapters/forecast_interface.py`)
+        before anything downstream ever sees it, and that adapter forwards
+        nothing by default (see its `config_hash` property's own
+        docstring: "this class has no `__getattr__` passthrough"). A raw
+        FI model declaring `StaticNaming.CARAVAN` must still resolve as
+        `CARAVAN` via `declared_static_naming` on the RETURNED, ADAPTED
+        instance -- not silently fall back to the adapter's un-forwarded
+        `NATIVE` default."""
+        from datetime import timedelta
+
+        from sapphire_flow.adapters import forecast_interface as fi_boundary
+        from sapphire_flow.services.caravan_statics import declared_static_naming
+        from sapphire_flow.types.enums import StaticNaming
+
+        class _CaravanFakeFIModel:
+            """Structurally satisfies forecast_interface.ForecastModel (the
+            runtime_checkable Protocol) -- a single past-only dynamic
+            branch keeps this well clear of Plan 156's multi-future-forced
+            guard, isolating the static_naming propagation as the sole
+            thing under test."""
+
+            model_tier = ModelTier.SKILL
+            alert_eligibility = AlertEligibility.SKILL_FORECAST
+            static_naming = StaticNaming.CARAVAN
+
+            def __init__(self) -> None:
+                self.artifact_scope = fi_boundary.FIArtifactScope.STATION
+                self._input_requirement = fi_boundary.InputRequirement(
+                    targets={
+                        "discharge": fi_boundary.TargetSpec(
+                            unit=fi_boundary.Unit.M3_PER_S,
+                            representations=frozenset(
+                                {fi_boundary.OutputRepresentation.DETERMINISTIC}
+                            ),
+                        )
+                    },
+                    dynamic={
+                        timedelta(hours=24): fi_boundary.SpatialInputSpec(
+                            data={
+                                fi_boundary.FISpatialRepresentation.POINT: (
+                                    fi_boundary.DynamicInputSpec(
+                                        past_known={
+                                            "obs": {
+                                                "discharge": (
+                                                    fi_boundary.PastKnownVariable(
+                                                        lookback=10,
+                                                        max_nan=0,
+                                                        unit=fi_boundary.Unit.M3_PER_S,
+                                                    )
+                                                )
+                                            }
+                                        },
+                                        future_known={
+                                            "nwp": {
+                                                "precip": (
+                                                    fi_boundary.FutureKnownVariable(
+                                                        future_steps=5,
+                                                        max_nan=0,
+                                                        unit=fi_boundary.Unit.MM,
+                                                    )
+                                                )
+                                            }
+                                        },
+                                    )
+                                )
+                            }
+                        )
+                    },
+                    static={"area"},
+                )
+
+            @property
+            def input_requirement(self) -> fi_boundary.InputRequirement:
+                return self._input_requirement
+
+            def train(self, inputs: object, *, config: object, rng: object) -> object:
+                raise NotImplementedError
+
+            def predict(
+                self,
+                artifact: object,
+                *,
+                inputs: object,
+                issue_datetime: object,
+                rng: object,
+            ) -> object:
+                raise NotImplementedError
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                raise NotImplementedError
+
+            def deserialize_artifact(self, raw: bytes) -> object:
+                raise NotImplementedError
+
+        class _EntryPoint:
+            name = "caravan_fake_model"
+
+            def load(self) -> type[_CaravanFakeFIModel]:
+                return _CaravanFakeFIModel
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda group: [_EntryPoint()],
+        )
+
+        result = discover_models()
+        adapted = result[ModelId("caravan_fake_model")]
+
+        # This must be a REAL adapter instance, not the raw model itself --
+        # otherwise the test would not be exercising the boundary at all.
+        assert isinstance(adapted, fi_boundary.ForecastInterfaceAdapter)
+        assert declared_static_naming(adapted) is StaticNaming.CARAVAN
