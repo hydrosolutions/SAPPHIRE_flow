@@ -44,30 +44,70 @@ pinned at ~72 mm is still in the sample, exactly as Plan 170's D6 predicted. M-A
   breaks a run on a `None` value, which is precisely the bridging M-A2 exists to prevent.
 
 - **D3 — TWO `frozen_sensor` instances, because one cannot do both jobs.**
-  `exclude_at_or_below` makes the rule **ignore** zeros (Plan 172 D8) — so the very threshold that
-  lets dry spells pass also makes that instance blind to zero runs. `QcRuleSet.rules_for`
-  (`types/domain.py:163`) filters by parameter and time step and returns **all** matches without
-  deduplicating by `rule_id`, and the checker appends each rule's flags
+  `exclude_at_or_below` makes the rule **ignore** values at or below it (Plan 172 D8) — so the very
+  threshold that lets dry spells pass also makes that instance blind to zero runs.
+  `QcRuleSet.rules_for` (`types/domain.py:163`) filters by parameter and time step and returns **all**
+  matches without deduplicating by `rule_id`, and the checker appends each rule's flags
   (`services/qc.py:255-263`), so one rule set can legitimately hold both:
 
-  | Instance | `exclude_at_or_below` | `min_consecutive` | Catches |
-  |---|---|---|---|
-  | **stuck-value** | `0.0` (ignore zeros) | short | Sindhuli Madhi's ~72 mm pinned block |
-  | **long-constant-run** | *absent* | long (the zero-run threshold) | Aiselukhark's 52-day zero run — and any other long constant run |
+  | Instance | `exclude_at_or_below` | `min_consecutive` | Scope | Catches |
+  |---|---|---|---|---|
+  | **stuck-value** | **5.0** (`stuck_high_min_value_mm`) | 12 h | whole series | Sindhuli Madhi's ~72 mm pinned block |
+  | **long-zero-run** | *absent* | **168 h (7 days)** | **JJAS only** (D3b) | Aiselukhark's 52-day run and its six siblings |
 
-  The second instance flags **any** sufficiently long constant run, including a genuine 52-day dry
-  spell. That is the wholesale decision working as intended, not a defect.
+  **The exclusion floor is 5.0 mm, not 0.0.** `stuck_high_min_value_mm = 5.0`
+  (`scripts/dhm_precip/params.py:118`) exists precisely because the 0.5 mm adjacency tolerance would
+  otherwise chain ordinary tipping-bucket noise (`0.2 / 0.4 / 0.6 …`) into a false "stuck" run. At
+  `0.0` every positive value stays eligible and that noise is masked as a defect.
+
+  **The 7-day threshold is measured, not asserted.** `minimum_run_duration_hours = 12`
+  (`params.py:110`) is M-A1's **inventory** threshold — right for *reporting* candidates, catastrophic
+  for *removal*. Measured against the pinned workbook, JJAS hours removed:
+
+  | threshold | median station | worst station |
+  |---|---|---|
+  | 12 h | **61.1 %** | 75.2 % |
+  | 24 h | 41.1 % | 58.6 % |
+  | 3 d | 12.4 % | 24.6 % |
+  | **7 d** | **1.6 %** | 17.0 % |
+  | 14 d | 0.0 % | 17.0 % |
+
+  7 days catches **every** documented defect — the shortest is Biratnagar at 12.2 days — while costing
+  the median station 1.6 %. 14 days would miss three of the seven; 12 hours would discard most of the
+  monsoon as if it were broken.
+
   **Give the two instances distinct `rule_version` strings** so an emitted flag says which fired —
-  Plan 172's D8b made `rule_version` flow through, and this is the first thing that needs it.
+  Plan 172's D8b made `rule_version` flow through, and this is its first real use.
 
-- **D4 — Sentinels need no new rule.** A `range_check` with `value_min = 0.0` rejects `-9999999`
-  already. Include it in the rule set with an upper bound sourced from regional extreme-value
-  literature, **not** from this sample's maxima (Plan 170's standing caution).
+- **D3b — Seasonal scope is applied OUTSIDE the checker, because the rule cannot express it.**
+  `_apply_frozen_sensor` takes only tolerance, minimum length and the exclusion floor
+  (`services/qc.py:92-98`) — no season parameter — and the checker applies every matching rule to the
+  **whole** station series (`services/qc.py:250`). A year-round long-zero-run rule would therefore
+  mask the entire dry season: Terai stations run DJF shares of 1–2 %, so their winters are *legitimately*
+  weeks of zero. The long-zero-run pass is run **per JJAS season**, on JJAS observations only, and the
+  stuck-value pass runs on the whole series (a pinned sensor is a defect in any month). Tested at the
+  cutoff (threshold − 1 h does not flag) and at a season boundary (a run spanning 30 Sep → 1 Oct does
+  not silently merge across seasons).
 
-- **D5 — `time_step` must be 3600 s.** The checker infers the step from the observations
-  (`services/qc.py:252`) and `rules_for` matches on it, so a rule whose `time_step` differs is
-  **silently skipped** — no error, no flags, an empty mask that looks like clean data. Assert the
-  inferred step matches the rule set's before trusting any result.
+- **D4 — `range_check` is a physical-impossibility gate, NOT an outlier filter.** `value_min = 0.0`
+  rejects the `-9999999` sentinels. The upper bound is **`value_max = 200.0` mm/h**, chosen to be
+  comfortably unreachable rather than discriminating: every value above it becomes `QC_FAILED`
+  (`services/qc.py:57`), so a tight bound would silently mask real extremes.
+  Calibration for why 200 is safe: Adhikari et al. (2025) define extreme hourly precipitation in
+  Nepal as **> 40 mm/h** and find such events *widespread*, with one Koshi station recording eight in
+  a single season — so 40 is common, not a ceiling. Our own largest defensible daily total is ~438 mm
+  (Tarahara, 2021-10-19, corroborated by Kanyam the same day).
+  **Outlier detection is explicitly not attempted here** — `gross_outlier` is unsuitable for
+  zero-inflated precipitation (Plan 170), and nothing replaces it. Boundary-tested both ways: a
+  legitimate 100 mm/h extreme passes; 200.1 is masked.
+
+- **D5 — The mask builder RAISES on a `time_step` mismatch.** The checker infers the step from the
+  observations (`services/qc.py:252`) and `rules_for` matches on it, so a rule whose `time_step`
+  differs is **silently skipped** — no error, no flags, an empty mask indistinguishable from clean
+  data. A characterisation test of that silence is not enough: the **mask builder itself** compares
+  the inferred step against the rule set's and raises a typed error before returning, and **task 2a
+  tests that exception**. This is the plan's most dangerous failure mode because it fails toward
+  "everything is fine".
 
 - **D6 — The run-detection contract is parameterised, not implicit.** Minimum run duration, seasonal
   scope, treatment of isolated missing values inside a run, boundary handling, and whether nearby runs
@@ -78,11 +118,32 @@ pinned at ~72 mm is still in the sample, exactly as Plan 170's D6 predicted. M-A
   one real performance risk. The checker already groups by `(station_id, parameter)`, so per-station
   batches change no result and bound peak memory.
 
-- **D8 — Rule 1's MNAR obligations attach to CONSUMERS, and the accounting is what makes them
-  honourable.** M-A3 does not compute any masked statistic, so it cannot violate Rule 1 — but it must
-  emit what consumers need to comply: retained/removed counts **per station and per season**, so
-  every downstream figure can state the exposure it rests on. A station losing most of its monsoon is
-  **excluded** from M-A6 via an explicit exclusion list, never silently thinned.
+- **D8 — Accounting is THREE-WAY, because "not removed" is not "retained".** A `MISSING` row
+  legitimately draws no flag (`services/qc.py:55`, `:106`), so counting it as retained would inflate
+  every retention figure with hours that were never observed. Three mutually exclusive categories,
+  reconciling exactly to the axis row count:
+  | Category | Meaning |
+  |---|---|
+  | `source_missing` | a gap row from M-A2 — never observed |
+  | `qc_removed` | observed, and masked by a rule |
+  | `retained_nonmissing` | observed and kept — the retention **numerator** |
+
+  **Retention is computed over OBSERVED rows only:**
+  `retained_nonmissing / (retained_nonmissing + qc_removed)`. `source_missing` is excluded from the
+  denominator — including it would blend "the sensor never reported" with "we masked it", which are
+  different facts and are exactly what this three-way split exists to keep apart.
+
+  **Exposure by hour of day as well as by season.** Rule 1 requires it
+  (`dhm-precipitation-milestones.md:51`) because a mask that removes hours unevenly across the day
+  biases diurnal means — and diurnal structure is exactly what M-A7 is for.
+
+  **"Losing most of its monsoon" is an exact numeric predicate**, not a judgement: a station whose
+  `retained_nonmissing / (retained_nonmissing + qc_removed)` over JJAS falls below a stated threshold
+  goes on the M-A6 exclusion list. The threshold is a parameter, and the resulting list is an
+  artefact — never a silent thinning.
+
+  Rule 1's obligations otherwise bind the mask's **consumers**: M-A3 computes no masked statistic, so
+  it cannot violate them; it supplies what compliance requires.
 
 - **D9 — Task exit gate** (`docs/workflow.md:376`), referenced by every code task: the task's own
   test, `uv run ruff check src/ scripts/ tests/`, `uv run ruff format --check` (same paths),
@@ -102,12 +163,15 @@ Every code task carries the D9 gate in addition to the test named below.
 
 ### Phase 1 — the rule set and the bridge
 
-**1a — in-code precipitation `QcRuleSet`.** The two `frozen_sensor` instances (D3) with distinct
-`rule_version`s, plus `range_check` (D4), all at `time_step = 3600 s` (D5). Detection parameters on
-the parameter object (D6).
+**1a — in-code precipitation `QcRuleSet`.** The two `frozen_sensor` instances (D3) — stuck-value at
+`exclude_at_or_below = 5.0` / 12 h, long-zero-run with no exclusion at 168 h — with distinct
+`rule_version`s, plus `range_check` at `0.0 / 200.0` (D4), all at `time_step = 3600 s`. Detection
+parameters on the frozen parameter object (D6).
 *Verification:* `uv run pytest tests/unit/scripts/test_dhm_precip_ruleset.py` — `rules_for` returns
-**both** frozen_sensor instances for precipitation at 3600 s; a rule set whose `time_step` disagrees
-with the data yields **no** flags (the silent-skip trap of D5, asserted so it can never surprise us).
+**both** frozen_sensor instances for precipitation at 3600 s, with distinct `rule_version`s; a
+`0.2/0.4/0.6` tipping-bucket noise sequence is **not** flagged as stuck (the 5.0 floor doing its job);
+a mismatched `time_step` yields no flags at the checker level (characterisation only — the enforcing
+raise is task 2a's).
 
 **1b — normalised frame → `Observation`s.** Per-station chunking (D7); gap rows `MISSING`, delivered
 rows `RAW` (D2).
@@ -121,15 +185,20 @@ values are preserved**; constructing a null row as `RAW` raises (locking the inv
 `Stage1QualityChecker.check()`, collect flags, and reduce them to the `(station, timestamp)` drop set.
 *Verification (red-first):* `uv run pytest tests/unit/scripts/test_dhm_precip_mask.py` — synthetic
 frames reproducing each real defect signature: a **52-day zero run**, a **120-hour pinned non-zero
-block**, and a **sentinel**, each caught; a legitimate short dry spell **not** caught; a zero run
-**interrupted by a gap** yields two shorter runs, neither reaching the threshold (proving M-A2's
-null-fill severs runs as intended).
+block**, and a **sentinel**, each caught; a **167-hour** zero run (threshold − 1 h) **not** caught; a
+zero run **interrupted by a gap** yields two shorter runs, neither reaching the threshold (proving
+M-A2's null-fill severs runs as intended); a run spanning **30 Sep → 1 Oct** does not merge across
+seasons (D3b); a **winter** month of zeros is untouched (D3b's whole point); and a **`time_step`
+mismatch raises** the typed error rather than returning an empty mask (D5).
 
-**2b — removal accounting and the exclusion list.** *(depends on 2a)* Retained/removed per station and
-per season; the M-A6 exclusion list from the monsoon-retention rule (D8).
-*Verification:* `uv run pytest tests/unit/scripts/test_dhm_precip_mask.py` — a station losing most of
-its monsoon appears in the exclusion list; one losing little does not; the accounting sums back to the
-input population.
+**2b — removal accounting and the exclusion list.** *(depends on 2a)* The three-way accounting of
+D8 — `source_missing` / `qc_removed` / `retained_nonmissing` — per station, per season **and per hour
+of day**; the M-A6 exclusion list from the exact monsoon-retention predicate.
+*Verification:* `uv run pytest tests/unit/scripts/test_dhm_precip_mask.py` — the three categories
+reconcile **exactly** to the axis row count; a gap row counts as `source_missing` and **never** as
+retained; retention is computed over `retained_nonmissing + qc_removed` only; hour-of-day exposure is
+emitted for every station; a station just below the retention threshold is on the exclusion list and
+one just above is not.
 
 ### Phase 3 — wire and record
 
