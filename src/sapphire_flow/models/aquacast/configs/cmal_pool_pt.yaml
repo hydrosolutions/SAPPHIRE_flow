@@ -1,0 +1,398 @@
+name: global_daily_cmal_pooled
+output_dir: experiments/global_train/daily/cmal_pool_PT
+seed: 42
+resolutions:
+- daily
+supervised:
+- daily
+window:
+  lookback_days: 210
+  forecast_days: 15
+  issue_hours:
+  - 0
+daily:
+  targets:
+  - discharge
+  is_target_in_past: true
+  past_dynamic:
+  - discharge
+  future_dynamic:
+  - precipitation
+  - mean_temperature
+static_features:
+- area
+- slope
+- stream_gradient
+- lake_fraction
+- air_temperature
+- precip_annual
+- pet_annual
+- aet_annual
+- aridity_index
+- climate_moisture_index
+- snow_cover
+- snow_cover_max
+- glacier_fraction
+- cropland_fraction
+- pasture_fraction
+- clay_fraction
+- silt_fraction
+- sand_fraction
+- soil_organic_carbon
+- soil_water_content
+- karst_fraction
+- irrigated_fraction
+- p_mean
+- frac_snow
+- high_prec_freq
+- high_prec_dur
+- low_prec_freq
+- low_prec_dur
+- glc_pc_s01
+- glc_pc_s02
+- glc_pc_s03
+- glc_pc_s04
+- glc_pc_s05
+- glc_pc_s06
+- glc_pc_s07
+- glc_pc_s08
+- glc_pc_s09
+- glc_pc_s10
+- glc_pc_s11
+- glc_pc_s12
+- glc_pc_s13
+- glc_pc_s14
+- glc_pc_s15
+- glc_pc_s16
+- glc_pc_s17
+- glc_pc_s18
+- glc_pc_s19
+- glc_pc_s20
+- glc_pc_s21
+- glc_pc_s22
+data:
+  data_root: ../workspace/data
+  basins_files:
+    train: configs/basins/pooled_daily_train.txt
+    val: configs/basins/pooled_daily_val.txt
+    test: configs/basins/pooled_daily_test.txt
+  regions:
+  - camels_ind
+  - camels_nz
+  - camels_us
+  - caravan_camelsaus
+  - caravan_camelsbr
+  - caravan_camels_ch
+  - caravan_camelscl
+  - caravan_camels_cz
+  - caravan_camels_de
+  - caravan_camels_dk
+  - caravan_camels_es
+  - caravan_camelsgb
+  - caravan_grdc
+  - caravan_hysets
+  - caravan_israel
+  - caravan_lamah_ice
+  - lamah
+  region_configs:
+    camels_ind: configs/regions/camels_ind.yaml
+    camels_nz: configs/regions/camels_nz.yaml
+    camels_us: configs/regions/camels_us.yaml
+    caravan_camelsaus: configs/regions/caravan_camelsaus.yaml
+    caravan_camelsbr: configs/regions/caravan_camelsbr.yaml
+    caravan_camels_ch: configs/regions/caravan_camels_ch.yaml
+    caravan_camelscl: configs/regions/caravan_camelscl.yaml
+    caravan_camels_cz: configs/regions/caravan_camels_cz.yaml
+    caravan_camels_de: configs/regions/caravan_camels_de.yaml
+    caravan_camels_dk: configs/regions/caravan_camels_dk.yaml
+    caravan_camels_es: configs/regions/caravan_camels_es.yaml
+    caravan_camelsgb: configs/regions/caravan_camelsgb.yaml
+    caravan_grdc: configs/regions/caravan_grdc.yaml
+    caravan_hysets: configs/regions/caravan_hysets.yaml
+    caravan_israel: configs/regions/caravan_israel.yaml
+    caravan_lamah_ice: configs/regions/caravan_lamah_ice.yaml
+    lamah: configs/regions/lamah.yaml
+  splits:
+    val:
+    - '1981-01-01'
+    - '1984-12-31'
+    train:
+    - '1985-01-01'
+    - '2011-12-31'
+    test:
+    - '2012-01-01'
+    - '2018-12-31'
+    regions:
+      camels_ind:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2013-11-23'
+        test:
+        - '2013-11-24'
+        - '2020-11-23'
+      camels_nz:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2017-04-01'
+        test:
+        - '2017-04-02'
+        - '2024-04-01'
+      camels_us:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2007-12-31'
+        test:
+        - '2008-01-01'
+        - '2014-12-31'
+      caravan_camelsaus:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2015-02-28'
+        test:
+        - '2015-03-01'
+        - '2022-02-28'
+      caravan_camelsbr:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2011-12-31'
+        test:
+        - '2012-01-01'
+        - '2018-12-31'
+      caravan_camels_ch:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2013-12-31'
+        test:
+        - '2014-01-01'
+        - '2020-12-31'
+      caravan_camelscl:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2013-06-06'
+        test:
+        - '2013-06-07'
+        - '2020-06-06'
+      caravan_camels_cz:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2017-12-31'
+        test:
+        - '2018-01-01'
+        - '2024-12-31'
+      caravan_camels_de:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2013-12-31'
+        test:
+        - '2014-01-01'
+        - '2020-12-31'
+      caravan_camels_dk:
+        val:
+        - '1989-01-01'
+        - '1992-12-31'
+        train:
+        - '1993-01-01'
+        - '2012-12-31'
+        test:
+        - '2013-01-01'
+        - '2019-12-31'
+      caravan_camels_es:
+        val:
+        - '1991-10-01'
+        - '1995-09-30'
+        train:
+        - '1995-10-01'
+        - '2013-09-30'
+        test:
+        - '2013-10-01'
+        - '2020-09-30'
+      caravan_camelsgb:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2008-09-30'
+        test:
+        - '2008-10-01'
+        - '2015-09-30'
+      caravan_grdc:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2016-05-18'
+        test:
+        - '2016-05-19'
+        - '2023-05-18'
+      caravan_hysets:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2011-12-31'
+        test:
+        - '2012-01-01'
+        - '2018-12-31'
+      caravan_israel:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2013-09-30'
+        test:
+        - '2013-10-01'
+        - '2020-09-30'
+      caravan_lamah_ice:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2017-09-28'
+        test:
+        - '2017-09-29'
+        - '2024-09-28'
+      lamah:
+        val:
+        - '1981-01-01'
+        - '1984-12-31'
+        train:
+        - '1985-01-01'
+        - '2010-12-31'
+        test:
+        - '2011-01-01'
+        - '2017-12-31'
+  batch_size: 2056
+  num_workers: 4
+  stride: 7
+  validator_daily:
+    validation_mode: drop_input_nan_target_forecast
+  quality_control:
+    splits:
+    - train
+    - val
+    - test
+    plausible_cap: 500
+    suspicious_threshold: 300
+    z_max: 3.0
+  augmentations:
+  - feature: discharge
+    p_channel: 0.4
+    p_random: 0.25
+    element_probability: 0.1
+model:
+  type: composed
+  hidden_size: 512
+  dropout_token: 0.0
+  dropout_backbone: 0.4
+  tokenizer:
+    type: factored
+    static:
+      network: mlp
+      hidden_dims:
+      - 64
+      - 64
+      - 20
+      activation:
+      - tanh
+      - tanh
+      - linear
+      dropout: 0.3
+    dynamic:
+      network: identity
+  backbone:
+    type: lstm
+    num_layers: 1
+    dropout: 0.4
+  head:
+    type: cmal
+    num_components: 3
+training:
+  max_epochs: 21
+  precision: bf16-mixed
+  optimizer:
+    optimizer:
+      type: adamw
+      lr: 1e-3
+      weight_decay: 1e-6
+    scheduler:
+      type: multistep
+      milestones:
+      - 3
+      - 7
+      - 14
+      - 18
+      lrs:
+      - 5e-4
+      - 2e-4
+      - 1e-4
+      - 7e-5
+  loss:
+    function: cmal_nll
+    weights:
+      daily: 1.0
+    lambda_mse: 0.0
+  checkpoint:
+    load: last
+  early_stopping:
+    enabled: false
+  progress_bar: true
+  verbose_validation_every_n: 1
+  augmentations:
+    target_noise:
+      enabled: true
+      sigma: 0.05
+      sigma_abs: 0.005
+inference:
+  strategy:
+    kind: point
+  n_aleatoric: 200
+  quantile_levels:
+  - 0.05
+  - 0.1
+  - 0.25
+  - 0.5
+  - 0.75
+  - 0.9
+  - 0.95
+  stride: 3
+evaluation:
+  forecast_type: probabilistic
+  metrics:
+  - nse
+  - kge
+  - persistence_index
+  - coverage_50
+  - coverage_80
+  - coverage_90

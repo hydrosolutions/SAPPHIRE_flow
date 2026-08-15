@@ -86,6 +86,7 @@ default = true
 [tool.uv.sources]
 forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface", tag = "v0.1.19" }
 recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "9340e4025e05a72729d93d1d6881abcd5f298ff1" }
+aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "1937794c8a055d8f1b572cc7f18b4f50be0c436e" }
 
 [tool.ruff]
 target-version = "py311"
@@ -137,6 +138,13 @@ filename = "src/sapphire_flow/__init__.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
 
+[project.optional-dependencies]
+# Plan 159 D17: the aquacast shim lives in this repo, but its dependency
+# stack (torch, flashrnn, laplace-torch, curvlinops, sklearn, scipy,
+# matplotlib) must NOT land in the base install or the `default`/`ingest`
+# workers -- only in the forecast-cycle worker image (Plan 157 D13).
+aquacast = ["aquacast"]
+
 [project.entry-points."sapphire_flow.models"]
 linear_regression_daily = "sapphire_flow.models.linear_regression_daily:LinearRegressionDaily"
 climatology_fallback = "sapphire_flow.models.climatology_fallback:ClimatologyFallbackModel"
@@ -144,3 +152,7 @@ persistence_fallback = "sapphire_flow.models.persistence_fallback:PersistenceFal
 nwp_regression = "sapphire_flow.models.nwp_regression:NwpRegression"
 nwp_rainfall_runoff = "sapphire_flow.models.nwp_regression:NwpRainfallRunoff"
 seasonal_precip_runoff_regression = "sapphire_flow.models.nwp_regression:SeasonalPrecipRunoffRegression"
+# Plan 159 T1: resolves ONLY with the `aquacast` extra installed. Without it the import
+# fails and discover_models skips this entry point — which is why the base package stays
+# importable and every other model still discovers.
+cmal_pool_pt = "sapphire_flow.models.aquacast:CmalPoolPT"
