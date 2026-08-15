@@ -152,6 +152,41 @@ static:   50 names        artifact_scope: GROUP
    shim cannot fix this by lying about the number**; it needs the FI contract change, or a
    provider-side opt-in. Unchanged by anything here.
 
+## T0b — the extra is NOT resolution-neutral (found while building T1, 2026-08-15)
+
+**Adding the `aquacast` extra bumps shared dependencies for the BASE install too.** uv resolves a
+single lockfile across all extras, so aquacast's floors propagate to everyone:
+
+| package | main | with the extra declared |
+|---|---|---|
+| numpy | 2.4.3 | **2.5.2** (aquacast: `>=2.4.6`) |
+| polars | 1.39.3 | **1.43.2** (aquacast: `>=1.41.2`) |
+| scikit-learn | 1.8.0 | **1.9.0** (aquacast: `>=1.9.0`) |
+
+**Consequence measured:** the pyright ratchet fails with **+7 errors in files that have nothing to do
+with aquacast** — `models/linear_regression_daily.py`, `models/nwp_regression.py`,
+`services/hindcast.py`, `services/skill/diagrams.py`, `services/training_data.py`,
+`flows/run_hindcast.py`. Every one is a *"type is unknown / partially unknown"* diagnostic, i.e. new
+type-stub inference noise from the version bumps, **not** a logic regression. Verified by running the
+ratchet on clean `main` (**OK, 428 ≤ 459**) and on the branch (**FAILS**) with no other difference.
+
+**"Optional extra" therefore means optional at INSTALL time, not at RESOLVE time.** D17's cost is
+higher than recorded: taking the shim in-repo means the whole repo moves to aquacast's dependency
+floors.
+
+**Options, none free — owner decision before T1 lands:**
+1. **Accept the bumps** and regenerate the pyright baseline deliberately, documenting that +7 is
+   stub noise. Cheapest, but it raises the baseline permanently and blunts the ratchet.
+2. **Fix the newly-surfaced annotations** in those six files. Keeps the ratchet sharp; unbounded
+   effort in code unrelated to this plan.
+3. **Split the resolution** (uv conflict/extra markers) so the base install keeps today's versions.
+   Preserves the status quo, adds lockfile complexity.
+4. **Reopen D17** — an external distribution has its own lockfile and cannot move ours. The
+   trade-off that made in-repo attractive (testability) is unchanged; only the cost side moved.
+
+**Note this is orthogonal to the FI bump (T0),** which was verified version-neutral: the resolved FI
+commit was identical before and after.
+
 ## Tasks
 
 ### T1 — the aquacast shim (IN THIS REPO, optional extra — see D17)
