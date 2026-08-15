@@ -47,6 +47,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import structlog  # noqa: E402
 
+from sapphire_flow.types.datetime import ensure_utc  # noqa: E402
 from scripts.dhm_precip.domain_types import RunManifest, Station, View  # noqa: E402
 from scripts.dhm_precip.loader import (  # noqa: E402
     PRODUCTION_SOURCE_SHA256,
@@ -109,9 +110,16 @@ def run(out: Path) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return _exit_code_for(exc)
 
+    # D9/CLAUDE.md — a single injected clock reading, never a bare
+    # `datetime.now()` inside `compute_all`'s business logic; reused for
+    # both the manifest's timestamps and `Observation.created_at` (task 2a).
+    generated_at = datetime.now(UTC)
+
     raw = raw_view(long_frame)
     on_grid = on_grid_view(long_frame, DEFAULT_PARAMS)
-    tables = compute_all(raw, on_grid, inventory, stations, DEFAULT_PARAMS)
+    tables = compute_all(
+        raw, on_grid, inventory, stations, DEFAULT_PARAMS, now=ensure_utc(generated_at)
+    )
     values = extract_values(tables)
     declarations = table_declarations(tables)
 
@@ -123,10 +131,10 @@ def run(out: Path) -> int:
         frame.write_parquet(tables_dir / f"{field.name}.parquet")
 
     manifest = RunManifest(
-        run_id=datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+        run_id=generated_at.strftime("%Y%m%dT%H%M%SZ"),
         source_path=str(source_path),
         source_sha256=PRODUCTION_SOURCE_SHA256,
-        generated_at=datetime.now(UTC),
+        generated_at=generated_at,
         parameters=asdict(DEFAULT_PARAMS),
         counts_by_view={
             View.RAW.value: compute_view_counts(raw),

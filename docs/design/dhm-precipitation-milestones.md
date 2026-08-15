@@ -214,6 +214,33 @@ its monsoon is no longer usable and must be **excluded** from M-A6 rather than s
 acceptance cases for each defect signature, including the Aiselukhark 52-day run**, the Sindhuli
 stuck-high block and the Lukla sentinels.
 
+**COMPLETE 2026-08-15 (Plan 173).** Two `Stage1QualityChecker` passes over the M-A2 normalised frame
+(D3c): pass A (`range_check` 0–200 mm/h + a stuck-value `frozen_sensor`, `exclude_at_or_below=5.0`,
+12h, whole series) and pass B (a long-zero-run `frozen_sensor`, no exclusion floor, **168h (7 days) —
+measured, not the 12h inventory threshold**, run once per JJAS season, season scope applied outside
+the checker per D3b). `scripts/dhm_precip/qc_ruleset.py`, `observations.py`, `qc_mask.py`.
+
+**Run against the real pinned workbook (2026-08-15):** the mask holds **11,381** of 1,367,522
+normalised rows (17 of 26 stations touched). Sindhuli Madhi's stuck-high block: **exactly 120 hours**
+— matches the predicted duration precisely. Aiselukhark: **2,852 hours** across the 52-day run and its
+siblings. Lukla: **45** sentinel hours, matching the count `M-D1`/OD-3 already settled retrospectively.
+Worst JJAS retention: **Lete 0.8296**, then **Aiselukhark 0.8313**, **Nagarkot_AWS 0.9134** — matching
+the plan's pre-implementation measurement (D3) to 3 decimal places. Median JJAS retention **0.984**; no
+station below 0.75. **The M-A6 exclusion list is empty** — expected (D8), not a bug: the 0.50 floor
+never binds on this delivery. The cross-classified `(station, season, hour_of_day, category)`
+accounting reconciles exactly to the 1,367,522-row axis. Locked in
+`tests/integration/test_dhm_precip_reproduction.py::TestQcMaskAgainstTheRealWorkbook` (workbook-gated
+— the M-A1 reproduction gate evaluates unmasked statistics by design and would pass against an empty
+mask, so these assertions run against real data specifically, not just synthetic fixtures).
+
+Rule provenance (id, `rule_version`, thresholds, scope, per pass) ships as its own artefact
+(`qc_rule_provenance`) — the mask reduction collapses flags to timestamps and discards which rule
+fired, so M-I2 needs this table to package the dataset reproducibly.
+
+**Out of scope here, as planned:** recomputing M-A1's 14 `withdrawn_unreproducible` expectations
+(M-A6/M-A7's job) and adjudicating which zero runs are real (declined by design — wholesale removal).
+The per-family citation ban on those withdrawn expectations stands until M-A6/M-A7 land.
+
 ### M-A4 · ERA5-Land acquisition
 **Depends: —** Start now. **Owner 2026-08-12: use a direct point/grid route rather than registering
 Gateway polygons.** *(Supersedes the polygon-registration plan — see OD-1.)*

@@ -25,6 +25,25 @@ from scripts.dhm_precip.manifest_io import read_manifest
 from scripts.dhm_precip.pipeline import ComputedTables
 
 
+def _axis_pairs_from_schema(frame: pl.DataFrame) -> set[tuple[str, str]]:
+    """Mirrors `pipeline.table_declarations`'s own derivation exactly: read
+    the `view`/`axis_status` columns' `Enum` CATEGORIES (schema-level), not
+    `.unique()` over row data — the only signal that survives a genuinely
+    empty (zero-row) table, e.g. an empty exclusion list or a clean mask
+    (major-3)."""
+    view_dtype = frame.schema["view"]
+    axis_dtype = frame.schema["axis_status"]
+    if isinstance(view_dtype, pl.Enum) and isinstance(axis_dtype, pl.Enum):
+        return {
+            (v, a)
+            for v in view_dtype.categories.to_list()
+            for a in axis_dtype.categories.to_list()
+        }
+    return {
+        (row[0], row[1]) for row in frame.select("view", "axis_status").unique().rows()
+    }
+
+
 @pytest.fixture()
 def synthetic_run_inputs(tmp_path, monkeypatch):
     rng = random.Random(158)
@@ -82,12 +101,30 @@ class TestRunnerExitsZeroAndWritesArtefacts:
         manifest = read_manifest(out / "results.json")
         for table in manifest.tables:
             frame = pl.read_parquet(out / "tables" / f"{table.name}.parquet")
-            observed = {
-                (row[0], row[1])
-                for row in frame.select("view", "axis_status").unique().rows()
-            }
+            observed = _axis_pairs_from_schema(frame)
             declared = {(v.value, a.value) for v, a in table.view_axis_pairs}
             assert observed == declared, table.name
+
+    def test_a_genuinely_empty_exclusion_list_still_declares_its_axis_pair(
+        self, synthetic_run_inputs, tmp_path
+    ) -> None:
+        # major-3: `synthetic_run_inputs` injects no QC defects, so no
+        # station crosses the JJAS retention floor and `qc_exclusion_list`
+        # is genuinely zero-row. It must STILL declare (ON_GRID,
+        # NORMALIZED) — a row-derived declaration would silently lose it.
+        # (`qc_mask` is covered separately, at the pipeline unit level,
+        # since it is NOT reliably empty for this fixture's random data.)
+        out = tmp_path / "out"
+        run_module.run(out)
+        manifest = read_manifest(out / "results.json")
+        declared = {t.name: t.view_axis_pairs for t in manifest.tables}
+        frame = pl.read_parquet(out / "tables" / "qc_exclusion_list.parquet")
+        assert frame.height == 0, (
+            "expected qc_exclusion_list to be empty in the no-defects "
+            "fixture (test assumption invalid, not the declaration bug)"
+        )
+        pairs = {(v.value, a.value) for v, a in declared["qc_exclusion_list"]}
+        assert pairs == {("ON_GRID", "NORMALIZED")}
 
     def test_manifest_records_the_injected_digest_and_source_path(
         self, synthetic_run_inputs, tmp_path
@@ -139,10 +176,7 @@ class TestNormalisedAxisArtefacts:
         manifest = read_manifest(out / "results.json")
         declared = {t.name: t.view_axis_pairs for t in manifest.tables}
         frame = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
-        observed = {
-            (row[0], row[1])
-            for row in frame.select("view", "axis_status").unique().rows()
-        }
+        observed = _axis_pairs_from_schema(frame)
         expected = {(v.value, a.value) for v, a in declared["normalised_axis"]}
         assert observed == expected
 
@@ -166,6 +200,95 @@ class TestNormalisedAxisArtefacts:
         frame = pl.read_parquet(out / "tables" / "normalisation_provenance.parquet")
         assert frame["accumulation_convention"][0] == "period_ending"
         assert "M-D3" in frame["period_ending_source"][0]
+
+
+@pytest.fixture()
+def synthetic_run_inputs_with_qc_defects(tmp_path, monkeypatch):
+    """Plan 173 (M-A3, task 3a) — a synthetic workbook whose injected defects
+    are strong enough to trip BOTH mask passes: a 20h stuck-high block
+    (above `minimum_run_duration_hours=12`) and a 170h JJAS zero run (above
+    `qc_mask_long_zero_run_min_consecutive_hours=168`), entirely within June
+    (JJAS) so the season scope doesn't exclude it."""
+    rng = random.Random(173)
+    empty = (EXPECTED_WORKBOOK_COLUMNS[5], EXPECTED_WORKBOOK_COLUMNS[6])
+    zero_run_station = EXPECTED_WORKBOOK_COLUMNS[10]
+    frame = build_synthetic_workbook_frame(
+        start=datetime(2024, 6, 1),
+        n_hours=200,
+        rng=rng,
+        empty_stations=empty,
+        stuck_high_run_hours=20,
+        zero_run_station=zero_run_station,
+        zero_run_hours=170,
+    )
+    xlsx_path = tmp_path / "synthetic.xlsx"
+    write_synthetic_workbook(xlsx_path, frame)
+    usable = tuple(c for c in EXPECTED_WORKBOOK_COLUMNS if c not in empty)
+    coords_path = tmp_path / "coords.csv"
+    write_synthetic_coordinates(coords_path, usable_columns=usable)
+
+    digest = compute_sha256(xlsx_path)
+    monkeypatch.setattr(run_module, "PRODUCTION_SOURCE_SHA256", digest)
+    monkeypatch.setenv("DHM_PRECIP_XLSX", str(xlsx_path))
+    monkeypatch.setenv("DHM_PRECIP_COORDS", str(coords_path))
+    return {
+        "tmp_path": tmp_path,
+        "zero_run_station": zero_run_station.removesuffix(" (mm)"),
+    }
+
+
+class TestQcMaskArtefacts:
+    """Plan 173 (M-A3, task 3a) — the runner writes all four M-A3 artefacts
+    alongside the existing ones, declared with the NORMALIZED axis-status
+    pattern (Plan 172)."""
+
+    def test_mask_accounting_exclusion_and_provenance_are_declared_normalized(
+        self, synthetic_run_inputs_with_qc_defects, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        manifest = read_manifest(out / "results.json")
+        declared = {t.name: t.view_axis_pairs for t in manifest.tables}
+        for name in (
+            "qc_mask",
+            "qc_removal_accounting",
+            "qc_exclusion_list",
+            "qc_rule_provenance",
+        ):
+            assert name in declared
+            pairs = {(v.value, a.value) for v, a in declared[name]}
+            assert pairs == {("ON_GRID", "NORMALIZED")}, name
+
+    def test_the_mask_is_non_empty_and_catches_the_injected_defects(
+        self, synthetic_run_inputs_with_qc_defects, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        mask = pl.read_parquet(out / "tables" / "qc_mask.parquet")
+        assert mask.height > 0
+        stations_masked = set(mask["station"].unique().to_list())
+        assert (
+            synthetic_run_inputs_with_qc_defects["zero_run_station"] in stations_masked
+        )
+
+    def test_removal_accounting_reconciles_to_the_normalised_axis_row_count(
+        self, synthetic_run_inputs_with_qc_defects, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        accounting = pl.read_parquet(out / "tables" / "qc_removal_accounting.parquet")
+        axis = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
+        assert accounting["count"].sum() == axis.height
+
+    def test_rule_provenance_records_three_rules_across_two_passes(
+        self, synthetic_run_inputs_with_qc_defects, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        provenance = pl.read_parquet(out / "tables" / "qc_rule_provenance.parquet")
+        assert provenance.height == 3
+        assert provenance["rule_version"].n_unique() == 3
+        assert set(provenance["pass_name"].to_list()) == {"A", "B"}
 
 
 class TestRunnerExitCodes:

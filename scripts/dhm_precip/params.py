@@ -132,6 +132,31 @@ class DhmPrecipParams:
     zero runs are detected within JJAS windows only, never across a
     season boundary (season_boundary)."""
 
+    # --- fit-for-purpose QC mask (Plan 173, M-A3, D3/D4/D8) ---
+    mam_months: tuple[int, ...] = (3, 4, 5)
+    """D8 — pre-monsoon, the conventional Nepali four-season split's third
+    named bucket (with `jjas_months`/`djf_months` already declared above and
+    `on_months` below)."""
+    on_months: tuple[int, ...] = (10, 11)
+    """D8 — post-monsoon."""
+    qc_mask_range_check_value_min_mm: float = 0.0
+    """D4 — a physical-impossibility floor, rejecting the `-9999999` sentinel."""
+    qc_mask_range_check_value_max_mm: float = 200.0
+    """D4 — comfortably unreachable rather than discriminating (Adhikari et
+    al. 2025: >40 mm/h is common in Nepal, not a ceiling); every value above
+    this becomes QC_FAILED, so a tight bound would mask real extremes."""
+    qc_mask_long_zero_run_min_consecutive_hours: int = 168
+    """D3 — measured, not asserted: 7 days catches every documented defect
+    (shortest is Biratnagar at 12.2 days) while costing the median station
+    only 1.6% of JJAS. Distinct from `minimum_run_duration_hours`, which is
+    M-A1's *inventory* threshold — right for reporting candidates,
+    catastrophic for wholesale removal."""
+    minimum_jjas_retained_fraction: float = 0.50
+    """D8 — a station whose JJAS `retained_nonmissing / (retained_nonmissing
+    + qc_removed)` falls STRICTLY below this is excluded from M-A6 (equality
+    passes). Measured worst case at the 7-day threshold is 0.830 (Lete) — this
+    is a safeguard against a pathological case, not a filter expected to fire."""
+
     def __post_init__(self) -> None:
         if not (self.wet_threshold_mm_per_h > 0.0):
             raise ValueError(
@@ -148,6 +173,32 @@ class DhmPrecipParams:
             raise ValueError("minimum_run_duration_hours must be >= 1")
         if not (0.0 < self.period_completeness_min_fraction <= 1.0):
             raise ValueError("period_completeness_min_fraction must be in (0, 1]")
+        if (
+            self.qc_mask_range_check_value_min_mm
+            >= self.qc_mask_range_check_value_max_mm
+        ):
+            raise ValueError(
+                "qc_mask_range_check_value_min_mm must be < "
+                "qc_mask_range_check_value_max_mm, got "
+                f"{self.qc_mask_range_check_value_min_mm} >= "
+                f"{self.qc_mask_range_check_value_max_mm}"
+            )
+        if self.qc_mask_long_zero_run_min_consecutive_hours < 1:
+            raise ValueError("qc_mask_long_zero_run_min_consecutive_hours must be >= 1")
+        if not (0.0 <= self.minimum_jjas_retained_fraction <= 1.0):
+            raise ValueError("minimum_jjas_retained_fraction must be in [0, 1]")
+        # D8 — the four named seasons must exhaustively and disjointly cover
+        # the twelve calendar months; a gap or overlap would let an axis row
+        # land in zero or two season bins, breaking the reconciliation
+        # invariant every downstream accounting table depends on.
+        season_months = (
+            self.mam_months + self.jjas_months + self.on_months + self.djf_months
+        )
+        if sorted(season_months) != list(range(1, 13)):
+            raise ValueError(
+                "mam_months + jjas_months + on_months + djf_months must "
+                f"partition 1..12 exactly, got {sorted(season_months)}"
+            )
 
 
 DEFAULT_PARAMS = DhmPrecipParams()
