@@ -88,6 +88,16 @@ def per_year_totals_with_completeness(
         )
         .join(slots_per_year, on="year")
     )
+    # D2b (Plan 172) — Polars' .sum() over an all-null group returns 0.0,
+    # not null; a station-year with zero retained hours must report a
+    # null total, never a fabricated 0.0 mm (D2's null-vs-zero guarantee
+    # surviving aggregation).
+    per_year = per_year.with_columns(
+        pl.when(pl.col("retained_hours") == 0)
+        .then(None)
+        .otherwise(pl.col("annual_total_mm"))
+        .alias("annual_total_mm")
+    )
     return _tag(
         per_year.with_columns(
             (pl.col("retained_hours") / pl.col("possible_hours")).alias(

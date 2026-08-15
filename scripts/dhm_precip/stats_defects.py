@@ -134,4 +134,14 @@ def annual_totals(on_grid: pl.DataFrame, params: DhmPrecipParams) -> pl.DataFram
         pl.col("value_mm").sum().alias("annual_total_mm"),
         pl.col("value_mm").is_not_null().sum().alias("hours_present"),
     )
+    # D2b (Plan 172) — Polars' .sum() over an all-null group returns 0.0,
+    # not null; a station-year with zero retained hours must report a
+    # null total, never a fabricated 0.0 mm (D2's null-vs-zero guarantee
+    # surviving aggregation).
+    per_year = per_year.with_columns(
+        pl.when(pl.col("hours_present") == 0)
+        .then(None)
+        .otherwise(pl.col("annual_total_mm"))
+        .alias("annual_total_mm")
+    )
     return _tag(per_year)

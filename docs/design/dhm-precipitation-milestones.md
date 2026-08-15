@@ -154,6 +154,38 @@ a stated assumption with a ±1 h phase-uncertainty flag carried downstream.
 
 **Exit:** normalised dataset + provenance + passing mass-conservation check.
 
+**COMPLETE 2026-08-14 (Plan 172).** M-D3 answered the open questions before implementation started
+(period-ending, no assumption needed; the 3,350 off-grid rows are DHM processing errors, excluded and
+counted rather than converted), so this milestone shrank to exactly D1's materialisation problem: **568
+hours are missing from the workbook for every station** (not a per-station reporting gap — the loader
+already carries those as NULL rows) — `scripts/dhm_precip/normalise.py`'s `normalise_hourly_axis`
+reindexes the ON_GRID view onto one common hourly axis per station (the runner's validated 26-station
+set, D6b), filling every missing `(station, hour)` cell with NULL, never `0.0` (D2). A delivered
+`(station, timestamp)` key must be unique — `DuplicateDeliveredRowError` otherwise, and the join itself
+is `validate="1:1"` — so a duplicate can never silently fan out into extra output rows. Conservation is
+proved by row identity — not summation, which review found is itself arithmetic and not
+order-independent (D5) — asserted in code via `assert_row_identity_conservation`, which the runner calls
+unconditionally: a violation halts the run. That assertion checks BOTH directions (every delivered
+identity survives into the output, and every preserved identity in the output traces back to a real
+delivered row via anti-joins, not a row-count-plus-forward-join check that a drop-one/duplicate-another
+corruption can defeat) and compares `value_mm` by IEEE bit pattern, not `==`/`eq_missing` (which treat
+`0.0` and `-0.0` as the same value; a bit-identical check does not). A post-implementation review round
+found and fixed both gaps. The aggregation guard (D2b) closes the same null-vs-zero
+trap in `stats_climatology.per_year_totals_with_completeness` and `stats_defects.annual_totals`, both
+of which previously reported a fabricated `0.0 mm` total for a wholly-unreported station-year (Polars'
+`.sum()` over an all-null group returns `0.0`, not null). A new `AxisStatus.NORMALIZED` tags the two new
+runner artefacts, `normalised_axis` and `normalisation_provenance`.
+
+**Run against the real pinned workbook (2026-08-14):** 52,597 hourly slots span the record; 568 of them
+have no row from any of the 26 live stations (52,029 delivered ON_GRID rows), materialising as
+568 × 26 = 14,768 inserted NULL rows. The off-grid provenance grains match D3's two named populations
+exactly: **3,350** `off_grid_source_timestamp_rows` and **6,633** `off_grid_non_null_observations`. The
+row-identity conservation assertion passed without exception. These totals — plus 52,597 unique hourly
+slots, 1,367,522 (= 52,597 × 26) normalised rows, 14,768 inserted NULL rows and unique
+`(station, timestamp)` keys — are regression-locked in
+`tests/integration/test_dhm_precip_reproduction.py::TestNormalisedAxisMatchesTheRecordedRealWorkbookTotals`
+(gated on `DHM_PRECIP_XLSX`, per constraint 1).
+
 ### M-A3 · Fit-for-purpose QC mask
 **Depends: M-A2, M-I1.** *(OD-3: this milestone is M-I1's first consumer.)* Blocks M-A6, M-A7, M-I2. *(Depends on M-A2, not M-A1: run detection needs a canonical
 hourly axis. On unnormalised rows, duplicated/off-grid/ambiguous timestamps make "consecutive"
@@ -397,6 +429,20 @@ in the plan that fail against current `main`** and pass after, with the existing
 **No longer ships unexercised (OD-3).** M-A3 calls `Stage1QualityChecker` with an in-code
 precipitation rule set over 26 stations × 6 years, so these rules face real data immediately — the
 drift risk that motivated the original split is closed without adding a single inert config row.
+
+**COMPLETE 2026-08-14 (Plan 172).** `_apply_frozen_sensor` (`services/qc.py:92`) gained the scalar
+`exclude_at_or_below` threshold (D8): a value at or below it never starts or extends a frozen run, so
+setting it to `0.0` lets precipitation's normal dry spells pass while still catching a stuck sensor
+(Sindhuli Madhi's ~72 mm pinned block). Absent from `thresholds`, **which observations get flagged,
+with what status and detail, is unchanged** — proved by an unmodified existing discharge case plus a
+new one. *Not* bit-for-bit, and the difference is deliberate: D8b also corrects the emitted
+`rule_version`, so existing configured rules now stamp their own `"1.0.0"` where the hard-coded
+constant previously wrote `"1.0"`. Flag *metadata* changes; flag *selection* does not. The function also now stamps
+`rule.rule_version` on every emitted flag instead of the hard-coded module constant `_RULE_VERSION`
+(D8b) — a flag can finally record which rule variant produced it, and existing configurations (whose
+`rule_version` already matches what they intended) keep their meaning; only `frozen_sensor` was
+touched, the other four rule functions still use `_RULE_VERSION` (out of scope here). Locked in
+`tests/unit/services/test_qc.py` (`TestFrozenSensorExclusion`, `TestFrozenSensorRuleVersion`).
 
 ### M-I2 · Reference dataset packaging
 **Depends: M-D1, M-A3.** Small.

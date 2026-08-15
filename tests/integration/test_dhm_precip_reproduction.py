@@ -164,3 +164,48 @@ class TestArtefactGateCatchesTampering:
 
         with pytest.raises(ExpectationCoverageError, match=withdrawn_id):
             validate_expectation_coverage(manifest, expectations)
+
+
+class TestNormalisedAxisMatchesTheRecordedRealWorkbookTotals:
+    """M-A2 (Plan 172) — the real-workbook totals recorded in
+    `docs/design/dhm-precipitation-milestones.md` ("Run against the real
+    pinned workbook (2026-08-14)") are only ever asserted at reduced
+    precision elsewhere (`axis_off_grid_observation_fraction` rounds
+    `6,633 / 1,039,476` to 3 decimals; the normalised dataset's own row/gap
+    counts are not asserted anywhere). Lock the exact real numbers here so a
+    future regression in the reindex or the off-grid diagnostics cannot
+    silently change them without failing this gate.
+    """
+
+    def test_provenance_off_grid_counts_match_the_recorded_totals(
+        self, tmp_path
+    ) -> None:
+        out = tmp_path / "m_a2_out"
+        run_pipeline(out)
+        provenance = pl.read_parquet(
+            out / "tables" / "normalisation_provenance.parquet"
+        )
+        assert provenance["off_grid_source_timestamp_rows"][0] == 3350
+        assert provenance["off_grid_non_null_observations"][0] == 6633
+
+    def test_normalised_axis_row_and_gap_counts_match_the_recorded_totals(
+        self, tmp_path
+    ) -> None:
+        # 52,597 hourly slots x 26 live stations; 568 of those slots have no
+        # row from any station, materialising as 568 x 26 = 14,768 inserted
+        # NULL rows (D2: null source_row_index).
+        out = tmp_path / "m_a2_out"
+        run_pipeline(out)
+        axis = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
+
+        assert axis["timestamp"].n_unique() == 52597
+        assert axis.height == 52597 * 26
+        assert axis.filter(pl.col("source_row_index").is_null()).height == 14768
+
+    def test_normalised_axis_has_unique_station_hour_keys(self, tmp_path) -> None:
+        out = tmp_path / "m_a2_out"
+        run_pipeline(out)
+        axis = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
+
+        key_counts = axis.group_by(["station", "timestamp"]).len()
+        assert key_counts["len"].max() == 1

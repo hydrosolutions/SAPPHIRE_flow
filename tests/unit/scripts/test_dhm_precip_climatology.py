@@ -86,6 +86,29 @@ class TestPerYearTotalsWithCompleteness:
         filler_row = result.filter(pl.col("station") == "Filler")
         assert filler_row["period_complete"][0] is True
 
+    def test_an_all_null_station_year_yields_a_null_total_not_zero(self) -> None:
+        # D2b — Polars' .sum() over an all-null group returns 0.0, not
+        # null; a station-year with zero retained hours must report a
+        # NULL annual_total_mm, never a fabricated 0.0 mm (D2's
+        # null-vs-zero guarantee surviving aggregation). A second,
+        # genuinely-reporting station forces `value_mm`'s dtype to
+        # Float64 — an all-None-list column would infer dtype Null and
+        # trivially sum to null regardless of the fix, masking the trap.
+        rows = [
+            {
+                "station": "AllMissing",
+                "timestamp": datetime(2024, 1, 1, h),
+                "value_mm": None,
+            }
+            for h in range(5)
+        ] + [
+            {"station": "Other", "timestamp": datetime(2024, 1, 1, 0), "value_mm": 5.0},
+        ]
+        result = per_year_totals_with_completeness(_on_grid_frame(rows), DEFAULT_PARAMS)
+        row = result.filter(pl.col("station") == "AllMissing")
+        assert row["retained_hours"][0] == 0
+        assert row["annual_total_mm"][0] is None
+
 
 def _coords(*names: str) -> StationCoordinateTable:
     return StationCoordinateTable(

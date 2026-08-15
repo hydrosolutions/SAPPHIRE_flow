@@ -229,3 +229,28 @@ class TestDailyAndAnnualTotals:
         ]
         result = annual_totals(_on_grid_frame(rows), DEFAULT_PARAMS)
         assert result["annual_total_mm"][0] == pytest.approx(120.0)
+
+    def test_an_all_null_station_year_yields_a_null_total_not_zero(self) -> None:
+        # D2b — Polars' .sum() over an all-null group returns 0.0, not
+        # null; a wholly-unreported station-year must report NULL, never a
+        # fabricated 0.0 mm total. A second, genuinely-reporting station
+        # forces `value_mm`'s dtype to Float64 (a frame with ONLY nulls
+        # would infer dtype Null and trivially sum to null regardless of
+        # the fix, masking the trap) — this is the real-world shape: one
+        # silent station beside others that do report.
+        rows = [
+            {
+                "station": "AllMissing",
+                "timestamp": datetime(2023, m, 1),
+                "value_mm": None,
+            }
+            for m in range(1, 13)
+        ] + [
+            {"station": "Other", "timestamp": datetime(2023, 1, 1), "value_mm": 5.0},
+        ]
+        result = annual_totals(_on_grid_frame(rows), DEFAULT_PARAMS)
+        row = result.filter(pl.col("station") == "AllMissing")
+        assert row["hours_present"][0] == 0
+        assert row["annual_total_mm"][0] is None
+        other_row = result.filter(pl.col("station") == "Other")
+        assert other_row["annual_total_mm"][0] == pytest.approx(5.0)

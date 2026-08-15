@@ -60,6 +60,27 @@ def _rule(rule_id: str, thresholds: dict[str, float]) -> QcRuleParams:
     )
 
 
+_PRECIP = "precipitation"
+
+
+def _precip_obs(value: float, hours: int = 0) -> Observation:
+    """M-I1 tests must use the REAL parameter. A review finding: they used the
+    module default `discharge`, so a precipitation-specific regression could
+    pass every M-I1 test — the checker matches rules to observations BY
+    parameter, so the wrong one exercises the wrong path."""
+    return _make_obs(value, hours, parameter=_PRECIP)
+
+
+def _precip_rule(rule_id: str, thresholds: dict[str, float]) -> QcRuleParams:
+    return QcRuleParams(
+        rule_id=rule_id,
+        rule_version="1.0",
+        parameter=_PRECIP,
+        time_step=_STEP,
+        thresholds=thresholds,
+    )
+
+
 def _rule_set(*rules: QcRuleParams) -> QcRuleSet:
     return QcRuleSet(version="1.0", rules=tuple(rules))
 
@@ -174,6 +195,116 @@ class TestFrozenSensor:
         )
         result = checker.check(obs, rs, [], [])
         assert all(result[o.id] == [] for o in obs)
+
+
+class TestFrozenSensorExclusion:
+    """M-I1 (Plan 172, D8) — `exclude_at_or_below` lets precipitation's
+    frozen_sensor ignore normal dry spells while still catching a stuck
+    sensor. D8: absent from thresholds, behaviour is unchanged (D8's
+    backwards-compatibility case)."""
+
+    def test_nonzero_120_hour_run_is_flagged_even_with_exclusion_present(
+        self,
+    ) -> None:
+        checker = Stage1QualityChecker()
+        # Sindhuli Madhi's stuck-high signature: ~72 mm pinned for 120 hours.
+        obs = [_precip_obs(72.0, i) for i in range(120)]
+        rs = _rule_set(
+            _precip_rule(
+                "frozen_sensor",
+                {
+                    "tolerance": 0.5,
+                    "min_consecutive": 12,
+                    "exclude_at_or_below": 0.0,
+                },
+            )
+        )
+        result = checker.check(obs, rs, [], [])
+        # Assert on ALL 120, not just from index 11: the rule backfills the
+        # whole run once min_consecutive is reached, so skipping the first 11
+        # would let broken backfilling pass unnoticed (review finding).
+        assert all(result[o.id] for o in obs), "every observation in the run is flagged"
+        assert all(result[o.id][0].rule_id == "frozen_sensor" for o in obs)
+
+    def test_50_day_zero_run_is_not_flagged_when_excluded(self) -> None:
+        checker = Stage1QualityChecker()
+        n_hours = 50 * 24
+        obs = [_precip_obs(0.0, i) for i in range(n_hours)]
+        rs = _rule_set(
+            _precip_rule(
+                "frozen_sensor",
+                {
+                    "tolerance": 1e-9,
+                    "min_consecutive": 12,
+                    "exclude_at_or_below": 0.0,
+                },
+            )
+        )
+        result = checker.check(obs, rs, [], [])
+        assert all(result[o.id] == [] for o in obs)
+
+    def test_existing_discharge_case_unchanged_when_threshold_absent(
+        self,
+    ) -> None:
+        # D8: identical to test_frozen_values_suspect above, with no
+        # `exclude_at_or_below` key at all — today's behaviour exactly.
+        checker = Stage1QualityChecker()
+        obs = [_make_obs(10.0, i) for i in range(4)]
+        rs = _rule_set(
+            _rule("frozen_sensor", {"tolerance": 0.01, "min_consecutive": 3})
+        )
+        result = checker.check(obs, rs, [], [])
+        flagged = [o for o in obs if result[o.id]]
+        assert len(flagged) >= 3
+        for o in flagged:
+            assert result[o.id][0].status == QcStatus.QC_SUSPECT
+            assert result[o.id][0].rule_id == "frozen_sensor"
+
+    def test_zero_does_not_extend_a_preceding_nonzero_run(self) -> None:
+        # A single 0.0 between two 4-length non-zero blocks, with
+        # min_consecutive=5: NEITHER block alone reaches the threshold, so a
+        # correct implementation (D8: excluded values "never start or
+        # extend" a run) flags nothing at all. An implementation that
+        # bridges the excluded 0.0 instead of breaking the run on it would
+        # see one continuous 4+1+4=9-long run and flag most of it — this
+        # test only passes if every single observation stays unflagged.
+        checker = Stage1QualityChecker()
+        values = [10.0] * 4 + [0.0] + [10.0] * 4
+        obs = [_make_obs(v, i) for i, v in enumerate(values)]
+        rs = _rule_set(
+            _rule(
+                "frozen_sensor",
+                {
+                    "tolerance": 0.01,
+                    "min_consecutive": 5,
+                    "exclude_at_or_below": 0.0,
+                },
+            )
+        )
+        result = checker.check(obs, rs, [], [])
+        assert all(result[o.id] == [] for o in obs)
+
+
+class TestFrozenSensorRuleVersion:
+    """D8b — the flag must carry `rule.rule_version`, not the module's
+    hard-coded constant, so a flag can record which rule variant produced
+    it."""
+
+    def test_emits_the_rules_own_rule_version(self) -> None:
+        checker = Stage1QualityChecker()
+        obs = [_make_obs(10.0, i) for i in range(4)]
+        rule = QcRuleParams(
+            rule_id="frozen_sensor",
+            rule_version="2.1.0-precip-exclusion",
+            parameter=_PARAM,
+            time_step=_STEP,
+            thresholds={"tolerance": 0.01, "min_consecutive": 3},
+        )
+        rs = _rule_set(rule)
+        result = checker.check(obs, rs, [], [])
+        flags = [f for o in obs for f in result[o.id]]
+        assert flags
+        assert all(f.rule_version == "2.1.0-precip-exclusion" for f in flags)
 
 
 class TestSpike:

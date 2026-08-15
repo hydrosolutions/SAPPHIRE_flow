@@ -113,6 +113,61 @@ class TestRunnerExitsZeroAndWritesArtefacts:
         assert declared_names == all_names
 
 
+class TestNormalisedAxisArtefacts:
+    """Task 3a (M-A2) — the normalised dataset and its provenance are
+    written and declared like every other table; the manifest declaration
+    round-trips against what is actually on disk."""
+
+    def test_normalised_axis_and_provenance_are_declared_with_normalized_status(
+        self, synthetic_run_inputs, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        manifest = read_manifest(out / "results.json")
+        declared = {t.name: t.view_axis_pairs for t in manifest.tables}
+        assert "normalised_axis" in declared
+        assert "normalisation_provenance" in declared
+        for name in ("normalised_axis", "normalisation_provenance"):
+            pairs = {(v.value, a.value) for v, a in declared[name]}
+            assert pairs == {("ON_GRID", "NORMALIZED")}, name
+
+    def test_normalised_axis_declaration_round_trips_against_the_parquet(
+        self, synthetic_run_inputs, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        manifest = read_manifest(out / "results.json")
+        declared = {t.name: t.view_axis_pairs for t in manifest.tables}
+        frame = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
+        observed = {
+            (row[0], row[1])
+            for row in frame.select("view", "axis_status").unique().rows()
+        }
+        expected = {(v.value, a.value) for v, a in declared["normalised_axis"]}
+        assert observed == expected
+
+    def test_normalised_axis_station_set_matches_the_usable_columns(
+        self, synthetic_run_inputs, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        frame = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
+        empty = {EXPECTED_WORKBOOK_COLUMNS[5], EXPECTED_WORKBOOK_COLUMNS[6]}
+        expected_stations = {
+            c.removesuffix(" (mm)") for c in EXPECTED_WORKBOOK_COLUMNS if c not in empty
+        }
+        assert set(frame["station"].unique().to_list()) == expected_stations
+
+    def test_normalisation_provenance_records_the_accumulation_convention(
+        self, synthetic_run_inputs, tmp_path
+    ) -> None:
+        out = tmp_path / "out"
+        run_module.run(out)
+        frame = pl.read_parquet(out / "tables" / "normalisation_provenance.parquet")
+        assert frame["accumulation_convention"][0] == "period_ending"
+        assert "M-D3" in frame["period_ending_source"][0]
+
+
 class TestRunnerExitCodes:
     def test_unset_source_path_exits_2(self, tmp_path, monkeypatch) -> None:
         monkeypatch.delenv("DHM_PRECIP_XLSX", raising=False)

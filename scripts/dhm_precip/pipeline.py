@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from scripts.dhm_precip import (
+    normalise,
     stats_axis,
     stats_climatology,
     stats_coherence,
@@ -24,6 +25,7 @@ from scripts.dhm_precip import (
 from scripts.dhm_precip.domain_types import (
     AxisStatus,
     LongFrameInventory,
+    Station,
     StationCoordinateTable,
     TableDeclaration,
     View,
@@ -72,6 +74,45 @@ class ComputedTables:
     modal_intensity: pl.DataFrame
     interannual_stability: pl.DataFrame
     loo_tail_prediction: pl.DataFrame
+    normalised_axis: pl.DataFrame
+    normalisation_provenance: pl.DataFrame
+
+
+def _normalised_axis_and_provenance(
+    raw: pl.DataFrame,
+    on_grid: pl.DataFrame,
+    stations: StationCoordinateTable,
+    params: DhmPrecipParams,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Plan 172 (M-A2) — the canonical gap-explicit hourly axis plus its
+    provenance record. `live_stations` is D6b's already-validated D12
+    population (never the workbook's raw 37-column set). D5's row-identity
+    conservation is asserted here in code — a violation halts the run."""
+    live_stations = frozenset(Station(s) for s in stations.stations)
+    normalised = normalise.normalise_hourly_axis(on_grid, live_stations)
+    normalise.assert_row_identity_conservation(on_grid, normalised, live_stations)
+    provenance = normalise.build_provenance(raw, params)
+
+    normalised_tagged = normalised.with_columns(
+        pl.lit(View.ON_GRID.value).alias("view"),
+        pl.lit(AxisStatus.NORMALIZED.value).alias("axis_status"),
+    )
+    provenance_tagged = pl.DataFrame(
+        {
+            "off_grid_source_timestamp_rows": [
+                provenance.off_grid_source_timestamp_rows
+            ],
+            "off_grid_non_null_observations": [
+                provenance.off_grid_non_null_observations
+            ],
+            "accumulation_convention": [provenance.accumulation_convention.value],
+            "period_ending_source": [provenance.period_ending_source],
+        }
+    ).with_columns(
+        pl.lit(View.ON_GRID.value).alias("view"),
+        pl.lit(AxisStatus.NORMALIZED.value).alias("axis_status"),
+    )
+    return normalised_tagged, provenance_tagged
 
 
 def compute_all(
@@ -81,6 +122,9 @@ def compute_all(
     stations: StationCoordinateTable,
     params: DhmPrecipParams,
 ) -> ComputedTables:
+    normalised_axis, normalisation_provenance = _normalised_axis_and_provenance(
+        raw, on_grid, stations, params
+    )
     group_membership = stats_precision.infer_group_membership(on_grid, params)
 
     frequency_correlations = stats_coherence.frequency_correlations(
@@ -222,6 +266,8 @@ def compute_all(
             on_grid, params
         ),
         loo_tail_prediction=loo_tail_prediction,
+        normalised_axis=normalised_axis,
+        normalisation_provenance=normalisation_provenance,
     )
 
 

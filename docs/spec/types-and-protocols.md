@@ -539,7 +539,9 @@ class QcRuleParams:
 **Threshold keys by rule**:
 - `range_check`: `value_min`, `value_max`
 - `rate_of_change`: `max_rate` (units per second)
-- `frozen_sensor`: `tolerance`, `min_consecutive` (int stored as float)
+- `frozen_sensor`: `tolerance`, `min_consecutive` (int stored as float), `exclude_at_or_below`
+  (optional — a value at or below it never starts or extends a frozen run, e.g. `0.0` so
+  precipitation's dry spells are not flagged; absent ⇒ every value is eligible, today's behaviour)
 - `spike`: `tolerance`
 - `gross_outlier`: `k_sigma`
 
