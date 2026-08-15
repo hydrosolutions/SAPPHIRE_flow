@@ -222,6 +222,46 @@ before aquacast does makes the `aquacast` extra unresolvable again.
 `precipitation`/`mean_temperature`. Doing only the first keeps us blocked on the horizon; doing
 neither keeps us pinned at v0.1.19.
 
+## T0d — INTERIM horizon opt-in (owner, 2026-08-15; aquacast maintainer away 2 weeks)
+
+**Context.** FI v0.1.20 can now express a horizon ceiling (T0c), but `cmal_pool_PT` still *declares*
+`future_steps=15` under the default `EXACT`, so a strict provider refuses ICON's 120 h. The fix is a
+one-line declaration in aquacast — and aquacast is **single-maintainer** (verified: 545 of 546
+commits), with the maintainer away for two weeks.
+
+**Owner decision: build the provider-side opt-in as an interim bridge.** `docs/fi-issues/002` already
+pre-committed to exactly this ("we will ship the second as an interim measure, defaulting to today's
+strict behaviour, and retire it once the contract can express the intent"). The retirement path is
+now *concrete* rather than hypothetical, which makes it safer than when first proposed.
+
+### The seam
+`services/run_group_forecast.py:386` computes
+`required_steps = model.data_requirements.forecast_horizon_steps`, then
+`assess_future_coverage` drops the WHOLE group on a shortfall. The opt-in belongs exactly there:
+it changes *what is required*, not what is delivered.
+
+### Design — self-retiring by construction
+Resolution order, so the interim path disappears on its own the moment aquacast declares:
+
+1. **The model's own declaration wins.** If a future-known variable declares
+   `horizon_semantics=AT_MOST`, use its `min_future_steps`. Read with `getattr(..., None)` so this
+   is safe on FI v0.1.19, which has no such field.
+2. **Otherwise the provider opt-in**, keyed by `ModelId` in `types/ids.py` beside `MODEL_TIERS` /
+   `ALERT_ELIGIBILITIES` (the established provider-side model-config pattern). **Log every use at
+   WARNING**, naming the model — the log is the retirement signal: when it stops appearing, delete
+   the table.
+3. **Otherwise strict** — today's behaviour, unchanged, for every model that opts into nothing.
+
+### Non-negotiables
+- **Default strict.** No model changes behaviour without an explicit entry.
+- **A floor, not "anything goes".** An entry supplies a *minimum* step count; below it the model is
+  still refused. "Fewer is fine" is never unbounded — the same argument the FI issue makes for
+  `min_future_steps`.
+- **Truncation must be visible.** A forecast produced on a short horizon is not equivalent to one on
+  the declared horizon; it must be loud in the logs, never silent.
+- **Delete-on-arrival.** This table is removed when aquacast declares `AT_MOST`, not kept "just in
+  case". Its docstring must say so.
+
 ## Tasks
 
 ### T1 — the aquacast shim (IN THIS REPO, optional extra — see D17)
