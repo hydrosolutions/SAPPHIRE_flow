@@ -29,130 +29,6 @@ role's credential — the mechanism the earlier draft assumed). Old T2 → **T3*
 old T5 (off-box copy) → **follow-on plan**. New **T6** = the local backup path must be the device it claims to be.
 Old T6 (docs) → **T7**.
 
-## ⛔ Round-2 independent review — corrections that OVERRIDE the text below
-
-Round 2 ran 2026-08-15 (round 1's rerun died to machine sleep). Verdict **NEEDS-CHANGES**: 5 blockers, ~13
-majors. **Confirmed sound and unchanged:** D1's `INHERIT` + `pg_read_all_data` mechanism (and that nothing in the
-existing bootstrap inadvertently touches `sapphire_backup`); D2's security argument; T2's explicit `PG*` child
-environment; T3's non-matching temp names + validate-before-publish + `os.link` no-clobber; T4's
-regular-file-and-size-positive predicate; T5's disposable-instance rehearsal.
-
-**B1 — D2 was not propagated (my error).** I re-decided D2 to a dedicated component but left every task pointing
-at `prefect-worker`. Corrected inline above. **Additionally required:** choose the **Prefect `backup` work pool**
-now (not "pool or one-shot, decide later"), and specify the complete `prefect-worker-backup` service — pool
-command, **pool creation before deployment registration**, deployment routing, Prefect env, backup `PG*` env,
-recipient-file mount, secrets, backup volume, tmpfs, limits, network, logging, restart policy, `depends_on: init`
-— **remove `backups:/data/backups` from the default worker (`docker-compose.yml:130`)**, and resolve how the
-shared image starts without its usual `DATABASE_URL_TEMPLATE`/`DB_PASSWORD_SECRET` entrypoint contract.
-
-**B2 — plaintext staging must not live on the persistent backup volume.** `finally` cannot run after SIGKILL/OOM/
-power loss, so a plaintext `.part` **containing token hashes** could persist indefinitely — worst of all while
-later backups keep failing. Stage plaintext on a **size-bounded tmpfs** available only to the backup component;
-encrypt into a `0600` temp on the backup volume; sweep the tmpfs at task **start** as well as in cleanup. Do not
-claim "no plaintext survives" while persistent plaintext staging exists.
-
-**B3 — mount validity must be evaluated BEFORE artifact freshness.** As written the goal, T4 and T6 conflict: T6
-makes mount status an independent alert while T4 would still accept a fresh artifact written into the *fallback
-boot-disk directory*. Required: while unmounted, do **not** inspect fallback files, do **not** clear the stale
-incident, and do **not** emit recovery. Backup health = `mount_ok AND valid_fresh_artifact` (separate messages are
-fine). Prefer blocking only the backup component from publishing, not forecasting/API startup.
-
-**B4 — "evidence matches the source" is undefined and unbuildable as written.** Querying the live source during a
-later rehearsal will *legitimately* disagree with an older dump. Required: generate a **manifest from the same
-exported snapshot `pg_dump` uses** (counts, object inventory, sequence values, migration version, non-sensitive
-row digests), encrypt it, **bind it to the artifact digest**, and compare the restored database against *that*.
-
-**B5 — the rehearsal must BE the real recovery path.** It currently excludes roles/ACLs while a separate prose
-path describes real recovery. `pg_dump` does not back up cluster roles, and the bootstrap cannot create roles
-before schema restore because it grants against tables. Required: provision the canonical owner, restore as that
-owner with `--no-owner --no-acl`, run role bootstrap **after**, then test live api/worker/backup logins **and the
-denial properties** (e.g. worker still cannot read `access_tokens`).
-
-**Majors** (~13) are recorded in the review and must be folded before READY. The load-bearing ones: the new role
-needs its **own convergence block** and `REVOKE CREATE` cannot override `PUBLIC` (the existing script makes the
-same mistaken claim at `bootstrap-roles.sql:97-101`); the `age` contract is not buildable as written
-(`--recipients-file`, not `--recipient-file`; pin the version; stream into an open `0600` descriptor); publication
-needs an **fsync + a defined commit point**; secret rotation needs container recreation, not live refresh; a
-**filesystem advisory lock** (a Prefect concurrency limit does not cover manual invocation); retention needs
-age/byte policy, paired sidecar deletion and pre-dump headroom checks; the **existing plaintext dumps need a
-migration** or the "no plaintext" acceptance is untrue; `3× artifact size` is the wrong restore-headroom model;
-and the CI assertion should pin the secret's **complete consumer set** to `{init, prefect-worker-backup}`.
-
-## ✅ D7 — DECIDED (owner, 2026-08-15): SPLIT. **Phase A first.**
-
-Backups have now been broken since **2026-08-13 02:01 UTC**. This plan has taken two review rounds and is still
-NEEDS-CHANGES, and its scope keeps growing (encryption, key custody, manifests, rehearsal, retention, disk
-exhaustion, locking, RPO). Every day spent perfecting it is another day with **no automated backup**.
-Proposed split — same end state, earlier safety:
-- **Phase A (restore correctness):** T1 role + T2 `PG*` + T3 atomic publish + T4 monitor. Backups run again,
-  complete, and fail loudly. Encryption included — it defines the artifact and B2 makes it urgent.
-- **Phase B (prove it):** T5 rehearsal-as-recovery-path, T6 mount check, retention/headroom, key-custody contract.
-- **Phase C (survive the site):** off-box replication (D4), RPO/PITR (D6).
-Recommendation: **take the split.** Phase A is the part that stops the bleeding; B and C are what make it a
-product. The alternative — one big READY — is defensible but keeps the current gap open for days.
-
-## BUILD SCOPE — PHASE A (the only thing being built now)
-
-**In:** **T1** (the `sapphire_backup` role) · **T2** (the flow gets its own credential as `PG*`, no URL) ·
-**T3** (atomic publication) · **T4** (a monitor that cannot be fooled, including alert-once).
-**Out — deferred to Phase B/C, and the sections below stay as their spec:** encryption at rest, key custody,
-the snapshot manifest, the restore rehearsal (T5), the mount check (T6), full retention/headroom policy,
-off-box replication (D4), RPO/PITR (D6).
-
-**Encryption moves to Phase B — a deliberate change from the round-2 text.** Round-2 blocker **B2** (plaintext
-`.part` surviving SIGKILL on the persistent volume) exists *because* we stage plaintext then encrypt. With no
-encryption in Phase A there is no staging asymmetry: the temp file and the final artifact are both plaintext, on
-the same volume, exactly as today — **no regression, and no new exposure.** This removes `age`, key custody, key
-rotation, the encrypted manifest and the migration of existing plaintext dumps from the critical path, roughly
-halving Phase A. **Ship gate: Phase B is REQUIRED before any customer release** — dumps contain `access_tokens`
-and `tenant_id` on an unencrypted disk, and that is not shippable. Phase A restores an internal-staging capability
-that is currently broken; it does not make the backup customer-grade.
-
-**Consequently, Phase A's honest claim is narrower than the Goal above:** it closes **complete** and **loud on
-failure**. It does **not** close **verified** (no rehearsal until T5) or **survivable** (no encryption, no off-box
-copy). B3's "an unmounted volume must never satisfy freshness" is **not** a Phase A requirement, because there is
-no mount to lose — `/Volumes/sapphire-backup` is a plain directory on the boot disk today; that hazard becomes
-live only when D4 provides a real device, which is why T6 sits with it in Phase B.
-
-### Phase A must additionally satisfy these round-2 majors
-
-- **T1 — its own convergence block, and `REVOKE CREATE` is not enough.** A `REVOKE CREATE … FROM sapphire_backup`
-  **cannot override a CREATE grant inherited from `PUBLIC`** — the existing script makes this same mistaken claim
-  at `bootstrap-roles.sql:97-101`. Revoke public-schema `CREATE` explicitly and **assert
-  `has_schema_privilege('sapphire_backup','public','CREATE') = false`**. Fail loudly (or deliberately reassign)
-  if a pre-existing `sapphire_backup` owns any object, since direct ACL revocation cannot strip owner-intrinsic
-  privileges.
-- **T2 — build the child environment from an ALLOWLIST**, so unrelated inherited `PG*` variables cannot override
-  the connection.
-- **T3 — define the publication commit point and make it durable.** `os.link` gives atomic no-clobber visibility,
-  but **fsync the artifact and its directory**, declare the link the commit point, and perform **no required
-  fallible work after it** — otherwise retention (`flows/backup.py:119-120`) or cleanup can fail *after* a valid
-  artifact exists while the flow reports failure.
-- **T3 — a filesystem advisory lock** over the whole dump→validate→publish→retention transaction. A Prefect
-  deployment concurrency limit does **not** cover manual invocation, duplicate deployments, or a second
-  scheduler. Keep the random suffix + no-clobber as defence in depth.
-- **T3 — validation must check a schema-qualified `TABLE DATA public access_tokens` TOC entry**, not merely a
-  line containing `access_tokens`. And specify **concrete timeout values** for dump and validation, with
-  termination waiting for the child before cleanup.
-- **T4 — define the notification state machine, including failed delivery.** "Recovery clears state" loses the
-  recovery permanently if the post fails; add an explicit **recovery-pending** state retried each tick until
-  delivered. Tests: stale → repeated-stale → recovered → stale.
-- **Secret rotation requires container recreation, not live refresh.** File-backed Compose secrets
-  (`docker-compose.yml:358-371`) do not reliably hot-reload when the host file is replaced atomically. Require
-  re-running `init`, then recreating `prefect-worker-backup`, and **acceptance-test that the old password fails
-  and the next backup succeeds with the new one.**
-- **CI assertion pins the COMPLETE consumer set.** Parse rendered `docker compose config` and assert the backup
-  secret's consumers are exactly `{init, prefect-worker-backup}` — not merely "absent from `prefect-worker`" —
-  plus: absent from ingest and api, the default worker no longer mounts the `backups` volume, and the backup
-  deployment targets only the `backup` pool.
-- **Retention (minimum for Phase A):** delete artifact and any sidecar together, never delete the last remaining
-  valid artifact, and **check headroom before starting the dump** rather than reclaiming after it. Full
-  count/age/byte policy is Phase B.
-
-**Phase A acceptance (host):** `backup-database` reaches `COMPLETED`; a dump with a current timestamp appears;
-`pg_restore --list` shows the schema-qualified `access_tokens` TABLE DATA entry (proving the privilege fix);
-the watchdog posts exactly **one** recovery message. Explicitly **not** "the alerts went quiet".
-
 ## Problem
 
 Two independent defects broke backups on 2026-08-13, **both** introduced by Plan 147 Slice D, and the first
@@ -231,9 +107,11 @@ machine, is a transport problem rather than a correctness problem.
   - **Option (c) — host-scheduled `docker exec` — is DISQUALIFIED for a shipped product**, independent of
     security: it is macOS/launchd-specific glue. Customers deploy the Compose topology, likely on Linux.
     Anything that works only on our mini is not a product.
-  - **⚠️ Sub-choice for the implementer, decide at build time:** a **Prefect `backup` work pool** (consistent
+  - **✅ Sub-choice RESOLVED (2026-08-15, review blocker): a Prefect `backup` work pool.** (Was: decide at
+    build time — that ambiguity meant Phase A had no defined execution component.) Rationale: consistent
     with the repo's flows-and-observability standard, and preserves the failure-detection signal T4 depends on)
-    **vs a minimal one-shot backup container** (smaller attack surface — no flow code, no adapters — but must
+    with the repo's flows-and-observability standard and it preserves the failure-detection signal. (A minimal
+    one-shot container has a smaller attack surface — no flow code, no adapters — but must
     not lose that signal). Either satisfies D2; the security property is *"the only component holding a
     read-everything credential is the one whose sole job is backup"*.
   - **Cost, stated:** the pool wiring round 1 correctly enumerated — pool creation **before** deployment
@@ -249,7 +127,8 @@ machine, is a transport problem rather than a correctness problem.
   is therefore **deferred**: it needs a write path the read-only backup identity does not have (only
   `sapphire_worker` holds `INSERT` on `pipeline_health`, `bootstrap-roles.sql:161`) and would otherwise be
   best-effort, i.e. not proof. "The flow never ran at all" is still covered — no new file → stale.
-  *(Amended by D5: the published name is now `sapphire_*.dump.age`, so T4's glob must change with it or the
+  *(**PHASE B ONLY** — in Phase A the published name is `sapphire_*.dump`, plaintext. When D5's encryption
+  lands the name becomes `sapphire_*.dump.age`, so T4's glob must change with it or the
   monitor goes permanently, falsely stale.)*
 - **D4 — off-box destination: ⏸ DEFERRED to a follow-on plan (was OPEN).** Rationale for splitting rather than
   deciding: with D5 the artifact is encrypted at creation, so it is safe wherever it lands — the destination
@@ -272,7 +151,7 @@ machine, is a transport problem rather than a correctness problem.
   2026-08-13 unattended-reboot proof; **no Plan 158 document exists** under `docs/plans/` or its archive —
   verified 2026-08-14. The argument above stands on tracked files; T7 records the 2026-08-13 observation in the
   runbook so it stops being an untracked claim.)*
-  - **Key custody:** the age **recipient (public) key** lives on the mini
+  - **Key custody (PHASE B):** the age **recipient (public) key** lives on the mini
     (`./secrets/backup_age_recipient.pub` — not a secret); the **identity (private) key** deliberately does
     **not** live on the mini (team password manager + one offline copy, per `docs/standards/security.md`
     § Backup encryption). Otherwise a stolen disk yields both the ciphertext and the key.
@@ -286,219 +165,150 @@ machine, is a transport problem rather than a correctness problem.
   shipping / PITR) is the standard answer. Explicitly a **non-goal to build** here — but a conscious deferral,
   not an oversight.
 
-## Tasks
 
-### T1 — a backup identity that can actually read the database (Repo)
+## Phase A — BUILD NOW (single authoritative spec)
 
-*In:* `docker/bootstrap-roles.sql`, `docker/bootstrap-roles.sh`, `docker-compose.yml` (new
-`sapphire_backup_db_password` secret; mount into `init` and **`prefect-worker-backup`** — NOT the default worker),
-`tests/integration/db/test_role_bootstrap.py`. *Out:* the api/worker grant layout, `docker/entrypoint.sh`.
+> **Structural note (2026-08-15).** Earlier revisions layered "corrections that override the text below" on top of
+> task bodies. That produced **two contradictions in a row** — D2 re-decided but tasks still naming
+> `prefect-worker`, then encryption deferred but T3/T4 still requiring `.dump.age`. Both were caught by review,
+> neither should have existed. **The Phase A tasks below are now the single source of truth; there is no override
+> layer.** Phase B/C sections are clearly marked as not-in-scope specs.
 
-- **Create as `INHERIT`** (D1): `CREATE ROLE sapphire_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
-  NOREPLICATION NOBYPASSRLS INHERIT PASSWORD %L`, via the same `format(...) + \gexec` create-or-alter pair used
-  for the other two roles (`bootstrap-roles.sql:31-51`), so a password rotation is picked up on re-run.
-- **Its own convergence block**, and **not** the api/worker one. The blanket membership REVOKE at
-  `bootstrap-roles.sql:78-82` is scoped `WHERE member.rolname IN ('sapphire_api','sapphire_worker')` and stays
-  that way. `sapphire_backup` instead gets, unconditionally on every deploy:
-  1. `ALTER ROLE sapphire_backup NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT;`
-     (demotes a pre-existing over-privileged role — same guarantee as `:70-71`);
-  2. a targeted membership revoke — every membership **except** `pg_read_all_data`, generated with `\gexec` in
-     the same shape as `:78-82`;
-  3. `REVOKE ALL PRIVILEGES ON ALL TABLES / ALL SEQUENCES / SCHEMA public / DATABASE sapphire / DATABASE prefect
-     FROM sapphire_backup;` then the intended grants below.
-  No re-grant-after-revoke choreography exists, so there is no ordering step for a future deploy to drop.
-- **Intended grants — read only:** `GRANT pg_read_all_data TO sapphire_backup;`,
-  `GRANT CONNECT ON DATABASE sapphire TO sapphire_backup;`, `GRANT USAGE ON SCHEMA public TO sapphire_backup;`
-  (`pg_read_all_data` confers `SELECT` on tables/views/sequences and schema `USAGE`, but **not** `CONNECT`), and
-  `REVOKE CREATE ON SCHEMA public FROM sapphire_backup;`. No `INSERT`/`UPDATE`/`DELETE`, ever.
-- **Cross-database connectivity policy — stated, not hand-waved.** `pg_read_all_data` is **cluster-wide**, so
-  connectivity is the control, not the grant:
-  - `sapphire` — `CONNECT` granted (above).
-  - `prefect` — denied, and **already enforced** by the existing `REVOKE CONNECT ON DATABASE prefect FROM PUBLIC`
-    (`bootstrap-roles.sql:112`). A per-role `REVOKE CONNECT` would **not** be sufficient on its own — the file
-    itself documents why (`:104-111`: every role inherits PUBLIC's ACL). Do not add one and call it the control;
-    the blanket `REVOKE ALL PRIVILEGES ON DATABASE prefect` above is defense-in-depth only.
-  - `postgres` (default maintenance DB) — **stays connectable via PUBLIC**, accepted: it holds no application
-    data, and revoking PUBLIC `CONNECT` there risks breaking `psql`/admin tooling. Recorded as a documented
-    residual (T7).
-  - **Rule for future databases** (T7 → `docs/conventions.md` § Service users): any new database must
-    `REVOKE CONNECT … FROM PUBLIC` at creation, because this role can read anything it can reach.
-- **Preflight assertions** (implemented in the flow by T3, specified here): fail loudly, before dumping, if
-  RLS-enabled tables > 0 or large objects > 0. Measured 2026-08-14: **RLS tables = 0, large objects = 0,
-  sequences = 2**.
-  - **Correction to the earlier draft:** an RLS table would **not** make `pg_dump` silently partial. PostgreSQL
-    16 dumps with `row_security = off` and *errors* when the dumping role cannot bypass RLS; a policy-filtered
-    partial dump requires `--enable-row-security`, which we never pass. The preflight is kept purely as an
-    **earlier, clearer fail-fast** (an alert naming the offending tables at 02:00, instead of a mid-dump server
-    error) — and must be described and tested that way, not as protection against silence.
-  - Large objects are the genuinely uncovered case (`pg_read_all_data` does not include them), so the count check
-    earns its place there.
+**Phase A closes exactly two of the four properties: COMPLETE and LOUD ON FAILURE.** It does **not** close
+*verified* (no rehearsal until Phase B) or *survivable* (no encryption, no off-box copy).
+**Ship gate: Phase B is REQUIRED before any customer release** — dumps contain `access_tokens` and `tenant_id`
+in plaintext on an unencrypted disk (FileVault Off). Phase A restores an internal capability that is currently
+broken; it does not make the backup customer-grade.
 
-**Red-first / acceptance — real connections only.** A `pg_auth_members` row proves nothing; every assertion below
-is a live login executing a real statement, extending the existing harness
-(`tests/integration/db/test_role_bootstrap.py:41`). All fail today because the role does not exist:
+**No encryption in Phase A.** Confirmed by review: this introduces **no new plaintext exposure** versus today,
+*provided* the temp is created `0600` on the same volume and stale temps are swept — today's direct-write file is
+already plaintext there and can already survive a failure. The hard link adds a directory entry to the same
+inode; it neither duplicates nor broadens access. The new path is strictly safer, because incomplete output never
+matches the published glob.
 
-1. `sapphire_backup` logs in and `SELECT`s from **`access_tokens`** and `access_token_stations` — the tables that
-   broke — while `sapphire_worker` still cannot (`:353-364` stays green).
-2. reads sequence state (`SELECT last_value FROM …`).
-3. **cannot** `INSERT`/`UPDATE`/`DELETE` on `stations` and `observations`; **cannot** `CREATE TABLE`;
-   **cannot** `DROP TABLE` (mirrors `:189-213`).
-4. `pg_roles` shows `rolsuper`/`rolcreatedb`/`rolcreaterole`/`rolreplication`/`rolbypassrls` all false **and
-   `rolinherit` true** (mirrors `:166-188`, with the deliberate INHERIT divergence asserted, not assumed).
-5. **cannot** connect to the `prefect` database (mirrors `:215-227`).
-6. password rotation invalidates the old password (mirrors `:427-448`).
-7. a second bootstrap run leaves the membership **and a live protected `SELECT`** working (idempotent re-grant —
-   mirrors `:388-426`).
-8. a deliberately pre-created **over-privileged** `sapphire_backup` (SUPERUSER + CREATEDB + write grants)
-   converges to the least-privilege shape (mirrors `:608-672`).
+**Rollout order is operational, not just logical: T1 → T2+T3 (one deploy) → T4.**
 
-### T2 — the backup flow gets its own credential without touching the shared one (Repo)
+### T1 — a backup identity that can actually read the database
 
-*In:* `src/sapphire_flow/flows/backup.py`, `docker-compose.yml` (**`prefect-worker-backup`** `environment:` + the T1
-secret mount; and **remove `backups:/data/backups` from the default `prefect-worker` at `docker-compose.yml:130`**), `tests/unit/flows/test_backup.py`. *Out:* `docker/entrypoint.sh` (**deliberately untouched**),
-`DATABASE_URL` / `DATABASE_URL_TEMPLATE` for every other flow.
+*In:* `docker/bootstrap-roles.sql`, `docker/bootstrap-roles.sh` (`SAPPHIRE_BACKUP_DB_PASSWORD_FILE` +
+`-v backup_password=`), `docker-compose.yml` (secret `sapphire_backup_db_password`, mounted to **`init`** and
+**`prefect-worker-backup`** only), `tests/integration/db/test_role_bootstrap.py`.
+*Out:* the api/worker grant layout; `docker/entrypoint.sh`.
 
-**This task exists because the earlier draft assumed a mechanism that does not exist.** `dump_database_task` reads
-`os.environ["DATABASE_URL"]` (`backup.py:57`) and derives every connection argument and `PGPASSWORD` from it
-(`:59-68`). That single URL is built **once at container start** by `docker/entrypoint.sh:20-22` from one
-`DATABASE_URL_TEMPLATE` + `DB_PASSWORD_SECRET` pair, set to the **worker** credential at
-`docker-compose.yml:99-100`, inside the same process that serves **every** deployment on the `default` pool
-(`docker-compose.yml:83`; e.g. the forecast cycle and ingest read `os.environ["DATABASE_URL"]` directly). There is
-no per-deployment credential override anywhere: `DeploymentSpec` carries only
-flow_module/flow_attr/deployment_name/cron/concurrency_limit/work_pool_name
-(`src/sapphire_flow/cli/register_deployments.py:26-32`).
+- `CREATE ROLE sapphire_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE **INHERIT** NOREPLICATION`, using the
+  existing `format(… %L)` + `\gexec` CREATE-or-ALTER-PASSWORD shape.
+- `GRANT pg_read_all_data TO sapphire_backup;` — plain membership; `INHERIT` makes it effective without
+  `SET ROLE`, which `pg_dump` never issues.
+- `GRANT CONNECT ON DATABASE sapphire TO sapphire_backup;` — `pg_read_all_data` does not confer it.
+- **Keep it OUT of the api/worker blanket-revoke block** (`bootstrap-roles.sql:78-101`); give it its **own**
+  convergence block.
+- **`REVOKE CREATE … FROM sapphire_backup` is NOT sufficient** — it cannot defeat a `CREATE` grant held by
+  `PUBLIC`; the existing script makes this same mistaken claim at `:97-101`. Require
+  **`REVOKE CREATE ON SCHEMA public FROM PUBLIC`**, keep the named-role revoke, and **assert
+  `has_schema_privilege('sapphire_backup','public','CREATE') = false`**.
+- **Fail loudly if a pre-existing `sapphire_backup` owns any object** (define the query and its scope) — direct
+  ACL revocation cannot strip owner-intrinsic privileges.
+- **Preflight, fail loudly:** `pg_class.relrowsecurity` count must be 0 and `pg_largeobject_metadata` empty
+  (measured 2026-08-14: both 0). Otherwise the dump silently goes partial.
 
-- **Rejected: repoint the container-wide `DATABASE_URL` at `sapphire_backup`.** It would silently downgrade every
-  other flow in the pool to read-only mid-run — a worse and more silent outage than the one this plan fixes.
-- **Chosen: a second, backup-only path that never touches `DATABASE_URL` and never builds a URL.**
-  - `docker-compose.yml` → `prefect-worker.environment`, all **non-secret**: `SAPPHIRE_BACKUP_PGHOST: postgres`,
-    `SAPPHIRE_BACKUP_PGPORT: "5432"`, `SAPPHIRE_BACKUP_PGUSER: sapphire_backup`,
-    `SAPPHIRE_BACKUP_PGDATABASE: sapphire`, `SAPPHIRE_BACKUP_DB_PASSWORD_FILE:
-    /run/secrets/sapphire_backup_db_password`, plus the T1 secret mount. (`prefect-worker-ingest`,
-    `docker-compose.yml:158-159`, gets **none** of these — it never runs this flow.)
-  - `dump_database_task` reads those five **at run time**, reads the password **from the file, per run**, and
-    builds an isolated child environment `PGHOST/PGPORT/PGUSER/PGDATABASE/PGPASSWORD`.
-  - **Every worker-derived connection input is removed**: `os.environ["DATABASE_URL"]`, `_to_libpq_url`,
-    `make_url`, and the `--host/--port/--username/--dbname` arguments (`backup.py:57-68`). `pg_dump` is invoked
-    with format/file/timeout arguments only.
-  - **No fallback.** A missing or empty variable, or an unreadable/empty secret file, fails the task immediately
-    with a message naming the variable. Falling back to `DATABASE_URL` is exactly how this bug class survives.
-  - **Rotation semantics:** because the password is read per run — unlike `DATABASE_URL`, spliced once at
-    container start (`entrypoint.sh:20-22`) — rotating `./secrets/sapphire_backup_db_password` and re-running
-    `init` takes effect on the **next scheduled run, with no container restart**. Documented in T7. (Rotating the
-    *worker* password still needs a restart; unchanged, out of scope.)
-  - **Relation to Plan 161 T2:** independent in both directions. The secret reaches `pg_dump` as `PGPASSWORD` and
-    is never placed in a URL, so no encoding/parsing question arises for backups at all.
+**Red-first / acceptance:** a **real login as `sapphire_backup` performing `SELECT` on `access_tokens`** — a
+`pg_auth_members` row proves nothing. Plus a test with a **pre-created role owning an object**, asserting the
+bootstrap fails rather than proceeding.
 
-**Red-first** (fails today — `backup.py:57` reads `DATABASE_URL`):
-1. Set `DATABASE_URL` to a **worker** credential and `SAPPHIRE_BACKUP_*` to a **conflicting backup** credential;
-   capture the fake subprocess's **argv and env**; assert `PGUSER`/`PGPASSWORD`/`PGHOST`/`PGDATABASE` come from
-   the backup pair, and that **no** `--host/--port/--username/--dbname` argument and no `DATABASE_URL`-derived
-   value appears anywhere in argv or env.
-2. Unset `SAPPHIRE_BACKUP_DB_PASSWORD_FILE` (or point it at a missing file) → the task raises naming the
-   variable, and **no subprocess is launched**.
+### T2 — the backup flow gets its own credential, with no URL
 
-**Host acceptance (T1+T2 together):** the dump connects as `sapphire_backup` — visible in `pg_stat_activity` /
-the Postgres log `user=` field during the run — and the resulting artifact contains `access_tokens` (proven by
-T5's rehearsal, not by the exit code).
+*In:* `src/sapphire_flow/flows/backup.py`, `docker-compose.yml` (`prefect-worker-backup` `environment:`),
+`tests/unit/flows/test_backup.py`. *Out:* `docker/entrypoint.sh`; `DATABASE_URL` for every other flow.
 
-### T3 — atomic, encrypted publication: an artifact exists only if it is good (Repo)
+`dump_database_task` reads `SAPPHIRE_BACKUP_PGHOST/PGPORT/PGUSER/PGDATABASE` + the password file and passes
+`PGHOST/PGPORT/PGUSER/PGDATABASE/PGPASSWORD` to the child. **No URL is constructed or parsed anywhere in the
+backup path.**
 
-*In:* `src/sapphire_flow/flows/backup.py`, `src/sapphire_flow/cli/register_deployments.py`,
-`tests/unit/flows/test_backup.py`, `tests/unit/cli/test_register_deployments.py`.
+- **Build the child environment from an ALLOWLIST**, not by mutating `os.environ`. Inherited `PGSERVICE`,
+  `PGOPTIONS`, `PGPASSFILE`, `PGSSLMODE` etc. must **not** reach libpq. Permit only the required `PG*` values
+  plus deliberately-allowed process values (`PATH`, `LC_ALL=C`).
+- Every required variable **missing or empty** is a loud failure, not a default.
 
-`pg_dump` currently writes straight to the final path and a failure leaves the file behind (`backup.py:62,71-76`).
-Deleting on non-zero exit is **not sufficient** — it cannot run under `SIGKILL`/OOM, and misses exceptions from
-`subprocess.run`, from post-dump filesystem operations, or from cleanup itself.
+**Red-first:** seed unrelated `PG*` variables in the environment and assert they are **absent** from the child;
+assert the backup identity is used even when a conflicting worker credential is present.
 
-**One artifact lifecycle, end to end.** Exactly one published artifact per successful run:
-**`sapphire_<UTC-timestamp>_<8-hex>.dump.age`**, mode `0600`. **No plaintext dump ever survives the run.**
+### T3 — atomic publication: an artifact exists only if it is good
 
-1. **Create the plaintext temp already protected.** `mkstemp(dir=backup_dir, prefix=".sapphire-tmp-",
-   suffix=".part")` → mode `0600` **before `pg_dump` writes a byte**, and a name that deliberately does not match
-   the published glob. (Today the chmod happens only *after* the dump completes — `backup.py:71` then `:78` — so
-   token hashes sit at the process umask for the entire dump and validation window. Set a restrictive umask
-   around the call as belt-and-braces.)
-2. **Dump** with T2's environment and a bounded timeout.
-3. **Validate — concretely.** (a) the temp is a regular file with size > 0; **and** (b) `pg_restore --list <temp>`
-   exits 0 within a bounded timeout **and** its TOC output contains an entry for `access_tokens`. Size > 0 alone
-   cannot establish archive structure, and the name-implies-valid invariant T4 depends on has to have a testable
-   meaning. Any non-zero exit, timeout, or raised exception → nothing is published. (T5 remains the stronger,
-   real-restore proof; this is the cheap gate that runs every night.)
-4. **Encrypt** to a second temp: `age --recipient-file "$SAPPHIRE_BACKUP_AGE_RECIPIENT_FILE" --output <temp2>
-   <temp>`; check the exit code.
-5. **Verify the encrypted artifact:** regular file, size > 0, begins with the `age-encryption.org/v1` header;
-   compute the sha256, log it, and write it to a sidecar `<final>.sha256` (the off-box follow-on verifies against
-   this rather than trusting an upload command's exit code).
-6. **Publish no-clobber and atomically:** `os.link(temp2, final)` — which raises `FileExistsError` if the name is
-   taken, where `os.rename` would silently clobber — then unlink `temp2`. Same filesystem by construction (both
-   temps are created inside `backup_dir`).
-7. **`finally`: best-effort delete of both temps**, so a plaintext dump never outlives the run and a crash remnant
-   can never match the published glob — the guarantee no post-hoc cleanup code can make.
+*In:* `src/sapphire_flow/flows/backup.py`. **Publishes exactly one file: `sapphire_<timestamp>_<8hex>.dump`,
+mode `0600`, plaintext.** No `age`, no `.age` suffix, no sidecar — those are Phase B.
 
-**Recorded trade-off:** publication cannot prove *decryptability*, because the age identity deliberately is not on
-the mini (D5). T5's rehearsal supplies that proof and is part of Host acceptance.
+**Transaction, entirely under a filesystem advisory lock** (a Prefect concurrency limit does **not** cover manual
+invocation, duplicate deployments, or a second scheduler — keep the random suffix and no-clobber as defence in
+depth):
 
-**Retention is a validated boundary, not a raw int.** Local retention **must be ≥ 1**; `0` or negative raises
-`ValueError` at the flow boundary (a frozen value type with `__post_init__`, per CLAUDE.md § Type Driven
-Development). Today `keep_count=0` deletes the dump the run just created (`backup.py:96-107`) and the suite
-**locks** that behaviour (`tests/unit/flows/test_backup.py:96` `test_keep_zero_removes_all`) — that test is
-**replaced** by rejection tests. Deliberate contract change: D4 makes the local copy the fast-restore path, so a
-configuration that deletes it is invalid, not merely unusual. Remote retention is defined independently by the
-off-box follow-on. Cleanup globs the **new** final pattern and additionally sweeps `.sapphire-tmp-*.part`
-temporaries older than a bounded age (today retention only considers finalised dumps).
+1. **Sweep stale temps**, then **pre-prune** retention *while preserving at least one valid artifact*, then
+   **check headroom** — before consuming space, not after.
+2. `pg_dump` → a `0600` temp whose name **does not match `sapphire_*.dump`**, same filesystem.
+3. **Validate**: `pg_restore --list` must contain an **anchored, schema-qualified `TABLE DATA public
+   access_tokens`** entry — this is the direct evidence the privilege fix worked. Tests must include **decoys**:
+   another schema, `TABLE` without `DATA`, ACL/comment entries, and a similarly-named table.
+4. `fsync` the file → **`os.link`** to the final name (atomic, no-clobber) → unlink the temp → `fsync` the
+   **directory** → **this is the logical commit point**.
+5. **Everything after the commit point is explicitly best-effort and MUST NOT change a successful result.**
+   Retention/cleanup failing after a valid artifact exists must not mark the flow failed
+   (today's separate cleanup task can, `flows/backup.py:115-121`).
 
-**Concurrency.** Add `concurrency_limit=1` to the `backup-database` `DeploymentSpec`
-(`register_deployments.py:75-80`; the suite currently asserts `is None` at
-`tests/unit/cli/test_register_deployments.py:73` — update it, matching `forecast-cycle`'s precedent at `register_deployments.py:73`).
-Independently of the limit, the `_<8-hex>` suffix plus no-clobber `os.link` make an overlap non-destructive rather
-than mutually-overwriting (final names had only second-level uniqueness). Retention runs after publication within
-the same flow and, with the limit, is never concurrent with another run's publication.
+**Concrete timeouts** for dump and validation, with termination **reaping the child before cleanup**.
+**Red-first:** the fake subprocess must **write partial content before failing** (a fake that writes nothing
+passes against today's code); plus tests for a timed-out child, lock contention from a second process, and
+`fsync` failure.
 
-**Red-first** (each must fail against current committed code):
-(a) fake `pg_dump` **writes partial content and then exits non-zero** → no `*.dump.age`, no plaintext, no `.part`
-remnant (a fake that writes nothing passes today and proves nothing);
-(b) validator (`pg_restore --list`) exits non-zero on a **non-empty** temp → nothing published;
-(c) the subprocess call raises → nothing published;
-(d) the plaintext temp's mode is `0o600` **as observed from inside the fake `pg_dump`**, not only afterwards;
-(e) publishing into a directory that already holds the target name → `FileExistsError`, existing artifact byte-
-identical afterwards;
-(f) `keep_count` of `0` and `-1` → `ValueError`, and nothing is deleted;
-(g) the encryption step fails → nothing published and no plaintext left behind.
+### T4 — a monitor that cannot be fooled
 
-### T4 — a monitor that cannot be fooled (Repo)
+*In:* `src/sapphire_flow/ops/watchdog.py` (`newest_backup_mtime` + the staleness block). Matches exactly
+`sapphire_*.dump`.
 
-*In:* `src/sapphire_flow/ops/watchdog.py` (`newest_backup_mtime` `:258-272`, `WatchdogState` `:101-110`, the
-staleness block `:499-520`) and the watchdog unit tests. **Unconditional** — the earlier draft said "if not
-already shipped"; verified unshipped: the alert fires on **every tick** (~288/day, `:508-520`) and
-`last_backup_alert_iso` is written at `:520` but never read.
+- Freshness requires a **regular file with size > 0**, using **`lstat()` + `stat.S_ISREG`** — `Path.is_file()`
+  follows symlinks, so a fresh symlink or directory must not satisfy it.
+- **Notification state machine, including failed delivery:** clearing incident state after *attempting* recovery
+  loses the recovery permanently if the post fails. Add a persistent **recovery-pending** state, retried each
+  tick until delivery succeeds. Handle the legacy `last_backup_alert_iso` field (currently written at `:520`,
+  never consulted).
+- **Alert once, not every tick** — absorbs Plan 161 T3 (`watchdog.py:508-520`, ~288 alerts/day today).
 
-- **Follow T3's rename.** The glob becomes the published `*.dump.age` pattern (today `*.dump`, `:263`). Without
-  this the monitor matches nothing after T3 and goes permanently, *falsely*, stale — a cross-task invariant, not
-  an optional tidy-up.
-- **Freshness predicate:** the newest **regular file with size > 0** matching the published pattern. Stated as
-  policy: T3 makes name-implies-valid true; the size floor is the cheap independent check so a truncated or
-  zero-byte artifact can never satisfy freshness. An invalid, zero-size or absent artifact must **never** clear
-  an incident or reset alert state.
-- **Split incident state from notification state.** `default_slack_poster` already reports delivery failure by
-  returning `False` (`:306-320`), but state advances regardless (`:515-520`), so a transient Slack failure on the
-  first stale tick would suppress the next attempt for a day — the opposite of "loud on failure".
-  - `backup_incident_since_iso` — set on the first stale tick, cleared **only** on recovery.
-  - `last_backup_alert_posted_iso` — advanced **only after a successful post**.
-  - Cadence: while stale with nothing delivered yet, retry **every tick**; after a successful post, re-notify at
-    most every ~24 h; on the transition back to fresh, post exactly **one** recovery message and clear both
-    fields. A missing webhook counts as *not delivered* (log-only path, `:518-519`), so configuring the webhook
-    later still produces an alert.
-  - Transitions to lock: stale → repeated-stale → recovered → stale.
+**Red-first:** stale → repeated-stale → recovered → stale; **failed recovery delivery followed by a successful
+retry**; a 0-byte file; a symlink.
 
-**Red-first** (each fails against current committed code):
-(a) a **0-byte** file with a fresh mtime matching the published pattern → still reported stale (fails today:
-`:258-272` checks mtime only);
-(b) two consecutive stale ticks → **exactly one** Slack post (fails today: `:508-520` posts every tick);
-(c) a stale tick where the poster returns `False`, then a second tick → a **second** post is attempted (fails
-today: state advances regardless of `posted`);
-(d) stale → fresh → **exactly one** recovery message, then silence (fails today: there is no recovery message at
-all).
+### Phase A infrastructure — the dedicated backup component
+
+**Decided, not left to the implementer:** a Prefect **`backup` work pool** with a dedicated
+**`prefect-worker-backup`** service.
+
+- Specify the **complete** service: pool command, Prefect env, backup `PG*` env, secrets, the `backups` volume,
+  tmpfs, resource limits, network, logging, restart policy, `depends_on: init`.
+- **Create the `backup` pool BEFORE deployment registration** (`init` registers deployments at
+  `docker-compose.yml:288-293`, before any worker starts); route **only** `backup-database` to it.
+- **Remove `backups:/data/backups` from the default `prefect-worker`** (`docker-compose.yml:130`).
+- **Resolve the startup contract explicitly:** the shared image's entrypoint expects
+  `DATABASE_URL_TEMPLATE`/`DB_PASSWORD_SECRET`; this service has neither. Choose and **test** a no-URL startup
+  mechanism (e.g. a Compose entrypoint override).
+- **Secret rotation requires container recreation** — file-backed Compose secrets
+  (`docker-compose.yml:358-371`) do not reliably hot-reload. Procedure: re-run `init`, recreate
+  `prefect-worker-backup`. **Acceptance-test that the old password fails and the next backup succeeds.**
+- **CI assertion:** parse rendered `docker compose config` and assert the backup secret's consumer set is
+  **exactly `{init, prefect-worker-backup}`**; that it is absent from api and ingest; that the default worker no
+  longer mounts `backups`; and that the backup deployment targets only the `backup` pool.
+
+### Phase A acceptance (host)
+
+Trigger **one** `backup-database` run post-deploy and **record its run ID and start time**. Require: state
+`COMPLETED`; an artifact whose mtime falls **inside that window**; `pg_restore --list` on **that exact artifact**
+showing the schema-qualified `access_tokens` `TABLE DATA` entry; and **exactly one** recovery post measured
+against a captured baseline. Explicitly **not** "the alerts went quiet".
+
+---
+
+## Phase B / C — DEFERRED, specs retained (NOT in this build)
+
+**Phase B (required before customer release):** encryption at publication + key custody, the snapshot manifest
+bound to the artifact digest, T5 restore-rehearsal-as-real-recovery-path (roles/ACLs + denial properties),
+T6 mount validation (evaluated **before** freshness), full retention/age/byte policy, and migrating the existing
+plaintext dumps. **Phase C:** off-box replication (D4) and RPO/PITR (D6).
 
 ### T5 — rehearse the restore (Repo + Host) — *the task that makes it a backup*
 
@@ -602,7 +412,7 @@ Every one of these currently contradicts what this plan ships:
   coverage (artifacts / Parquet), the automated monthly cadence, and the off-site target. Not a supersession —
   front matter stays `supersedes: []` — but 048's scope note must say so explicitly.
 
-## Exit gates
+## Exit gates (END STATE — Phase A's subset is every gate below EXCEPT the T6 / restore-rehearsal items)
 
 Full `uv run pytest`; `ruff format --check` + `ruff check`; pyright ratchet; `shellcheck` + `bash -n` for
 `docker/bootstrap-roles.sh`, `scripts/restore-rehearsal.sh`, `scripts/bootstrap-mac-mini.sh` and
@@ -610,7 +420,10 @@ Full `uv run pytest`; `ruff format --check` + `ruff check`; pyright ratchet; `sh
 and T6 proven RED against current committed code** (T1's are integration tests against a real Postgres via the
 existing harness at `tests/integration/db/test_role_bootstrap.py:41`).
 
-## Host acceptance
+## Host acceptance — END STATE (Phase B/C)
+
+> **Phase A's acceptance is the one under "Phase A acceptance (host)" above — this section is the END-STATE
+> bar and is NOT satisfiable in Phase A** (no encryption, no sidecar, no rehearsal, no mount to validate).
 
 `backup-database` reaches **`COMPLETED`**; `pg_stat_activity` / the Postgres log shows the dump connecting as
 **`sapphire_backup`**; exactly one `sapphire_*.dump.age` with a **current** timestamp and mode `0600` appears,
@@ -636,3 +449,4 @@ twice.
 - **Rotating the worker DB password** (its first two characters leaked into a Prefect state message; Plan 161).
 - **Plan 161 T2** (construct-don't-splice) — independent; after T2 here, the backup path constructs no URL at
   all, so neither plan gates the other.
+
