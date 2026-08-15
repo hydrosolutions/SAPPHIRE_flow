@@ -29,6 +29,68 @@ role's credential — the mechanism the earlier draft assumed). Old T2 → **T3*
 old T5 (off-box copy) → **follow-on plan**. New **T6** = the local backup path must be the device it claims to be.
 Old T6 (docs) → **T7**.
 
+## ⛔ Round-2 independent review — corrections that OVERRIDE the text below
+
+Round 2 ran 2026-08-15 (round 1's rerun died to machine sleep). Verdict **NEEDS-CHANGES**: 5 blockers, ~13
+majors. **Confirmed sound and unchanged:** D1's `INHERIT` + `pg_read_all_data` mechanism (and that nothing in the
+existing bootstrap inadvertently touches `sapphire_backup`); D2's security argument; T2's explicit `PG*` child
+environment; T3's non-matching temp names + validate-before-publish + `os.link` no-clobber; T4's
+regular-file-and-size-positive predicate; T5's disposable-instance rehearsal.
+
+**B1 — D2 was not propagated (my error).** I re-decided D2 to a dedicated component but left every task pointing
+at `prefect-worker`. Corrected inline above. **Additionally required:** choose the **Prefect `backup` work pool**
+now (not "pool or one-shot, decide later"), and specify the complete `prefect-worker-backup` service — pool
+command, **pool creation before deployment registration**, deployment routing, Prefect env, backup `PG*` env,
+recipient-file mount, secrets, backup volume, tmpfs, limits, network, logging, restart policy, `depends_on: init`
+— **remove `backups:/data/backups` from the default worker (`docker-compose.yml:130`)**, and resolve how the
+shared image starts without its usual `DATABASE_URL_TEMPLATE`/`DB_PASSWORD_SECRET` entrypoint contract.
+
+**B2 — plaintext staging must not live on the persistent backup volume.** `finally` cannot run after SIGKILL/OOM/
+power loss, so a plaintext `.part` **containing token hashes** could persist indefinitely — worst of all while
+later backups keep failing. Stage plaintext on a **size-bounded tmpfs** available only to the backup component;
+encrypt into a `0600` temp on the backup volume; sweep the tmpfs at task **start** as well as in cleanup. Do not
+claim "no plaintext survives" while persistent plaintext staging exists.
+
+**B3 — mount validity must be evaluated BEFORE artifact freshness.** As written the goal, T4 and T6 conflict: T6
+makes mount status an independent alert while T4 would still accept a fresh artifact written into the *fallback
+boot-disk directory*. Required: while unmounted, do **not** inspect fallback files, do **not** clear the stale
+incident, and do **not** emit recovery. Backup health = `mount_ok AND valid_fresh_artifact` (separate messages are
+fine). Prefer blocking only the backup component from publishing, not forecasting/API startup.
+
+**B4 — "evidence matches the source" is undefined and unbuildable as written.** Querying the live source during a
+later rehearsal will *legitimately* disagree with an older dump. Required: generate a **manifest from the same
+exported snapshot `pg_dump` uses** (counts, object inventory, sequence values, migration version, non-sensitive
+row digests), encrypt it, **bind it to the artifact digest**, and compare the restored database against *that*.
+
+**B5 — the rehearsal must BE the real recovery path.** It currently excludes roles/ACLs while a separate prose
+path describes real recovery. `pg_dump` does not back up cluster roles, and the bootstrap cannot create roles
+before schema restore because it grants against tables. Required: provision the canonical owner, restore as that
+owner with `--no-owner --no-acl`, run role bootstrap **after**, then test live api/worker/backup logins **and the
+denial properties** (e.g. worker still cannot read `access_tokens`).
+
+**Majors** (~13) are recorded in the review and must be folded before READY. The load-bearing ones: the new role
+needs its **own convergence block** and `REVOKE CREATE` cannot override `PUBLIC` (the existing script makes the
+same mistaken claim at `bootstrap-roles.sql:97-101`); the `age` contract is not buildable as written
+(`--recipients-file`, not `--recipient-file`; pin the version; stream into an open `0600` descriptor); publication
+needs an **fsync + a defined commit point**; secret rotation needs container recreation, not live refresh; a
+**filesystem advisory lock** (a Prefect concurrency limit does not cover manual invocation); retention needs
+age/byte policy, paired sidecar deletion and pre-dump headroom checks; the **existing plaintext dumps need a
+migration** or the "no plaintext" acceptance is untrue; `3× artifact size` is the wrong restore-headroom model;
+and the CI assertion should pin the secret's **complete consumer set** to `{init, prefect-worker-backup}`.
+
+## ⚠️ D7 — OPEN (raised by me, not the reviewer): should this plan ship in phases?
+
+Backups have now been broken since **2026-08-13 02:01 UTC**. This plan has taken two review rounds and is still
+NEEDS-CHANGES, and its scope keeps growing (encryption, key custody, manifests, rehearsal, retention, disk
+exhaustion, locking, RPO). Every day spent perfecting it is another day with **no automated backup**.
+Proposed split — same end state, earlier safety:
+- **Phase A (restore correctness):** T1 role + T2 `PG*` + T3 atomic publish + T4 monitor. Backups run again,
+  complete, and fail loudly. Encryption included — it defines the artifact and B2 makes it urgent.
+- **Phase B (prove it):** T5 rehearsal-as-recovery-path, T6 mount check, retention/headroom, key-custody contract.
+- **Phase C (survive the site):** off-box replication (D4), RPO/PITR (D6).
+Recommendation: **take the split.** Phase A is the part that stops the bleeding; B and C are what make it a
+product. The alternative — one big READY — is defensible but keeps the current gap open for days.
+
 ## Problem
 
 Two independent defects broke backups on 2026-08-13, **both** introduced by Plan 147 Slice D, and the first
@@ -167,7 +229,7 @@ machine, is a transport problem rather than a correctness problem.
 ### T1 — a backup identity that can actually read the database (Repo)
 
 *In:* `docker/bootstrap-roles.sql`, `docker/bootstrap-roles.sh`, `docker-compose.yml` (new
-`sapphire_backup_db_password` secret; mount into `init` and `prefect-worker`),
+`sapphire_backup_db_password` secret; mount into `init` and **`prefect-worker-backup`** — NOT the default worker),
 `tests/integration/db/test_role_bootstrap.py`. *Out:* the api/worker grant layout, `docker/entrypoint.sh`.
 
 - **Create as `INHERIT`** (D1): `CREATE ROLE sapphire_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
@@ -230,8 +292,8 @@ is a live login executing a real statement, extending the existing harness
 
 ### T2 — the backup flow gets its own credential without touching the shared one (Repo)
 
-*In:* `src/sapphire_flow/flows/backup.py`, `docker-compose.yml` (`prefect-worker` `environment:` + the T1 secret
-mount), `tests/unit/flows/test_backup.py`. *Out:* `docker/entrypoint.sh` (**deliberately untouched**),
+*In:* `src/sapphire_flow/flows/backup.py`, `docker-compose.yml` (**`prefect-worker-backup`** `environment:` + the T1
+secret mount; and **remove `backups:/data/backups` from the default `prefect-worker` at `docker-compose.yml:130`**), `tests/unit/flows/test_backup.py`. *Out:* `docker/entrypoint.sh` (**deliberately untouched**),
 `DATABASE_URL` / `DATABASE_URL_TEMPLATE` for every other flow.
 
 **This task exists because the earlier draft assumed a mechanism that does not exist.** `dump_database_task` reads
@@ -454,7 +516,7 @@ Every one of these currently contradicts what this plan ships:
   Must describe `age`, where the recipient public key lives (on the mini) and where the identity does **not**
   (team password manager + one offline copy), and the recovery consequence of losing it.
 - `docs/standards/cicd.md:744` — "Three DB password secrets exist, one per credential tier" → **four**, with the
-  `sapphire_backup_db_password` row and its mounts (`init` + `prefect-worker` only), plus the new
+  `sapphire_backup_db_password` row and its mounts (`init` + `prefect-worker-backup` only), plus the new
   `SAPPHIRE_BACKUP_*` connection variables and why they are separate from `DATABASE_URL`.
 - `docs/conventions.md:322-334` § Service users — documents exactly **two** scoped roles. Add `sapphire_backup`,
   its read-only grant matrix, the **INHERIT divergence and its rationale** (D1), the cross-database connectivity
