@@ -16,6 +16,7 @@ from sapphire_flow.services.ensemble_fanout import (
     reject_prior_state_for_fanout,
     reject_stateful_ensemble_states,
 )
+from sapphire_flow.services.horizon_semantics import resolve_required_steps
 from sapphire_flow.services.input_quality import assess_input_quality
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
@@ -171,7 +172,14 @@ def _run_single_model(
     # forecast, never a truncated NWP one.
     future_features = model.data_requirements.future_dynamic_features
     if future_features:
-        required_steps = model.data_requirements.forecast_horizon_steps
+        # Plan 159 T0d (INTERIM): a model's declared horizon may be a CEILING rather
+        # than a floor. Strict by default; see `services/horizon_semantics.py`.
+        horizon = resolve_required_steps(
+            model,
+            assignment.model_id,
+            model.data_requirements.forecast_horizon_steps,
+        )
+        required_steps = horizon.steps
         coverage = assess_future_coverage(
             inputs.data.future_dynamic,
             required_features=future_features,

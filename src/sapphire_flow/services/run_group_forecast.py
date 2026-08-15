@@ -7,6 +7,7 @@ import structlog
 
 from sapphire_flow.exceptions import ModelOutputError, StoreError
 from sapphire_flow.services.hindcast import is_connection_fatal
+from sapphire_flow.services.horizon_semantics import resolve_required_steps
 from sapphire_flow.services.input_quality import assess_input_quality
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
@@ -383,7 +384,14 @@ def run_group_forecast(
     # the fallback chain still runs, mirroring the STATION path.
     future_features = model.data_requirements.future_dynamic_features
     if future_features:
-        required_steps = model.data_requirements.forecast_horizon_steps
+        # Plan 159 T0d (INTERIM): a model's declared horizon may be a CEILING rather
+        # than a floor. Strict by default; see `services/horizon_semantics.py`.
+        horizon = resolve_required_steps(
+            model,
+            assignment.model_id,
+            model.data_requirements.forecast_horizon_steps,
+        )
+        required_steps = horizon.steps
         ensemble_mode = model.data_requirements.ensemble_mode
         for station_id in group_inputs.station_ids:
             station_future = group_inputs.for_station(station_id).future_dynamic

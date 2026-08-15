@@ -48,6 +48,28 @@ ALERT_ELIGIBILITIES: dict[ModelId, AlertEligibility] = {
     CLIMATOLOGY_FALLBACK_MODEL_ID: AlertEligibility.NO_EVENT_INFORMATION,
     PERSISTENCE_FALLBACK_MODEL_ID: AlertEligibility.CURRENT_OBS_PROXY,
 }
+AQUACAST_CMAL_POOL_PT_MODEL_ID = ModelId("cmal_pool_pt")
+
+# Plan 159 T0d — INTERIM, DELETE-ON-ARRIVAL.
+#
+# Maps a model to the MINIMUM future steps it may run on, for models whose declared
+# `future_steps` is really a CEILING but which cannot yet say so. ForecastInterface
+# v0.1.20 added `horizon_semantics=AT_MOST`; a model that declares it takes precedence
+# over this table (`services/horizon_semantics.py`), so entries here go stale on their
+# own and every use is logged at WARNING.
+#
+# A value is a FLOOR, never "anything goes": below it the model is still refused.
+#
+# `cmal_pool_pt` declares 15 daily steps, but its architecture accepts fewer (aquacast
+# 85e09a45, "trained horizon is a maximum, not a fixed input length") while the
+# declaration cannot express it. 5 = MeteoSwiss ICON-CH2-EPS's 120 h, our operational
+# ceiling. **This 5 is a PROVIDER assumption, not a modelling judgement** — whether a
+# 15-day-trained model is still useful at 5 days is the modeller's call, and this entry
+# must be replaced by their AT_MOST + min_future_steps declaration, not ratified by it.
+HORIZON_CEILING_FLOORS: dict[ModelId, int] = {
+    AQUACAST_CMAL_POOL_PT_MODEL_ID: 5,
+}
+
 FALLBACK_MODEL_IDS: frozenset[ModelId] = frozenset(
     model_id for model_id, tier in MODEL_TIERS.items() if tier is ModelTier.FALLBACK
 )

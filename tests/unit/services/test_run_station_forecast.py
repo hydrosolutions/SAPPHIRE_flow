@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import polars as pl
 from structlog.testing import capture_logs
 
+import sapphire_flow.services.horizon_semantics as horizon_semantics
 import sapphire_flow.services.run_station_forecast as rsf_module
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import ModelOutputError
@@ -49,6 +50,7 @@ from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import FakeModelArtifactStore, FakeModelStateStore
 
 if TYPE_CHECKING:
+    import pytest
     from pytest import MonkeyPatch
 
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
@@ -1144,6 +1146,41 @@ class TestNwpCoverageGuard:
         assert result.primary_model_id == self._NATIVE_ID
         native = result.results[self._NATIVE_ID]
         assert native.ensembles["discharge"].forecast_horizon_steps == 5
+
+    def test_an_opted_in_model_runs_on_a_short_frame(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 159 T0d at the REAL seam, not just the helper: the SAME 1-row frame
+        that is skipped above must now be accepted, because the provider opt-in says
+        this model's declared horizon is a ceiling. Patching our own config table is
+        legitimate here — what must never be faked is the entry point itself."""
+        monkeypatch.setattr(
+            horizon_semantics.__name__ + ".HORIZON_CEILING_FLOORS",
+            {self._NWP_ID: 1},
+            raising=True,
+        )
+
+        result = self._run_all(future_rows=1)
+
+        assert self._NWP_ID in result.results
+        assert self._NWP_ID not in result.failed_models
+        assert result.primary_model_id == self._NWP_ID
+
+    def test_an_opt_in_below_the_available_rows_still_refuses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The opt-in is a FLOOR, not "anything goes": a frame shorter than the floor
+        is still refused, so truncation stays bounded."""
+        monkeypatch.setattr(
+            horizon_semantics.__name__ + ".HORIZON_CEILING_FLOORS",
+            {self._NWP_ID: 3},
+            raising=True,
+        )
+
+        result = self._run_all(future_rows=1)
+
+        assert self._NWP_ID not in result.results
+        assert self._NWP_ID in result.failed_models
 
     def test_adequate_coverage_keeps_nwp_model(self) -> None:
         # 5 clean daily rows satisfy forecast_horizon_steps=5 → NWP model runs.
