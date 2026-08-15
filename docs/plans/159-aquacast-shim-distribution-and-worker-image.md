@@ -187,6 +187,41 @@ floors.
 **Note this is orthogonal to the FI bump (T0),** which was verified version-neutral: the resolved FI
 commit was identical before and after.
 
+## T0c — FI v0.1.20 lands the horizon contract we asked for (2026-08-15)
+
+**`v0.1.20` adds exactly what `docs/fi-issues/002-future-steps-at-most-semantics.md` proposed** —
+verified against the tag, not assumed:
+
+```python
+class HorizonSemantics(Enum):
+    EXACT = "exact"      # fewer steps is an error
+    AT_MOST = "at_most"  # fewer is acceptable, yields a shorter forecast
+
+class FutureKnownVariable(BaseModel):
+    horizon_semantics: HorizonSemantics = HorizonSemantics.EXACT   # default preserves today
+    min_future_steps: int | None = None                            # only meaningful when AT_MOST
+```
+
+All three properties the issue argued for are present: the default is `EXACT` so no existing model
+changes meaning, `min_future_steps` exists so "fewer is fine" is not unbounded, and the declaration
+belongs to the **model**. A `model_validator` enforces coherence between the pair.
+
+### ⚠️ This does NOT unblock the Swiss forecast on its own
+The contract can now *express* a ceiling, but `cmal_pool_PT` still **declares** `future_steps=15`
+with the default `EXACT`. Until **aquacast declares `AT_MOST` (+ a sensible `min_future_steps`) on
+its future-known variables**, a strict provider still refuses ICON's 120 h. The remaining work is on
+the modeller's side, not ours.
+
+### ⚠️ Sequencing trap: bumping us to v0.1.20 BREAKS the extra
+**aquacast pins `tag = "v0.1.19"`, which is exact.** Two different tags of the same git URL are two
+different sources to uv — the identical class of conflict T0/#155 just fixed. So moving to v0.1.20
+before aquacast does makes the `aquacast` extra unresolvable again.
+
+**The ask to the modeller is therefore a single coordinated change:** move aquacast to FI
+**v0.1.20** *and* declare `horizon_semantics=AT_MOST` with `min_future_steps` on
+`precipitation`/`mean_temperature`. Doing only the first keeps us blocked on the horizon; doing
+neither keeps us pinned at v0.1.19.
+
 ## Tasks
 
 ### T1 — the aquacast shim (IN THIS REPO, optional extra — see D17)
