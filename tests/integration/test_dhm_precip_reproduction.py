@@ -209,3 +209,48 @@ class TestNormalisedAxisMatchesTheRecordedRealWorkbookTotals:
 
         key_counts = axis.group_by(["station", "timestamp"]).len()
         assert key_counts["len"].max() == 1
+
+
+class TestQcMaskAgainstTheRealWorkbook:
+    """Task 3a (Plan 173, M-A3) — the M-A1 reproduction gate evaluates
+    UNMASKED statistics by design and would therefore pass against an EMPTY
+    mask; these assertions run against the real workbook specifically so a
+    regression that silently emptied the mask (D5's failure mode) cannot
+    hide behind that gate. Real counts recorded 2026-08-15, run against the
+    pinned production workbook.
+    """
+
+    def test_the_mask_is_non_empty_and_catches_the_recorded_real_defects(
+        self, tmp_path
+    ) -> None:
+        out = tmp_path / "m_a3_out"
+        run_pipeline(out)
+        mask = pl.read_parquet(out / "tables" / "qc_mask.parquet")
+
+        assert mask.height == 11381
+
+        sindhuli = mask.filter(pl.col("station") == "Sindhuli Madhi")
+        assert sindhuli.height == 120  # D3's predicted stuck-high duration
+
+        aiselukhark = mask.filter(pl.col("station") == "Aiselukhark")
+        assert aiselukhark.height >= 52 * 24  # the 52-day run plus its siblings
+
+        lukla = mask.filter(pl.col("station") == "Lukla Airport")
+        assert lukla.height == 45  # matches the milestone doc's sentinel count
+
+    def test_the_accounting_reconciles_to_the_axis_row_count(self, tmp_path) -> None:
+        out = tmp_path / "m_a3_out"
+        run_pipeline(out)
+        accounting = pl.read_parquet(out / "tables" / "qc_removal_accounting.parquet")
+        axis = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
+
+        assert accounting["count"].sum() == axis.height
+
+    def test_the_exclusion_list_is_empty_on_real_data(self, tmp_path) -> None:
+        # D8: expected, not a bug — the worst measured JJAS retention is
+        # 0.830 (Lete), well above the 0.50 exclusion floor.
+        out = tmp_path / "m_a3_out"
+        run_pipeline(out)
+        exclusion_list = pl.read_parquet(out / "tables" / "qc_exclusion_list.parquet")
+
+        assert exclusion_list.height == 0

@@ -8,6 +8,7 @@ manifest `id` maps onto a computed table.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,8 @@ import polars as pl
 
 from scripts.dhm_precip import (
     normalise,
+    observations,
+    qc_mask,
     stats_axis,
     stats_climatology,
     stats_coherence,
@@ -33,6 +36,7 @@ from scripts.dhm_precip.domain_types import (
 from scripts.dhm_precip.numeric import as_float, as_int
 
 if TYPE_CHECKING:
+    from sapphire_flow.types.datetime import UtcDatetime
     from scripts.dhm_precip.params import DhmPrecipParams
 
 ExpectationValue = float | int | str | tuple[float, float] | None
@@ -76,6 +80,10 @@ class ComputedTables:
     loo_tail_prediction: pl.DataFrame
     normalised_axis: pl.DataFrame
     normalisation_provenance: pl.DataFrame
+    qc_mask: pl.DataFrame
+    qc_removal_accounting: pl.DataFrame
+    qc_exclusion_list: pl.DataFrame
+    qc_rule_provenance: pl.DataFrame
 
 
 def _normalised_axis_and_provenance(
@@ -115,15 +123,138 @@ def _normalised_axis_and_provenance(
     return normalised_tagged, provenance_tagged
 
 
+def _tag_normalized(frame: pl.DataFrame) -> pl.DataFrame:
+    """Plan 173 (M-A3) — the NORMALIZED axis-status pattern Plan 172
+    established: every QC-mask artefact is derived from, and keyed against,
+    the normalised hourly axis, never the raw ON_GRID view."""
+    return frame.with_columns(
+        pl.lit(View.ON_GRID.value).alias("view"),
+        pl.lit(AxisStatus.NORMALIZED.value).alias("axis_status"),
+    )
+
+
+def _qc_mask_table(mask: frozenset[qc_mask.MaskKey]) -> pl.DataFrame:
+    rows = sorted(mask, key=lambda kv: (kv[0], kv[1]))
+    frame = pl.DataFrame(
+        {
+            "station": [str(station) for station, _ts in rows],
+            "timestamp": [ts.replace(tzinfo=None) for _station, ts in rows],
+        },
+        schema={"station": pl.Utf8, "timestamp": pl.Datetime("us")},
+    )
+    return _tag_normalized(frame)
+
+
+def _qc_removal_accounting_table(
+    rows: tuple[qc_mask.RemovalAccountingRow, ...],
+) -> pl.DataFrame:
+    frame = pl.DataFrame(
+        {
+            "station": [str(r.station) for r in rows],
+            "season": [r.season.value for r in rows],
+            "hour_of_day": [r.hour_of_day for r in rows],
+            "category": [r.category.value for r in rows],
+            "count": [r.count for r in rows],
+        },
+        schema={
+            "station": pl.Utf8,
+            "season": pl.Utf8,
+            "hour_of_day": pl.Int64,
+            "category": pl.Utf8,
+            "count": pl.Int64,
+        },
+    )
+    return _tag_normalized(frame)
+
+
+def _qc_exclusion_list_table(
+    entries: tuple[qc_mask.ExclusionListEntry, ...],
+) -> pl.DataFrame:
+    frame = pl.DataFrame(
+        {
+            "station": [str(e.station) for e in entries],
+            "jjas_retained_fraction": [e.jjas_retained_fraction for e in entries],
+            "reason": [e.reason.value for e in entries],
+        },
+        schema={
+            "station": pl.Utf8,
+            "jjas_retained_fraction": pl.Float64,
+            "reason": pl.Utf8,
+        },
+    )
+    return _tag_normalized(frame)
+
+
+def _qc_rule_provenance_table(
+    rows: tuple[qc_mask.RuleProvenanceRow, ...],
+) -> pl.DataFrame:
+    """D9/M-I2 — the mask reduction collapses flags to timestamps and
+    discards which rule fired; this table is the manifest's own record of
+    the exact executed rule definitions, per pass (D3c). `thresholds` is
+    serialised to JSON since its keys vary per rule — a flat parquet column
+    can't otherwise carry it."""
+    frame = pl.DataFrame(
+        {
+            "pass_name": [r.pass_name for r in rows],
+            "rule_id": [r.rule_id for r in rows],
+            "rule_version": [r.rule_version for r in rows],
+            "time_step_seconds": [r.time_step_seconds for r in rows],
+            "scope": [r.scope for r in rows],
+            "thresholds_json": [json.dumps(r.thresholds, sort_keys=True) for r in rows],
+        },
+        schema={
+            "pass_name": pl.Utf8,
+            "rule_id": pl.Utf8,
+            "rule_version": pl.Utf8,
+            "time_step_seconds": pl.Int64,
+            "scope": pl.Utf8,
+            "thresholds_json": pl.Utf8,
+        },
+    )
+    return _tag_normalized(frame)
+
+
+def _qc_mask_tables(
+    normalised_axis: pl.DataFrame,
+    params: DhmPrecipParams,
+    *,
+    now: UtcDatetime,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Task 2a/2b/3a (Plan 173, M-A3) — the fit-for-purpose QC mask, its
+    removal accounting, the M-A6 exclusion list, and rule provenance,
+    computed from the SAME normalised axis M-A2 produced. `now` is injected
+    (CLAUDE.md: no bare `datetime.now()` in business logic) — it only ever
+    becomes `Observation.created_at`, which no QC rule reads."""
+    obs_by_station = observations.observations_by_station(
+        normalised_axis, parameter="precipitation", created_at=now
+    )
+    mask = qc_mask.build_mask(obs_by_station, params)
+    accounting_rows = qc_mask.build_removal_accounting(obs_by_station, mask, params)
+    exclusion_entries = qc_mask.build_exclusion_list(accounting_rows, params)
+    provenance_rows = qc_mask.rule_provenance_rows(params)
+
+    return (
+        _qc_mask_table(mask),
+        _qc_removal_accounting_table(accounting_rows),
+        _qc_exclusion_list_table(exclusion_entries),
+        _qc_rule_provenance_table(provenance_rows),
+    )
+
+
 def compute_all(
     raw: pl.DataFrame,
     on_grid: pl.DataFrame,
     inventory: LongFrameInventory,
     stations: StationCoordinateTable,
     params: DhmPrecipParams,
+    *,
+    now: UtcDatetime,
 ) -> ComputedTables:
     normalised_axis, normalisation_provenance = _normalised_axis_and_provenance(
         raw, on_grid, stations, params
+    )
+    qc_mask_table, qc_removal_accounting, qc_exclusion_list, qc_rule_provenance = (
+        _qc_mask_tables(normalised_axis, params, now=now)
     )
     group_membership = stats_precision.infer_group_membership(on_grid, params)
 
@@ -268,6 +399,10 @@ def compute_all(
         loo_tail_prediction=loo_tail_prediction,
         normalised_axis=normalised_axis,
         normalisation_provenance=normalisation_provenance,
+        qc_mask=qc_mask_table,
+        qc_removal_accounting=qc_removal_accounting,
+        qc_exclusion_list=qc_exclusion_list,
+        qc_rule_provenance=qc_rule_provenance,
     )
 
 
