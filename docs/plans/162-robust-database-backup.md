@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-14
 plan: 162
 title: Robust database backup — complete, verified restorable, loud on failure, and safe to move off the machine
@@ -12,7 +12,11 @@ supersedes: []
 # Plan 162 — Robust database backup
 
 ## Status
-**DRAFT** (2026-08-14). Operational reliability (category **A**). **Backups are live-broken**: the last successful
+**READY** (2026-08-15) — **build scope is PHASE A only** (T1-T4 + the backup component; see "Phase A — BUILD
+NOW"). Phase B/C specs are retained below but explicitly **not** in this build.
+Reviewed three times: two full rounds on the whole plan plus a focused pass on the narrowed Phase A scope; the
+last round's blockers were coherence, not design. Operational reliability (category **A**). **Backups are
+live-broken**: the last successful
 automated backup was **2026-08-13 02:01 UTC**. Absorbs **T3/T4/T5 of Plan 161** (which stay recorded there as the
 incident trail; this plan is where they get built).
 
