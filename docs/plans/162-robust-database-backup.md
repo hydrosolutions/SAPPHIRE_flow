@@ -82,16 +82,43 @@ machine, is a transport problem rather than a correctness problem.
     `pg_read_all_data` on every run, and `pg_dump` never calls `SET ROLE`. So: plain `INHERIT`, plain
     `GRANT pg_read_all_data TO sapphire_backup;`, and **out of** the api/worker blanket-revoke block — correct
     by construction, with its own targeted convergence block instead (T1).
-- **D2 — where it runs. ✅ DECIDED (owner, 2026-08-14): mount into the existing `prefect-worker`.** Accepted
-  cost: that container gains a read-everything (read-only) credential. A dedicated backup pool is **deferred**,
-  not rejected — it needs pool creation before deployment registration, routing, volume, mounts, limits and
-  `depends_on: init`.
-  - **Re-examined after review** (the reviewer argued a dedicated pool now looks simpler): kept, *because*
-    T2 gives the backup flow a credential path that is fully disjoint from the container-wide `DATABASE_URL`
-    every other flow on the `default` pool reads (`docker-compose.yml:83,99-100`). Nothing but
-    `dump_database_task` reads the `SAPPHIRE_BACKUP_*` variables, so the shared container no longer implies a
-    shared identity. The residual cost is only that the read-everything secret is *mounted* in the worker
-    container, which D2 already accepted. Revisit if a second flow ever needs its own identity.
+- **D2 — where it runs. ✅ RE-DECIDED (owner, 2026-08-15): a DEDICATED backup component — option (b).**
+  *Supersedes the 2026-08-14 decision to mount into the existing `prefect-worker`.* The owner's directive was
+  explicit: **this ships to customers, so pick the right option, not the cheap one.** That changes the analysis:
+  - **The product is multi-tenant.** `access_tokens` carries `tenant_id`, `token_hash`, `role`, `key_prefix`
+    (verified on the live schema). A component able to read that table can enumerate **every tenant's**
+    credential metadata. On a single-operator LAN staging box that is a nuisance; in a shipped multi-tenant
+    system it is a cross-tenant exposure path, and the first thing a customer security review will ask about.
+  - **Option (a) reverses a deliberate hardening decision.** `bootstrap-roles.sql:189` explicitly
+    `REVOKE SELECT ON access_tokens, access_token_stations FROM sapphire_worker`, documented at `:178-188`:
+    *"a Prefect worker running flows has no business reading token hashes/scopes"* — and noted as *"caught by a
+    live docker-compose deploy rehearsal, not static review"*. Mounting a `pg_read_all_data` credential into
+    that same container restores the capability to the **process**, defeating the revoke's intent by the back
+    door.
+  - **The "disjoint credential path" argument does not cover this.** Round 1 kept (a) because T2 gives the
+    backup a credential path disjoint from the container-wide `DATABASE_URL`. That correctly addresses *identity
+    confusion* — but the risk here is a **mounted secret**: the read-everything credential would sit in the
+    container that also runs flow code, model artifacts and adapters touching external data. Disjoint variables
+    do not help once that process is compromised.
+  - **Honest bound on today's risk:** `access_token_pepper` is mounted **only into `api`** (verified), so (a)
+    would leak peppered hashes and metadata, not directly usable tokens. It is a loss of defence-in-depth, not
+    an immediate breach — which is why (a) was defensible for staging and is not defensible for a shipped
+    product.
+  - **Option (c) — host-scheduled `docker exec` — is DISQUALIFIED for a shipped product**, independent of
+    security: it is macOS/launchd-specific glue. Customers deploy the Compose topology, likely on Linux.
+    Anything that works only on our mini is not a product.
+  - **⚠️ Sub-choice for the implementer, decide at build time:** a **Prefect `backup` work pool** (consistent
+    with the repo's flows-and-observability standard, and preserves the failure-detection signal T4 depends on)
+    **vs a minimal one-shot backup container** (smaller attack surface — no flow code, no adapters — but must
+    not lose that signal). Either satisfies D2; the security property is *"the only component holding a
+    read-everything credential is the one whose sole job is backup"*.
+  - **Cost, stated:** the pool wiring round 1 correctly enumerated — pool creation **before** deployment
+    registration, routing, volume, mounts, resource limits, `depends_on: init` (`docker-compose.yml:80-83`,
+    `:149-152`, `:288-293`). Roughly half a day more than option (a).
+  - **Regression guard (required):** a CI assertion that the backup secret **never** appears in
+    `prefect-worker`'s mounts, so this cannot silently revert. The property must be testable, not merely
+    documented.
+
 - **D3 — success signal. ✅ DECIDED: make the filesystem trustworthy instead of adding a second channel.** With
   atomic publication, a file *only* carries the published name if it already validated — so "newest artifact"
   becomes real evidence and the monitor can keep reading it. The `pipeline_health` record proposed in Plan 161 T5
