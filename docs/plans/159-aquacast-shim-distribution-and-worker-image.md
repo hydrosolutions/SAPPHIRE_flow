@@ -119,6 +119,39 @@ So the bump is low-risk: three additive changes plus one narrowing we already sa
   trained binning used ... so what we declare and what the weights were fit on cannot drift apart."
   **We currently ignore it** — acceptable for a daily model, and a real question for Plan 153.
 
+## PT's contract, read off the LIVE model (2026-08-15)
+
+Constructed `AquacastModel(ModelTemplate.from_yaml(cmal_pool_PT/config.yaml))` against real aquacast
+`0.1.343` + FI `0.1.19` and dumped `input_requirement`. **This supersedes any description of the
+contract elsewhere — it is what the model actually declares.**
+
+```
+targets:  discharge  unit=mm/day  representations=[quantiles, deterministic]
+dynamic:  P1D -> data[basin_average]
+  past_known[aquacast]:   discharge        lookback=210 max_nan=0 unit=mm/day  agg=sum
+                          precipitation    lookback=210 max_nan=0 unit=mm/day  agg=sum
+                          mean_temperature lookback=210 max_nan=0 unit=°C      agg=mean
+  future_known[aquacast]: precipitation    future_steps=15 max_nan=0 unit=mm/day agg=sum  ens=single
+                          mean_temperature future_steps=15 max_nan=0 unit=°C     agg=mean ens=single
+static:   50 names        artifact_scope: GROUP
+```
+
+### Four corrections to this plan's assumptions
+1. **`precipitation` is `mm/day` too, not just discharge.** G9 says to "audit precipitation and
+   expose canonical `MM` if it declares `MM_PER_DAY`" — it does. So the unit boundary covers **two**
+   variables, and only the discharge one is area-dependent; precipitation `mm/day → mm` over a daily
+   step is a pure relabel, not a conversion.
+2. **There is a SOURCE layer this plan never mentions**: the shape is
+   `dynamic[time_step].data[spatial].{past_known,future_known}[SOURCE][name]`, and the source key
+   here is the literal string `"aquacast"`. Any shim translation must preserve that nesting.
+3. **`aggregation` is now declared** (`sum`/`mean`) — the FI v0.1.19 feature from T0, live on this
+   artifact. We ignore it today; it is a Plan 153 question.
+4. **`future_steps=15` is still declared** even though the modeller relaxed the horizon to a
+   *maximum*. This is exactly the FI gap written up in `docs/fi-issues/002-future-steps-at-most-
+   semantics.md` — the declaration cannot say "at most", so a strict provider still refuses. **The
+   shim cannot fix this by lying about the number**; it needs the FI contract change, or a
+   provider-side opt-in. Unchanged by anything here.
+
 ## Tasks
 
 ### T1 — the aquacast shim (IN THIS REPO, optional extra — see D17)
