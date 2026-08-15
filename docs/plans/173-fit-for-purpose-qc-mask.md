@@ -1,6 +1,7 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-15
+revised: 2026-08-15
 plan: 173
 title: M-A3 — the fit-for-purpose QC mask
 scope: A timestamp mask over the normalised hourly frame, produced by running the PRODUCTION QC checker with an in-code precipitation rule set, plus per-station/per-season removal accounting and the M-A6 exclusion list. Explicitly NOT a cleaned dataset (consumers apply the mask), NOT adjudication of which zero runs are real, NOT any ERA5 work, NOT operational config binding (M-I4, gated).
@@ -12,7 +13,11 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 173 — M-A3 fit-for-purpose QC mask
 
 ## Status
-**DRAFT.** Implements **M-A3**, unblocked by Plan 172 (the canonical axis and the `frozen_sensor`
+**READY — owner-confirmed 2026-08-15.** Gated with **three manual Codex rounds** (2B+3M, then a
+third round asked what the first two had MISSED, which found 2B+4M more). Two of the four blockers
+were the same class of defect — an unpinned, mask-changing parameter — caught in different places.
+
+Implements **M-A3**, unblocked by Plan 172 (the canonical axis and the `frozen_sensor`
 value exclusion). This is the milestone that makes magnitude statistics usable.
 
 ## Problem
