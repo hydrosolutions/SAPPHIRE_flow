@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.726"
+version = "0.1.727"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -27,10 +27,10 @@ dependencies = [
     "jinja2>=3.1.6",
     "mako>=1.3.11",
     "numcodecs>=0.16.1,<0.17",
-    "numpy>=2.4.3",
+    "numpy>=2.4.6",
     "orjson",
     "platformdirs>=4.0",
-    "polars",
+    "polars>=1.41.2",
     "prefect>=3.0",
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",
@@ -38,7 +38,7 @@ dependencies = [
     "recap-dg-client",
     "requests>=2.33.1",
     "rioxarray>=0.19.0",
-    "scikit-learn>=1.8.0",
+    "scikit-learn>=1.9.0",
     "shapely",
     "sqlalchemy>=2.0",
     "starlette>=1.3.1",
@@ -114,7 +114,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.726"
+current_version = "0.1.727"
 commit = false
 tag = false
 allow_dirty = true
