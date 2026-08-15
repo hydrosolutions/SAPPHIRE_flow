@@ -79,6 +79,17 @@ pinned at ~72 mm is still in the sample, exactly as Plan 170's D6 predicted. M-A
   **Give the two instances distinct `rule_version` strings** so an emitted flag says which fired —
   Plan 172's D8b made `rule_version` flow through, and this is its first real use.
 
+- **D3c — Two PASSES with pass-specific rule sets, not one call with `skipped_rule_ids`.** Both
+  instances share `rule_id = "frozen_sensor"`, and the checker selects rules only by `rule_id`
+  (`services/qc.py:256`) — `skipped_rule_ids` cannot distinguish them, so a single full-rule-set call
+  would apply the long-zero-run rule year-round and defeat D3b. Instead:
+  | Pass | Rule set | Observations |
+  |---|---|---|
+  | **A** | `range_check` + stuck-value `frozen_sensor` | the whole station series |
+  | **B** | long-zero-run `frozen_sensor` only | one JJAS season at a time |
+
+  The mask is the **union** of both passes' flagged keys.
+
 - **D3b — Seasonal scope is applied OUTSIDE the checker, because the rule cannot express it.**
   `_apply_frozen_sensor` takes only tolerance, minimum length and the exclusion floor
   (`services/qc.py:92-98`) — no season parameter — and the checker applies every matching rule to the
@@ -133,14 +144,30 @@ pinned at ~72 mm is still in the sample, exactly as Plan 170's D6 predicted. M-A
   denominator — including it would blend "the sensor never reported" with "we masked it", which are
   different facts and are exactly what this three-way split exists to keep apart.
 
-  **Exposure by hour of day as well as by season.** Rule 1 requires it
-  (`dhm-precipitation-milestones.md:51`) because a mask that removes hours unevenly across the day
-  biases diurnal means — and diurnal structure is exactly what M-A7 is for.
+  **Exposure is CROSS-CLASSIFIED by `(station, season, hour_of_day, category)`**, not two separate
+  marginals. Rule 1 requires hour-of-day exposure (`dhm-precipitation-milestones.md:51`) because a
+  mask that removes hours unevenly across the day biases diurnal means — and M-A7's whole subject is
+  diurnal structure. Season and hour reported separately cannot answer "what was the JJAS diurnal
+  exposure?", which is the question that actually matters.
 
-  **"Losing most of its monsoon" is an exact numeric predicate**, not a judgement: a station whose
-  `retained_nonmissing / (retained_nonmissing + qc_removed)` over JJAS falls below a stated threshold
-  goes on the M-A6 exclusion list. The threshold is a parameter, and the resulting list is an
-  artefact — never a silent thinning.
+  **Seasons must be exhaustive.** The parameter object names only JJAS and DJF, leaving five months
+  unassigned — every axis row must land in exactly one bin, so the mapping is the conventional Nepali
+  four: **MAM** (pre-monsoon), **JJAS** (monsoon), **ON** (post-monsoon), **DJF** (winter). Asserted
+  by reconciling the cross-classified table back to the axis row count exactly once per row.
+
+  **"Losing most of its monsoon" is an exact, pinned predicate**, not a judgement. A station is
+  excluded from M-A6 when its JJAS
+  `retained_nonmissing / (retained_nonmissing + qc_removed)` is **strictly below
+  `minimum_jjas_retained_fraction = 0.50`**. Equality passes (0.50 is retained). A **zero denominator**
+  — a station with no observed JJAS hours at all — is excluded, and recorded with that reason rather
+  than dividing by zero.
+
+  **Expect the list to be EMPTY, and do not treat that as a bug.** Measured at the 7-day threshold,
+  the worst-affected station retains **0.830** (Lete; then Aiselukhark 0.831, Nagarkot 0.913) against
+  a median of **0.984**, and **no station falls below 0.75**. The predicate is a safeguard against a
+  pathological case, not a filter expected to fire on this delivery. An implementer who finds an empty
+  list has not broken anything — the test asserts the boundary with synthetic stations, not that any
+  real station is excluded.
 
   Rule 1's obligations otherwise bind the mask's **consumers**: M-A3 computes no masked statistic, so
   it cannot violate them; it supplies what compliance requires.
@@ -169,7 +196,9 @@ Every code task carries the D9 gate in addition to the test named below.
 parameters on the frozen parameter object (D6).
 *Verification:* `uv run pytest tests/unit/scripts/test_dhm_precip_ruleset.py` — `rules_for` returns
 **both** frozen_sensor instances for precipitation at 3600 s, with distinct `rule_version`s; a
-`0.2/0.4/0.6` tipping-bucket noise sequence is **not** flagged as stuck (the 5.0 floor doing its job);
+`0.2/0.4/0.6` tipping-bucket noise sequence **at least `min_consecutive` long** is **not** flagged as
+stuck — the length matters, since a shorter sequence would pass for the wrong reason (the 5.0 floor
+must do the work, not the run being too short to qualify);
 a mismatched `time_step` yields no flags at the checker level (characterisation only — the enforcing
 raise is task 2a's).
 
@@ -185,28 +214,44 @@ values are preserved**; constructing a null row as `RAW` raises (locking the inv
 `Stage1QualityChecker.check()`, collect flags, and reduce them to the `(station, timestamp)` drop set.
 *Verification (red-first):* `uv run pytest tests/unit/scripts/test_dhm_precip_mask.py` — synthetic
 frames reproducing each real defect signature: a **52-day zero run**, a **120-hour pinned non-zero
-block**, and a **sentinel**, each caught; a **167-hour** zero run (threshold − 1 h) **not** caught; a
+block**, and a **sentinel** — each masked **in full**, asserted as an exact expected timestamp set
+rather than "at least one flag", since wholesale removal is the decision and a partial mask would
+satisfy a weaker assertion; a **167-hour** zero run (threshold − 1 h) **not** caught; a
 zero run **interrupted by a gap** yields two shorter runs, neither reaching the threshold (proving
 M-A2's null-fill severs runs as intended); a run spanning **30 Sep → 1 Oct** does not merge across
 seasons (D3b); a **winter** month of zeros is untouched (D3b's whole point); and a **`time_step`
 mismatch raises** the typed error rather than returning an empty mask (D5).
 
-**2b — removal accounting and the exclusion list.** *(depends on 2a)* The three-way accounting of
+**2b — removal accounting, overlap handling, and the exclusion list.** *(depends on 2a)* The three-way accounting of
 D8 — `source_missing` / `qc_removed` / `retained_nonmissing` — per station, per season **and per hour
 of day**; the M-A6 exclusion list from the exact monsoon-retention predicate.
-*Verification:* `uv run pytest tests/unit/scripts/test_dhm_precip_mask.py` — the three categories
-reconcile **exactly** to the axis row count; a gap row counts as `source_missing` and **never** as
-retained; retention is computed over `retained_nonmissing + qc_removed` only; hour-of-day exposure is
-emitted for every station; a station just below the retention threshold is on the exclusion list and
-one just above is not.
+*Verification:* `uv run pytest tests/unit/scripts/test_dhm_precip_mask.py` —
+**overlap**: a ≥168 h JJAS constant run *above* the 5.0 floor trips **both** instances, so two flags
+with distinct `rule_version`s are emitted, yet the mask holds **one** key per timestamp and
+`qc_removed` counts each observation **exactly once** (the double-counting this design invites);
+the cross-classified `(station, season, hour_of_day, category)` table reconciles **exactly** to the
+axis row count, every row in exactly one of the four seasons, with **exact expected hour counts** for
+a synthetic station — not merely "exposure is emitted";
+a gap row counts as `source_missing` and **never** as retained; retention divides by
+`retained_nonmissing + qc_removed` only; a synthetic station at retention 0.49 is excluded, one at
+**exactly 0.50** is not, and one with zero observed JJAS hours is excluded with that reason.
 
 ### Phase 3 — wire and record
 
-**3a — emit the mask and accounting.** Extend the runner to write both alongside the existing
-artefacts, declared in the manifest (the `NORMALIZED` axis status pattern Plan 172 established).
+**3a — emit the mask, accounting, exclusion list and rule provenance.** Extend the runner to write
+**all four** alongside the existing artefacts, declared in the manifest (the `NORMALIZED` axis-status
+pattern Plan 172 established). The exclusion list is an artefact (D8), not a log line. **Rule
+provenance is part of it**: the mask reduction collapses flags to timestamps and discards which rule
+fired, so the manifest records the **exact executed rule definitions — id, `rule_version`, thresholds
+and scope, per pass (D3c)**. M-I2 needs the mask definition and version to package the dataset
+(`dhm-precipitation-milestones.md:447-452`); without it the mask is unreproducible from the artefact
+alone.
 *Verification:* `DHM_PRECIP_XLSX=… uv run python scripts/dhm_precip/run.py --out <tmp>` exits 0 and
-writes mask + accounting with round-tripping manifest declarations; the M-A1 reproduction gate still
-passes **with the workbook** (a bare full-suite run skips it).
+writes **mask, accounting, exclusion list and rule provenance**, all with round-tripping manifest
+declarations. **Workbook-gated assertions on the real outputs**, because the M-A1 reproduction gate
+evaluates *unmasked* statistics by design and would therefore pass against an **empty** mask: assert
+the real mask is non-empty, that it contains Sindhuli Madhi's stuck-high block and Aiselukhark's
+52-day run, and that the cross-classified accounting reconciles to the axis row count.
 
 **3b — documentation.** Record M-A3 complete in the milestone doc with the real removal figures.
 **Do not** update the vision's withdrawn expectations here — recomputing them is M-A6/M-A7's, and the
