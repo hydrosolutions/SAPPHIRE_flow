@@ -51,14 +51,23 @@ Run against `data/dhm_precip/station_coordinates.csv` (26 stations, gitignored) 
 
 ## Design decisions
 
-- **D1 — Nearest cell centre is the primary operator; bilinear is the sensitivity arm.**
-  Precipitation is not a smooth field, and **bilinear interpolation of a precipitation field
-  systematically damps extremes** — it is a weighted average of four cells. Our track's central
+- **D1 — Nearest cell centre is THE operator. Owner-decided 2026-08-15; locked before any numbers
+  were seen.** Precipitation is not a smooth field, and **bilinear interpolation of a precipitation
+  field systematically damps extremes** — it is a weighted average of four cells. Our track's central
   finding is that the distribution **tail** is what fails to transfer and what a flood system depends
   on, so an operator that smooths the tail biases exactly the quantity of interest. Nearest preserves
   the model's own distribution shape at the cost of a positional error bounded by half a cell
-  diagonal (~7 km here, measured above). Both are computed; **nearest is what M-A6 consumes** unless
-  the sensitivity result overturns it, and that decision is recorded in the manifest, not assumed.
+  diagonal (~7 km here, measured above). The operator is recorded in the manifest (D7), never implied
+  by code.
+
+- **D1a — The sensitivity comparison is a DIAGNOSTIC, not a decision gate.** Because D1 is locked, the
+  nearest-vs-bilinear comparison no longer selects anything — which removes the risk the plan was
+  originally guarding against (choosing, after the fact, the operator that flatters the comparison).
+  It is still required, for a different and better-defined reason: it **quantifies operator-induced
+  uncertainty, which M-A6 must carry alongside its error characterisation**. A bias that is smaller
+  than the spread between two defensible operators is not a finding.
+  ⇒ Report it as an uncertainty band, not as a ranking, and **do not** phrase any result as
+  "bilinear would have been better".
 
 - **D2 — "Containing cell" and "nearest cell centre" are NOT the same operator and must not be
   conflated.** ERA5-Land values are cell-centre-registered on whole-0.1° nodes. "Nearest node" and
@@ -78,9 +87,14 @@ Run against `data/dhm_precip/station_coordinates.csv` (26 stations, gitignored) 
   reference the way Plan 171 captured the CDS payload, and record it in the plan before task 2 codes
   against it. **If the probe shows this needs an operator act** (a second licence acceptance, a
   different account), that surfaces as an owner ask immediately rather than mid-build.
-  **Fallback if orography proves unobtainable in this window:** report the mismatch against a public
-  DEM aggregated to the ERA5-Land grid, **labelled as a DEM proxy, not model orography** — they are
-  not the same quantity, and conflating them would misstate the diagnostic.
+  **Fallback ACCEPTED by the owner 2026-08-15:** if model orography needs a further operator act, or
+  proves unobtainable in this window, report the mismatch against a public DEM aggregated to the
+  ERA5-Land grid, **labelled in the artefact itself as a DEM proxy, not model orography.**
+  They are not the same quantity — model orography is what the ERA5-Land land-surface scheme actually
+  ran on, a DEM aggregate is what the terrain actually is, and the difference between them is a real
+  part of the model's error. The label is therefore load-bearing, not a caveat: it must appear as a
+  **field in the elevation table** (an enum, per CLAUDE.md — never a boolean), so no downstream
+  consumer can read the number without reading its provenance. M-A5 does not block on the real thing.
 
 - **D4 — Extraction never applies the QC mask.** The M-A3 mask is the **gauge** side. Applying it here
   would bake a pairing decision into the ERA5 artefact and make it unusable for anything else. Rule 1
@@ -155,20 +169,22 @@ Run against `data/dhm_precip/station_coordinates.csv` (26 stations, gitignored) 
 
 - Extracted per-station hourly series for all **26** stations, unmasked, regenerable from the
   committed pipeline
-- Operator **named and recorded in the manifest**, not implied by code
-- Per-station elevation-mismatch table (with the orography source explicitly labelled)
-- Operator-sensitivity comparison including tail quantiles
+- Operator **named and recorded in the manifest**, not implied by code — and it is **nearest** (D1)
+- Per-station elevation-mismatch table carrying an **orography-source enum** (`model_orography` |
+  `dem_proxy`) as a field, not a footnote (D3a)
+- Operator-sensitivity comparison including tail quantiles, reported as an **uncertainty band that
+  M-A6 carries** — not as a ranking of operators (D1a)
 - Kirtipur/Khumaltar within-cell bound emitted as a named diagnostic
 - `ruff` + `pyright` clean; pyright ratchet honoured; full suite green
 - Real-data gate authored and **skipping** with a clear reason until 2b lands
 
-## Open questions for the owner
+## Owner decisions (2026-08-15) — both open questions resolved
 
-1. **Does the sensitivity result get to overturn D1?** My position: yes, but only on a pre-stated
-   criterion, decided **before** seeing the numbers — otherwise we are choosing the operator that
-   flatters the comparison. Proposed criterion: keep nearest unless bilinear changes a **tail**
-   statistic by less than the Kirtipur/Khumaltar within-cell bound (i.e. the operator choice is
-   demonstrably smaller than irreducible representativeness error), in which case either is
-   defensible and we keep nearest for tail fidelity anyway.
-2. **Is a DEM-proxy fallback (D3a) acceptable** if model orography proves to need another operator
-   act, or should the milestone block on the real thing?
+| Question | Decision | Where it lands |
+|---|---|---|
+| May the sensitivity result overturn the operator choice? | **No — nearest is locked**, decided before any numbers were seen. The comparison stays, re-purposed as an uncertainty diagnostic | D1, D1a |
+| Is a DEM proxy acceptable if model orography needs another operator act? | **Yes** — labelled in the artefact as a proxy. M-A5 does not block on it | D3a |
+
+No open questions remain for the owner. The residual unknown is technical, not a decision:
+**how ERA5-Land's static orography is actually obtained** (task 1a), which is why 1a is a probe that
+must complete before task 2 codes against it.
