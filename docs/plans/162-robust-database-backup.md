@@ -78,7 +78,7 @@ age/byte policy, paired sidecar deletion and pre-dump headroom checks; the **exi
 migration** or the "no plaintext" acceptance is untrue; `3× artifact size` is the wrong restore-headroom model;
 and the CI assertion should pin the secret's **complete consumer set** to `{init, prefect-worker-backup}`.
 
-## ⚠️ D7 — OPEN (raised by me, not the reviewer): should this plan ship in phases?
+## ✅ D7 — DECIDED (owner, 2026-08-15): SPLIT. **Phase A first.**
 
 Backups have now been broken since **2026-08-13 02:01 UTC**. This plan has taken two review rounds and is still
 NEEDS-CHANGES, and its scope keeps growing (encryption, key custody, manifests, rehearsal, retention, disk
@@ -90,6 +90,68 @@ Proposed split — same end state, earlier safety:
 - **Phase C (survive the site):** off-box replication (D4), RPO/PITR (D6).
 Recommendation: **take the split.** Phase A is the part that stops the bleeding; B and C are what make it a
 product. The alternative — one big READY — is defensible but keeps the current gap open for days.
+
+## BUILD SCOPE — PHASE A (the only thing being built now)
+
+**In:** **T1** (the `sapphire_backup` role) · **T2** (the flow gets its own credential as `PG*`, no URL) ·
+**T3** (atomic publication) · **T4** (a monitor that cannot be fooled, including alert-once).
+**Out — deferred to Phase B/C, and the sections below stay as their spec:** encryption at rest, key custody,
+the snapshot manifest, the restore rehearsal (T5), the mount check (T6), full retention/headroom policy,
+off-box replication (D4), RPO/PITR (D6).
+
+**Encryption moves to Phase B — a deliberate change from the round-2 text.** Round-2 blocker **B2** (plaintext
+`.part` surviving SIGKILL on the persistent volume) exists *because* we stage plaintext then encrypt. With no
+encryption in Phase A there is no staging asymmetry: the temp file and the final artifact are both plaintext, on
+the same volume, exactly as today — **no regression, and no new exposure.** This removes `age`, key custody, key
+rotation, the encrypted manifest and the migration of existing plaintext dumps from the critical path, roughly
+halving Phase A. **Ship gate: Phase B is REQUIRED before any customer release** — dumps contain `access_tokens`
+and `tenant_id` on an unencrypted disk, and that is not shippable. Phase A restores an internal-staging capability
+that is currently broken; it does not make the backup customer-grade.
+
+**Consequently, Phase A's honest claim is narrower than the Goal above:** it closes **complete** and **loud on
+failure**. It does **not** close **verified** (no rehearsal until T5) or **survivable** (no encryption, no off-box
+copy). B3's "an unmounted volume must never satisfy freshness" is **not** a Phase A requirement, because there is
+no mount to lose — `/Volumes/sapphire-backup` is a plain directory on the boot disk today; that hazard becomes
+live only when D4 provides a real device, which is why T6 sits with it in Phase B.
+
+### Phase A must additionally satisfy these round-2 majors
+
+- **T1 — its own convergence block, and `REVOKE CREATE` is not enough.** A `REVOKE CREATE … FROM sapphire_backup`
+  **cannot override a CREATE grant inherited from `PUBLIC`** — the existing script makes this same mistaken claim
+  at `bootstrap-roles.sql:97-101`. Revoke public-schema `CREATE` explicitly and **assert
+  `has_schema_privilege('sapphire_backup','public','CREATE') = false`**. Fail loudly (or deliberately reassign)
+  if a pre-existing `sapphire_backup` owns any object, since direct ACL revocation cannot strip owner-intrinsic
+  privileges.
+- **T2 — build the child environment from an ALLOWLIST**, so unrelated inherited `PG*` variables cannot override
+  the connection.
+- **T3 — define the publication commit point and make it durable.** `os.link` gives atomic no-clobber visibility,
+  but **fsync the artifact and its directory**, declare the link the commit point, and perform **no required
+  fallible work after it** — otherwise retention (`flows/backup.py:119-120`) or cleanup can fail *after* a valid
+  artifact exists while the flow reports failure.
+- **T3 — a filesystem advisory lock** over the whole dump→validate→publish→retention transaction. A Prefect
+  deployment concurrency limit does **not** cover manual invocation, duplicate deployments, or a second
+  scheduler. Keep the random suffix + no-clobber as defence in depth.
+- **T3 — validation must check a schema-qualified `TABLE DATA public access_tokens` TOC entry**, not merely a
+  line containing `access_tokens`. And specify **concrete timeout values** for dump and validation, with
+  termination waiting for the child before cleanup.
+- **T4 — define the notification state machine, including failed delivery.** "Recovery clears state" loses the
+  recovery permanently if the post fails; add an explicit **recovery-pending** state retried each tick until
+  delivered. Tests: stale → repeated-stale → recovered → stale.
+- **Secret rotation requires container recreation, not live refresh.** File-backed Compose secrets
+  (`docker-compose.yml:358-371`) do not reliably hot-reload when the host file is replaced atomically. Require
+  re-running `init`, then recreating `prefect-worker-backup`, and **acceptance-test that the old password fails
+  and the next backup succeeds with the new one.**
+- **CI assertion pins the COMPLETE consumer set.** Parse rendered `docker compose config` and assert the backup
+  secret's consumers are exactly `{init, prefect-worker-backup}` — not merely "absent from `prefect-worker`" —
+  plus: absent from ingest and api, the default worker no longer mounts the `backups` volume, and the backup
+  deployment targets only the `backup` pool.
+- **Retention (minimum for Phase A):** delete artifact and any sidecar together, never delete the last remaining
+  valid artifact, and **check headroom before starting the dump** rather than reclaiming after it. Full
+  count/age/byte policy is Phase B.
+
+**Phase A acceptance (host):** `backup-database` reaches `COMPLETED`; a dump with a current timestamp appears;
+`pg_restore --list` shows the schema-qualified `access_tokens` TABLE DATA entry (proving the privilege fix);
+the watchdog posts exactly **one** recovery message. Explicitly **not** "the alerts went quiet".
 
 ## Problem
 
