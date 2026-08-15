@@ -8,6 +8,7 @@ manifest `id` maps onto a computed table.
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -101,36 +102,48 @@ def _normalised_axis_and_provenance(
     normalise.assert_row_identity_conservation(on_grid, normalised, live_stations)
     provenance = normalise.build_provenance(raw, params)
 
-    normalised_tagged = normalised.with_columns(
-        pl.lit(View.ON_GRID.value).alias("view"),
-        pl.lit(AxisStatus.NORMALIZED.value).alias("axis_status"),
-    )
-    provenance_tagged = pl.DataFrame(
-        {
-            "off_grid_source_timestamp_rows": [
-                provenance.off_grid_source_timestamp_rows
-            ],
-            "off_grid_non_null_observations": [
-                provenance.off_grid_non_null_observations
-            ],
-            "accumulation_convention": [provenance.accumulation_convention.value],
-            "period_ending_source": [provenance.period_ending_source],
-        }
-    ).with_columns(
-        pl.lit(View.ON_GRID.value).alias("view"),
-        pl.lit(AxisStatus.NORMALIZED.value).alias("axis_status"),
+    normalised_tagged = _tag_normalized(normalised)
+    provenance_tagged = _tag_normalized(
+        pl.DataFrame(
+            {
+                "off_grid_source_timestamp_rows": [
+                    provenance.off_grid_source_timestamp_rows
+                ],
+                "off_grid_non_null_observations": [
+                    provenance.off_grid_non_null_observations
+                ],
+                "accumulation_convention": [provenance.accumulation_convention.value],
+                "period_ending_source": [provenance.period_ending_source],
+            }
+        )
     )
     return normalised_tagged, provenance_tagged
+
+
+def _tag(frame: pl.DataFrame, view: View, axis_status: AxisStatus) -> pl.DataFrame:
+    """major-3 — tags a table with its declared `(view, axis_status)`, cast
+    to a single-category `Enum` rather than left as a plain string literal.
+    An `Enum`'s categories are part of its SCHEMA, not its row data, so they
+    survive intact even when the frame has ZERO rows and round-trip through
+    parquet unchanged (a plain literal column carries no recoverable value
+    once there are no rows to read it from — proven empirically: `.unique()`
+    over 0 rows returns nothing). `table_declarations` reads these
+    categories, never `.unique()` over row data, so a genuinely empty
+    exclusion list or a clean (zero-flag) mask still declares its axis
+    scope instead of silently losing it."""
+    return frame.with_columns(
+        pl.lit(view.value).cast(pl.Enum([view.value])).alias("view"),
+        pl.lit(axis_status.value)
+        .cast(pl.Enum([axis_status.value]))
+        .alias("axis_status"),
+    )
 
 
 def _tag_normalized(frame: pl.DataFrame) -> pl.DataFrame:
     """Plan 173 (M-A3) — the NORMALIZED axis-status pattern Plan 172
     established: every QC-mask artefact is derived from, and keyed against,
     the normalised hourly axis, never the raw ON_GRID view."""
-    return frame.with_columns(
-        pl.lit(View.ON_GRID.value).alias("view"),
-        pl.lit(AxisStatus.NORMALIZED.value).alias("axis_status"),
-    )
+    return _tag(frame, View.ON_GRID, AxisStatus.NORMALIZED)
 
 
 def _qc_mask_table(mask: frozenset[qc_mask.MaskKey]) -> pl.DataFrame:
@@ -224,12 +237,17 @@ def _qc_mask_tables(
     removal accounting, the M-A6 exclusion list, and rule provenance,
     computed from the SAME normalised axis M-A2 produced. `now` is injected
     (CLAUDE.md: no bare `datetime.now()` in business logic) — it only ever
-    becomes `Observation.created_at`, which no QC rule reads."""
-    obs_by_station = observations.observations_by_station(
+    becomes `Observation.created_at`, which no QC rule reads.
+
+    D7 — `iter_observations_by_station` streams one station's `Observation`
+    list at a time and `iter_station_results` consumes it station-by-station
+    (computing and discarding each station's result before the next
+    station's objects are built), so peak memory never holds all ~1.37M
+    `Observation` objects at once."""
+    station_observations = observations.iter_observations_by_station(
         normalised_axis, parameter="precipitation", created_at=now
     )
-    mask = qc_mask.build_mask(obs_by_station, params)
-    accounting_rows = qc_mask.build_removal_accounting(obs_by_station, mask, params)
+    mask, accounting_rows = qc_mask.iter_station_results(station_observations, params)
     exclusion_entries = qc_mask.build_exclusion_list(accounting_rows, params)
     provenance_rows = qc_mask.rule_provenance_rows(params)
 
@@ -274,14 +292,15 @@ def compute_all(
         dict(zip(loo_input["station"], loo_input["q0.5"], strict=True)),
         dict(zip(loo_input["station"], loo_input["q0.99"], strict=True)),
     )
-    loo_tail_prediction = pl.DataFrame(
-        {
-            "statistic": list(loo_result.keys()),
-            "value": list(loo_result.values()),
-        }
-    ).with_columns(
-        pl.lit(View.ON_GRID.value).alias("view"),
-        pl.lit(AxisStatus.RAW_PROVISIONAL.value).alias("axis_status"),
+    loo_tail_prediction = _tag(
+        pl.DataFrame(
+            {
+                "statistic": list(loo_result.keys()),
+                "value": list(loo_result.values()),
+            }
+        ),
+        View.ON_GRID,
+        AxisStatus.RAW_PROVISIONAL,
     )
 
     # D7/major-6: geometry (coordinate-only) and correlation (data-derived)
@@ -289,25 +308,26 @@ def compute_all(
     # `axis_status` values — a single table cannot honestly carry both
     # `AXIS_INDEPENDENT` and `RAW_PROVISIONAL` rows tagged uniformly as one
     # or the other.
-    geometry_summary = pl.DataFrame(
-        {
-            "statistic": ["median_nn_distance_km", "pairs_within_25km_count"],
-            "value": [
-                as_float(
-                    stats_coherence.nearest_neighbour_distances(pairwise_distances)[
-                        "nearest_neighbour_km"
-                    ].median()
-                ),
-                float(
-                    stats_coherence.pair_count_within(
-                        pairwise_distances, params.distance_bin_edges_km[0]
-                    )
-                ),
-            ],
-        }
-    ).with_columns(
-        pl.lit(View.ON_GRID.value).alias("view"),
-        pl.lit(AxisStatus.AXIS_INDEPENDENT.value).alias("axis_status"),
+    geometry_summary = _tag(
+        pl.DataFrame(
+            {
+                "statistic": ["median_nn_distance_km", "pairs_within_25km_count"],
+                "value": [
+                    as_float(
+                        stats_coherence.nearest_neighbour_distances(pairwise_distances)[
+                            "nearest_neighbour_km"
+                        ].median()
+                    ),
+                    float(
+                        stats_coherence.pair_count_within(
+                            pairwise_distances, params.distance_bin_edges_km[0]
+                        )
+                    ),
+                ],
+            }
+        ),
+        View.ON_GRID,
+        AxisStatus.AXIS_INDEPENDENT,
     )
     coherence_summary = pl.DataFrame(
         {
@@ -347,10 +367,10 @@ def compute_all(
                 ),
                 stats_coherence.undistanced_median_r(diurnal_correlations),
             ],
-        }
-    ).with_columns(
-        pl.lit(View.ON_GRID.value).alias("view"),
-        pl.lit(AxisStatus.RAW_PROVISIONAL.value).alias("axis_status"),
+        },
+    )
+    coherence_summary = _tag(
+        coherence_summary, View.ON_GRID, AxisStatus.RAW_PROVISIONAL
     )
 
     return ComputedTables(
@@ -603,12 +623,31 @@ def extract_values(tables: ComputedTables) -> dict[str, ExpectationValue]:
 
 
 def table_declarations(tables: ComputedTables) -> tuple[TableDeclaration, ...]:
+    """major-3 — every table's declared `(view, axis_status)` pairs, read
+    from the `view`/`axis_status` columns' `Enum` dtype CATEGORIES (schema),
+    never from `.unique()` over row data. A genuinely empty table (an
+    exclusion list with zero entries, a clean mask with zero flagged rows)
+    still declares its axis scope correctly: `Enum` categories are part of
+    the column's dtype, not its row count, and survive a parquet round-trip
+    with 0 rows intact (`_tag`/`_tag_normalized` always cast the tagging
+    columns to a single-category `Enum` for exactly this reason)."""
     declarations: list[TableDeclaration] = []
     for field_name in ComputedTables.__dataclass_fields__:
         frame: pl.DataFrame = getattr(tables, field_name)
         if "view" not in frame.columns or "axis_status" not in frame.columns:
             continue
-        pairs = frame.select("view", "axis_status").unique().rows()
+        view_dtype = frame.schema["view"]
+        axis_dtype = frame.schema["axis_status"]
+        if isinstance(view_dtype, pl.Enum) and isinstance(axis_dtype, pl.Enum):
+            pairs = itertools.product(
+                view_dtype.categories.to_list(), axis_dtype.categories.to_list()
+            )
+        else:
+            # Defensive fallback — no code path produces a non-Enum "view"/
+            # "axis_status" column today (`_tag`/`_tag_normalized` are the
+            # only taggers), but a row-derived reading is only correct when
+            # the table actually has rows.
+            pairs = frame.select("view", "axis_status").unique().rows()
         declarations.append(
             TableDeclaration(
                 name=field_name,

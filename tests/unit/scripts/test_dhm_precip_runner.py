@@ -25,6 +25,25 @@ from scripts.dhm_precip.manifest_io import read_manifest
 from scripts.dhm_precip.pipeline import ComputedTables
 
 
+def _axis_pairs_from_schema(frame: pl.DataFrame) -> set[tuple[str, str]]:
+    """Mirrors `pipeline.table_declarations`'s own derivation exactly: read
+    the `view`/`axis_status` columns' `Enum` CATEGORIES (schema-level), not
+    `.unique()` over row data — the only signal that survives a genuinely
+    empty (zero-row) table, e.g. an empty exclusion list or a clean mask
+    (major-3)."""
+    view_dtype = frame.schema["view"]
+    axis_dtype = frame.schema["axis_status"]
+    if isinstance(view_dtype, pl.Enum) and isinstance(axis_dtype, pl.Enum):
+        return {
+            (v, a)
+            for v in view_dtype.categories.to_list()
+            for a in axis_dtype.categories.to_list()
+        }
+    return {
+        (row[0], row[1]) for row in frame.select("view", "axis_status").unique().rows()
+    }
+
+
 @pytest.fixture()
 def synthetic_run_inputs(tmp_path, monkeypatch):
     rng = random.Random(158)
@@ -82,12 +101,30 @@ class TestRunnerExitsZeroAndWritesArtefacts:
         manifest = read_manifest(out / "results.json")
         for table in manifest.tables:
             frame = pl.read_parquet(out / "tables" / f"{table.name}.parquet")
-            observed = {
-                (row[0], row[1])
-                for row in frame.select("view", "axis_status").unique().rows()
-            }
+            observed = _axis_pairs_from_schema(frame)
             declared = {(v.value, a.value) for v, a in table.view_axis_pairs}
             assert observed == declared, table.name
+
+    def test_a_genuinely_empty_exclusion_list_still_declares_its_axis_pair(
+        self, synthetic_run_inputs, tmp_path
+    ) -> None:
+        # major-3: `synthetic_run_inputs` injects no QC defects, so no
+        # station crosses the JJAS retention floor and `qc_exclusion_list`
+        # is genuinely zero-row. It must STILL declare (ON_GRID,
+        # NORMALIZED) — a row-derived declaration would silently lose it.
+        # (`qc_mask` is covered separately, at the pipeline unit level,
+        # since it is NOT reliably empty for this fixture's random data.)
+        out = tmp_path / "out"
+        run_module.run(out)
+        manifest = read_manifest(out / "results.json")
+        declared = {t.name: t.view_axis_pairs for t in manifest.tables}
+        frame = pl.read_parquet(out / "tables" / "qc_exclusion_list.parquet")
+        assert frame.height == 0, (
+            "expected qc_exclusion_list to be empty in the no-defects "
+            "fixture (test assumption invalid, not the declaration bug)"
+        )
+        pairs = {(v.value, a.value) for v, a in declared["qc_exclusion_list"]}
+        assert pairs == {("ON_GRID", "NORMALIZED")}
 
     def test_manifest_records_the_injected_digest_and_source_path(
         self, synthetic_run_inputs, tmp_path
@@ -139,10 +176,7 @@ class TestNormalisedAxisArtefacts:
         manifest = read_manifest(out / "results.json")
         declared = {t.name: t.view_axis_pairs for t in manifest.tables}
         frame = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
-        observed = {
-            (row[0], row[1])
-            for row in frame.select("view", "axis_status").unique().rows()
-        }
+        observed = _axis_pairs_from_schema(frame)
         expected = {(v.value, a.value) for v, a in declared["normalised_axis"]}
         assert observed == expected
 

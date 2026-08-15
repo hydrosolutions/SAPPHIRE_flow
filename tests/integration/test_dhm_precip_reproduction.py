@@ -21,6 +21,7 @@ import os
 import polars as pl
 import pytest
 
+from scripts.dhm_precip import stats_defects
 from scripts.dhm_precip.evaluate import (
     DeclaredTableMismatchError,
     ExpectationCoverageError,
@@ -30,6 +31,7 @@ from scripts.dhm_precip.evaluate import (
 )
 from scripts.dhm_precip.expectations import load_expectations
 from scripts.dhm_precip.manifest_io import read_manifest
+from scripts.dhm_precip.params import DEFAULT_PARAMS
 from scripts.dhm_precip.run import run as run_pipeline
 
 pytestmark = pytest.mark.skipif(
@@ -223,20 +225,85 @@ class TestQcMaskAgainstTheRealWorkbook:
     def test_the_mask_is_non_empty_and_catches_the_recorded_real_defects(
         self, tmp_path
     ) -> None:
+        # minor-4: aggregate counts alone would still pass with 120 WRONG
+        # Sindhuli hours, 45 WRONG Lukla hours, or any 1,248 WRONG
+        # Aiselukhark hours. Each station's masked timestamp set is checked
+        # here against an INDEPENDENTLY derived expectation — Lukla's
+        # directly from the normalised values (the same range-check
+        # condition the rule applies), Sindhuli's and Aiselukhark's from
+        # `stats_defects`'s own candidate-run detection (a separate code
+        # path from `qc_mask.build_mask`) — so a regression that shifts,
+        # truncates, or misattributes the flagged hours fails even though
+        # the COUNT still matches.
         out = tmp_path / "m_a3_out"
         run_pipeline(out)
         mask = pl.read_parquet(out / "tables" / "qc_mask.parquet")
+        normalised_axis = pl.read_parquet(out / "tables" / "normalised_axis.parquet")
 
         assert mask.height == 11381
 
         sindhuli = mask.filter(pl.col("station") == "Sindhuli Madhi")
         assert sindhuli.height == 120  # D3's predicted stuck-high duration
+        sindhuli_ts = set(sindhuli["timestamp"].to_list())
+        sindhuli_runs = stats_defects.stuck_high_candidate_runs(
+            normalised_axis, DEFAULT_PARAMS
+        ).filter(pl.col("station") == "Sindhuli Madhi")
+        longest_stuck_run = sindhuli_runs.sort(
+            "run_length_hours", descending=True
+        ).head(1)
+        assert longest_stuck_run.height == 1
+        expected_sindhuli_ts = set(
+            pl.datetime_range(
+                longest_stuck_run["run_start"][0],
+                longest_stuck_run["run_end"][0],
+                interval="1h",
+                eager=True,
+            ).to_list()
+        )
+        assert expected_sindhuli_ts <= sindhuli_ts, (
+            "the independently-detected stuck-high interval is not fully "
+            "contained in the mask's flagged Sindhuli Madhi timestamps"
+        )
 
         aiselukhark = mask.filter(pl.col("station") == "Aiselukhark")
         assert aiselukhark.height >= 52 * 24  # the 52-day run plus its siblings
+        aiselukhark_ts = set(aiselukhark["timestamp"].to_list())
+        aiselukhark_runs = stats_defects.candidate_zero_runs(
+            normalised_axis, DEFAULT_PARAMS
+        ).filter(pl.col("station") == "Aiselukhark")
+        longest_zero_run = aiselukhark_runs.sort(
+            "run_length_hours", descending=True
+        ).head(1)
+        assert longest_zero_run.height == 1
+        assert (
+            longest_zero_run["run_length_hours"][0] >= 52 * 24
+        )  # still the 52-day run
+        expected_aiselukhark_ts = set(
+            pl.datetime_range(
+                longest_zero_run["run_start"][0],
+                longest_zero_run["run_end"][0],
+                interval="1h",
+                eager=True,
+            ).to_list()
+        )
+        assert expected_aiselukhark_ts <= aiselukhark_ts, (
+            "the independently-detected 52-day zero-run interval is not "
+            "fully contained in the mask's flagged Aiselukhark timestamps"
+        )
 
         lukla = mask.filter(pl.col("station") == "Lukla Airport")
         assert lukla.height == 45  # matches the milestone doc's sentinel count
+        lukla_axis = normalised_axis.filter(pl.col("station") == "Lukla Airport")
+        expected_lukla_ts = set(
+            lukla_axis.filter(
+                (pl.col("value_mm") < DEFAULT_PARAMS.qc_mask_range_check_value_min_mm)
+                | (pl.col("value_mm") > DEFAULT_PARAMS.qc_mask_range_check_value_max_mm)
+            )["timestamp"].to_list()
+        )
+        assert set(lukla["timestamp"].to_list()) == expected_lukla_ts, (
+            "the mask's flagged Lukla timestamps do not exactly match the "
+            "out-of-range values derived directly from the normalised axis"
+        )
 
     def test_the_accounting_reconciles_to_the_axis_row_count(self, tmp_path) -> None:
         out = tmp_path / "m_a3_out"

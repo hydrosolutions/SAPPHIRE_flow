@@ -12,7 +12,11 @@ from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import ObservationId, StationId
 from sapphire_flow.types.observation import Observation
 from scripts.dhm_precip.domain_types import Station
-from scripts.dhm_precip.observations import observations_by_station, station_id_for
+from scripts.dhm_precip.observations import (
+    iter_observations_by_station,
+    observations_by_station,
+    station_id_for,
+)
 
 
 def _normalised_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
@@ -107,6 +111,112 @@ class TestObservationsByStation:
         assert station_id_for(Station("Aiselukhark")) != station_id_for(
             Station("Sindhuli Madhi")
         )
+
+
+class TestIterObservationsByStation:
+    def _frame(self, station_names: list[str]) -> pl.DataFrame:
+        rows = [
+            {
+                "source_row_index": i,
+                "station": name,
+                "timestamp": datetime(2024, 6, 1, 0),
+                "value_mm": 1.0,
+            }
+            for i, name in enumerate(station_names)
+        ]
+        return _normalised_frame(rows)
+
+    def test_matches_the_eager_dict_built_from_the_same_frame(self) -> None:
+        # D7 — streaming must not change the result, only when memory for
+        # each station's Observation list is held.
+        rows = [
+            {
+                "source_row_index": 0,
+                "station": "A",
+                "timestamp": datetime(2024, 6, 1, 0),
+                "value_mm": 1.0,
+            },
+            {
+                "source_row_index": 0,
+                "station": "B",
+                "timestamp": datetime(2024, 6, 1, 1),
+                "value_mm": None,
+            },
+            {
+                "source_row_index": 1,
+                "station": "A",
+                "timestamp": datetime(2024, 6, 1, 2),
+                "value_mm": 3.0,
+            },
+        ]
+        frame = _normalised_frame(rows)
+        created_at = datetime(2026, 1, 1, tzinfo=UTC)
+
+        streamed = dict(
+            iter_observations_by_station(
+                frame, parameter="precipitation", created_at=created_at
+            )
+        )
+        eager = observations_by_station(
+            frame, parameter="precipitation", created_at=created_at
+        )
+
+        assert streamed.keys() == eager.keys()
+        for station in streamed:
+            assert streamed[station] == eager[station]
+
+    def test_returns_a_lazy_generator_not_a_materialised_collection(self) -> None:
+        # A `list`/`dict` return would defeat D7's whole point (all
+        # stations' `Observation` objects built before the caller can start
+        # discarding any of them). Calling the function must return an
+        # object that has not yet iterated the frame — proven here by
+        # `inspect.isgenerator`.
+        import inspect
+
+        frame = self._frame(["A", "B", "C"])
+        result = iter_observations_by_station(
+            frame,
+            parameter="precipitation",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        assert inspect.isgenerator(result)
+
+    def test_only_the_requested_station_is_built_before_the_next_next_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # D7's actual memory claim: consuming ONE item from the generator
+        # must build ONLY that one station's Observation list — not every
+        # station's list up front. Spies on the per-group builder to prove
+        # it is called incrementally, not all at once before the first
+        # yield.
+        import scripts.dhm_precip.observations as observations_module
+
+        calls: list[str] = []
+        original = observations_module._observations_for_group
+
+        def _spy(station: Station, group: pl.DataFrame, **kwargs: object) -> list:
+            calls.append(str(station))
+            return original(station, group, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(observations_module, "_observations_for_group", _spy)
+
+        frame = self._frame(["A", "B", "C"])
+        generator = iter_observations_by_station(
+            frame,
+            parameter="precipitation",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        first_station, _first_obs = next(generator)
+        assert calls == [str(first_station)]  # NOT all three stations yet
+
+        remaining = dict(generator)
+        assert calls == ["A", "B", "C"]
+        assert set(remaining.keys()) | {first_station} == {
+            Station("A"),
+            Station("B"),
+            Station("C"),
+        }
 
 
 class TestConstructingAGapRowAsRawInvariant:

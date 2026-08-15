@@ -23,7 +23,11 @@ D5: the mask builder RAISES on a `time_step` mismatch. The checker infers
 the step from the observations and `rules_for` matches on it, so a rule
 whose `time_step` differs is silently skipped — no error, no flags, an empty
 mask indistinguishable from clean data. This is the plan's most dangerous
-failure mode; guarded here before either pass runs.
+failure mode; guarded here before either pass runs. The guard checks EVERY
+rule in the pass-specific rule set individually — not just whether at least
+one rule happens to match — so a single mismatched rule mixed into an
+otherwise-matching set (e.g. one 30-minute rule among hourly rules) still
+raises instead of being silently and partially omitted.
 
 D8: accounting is THREE-WAY (`source_missing` / `qc_removed` /
 `retained_nonmissing`), cross-classified by `(station, season, hour_of_day,
@@ -52,7 +56,7 @@ from scripts.dhm_precip.qc_ruleset import (
 from scripts.dhm_precip.seasons import Season, season_for
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
     from datetime import timedelta
 
     from sapphire_flow.types.datetime import UtcDatetime
@@ -139,17 +143,23 @@ def _inferred_time_step(observations: list[Observation]) -> timedelta:
 def _raise_on_time_step_mismatch(
     observations: list[Observation], rule_set: QcRuleSet
 ) -> None:
+    """D5 — reject EVERY rule whose declared `time_step` doesn't match the
+    inferred step, not just whether at least one rule happens to match.
+    `QcRuleSet.rules_for` filters per-rule, so a rule set containing a mix of
+    matching and mismatched rules would otherwise let the mismatched ones be
+    silently and partially dropped while the matching ones still ran —
+    exactly the failure this guard exists to prevent."""
     if not observations:
         return
-    declared_steps = {r.time_step for r in rule_set.rules}
     inferred = _inferred_time_step(observations)
-    if inferred not in declared_steps:
+    mismatched = [r for r in rule_set.rules if r.time_step != inferred]
+    if mismatched:
+        offending = sorted(f"{r.rule_version} ({r.time_step})" for r in mismatched)
         raise TimeStepMismatchError(
-            f"observations imply a {inferred} step; the rule set declares "
-            f"{sorted(declared_steps, key=lambda t: t.total_seconds())} — "
-            "Stage1QualityChecker.rules_for() would silently match no "
-            "rules and return an empty mask indistinguishable from clean "
-            "data (D5)"
+            f"observations imply a {inferred} step; the following declared "
+            f"rules do not match it and would be silently skipped by "
+            f"Stage1QualityChecker.rules_for(), producing a mask that omits "
+            f"them without error (D5): {offending}"
         )
 
 
@@ -170,6 +180,39 @@ def _jjas_seasons(
     ]
 
 
+def _station_mask(
+    station: Station,
+    observations: list[Observation],
+    pass_a_rules: QcRuleSet,
+    pass_b_rules: QcRuleSet,
+    checker: Stage1QualityChecker,
+    params: DhmPrecipParams,
+) -> frozenset[MaskKey]:
+    """D1/D3c — one station's flagged `(station, timestamp)` keys, both
+    passes unioned. Raises `TimeStepMismatchError` (D5) before running
+    either pass on this station (or one of its seasons) whose observations
+    don't imply the rule set's declared step. Factored out of `build_mask`
+    so the streaming entry point (`iter_station_results`, D7) can compute
+    one station's mask without ever holding another station's observations."""
+    if not observations:
+        return frozenset()
+    ordered = sorted(observations, key=lambda o: o.timestamp)
+
+    dropped: set[MaskKey] = set()
+    _raise_on_time_step_mismatch(ordered, pass_a_rules)
+    flags_a = checker.check(ordered, pass_a_rules, [], [])
+    dropped.update((station, obs.timestamp) for obs in ordered if flags_a[obs.id])
+
+    for _year, season_obs in _jjas_seasons(ordered, params):
+        _raise_on_time_step_mismatch(season_obs, pass_b_rules)
+        flags_b = checker.check(season_obs, pass_b_rules, [], [])
+        dropped.update(
+            (station, obs.timestamp) for obs in season_obs if flags_b[obs.id]
+        )
+
+    return frozenset(dropped)
+
+
 def build_mask(
     obs_by_station: Mapping[Station, list[Observation]],
     params: DhmPrecipParams,
@@ -177,58 +220,58 @@ def build_mask(
     """D1/D3c — run both passes over every station and union the flagged
     `(station, timestamp)` keys. Raises `TimeStepMismatchError` (D5) before
     running either pass on a station (or season) whose observations don't
-    imply the rule set's declared step."""
+    imply the rule set's declared step.
+
+    Takes a fully materialised `Mapping` — convenient for tests and small
+    inputs. The production pipeline (`pipeline._qc_mask_tables`) uses
+    `iter_station_results` instead, which never holds more than one
+    station's observations in memory at once (D7)."""
     rule_set = build_precipitation_qc_rule_set(params)
     pass_a_rules = rule_subset(rule_set, PASS_A_RULE_VERSIONS)
     pass_b_rules = rule_subset(rule_set, PASS_B_RULE_VERSIONS)
     checker = Stage1QualityChecker()
 
     dropped: set[MaskKey] = set()
-
     for station, observations in obs_by_station.items():
-        if not observations:
-            continue
-        ordered = sorted(observations, key=lambda o: o.timestamp)
-
-        _raise_on_time_step_mismatch(ordered, pass_a_rules)
-        flags_a = checker.check(ordered, pass_a_rules, [], [])
-        dropped.update((station, obs.timestamp) for obs in ordered if flags_a[obs.id])
-
-        for _year, season_obs in _jjas_seasons(ordered, params):
-            _raise_on_time_step_mismatch(season_obs, pass_b_rules)
-            flags_b = checker.check(season_obs, pass_b_rules, [], [])
-            dropped.update(
-                (station, obs.timestamp) for obs in season_obs if flags_b[obs.id]
+        dropped.update(
+            _station_mask(
+                station, observations, pass_a_rules, pass_b_rules, checker, params
             )
-
+        )
     return frozenset(dropped)
 
 
-def build_removal_accounting(
-    obs_by_station: Mapping[Station, list[Observation]],
-    mask: frozenset[MaskKey],
+def _station_accounting_counts(
+    station: Station,
+    observations: list[Observation],
+    station_mask_timestamps: frozenset[UtcDatetime],
     params: DhmPrecipParams,
-) -> tuple[RemovalAccountingRow, ...]:
-    """D8 — the three-way, cross-classified accounting table. Raises
-    `ReconciliationError` if the emitted rows don't sum back to exactly the
-    number of observations supplied — a silent miscount here would corrupt
-    every retention figure downstream."""
+) -> tuple[dict[tuple[Station, Season, int, RetentionCategory], int], int]:
+    """D8 — one station's contribution to the cross-classified accounting
+    counts, plus the number of observations it was built from. Factored out
+    of `build_removal_accounting` so the streaming entry point can reconcile
+    incrementally without holding every station's observations at once."""
     counts: dict[tuple[Station, Season, int, RetentionCategory], int] = {}
     total = 0
-    for station, observations in obs_by_station.items():
-        for obs in observations:
-            total += 1
-            season = season_for(obs.timestamp, params)
-            hour = obs.timestamp.hour
-            if obs.qc_status == QcStatus.MISSING:
-                category = RetentionCategory.SOURCE_MISSING
-            elif (station, obs.timestamp) in mask:
-                category = RetentionCategory.QC_REMOVED
-            else:
-                category = RetentionCategory.RETAINED_NONMISSING
-            key = (station, season, hour, category)
-            counts[key] = counts.get(key, 0) + 1
+    for obs in observations:
+        total += 1
+        season = season_for(obs.timestamp, params)
+        hour = obs.timestamp.hour
+        if obs.qc_status == QcStatus.MISSING:
+            category = RetentionCategory.SOURCE_MISSING
+        elif obs.timestamp in station_mask_timestamps:
+            category = RetentionCategory.QC_REMOVED
+        else:
+            category = RetentionCategory.RETAINED_NONMISSING
+        key = (station, season, hour, category)
+        counts[key] = counts.get(key, 0) + 1
+    return counts, total
 
+
+def _rows_from_counts(
+    counts: dict[tuple[Station, Season, int, RetentionCategory], int],
+    total: int,
+) -> tuple[RemovalAccountingRow, ...]:
     rows = tuple(
         RemovalAccountingRow(
             station=key[0],
@@ -249,6 +292,71 @@ def build_removal_accounting(
             f"expected {total} observations"
         )
     return rows
+
+
+def build_removal_accounting(
+    obs_by_station: Mapping[Station, list[Observation]],
+    mask: frozenset[MaskKey],
+    params: DhmPrecipParams,
+) -> tuple[RemovalAccountingRow, ...]:
+    """D8 — the three-way, cross-classified accounting table. Raises
+    `ReconciliationError` if the emitted rows don't sum back to exactly the
+    number of observations supplied — a silent miscount here would corrupt
+    every retention figure downstream.
+
+    Takes a fully materialised `Mapping` and the whole-run `mask` — the
+    production pipeline uses `iter_station_results` instead (D7)."""
+    counts: dict[tuple[Station, Season, int, RetentionCategory], int] = {}
+    total = 0
+    for station, observations in obs_by_station.items():
+        station_mask_timestamps = frozenset(ts for st, ts in mask if st == station)
+        station_counts, station_total = _station_accounting_counts(
+            station, observations, station_mask_timestamps, params
+        )
+        for key, count in station_counts.items():
+            counts[key] = counts.get(key, 0) + count
+        total += station_total
+    return _rows_from_counts(counts, total)
+
+
+def iter_station_results(
+    station_observations: Iterable[tuple[Station, list[Observation]]],
+    params: DhmPrecipParams,
+) -> tuple[frozenset[MaskKey], tuple[RemovalAccountingRow, ...]]:
+    """D7 — the memory-bounded production entry point. Consumes an
+    `Iterable` (typically a generator, see `observations.iter_observations_by_station`)
+    that yields ONE station's observation list at a time: for each station,
+    computes that station's mask keys and accounting rows immediately, then
+    discards its `Observation` objects before the next station is produced —
+    so peak memory is bounded to one station's observations
+    (~52k/station), never all ~1.37M at once. `build_mask` and
+    `build_removal_accounting` remain available for tests and small,
+    fully-materialised inputs; this function is what the pipeline calls."""
+    rule_set = build_precipitation_qc_rule_set(params)
+    pass_a_rules = rule_subset(rule_set, PASS_A_RULE_VERSIONS)
+    pass_b_rules = rule_subset(rule_set, PASS_B_RULE_VERSIONS)
+    checker = Stage1QualityChecker()
+
+    dropped: set[MaskKey] = set()
+    counts: dict[tuple[Station, Season, int, RetentionCategory], int] = {}
+    total = 0
+
+    for station, observations in station_observations:
+        station_mask = _station_mask(
+            station, observations, pass_a_rules, pass_b_rules, checker, params
+        )
+        dropped.update(station_mask)
+
+        station_mask_timestamps = frozenset(ts for _st, ts in station_mask)
+        station_counts, station_total = _station_accounting_counts(
+            station, observations, station_mask_timestamps, params
+        )
+        for key, count in station_counts.items():
+            counts[key] = counts.get(key, 0) + count
+        total += station_total
+
+    rows = _rows_from_counts(counts, total)
+    return frozenset(dropped), rows
 
 
 def _jjas_retained_fraction(

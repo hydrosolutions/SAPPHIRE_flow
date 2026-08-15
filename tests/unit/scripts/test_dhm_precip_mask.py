@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from sapphire_flow.services.qc import Stage1QualityChecker
+from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import ObservationId, StationId
 from sapphire_flow.types.observation import Observation
@@ -26,6 +27,7 @@ from scripts.dhm_precip.qc_mask import (
     RemovalAccountingRow,
     RetentionCategory,
     TimeStepMismatchError,
+    _raise_on_time_step_mismatch,
     build_exclusion_list,
     build_mask,
     build_removal_accounting,
@@ -180,6 +182,39 @@ class TestBuildMaskDefectSignatures:
         with pytest.raises(TimeStepMismatchError):
             build_mask({station: series}, DEFAULT_PARAMS)
 
+    def test_a_single_mismatched_rule_among_matching_rules_still_raises(
+        self,
+    ) -> None:
+        # D5's exact failure mode: a rule set where MOST rules match the
+        # inferred step but ONE does not must still raise — not be silently
+        # and partially dropped while the matching rules run unflagged.
+        sid = StationId(uuid.uuid4())
+        start = datetime(2024, 7, 1, tzinfo=UTC)
+        hourly_series = _hourly_run(sid, start, 1.0, 30)
+
+        mixed_rule_set = QcRuleSet(
+            version="test-mixed",
+            rules=(
+                QcRuleParams(
+                    rule_id="range_check",
+                    rule_version="matches-hourly",
+                    parameter="precipitation",
+                    time_step=timedelta(hours=1),
+                    thresholds={"value_min": 0.0, "value_max": 200.0},
+                ),
+                QcRuleParams(
+                    rule_id="frozen_sensor",
+                    rule_version="mismatched-30min",
+                    parameter="precipitation",
+                    time_step=timedelta(minutes=30),
+                    thresholds={"tolerance": 0.01, "min_consecutive": 12.0},
+                ),
+            ),
+        )
+
+        with pytest.raises(TimeStepMismatchError, match="mismatched-30min"):
+            _raise_on_time_step_mismatch(hourly_series, mixed_rule_set)
+
 
 class TestBuildMaskOverlap:
     def test_a_constant_run_above_the_floor_trips_both_instances_but_masks_once(
@@ -227,6 +262,56 @@ class TestRemovalAccounting:
         mask = frozenset({(station, obs[2].timestamp)})
 
         rows = build_removal_accounting({station: obs}, mask, DEFAULT_PARAMS)
+
+        # minor-5: the marginal checks below only constrain totals and one
+        # cell — several wrong (season, hour, category) assignments could
+        # still satisfy them. Lock the COMPLETE expected row set instead.
+        expected_rows = {
+            RemovalAccountingRow(
+                station=station,
+                season=Season.MAM,
+                hour_of_day=10,
+                category=RetentionCategory.RETAINED_NONMISSING,
+                count=1,
+            ),
+            RemovalAccountingRow(
+                station=station,
+                season=Season.MAM,
+                hour_of_day=11,
+                category=RetentionCategory.SOURCE_MISSING,
+                count=1,
+            ),
+            RemovalAccountingRow(
+                station=station,
+                season=Season.JJAS,
+                hour_of_day=10,
+                category=RetentionCategory.QC_REMOVED,
+                count=1,
+            ),
+            RemovalAccountingRow(
+                station=station,
+                season=Season.JJAS,
+                hour_of_day=11,
+                category=RetentionCategory.RETAINED_NONMISSING,
+                count=1,
+            ),
+            RemovalAccountingRow(
+                station=station,
+                season=Season.ON,
+                hour_of_day=10,
+                category=RetentionCategory.RETAINED_NONMISSING,
+                count=1,
+            ),
+            RemovalAccountingRow(
+                station=station,
+                season=Season.DJF,
+                hour_of_day=10,
+                category=RetentionCategory.RETAINED_NONMISSING,
+                count=1,
+            ),
+        }
+        assert set(rows) == expected_rows
+        assert len(rows) == len(expected_rows)  # no duplicate (season, hour, category)
 
         assert sum(r.count for r in rows) == len(obs)
         assert {r.season for r in rows} == {
