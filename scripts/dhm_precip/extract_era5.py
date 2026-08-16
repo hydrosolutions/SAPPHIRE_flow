@@ -435,7 +435,11 @@ def run(
     write_extraction_manifest(manifest, staging / "extraction_manifest.json")
     reopen_and_validate_bundle(staging, expected_station_count=len(stations.by_station))
     final_dir = publish_bundle(
-        staging, data_root=data_root, identity=identity, clock_now=resolved_clock()
+        staging,
+        data_root=data_root,
+        identity=identity,
+        expected_station_count=len(stations.by_station),
+        clock_now=resolved_clock(),
     )
 
     if args.out is not None:
