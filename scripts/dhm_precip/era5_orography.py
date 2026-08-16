@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime  # noqa: TC003 - pydantic must resolve this at runtime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -145,31 +145,35 @@ class DownloadedFileRecord:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class FetchedOrographySource:
-    """What `fetch_orography_source` can know BEFORE the raster exists: the
-    route it was fetched under and the bytes it actually got."""
-
-    orography_route_identity: str
-    downloaded_files: tuple[DownloadedFileRecord, ...]
-    fetched_at: datetime
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
 class OrographySourceRecord:
-    """D7 (corrected 2026-08-16) — the MATERIALISED record. Carries both
-    identities: the route-only one (computable at 1a) and the composite one
-    that additionally covers every downloaded file's sha256, the derived
-    raster's own sha256 and the frozen raster schema (computable only once
-    the bytes exist). `extraction_identity` consumes the composite."""
+    """D3a/D7 — the record of what was actually MATERIALISED.
+
+    It is written TWICE, because its two halves become knowable at different
+    moments and the plan requires the first half to be durable on its own
+    (1b: "a first fetch, with no prior record, succeeds and writes one"):
+
+    1. `fetch_orography_source` writes the FETCH half — the route identity,
+       every downloaded file's sha256/size, and the injected-clock fetch
+       time. The derived raster does not exist yet, so the composite
+       identity fields are `None`.
+    2. `materialise_orography` rewrites the same record with the derived
+       raster's path/sha256/schema version and the composite
+       `orography_identity` (D7), which is the one `extraction_identity`
+       consumes.
+
+    Persisting after step 1 is what makes the re-fetch guard real: an
+    unexplained change in a "static" source is caught even when a previous
+    run died between the download and the aggregation.
+    """
 
     orography_route_identity: str
-    orography_identity: str
     downloaded_files: tuple[DownloadedFileRecord, ...]
-    raster_path: str
-    """Relative to the data root."""
-    raster_sha256: str
-    raster_schema_version: str
     fetched_at: datetime
+    orography_identity: str | None = None
+    raster_path: str | None = None
+    """Relative to the data root."""
+    raster_sha256: str | None = None
+    raster_schema_version: str | None = None
 
 
 def orography_dir(data_root: Path) -> Path:
@@ -195,12 +199,12 @@ class _DownloadedFileRecordModel(BaseModel):
 
 class _OrographySourceRecordModel(BaseModel):
     orography_route_identity: str
-    orography_identity: str
     downloaded_files: list[_DownloadedFileRecordModel]
-    raster_path: str
-    raster_sha256: str
-    raster_schema_version: str
     fetched_at: datetime
+    orography_identity: str | None = None
+    raster_path: str | None = None
+    raster_sha256: str | None = None
+    raster_schema_version: str | None = None
 
 
 def write_orography_source_record(record: OrographySourceRecord, path: Path) -> None:
@@ -249,14 +253,14 @@ def read_orography_source_record(path: Path) -> OrographySourceRecord | None:
         ) from exc
     return OrographySourceRecord(
         orography_route_identity=model.orography_route_identity,
-        orography_identity=model.orography_identity,
         downloaded_files=tuple(
             DownloadedFileRecord(**f.model_dump()) for f in model.downloaded_files
         ),
+        fetched_at=model.fetched_at,
+        orography_identity=model.orography_identity,
         raster_path=model.raster_path,
         raster_sha256=model.raster_sha256,
         raster_schema_version=model.raster_schema_version,
-        fetched_at=model.fetched_at,
     )
 
 
@@ -284,12 +288,13 @@ def fetch_orography_source(
     downloader: OrographyDownloader,
     data_root: Path,
     clock: Callable[[], datetime],
-) -> FetchedOrographySource:
-    """1b — fetch per the frozen spec. A re-run verifies observed hashes
-    against the EXISTING record (an unexplained change in a "static" source
-    is a typed failure) rather than assuming a prior fetch was good. The
-    persisted `OrographySourceRecord` is written by `materialise_orography`,
-    which is the first point at which the composite identity (D7) exists."""
+) -> OrographySourceRecord:
+    """1b — fetch per the frozen spec, then WRITE the fetch half of the
+    `OrographySourceRecord` (D3a). A re-run verifies observed hashes against
+    the EXISTING record (an unexplained change in a "static" source is a
+    typed failure) rather than assuming a prior fetch was good; that guard
+    only binds because the first fetch persists a record even though the
+    derived raster does not exist yet."""
     route_identity = orography_route_identity(spec)
     existing = read_orography_source_record(orography_source_record_path(data_root))
 
@@ -324,16 +329,18 @@ def fetch_orography_source(
                     "source"
                 )
 
+    record = OrographySourceRecord(
+        orography_route_identity=route_identity,
+        downloaded_files=tuple(files),
+        fetched_at=clock(),
+    )
+    write_orography_source_record(record, orography_source_record_path(data_root))
     log.info(
         "era5.orography.fetched",
         orography_route_identity=route_identity,
         n_files=len(files),
     )
-    return FetchedOrographySource(
-        orography_route_identity=route_identity,
-        downloaded_files=tuple(files),
-        fetched_at=clock(),
-    )
+    return record
 
 
 # --- convert (D3a) ---
@@ -607,18 +614,16 @@ def materialise_orography(
             expected_lat=expected_lat,
             expected_lon=expected_lon,
         )
-    record = OrographySourceRecord(
-        orography_route_identity=route_identity,
+    record = replace(
+        fetched,
         orography_identity=orography_identity(
             route_identity=route_identity,
             source_file_sha256s=[f.sha256 for f in fetched.downloaded_files],
             raster_sha256=raster_sha256,
         ),
-        downloaded_files=fetched.downloaded_files,
         raster_path=str(final_path.relative_to(data_root)),
         raster_sha256=raster_sha256,
         raster_schema_version=OROGRAPHY_SCHEMA_VERSION,
-        fetched_at=fetched.fetched_at,
     )
     write_orography_source_record(record, orography_source_record_path(data_root))
     return record
@@ -626,13 +631,25 @@ def materialise_orography(
 
 def verify_orography_materialisation(
     record: OrographySourceRecord, *, data_root: Path
-) -> None:
+) -> str:
     """D7 (CORRECTED 2026-08-16, blocker B2) — "a materialised raster is
     never trusted because a file of the right name exists". On EVERY run,
     re-verify every source file's sha256 against the record, the raster's
     own sha256 against the record, and that the composite identity
     recomputes from those bytes. Any mismatch is a typed failure, never a
-    silent reuse."""
+    silent reuse. Returns the VERIFIED composite `orography_identity`, so a
+    caller cannot reach it without having verified it."""
+    if (
+        record.orography_identity is None
+        or record.raster_path is None
+        or record.raster_sha256 is None
+    ):
+        raise Era5OrographyError(
+            "OrographySourceRecord carries only the fetch half (no derived "
+            "raster) — the orography was downloaded but never materialised; "
+            "re-run `materialise_orography` (D3a/1b)"
+        )
+
     for downloaded in record.downloaded_files:
         path = data_root / downloaded.path
         if not path.exists():
@@ -674,3 +691,4 @@ def verify_orography_materialisation(
             f"bytes: recorded {record.orography_identity}, recomputed "
             f"{recomputed} (D7)"
         )
+    return recomputed

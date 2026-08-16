@@ -104,9 +104,10 @@ from scripts.dhm_precip.era5_manifest import (  # noqa: E402
 from scripts.dhm_precip.era5_orography import (  # noqa: E402
     OrographyDownloader,
     materialise_orography,
-    orography_dir,
     orography_raster_path,
+    orography_source_record_path,
     read_orography_source_record,
+    verify_orography_materialisation,
 )
 from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC  # noqa: E402
 from scripts.dhm_precip.era5_request import (  # noqa: E402
@@ -258,15 +259,11 @@ def run(
     expected_lat = np.round(np.linspace(south, north, lat_count), 10)
     expected_lon = np.round(np.linspace(west, east, lon_count), 10)
 
-    record_path = orography_dir(data_root) / "orography_source_record.json"
-    existing_record = read_orography_source_record(record_path)
-    if (
-        existing_record is None
-        or not orography_raster_path(
-            data_root, identity=existing_record.orography_identity
-        ).exists()
-    ):
-        source_record, _sha = materialise_orography(
+    existing_record = read_orography_source_record(
+        orography_source_record_path(data_root)
+    )
+    if existing_record is None or existing_record.raster_path is None:
+        source_record = materialise_orography(
             OBSERVED_OROGRAPHY_SPEC,
             downloader=downloader,
             raw_reader=raw_reader,
@@ -278,10 +275,10 @@ def run(
         )
     else:
         source_record = existing_record
-    log.info(
-        "era5_extract.cli.orography_ready",
-        orography_identity=source_record.orography_identity,
-    )
+    # D7 — "a materialised raster is never trusted because a file of the
+    # right name exists": re-verify on EVERY run, freshly derived or adopted.
+    oro_identity = verify_orography_materialisation(source_record, data_root=data_root)
+    log.info("era5_extract.cli.orography_ready", orography_identity=oro_identity)
 
     if args.stage == "orography":
         return 0
@@ -316,7 +313,7 @@ def run(
         )
 
     orography_ds_path = orography_raster_path(
-        data_root, identity=source_record.orography_identity
+        data_root, route_identity=source_record.orography_route_identity
     )
     with xr.open_dataset(orography_ds_path, engine="h5netcdf") as oro_reopened:
         orography_ds = oro_reopened.load()
@@ -374,7 +371,7 @@ def run(
         operator_id=str(ExtractionOperator.NEAREST),
         coordinate_table_sha256=coordinate_table_sha256,
         source_sha256s=source_sha256s,
-        orography_identity=source_record.orography_identity,
+        orography_identity=oro_identity,
         jjas_months=DEFAULT_PARAMS.jjas_months,
         djf_months=DEFAULT_PARAMS.djf_months,
         mam_months=DEFAULT_PARAMS.mam_months,
@@ -410,7 +407,7 @@ def run(
         )
     }
     manifest = ExtractionManifest(
-        orography_identity=source_record.orography_identity,
+        orography_identity=oro_identity,
         extraction_identity=identity,
         operator_id=str(ExtractionOperator.NEAREST),
         coordinate_table_sha256=coordinate_table_sha256,
@@ -423,7 +420,7 @@ def run(
             "vertical_reference": str(OBSERVED_OROGRAPHY_SPEC.vertical_reference),
         },
         orography_source_record={
-            "orography_identity": source_record.orography_identity,
+            "orography_identity": oro_identity,
             "fetched_at": source_record.fetched_at.isoformat(),
             "n_files": len(source_record.downloaded_files),
         },
