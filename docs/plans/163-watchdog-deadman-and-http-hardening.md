@@ -40,6 +40,32 @@ minor resolved:**
    `test_posts_empty_body_with_the_5s_timeout_constant`, asserting `timeout == DEADMAN_POST_TIMEOUT_S == 5.0` and
    the absence of `json`/`data`/`content`/`files` kwargs on the captured `httpx.post` call.
 
+**Second post-implementation fixer round (2026-08-16), 3 minors closing the last gaps in the "never raises"
+contract:**
+1. **(minor) The existence preflight sat OUTSIDE the guard.** `read_deadman_url` called `Path.exists()` before the
+   `(OSError, UnicodeError)` `try` — on Python 3.12 `exists()` can itself re-raise a non-ignored `OSError` (e.g. a
+   permission error on a parent directory). Fixed by dropping the preflight entirely and calling `read_text()`
+   directly inside the guard (a missing file now degrades via `FileNotFoundError`, an `OSError` subclass, like
+   every other unreadable case). Locked by
+   `TestReadDeadmanUrl::test_existence_preflight_permission_error_does_not_raise` — proven RED against the
+   pre-fix code (stash-fix/run/restore).
+2. **(minor) Response handling lived outside the single adapter boundary.** `default_slack_poster` and
+   `default_deadman_poster` accessed `resp.status_code`/`resp.text` AFTER their `try` block, so an unexpected
+   response-access exception could still escape despite the "never raises" promise (masked only because
+   `run_once`'s `_safe_slack_post`/`_safe_deadman_post` wrappers contained the damage for that one caller). Moved
+   all response handling inside each function's `try`. Locked by
+   `TestResponseHandlingInsideGuardDefaultSlackPoster` (status_code-access-raises, text-access-raises) and
+   `TestResponseHandlingInsideGuardDefaultDeadmanPoster` (status_code-access-raises) — proven RED against the
+   pre-fix code.
+3. **(minor) Exception safety was integration-tested at only one of four Slack call sites.** Only the backup
+   branch (`TestSlackExceptionDuringBackupTransition`) had a raising-poster test proving `_safe_slack_post` usage;
+   a regression reintroducing a raw `slack_poster(...)` call in the health, BAFU-forecast or BAFU-observation
+   branch would have passed every other existing test. Added
+   `TestRaisingSlackPosterAcrossAllFourAlertBranches`, a `pytest.mark.parametrize` over all four branches
+   asserting state is persisted and exactly one heartbeat is attempted in each case — verified to fail when any
+   one of the four `_safe_slack_post(...)` call sites is manually reverted to a raw `slack_poster(...)` call
+   (checked all four independently, restored after each).
+
 ## Problem
 
 **The mac-mini watchdog has been silent since ~03:54 on 2026-08-16.** It had been posting a stale-backup alert

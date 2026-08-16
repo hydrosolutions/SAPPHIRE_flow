@@ -1851,6 +1851,82 @@ class TestMalformedUrlHardeningDefaultDeadmanPoster:
         assert default_deadman_poster(_INVALID_URL_MALFORMED) is False
 
 
+# ---------- Plan 163 fixer round (minor 2): response handling must live -----
+#            INSIDE the single adapter boundary, not after it -------------
+#
+# `default_slack_poster`/`default_deadman_poster` promise to "never raise".
+# The buggy implementation caught request exceptions but then accessed
+# `resp.status_code`/`resp.text` OUTSIDE the `try` — an unexpected exception
+# from either escapes uncaught. This is currently MASKED for `run_once`
+# because its `_safe_slack_post`/`_safe_deadman_post` wrappers contain the
+# damage — but the functions themselves promise never to raise, and any
+# other caller (including tests, and any future caller) relies on that
+# promise directly, not on `run_once`'s wrapper.
+
+
+class _StatusCodeAccessRaises:
+    """A fake httpx response whose `.status_code` property raises when
+    accessed — simulates an unexpected response-object defect."""
+
+    @property
+    def status_code(self) -> int:
+        raise RuntimeError("status_code access exploded")
+
+
+class _SlackTextAccessRaises:
+    """A fake httpx response with a normal (failing) `status_code` but a
+    `.text` property that raises — reaches the `resp.text[:200]` line in
+    `default_slack_poster`'s failure-logging branch specifically."""
+
+    status_code = 500
+
+    @property
+    def text(self) -> str:
+        raise RuntimeError("text access exploded")
+
+
+class TestResponseHandlingInsideGuardDefaultSlackPoster:
+    def test_status_code_access_raises_returns_false_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        monkeypatch.setattr(
+            watchdog_module.httpx,
+            "post",
+            lambda *a, **k: _StatusCodeAccessRaises(),
+        )
+        assert default_slack_poster("https://hooks.slack.com/x", "msg") is False
+
+    def test_text_access_raises_returns_false_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        monkeypatch.setattr(
+            watchdog_module.httpx, "post", lambda *a, **k: _SlackTextAccessRaises()
+        )
+        assert default_slack_poster("https://hooks.slack.com/x", "msg") is False
+
+
+class TestResponseHandlingInsideGuardDefaultDeadmanPoster:
+    def test_status_code_access_raises_returns_false_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        try:
+            default_deadman_poster = watchdog_module.default_deadman_poster
+        except AttributeError:
+            pytest.fail("default_deadman_poster not implemented (Plan 163 T2)")
+        monkeypatch.setattr(
+            watchdog_module.httpx,
+            "post",
+            lambda *a, **k: _StatusCodeAccessRaises(),
+        )
+        assert default_deadman_poster("https://hc-ping.com/x") is False
+
+
 # ---------- Plan 163 T2: read_deadman_url ----------------------------------
 
 
@@ -1905,6 +1981,37 @@ class TestReadDeadmanUrl:
             raise OSError("permission denied")
 
         monkeypatch.setattr(Path, "read_text", _raise)
+        assert self._read(p) is None
+
+    def test_existence_preflight_permission_error_does_not_raise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 163 fixer round (minor 1): the buggy implementation called
+        `path.exists()` as a preflight OUTSIDE the `(OSError, UnicodeError)`
+        guard. On Python 3.12, `exists()` (which calls `stat()`) can itself
+        re-raise a non-ignored `OSError` — e.g. a permission error on a
+        parent directory — escaping uncaught and violating the documented
+        "unreadable => None, no error" contract. The fixed implementation
+        must not call `exists()`/`stat()` at all: it reads directly inside
+        the guard, so a nonexistent (or otherwise inaccessible) path
+        degrades to "unreadable" => None like every other case, without
+        ever touching `exists()`/`stat()`.
+
+        Patches BOTH `Path.exists` and `Path.stat` to raise `PermissionError`
+        (the real-world shape of a parent-directory permission error) and
+        points at a path whose parent directory does not exist either, so
+        the fixed code's `read_text()` call fails on its own merits
+        (`FileNotFoundError`, an `OSError` subclass) without depending on
+        `exists()`/`stat()` ever being called.
+        """
+
+        def _raise(self: Path, *args: object, **kwargs: object) -> object:
+            raise PermissionError("permission denied for parent directory")
+
+        monkeypatch.setattr(Path, "exists", _raise)
+        monkeypatch.setattr(Path, "stat", _raise)
+
+        p = tmp_path / "unreadable_parent" / "deadman_url"
         assert self._read(p) is None
 
 
@@ -2257,6 +2364,114 @@ class TestSlackExceptionDuringBackupTransition:
         assert state.backup_notification_pending == "stale"
         reloaded = WatchdogState.load(cfg.state_path)
         assert reloaded.backup_notification_pending == "stale"
+        assert len(deadman.calls) == 1
+
+
+def _check_health_branch_state(state: WatchdogState) -> None:
+    assert state.consecutive_health_failures == 1
+
+
+def _check_backup_branch_state(state: WatchdogState) -> None:
+    assert state.backup_notification_pending == "stale"
+
+
+def _check_bafu_forecast_branch_state(state: WatchdogState) -> None:
+    assert state.consecutive_bafu_failures == 1
+
+
+def _check_bafu_observation_branch_state(state: WatchdogState) -> None:
+    assert state.consecutive_bafu_obs_failures == 1
+
+
+class TestRaisingSlackPosterAcrossAllFourAlertBranches:
+    """Plan 163 fixer round (minor 3): `TestSlackExceptionDuringBackupTransition`
+    above locks the raising-poster scenario for exactly ONE of the four
+    Slack call sites (backup). A regression reintroducing a RAW
+    `slack_poster(...)` call — instead of the `_safe_slack_post(...)`
+    wrapper — in the health, BAFU-forecast or BAFU-observation branch would
+    pass every OTHER existing test, because none of them drives a raising
+    poster through those three branches. Parameterizes the identical
+    scenario across all four sites: each case's own hysteresis/pending
+    field must be correctly PERSISTED to disk, and exactly one dead-man
+    heartbeat must be attempted, even though the Slack poster explodes.
+
+    Each case is set up so ONLY its target branch's condition triggers an
+    alert (the other three checks report healthy/fresh), isolating which
+    call site is actually exercised.
+    """
+
+    @pytest.mark.parametrize(
+        ("probe", "bafu_probe", "bafu_obs_probe", "backup_fresh", "check"),
+        [
+            pytest.param(
+                _fail_probe,
+                _bafu_ok_probe,
+                _bafu_obs_ok_probe,
+                True,
+                _check_health_branch_state,
+                id="health",
+            ),
+            pytest.param(
+                _ok_probe,
+                _bafu_ok_probe,
+                _bafu_obs_ok_probe,
+                False,
+                _check_backup_branch_state,
+                id="backup",
+            ),
+            pytest.param(
+                _ok_probe,
+                _bafu_stale_probe,
+                _bafu_obs_ok_probe,
+                True,
+                _check_bafu_forecast_branch_state,
+                id="bafu_forecast",
+            ),
+            pytest.param(
+                _ok_probe,
+                _bafu_ok_probe,
+                _bafu_obs_stale_probe,
+                True,
+                _check_bafu_observation_branch_state,
+                id="bafu_observation",
+            ),
+        ],
+    )
+    def test_raising_slack_poster_persists_state_and_pings_once(
+        self,
+        tmp_path: Path,
+        probe: object,
+        bafu_probe: object,
+        bafu_obs_probe: object,
+        backup_fresh: bool,
+        check: object,
+    ) -> None:
+        backup_dir = (
+            _make_fresh_backup(tmp_path, hours_ago=1.0)
+            if backup_fresh
+            else tmp_path / "pg_dumps_missing"
+        )
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(
+            tmp_path, deadman_path=deadman_path, backup_dir=backup_dir
+        )
+        cfg.slack_path.write_text("https://hooks.slack.com/services/T00/B00/XXX\n")
+        deadman = _DeadmanRecorder()
+
+        # Must NOT raise, regardless of which branch's Slack call explodes.
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=probe,  # type: ignore[arg-type]
+            slack_poster=_RaisingSlackPoster(),
+            bafu_probe=bafu_probe,  # type: ignore[arg-type]
+            bafu_obs_probe=bafu_obs_probe,  # type: ignore[arg-type]
+            deadman_poster=deadman,
+        )
+
+        check(state)  # type: ignore[operator]
+        reloaded = WatchdogState.load(cfg.state_path)
+        check(reloaded)  # type: ignore[operator]
         assert len(deadman.calls) == 1
 
 

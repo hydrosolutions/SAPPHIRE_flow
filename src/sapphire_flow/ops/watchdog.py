@@ -467,9 +467,17 @@ def read_deadman_url(path: Path) -> str | None:
     missing/empty/unreadable/undecodable (Plan 163, mirrors
     `read_slack_webhook`/`read_probe_token`). `Path.read_text()` can raise
     `UnicodeError` on invalid bytes, not only `OSError` — both must degrade
-    to "no URL configured", never crash the tick."""
-    if not path.exists():
-        return None
+    to "no URL configured", never crash the tick.
+
+    Plan 163 fixer round (minor 1): deliberately does NOT preflight with
+    `path.exists()` — on Python 3.12, `exists()` (which calls `stat()`) can
+    itself re-raise a non-ignored `OSError` (e.g. a permission error on a
+    parent directory), and a preflight call sitting OUTSIDE this guard
+    would violate the documented "unreadable => None, no error" contract.
+    A missing file is just another `read_text()` failure (`FileNotFoundError`,
+    an `OSError` subclass) caught by the same guard as every other
+    unreadable case.
+    """
     try:
         value = path.read_text().strip()
     except (OSError, UnicodeError) as exc:
@@ -479,23 +487,30 @@ def read_deadman_url(path: Path) -> str | None:
 
 
 def default_slack_poster(url: str, message: str) -> bool:
+    """Plan 163 fixer round (minor 2): response handling (`status_code`,
+    `text`) happens INSIDE this try — an unexpected exception accessing
+    either (e.g. a fake/wrapped response in a test, or a future httpx
+    change) is caught by the same boundary as the request itself, so this
+    function's 'never raises' promise holds for callers other than
+    `run_once` too (whose `_safe_slack_post` wrapper would otherwise be the
+    only thing containing the damage)."""
     payload = {"text": message}
     try:
         resp = httpx.post(url, json=payload, timeout=SLACK_POST_TIMEOUT_S)
+        if resp.status_code >= 300:
+            log.warning(
+                "watchdog.slack_post_failed",
+                http_status=resp.status_code,
+                body=resp.text[:200],
+            )
+            return False
+        return True
     except _HTTP_CALL_EXCEPTIONS as exc:
         log.warning("watchdog.slack_post_failed", error=str(exc))
         return False
     except Exception as exc:  # defensive containment boundary, never BaseException
         log.error("watchdog.slack_post_unexpected_error", error=str(exc))
         return False
-    if resp.status_code >= 300:
-        log.warning(
-            "watchdog.slack_post_failed",
-            http_status=resp.status_code,
-            body=resp.text[:200],
-        )
-        return False
-    return True
 
 
 DeadmanPoster = Callable[[str], bool]
@@ -505,19 +520,22 @@ DeadmanPoster = Callable[[str], bool]
 def default_deadman_poster(url: str) -> bool:
     """POST an empty body to the dead-man ping URL. Success is
     `200 <= status < 300`. Never raises (Plan 163 D4: a dead-man outage
-    must never be able to break the process it monitors)."""
+    must never be able to break the process it monitors).
+
+    Plan 163 fixer round (minor 2): `status_code` access happens INSIDE
+    this try, same rationale as `default_slack_poster`."""
     try:
         resp = httpx.post(url, timeout=DEADMAN_POST_TIMEOUT_S)
+        if 200 <= resp.status_code < 300:
+            return True
+        log.warning("watchdog.deadman_post_failed", http_status=resp.status_code)
+        return False
     except _HTTP_CALL_EXCEPTIONS as exc:
         log.warning("watchdog.deadman_post_failed", error=str(exc))
         return False
     except Exception as exc:  # defensive containment boundary, never BaseException
         log.error("watchdog.deadman_post_unexpected_error", error=str(exc))
         return False
-    if 200 <= resp.status_code < 300:
-        return True
-    log.warning("watchdog.deadman_post_failed", http_status=resp.status_code)
-    return False
 
 
 def should_alert_health(
