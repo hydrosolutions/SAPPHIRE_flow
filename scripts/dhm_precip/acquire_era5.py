@@ -80,8 +80,8 @@ from scripts.dhm_precip.era5_errors import (  # noqa: E402
 )
 from scripts.dhm_precip.era5_manifest import (  # noqa: E402
     DEFAULT_DATA_ROOT,
+    MIN_DIAGNOSTIC_SAMPLE_DAYS,
     AccumulationDiagnosticRecord,
-    Era5ProvenanceManifest,
     checksum_file,
     load_operator_provenance,
     manifest_path_for,
@@ -161,6 +161,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     return parser
+
+
+def _approved_diagnostic_window(
+    window_args: list[str] | None, windows: list[AcquisitionWindow]
+) -> AcquisitionWindow:
+    """M-7/B5 — `--stage diagnose` requires EXACTLY ONE explicitly named,
+    approved window.
+
+    Without `--window` the stage resolved the full D4 set of eight windows,
+    which includes a single-DAY boundary window and a single-HOUR one; a
+    one-hour sample cannot establish a daily accumulation convention, yet it
+    used to be diagnosed and recorded like any other. An approved window is
+    therefore a whole month or a whole year (`day is None`).
+    """
+    if not window_args or len(windows) != 1:
+        raise NonExpressibleWindowError(
+            "--stage diagnose requires exactly one explicit --window (the "
+            "diagnostic is a publish gate, and the default window set "
+            "includes boundary-context windows too short to diagnose); got "
+            f"{window_args!r}"
+        )
+    window = windows[0]
+    if window.day is not None:
+        raise NonExpressibleWindowError(
+            f"--stage diagnose needs a whole month or year window, but "
+            f"{window.window_id!r} is day- or hour-granular and cannot "
+            "establish a daily accumulation convention"
+        )
+    return window
 
 
 def run(
@@ -249,64 +278,96 @@ def run(
             log.info("era5.cli.transformed", year=record.product_year)
 
     if args.stage == "diagnose":
+        # B5 / M-7 (CORRECTED 2026-08-16) — the persisted diagnostic is a
+        # GATE (M-A5 D5.2 refuses to publish without one), so the stage that
+        # writes it must itself be trustworthy. Three corrections:
+        #   1. exactly ONE explicit approved window (no `--window` used to
+        #      resolve all eight D4 windows, including the one-hour boundary
+        #      window the diagnostic must reject);
+        #   2. the raw file is reconciled against the acquisition manifest's
+        #      own sha256 BEFORE it is decoded as a dataset;
+        #   3. a minimum whole-day sample is pinned.
+        window = _approved_diagnostic_window(args.window, windows)
         manifest_path = manifest_path_for(data_root)
-        for window in windows:
-            path = raw_artifact_path(window.window_id, data_root)
-            if not path.exists():
-                raise Era5StorageError(
-                    f"no raw artifact for window {window.window_id!r} at "
-                    f"{path}; run --stage acquire first"
-                )
-            with xr.open_dataset(path) as raw_ds:
-                diagnostic = diagnose_accumulation_convention(raw_ds.load())
-            if diagnostic.reset_hour != DAY_START_HOUR or not (
-                diagnostic.monotone_within_day
-            ):
-                raise Era5TransformFailedError(
-                    f"observed accumulation convention for window "
-                    f"{window.window_id!r} disagrees with D6's assumed "
-                    f"reset hour {DAY_START_HOUR}: observed "
-                    f"reset_hour={diagnostic.reset_hour} "
-                    f"monotone_within_day={diagnostic.monotone_within_day} — "
-                    "the deaccumulation rule needs correcting (and the "
-                    "correction recording in the plan) before any transform "
-                    "is trusted"
-                )
-            log.info(
-                "era5.diagnose.confirmed",
-                window_id=window.window_id,
-                reset_hour=diagnostic.reset_hour,
-                terminal_hour=diagnostic.terminal_hour,
-                monotone_within_day=diagnostic.monotone_within_day,
-                sample_size_days=diagnostic.sample_size_days,
+        manifest = read_manifest(manifest_path)
+        if manifest is None:
+            raise Era5StorageError(
+                f"no acquisition manifest at {manifest_path}; the diagnostic "
+                "is a publish gate and may only run against a window with "
+                "recorded acquisition provenance — run --stage acquire first"
             )
-            # Plan 174 (M-A5) task 1c / D5.2 — persist a PASSING diagnostic
-            # into the acquisition manifest, atomically, with the injected
-            # clock. Only reached once the raise above has NOT fired, so a
-            # failing diagnostic writes no record (as today).
-            # `--stage diagnose` is runnable against a raw artifact placed on
-            # disk without having gone through `--stage acquire` in the same
-            # data root (this CLI's own tests do exactly that) — so a missing
-            # manifest is not an error here, mirroring `acquire_window`'s own
-            # "no manifest yet" bootstrap
-            # (`scripts/dhm_precip/era5_acquire.py:393-399`).
-            manifest = read_manifest(manifest_path) or Era5ProvenanceManifest(
-                dataset=DEFAULT_REQUEST_SPEC.dataset,
-                client_package_version=_cdsapi_version(),
-                operator_provenance=provenance,
+        raw_record = manifest.raw_windows.get(window.window_id)
+        if raw_record is None:
+            raise Era5StorageError(
+                f"the acquisition manifest carries no raw-window record for "
+                f"{window.window_id!r}; the diagnostic may only run against "
+                "a window this manifest actually acquired"
             )
-            record = AccumulationDiagnosticRecord(
-                window_id=window.window_id,
-                source_sha256=checksum_file(path),
-                reset_hour=diagnostic.reset_hour,
-                terminal_hour=diagnostic.terminal_hour,
-                monotone_within_day=diagnostic.monotone_within_day,
-                sample_size_days=diagnostic.sample_size_days,
-                recorded_at=resolved_clock(),
+        path = raw_artifact_path(window.window_id, data_root)
+        if not path.exists():
+            raise Era5StorageError(
+                f"no raw artifact for window {window.window_id!r} at "
+                f"{path}; run --stage acquire first"
             )
-            write_manifest_atomic(
-                with_accumulation_diagnostic(manifest, record), manifest_path
+        # Reconcile BEFORE decoding (m-2: checksumming necessarily reads raw
+        # bytes; the guarantee is that no DECODE of those bytes happens
+        # first).
+        observed_sha256 = checksum_file(path)
+        if observed_sha256 != raw_record.sha256:
+            raise Era5TransformFailedError(
+                f"raw artifact for window {window.window_id!r} has sha256 "
+                f"{observed_sha256}, but the acquisition manifest records "
+                f"{raw_record.sha256} — refusing to decode it, and refusing "
+                "to record a diagnostic against bytes of unknown origin"
             )
+        with xr.open_dataset(path) as raw_ds:
+            diagnostic = diagnose_accumulation_convention(raw_ds.load())
+        if diagnostic.reset_hour != DAY_START_HOUR or not (
+            diagnostic.monotone_within_day
+        ):
+            raise Era5TransformFailedError(
+                f"observed accumulation convention for window "
+                f"{window.window_id!r} disagrees with D6's assumed "
+                f"reset hour {DAY_START_HOUR}: observed "
+                f"reset_hour={diagnostic.reset_hour} "
+                f"monotone_within_day={diagnostic.monotone_within_day} — "
+                "the deaccumulation rule needs correcting (and the "
+                "correction recording in the plan) before any transform "
+                "is trusted"
+            )
+        if diagnostic.sample_size_days < MIN_DIAGNOSTIC_SAMPLE_DAYS:
+            raise Era5TransformFailedError(
+                f"window {window.window_id!r} covers only "
+                f"sample_size_days={diagnostic.sample_size_days} whole "
+                f"accumulation days, below the pinned minimum of "
+                f"{MIN_DIAGNOSTIC_SAMPLE_DAYS}; too short a sample cannot "
+                "establish a daily accumulation convention"
+            )
+        log.info(
+            "era5.diagnose.confirmed",
+            window_id=window.window_id,
+            reset_hour=diagnostic.reset_hour,
+            terminal_hour=diagnostic.terminal_hour,
+            monotone_within_day=diagnostic.monotone_within_day,
+            sample_size_days=diagnostic.sample_size_days,
+        )
+        # Plan 174 (M-A5) task 1c / D5.2 — persist a PASSING diagnostic into
+        # the acquisition manifest, atomically, with the injected clock,
+        # keyed by window id (records are stored PER WINDOW). Only reached
+        # once none of the raises above has fired, so a failing diagnostic
+        # writes no record.
+        record = AccumulationDiagnosticRecord(
+            window_id=window.window_id,
+            source_sha256=observed_sha256,
+            reset_hour=diagnostic.reset_hour,
+            terminal_hour=diagnostic.terminal_hour,
+            monotone_within_day=diagnostic.monotone_within_day,
+            sample_size_days=diagnostic.sample_size_days,
+            recorded_at=resolved_clock(),
+        )
+        write_manifest_atomic(
+            with_accumulation_diagnostic(manifest, record), manifest_path
+        )
 
     return 0
 

@@ -20,11 +20,13 @@ from scripts.dhm_precip.era5_manifest import (
     Era5ProvenanceManifest,
     OperatorProvenance,
     PackingAccounting,
+    RawWindowRecord,
     TransformYearRecord,
     checksum_file,
     manifest_path_for,
     product_artifact_path,
     with_accumulation_diagnostic,
+    with_raw_window,
     with_transform_year,
     write_manifest_atomic,
 )
@@ -110,6 +112,21 @@ def _build_data_root(tmp_path: Path, *, ramp_intercept: float = 0.5) -> Path:
                 transformed_at=datetime(2026, 1, 1, tzinfo=UTC),
             ),
         )
+    # B5 — the passing predicate now cross-checks the diagnostic's
+    # `source_sha256` against the manifest's OWN raw-window record for that
+    # window, so the fixture must carry that provenance.
+    manifest = with_raw_window(
+        manifest,
+        RawWindowRecord(
+            window_id="2021-10",
+            dataset="reanalysis-era5-land",
+            request_payload={},
+            raw_request_identity="r",
+            sha256="a" * 64,
+            client_package_version="0.7.7",
+            downloaded_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
     diag = AccumulationDiagnosticRecord(
         window_id="2021-10",
         source_sha256="a" * 64,

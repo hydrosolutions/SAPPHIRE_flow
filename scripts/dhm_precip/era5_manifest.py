@@ -262,17 +262,55 @@ def with_accumulation_diagnostic(
     return replace(manifest, accumulation_diagnostics=updated)
 
 
+MIN_DIAGNOSTIC_SAMPLE_DAYS = 28
+"""B5/M-7 — the minimum number of whole accumulation days a diagnostic
+sample must cover before its record may gate a publish. Plan 171's approved
+sample window (`2021-10`) is a whole calendar month; the shortest calendar
+month is 28 days, so anything below that is not a real window — a one-hour
+boundary-context window yields 0 and used to satisfy the gate."""
+
+
 def passing_accumulation_diagnostic(
-    manifest: Era5ProvenanceManifest, *, expected_reset_hour: int
+    manifest: Era5ProvenanceManifest,
+    *,
+    expected_reset_hour: int,
+    min_sample_size_days: int = MIN_DIAGNOSTIC_SAMPLE_DAYS,
 ) -> AccumulationDiagnosticRecord | None:
-    """1c — "does this manifest carry a passing real-data diagnostic?" A
-    passing record confirms `expected_reset_hour` (D6's assumed
-    `DAY_START_HOUR`, passed in by the caller to avoid this module
-    importing `era5_deaccumulate`, which already imports this one) and
-    reports no monotonicity violation. Any real window qualifies — M-A5
-    only needs one."""
-    for record in manifest.accumulation_diagnostics.values():
-        if record.reset_hour == expected_reset_hour and record.monotone_within_day:
+    """1c — "does this manifest carry a passing real-data diagnostic?"
+
+    B5 (CORRECTED 2026-08-16) — the predicate used to test only
+    `reset_hour` and `monotone_within_day`, ignoring the three fields that
+    make the record TRUSTWORTHY rather than merely present. A passing record
+    must now satisfy ALL of:
+
+    * `reset_hour == expected_reset_hour` — D6's assumed `DAY_START_HOUR`,
+      passed in by the caller to avoid importing `era5_deaccumulate`, which
+      already imports this module;
+    * `monotone_within_day` — no violation at the chosen reset;
+    * `terminal_hour == (expected_reset_hour - 1) % 24` — the record's own
+      fields must be mutually consistent, which catches a hand-edited or
+      stale record written by a different diagnostic;
+    * `sample_size_days >= min_sample_size_days` — a one-hour boundary
+      window reports 0 whole days and cannot establish a daily convention;
+    * `source_sha256` equal to the manifest's OWN raw-window record for the
+      same window — the diagnostic must have been run against the bytes
+      this manifest records, not against some other file of that name.
+
+    Any real window that satisfies all five qualifies — M-A5 needs one.
+    Iteration is ordered by window id so the answer is deterministic.
+    """
+    expected_terminal_hour = (expected_reset_hour - 1) % 24
+    for _window_id, record in sorted(manifest.accumulation_diagnostics.items()):
+        raw = manifest.raw_windows.get(record.window_id)
+        if (
+            record.reset_hour == expected_reset_hour
+            and record.monotone_within_day
+            and record.terminal_hour == expected_terminal_hour
+            and record.sample_size_days >= min_sample_size_days
+            and raw is not None
+            and bool(record.source_sha256)
+            and record.source_sha256 == raw.sha256
+        ):
             return record
     return None
 
