@@ -171,6 +171,60 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# --- D9/D7 - the frozen on-disk encoding spec for the points bundle ---
+#
+# MAJOR (2026-08-16): the identity's "full encoding spec" previously carried
+# only the `valid_time` units/dtype, so a change to the precipitation fill
+# value, compression, chunking or the station encoding produced the SAME
+# `extraction_identity` and the stale bundle was reused. Mirrors M-A4's own
+# `era5_transform._OUTPUT_ENCODING_SPEC`.
+#
+# Chunking is declared as a POLICY (one station, one station-year per chunk)
+# rather than a literal shape, because the hour count depends on the study
+# years; `_xarray_encoding` clamps it to the array actually being written.
+_POINTS_CHUNK_STATIONS = 1
+_POINTS_CHUNK_HOURS = 8760
+_SEMANTIC_TIMEZONE = "UTC"
+_POINTS_TIME_UNITS = "hours since 1970-01-01 00:00:00"
+
+POINTS_OUTPUT_ENCODING_SPEC: dict[str, dict[str, object]] = {
+    "precipitation_mm_per_h": {
+        "dtype": "float32",
+        "zlib": True,
+        "complevel": 4,
+        "chunk_stations": _POINTS_CHUNK_STATIONS,
+        "chunk_hours": _POINTS_CHUNK_HOURS,
+        "_FillValue": "NaN",
+    },
+    "valid_time": {
+        "units": _POINTS_TIME_UNITS,
+        "dtype": "int64",
+        "semantic_timezone_attr": _SEMANTIC_TIMEZONE,
+    },
+    "station": {"dtype": "S1", "fixed_length": True},
+}
+
+
+def _xarray_encoding(shape: tuple[int, ...]) -> dict[str, dict[str, object]]:
+    """Translate the frozen spec into the encoding dict the pinned encoder
+    takes, clamping the declared chunk policy to the array being written."""
+    n_stations, n_hours = shape
+    return {
+        "precipitation_mm_per_h": {
+            "dtype": "float32",
+            "zlib": True,
+            "complevel": 4,
+            "chunksizes": (
+                min(_POINTS_CHUNK_STATIONS, n_stations),
+                min(_POINTS_CHUNK_HOURS, n_hours),
+            ),
+            "_FillValue": float("nan"),
+        },
+        "valid_time": {"units": _POINTS_TIME_UNITS, "dtype": "int64"},
+        "station": {"dtype": "S1"},
+    }
+
+
 def _default_expected_stations() -> frozenset[Station]:
     """The workbook-derived usable-station inventory (2d's boundary
     decision) — reads the pinned production workbook's COLUMN inventory
@@ -402,9 +456,7 @@ def run(
         output_schema_version=OUTPUT_SCHEMA_VERSION,
         output_format="netcdf4_h5netcdf",
         output_dtype="float32",
-        output_encoding={
-            "valid_time": {"units": "hours since 1970-01-01 00:00:00", "dtype": "int64"}
-        },
+        output_encoding=POINTS_OUTPUT_ENCODING_SPEC,
     )
 
     staging = prepare_staging_dir(data_root, identity=identity)
@@ -520,6 +572,18 @@ def _concat_series(parts: list[ExtractedSeries]) -> ExtractedSeries:
 def _write_series_netcdf(
     path: Path, by_station: dict[Station, ExtractedSeries]
 ) -> None:
+    """D9/D5.0 — the on-disk schema is part of the contract:
+
+    * `station` is a FIXED-LENGTH string coordinate (`dtype="S1"` writes the
+      netCDF char-array representation over a `stringN` dimension), not
+      h5netcdf's variable-length default;
+    * `precipitation_mm_per_h` carries the declared fill value, compression
+      and chunking — all of which `POINTS_OUTPUT_ENCODING_SPEC` hashes into
+      `extraction_identity`;
+    * `valid_time` stays CF-encoded and timezone-NAIVE (D5.0 — a tz-aware
+      coordinate cannot be written by the pinned encoder at all), with the
+      SEMANTIC UTC attribute carrying the claim the dtype cannot.
+    """
     stations = sorted(by_station)
     valid_time = by_station[stations[0]].valid_time
     values = np.stack([by_station[s].values for s in stations], axis=0).astype(
@@ -527,15 +591,11 @@ def _write_series_netcdf(
     )
     ds = xr.Dataset(
         {"precipitation_mm_per_h": (["station", "valid_time"], values)},
-        coords={"station": stations, "valid_time": valid_time},
+        coords={"station": [str(s) for s in stations], "valid_time": valid_time},
     )
-    ds.to_netcdf(
-        path,
-        engine="h5netcdf",
-        encoding={
-            "valid_time": {"units": "hours since 1970-01-01 00:00:00", "dtype": "int64"}
-        },
-    )
+    ds["valid_time"].attrs["timezone"] = _SEMANTIC_TIMEZONE
+    ds["precipitation_mm_per_h"].attrs["units"] = "mm h-1"
+    ds.to_netcdf(path, engine="h5netcdf", encoding=_xarray_encoding(values.shape))
 
 
 def _row_to_dict(row: StationGridElevationRow) -> dict[str, object]:

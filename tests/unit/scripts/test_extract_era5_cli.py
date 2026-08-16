@@ -361,6 +361,99 @@ class TestPublishBundle:
                 assert entry["n_nan"] == 0
                 assert entry["first_nan_valid_time"] is None
 
+    def test_published_series_follow_the_d9_netcdf_schema(self, tmp_path: Path) -> None:
+        """D9/D5.0 (MAJOR, 2026-08-16) — the D9 NetCDF schema was not
+        implemented: `station` used h5netcdf's VARIABLE-length string
+        default instead of a fixed-length string coord, and there was no
+        semantic UTC attribute on `valid_time`.
+
+        D5.0 is deliberately NOT "fixed" here: on-disk time stays CF-encoded
+        and timezone-NAIVE, because a tz-aware coordinate cannot be written
+        by the pinned encoder and a validator rejecting a naive axis would
+        reject every real M-A4 product.
+        """
+        import h5py
+
+        data_root = _build_data_root(tmp_path)
+        assert _run_all(data_root) == 0
+        current = current_pointer_path(data_root).read_text().strip()
+
+        for name in ("series_nearest.nc", "series_bilinear.nc"):
+            path = points_root(data_root) / current / name
+            with h5py.File(path, "r") as raw:
+                station = raw["station"]
+                # Fixed-length: an |S1 char array over a string dimension,
+                # NOT h5py's variable-length string special dtype.
+                assert h5py.check_string_dtype(station.dtype) is None or (
+                    h5py.check_string_dtype(station.dtype).length is not None
+                ), f"{name}: station is a variable-length string"
+                assert station.dtype.kind == "S", name
+                assert station.ndim == 2, name
+
+            with xr.open_dataset(path, engine="h5netcdf") as reopened:
+                loaded = reopened.load()
+                assert loaded["valid_time"].attrs.get("timezone") == "UTC", name
+                # D5.0 — still naive on disk, denoting UTC.
+                assert np.issubdtype(loaded["valid_time"].dtype, np.datetime64), name
+                enc = loaded["valid_time"].encoding
+                assert str(enc["units"]).startswith("hours since 1970-01-01"), name
+                assert str(enc["dtype"]) == "int64", name
+                penc = loaded["precipitation_mm_per_h"].encoding
+                assert penc["zlib"] is True, name
+                assert penc["complevel"] == 4, name
+                assert penc["chunksizes"] is not None, name
+                assert np.isnan(float(penc["_FillValue"])), name
+                assert str(penc["dtype"]) == "float32", name
+
+    def test_the_identity_covers_the_full_encoding_spec(self) -> None:
+        """D7 — the identity's "full encoding spec" omitted the
+        precipitation fill value, compression and chunking, and the station
+        encoding entirely, so a change to any of them produced the same
+        identity and the stale bundle was reused."""
+        spec = extract_era5.POINTS_OUTPUT_ENCODING_SPEC
+        assert set(spec["precipitation_mm_per_h"]) >= {
+            "dtype",
+            "zlib",
+            "complevel",
+            "chunk_stations",
+            "chunk_hours",
+            "_FillValue",
+        }
+        assert set(spec["valid_time"]) >= {"units", "dtype", "semantic_timezone_attr"}
+        assert set(spec["station"]) >= {"dtype", "fixed_length"}
+
+    def test_changing_any_encoding_field_changes_the_identity(self) -> None:
+        from scripts.dhm_precip.era5_extract_manifest import extraction_identity
+
+        base_kwargs: dict[str, object] = {
+            "operator_id": "NEAREST",
+            "coordinate_table_sha256": "a" * 64,
+            "source_sha256s": ("b" * 64,),
+            "orography_identity": "c" * 64,
+            "jjas_months": (6, 7, 8, 9),
+            "djf_months": (12, 1, 2),
+            "mam_months": (3, 4, 5),
+            "on_months": (10, 11),
+            "wet_threshold_mm_per_h": 0.2,
+            "wet_threshold_side": ">=",
+            "zero_policy": "exclude_zero",
+            "quantile_definition": "linear",
+            "quantile_grid": (0.5,),
+            "station_elevation_datum": "UNKNOWN",
+            "orography_elevation_datum": "LOCAL_MSL",
+            "output_schema_version": "1",
+            "output_format": "netcdf4_h5netcdf",
+            "output_dtype": "float32",
+        }
+        spec = extract_era5.POINTS_OUTPUT_ENCODING_SPEC
+        base = extraction_identity(**base_kwargs, output_encoding=spec)  # type: ignore[arg-type]
+        for variable, fields in spec.items():
+            for field_name in fields:
+                mutated = {k: dict(v) for k, v in spec.items()}
+                mutated[variable][field_name] = "MUTATED"
+                changed = extraction_identity(**base_kwargs, output_encoding=mutated)  # type: ignore[arg-type]
+                assert base != changed, f"{variable}.{field_name} is not hashed"
+
     def test_station_outside_grid_exits_4(self, tmp_path: Path) -> None:
         data_root = _build_data_root(tmp_path)
         coords_path = data_root / "station_coordinates.csv"
