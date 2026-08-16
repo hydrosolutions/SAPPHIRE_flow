@@ -1,7 +1,7 @@
 ---
 status: READY
 created: 2026-08-15
-revised: 2026-08-16
+revised: 2026-08-16 (post-implementation review — 4 plan-level blockers corrected)
 plan: 174
 title: M-A5 — ERA5-Land point extraction at the 26 station locations
 scope: Extract the M-A4 hourly-mm ERA5-Land product at the 26 gauge locations with a NAMED, recorded extraction operator; acquire and freeze an orography source; record per-station grid coordinates and orography elevation; quantify station-to-grid elevation mismatch; run an operator-sensitivity comparison; propagate the IMERG scope split into the milestone doc. Explicitly NOT the gauge-vs-ERA5 comparison (M-A6), NOT IMERG (split to its own plan — no acquisition path exists), NOT any QC-mask application (the mask is the gauge side; pairing is M-A6), NOT the Kirtipur/Khumaltar gauge-pair diagnostic (moved to M-A6 — see D6), NOT a correction design.
@@ -38,6 +38,55 @@ them deliberately rather than rediscovering them.
 | m-2 | "checksum mismatch **before any read/file open**" is literally impossible — checksumming reads the file | Reword to "before the payload is decoded" |
 | m-3 | The Problem section says M-A4 "left" the products on disk; Constraint 1 correctly says none exists yet | Internal contradiction — fix the Problem wording |
 | m-4 | Two stale citations (the Plan 171 "freeze payload" precedent, and the per-file `os.replace` line reference) | Repoint to the real locations |
+
+### ⛔ POST-IMPLEMENTATION REVIEW (2026-08-16) — 5 blockers, 5 majors, 2 minors
+
+Commit `50dd58d` builds the plan and the **full suite is green (3,753 passed, 0 failed)** with
+`ruff`/`pyright`/ratchet clean. It was nevertheless **never reviewed** by the workflow (escalated at
+round 0), and the implementer self-reports `acceptanceTestsRedFirst: false` for most of Phase 2–4.
+An independent Codex pass plus a manual read then found the following.
+
+**Four of the five blockers are defects in THIS PLAN, not in the code.** Every one of them survived a
+fully green suite, because a suite written against a wrong spec cannot fail on it. Each is corrected
+in place above:
+
+| # | Blocker | Origin | Corrected in |
+|---|---|---|---|
+| B1 | Geopotential band bounded the field **minimum**; the Terai (~588 m² s⁻²) is in the box ⇒ Branch A raises on **every** real run | **this plan** | D3a |
+| B2 | `orography_identity` covers the route only — a changed source byte-for-byte keeps the identity, stale raster silently reused | **this plan** (the D3a spec/record split moved the hashes out and D7 was not updated — the two clauses contradicted each other) | D7 |
+| B3 | "Adopt if the manifest reconciles" was never defined; an **empty payload map reconciles vacuously** and the adopt path **deletes the fresh complete bundle** | **this plan** | D7.3 |
+| B4 | Cardinality 26 never enforced — equality against a self-supplied inventory is not a constraint | **this plan** (the 2d single-source decision removed the only pin) | D8/2d |
+| B5 | Accumulation diagnostic still not a trustworthy gate: decodes before reconciling the manifest sha256, and the passing predicate ignores `source_sha256`, `terminal_hour`, `sample_size_days` | **recorded as M-7 and set READY over it** | below |
+
+**B5 is a process failure, not a spec bug.** M-7 was written into the residual table with the
+disposition "fix in 1c" and READY was set anyway. It came back as a blocker. **Recording a known
+defect is not handling it** — a residual that is load-bearing for correctness must either be fixed
+before READY or explicitly descoped, never carried as a note. ⇒ **1c is now a required task with
+explicit criteria:** exactly one approved `--window`; reconcile its sha256 **before** decoding; the
+passing predicate must include `source_sha256`, `terminal_hour` and a minimum `sample_size_days`;
+records stored per window.
+
+**Majors, all required in the fixer round:** `zero_policy` hashed-but-unapplied (D1a, corrected
+above) · sign-agreement and excluded-hour grain (D1a, corrected above) · the manifest omitting
+`OrographySpec` fields, source file hashes/sizes and D11's per-station `n_hours`/`n_finite`/`n_nan`
+and first/last-NaN stamps · the D9 NetCDF schema not implemented (variable-length station strings
+instead of fixed-length, no semantic UTC attribute, encoding absent from the identity).
+
+**Downgraded on inspection:** the "area-weighted" aggregation is genuinely unweighted, but within one
+0.1° cell `cos(lat)` varies ~0.17% — negligible against hundreds of metres of intra-cell relief.
+⇒ **Correct the claim, do not implement weighting**; rename the rule to what it is
+(`mean_of_contained_cells`) so the manifest stops asserting a method that was not used.
+
+**Minors:** `Era5AcquisitionError` precedes its `Era5StorageError` subclass in the CLI's exit-code
+dispatch, so storage errors exit 4 instead of 5, and raw `OSError` escapes to 1 · **and one test that
+proves nothing**: `tests/unit/scripts/test_era5_extract.py:312` asserts
+`elev_mismatch_m == row.station_elev_m − row.orography_elev_m`, recomputing the implementation's own
+formula from its own output — it passes against any wrong orography cell. It must assert an
+**independently derived** expected cell and value, and the required 1 m haversine tolerance.
+
+**The lesson worth keeping:** a green suite plus clean static gates said nothing about any of this.
+The defects lived in the specification and in tests written after the code, which is precisely the
+pair that a test run cannot separate. [[feedback_independent_review_beats_automated_loop]]
 
 **Proportionality note, on the record.** At ~760 lines this plan is heavy for work whose core is
 "extract a grid at 26 points," and M-12 is a symptom. The orography Branch-A/Branch-B probe carries
@@ -141,7 +190,21 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     reported per season and for JJAS specifically
   - **zero / wet-hour policy** — `wet_threshold_mm_per_h = 0.2` with `wet_threshold_side = ">="`
     (`scripts/dhm_precip/params.py:43-44`) and `zero_policy = "exclude_zero"`
-    (`scripts/dhm_precip/params.py:48`)
+    (`scripts/dhm_precip/params.py:48`).
+    **⛔ CORRECTED 2026-08-16 — pinned, hashed into the identity, and then NOT APPLIED.** The
+    implementation computes every quantile over all common-finite hours, while the manifest records
+    `zero_policy="exclude_zero"` — **the artefact asserts a policy the computation did not use.**
+    Two consequences, the second worse than the first: ERA5-Land is dry most hours, so the lower half
+    of the grid collapses toward 0.0 for both operators; and the numbers become **incomparable with
+    every other quantile in this track** — all eight M-A1 intensity expectations state
+    `zero_policy = "exclude_zero"` over *"JJAS wet-hour (≥ 0.2 mm/h) non-null observations"*
+    (`scripts/dhm_precip/expectations.toml:284,303,322,341,781,800,819,835`), which is exactly the
+    population M-A6 will want to compare against.
+    ⇒ **Quantiles are computed on the WET-HOUR population** (`value >= 0.2`, per operator), never on
+    all finite hours. **A parameter that is hashed into the identity but never read is worse than an
+    unpinned one** — it is false provenance. The acceptance test must assert the *population*, not
+    merely that `quantile_grid` was used (`tests/unit/scripts/test_era5_extract.py:386` asserts only
+    the grid, which is why this survived a green suite).
   - **quantile definition and grid** — `quantile_definition = "linear"`
     (`scripts/dhm_precip/params.py:47`) and the existing
     `quantile_grid = (0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999)`
@@ -149,7 +212,16 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   - **delta statistic** — per station and per quantile, report both the **absolute difference**
     `nearest − bilinear` (mm/h) and the **ratio** `nearest / bilinear`, plus the **sign-agreement
     fraction** across stations at each quantile (which is what tells us whether any ordering is
-    systematic at all); wet-hour mean intensity and wet-hour frequency reported the same way
+    systematic at all); wet-hour mean intensity and wet-hour frequency reported the same way.
+    **⛔ CORRECTED 2026-08-16 — both accounting columns are computed at the wrong grain.**
+    Sign agreement is produced only at a hard-coded `q=0.5`, leaving it null for the other seven
+    quantiles *and* for both wet-hour statistics — so the one column that reveals whether an ordering
+    is systematic is absent everywhere it matters (D1's bilinear-damps-the-tail question lives at
+    q0.99/q0.999, not the median). And a **single global excluded-hour count is copied onto every
+    row**, so a station-and-season figure silently reports a whole-run total.
+    ⇒ **`sign_agreement_fraction` is computed for EVERY (season, statistic, quantile) combination**
+    on `ACROSS_STATION` rows, and **`n_hours_excluded` / `n_hours_common_finite` are computed at each
+    row's own grain** — per station and season for `STATION` rows, per season for `ACROSS_STATION`.
 
 - **D2 — "Containing cell" and "nearest cell centre" are NOT the same operator and must not be
   conflated.** ERA5-Land values are cell-centre-registered on whole-0.1° nodes. "Nearest node" and
@@ -180,8 +252,29 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   **Unit conversion is mandatory and part of the spec:** the field is *surface geopotential*
   Φ in m² s⁻², and elevation is `z = Φ / g0` with **`g0 = 9.80665 m s⁻²`** (the WMO standard
   gravity). The spec records whether the retrieved field is geopotential or already metres; a
-  retrieved field whose magnitude is inconsistent with the declared unit (Nepal box: metres ⇒ tens to
-  thousands; geopotential ⇒ 10⁴–10⁵) is a **typed failure**, not a silent divide.
+  retrieved field whose magnitude is inconsistent with the declared unit is a **typed failure**, not
+  a silent divide.
+
+  **⛔ CORRECTED 2026-08-16 — the first band was wrong and would have failed every real run.**
+  The original wording ("Nepal box: metres ⇒ tens to thousands; geopotential ⇒ 10⁴–10⁵") was applied
+  as a bound on the field **minimum**, and the acquired box (26–31 N) contains the **Terai lowlands**:
+
+  | | elevation | geopotential = z·g0 |
+  |---|---|---|
+  | Terai lowland (in box) | ~60 m | **~588 m² s⁻²** |
+  | Everest | 8,849 m | ~86,779 m² s⁻² |
+
+  `10000 <= 588` is false, so **Branch A raises `Era5OrographyError` on any real field.** Synthetic
+  fixtures were chosen in-band, so no test catches it.
+
+  **The minimum carries no signal — it is small under both units. Discriminate on the MAXIMUM:**
+  - `field_max > 9_999` ⇒ the field is **geopotential** (Everest ⇒ ~86,779) → apply `Φ/g0`
+  - `field_max <= 9_999` ⇒ the field is **already metres** (Everest ⇒ 8,849) → identity
+  - the declared `conversion_rule` must **agree** with that classification, else typed failure —
+    this is the check, replacing the min-bound entirely
+  - a lower sanity bound may only reject the physically impossible: `field_min < -500 m`
+    (or `< -5000 m² s⁻²`) ⇒ typed failure, which catches an unmasked no-data sentinel such as −32768
+
   Vertical reference: as documented by the producer, recorded verbatim in the spec.
 
   **Branch B — public DEM proxy (owner-accepted fallback, taken whenever Branch A needs a further
@@ -357,9 +450,23 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   Mirror M-A4's two-identity pattern (`scripts/dhm_precip/era5_manifest.py:87`, `:95`), extended
   where review showed M-A4's shape is insufficient here.
   **Two identities:**
-  - `orography_identity` = sha256(canonical-JSON of the frozen `OrographySpec` — every field in D3a,
-    including source sha256s, CRS, vertical reference, units, no-data sentinel, aggregation rule,
-    conversion rule, product version — plus `orography_schema_version` and `orography_code_version`).
+  - **⛔ CORRECTED 2026-08-16 — this clause contradicted D3a and opened a provenance hole.** It said
+    `orography_identity` = sha256 of the `OrographySpec` "**including source sha256s**" — but the D3a
+    fix had just *moved* those hashes out of `OrographySpec` into `OrographySourceRecord`. The
+    implementation resolved the contradiction by following D3a, so the identity covers the **route
+    only**. Consequence: **a source file whose bytes change at the same URL does not change the
+    identity**, and the stale raster is silently reused. Split cleanly instead:
+    - `orography_route_identity` = sha256(canonical-JSON of `OrographySpec` — product id + version,
+      URL/tile pattern, licence, CRS, vertical reference, units, no-data sentinel, aggregation rule,
+      conversion rule, probe date, rejected-candidate log — plus `orography_schema_version` and
+      `orography_code_version`). Computable at **1a**, before anything is downloaded.
+    - `orography_identity` = sha256(`orography_route_identity` **+ every `OrographySourceRecord`
+      file sha256 + the derived raster's own sha256 + the frozen raster schema** — variable name,
+      dims, dtype, encoding, mask/flag variable, per M-8). Computable only at **1b**, which is where
+      the materialised bytes first exist. This is the one `extraction_identity` consumes.
+    - **A materialised raster is never trusted because a file of the right name exists.** On every
+      run, re-verify the source hashes against the record and the raster's own sha256 against the
+      manifest; a mismatch is a typed failure, not a silent reuse.
   - `extraction_identity` = sha256(canonical-JSON of **every value-affecting input**):
     operator id · station-coordinate-table sha256 · the **list of source product sha256s consumed**
     (validated against the acquisition manifest before use, never trusted from the filename) ·
@@ -388,10 +495,28 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
      `os.replace` (a file, so genuinely atomic).
   3. **`os.replace` cannot replace a non-empty directory with another non-empty directory.** So the
      "regenerate an existing identity" path is not a replace at all. If `<extraction_identity>/`
-     already exists: **validate and adopt it** if its manifest reconciles, otherwise **quarantine it**
+     already exists: **validate and adopt it** if it reconciles, otherwise **quarantine it**
      (rename to `<extraction_identity>.orphan-<n>/`) and publish fresh. A staging directory with no
      pointer is unreferenced garbage the next run deletes; a published directory with no matching
      manifest entry is **re-validated, never assumed good** (Plan 171 D11's rule).
+
+     **⛔ CORRECTED 2026-08-16 — "reconciles" was never defined, and the loose reading DESTROYS the
+     good bundle.** As implemented, reconcile iterates only whatever `payload_sha256s` the existing
+     manifest happens to list — so **an empty payload map reconciles vacuously** — and the adopt path
+     then *deletes the freshly generated, complete staging directory* in favour of the incomplete
+     published one. Adoption is the dangerous branch, not the safe one, so it must be the
+     hard-to-satisfy one. **Reconcile means ALL of:**
+     1. the manifest parses, and its recorded identity **equals the directory name**;
+     2. `payload_sha256s` is **non-empty** and its key set **equals exactly** the D9 payload set
+        (`series_nearest.nc`, `series_bilinear.nc`, `station_grid_elevation.csv`,
+        `operator_sensitivity.csv`) — no missing entries, no extras;
+     3. every listed file exists and its sha256 matches;
+     4. the **D9 reopen-and-validate bundle validator passes** on the directory — the same validator
+        the staging path must pass before publication. A published bundle is held to the identical
+        standard as a fresh one.
+
+     **Any failure ⇒ quarantine and publish fresh. Never delete staging before adoption has fully
+     succeeded** — the ordering must be validate-then-discard, not discard-then-adopt.
 
 - **D8 — Station identity is the coordinate table's `station` column,** the same key the gauge side
   uses (`scripts/dhm_precip/loader.py:251` loads and validates it; `:306` already asserts the
@@ -638,6 +763,18 @@ the "renamed station raises" case below is not merely untested, it is **impossib
 this plan**, passed in and recorded in the manifest — rather than inventing a second, divergent
 canonical list. (A committed canonical inventory is the tidier long-run answer, but it duplicates a
 fact the workbook already owns and would silently rot against it; that belongs to M-I2, not here.)
+
+**⛔ CORRECTED 2026-08-16 — that decision removed the only thing pinning the COUNT.** With a single
+source, the loader checks the extracted set *equals the inventory* — and an inventory of 25 satisfies
+that perfectly. A workbook that silently yields 25 stations extracts 25 and publishes happily; the
+publication check compares against `len(stations)`, i.e. against itself. Equality to a self-supplied
+list is not a constraint.
+⇒ **Pin the cardinality independently of the inventory.** `expected_station_count = 26` on the frozen
+parameter object; the run raises `StationSetMismatchError` if the workbook-derived inventory is not
+exactly that size, **before** any extraction, naming the count it got. This is deliberately a
+hard-coded number and not derived — it is a *tripwire on the boundary input*, and deriving it from
+the same source it guards would defeat it. If the delivery legitimately changes size, the number is
+updated in one place, as a visible decision.
 *In scope:* load the coordinate table via the existing `load_station_coordinates`, passing the
 workbook-derived inventory; assert the extracted station set **equals** it; assert exactly 26 rows,
 no duplicate station, one row per station in every emitted table; wrap the loader's existing
