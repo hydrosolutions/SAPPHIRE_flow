@@ -231,8 +231,9 @@ class TestAggregateToGrid:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """A 3x3 target grid at 0.1 deg, each cell subdivided into
         `n_per_target` x `n_per_target` source cells at 0.01 deg — a linear
-        ramp is exactly hand-computable: the area-weighted mean of a
-        symmetric subgrid equals the value at the target cell centre."""
+        ramp is exactly hand-computable: the (unweighted)
+        `mean_of_contained_cells` over a symmetric subgrid equals the value
+        at the target cell centre."""
         target_lat = np.array([26.0, 26.1, 26.2])
         target_lon = np.array([85.0, 85.1, 85.2])
         spacing = 0.1

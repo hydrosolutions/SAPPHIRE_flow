@@ -40,8 +40,8 @@ live against the public CDS dataset pages and ECMWF's parameter database
   ERA5-Land grid already used for `total_precipitation`
   (`scripts/dhm_precip/era5_request.py:37`) — the aggregation rule
   therefore degenerates to the identity case of the one general
-  area-weighted-mean aggregator 1b implements (a single source cell,
-  weight 1, per target cell). 1b's exact-grid-vector check (D3a) is the
+  `mean_of_contained_cells` aggregator 1b implements (a single source cell
+  per target cell). 1b's exact-grid-vector check (D3a) is the
   real proof of this, run once the raster is actually materialised.
 
 **Branch B was not evaluated.** Branch A satisfied D3a's "no operator act"

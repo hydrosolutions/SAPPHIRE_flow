@@ -337,8 +337,12 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   in a "static" source is a typed failure), which is the check the previous wording was reaching for.
 
   *Aggregation / resampling rule (frozen, identical for both branches where applicable):*
-  reproject to EPSG:4326 if not already; then **area-weighted arithmetic mean of source cells whose
-  centres fall inside the 0.1° ERA5-Land cell**, computed per ERA5-Land cell over the acquired box.
+  reproject to EPSG:4326 if not already; then **`mean_of_contained_cells` — the (unweighted)
+  arithmetic mean of source cells whose centres fall inside the 0.1° ERA5-Land cell**, computed per
+  ERA5-Land cell over the acquired box. *(Renamed 2026-08-16 per the "Downgraded on inspection"
+  finding above: the rule was called "area-weighted" and never was; `cos(lat)` varies ~0.17 % across
+  one 0.1° cell, negligible against hundreds of metres of intra-cell relief, so the CLAIM is
+  corrected rather than weighting implemented.)*
   **No-data policy:** a target cell with **any** contributing no-data source cell is aggregated over
   the valid remainder and **flagged**; a target cell with **>5 % no-data by area, or zero valid
   source cells, is emitted as NaN and is a typed failure if any station's cell is affected.**
