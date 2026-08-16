@@ -19,6 +19,13 @@ log = structlog.get_logger(__name__)
 
 WORK_POOL = "default"
 INGEST_POOL = "ingest"
+# Plan 162 D2/T2: the dedicated backup component — the only work pool served
+# by a worker holding the read-everything `sapphire_backup` credential
+# (prefect-worker-backup, docker-compose.yml). Created below (register_all)
+# in the same set-comprehension loop as every other pool, which already runs
+# BEFORE the deployment-registration loop — required ordering, since `init`
+# registers deployments before any worker starts (docker-compose.yml).
+BACKUP_POOL = "backup"
 FLOW_SOURCE_ROOT = "/app"
 
 
@@ -77,6 +84,10 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="backup_database_flow",
             deployment_name="backup-database",
             cron=cron_backup,
+            # Plan 162 D2: routed to the DEDICATED backup pool, never
+            # `default` — the only worker serving this pool holds the
+            # read-everything sapphire_backup credential.
+            work_pool_name=BACKUP_POOL,
         ),
         DeploymentSpec(
             flow_module="sapphire_flow.flows.train_models",

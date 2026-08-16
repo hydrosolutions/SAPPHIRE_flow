@@ -127,7 +127,6 @@ services:
     networks: [backend]
     volumes:
       - model_artifacts:/data/artifacts:rw
-      - backups:/data/backups:rw
       - nwp_grids:/data/nwp_grids:rw
       - bafu_forecast_archive:/data/bafu_forecasts:rw
       - bafu_observation_archive:/data/bafu_observations:rw
@@ -184,6 +183,69 @@ services:
     restart: unless-stopped
     networks: [backend]
     volumes:
+      - ./config.toml:/app/config.toml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Dedicated backup worker (Plan 162 D2/T2): the ONLY container that holds a
+  # read-everything (`pg_read_all_data`) credential. Deliberately NOT the
+  # shared `prefect-worker` — that container also runs flow code, model
+  # artifacts and third-party adapters touching external data, so mounting
+  # the backup secret there would restore, via a compromised process, the
+  # exact access `bootstrap-roles.sql` deliberately revokes from
+  # sapphire_worker (D2). Serves ONLY the `backup` work pool (created before
+  # deployment registration by `init` — see register_deployments.py).
+  prefect-worker-backup:
+    build: *app-build
+    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
+    command: prefect worker start --pool backup --type process
+    mem_limit: 512m
+    environment:
+      SAPPHIRE_DATA_DIR: /data
+      SAPPHIRE_CONFIG: /app/config.toml
+      # No DATABASE_URL_TEMPLATE: this service constructs NO URL anywhere
+      # (Plan 162 T2) — dump_database_task reads SAPPHIRE_BACKUP_PGHOST/
+      # PGPORT/PGUSER/PGDATABASE + the password file below directly.
+      # DB_PASSWORD_SECRET is set purely so the SHARED entrypoint.sh's
+      # mandatory password-file read succeeds (it also does the /run/secrets
+      # and /data/backups chown + gosu drop-privilege this service still
+      # needs) — the value it reads is never used to build a URL, because
+      # DATABASE_URL_TEMPLATE stays unset. Tested by
+      # tests/unit/deploy/test_compose_backup_pool.py.
+      DB_PASSWORD_SECRET: /run/secrets/sapphire_backup_db_password
+      SAPPHIRE_BACKUP_PGHOST: postgres
+      SAPPHIRE_BACKUP_PGPORT: "5432"
+      SAPPHIRE_BACKUP_PGUSER: sapphire_backup
+      SAPPHIRE_BACKUP_PGDATABASE: sapphire
+      SAPPHIRE_BACKUP_DB_PASSWORD_FILE: /run/secrets/sapphire_backup_db_password
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: WARNING
+      # Plan 103: see prefect-worker above for rationale.
+      PREFECT_HOME: /tmp/prefect
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - FOWNER
+    secrets:
+      - sapphire_backup_db_password
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - backups:/data/backups:rw
       - ./config.toml:/app/config.toml:ro
     logging:
       driver: json-file
@@ -303,6 +365,10 @@ services:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       SAPPHIRE_API_DB_PASSWORD_FILE: /run/secrets/sapphire_api_db_password
       SAPPHIRE_WORKER_DB_PASSWORD_FILE: /run/secrets/sapphire_worker_db_password
+      # Plan 162 T1: init also bootstraps/rotates the sapphire_backup role's
+      # password (docker/bootstrap-roles.sh) — same convention as the api/
+      # worker password-file env vars above.
+      SAPPHIRE_BACKUP_DB_PASSWORD_FILE: /run/secrets/sapphire_backup_db_password
       PREFECT_API_URL: http://prefect-server:4200/api
       # Plan 103: see prefect-worker above for rationale. `init` uses the
       # Prefect client (register_deployments) so it needs the same fix.
@@ -331,6 +397,7 @@ services:
       - db_password
       - sapphire_api_db_password
       - sapphire_worker_db_password
+      - sapphire_backup_db_password
     read_only: true
     tmpfs:
       - /tmp
@@ -369,6 +436,13 @@ secrets:
     file: ./secrets/sapphire_api_db_password
   sapphire_worker_db_password:
     file: ./secrets/sapphire_worker_db_password
+  # Plan 162 D1/T1: the sapphire_backup role's password — the ONLY role
+  # granted `pg_read_all_data`. Mounted ONLY into `init` (bootstraps/rotates
+  # it) and `prefect-worker-backup` (the dedicated backup component, D2) —
+  # deliberately absent from api/prefect-worker/prefect-worker-ingest, so no
+  # other container can read this credential even if compromised.
+  sapphire_backup_db_password:
+    file: ./secrets/sapphire_backup_db_password
   # Plan 147 Slice C: R1 LOCKED = HMAC-SHA-256 + a server-side pepper for
   # access_tokens.token_hash. Mounted ONLY into the `api` service — auth
   # verification AND the token-management CLI (`docker compose exec api

@@ -110,7 +110,9 @@ class _SlackRecorder:
 def _make_fresh_backup(tmp: Path, *, hours_ago: float) -> Path:
     path = tmp / "pg_dumps"
     path.mkdir(parents=True, exist_ok=True)
-    dump = path / "sapphire-2026-04-22.dump"
+    # Plan 162 T4: the watchdog matches exactly `sapphire_*.dump` — an
+    # underscore after `sapphire`, not a hyphen.
+    dump = path / "sapphire_20260422_120000_abcd1234.dump"
     dump.write_bytes(b"dummy")
     ts = (_NOW - timedelta(hours=hours_ago)).timestamp()
     import os
@@ -247,8 +249,8 @@ class TestNewestBackupMtime:
 
         d = tmp_path / "dumps"
         d.mkdir()
-        old = d / "old.dump"
-        new = d / "new.dump"
+        old = d / "sapphire_old_11111111.dump"
+        new = d / "sapphire_new_22222222.dump"
         old.write_bytes(b"1")
         new.write_bytes(b"2")
         old_ts = (_NOW - timedelta(hours=48)).timestamp()
@@ -258,6 +260,75 @@ class TestNewestBackupMtime:
         result = newest_backup_mtime(d)
         assert result is not None
         assert abs((result - (_NOW - timedelta(hours=2))).total_seconds()) < 1.0
+
+    def test_ignores_files_not_matching_sapphire_prefix(self, tmp_path: Path) -> None:
+        # Only `sapphire_*.dump` counts as evidence — a stray `.dump` file
+        # (pre-Plan-162 glob was bare `*.dump`) must not satisfy freshness.
+        import os
+
+        d = tmp_path / "dumps"
+        d.mkdir()
+        other = d / "other-2026-04-22.dump"
+        other.write_bytes(b"x")
+        os.utime(other, (_NOW.timestamp(), _NOW.timestamp()))
+        assert newest_backup_mtime(d) is None
+
+    def test_zero_byte_file_is_not_fresh(self, tmp_path: Path) -> None:
+        """Plan 162 T4 — freshness requires size > 0. RED against the
+        pre-T4 watchdog: it only checked mtime via `entry.stat()`, so a
+        0-byte file (a failed dump under the old direct-write path) with a
+        fresh mtime was reported as evidence of a good backup — exactly the
+        "loud on failure" defect this plan closes."""
+        import os
+
+        d = tmp_path / "dumps"
+        d.mkdir()
+        empty = d / "sapphire_20260422_120000_deadbeef.dump"
+        empty.write_bytes(b"")
+        os.utime(empty, (_NOW.timestamp(), _NOW.timestamp()))
+        assert newest_backup_mtime(d) is None
+
+    def test_zero_byte_file_does_not_shadow_an_older_valid_one(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+
+        d = tmp_path / "dumps"
+        d.mkdir()
+        valid = d / "sapphire_old_11111111.dump"
+        valid.write_bytes(b"real content")
+        valid_ts = (_NOW - timedelta(hours=5)).timestamp()
+        os.utime(valid, (valid_ts, valid_ts))
+
+        empty = d / "sapphire_new_22222222.dump"
+        empty.write_bytes(b"")
+        os.utime(empty, (_NOW.timestamp(), _NOW.timestamp()))
+
+        result = newest_backup_mtime(d)
+        assert result is not None
+        assert abs((result - (_NOW - timedelta(hours=5))).total_seconds()) < 1.0
+
+    def test_symlink_is_not_fresh(self, tmp_path: Path) -> None:
+        """Plan 162 T4 — `lstat()` + `stat.S_ISREG`, not `Path.is_file()`
+        (which follows symlinks). RED against the pre-T4 watchdog: a fresh
+        symlink named like a dump satisfied `entry.stat()` (which follows
+        the link) and was reported as evidence, even pointing at nothing."""
+        import os
+
+        d = tmp_path / "dumps"
+        d.mkdir()
+        target = tmp_path / "not_a_backup.txt"
+        target.write_bytes(b"not a real dump")
+        link = d / "sapphire_20260422_120000_cafef00d.dump"
+        link.symlink_to(target)
+        os.utime(link, (_NOW.timestamp(), _NOW.timestamp()), follow_symlinks=False)
+        assert newest_backup_mtime(d) is None
+
+    def test_directory_matching_glob_is_not_fresh(self, tmp_path: Path) -> None:
+        d = tmp_path / "dumps"
+        d.mkdir()
+        (d / "sapphire_20260422_120000_00000000.dump").mkdir()
+        assert newest_backup_mtime(d) is None
 
 
 # ---------- run_once: happy path ---------------------------------------------
@@ -434,6 +505,450 @@ class TestRunOnceBackup:
         assert len(slack.calls) == 1
         _, msg = slack.calls[0]
         assert "none found" in msg
+
+
+# ---------- run_once: backup notification state machine (Plan 162 T4) --------
+
+
+class TestRunOnceBackupNotificationStateMachine:
+    """Absorbs Plan 161 T3: the pre-T4 watchdog alerted on EVERY stale tick
+    (~288/day at 5 min intervals) — `stale -> repeated-stale -> recovered ->
+    stale` must alert exactly on the 1st stale tick, stay SILENT on the
+    repeat, alert once on recovery, then alert again on the NEW incident.
+    RED against the pre-T4 watchdog: the 2nd (repeated-stale) tick asserts
+    zero Slack calls but the old code posts unconditionally every tick.
+    """
+
+    def test_stale_then_repeated_stale_then_recovered_then_stale(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        stale_dump = backup_dir / "sapphire_stale_11111111.dump"
+        stale_dump.write_bytes(b"dummy")
+        stale_ts = (_NOW - timedelta(hours=30)).timestamp()  # > 26h threshold
+        os.utime(stale_dump, (stale_ts, stale_ts))
+
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: first stale tick -> alerts.
+        slack1 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack1,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert state.consecutive_backup_stale_failures == 1
+        assert len(slack1.calls) == 1
+        assert "backup STALE" in slack1.calls[0][1]
+
+        # Tick 2: repeated stale -> hysteresis stays SILENT.
+        slack2 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack2,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert state.consecutive_backup_stale_failures == 2
+        assert slack2.calls == []
+
+        # Tick 3: a fresh dump lands (recovery) -> a single recovery alert.
+        fresh_dump = backup_dir / "sapphire_fresh_22222222.dump"
+        fresh_dump.write_bytes(b"dummy")
+        fresh_ts = (_NOW - timedelta(hours=2)).timestamp()
+        os.utime(fresh_dump, (fresh_ts, fresh_ts))
+
+        slack3 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack3,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert state.consecutive_backup_stale_failures == 0
+        assert len(slack3.calls) == 1
+        assert "backup RECOVERED" in slack3.calls[0][1]
+
+        # Tick 4: the fresh dump ages out (no new backup landed) — a NEW
+        # incident, so it alerts on the 1st tick again.
+        fresh_dump.unlink()
+
+        slack4 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack4,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert state.consecutive_backup_stale_failures == 1
+        assert len(slack4.calls) == 1
+        assert "backup STALE" in slack4.calls[0][1]
+
+    def test_failed_recovery_delivery_is_retried_until_it_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        """The exact bug the `backup_notification_pending` field exists to
+        close: a recovery alert lost to a failed Slack post must NOT be lost
+        forever. RED against a state machine without persistent pending
+        state: the 3rd tick's hysteresis check sees prev_failures == 0 (the
+        recovery tick already reset it) and current_ok with prev_failures
+        not > 0, so `should_alert_health` returns False and the retry never
+        fires — this test's final assertion (exactly one successful post)
+        would instead see zero.
+        """
+        import os
+
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        stale_dump = backup_dir / "sapphire_stale_11111111.dump"
+        stale_dump.write_bytes(b"dummy")
+        stale_ts = (_NOW - timedelta(hours=30)).timestamp()
+        os.utime(stale_dump, (stale_ts, stale_ts))
+
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Establish an incident (alert delivered successfully).
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(succeed=True),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+
+        # A fresh dump lands (recovery) — the RECOVERY tick's delivery FAILS.
+        fresh_dump = backup_dir / "sapphire_fresh_22222222.dump"
+        fresh_dump.write_bytes(b"dummy")
+        fresh_ts = (_NOW - timedelta(hours=2)).timestamp()
+        os.utime(fresh_dump, (fresh_ts, fresh_ts))
+
+        failing_slack = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert len(failing_slack.calls) == 1
+        assert state.backup_notification_pending == "recovered"
+        assert state.consecutive_backup_stale_failures == 0
+
+        # Next tick: still not stale, no NEW hysteresis trigger — but the
+        # pending recovery notification must be retried.
+        retry_slack = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert len(retry_slack.calls) == 1
+        assert "backup RECOVERED" in retry_slack.calls[0][1]
+        assert state.backup_notification_pending is None
+
+        # A further tick must NOT re-send — pending was cleared.
+        quiet_slack = _SlackRecorder(succeed=True)
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=quiet_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert quiet_slack.calls == []
+
+    def test_alert_once_survives_past_the_health_hysteresis_sixth_tick(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 162 T4 review fix, red-first: reusing `should_alert_health`
+        for backup staleness re-fires on the 6th consecutive failure (and
+        every 6th after that) — not truly "alert once". RED against that
+        reuse: after `ALERT_REPEAT_EVERY + 2` consecutive stale ticks, a
+        SECOND alert would have fired at the 6th tick (per
+        `ALERT_REPEAT_EVERY`), so `total_calls` would be 2, not 1."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=30)  # stays stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        total_calls = 0
+        for _ in range(ALERT_REPEAT_EVERY + 2):
+            slack = _SlackRecorder()
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_ok_probe,
+                slack_poster=slack,
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+            )
+            total_calls += len(slack.calls)
+
+        assert total_calls == 1
+
+    def test_failed_stale_delivery_followed_by_recovery_before_retry_reports_recovered(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 162 T4 review fix, red-first: the empirical interleaving
+        bug. Tick 1 goes stale and Slack delivery FAILS
+        (`backup_notification_pending == "stale"`); tick 2 a FRESH dump
+        lands before the retry. The eventually-delivered message must say
+        RECOVERED — the CURRENT, true condition — never the stale
+        `pending` value. RED against a fix that blindly resends `pending`:
+        tick 2 would re-send "backup STALE" for a dump that is now fresh,
+        and because delivery then "succeeds", the real recovery would
+        never be reported."""
+        import os
+
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        stale_dump = backup_dir / "sapphire_stale_11111111.dump"
+        stale_dump.write_bytes(b"dummy")
+        stale_ts = (_NOW - timedelta(hours=30)).timestamp()
+        os.utime(stale_dump, (stale_ts, stale_ts))
+
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: goes stale, delivery FAILS.
+        failing_slack = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert len(failing_slack.calls) == 1
+        assert "backup STALE" in failing_slack.calls[0][1]
+        assert state.backup_notification_pending == "stale"
+
+        # A fresh dump lands BEFORE the retry.
+        fresh_dump = backup_dir / "sapphire_fresh_22222222.dump"
+        fresh_dump.write_bytes(b"dummy")
+        fresh_ts = (_NOW - timedelta(hours=1)).timestamp()
+        os.utime(fresh_dump, (fresh_ts, fresh_ts))
+
+        # Tick 2: the retry delivers — must report RECOVERED, not STALE.
+        retry_slack = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert len(retry_slack.calls) == 1
+        assert "backup RECOVERED" in retry_slack.calls[0][1]
+        assert state.backup_notification_pending is None
+        assert state.consecutive_backup_stale_failures == 0
+
+        # Tick 3: must stay silent — nothing pending, nothing changed.
+        quiet_slack = _SlackRecorder(succeed=True)
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=quiet_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert quiet_slack.calls == []
+
+    def test_failed_recovery_then_new_staleness_before_retry_reports_stale(
+        self, tmp_path: Path
+    ) -> None:
+        """Mirror of the case above: a recovery alert fails to deliver,
+        then a NEW staleness event occurs before the retry. The
+        eventually-delivered message must say STALE (the current truth),
+        not the stale `pending == "recovered"` value."""
+        import os
+
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        stale_dump = backup_dir / "sapphire_stale_11111111.dump"
+        stale_dump.write_bytes(b"dummy")
+        stale_ts = (_NOW - timedelta(hours=30)).timestamp()
+        os.utime(stale_dump, (stale_ts, stale_ts))
+
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Establish an incident (delivered successfully).
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(succeed=True),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+
+        # A fresh dump lands (recovery) — delivery FAILS.
+        fresh_dump = backup_dir / "sapphire_fresh_22222222.dump"
+        fresh_dump.write_bytes(b"dummy")
+        fresh_ts = (_NOW - timedelta(hours=1)).timestamp()
+        os.utime(fresh_dump, (fresh_ts, fresh_ts))
+
+        failing_slack = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert state.backup_notification_pending == "recovered"
+
+        # The fresh dump ages back out into staleness BEFORE the retry.
+        fresh_dump.unlink()
+
+        retry_slack = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert len(retry_slack.calls) == 1
+        assert "backup STALE" in retry_slack.calls[0][1]
+        assert state.backup_notification_pending is None
+        assert state.consecutive_backup_stale_failures == 1
+
+    def test_absent_webhook_does_not_set_pending(self, tmp_path: Path) -> None:
+        # Log-only mode (no Slack configured) is not a delivery FAILURE —
+        # it must not be retried forever once a webhook eventually appears
+        # for an unrelated reason.
+        stale_dir = _make_fresh_backup(tmp_path, hours_ago=30)
+        cfg = _config(tmp_path, backup_dir=stale_dir)
+        # deliberately do not write cfg.slack_path
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert state.backup_notification_pending is None
+
+    def test_pending_survives_webhook_becoming_absent_then_delivers_on_return(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 162 T1-fixer-round MAJOR: a pending notification must be
+        cleared ONLY by confirmed delivery — never merely because the
+        webhook happens to be absent/unreadable on a LATER tick. Tick 1
+        establishes an incident (delivered fine). Tick 2's recovery
+        delivery FAILS -> pending == "recovered". Tick 3 the webhook file
+        is gone entirely (absent/unreadable) -> pending must SURVIVE,
+        unposted. Tick 4 the webhook returns -> the deferred RECOVERED
+        message must finally be delivered and pending cleared.
+
+        RED against the pre-fix branch (`else: ... pending=None`
+        unconditionally whenever `webhook` is falsy): tick 3 would discard
+        the pending "recovered" notification outright. By tick 4,
+        `consecutive_backup_stale_failures` is already 0 from tick 2's
+        recovery and stays 0 through tick 3 (not stale), so
+        `_backup_notification_kind` sees `pending=None`,
+        `was_stale=False`, `is_stale=False` -> returns `None`: NOTHING is
+        sent at tick 4 either. The final assertion (exactly one delivered
+        RECOVERED message) would instead see zero."""
+        import os
+
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        stale_dump = backup_dir / "sapphire_stale_11111111.dump"
+        stale_dump.write_bytes(b"dummy")
+        stale_ts = (_NOW - timedelta(hours=30)).timestamp()
+        os.utime(stale_dump, (stale_ts, stale_ts))
+
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: establish an incident, delivered fine.
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(succeed=True),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+
+        # Tick 2: a fresh dump lands (recovery) — delivery FAILS.
+        fresh_dump = backup_dir / "sapphire_fresh_22222222.dump"
+        fresh_dump.write_bytes(b"dummy")
+        fresh_ts = (_NOW - timedelta(hours=2)).timestamp()
+        os.utime(fresh_dump, (fresh_ts, fresh_ts))
+
+        failing_slack = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert len(failing_slack.calls) == 1
+        assert state.backup_notification_pending == "recovered"
+
+        # Tick 3: the webhook file is gone entirely (absent/unreadable).
+        # The still-pending recovery must NOT be attempted (no webhook to
+        # post to) and must NOT be discarded either.
+        cfg.slack_path.unlink()
+        no_webhook_slack = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=no_webhook_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert no_webhook_slack.calls == []
+        assert state.backup_notification_pending == "recovered"
+
+        # Tick 4: the webhook returns — the deferred RECOVERED message
+        # must finally be delivered, and pending cleared.
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        retry_slack = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert len(retry_slack.calls) == 1
+        assert "backup RECOVERED" in retry_slack.calls[0][1]
+        assert state.backup_notification_pending is None
 
 
 # ---------- run_once: Slack absent => log-only -------------------------------
@@ -997,6 +1512,144 @@ class TestRunOnceBafuObsFreshness:
         assert state.consecutive_bafu_failures == 0
         assert state.consecutive_bafu_obs_failures == 1
         assert len(slack.calls) == 1
+
+
+class TestWatchdogStateBackupNotificationBackwardCompat:
+    """Plan 162 T4 — the new hysteresis + pending-notification fields, and
+    the retired-but-still-round-tripped legacy `last_backup_alert_iso`."""
+
+    def test_roundtrip_includes_new_fields(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        original = WatchdogState(
+            consecutive_backup_stale_failures=2,
+            backup_notification_pending="recovered",
+        )
+        original.dump(path)
+        loaded = WatchdogState.load(path)
+        assert loaded == original
+
+    def test_state_written_before_this_plan_with_no_prior_alert_defaults_to_no_incident(
+        self, tmp_path: Path
+    ) -> None:
+        # A state file predating Plan 162 has neither new key at all, AND
+        # the legacy field is null — the old watchdog never alerted, so
+        # there is genuinely no incident to migrate.
+        p = tmp_path / "old_state.json"
+        p.write_text(
+            '{"consecutive_health_failures": 0, "last_backup_alert_iso": null}'
+        )
+        s = WatchdogState.load(p)
+        assert s.consecutive_backup_stale_failures == 0
+        assert s.backup_notification_pending is None
+        assert s.last_backup_alert_iso is None
+
+    def test_legacy_state_with_a_prior_alert_migrates_to_active_incident(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 162 T4 review fix, red-first: a state file predating Plan
+        162 has NO `consecutive_backup_stale_failures` key (key ABSENT, not
+        present-and-zero). If `last_backup_alert_iso` shows the OLD
+        watchdog had already alerted, treating the absent key as "no
+        incident" would make an unresolved legacy incident invisible — the
+        very first Phase-A tick with a fresh backup would then infer
+        "nothing changed" and never emit the recovery notification the
+        rollout owes. RED against a fix that only defaults the absent key
+        to 0 unconditionally: `consecutive_backup_stale_failures` would be
+        0 here instead of the migrated 1."""
+        p = tmp_path / "old_state.json"
+        p.write_text(
+            '{"consecutive_health_failures": 0, '
+            '"last_backup_alert_iso": "2026-04-22T12:00:00+00:00"}'
+        )
+        s = WatchdogState.load(p)
+        assert s.consecutive_backup_stale_failures == 1
+        assert s.backup_notification_pending is None
+        # Legacy field still round-trips for anything reading state files
+        # directly, even though no code path consults it anymore.
+        assert s.last_backup_alert_iso == "2026-04-22T12:00:00+00:00"
+
+    def test_legacy_incident_state_migrates_then_emits_recovery_on_first_fresh_tick(
+        self, tmp_path: Path
+    ) -> None:
+        """Full `run_once` proof of the migration: a legacy (pre-Plan-162)
+        state file with a prior alert, and a NOW-fresh backup, must emit
+        exactly one 'backup RECOVERED' notification on the very first
+        post-rollout tick — not silence, which is what "absent key -> no
+        incident" would otherwise produce."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)  # fresh
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        cfg.state_path.write_text(
+            '{"consecutive_health_failures": 0, '
+            '"last_backup_alert_iso": "2026-04-22T10:00:00+00:00"}'
+        )
+
+        slack = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+
+        backup_calls = [c for c in slack.calls if "backup" in c[1]]
+        assert len(backup_calls) == 1
+        assert "backup RECOVERED" in backup_calls[0][1]
+        assert state.consecutive_backup_stale_failures == 0
+
+    def test_legacy_incident_state_stays_silent_while_still_stale(
+        self, tmp_path: Path
+    ) -> None:
+        """The mirror case: a legacy incident that is STILL stale must not
+        double-alert on the migration tick — the incident was already
+        reported (by the old watchdog); only a NEW transition or a
+        recovery may notify."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=30)  # still stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        cfg.state_path.write_text(
+            '{"consecutive_health_failures": 0, '
+            '"last_backup_alert_iso": "2026-04-22T10:00:00+00:00"}'
+        )
+
+        slack = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+
+        backup_calls = [c for c in slack.calls if "backup" in c[1]]
+        assert backup_calls == []
+        assert state.consecutive_backup_stale_failures == 2
+
+    def test_garbage_pending_value_normalizes_to_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "state.json"
+        p.write_text('{"backup_notification_pending": "not-a-real-kind"}')
+        s = WatchdogState.load(p)
+        assert s.backup_notification_pending is None
+
+    def test_new_backup_ticks_no_longer_write_the_legacy_field(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=30)  # stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+        assert state.last_backup_alert_iso is None
 
 
 class TestWatchdogStateBafuObsBackwardCompat:
