@@ -137,15 +137,21 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# D9's exit-code table. ORDERED SUBCLASS-FIRST, and that ordering is load
+# bearing: `Era5StorageError` is a SUBCLASS of `Era5AcquisitionError`, so
+# listing the base first made every storage failure exit 4 (an extraction
+# post-condition) instead of the documented 5. `_exit_code_for` returns the
+# FIRST match, so a base class may never precede one of its own subclasses
+# (locked by a test).
 _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (DhmPrecipLoaderError, 2),
     (Era5OrographyError, 3),
     (ExtractionPostConditionError, 4),
-    (
-        Era5AcquisitionError,
-        4,
-    ),  # every other Era5*Error (extraction hierarchy) not covered above
     (Era5StorageError, 5),
+    # every other Era5*Error (extraction hierarchy) not covered above
+    (Era5AcquisitionError, 4),
+    # a raw OSError never reaches the typed hierarchy: it is storage.
+    (OSError, 5),
 )
 
 
@@ -615,7 +621,7 @@ def main(argv: list[str] | None = None, **kwargs: object) -> int:
     configure_cli_logging()
     try:
         return run(args, **kwargs)  # type: ignore[arg-type]
-    except (DhmPrecipLoaderError, Era5AcquisitionError) as exc:
+    except (DhmPrecipLoaderError, Era5AcquisitionError, OSError) as exc:
         log.error(
             "era5_extract.cli.failed", error=str(exc), error_type=type(exc).__name__
         )

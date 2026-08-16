@@ -183,6 +183,50 @@ def _run_all(
     )
 
 
+class TestExitCodeDispatch:
+    """D9 (MINOR, 2026-08-16) — `Era5AcquisitionError` preceded its own
+    subclass `Era5StorageError` in the dispatch table, so every storage
+    failure exited 4 (a post-condition failure) instead of 5; and a raw
+    `OSError` escaped `main()` entirely, surfacing as an uncaught traceback
+    rather than the documented storage exit code."""
+
+    def test_storage_error_maps_to_5_not_4(self) -> None:
+        from scripts.dhm_precip.era5_errors import Era5StorageError
+
+        assert extract_era5._exit_code_for(Era5StorageError("disk full")) == 5
+
+    def test_every_subclass_precedes_its_base_in_the_dispatch_table(self) -> None:
+        table = extract_era5._EXIT_BY_ERROR
+        for i, (exc_type, _code) in enumerate(table):
+            for later_type, _later_code in table[i + 1 :]:
+                assert not (
+                    issubclass(later_type, exc_type) and later_type is not exc_type
+                ), (
+                    f"{later_type.__name__} is a SUBCLASS of {exc_type.__name__}, "
+                    "which is listed before it — the first match wins, so the "
+                    "subclass entry can never be reached"
+                )
+
+    def test_a_raw_oserror_exits_5(self, tmp_path: Path) -> None:
+        data_root = _build_data_root(tmp_path)
+
+        class _ExplodingDownloader:
+            def download(self, *, spec: object, dest_dir: Path) -> tuple[Path, ...]:  # noqa: ARG002
+                raise OSError("no space left on device")
+
+        code = extract_era5.main(
+            ["--stage", "orography", "--data-root", str(data_root)],
+            clock=_CLOCK,
+            orography_downloader=_ExplodingDownloader(),
+            orography_raw_reader=_fake_raw_reader,
+            coords_path=data_root / "station_coordinates.csv",
+            expected_stations=frozenset({Station("A"), Station("B")}),
+            request_area=_AREA,
+            params=_TEST_PARAMS,
+        )
+        assert code == 5
+
+
 class TestCliHelp:
     def test_help_exits_zero(self) -> None:
         with pytest.raises(SystemExit) as exc_info:
