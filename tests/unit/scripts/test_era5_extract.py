@@ -33,6 +33,7 @@ from scripts.dhm_precip.era5_errors import (
     StationSetMismatchError,
 )
 from scripts.dhm_precip.era5_extract import (
+    ExtractedSeries,
     assert_expected_station_cardinality,
     assert_extraction_source_valid,
     assert_no_missing_primary,
@@ -401,6 +402,26 @@ def _replace_station(coord: StationCoordinate, name: str) -> StationCoordinate:
 # --- 3b: operator-sensitivity envelope (D1a) ---
 
 
+def _series(
+    station: Station,
+    operator: ExtractionOperator,
+    valid_time: np.ndarray,
+    values: np.ndarray,
+) -> ExtractedSeries:
+    return ExtractedSeries(
+        station=station,
+        operator=operator,
+        valid_time=valid_time,
+        values=values,
+        grid_lat=0.0,
+        grid_lon=0.0,
+        grid_i=0,
+        grid_j=0,
+        n_finite=int(np.isfinite(values).sum()),
+        n_nan=int(np.isnan(values).sum()),
+    )
+
+
 class TestOperatorSensitivityEnvelope:
     def test_quantile_grid_matches_default_params(self) -> None:
         ds = _clean_ds()
@@ -414,6 +435,56 @@ class TestOperatorSensitivityEnvelope:
             set(quantile_rows["quantile"].drop_nulls().to_list())
         )
         assert observed_quantiles == sorted(DEFAULT_PARAMS.quantile_grid)
+
+    def test_quantiles_are_computed_on_the_wet_hour_population(self) -> None:
+        """D1a (CORRECTED 2026-08-16) — `zero_policy="exclude_zero"` was
+        pinned AND hashed into `extraction_identity` and then never applied:
+        quantiles ran over all common-finite hours while the manifest
+        asserted the wet-hour policy. That is false provenance, and it makes
+        the numbers incomparable with every other quantile in this track
+        (all eight M-A1 intensity expectations are stated over JJAS wet-hour
+        >= 0.2 mm/h non-null observations).
+
+        This asserts the POPULATION, not merely that `quantile_grid` was
+        used: with five dry hours and the wet hours 1..5, the wet-hour median
+        is 3.0 while the all-hours median is 0.5.
+        """
+        n = 10
+        valid_time = np.array(
+            [
+                np.datetime64("2021-06-01T00:00") + np.timedelta64(h, "h")
+                for h in range(n)
+            ]
+        )
+        values = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+        nearest = {
+            Station("A"): _series(
+                Station("A"), ExtractionOperator.NEAREST, valid_time, values
+            )
+        }
+        bilinear = {
+            Station("A"): _series(
+                Station("A"), ExtractionOperator.BILINEAR, valid_time, values
+            )
+        }
+        table = build_operator_sensitivity_table(
+            nearest, bilinear, params=DEFAULT_PARAMS
+        )
+        median = table.filter(
+            (pl.col("scope") == "STATION")
+            & (pl.col("season") == "JJAS")
+            & (pl.col("statistic") == "QUANTILE")
+            & (pl.col("quantile") == 0.5)
+        )
+        assert median.height == 1
+        all_hours_median = float(np.quantile(values, 0.5))
+        wet_hours_median = float(np.quantile(values[values >= 0.2], 0.5))
+        assert all_hours_median != wet_hours_median  # the test can distinguish
+        assert median["nearest_value"][0] == pytest.approx(wet_hours_median)
+        assert median["bilinear_value"][0] == pytest.approx(wet_hours_median)
+        # And the wet-hour counts on the row say which population it was.
+        assert median["n_wet_nearest"][0] == 5
+        assert median["n_hours_common_finite"][0] == n
 
     def test_sign_agreement_fraction_is_half_on_a_constructed_split(self) -> None:
         # Two stations, one hour: nearest > bilinear at A, nearest < bilinear at B.

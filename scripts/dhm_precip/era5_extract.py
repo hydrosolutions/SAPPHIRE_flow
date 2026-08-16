@@ -510,13 +510,33 @@ def build_operator_sensitivity_table(
     def _add_quantile_rows(
         frame: pl.DataFrame, *, scope: str, station: str | None, season: str
     ) -> None:
+        # D1a (CORRECTED 2026-08-16) — quantiles are computed on the
+        # WET-HOUR population, PER OPERATOR, never on all finite hours.
+        # `zero_policy = "exclude_zero"` is pinned on the frozen parameter
+        # object AND hashed into `extraction_identity`; computing over all
+        # hours while the manifest recorded that policy was false
+        # provenance, and it made these numbers incomparable with every
+        # other quantile in this track (M-A1's intensity expectations are
+        # all stated over wet-hour >= 0.2 mm/h observations). The wet set
+        # differs by operator, which is why `n_wet_nearest` and
+        # `n_wet_bilinear` are both reported.
+        nearest_pop = frame.filter(_wet("nearest_mm_h"))
+        bilinear_pop = frame.filter(_wet("bilinear_mm_h"))
         for q in params.quantile_grid:
-            nearest_q = frame.select(
-                pl.col("nearest_mm_h").quantile(q, interpolation="linear")
-            ).item()
-            bilinear_q = frame.select(
-                pl.col("bilinear_mm_h").quantile(q, interpolation="linear")
-            ).item()
+            nearest_q = (
+                nearest_pop.select(
+                    pl.col("nearest_mm_h").quantile(q, interpolation="linear")
+                ).item()
+                if nearest_pop.height
+                else None
+            )
+            bilinear_q = (
+                bilinear_pop.select(
+                    pl.col("bilinear_mm_h").quantile(q, interpolation="linear")
+                ).item()
+                if bilinear_pop.height
+                else None
+            )
             delta = None
             if nearest_q is not None and bilinear_q is not None:
                 delta = nearest_q - bilinear_q
@@ -539,8 +559,8 @@ def build_operator_sensitivity_table(
                     "ratio": ratio,
                     "n_hours_common_finite": frame.height,
                     "n_hours_excluded": excluded,
-                    "n_wet_nearest": frame.filter(_wet("nearest_mm_h")).height,
-                    "n_wet_bilinear": frame.filter(_wet("bilinear_mm_h")).height,
+                    "n_wet_nearest": nearest_pop.height,
+                    "n_wet_bilinear": bilinear_pop.height,
                     "sign_agreement_fraction": None,
                 }
             )
