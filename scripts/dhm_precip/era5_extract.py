@@ -494,7 +494,6 @@ def build_operator_sensitivity_table(
         & pl.col("nearest_mm_h").is_finite()
         & pl.col("bilinear_mm_h").is_finite()
     )
-    excluded = long.height - common_finite.height
 
     threshold = pl.lit(params.wet_threshold_mm_per_h)
 
@@ -508,7 +507,12 @@ def build_operator_sensitivity_table(
     rows: list[dict[str, object]] = []
 
     def _add_quantile_rows(
-        frame: pl.DataFrame, *, scope: str, station: str | None, season: str
+        frame: pl.DataFrame,
+        *,
+        scope: str,
+        station: str | None,
+        season: str,
+        n_excluded: int,
     ) -> None:
         # D1a (CORRECTED 2026-08-16) — quantiles are computed on the
         # WET-HOUR population, PER OPERATOR, never on all finite hours.
@@ -558,7 +562,7 @@ def build_operator_sensitivity_table(
                     "delta_unit": SensitivityDeltaUnit.MM_PER_H,
                     "ratio": ratio,
                     "n_hours_common_finite": frame.height,
-                    "n_hours_excluded": excluded,
+                    "n_hours_excluded": n_excluded,
                     "n_wet_nearest": nearest_pop.height,
                     "n_wet_bilinear": bilinear_pop.height,
                     "sign_agreement_fraction": None,
@@ -566,7 +570,12 @@ def build_operator_sensitivity_table(
             )
 
     def _add_wet_rows(
-        frame: pl.DataFrame, *, scope: str, station: str | None, season: str
+        frame: pl.DataFrame,
+        *,
+        scope: str,
+        station: str | None,
+        season: str,
+        n_excluded: int,
     ) -> None:
         nearest_wet = frame.filter(_wet("nearest_mm_h"))
         bilinear_wet = frame.filter(_wet("bilinear_mm_h"))
@@ -603,7 +612,7 @@ def build_operator_sensitivity_table(
                 "delta_unit": SensitivityDeltaUnit.MM_PER_H,
                 "ratio": ratio_mean,
                 "n_hours_common_finite": frame.height,
-                "n_hours_excluded": excluded,
+                "n_hours_excluded": n_excluded,
                 "n_wet_nearest": nearest_wet.height,
                 "n_wet_bilinear": bilinear_wet.height,
                 "sign_agreement_fraction": None,
@@ -634,7 +643,7 @@ def build_operator_sensitivity_table(
                 "delta_unit": SensitivityDeltaUnit.FRACTION,
                 "ratio": ratio_freq,
                 "n_hours_common_finite": frame.height,
-                "n_hours_excluded": excluded,
+                "n_hours_excluded": n_excluded,
                 "n_wet_nearest": nearest_wet.height,
                 "n_wet_bilinear": bilinear_wet.height,
                 "sign_agreement_fraction": None,
@@ -649,64 +658,97 @@ def build_operator_sensitivity_table(
     seasons_present = list(dict.fromkeys(seasons_present))  # de-dup, keep order
     stations_present = sorted({str(s) for s in nearest_by_station})
 
+    def _grain(
+        source: pl.DataFrame, *, station: str | None, season: str
+    ) -> pl.DataFrame:
+        frame = source
+        if station is not None:
+            frame = frame.filter(pl.col("station") == station)
+        if season != "ALL":
+            frame = frame.filter(pl.col("season") == season)
+        return frame
+
+    def _excluded_at(*, station: str | None, season: str) -> int:
+        """D1a (CORRECTED 2026-08-16) — the excluded-hour count belongs to
+        each row's OWN grain. A single global figure was copied onto every
+        row, so a station-and-season row silently reported a whole-run
+        total."""
+        return (
+            _grain(long, station=station, season=season).height
+            - _grain(common_finite, station=station, season=season).height
+        )
+
     for station in stations_present:
-        per_station = common_finite.filter(pl.col("station") == station)
         for season in seasons_present:
-            frame = (
-                per_station
-                if season == "ALL"
-                else per_station.filter(pl.col("season") == season)
-            )
+            frame = _grain(common_finite, station=station, season=season)
+            n_excluded = _excluded_at(station=station, season=season)
             _add_quantile_rows(
-                frame, scope=SensitivityScope.STATION, station=station, season=season
+                frame,
+                scope=SensitivityScope.STATION,
+                station=station,
+                season=season,
+                n_excluded=n_excluded,
             )
             _add_wet_rows(
-                frame, scope=SensitivityScope.STATION, station=station, season=season
+                frame,
+                scope=SensitivityScope.STATION,
+                station=station,
+                season=season,
+                n_excluded=n_excluded,
             )
 
-    # ACROSS_STATION rows: same statistics pooled over all stations, plus
-    # the sign-agreement fraction (station is null on these rows).
+    # ACROSS_STATION rows: the same statistics pooled over all stations.
     for season in seasons_present:
-        frame = (
-            common_finite
-            if season == "ALL"
-            else common_finite.filter(pl.col("season") == season)
-        )
+        frame = _grain(common_finite, station=None, season=season)
+        n_excluded = _excluded_at(station=None, season=season)
         _add_quantile_rows(
-            frame, scope=SensitivityScope.ACROSS_STATION, station=None, season=season
+            frame,
+            scope=SensitivityScope.ACROSS_STATION,
+            station=None,
+            season=season,
+            n_excluded=n_excluded,
         )
         _add_wet_rows(
-            frame, scope=SensitivityScope.ACROSS_STATION, station=None, season=season
+            frame,
+            scope=SensitivityScope.ACROSS_STATION,
+            station=None,
+            season=season,
+            n_excluded=n_excluded,
         )
 
-        # Sign agreement: per-station sign of (nearest_median - bilinear_median)
-        # at the median quantile, fraction of stations agreeing on the
-        # majority sign — reported once per season on the QUANTILE/median rows.
-        if frame.height and stations_present:
-            signs: list[int] = []
-            for station in stations_present:
-                station_frame = frame.filter(pl.col("station") == station)
-                if station_frame.height == 0:
-                    continue
-                nearest_med = station_frame.select(
-                    pl.col("nearest_mm_h").quantile(0.5, interpolation="linear")
-                ).item()
-                bilinear_med = station_frame.select(
-                    pl.col("bilinear_mm_h").quantile(0.5, interpolation="linear")
-                ).item()
-                if nearest_med is None or bilinear_med is None:
-                    continue
-                signs.append(1 if nearest_med >= bilinear_med else -1)
-            if signs:
-                majority = 1 if sum(1 for s in signs if s > 0) >= len(signs) / 2 else -1
-                agreement = sum(1 for s in signs if s == majority) / len(signs)
-                for row in rows:
-                    if (
-                        row["scope"] == SensitivityScope.ACROSS_STATION
-                        and row["season"] == season
-                        and row["statistic"] == SensitivityStatistic.QUANTILE
-                        and row["quantile"] == 0.5
-                    ):
-                        row["sign_agreement_fraction"] = agreement
+    # D1a (CORRECTED 2026-08-16) — `sign_agreement_fraction` for EVERY
+    # (season, statistic, quantile) combination on the ACROSS_STATION rows.
+    # It used to be produced only at a hard-coded q=0.5, leaving it null for
+    # the other seven quantiles AND for both wet-hour statistics — so the
+    # one column that reveals whether an ordering is SYSTEMATIC was absent
+    # exactly where D1's bilinear-damps-the-tail question lives (q0.99,
+    # q0.999), and absent entirely for wet mean intensity and wet frequency.
+    #
+    # It is derived from the per-station rows already computed above, so the
+    # summary can never disagree with the detail it summarises. A tie
+    # (delta == 0) counts as a positive sign, as before.
+    deltas_by_key: dict[tuple[str, object, object], list[float]] = {}
+    for row in rows:
+        if row["scope"] != SensitivityScope.STATION:
+            continue
+        delta = row["delta_absolute"]
+        if not isinstance(delta, (int, float)):
+            continue
+        key = (str(row["season"]), row["statistic"], row["quantile"])
+        deltas_by_key.setdefault(key, []).append(float(delta))
+
+    for row in rows:
+        if row["scope"] != SensitivityScope.ACROSS_STATION:
+            continue
+        deltas = deltas_by_key.get(
+            (str(row["season"]), row["statistic"], row["quantile"])
+        )
+        if not deltas:
+            continue
+        signs = [1 if d >= 0.0 else -1 for d in deltas]
+        majority = 1 if sum(1 for sign in signs if sign > 0) >= len(signs) / 2 else -1
+        row["sign_agreement_fraction"] = sum(
+            1 for sign in signs if sign == majority
+        ) / len(signs)
 
     return pl.DataFrame(rows, infer_schema_length=None)

@@ -422,6 +422,38 @@ def _series(
     )
 
 
+def _two_station_table() -> pl.DataFrame:
+    """Two JJAS hours at two stations, all values above the 0.2 mm/h wet
+    threshold, constructed so the per-station sign of (nearest - bilinear)
+    SPLITS at the median and AGREES at q0.99:
+
+      A  nearest [1, 10]  bilinear [2.0, 5.0]  -> med +2.0   q0.99 +4.94
+      B  nearest [1, 10]  bilinear [5.5, 6.5]  -> med -0.5   q0.99 +3.42
+    """
+    valid_time = np.array(
+        [np.datetime64("2021-06-01T00:00"), np.datetime64("2021-06-01T01:00")]
+    )
+    nearest = {
+        s: _series(s, ExtractionOperator.NEAREST, valid_time, np.array([1.0, 10.0]))
+        for s in (Station("A"), Station("B"))
+    }
+    bilinear = {
+        Station("A"): _series(
+            Station("A"),
+            ExtractionOperator.BILINEAR,
+            valid_time,
+            np.array([2.0, 5.0]),
+        ),
+        Station("B"): _series(
+            Station("B"),
+            ExtractionOperator.BILINEAR,
+            valid_time,
+            np.array([5.5, 6.5]),
+        ),
+    }
+    return build_operator_sensitivity_table(nearest, bilinear, params=DEFAULT_PARAMS)
+
+
 class TestOperatorSensitivityEnvelope:
     def test_quantile_grid_matches_default_params(self) -> None:
         ds = _clean_ds()
@@ -541,6 +573,104 @@ class TestOperatorSensitivityEnvelope:
         assert median_across.height == 1
         assert median_across["sign_agreement_fraction"][0] == pytest.approx(0.5)
 
+    def test_sign_agreement_is_populated_for_every_across_station_row(self) -> None:
+        """D1a (CORRECTED 2026-08-16) — sign agreement was produced only at a
+        hard-coded q=0.5, leaving it null for the other seven quantiles AND
+        for both wet-hour statistics. The one column that reveals whether an
+        ordering is systematic was absent everywhere it matters: D1's
+        bilinear-damps-the-tail question lives at q0.99/q0.999, not the
+        median."""
+        table = _two_station_table()
+        across = table.filter(pl.col("scope") == "ACROSS_STATION")
+        assert across.height > 0
+        assert across["sign_agreement_fraction"].null_count() == 0
+        # ... and only there (D9: populated only on ACROSS_STATION rows).
+        per_station = table.filter(pl.col("scope") == "STATION")
+        assert per_station["sign_agreement_fraction"].null_count() == per_station.height
+
+    def test_sign_agreement_differs_between_the_median_and_the_tail(self) -> None:
+        """Constructed so the two stations SPLIT at the median but AGREE at
+        q0.99 — a table that reports one hard-coded q=0.5 figure cannot tell
+        these apart."""
+        table = _two_station_table()
+
+        def _agreement(q: float) -> float:
+            row = table.filter(
+                (pl.col("scope") == "ACROSS_STATION")
+                & (pl.col("season") == "JJAS")
+                & (pl.col("statistic") == "QUANTILE")
+                & (pl.col("quantile") == q)
+            )
+            assert row.height == 1
+            return float(row["sign_agreement_fraction"][0])
+
+        assert _agreement(0.5) == pytest.approx(0.5)
+        assert _agreement(0.99) == pytest.approx(1.0)
+
+    def test_wet_hour_statistics_also_carry_sign_agreement(self) -> None:
+        table = _two_station_table()
+        for statistic in ("WET_MEAN_INTENSITY", "WET_FREQUENCY"):
+            row = table.filter(
+                (pl.col("scope") == "ACROSS_STATION")
+                & (pl.col("season") == "JJAS")
+                & (pl.col("statistic") == statistic)
+            )
+            assert row.height == 1, statistic
+            assert row["sign_agreement_fraction"][0] is not None, statistic
+
+    def test_excluded_hour_count_is_at_each_rows_own_grain(self) -> None:
+        """D1a (CORRECTED 2026-08-16) — a single global excluded-hour count
+        was copied onto every row, so a station-and-season figure silently
+        reported a whole-run total."""
+        valid_time = np.array(
+            [
+                np.datetime64("2021-06-01T00:00") + np.timedelta64(h, "h")
+                for h in range(4)
+            ]
+        )
+        clean = np.array([1.0, 2.0, 3.0, 4.0])
+        holed = np.array([1.0, np.nan, 3.0, np.nan])
+        nearest = {
+            Station("A"): _series(
+                Station("A"), ExtractionOperator.NEAREST, valid_time, clean
+            ),
+            Station("B"): _series(
+                Station("B"), ExtractionOperator.NEAREST, valid_time, clean
+            ),
+        }
+        bilinear = {
+            Station("A"): _series(
+                Station("A"), ExtractionOperator.BILINEAR, valid_time, clean
+            ),
+            Station("B"): _series(
+                Station("B"), ExtractionOperator.BILINEAR, valid_time, holed
+            ),
+        }
+        table = build_operator_sensitivity_table(
+            nearest, bilinear, params=DEFAULT_PARAMS
+        )
+
+        def _counts(scope: str, station: str | None) -> tuple[int, int]:
+            row = table.filter(
+                (pl.col("scope") == scope)
+                & (pl.col("season") == "JJAS")
+                & (pl.col("statistic") == "WET_FREQUENCY")
+                & (
+                    pl.col("station").is_null()
+                    if station is None
+                    else pl.col("station") == station
+                )
+            )
+            assert row.height == 1
+            return (
+                int(row["n_hours_common_finite"][0]),
+                int(row["n_hours_excluded"][0]),
+            )
+
+        assert _counts("STATION", "A") == (4, 0)
+        assert _counts("STATION", "B") == (2, 2)
+        assert _counts("ACROSS_STATION", None) == (6, 2)
+
     def test_no_output_field_implies_a_winner(self) -> None:
         """D1a: never phrased as a ranking. The table has no 'winner'/'better'
         column and no boolean verdict field — only symmetric statistics."""
@@ -565,5 +695,21 @@ class TestOperatorSensitivityEnvelope:
         table = build_operator_sensitivity_table(
             nearest, bilinear, params=DEFAULT_PARAMS
         )
-        assert (table["n_hours_excluded"] == nearest[Station("A")].values.size).all()
+        total_hours = nearest[Station("A")].values.size
         assert (table["n_hours_common_finite"] == 0).all()
+        # UPDATED for the corrected D1a grain rule: `n_hours_excluded` is no
+        # longer one global figure stamped onto every row. The whole-period
+        # ("ALL") row carries the whole-run total, and the four disjoint
+        # seasons partition it — which is what a per-grain count means.
+        one_key = table.filter(
+            (pl.col("scope") == "STATION") & (pl.col("statistic") == "WET_FREQUENCY")
+        )
+        by_season = dict(
+            zip(
+                one_key["season"].to_list(),
+                one_key["n_hours_excluded"].to_list(),
+                strict=True,
+            )
+        )
+        assert by_season["ALL"] == total_hours
+        assert sum(v for k, v in by_season.items() if k != "ALL") == total_hours
