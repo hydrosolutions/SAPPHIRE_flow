@@ -317,13 +317,64 @@ def _orography_ds(ds: xr.Dataset, *, scale: float = 10.0) -> xr.Dataset:
     )
 
 
+def _independent_haversine_km(
+    lat1: float, lon1: float, lat2: float, lon2: float
+) -> float:
+    """Written out here on purpose: `offset_km` must be checked against an
+    INDEPENDENT computation, not against the implementation's own helper.
+    WGS84 spherical radius, as the plan's "Measured facts" table states."""
+    import math
+
+    radius_km = 6371.0088
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
+    return 2 * radius_km * math.asin(math.sqrt(a))
+
+
 class TestStationGridElevationTable:
-    def test_two_stations_one_row_each_with_hand_computed_mismatch(self) -> None:
+    def test_row_matches_an_independently_derived_cell_value_and_offset(self) -> None:
+        """MINOR (2026-08-16) — the previous version of this test asserted
+        `elev_mismatch_m == row.station_elev_m - row.orography_elev_m`,
+        recomputing the implementation's own formula from its own output. It
+        passed against ANY wrong orography cell, because both sides came
+        from the same (possibly wrong) lookup.
+
+        Everything expected below is derived here, from the fixture's
+        declared analytic surface and the station's coordinate, without
+        reading a single field the implementation produced:
+
+        * the 3x3 fixture grid is lat [26.0, 26.1, 26.2] x lon
+          [85.0, 85.1, 85.2] (`build_era5_land_product_fixture`'s default
+          area at 0.1 deg spacing);
+        * its field is `0.5 + 1.0*i + 0.1*j`, and `_orography_ds` scales it
+          by 10;
+        * the station at (26.13, 85.17) is nearest node (i=1, j=2) —
+          |26.13-26.1| = 0.03 against 0.07/0.13 for the other rows, and
+          |85.17-85.2| = 0.03 against 0.07/0.17 for the other columns, so
+          there is no tie to break;
+        * therefore orography = (0.5 + 1 + 0.2) * 10 = 17.0 m exactly, and
+          the mismatch against the fixture's 1000.0 m station elevation is
+          983.0 m.
+        """
         ds = _clean_ds()
         oro_ds = _orography_ds(ds)
+        station_lat, station_lon = 26.13, 85.17
+        expected_grid_lat, expected_grid_lon = 26.1, 85.2
+        expected_i, expected_j = 1, 2
+        expected_orography_m = (0.5 + 1.0 * expected_i + 0.1 * expected_j) * 10.0
+        expected_mismatch_m = 1000.0 - expected_orography_m
+        expected_offset_km = _independent_haversine_km(
+            station_lat, station_lon, expected_grid_lat, expected_grid_lon
+        )
+
         table = StationCoordinateTable(
             by_station={
-                Station("A"): _replace_station(_station(26.05, 85.05), "A"),
+                Station("A"): _replace_station(_station(station_lat, station_lon), "A"),
             }
         )
         rows = build_station_grid_elevation_table(
@@ -338,11 +389,14 @@ class TestStationGridElevationTable:
         )
         assert len(rows) == 1
         row = rows[0]
-        # station.elev_m=1000.0 (fixed in _station); nearest node (0 or 1,0 or 1)
-        # orography value at that same node = ramp(node) * 10.
-        assert row.elev_mismatch_m == pytest.approx(
-            row.station_elev_m - row.orography_elev_m
-        )
+        assert (row.grid_i, row.grid_j) == (expected_i, expected_j)
+        assert row.grid_lat == pytest.approx(expected_grid_lat)
+        assert row.grid_lon == pytest.approx(expected_grid_lon)
+        assert row.orography_elev_m == pytest.approx(expected_orography_m, abs=1e-6)
+        assert row.elev_mismatch_m == pytest.approx(expected_mismatch_m, abs=1e-9)
+        # 3a's stated tolerance: `offset_km` matches an independent haversine
+        # to 1 m.
+        assert row.offset_km == pytest.approx(expected_offset_km, abs=0.001)
         assert row.station_elevation_datum == VerticalDatum.UNKNOWN
         assert row.datum_reconciled == DatumReconciliationStatus.UNRECONCILED
         assert row.stations_in_cell == 1
