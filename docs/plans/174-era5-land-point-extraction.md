@@ -1,7 +1,7 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-15
-revised: 2026-08-15
+revised: 2026-08-16
 plan: 174
 title: M-A5 — ERA5-Land point extraction at the 26 station locations
 scope: Extract the M-A4 hourly-mm ERA5-Land product at the 26 gauge locations with a NAMED, recorded extraction operator; acquire and freeze an orography source; record per-station grid coordinates and orography elevation; quantify station-to-grid elevation mismatch; run an operator-sensitivity comparison; propagate the IMERG scope split into the milestone doc. Explicitly NOT the gauge-vs-ERA5 comparison (M-A6), NOT IMERG (split to its own plan — no acquisition path exists), NOT any QC-mask application (the mask is the gauge side; pairing is M-A6), NOT the Kirtipur/Khumaltar gauge-pair diagnostic (moved to M-A6 — see D6), NOT a correction design.
@@ -13,7 +13,38 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 174 — M-A5 ERA5-Land point extraction
 
 ## Status
-**DRAFT.** Not for implementation until the owner confirms.
+**READY — owner-confirmed 2026-08-16.**
+
+Gated by one `/plan` round that **stalled** (3 rounds; 4 blockers, 11 majors). Its design reasoning
+was sound and is kept; **all four blockers were defects in machinery the loop itself invented**, and
+each is resolved above by removing structure rather than adding more (D5.0, the `OrographySpec` /
+`OrographySourceRecord` split, 1b's narrowed scope, D7's three publication corrections).
+
+### Residual review findings — KNOWN, accepted into implementation
+
+Not folded above. The owner set READY with these open; they are recorded so the implementer meets
+them deliberately rather than rediscovering them.
+
+| # | Finding | Disposition |
+|---|---|---|
+| M-7 | The persisted accumulation diagnostic (Task 1c) is not yet a trustworthy gate — `diagnose` doesn't reconcile the raw file against its manifest sha256, and with no `--window` it resolves *all* windows including a one-hour edge window the diagnostic must reject | **Fix in 1c**: require exactly one explicit approved window, reconcile its sha256 before decoding, pin a minimum complete-day count, and store records per window |
+| M-8 | The orography raster schema is not actually frozen — no pinned variable name, dims, dtype, encoding or mask variable, and those choices are absent from `orography_identity`; `datum_reconciled` is called an enum but never defined | **Fix in 1b/3a**: pin the raster schema and fold it into the identity; define `DatumReconciliationStatus` and its derivation |
+| M-9 | Task 5b must propagate the split through *every* authoritative reference — Plan 171's front matter and out-of-scope section, and the milestone doc's "three-way" and **"bounds"** wording (which now contradicts D1a) | **Widen 5b** to all of them; replace "bounds" with "quantifies operator spread" |
+| M-10 | Phase 5 depends only on 4a but Task 5a must record 4b's real-data results — the plan can self-record before the results exist | **Fix the graph**: 5a depends on 4b |
+| M-11 | Task 4a's identity test checks only a subset of what D7 declares the identity covers, so a broken implementation passes | **Widen the test** to every declared identity input |
+| M-12 | D1a's statistical surface is combinatorial (8 quantiles × season *and* JJAS × absolute *and* ratio *and* sign-agreement × per-station *and* across-station) for a diagnostic that is explicitly not a decision gate | **Proportionality — trim** at implementation; the milestone asks only for "at least one sensitivity comparison" |
+| M-13 | 2d's red-first cases partly duplicate behaviour `load_station_coordinates` already provides — the duplicate-station case is handled today, so that assertion proves nothing new | **Keep only genuinely new** cases; wrap the existing error rather than re-implementing it |
+| m-1 | `series_bilinear.nc` is a full first-class published artefact though it is only D1a's comparand | Consider demoting it below the published bundle |
+| m-2 | "checksum mismatch **before any read/file open**" is literally impossible — checksumming reads the file | Reword to "before the payload is decoded" |
+| m-3 | The Problem section says M-A4 "left" the products on disk; Constraint 1 correctly says none exists yet | Internal contradiction — fix the Problem wording |
+| m-4 | Two stale citations (the Plan 171 "freeze payload" precedent, and the per-file `os.replace` line reference) | Repoint to the real locations |
+
+**Proportionality note, on the record.** At ~760 lines this plan is heavy for work whose core is
+"extract a grid at 26 points," and M-12 is a symptom. The orography Branch-A/Branch-B probe carries
+most of the weight (two of the four blockers lived there). Dropping Branch A — the owner has already
+accepted a DEM proxy — would collapse that apparatus, at the cost of measuring terrain rather than
+what the land-surface scheme actually ran on. Raised and **not** taken; recorded here so the trade
+stays visible.
 
 ## Scope correction this plan makes to the milestone
 
@@ -287,10 +318,17 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   - It **loads gauge data inside a plan whose own D4 forbids gauge/mask coupling** and whose scope
     line excludes mask application — the diagnostic needs the M-A3 mask to be meaningful, which makes
     it a pairing operation, i.e. M-A6's job by definition.
-  - It **omits gauge measurement/QC error**, which is a *confirmed, first-order* confound **at
-    exactly this pair**: Khumaltar totals **294 mm in 2023 vs 1,504 mm in 2024**
-    (`scripts/dhm_precip/expectations.toml:437-461`, `docs/design/dhm-precipitation-vision.md:150-151`),
-    a ~5× swing attributed to a long zero-run defect that **passes a naive ≥85 % coverage filter**.
+  - It **omits gauge measurement/QC error**, which is a first-order confound **at exactly this pair**:
+    Khumaltar totals **294 mm in 2023 vs 1,504 mm in 2024**
+    (`scripts/dhm_precip/expectations.toml:434-464`), a ~5× swing between adjacent years at a station
+    whose 30 m elevation difference from its partner cannot explain it.
+    **⚠️ Precision (folded from review — an earlier revision of this bullet, and a verbal summary of
+    it, over-attributed the cause).** Those expectations record the two annual totals and **name no
+    mechanism**; the M-A3 long-zero-run population does not name Khumaltar. So the correct statement
+    is: *the swing is documented, its cause is not.* That is still disqualifying for a "clean bound"
+    — an unexplained 5× inter-annual swing is exactly the kind of gauge behaviour that would dominate
+    a small representativeness signal — but it is **not** evidence of a specific defect, and must not
+    be cited as one.
     Plan 170 quotes the raw pair disagreement at ~37 % of seasonal total
     (`docs/plans/170-dhm-precip-reproducible-baseline.md:55-58`) — the *same order* as the known
     defect. Unmasked, the "representativeness bound" would be dominated by a gauge malfunction.
