@@ -10,11 +10,11 @@ import pytest
 
 from scripts.dhm_precip.era5_errors import Era5StorageError
 from scripts.dhm_precip.era5_manifest import (
+    MIN_DIAGNOSTIC_SAMPLE_DAYS,
     AccumulationDiagnosticRecord,
     Era5ProvenanceManifest,
     OperatorProvenance,
     PackingAccounting,
-    MIN_DIAGNOSTIC_SAMPLE_DAYS,
     RawWindowRecord,
     TransformYearRecord,
     checksum_file,
