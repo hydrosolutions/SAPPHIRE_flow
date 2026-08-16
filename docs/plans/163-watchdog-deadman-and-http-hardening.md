@@ -114,11 +114,18 @@ second opinion — not as the only one.)
   pings, because Slack is the channel for *detected* failure and the dead-man is the channel for a watchdog that
   dies before it can report anything. Keeping these orthogonal is the point; conflating them would mean a
   degraded stack silences the liveness signal.
+- **D2b — freshness is judged by the PROVIDER's receipt time, not the mini's clock.** Host clock skew can
+  distort local staleness checks but cannot falsely refresh the dead-man — a useful independence property.
 - **D3 — feature-off by default.** Missing/empty/unreadable `secrets/deadman_url` ⇒ no ping, no error. The file
   is git-ignored and absent in CI and in every dev checkout.
 - **D4 — the ping must never be able to break the watchdog.** A dead-man outage taking down the process it
   monitors would be perverse. All failures are caught, logged and reported as `False`.
-- **⚠️ D5 — OPEN (owner): grace period.** Recommend **15 min** (3× the 300 s `StartInterval`) so one slow tick
+- **⛔ D5 — MUST BE CLOSED BEFORE READY (not host acceptance).** *(Review blocker: the provider's period, grace,
+  channel attachment and first-ping arming behaviour are part of the safety mechanism itself — a plan that leaves
+  them open is not buildable-to-safe.)* Record the configured values in this plan, confirm the Slack **and**
+  email integrations are attached **to this check**, and document whether a never-pinged "NEW" check alerts at
+  all (this likely explains why the 2026-08-14 test DOWN alert never arrived) plus the explicit arming step.
+  **Owner input still required:** Recommend **15 min** (3× the 300 s `StartInterval`) so one slow tick
   does not page. Also confirm the check's **Period** is 5 min — a new Healthchecks check defaults to **1 day /
   1 h grace**, which would have delayed the test alert by a day and may be why the test DOWN alert never arrived.
 
@@ -126,9 +133,26 @@ second opinion — not as the only one.)
 
 ### T1 — HTTP hardening (do this first; the ping depends on it)
 
-*In:* `src/sapphire_flow/ops/watchdog.py`. Introduce a single `_HTTP_CALL_EXCEPTIONS` tuple covering
-`httpx.HTTPError` **and** `httpx.InvalidURL` (and any other non-`HTTPError` httpx raise), and use it at **every**
-outbound call site — `default_slack_poster` and every probe — not just the new one.
+*In:* `src/sapphire_flow/ops/watchdog.py`.
+
+**The call sites are exactly three** (enumerated against current main, confirmed — there is no fourth):
+health GET `:215`, the shared BAFU-detail GET `:266` (invoked twice, forecast `:674` and observations `:739`),
+and the Slack POST `:377`.
+
+**⛔ The boundary must cover more than the request.** Probe clients are **constructed before** the `try`
+(`:213`, `:263`) and `close()` runs in `finally` (`:235`, `:309`) — so construction and cleanup exceptions
+**still escape** a tuple that only guards the request. Wrap **client construction, the request, response
+handling, and owned-client cleanup** in one exception boundary.
+
+**⛔ The exception set was underspecified.** `httpx.HTTPError` + `httpx.InvalidURL` does **not** deliver
+"never raises": transport/SSL/socket setup failures can surface as **`OSError`** (`ssl.SSLError` and socket
+errors are `OSError` subclasses), and malformed Unicode/IDNA input can surface as **`UnicodeError`**. httpx
+normally translates many of these, but the design cannot *rely* on that while claiming containment. Enumerate at
+least `httpx.HTTPError`, `httpx.InvalidURL`, `OSError`, `UnicodeError`, and add a final defensive
+`except Exception` at the adapter boundary — **never `BaseException`**, which would swallow `KeyboardInterrupt`.
+
+*Not* in the tuple: `socket.gethostname()` (`:556`) can raise `OSError`, but it is not an outbound HTTP call. If
+it aborts the tick, **the absent heartbeat is the correct signal** — do not defend it.
 
 **Red-first:** a poster/probe given a malformed URL (e.g. `not a url`, `http://`) must return `False` and log,
 **not** raise. Prove it fails against current `main`, where only `httpx.HTTPError` is caught.
@@ -141,8 +165,20 @@ outbound call site — `default_slack_poster` and every probe — not just the n
   `None` when missing/empty/unreadable (mirroring `read_slack_webhook`/`read_probe_token`).
 - `DeadmanPoster = Callable[[str], bool]`; `default_deadman_poster(url)` POSTs an empty body with a short
   timeout, catches `_HTTP_CALL_EXCEPTIONS`, treats `status >= 300` as failure, and **never raises**.
-- Called **at the end of every tick, unconditionally** (per D2) — including ticks where checks failed or Slack
-  delivery failed. It must not sit behind any early return.
+- **⛔ THE HEARTBEAT CONTRACT — the first draft of this line was wrong and dangerous.** It said "at the end of
+  every tick, **unconditionally**", which invites a `finally`. **A `finally` heartbeat would be a bug**: it would
+  mark a *crashed or incomplete* tick as healthy — a false all-clear, the exact class this plan exists to
+  eliminate. The correct contract is:
+  > **Exactly once after every tick that COMPLETED and PERSISTED successfully** — regardless of unhealthy check
+  > results or failed notification delivery, but **NOT** if the tick raised.
+
+  **Placement is therefore exact:** read the URL and call the guarded poster **immediately after
+  `state.dump(...)` (`watchdog.py:795`) and before `return` (`:796`).** Current `run_once` has **no** early
+  return before that point (confirmed), but many things can raise before it — hostname lookup (`:556`), state
+  load (`:558`), probes (`:561`, `:674`, `:739`), Slack calls (`:587`, `:635`, `:719`, `:782`), and persistence
+  itself (`:795`). **All of those must suppress the ping**, because a fatal bug, a persistence failure or a
+  mid-tick kill *should* make the dead-man fire. A tick killed mid-flight correctly emits no heartbeat.
+  Placing it after persistence also means a slow or hanging ping can never block or corrupt the state write.
 - Injectable (`deadman_poster` parameter) for tests, like the existing posters.
 - CLI `--deadman-url-path`, and the plist passes it.
 
@@ -150,6 +186,40 @@ outbound call site — `default_slack_poster` and every probe — not just the n
 and no error; (c) a poster that raises must **not** propagate out of `run_once`; (d) a tick whose health checks
 **fail** still pings — this is the case that makes the switch meaningful and the one most likely to be broken by
 a well-meaning refactor.
+
+### T3 — interaction with Plan 162's notification state machine (review major)
+
+`watchdog.py:634` — an **unexpected** Slack-poster exception exits `run_once` **before**
+`backup_notification_pending` is updated and before state is persisted, which can lose precisely the
+pending/recovery-pending transition Plan 162 Phase A added to survive delivery failure. Route **all four** Slack
+call sites through a safe helper that converts delivery exceptions to `False`, and persist
+`backup_notification_pending` **before** the dead-man ping is attempted.
+
+**Red-first:** a raising dead-man poster must still leave the expected state file on disk; a raising Slack
+delivery during a backup transition must **preserve and persist** `backup_notification_pending` and still attempt
+exactly one heartbeat.
+
+### T4 — wiring, defaults and the plist (review majors)
+
+- **`WatchdogConfig.deadman_url_path`** defaulting to `DEFAULT_DEADMAN_PATH`, and **`deadman_poster` optional
+  with a default** on `run_once` — otherwise every existing `_config`/`run_once` call site in
+  `tests/unit/ops/test_watchdog.py` needs a mechanical edit. Existing configurations (no URL file) must produce
+  **zero** network calls.
+- **Plist:** add exactly `<string>--deadman-url-path</string>` and `<string>./secrets/deadman_url</string>`
+  (`ch.hydrosolutions.sapphire-watchdog.plist:16`), **plus** parser registration and `args.deadman_url_path`
+  mapping in `main()` (`:803-865`). **`plutil -lint` proves XML validity, not that the parsed path reaches
+  `run_once`** — add a CLI-wiring test.
+- **`RunAtLoad` is currently `false`** (`:35`), so the first execution can be delayed a full interval. Set it
+  `true` for immediate deployment validation, or document and accept the gap. (This does not address the
+  LaunchAgent/login-session defect — that stays Plan 158 T5.)
+- **Timeout is a number, not an adjective:** define a constant (**5 s**), test that it reaches httpx, and record
+  the worst-case sequential tick budget against the plist's **300 s** `StartInterval` (`:27`).
+- **`read_deadman_url` must contain decoding failures too** — `Path.read_text()` can raise `UnicodeError` on
+  invalid bytes, not only `OSError`. Return `None` for missing, empty, unreadable **and undecodable**; test each.
+- **Success is `200 <= status < 300`**, not merely "not >= 300".
+- **Per-site malformed-URL tests**: separate red tests for `default_slack_poster`, `probe_health` **and**
+  `probe_bafu_freshness`. One generic test does not prove all three sites; the harness at
+  `tests/unit/ops/test_watchdog.py:1039` supports this directly.
 
 ## Exit gates
 
