@@ -88,12 +88,29 @@ formula from its own output — it passes against any wrong orography cell. It m
 The defects lived in the specification and in tests written after the code, which is precisely the
 pair that a test run cannot separate. [[feedback_independent_review_beats_automated_loop]]
 
-**Proportionality note, on the record.** At ~760 lines this plan is heavy for work whose core is
-"extract a grid at 26 points," and M-12 is a symptom. The orography Branch-A/Branch-B probe carries
-most of the weight (two of the four blockers lived there). Dropping Branch A — the owner has already
-accepted a DEM proxy — would collapse that apparatus, at the cost of measuring terrain rather than
-what the land-surface scheme actually ran on. Raised and **not** taken; recorded here so the trade
-stays visible.
+**Proportionality note, on the record.** This plan is heavy for work whose core is "extract a grid at
+26 points," and M-12 is a symptom. The orography Branch-A/Branch-B probe carries most of the weight
+(two of the four blockers lived there).
+
+**Cutting Branch A was proposed on 2026-08-16 and REJECTED — settled, do not re-open.** The proposal
+rested on Branch A's "reachability / credential stall risk" and on its share of the blockers. **Task
+1a's probe had already retired the first reason** and the reviewer proposing the cut had not read it:
+
+- `geopotential` is an **invariant field of the SAME `reanalysis-era5-land` dataset** — same dataset
+  id, same `cdsapi.Client()`, **same licence already accepted in Plan 171 P0**. No second account, no
+  second service, no operator act.
+- Same dataset ⇒ **identical 0.1° grid**, so aggregation degenerates to the identity case (one source
+  cell per target cell, weight 1).
+
+⇒ The cut would have **increased** complexity, not reduced it: Branch B means an external DEM on a
+*different* grid (COP-DEM 90 m / GMTED 7.5″ / ETOPO 15″) needing real reprojection, real
+area-weighted aggregation, a no-data policy that actually binds, and possibly a new raster dependency
+that constraint 5 warns against — while also downgrading the measured quantity from **model terrain**
+to **terrain**. B1 and B2 are fixed above and neither fix requires Branch A to go.
+
+**Rule this illustrates:** a proportionality argument must be checked against the probe results
+already in the document. "This apparatus is where the blockers were" is not sufficient grounds to
+delete it — the blockers were cheap spec fixes, not structural cost. [[feedback_verify_before_folding]]
 
 ## Scope correction this plan makes to the milestone
 
