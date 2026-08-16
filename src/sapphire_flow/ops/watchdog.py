@@ -52,7 +52,11 @@ Plan 163 also hardens every outbound HTTP call (health probe, BAFU-detail
 probe, Slack POST, dead-man POST) against more than ``httpx.HTTPError`` —
 malformed hand-pasted URLs (``httpx.InvalidURL``, not an ``HTTPError``
 subclass), transport/SSL/socket failures (``OSError``) and malformed
-IDNA/unicode input (``UnicodeError``) must never kill a tick.
+IDNA/unicode input (``UnicodeError``) must never kill a tick. The boundary
+covers owned-client cleanup too: ``probe_health``/``probe_bafu_freshness``
+construct their client inside the guarded region and also guard the
+``finally``-block ``close()`` of an owned client, since an unguarded close()
+exception would override the try block's return value and still escape.
 """
 
 from __future__ import annotations
@@ -280,8 +284,22 @@ def probe_health(url: str, *, client: httpx.Client | None = None) -> HealthProbe
         log.error("watchdog.probe_health_unexpected_error", error=str(exc))
         return HealthProbeResult(ok=False, http_status=None, error=f"unexpected: {exc}")
     finally:
+        # Plan 163 fixer round: an owned client's close() can itself raise
+        # (OSError from a half-torn-down transport, etc). Left unguarded,
+        # that exception replaces whatever `return`/exception the try block
+        # already produced and escapes the boundary this function exists to
+        # provide — the same containment as the request itself, applied to
+        # cleanup.
         if owns_client and c is not None:
-            c.close()
+            try:
+                c.close()
+            except _HTTP_CALL_EXCEPTIONS as exc:
+                log.warning("watchdog.probe_health_client_close_failed", error=str(exc))
+            except Exception as exc:  # never BaseException
+                log.error(
+                    "watchdog.probe_health_client_close_unexpected_error",
+                    error=str(exc),
+                )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -365,8 +383,21 @@ def probe_bafu_freshness(
             found=False, checked_at=None, status=None, error=f"unexpected: {exc}"
         )
     finally:
+        # Plan 163 fixer round: same cleanup guard as `probe_health` — an
+        # owned client's close() can raise, and unguarded that would
+        # override the try block's return/exception and escape containment.
         if owns_client and c is not None:
-            c.close()
+            try:
+                c.close()
+            except _HTTP_CALL_EXCEPTIONS as exc:
+                log.warning(
+                    "watchdog.probe_bafu_freshness_client_close_failed", error=str(exc)
+                )
+            except Exception as exc:  # never BaseException
+                log.error(
+                    "watchdog.probe_bafu_freshness_client_close_unexpected_error",
+                    error=str(exc),
+                )
 
 
 def newest_backup_mtime(backup_dir: Path) -> datetime | None:

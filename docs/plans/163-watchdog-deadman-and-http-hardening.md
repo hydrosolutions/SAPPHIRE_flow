@@ -15,6 +15,31 @@ supersedes: []
 **READY** (2026-08-16) — D5 closed by the owner; independently reviewed (4 blockers + 8 majors folded, including
 a heartbeat contract that was wrong in the first draft). Operational reliability (category **A**). Responds to a **live, ongoing** incident.
 
+**Post-implementation fixer round (2026-08-16), independent Codex review over the committed diff — 3 majors + 1
+minor resolved:**
+1. **(major) Owned-client cleanup could still escape T1's boundary.** `probe_health`/`probe_bafu_freshness` guarded
+   the request but not an owned client's `finally`-block `close()` — an `OSError` there would override a
+   successful `return` (or an already-caught request exception) and kill the tick. Both `close()` calls are now
+   wrapped in the same `_HTTP_CALL_EXCEPTIONS` + defensive `except Exception` boundary. Locked by
+   `TestOwnedClientCleanupHardeningProbeHealth`/`...ProbeBafuFreshness` (fake owned client, `get()` succeeds,
+   `close()` raises) — proven RED against the pre-fix code (stash-fix/run/restore).
+2. **(major) Heartbeat-ordering tests didn't actually prove ping-after-persist.** The existing raising-poster/
+   raising-probe tests would have passed even if the ping were moved to immediately *before* `state.dump(...)`.
+   Added `test_ping_observes_state_already_persisted_on_disk` (the injected poster asserts the state file already
+   holds this tick's persisted content when invoked) and
+   `test_dump_failure_before_persistence_suppresses_heartbeat` (monkeypatches `WatchdogState.dump` to raise;
+   asserts the exception propagates and zero pings occur).
+3. **(major) Ordinary unit tests could ping the REAL production dead-man URL.** `_config()`'s `WatchdogConfig` left
+   `deadman_url_path` at its default (`DEFAULT_DEADMAN_PATH`, a *relative* `./secrets/deadman_url`) — on a
+   checkout where that host secret is present (e.g. the mac-mini), every `run_once` test not overriding
+   `deadman_poster` would fire a real heartbeat via `default_deadman_poster`. `_config()` now points
+   `deadman_url_path` at a `tmp_path` file that is never written; the two hand-reconstructed `WatchdogConfig(...)`
+   test configs (which silently dropped this and every other field not listed) now use `dataclasses.replace(base,
+   ...)` instead.
+4. **(minor) No test locked the dead-man poster's timeout/empty-body.** Added
+   `test_posts_empty_body_with_the_5s_timeout_constant`, asserting `timeout == DEADMAN_POST_TIMEOUT_S == 5.0` and
+   the absence of `json`/`data`/`content`/`files` kwargs on the captured `httpx.post` call.
+
 ## Problem
 
 **The mac-mini watchdog has been silent since ~03:54 on 2026-08-16.** It had been posting a stale-backup alert
