@@ -136,6 +136,33 @@ Flags:
   place so re-install is fast.
 - `--help` — show usage.
 
+### ⛔ BREAKING DEPLOY PREREQUISITE (Plan 162 Phase A) — `secrets/sapphire_backup_db_password`
+
+**The first deploy that includes Plan 162 Phase A WILL FAIL unless this file exists on the host, and it takes
+the whole stack down with it, not just backups.** Two independent hard requirements:
+
+- `docker-compose.yml` declares the secret as `file: ./secrets/sapphire_backup_db_password`. Docker Compose
+  refuses to start **any** service when a declared secret file is missing — so `up -d` fails outright.
+- `docker/bootstrap-roles.sh` requires `SAPPHIRE_BACKUP_DB_PASSWORD_FILE` (`:?`-guarded) and exits 1 if it is
+  unreadable, so the `init` service fails and the deploy aborts.
+
+**Create it BEFORE the first `up -d` that carries this change:**
+
+```sh
+cd ~/SAPPHIRE_flow
+umask 077
+openssl rand -base64 32 > secrets/sapphire_backup_db_password
+chmod 600 secrets/sapphire_backup_db_password
+```
+
+Use **URL-safe** characters if you ever set this by hand rather than generating it — see Plan 161: a `/` in a
+generated password is what broke backups on 2026-08-13, and until Plan 161 T2 lands the producer still splices
+passwords into URLs without encoding.
+
+`init` picks the file up on the next start and creates/rotates the `sapphire_backup` role from it; no manual SQL
+is needed. Rotating it later requires re-running `init` **and recreating `prefect-worker-backup`** — file-backed
+Compose secrets do not hot-reload.
+
 ### Build-time secret — `RECAP_DG_CLIENT_TOKEN`
 
 Any image build (a first `up -d --build`, or a rebuild after an image

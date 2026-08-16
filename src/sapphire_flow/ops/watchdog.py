@@ -5,10 +5,18 @@ BAFU forecast collector's freshness heartbeat on every invocation
 (scheduled by launchd every 5 min — see
 `scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist`).
 
-Hysteresis: alerts on the first failure, then only on every 6th
-consecutive failure (~30 min cadence at 5 min intervals), and once
-more when the service recovers. State is kept in
-``~/.sapphire-watchdog-state.json``.
+Hysteresis (health + both BAFU freshness checks): alerts on the first
+failure, then only on every 6th consecutive failure (~30 min cadence
+at 5 min intervals), and once more when the service recovers.
+
+Backup staleness (Plan 162 T4) uses a DIFFERENT, dedicated "alert
+once" policy — not the 6th-failure hysteresis above: exactly one
+alert on the first stale tick, silence for as long as it stays stale,
+and exactly one recovery alert — see ``_backup_notification_kind``.
+A notification that fails delivery is retried every subsequent tick
+(regardless of the condition) until it is actually posted.
+
+State is kept in ``~/.sapphire-watchdog-state.json``.
 
 Slack: reads ``./secrets/slack_webhook_url`` (host-process secret —
 NOT a Docker secret; see docs/standards/security.md §Secrets
@@ -38,12 +46,13 @@ import argparse
 import functools
 import json
 import socket
+import stat
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import structlog
@@ -101,14 +110,34 @@ SLACK_POST_TIMEOUT_S = 5.0
 ALERT_REPEAT_EVERY = 6  # every 6th consecutive failure (~30 min at 5 min tick)
 
 
+BackupNotificationKind = Literal["stale", "recovered"]
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WatchdogState:
     """Hysteresis state persisted between invocations."""
 
     consecutive_health_failures: int = 0
+    # Legacy field (pre-Plan-162): written on every stale tick, never read
+    # by anything. Kept ONLY for backward-compatible round-tripping of state
+    # files written by an older watchdog — no code path sets it anymore
+    # (Plan 162 T4 replaces it with `consecutive_backup_stale_failures` +
+    # `backup_notification_pending`, the real hysteresis + delivery state).
     last_backup_alert_iso: str | None = None
     consecutive_bafu_failures: int = 0
     consecutive_bafu_obs_failures: int = 0
+    # Plan 162 T4: backup-staleness hysteresis, mirroring
+    # consecutive_health_failures — the pre-Plan-162 backup block alerted on
+    # EVERY stale tick (~288/day at 5 min intervals), absorbing Plan 161 T3.
+    consecutive_backup_stale_failures: int = 0
+    # Plan 162 T4: a notification this watchdog owes but has not yet
+    # DELIVERED. Set when `should_alert_health` says "alert" but the Slack
+    # post fails; retried every tick (regardless of the current backup
+    # condition) until delivery succeeds, then cleared. Without this, a
+    # recovery alert lost to a failed Slack post is lost PERMANENTLY: the
+    # hysteresis policy only re-fires on prev_failures > 0, which the
+    # recovery tick itself already reset to 0.
+    backup_notification_pending: BackupNotificationKind | None = None
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -119,9 +148,30 @@ class WatchdogState:
         except (OSError, json.JSONDecodeError) as exc:
             log.warning("watchdog.state_read_failed", path=str(path), error=str(exc))
             return cls()
+        pending_raw = raw.get("backup_notification_pending")
+        pending: BackupNotificationKind | None = (
+            pending_raw if pending_raw in ("stale", "recovered") else None
+        )
+        legacy_alert_iso = raw.get("last_backup_alert_iso")
+        stale_failures_raw = raw.get("consecutive_backup_stale_failures")
+        if stale_failures_raw is None:
+            # Plan 162 T4 review fix: a state file written by the PRE-Plan-
+            # 162 watchdog has no `consecutive_backup_stale_failures` key at
+            # all (KEY ABSENT, not present-and-zero — `dump()` always writes
+            # the key going forward, so this branch only ever fires once,
+            # on the very first tick after rollout). Treating "key absent"
+            # as "no incident" would silently drop an already-unresolved
+            # legacy incident: if `last_backup_alert_iso` shows the OLD
+            # watchdog had alerted, the very next tick with a fresh backup
+            # must still emit the one recovery notification a rollout
+            # deserves. Migrate to "an incident is active" (1) rather than
+            # invent a fake failure count the old watchdog never tracked.
+            consecutive_backup_stale_failures = 1 if legacy_alert_iso else 0
+        else:
+            consecutive_backup_stale_failures = int(stale_failures_raw)
         return cls(
             consecutive_health_failures=int(raw.get("consecutive_health_failures", 0)),
-            last_backup_alert_iso=raw.get("last_backup_alert_iso"),
+            last_backup_alert_iso=legacy_alert_iso,
             # Backward compatible with state files written before the Flow 4
             # staleness hook: absent key defaults to 0.
             consecutive_bafu_failures=int(raw.get("consecutive_bafu_failures", 0)),
@@ -130,6 +180,8 @@ class WatchdogState:
             consecutive_bafu_obs_failures=int(
                 raw.get("consecutive_bafu_obs_failures", 0)
             ),
+            consecutive_backup_stale_failures=consecutive_backup_stale_failures,
+            backup_notification_pending=pending,
         )
 
     def dump(self, path: Path) -> None:
@@ -138,6 +190,8 @@ class WatchdogState:
             "last_backup_alert_iso": self.last_backup_alert_iso,
             "consecutive_bafu_failures": self.consecutive_bafu_failures,
             "consecutive_bafu_obs_failures": self.consecutive_bafu_obs_failures,
+            "consecutive_backup_stale_failures": self.consecutive_backup_stale_failures,
+            "backup_notification_pending": self.backup_notification_pending,
         }
         path.write_text(json.dumps(payload, indent=2))
 
@@ -256,17 +310,31 @@ def probe_bafu_freshness(
 
 
 def newest_backup_mtime(backup_dir: Path) -> datetime | None:
-    """Return the newest *.dump mtime as a UTC datetime, or None if none exist."""
+    """Return the newest *evidence-backed* `sapphire_*.dump` mtime as a UTC
+    datetime, or None if none exist (Plan 162 T4).
+
+    Matches the exact published-artifact glob (`sapphire_*.dump`), and
+    requires each candidate be a REGULAR file with size > 0, checked via
+    `lstat()` + `stat.S_ISREG` — `Path.is_file()` follows symlinks, so a
+    fresh symlink (pointing anywhere, including nowhere) or a same-named
+    directory would otherwise satisfy freshness without being evidence of
+    anything. A 0-byte file (a failed dump under the pre-T3 direct-write
+    path, or any other zero-length artifact) is likewise never "fresh".
+    """
     if not backup_dir.exists() or not backup_dir.is_dir():
         return None
     newest: float | None = None
-    for entry in backup_dir.glob("*.dump"):
+    for entry in backup_dir.glob("sapphire_*.dump"):
         try:
-            mtime = entry.stat().st_mtime
+            entry_stat = entry.lstat()
         except OSError:
             continue
-        if newest is None or mtime > newest:
-            newest = mtime
+        if not stat.S_ISREG(entry_stat.st_mode):
+            continue
+        if entry_stat.st_size <= 0:
+            continue
+        if newest is None or entry_stat.st_mtime > newest:
+            newest = entry_stat.st_mtime
     if newest is None:
         return None
     return datetime.fromtimestamp(newest, tz=UTC)
@@ -335,6 +403,33 @@ def should_alert_health(
     return False
 
 
+def _backup_notification_kind(
+    *, was_stale: bool, is_stale: bool, pending: BackupNotificationKind | None
+) -> BackupNotificationKind | None:
+    """Plan 162 T4 review fix: the notification this tick OWES, computed
+    fresh from the CURRENT condition every time — never by resending
+    whatever kind happened to be `pending`.
+
+    A `pending` kind only ever means "the previous tick tried to notify and
+    delivery failed"; it is NOT ground truth about what to say now. If the
+    condition has moved on since then (a stale alert that failed to deliver,
+    followed by a fresh backup landing before the retry — or the mirror: a
+    recovery alert that failed to deliver, followed by a NEW staleness
+    event), resending the stale `pending` value would report a
+    self-contradictory message (e.g. "STALE" for a dump that is now 0h
+    old) and — because delivery would then "succeed" — silently swallow the
+    real, current-condition alert forever. Recomputing from `is_stale` on
+    every tick a notification is owed closes that gap in both directions.
+    """
+    if pending is not None:
+        return "stale" if is_stale else "recovered"
+    if is_stale and not was_stale:
+        return "stale"
+    if was_stale and not is_stale:
+        return "recovered"
+    return None
+
+
 def _format_health_alert(
     *, hostname: str, now: datetime, probe: HealthProbeResult
 ) -> str:
@@ -362,6 +457,13 @@ def _format_backup_alert(*, newest: datetime | None, threshold: timedelta) -> st
     return (
         f"[SAPPHIRE staging] backup STALE — newest dump: {newest_str}, "
         f"threshold: {hours}h"
+    )
+
+
+def _format_backup_recovery_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        f"[SAPPHIRE staging] backup RECOVERED — host: {hostname}, "
+        f"time: {now.isoformat()}"
     )
 
 
@@ -495,7 +597,15 @@ def run_once(
             consecutive_health_failures=state.consecutive_health_failures + 1,
         )
 
-    # --- Backup staleness ---
+    # --- Backup staleness (Plan 162 T4) ---
+    # Dedicated "alert once, then only on recovery" policy — NOT
+    # `should_alert_health`'s hysteresis, which re-fires on every 6th
+    # consecutive failure (~288/day at 5 min intervals absorbing down to
+    # ~48/day, still not "once"). `_backup_notification_kind` decides
+    # purely from the CURRENT condition (`is_stale`) vs. the condition on
+    # entry to this tick (`was_stale`), recomputed fresh whenever a
+    # notification is still `pending` from a failed delivery — see its
+    # docstring for why blindly resending the pending value is wrong.
     newest = newest_backup_mtime(config.backup_dir)
     is_stale = newest is None or (now - newest) > BACKUP_STALE_THRESHOLD
     log.info(
@@ -505,19 +615,59 @@ def run_once(
         stale=is_stale,
     )
 
-    if is_stale:
-        message = _format_backup_alert(newest=newest, threshold=BACKUP_STALE_THRESHOLD)
-        # For simplicity, alert every tick on backup staleness; in
-        # practice the operator is paged on the first one and silences
-        # subsequent ones manually. Dedupe-by-day would add complexity
-        # without operational value — revisit if alert fatigue is seen.
-        log.warning("watchdog.backup_stale_alert", message=message)
+    was_stale = state.consecutive_backup_stale_failures > 0
+    pending = state.backup_notification_pending
+    notification_kind = _backup_notification_kind(
+        was_stale=was_stale, is_stale=is_stale, pending=pending
+    )
+
+    if notification_kind is not None:
+        if notification_kind == "stale":
+            message = _format_backup_alert(
+                newest=newest, threshold=BACKUP_STALE_THRESHOLD
+            )
+            log.warning("watchdog.backup_stale_alert", message=message)
+        else:
+            message = _format_backup_recovery_alert(hostname=host, now=now)
+            log.info("watchdog.backup_recovery_alert", message=message)
+
         if webhook:
             posted = slack_poster(webhook, message)
             log.info("watchdog.slack_post_attempted", posted=posted)
+            state = replace(
+                state,
+                backup_notification_pending=None if posted else notification_kind,
+            )
+        elif pending is not None:
+            # Third variant of the notification-loss class: `pending` was
+            # ALREADY set on entry to this tick — a previous delivery
+            # attempt failed and is awaiting retry. The webhook merely
+            # being absent/unreadable RIGHT NOW (a transient secrets-mount
+            # hiccup, a rotation in progress) is not a successful delivery
+            # and must not be treated as one — clearing pending here would
+            # discard the notification forever, since a steady-state tick
+            # with no further condition change never recomputes it from
+            # scratch. A pending notification is cleared ONLY by confirmed
+            # delivery (the `if webhook:` branch above); every other path
+            # must leave it exactly as `_backup_notification_kind` just
+            # recomputed it, to retry on a later tick.
+            log.info("watchdog.slack_skipped_pending_retry_deferred")
+            state = replace(state, backup_notification_pending=notification_kind)
         else:
+            # Fresh notification, no webhook EVER configured this tick or
+            # before: log-only mode, not a delivery failure — never
+            # retried, mirrors the health/BAFU checks' behaviour.
             log.info("watchdog.slack_skipped_log_only")
-        state = replace(state, last_backup_alert_iso=now.isoformat())
+            state = replace(state, backup_notification_pending=None)
+
+    if is_stale:
+        state = replace(
+            state,
+            consecutive_backup_stale_failures=state.consecutive_backup_stale_failures
+            + 1,
+        )
+    else:
+        state = replace(state, consecutive_backup_stale_failures=0)
 
     # --- BAFU forecast collector freshness (Flow 4 staleness hook) ---
     bafu_url = config.bafu_health_detail_url or _bafu_url_from_health(config.health_url)

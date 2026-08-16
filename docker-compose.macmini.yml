@@ -6,8 +6,9 @@
 #
 # What this overlay does:
 #   * Binds /Volumes/sapphire-backup/pg_dumps (USB SSD) into the
-#     prefect-worker's /data/backups. Shadows the named `backups`
-#     volume so nightly pg_dumps land on the removable disk.
+#     prefect-worker-backup's /data/backups (Plan 162 D2: the dedicated
+#     backup component, not the shared prefect-worker). Shadows the named
+#     `backups` volume so nightly pg_dumps land on the removable disk.
 #   * Binds /Users/sapphire/camels-ch (pre-staged host directory) into
 #     /data/raw read-only. Required by onboard-stations after Plan 060
 #     removed the sapphire_data:/data/raw mount from the base compose.
@@ -24,7 +25,6 @@ services:
       SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
       SAPPHIRE_REQUIRE_NWP: "1"
     volumes:
-      - /Volumes/sapphire-backup/pg_dumps:/data/backups:rw
       - /Users/sapphire/camels-ch:/data/raw:ro
       - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
 
@@ -33,6 +33,16 @@ services:
       SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
     volumes:
       - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
+
+  # Plan 162 D2/T6-precursor: the dedicated backup component. Binds the USB
+  # SSD in place of the named `backups` volume so nightly dumps land off the
+  # boot disk — mirrors the base overlay's prior prefect-worker bind, moved
+  # here because the backup flow itself moved to this dedicated worker.
+  # Verifying this is actually a MOUNTED volume (not a boot-disk directory)
+  # is T6, deliberately deferred to Phase B.
+  prefect-worker-backup:
+    volumes:
+      - /Volumes/sapphire-backup/pg_dumps:/data/backups:rw
 
   api:
     ports:

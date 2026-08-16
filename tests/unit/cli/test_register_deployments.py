@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sapphire_flow.cli.register_deployments import (
+    BACKUP_POOL,
     WORK_POOL,
     DeploymentSpec,
     _build_specs,
@@ -79,10 +80,17 @@ class TestBuildSpecs:
 
         assert by_name["ingest-observations"].work_pool_name == "ingest"
         for name, spec in by_name.items():
-            if name == "ingest-observations":
+            if name in ("ingest-observations", "backup-database"):
                 continue
             assert spec.work_pool_name == "default"
             assert spec.work_pool_name == WORK_POOL
+
+    def test_backup_database_routes_to_the_dedicated_backup_pool(self) -> None:
+        """Plan 162 D2: the only worker serving this pool holds the
+        read-everything `sapphire_backup` credential."""
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        assert by_name["backup-database"].work_pool_name == "backup"
+        assert by_name["backup-database"].work_pool_name == BACKUP_POOL
 
     def test_env_var_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SCHEDULE_INGEST_OBSERVATIONS", "*/10 * * * *")
@@ -339,10 +347,10 @@ class TestRegisterAll:
 
             await register_all()
 
-        assert mock_client.create_work_pool.await_count == 2
+        assert mock_client.create_work_pool.await_count == 3
         assert {
             c.args[0].name for c in mock_client.create_work_pool.await_args_list
-        } == {"default", "ingest"}
+        } == {"default", "ingest", "backup"}
         assert {
             c.args[0].deployment_name for c in mock_register.await_args_list
         } == DEPLOYMENT_NAMES
@@ -376,13 +384,13 @@ class TestRegisterAll:
             mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
             # Should NOT raise — the per-iteration guard catches the raising call
-            # ("default" pre-exists) while "ingest" is created.
+            # ("default" pre-exists) while "ingest" and "backup" are created.
             await register_all()
 
-        # Both pools were attempted despite one raising.
+        # All three pools were attempted despite one raising.
         assert {
             c.args[0].name for c in mock_client.create_work_pool.await_args_list
-        } == {"default", "ingest"}
+        } == {"default", "ingest", "backup"}
         assert {
             c.args[0].deployment_name for c in mock_register.await_args_list
         } == DEPLOYMENT_NAMES
@@ -394,6 +402,7 @@ class TestRegisterAll:
         mock_client = AsyncMock()
         mock_client.create_work_pool = AsyncMock(
             side_effect=[
+                ObjectAlreadyExists("pool exists"),
                 ObjectAlreadyExists("pool exists"),
                 ObjectAlreadyExists("pool exists"),
             ]
@@ -415,8 +424,9 @@ class TestRegisterAll:
             )
             mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            # Both pools already exist — both raises are caught, all specs register.
+            # All three pools already exist — every raise is caught, all specs
+            # register.
             await register_all()
 
-        assert mock_client.create_work_pool.await_count == 2
+        assert mock_client.create_work_pool.await_count == 3
         assert mock_register.await_count == len(DEPLOYMENT_NAMES)
