@@ -282,6 +282,85 @@ class TestPublishBundle:
         assert _run_all(data_root, expected_stations=frozenset({Station("A")})) == 4
         assert not current_pointer_path(data_root).exists()
 
+    def test_manifest_carries_the_full_required_provenance(
+        self, tmp_path: Path
+    ) -> None:
+        """D9/D11 (MAJOR, 2026-08-16) — the manifest omitted required
+        provenance: only four `OrographySpec` fields were serialised, the
+        source record's paths/sha256s/sizes were collapsed to `n_files`, the
+        diagnostic's terminal hour / sample size / timestamp were dropped,
+        and D11's per-station accounting was absent entirely."""
+        import json
+
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+
+        data_root = _build_data_root(tmp_path)
+        assert _run_all(data_root) == 0
+        current = current_pointer_path(data_root).read_text().strip()
+        manifest = json.loads(
+            (points_root(data_root) / current / "extraction_manifest.json").read_text()
+        )
+
+        # 1. EVERY OrographySpec field, not four of them.
+        spec = manifest["orography_spec"]
+        for field_name in (
+            "source",
+            "product_id",
+            "product_version",
+            "download_url",
+            "licence_name",
+            "licence_version",
+            "licence_url",
+            "source_crs",
+            "vertical_reference",
+            "units",
+            "no_data_sentinel",
+            "aggregation_rule_id",
+            "conversion_rule",
+            "probe_date",
+            "rejected_candidates",
+        ):
+            assert field_name in spec, field_name
+        assert spec["licence_url"] == OBSERVED_OROGRAPHY_SPEC.licence_url
+
+        # 2. The source record's per-file path/sha256/size, not `n_files`.
+        source_record = manifest["orography_source_record"]
+        assert source_record["downloaded_files"]
+        for entry in source_record["downloaded_files"]:
+            assert set(entry) >= {"path", "sha256", "size_bytes"}
+            assert entry["size_bytes"] > 0
+        assert source_record["raster_sha256"]
+        assert source_record["orography_route_identity"]
+
+        # 3. The cited diagnostic, whole.
+        diagnostic = manifest["accumulation_diagnostic"]
+        assert set(diagnostic) >= {
+            "window_id",
+            "source_sha256",
+            "reset_hour",
+            "terminal_hour",
+            "monotone_within_day",
+            "sample_size_days",
+            "recorded_at",
+        }
+
+        # 4. D11's per-station accounting, per operator.
+        accounting = manifest["station_accounting"]
+        assert set(accounting) == {"NEAREST", "BILINEAR"}
+        for per_operator in accounting.values():
+            assert set(per_operator) == {"A", "B"}
+            for entry in per_operator.values():
+                assert set(entry) >= {
+                    "n_hours",
+                    "n_finite",
+                    "n_nan",
+                    "first_nan_valid_time",
+                    "last_nan_valid_time",
+                }
+                assert entry["n_hours"] == entry["n_finite"] + entry["n_nan"]
+                assert entry["n_nan"] == 0
+                assert entry["first_nan_valid_time"] is None
+
     def test_station_outside_grid_exits_4(self, tmp_path: Path) -> None:
         data_root = _build_data_root(tmp_path)
         coords_path = data_root / "station_coordinates.csv"

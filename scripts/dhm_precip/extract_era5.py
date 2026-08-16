@@ -85,6 +85,7 @@ from scripts.dhm_precip.era5_extract import (  # noqa: E402
     extract_bilinear_series,
     extract_nearest_series,
     load_expected_station_coordinates,
+    station_accounting_entry,
 )
 from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
     ExtractionManifest,
@@ -110,7 +111,10 @@ from scripts.dhm_precip.era5_orography import (  # noqa: E402
     read_orography_source_record,
     verify_orography_materialisation,
 )
-from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC  # noqa: E402
+from scripts.dhm_precip.era5_orography_spec import (  # noqa: E402
+    OBSERVED_OROGRAPHY_SPEC,
+    OrographySpec,
+)
 from scripts.dhm_precip.era5_request import (  # noqa: E402
     DEFAULT_REQUEST_SPEC,
     GRID_SPACING_DEG,
@@ -425,22 +429,34 @@ def run(
         coordinate_table_sha256=coordinate_table_sha256,
         source_sha256s=tuple(source_sha256s),
         payload_sha256s=payload_sha256s,
-        orography_spec={
-            "product_id": OBSERVED_OROGRAPHY_SPEC.product_id,
-            "product_version": OBSERVED_OROGRAPHY_SPEC.product_version,
-            "source": str(OBSERVED_OROGRAPHY_SPEC.source),
-            "vertical_reference": str(OBSERVED_OROGRAPHY_SPEC.vertical_reference),
-        },
+        orography_spec=_orography_spec_payload(OBSERVED_OROGRAPHY_SPEC),
         orography_source_record={
+            "orography_route_identity": source_record.orography_route_identity,
             "orography_identity": oro_identity,
             "fetched_at": source_record.fetched_at.isoformat(),
-            "n_files": len(source_record.downloaded_files),
+            "downloaded_files": [asdict(f) for f in source_record.downloaded_files],
+            "raster_path": source_record.raster_path,
+            "raster_sha256": source_record.raster_sha256,
+            "raster_schema_version": source_record.raster_schema_version,
         },
         accumulation_diagnostic={
             "window_id": diagnostic.window_id,
             "source_sha256": diagnostic.source_sha256,
             "reset_hour": diagnostic.reset_hour,
+            "terminal_hour": diagnostic.terminal_hour,
             "monotone_within_day": diagnostic.monotone_within_day,
+            "sample_size_days": diagnostic.sample_size_days,
+            "recorded_at": diagnostic.recorded_at.isoformat(),
+        },
+        station_accounting={
+            str(ExtractionOperator.NEAREST): {
+                str(station): station_accounting_entry(series)
+                for station, series in sorted(merged_nearest.items())
+            },
+            str(ExtractionOperator.BILINEAR): {
+                str(station): station_accounting_entry(series)
+                for station, series in sorted(merged_bilinear.items())
+            },
         },
         generated_at=resolved_clock(),
     )
@@ -469,6 +485,22 @@ def run(
 
     log.info("era5_extract.cli.published", extraction_identity=identity)
     return 0
+
+
+def _orography_spec_payload(spec: OrographySpec) -> dict[str, object]:
+    """D9 — EVERY `OrographySpec` field, JSON-safe. Serialising only four of
+    them (product id/version, source, vertical reference) dropped the
+    licence, the URL, the CRS, the units, the no-data sentinel and both
+    frozen rules — i.e. most of what makes the route reproducible."""
+    payload = asdict(spec)
+    payload["source"] = str(spec.source)
+    payload["vertical_reference"] = str(spec.vertical_reference)
+    payload["conversion_rule"] = str(spec.conversion_rule)
+    payload["probe_date"] = spec.probe_date.isoformat()
+    payload["rejected_candidates"] = [
+        asdict(candidate) for candidate in spec.rejected_candidates
+    ]
+    return payload
 
 
 def _concat_series(parts: list[ExtractedSeries]) -> ExtractedSeries:

@@ -20,7 +20,7 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime  # noqa: TC003 - pydantic must resolve this at runtime
 from typing import TYPE_CHECKING
 
@@ -148,8 +148,23 @@ class ExtractionManifest:
     payload_sha256s: dict[str, str]
     """Filename (relative to this identity directory) -> sha256."""
     orography_spec: dict[str, object]
+    """EVERY `OrographySpec` field (D3a), not a four-field excerpt — the
+    route is provenance, and a partially serialised route cannot be
+    reconstructed."""
     orography_source_record: dict[str, object]
+    """The materialised record: every downloaded file's path, sha256 and
+    byte size, the derived raster's path/sha256, and both identities."""
     accumulation_diagnostic: dict[str, object]
+    """The whole cited record (D5.2), including `terminal_hour`,
+    `sample_size_days` and the injected-clock `recorded_at`."""
+    station_accounting: dict[str, dict[str, dict[str, object]]] = field(
+        default_factory=dict[str, dict[str, dict[str, object]]]
+    )
+    """D11 — operator id -> station -> {n_hours, n_finite, n_nan,
+    first_nan_valid_time, last_nan_valid_time}. "The counts are emitted in
+    the manifest either way" (D11.2), so they are reported for BOTH
+    operators, including bilinear's counted missing-neighbour NaNs
+    (D11.3)."""
     generated_at: datetime
 
 
@@ -163,6 +178,7 @@ class _ExtractionManifestModel(BaseModel):
     orography_spec: dict[str, object]
     orography_source_record: dict[str, object]
     accumulation_diagnostic: dict[str, object]
+    station_accounting: dict[str, dict[str, dict[str, object]]] = {}
     generated_at: datetime
 
 
@@ -177,6 +193,7 @@ def write_extraction_manifest(manifest: ExtractionManifest, path: Path) -> None:
         orography_spec=manifest.orography_spec,
         orography_source_record=manifest.orography_source_record,
         accumulation_diagnostic=manifest.accumulation_diagnostic,
+        station_accounting=manifest.station_accounting,
         generated_at=manifest.generated_at,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,6 +231,7 @@ def read_extraction_manifest(path: Path) -> ExtractionManifest | None:
         orography_spec=model.orography_spec,
         orography_source_record=model.orography_source_record,
         accumulation_diagnostic=model.accumulation_diagnostic,
+        station_accounting=model.station_accounting,
         generated_at=model.generated_at,
     )
 

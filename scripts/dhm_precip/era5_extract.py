@@ -204,6 +204,24 @@ class ExtractedSeries:
     n_nan: int
 
 
+def station_accounting_entry(series: ExtractedSeries) -> dict[str, object]:
+    """D11.2/D11.3 — the per-station finite accounting the manifest must
+    carry "either way", including the first and last NaN stamp so a hole is
+    locatable rather than merely counted."""
+    nan_positions = np.flatnonzero(~np.isfinite(series.values))
+    return {
+        "n_hours": int(series.values.size),
+        "n_finite": int(series.n_finite),
+        "n_nan": int(series.n_nan),
+        "first_nan_valid_time": (
+            str(series.valid_time[nan_positions[0]]) if nan_positions.size else None
+        ),
+        "last_nan_valid_time": (
+            str(series.valid_time[nan_positions[-1]]) if nan_positions.size else None
+        ),
+    }
+
+
 def assert_station_within_grid(
     coord: StationCoordinate, *, lat: np.ndarray, lon: np.ndarray
 ) -> None:
