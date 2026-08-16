@@ -68,3 +68,48 @@ class Era5SchemaValidationError(Era5TransformFailedError):
 
 class Era5StorageError(Era5AcquisitionError):
     """Storage or manifest write/read failed. CLI exit code 5."""
+
+
+# --- Plan 174 (M-A5) D9 — point-extraction error hierarchy ---
+
+
+class Era5ExtractionError(Era5AcquisitionError):
+    """Base for every M-A5 point-extraction error."""
+
+
+class Era5OrographyError(Era5ExtractionError):
+    """D3a/D3b — orography acquisition, conversion or aggregation failed
+    (a magnitude-check failure, a hash mismatch against an existing
+    `OrographySourceRecord`, a no-data/grid-vector post-condition). CLI
+    exit code 3."""
+
+
+class StationOutsideGridError(Era5ExtractionError):
+    """D11.1 — a station's coordinate lies outside the product's grid range
+    (plus the D2 half-spacing registration allowance). The extraction must
+    never let `.sel(method="nearest")` silently relocate it to the
+    boundary. CLI exit code 4."""
+
+
+class NonFiniteExtractionError(Era5ExtractionError):
+    """D11.2 — the nearest-operator series contains a NaN at some station.
+    ERA5-Land over this land box should be complete; a NaN means something
+    upstream is wrong. CLI exit code 4."""
+
+
+class StationSetMismatchError(Era5ExtractionError):
+    """D8 — the extracted station set does not equal the expected
+    (workbook-derived) inventory exactly, or a table carries a duplicate or
+    missing station row. CLI exit code 4."""
+
+
+class SourceChecksumMismatchError(Era5ExtractionError):
+    """D7/D9 — a consumed source product's sha256 disagrees with the
+    acquisition manifest, checked before the file's payload is decoded.
+    CLI exit code 4."""
+
+
+class ExtractionPostConditionError(Era5ExtractionError):
+    """D9/D11 — any other extraction post-condition failure: axis validity,
+    registration, required attrs, bundle-publication invariants. CLI exit
+    code 4."""

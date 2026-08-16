@@ -361,8 +361,18 @@ gate tasks 2b and 4b.
   What is honestly reusable is the **transform stage** — pure functions over an `xarray.Dataset`, with
   no provider knowledge. The **client/auth/request layer (1a, 2a) is CDS-specific by construction.**
   The only structure this plan builds for testability is a single injected CDS-call seam, which the
-  fake-client tests need regardless. M-A5 decides, once IMERG's real API is known, whether to
-  refactor this module or write a sibling — a comparison that cannot be made honestly today.
+  fake-client tests need regardless.
+
+  **⚠️ Superseded (Plan 174, 2026-08-16).** The line above — "M-A5 decides, once IMERG's real API is
+  known, whether to refactor this module or write a sibling" — routed IMERG's disposition to M-A5.
+  Plan 174 (M-A5) resolved this by **splitting IMERG out entirely**: it is not a refactor-or-sibling
+  question for M-A5 to decide, because IMERG's acquisition shape differs from ERA5-Land's in kind
+  (half-hourly native resolution requiring aggregation to hourly, and a rate mm/hr convention rather
+  than an accumulation — none of this module's deaccumulation logic transfers). IMERG acquisition +
+  extraction is its own milestone, **M-A5b**
+  (`docs/design/dhm-precipitation-milestones.md`), with its own not-yet-written plan. This module
+  (`scripts/dhm_precip/era5_*.py`) stays ERA5-Land-only; M-A5b decides for itself, when written,
+  whether any of this transform-stage code is reusable.
 
 - **D13 — Dev-only dependency.** `uv add --dev cdsapi` (or whatever 1a observes to be current).
   Loose `scripts/` tooling is dev-only and out of the image (`docs/plans/122-package-operational-scripts.md:59`),

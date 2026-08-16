@@ -80,8 +80,15 @@ from scripts.dhm_precip.era5_errors import (  # noqa: E402
 )
 from scripts.dhm_precip.era5_manifest import (  # noqa: E402
     DEFAULT_DATA_ROOT,
+    AccumulationDiagnosticRecord,
+    Era5ProvenanceManifest,
+    checksum_file,
     load_operator_provenance,
+    manifest_path_for,
     raw_artifact_path,
+    read_manifest,
+    with_accumulation_diagnostic,
+    write_manifest_atomic,
 )
 from scripts.dhm_precip.era5_request import (  # noqa: E402
     ALL_ACQUISITION_WINDOWS,
@@ -242,6 +249,7 @@ def run(
             log.info("era5.cli.transformed", year=record.product_year)
 
     if args.stage == "diagnose":
+        manifest_path = manifest_path_for(data_root)
         for window in windows:
             path = raw_artifact_path(window.window_id, data_root)
             if not path.exists():
@@ -271,6 +279,33 @@ def run(
                 terminal_hour=diagnostic.terminal_hour,
                 monotone_within_day=diagnostic.monotone_within_day,
                 sample_size_days=diagnostic.sample_size_days,
+            )
+            # Plan 174 (M-A5) task 1c / D5.2 — persist a PASSING diagnostic
+            # into the acquisition manifest, atomically, with the injected
+            # clock. Only reached once the raise above has NOT fired, so a
+            # failing diagnostic writes no record (as today).
+            # `--stage diagnose` is runnable against a raw artifact placed on
+            # disk without having gone through `--stage acquire` in the same
+            # data root (this CLI's own tests do exactly that) — so a missing
+            # manifest is not an error here, mirroring `acquire_window`'s own
+            # "no manifest yet" bootstrap
+            # (`scripts/dhm_precip/era5_acquire.py:393-399`).
+            manifest = read_manifest(manifest_path) or Era5ProvenanceManifest(
+                dataset=DEFAULT_REQUEST_SPEC.dataset,
+                client_package_version=_cdsapi_version(),
+                operator_provenance=provenance,
+            )
+            record = AccumulationDiagnosticRecord(
+                window_id=window.window_id,
+                source_sha256=checksum_file(path),
+                reset_hour=diagnostic.reset_hour,
+                terminal_hour=diagnostic.terminal_hour,
+                monotone_within_day=diagnostic.monotone_within_day,
+                sample_size_days=diagnostic.sample_size_days,
+                recorded_at=resolved_clock(),
+            )
+            write_manifest_atomic(
+                with_accumulation_diagnostic(manifest, record), manifest_path
             )
 
     return 0

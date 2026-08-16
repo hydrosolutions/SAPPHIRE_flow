@@ -10,6 +10,7 @@ import pytest
 
 from scripts.dhm_precip.era5_errors import Era5StorageError
 from scripts.dhm_precip.era5_manifest import (
+    AccumulationDiagnosticRecord,
     Era5ProvenanceManifest,
     OperatorProvenance,
     PackingAccounting,
@@ -17,12 +18,14 @@ from scripts.dhm_precip.era5_manifest import (
     TransformYearRecord,
     checksum_file,
     load_operator_provenance,
+    passing_accumulation_diagnostic,
     publish_atomic,
     raw_request_identity,
     raw_window_is_current,
     read_manifest,
     transform_identity,
     transform_year_is_current,
+    with_accumulation_diagnostic,
     with_raw_window,
     with_transform_year,
     write_manifest_atomic,
@@ -227,6 +230,79 @@ class TestAtomicManifestWriter:
         read_back = read_manifest(path)
         assert read_back == original
         assert read_back.raw_windows == {}
+
+
+class TestAccumulationDiagnosticRecord:
+    """Plan 174 (M-A5) task 1c."""
+
+    def _manifest(self) -> Era5ProvenanceManifest:
+        return Era5ProvenanceManifest(
+            dataset="reanalysis-era5-land",
+            client_package_version="0.7.7",
+            operator_provenance=_PROVENANCE,
+        )
+
+    def _record(self, **overrides: object) -> AccumulationDiagnosticRecord:
+        base: dict[str, object] = {
+            "window_id": "2021-10",
+            "source_sha256": "a" * 64,
+            "reset_hour": 1,
+            "terminal_hour": 0,
+            "monotone_within_day": True,
+            "sample_size_days": 31,
+            "recorded_at": datetime(2026, 8, 16, tzinfo=UTC),
+        }
+        base.update(overrides)
+        return AccumulationDiagnosticRecord(**base)  # type: ignore[arg-type]
+
+    def test_round_trips_through_the_manifest(self, tmp_path: Path) -> None:
+        manifest = with_accumulation_diagnostic(self._manifest(), self._record())
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(manifest, path)
+        read_back = read_manifest(path)
+        assert read_back == manifest
+        assert read_back.accumulation_diagnostics["2021-10"] == self._record()
+
+    def test_manifest_written_before_this_change_still_loads(
+        self, tmp_path: Path
+    ) -> None:
+        # A manifest JSON with NO "accumulation_diagnostics" key at all (the
+        # exact shape of a pre-1c manifest on disk) must load, defaulting to
+        # {} rather than raising.
+        import json
+
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(), path)
+        raw = json.loads(path.read_text())
+        del raw["accumulation_diagnostics"]
+        path.write_text(json.dumps(raw))
+
+        read_back = read_manifest(path)
+        assert read_back is not None
+        assert read_back.accumulation_diagnostics == {}
+        assert passing_accumulation_diagnostic(read_back, expected_reset_hour=1) is None
+
+    def test_passing_diagnostic_is_found(self) -> None:
+        manifest = with_accumulation_diagnostic(self._manifest(), self._record())
+        found = passing_accumulation_diagnostic(manifest, expected_reset_hour=1)
+        assert found is not None
+        assert found.window_id == "2021-10"
+
+    def test_non_monotone_diagnostic_is_not_passing(self) -> None:
+        manifest = with_accumulation_diagnostic(
+            self._manifest(), self._record(monotone_within_day=False)
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_wrong_reset_hour_diagnostic_is_not_passing(self) -> None:
+        manifest = with_accumulation_diagnostic(
+            self._manifest(), self._record(reset_hour=3, terminal_hour=2)
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_no_diagnostic_at_all_is_absent_not_raising(self) -> None:
+        manifest = self._manifest()
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
 
 
 class TestResumeChecks:

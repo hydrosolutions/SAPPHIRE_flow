@@ -200,6 +200,23 @@ class TransformYearRecord:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class AccumulationDiagnosticRecord:
+    """Plan 174 (M-A5) task 1c / D5.2 — `--stage diagnose`'s persisted
+    result: the empirical accumulation-convention diagnostic run against a
+    real acquired window, keyed by window id so multiple windows can each
+    carry their own record. M-A5's real-data publish path (4a) cites this
+    rather than re-establishing the semantics itself."""
+
+    window_id: str
+    source_sha256: str
+    reset_hour: int
+    terminal_hour: int
+    monotone_within_day: bool
+    sample_size_days: int
+    recorded_at: datetime
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class Era5ProvenanceManifest:
     """D11 — the whole acquisition's provenance, one file, updated
     atomically after every completed stage."""
@@ -213,6 +230,12 @@ class Era5ProvenanceManifest:
     transformed_years: dict[str, TransformYearRecord] = field(
         default_factory=dict[str, "TransformYearRecord"]
     )
+    accumulation_diagnostics: dict[str, AccumulationDiagnosticRecord] = field(
+        default_factory=dict[str, "AccumulationDiagnosticRecord"]
+    )
+    """Keyed by `window_id`. Absent on any manifest written before Plan 174
+    task 1c — `read_manifest` must load such a manifest with this defaulting
+    to `{}`, never raising."""
 
 
 def with_raw_window(
@@ -229,6 +252,29 @@ def with_transform_year(
     updated = dict(manifest.transformed_years)
     updated[str(record.product_year)] = record
     return replace(manifest, transformed_years=updated)
+
+
+def with_accumulation_diagnostic(
+    manifest: Era5ProvenanceManifest, record: AccumulationDiagnosticRecord
+) -> Era5ProvenanceManifest:
+    updated = dict(manifest.accumulation_diagnostics)
+    updated[record.window_id] = record
+    return replace(manifest, accumulation_diagnostics=updated)
+
+
+def passing_accumulation_diagnostic(
+    manifest: Era5ProvenanceManifest, *, expected_reset_hour: int
+) -> AccumulationDiagnosticRecord | None:
+    """1c — "does this manifest carry a passing real-data diagnostic?" A
+    passing record confirms `expected_reset_hour` (D6's assumed
+    `DAY_START_HOUR`, passed in by the caller to avoid this module
+    importing `era5_deaccumulate`, which already imports this one) and
+    reports no monotonicity violation. Any real window qualifies — M-A5
+    only needs one."""
+    for record in manifest.accumulation_diagnostics.values():
+        if record.reset_hour == expected_reset_hour and record.monotone_within_day:
+            return record
+    return None
 
 
 def raw_window_is_current(
@@ -306,12 +352,23 @@ class _TransformYearRecordModel(BaseModel):
     transformed_at: datetime
 
 
+class _AccumulationDiagnosticRecordModel(BaseModel):
+    window_id: str
+    source_sha256: str
+    reset_hour: int
+    terminal_hour: int
+    monotone_within_day: bool
+    sample_size_days: int
+    recorded_at: datetime
+
+
 class _Era5ProvenanceManifestModel(BaseModel):
     dataset: str
     client_package_version: str
     operator_provenance: _OperatorProvenanceModel
     raw_windows: dict[str, _RawWindowRecordModel] = {}
     transformed_years: dict[str, _TransformYearRecordModel] = {}
+    accumulation_diagnostics: dict[str, _AccumulationDiagnosticRecordModel] = {}
 
 
 def _to_model(manifest: Era5ProvenanceManifest) -> _Era5ProvenanceManifestModel:
@@ -328,6 +385,10 @@ def _to_model(manifest: Era5ProvenanceManifest) -> _Era5ProvenanceManifestModel:
         transformed_years={
             key: _TransformYearRecordModel(**asdict(record))
             for key, record in manifest.transformed_years.items()
+        },
+        accumulation_diagnostics={
+            key: _AccumulationDiagnosticRecordModel(**asdict(record))
+            for key, record in manifest.accumulation_diagnostics.items()
         },
     )
 
@@ -356,6 +417,10 @@ def _to_domain(model: _Era5ProvenanceManifestModel) -> Era5ProvenanceManifest:
                 transformed_at=record.transformed_at,
             )
             for key, record in model.transformed_years.items()
+        },
+        accumulation_diagnostics={
+            key: AccumulationDiagnosticRecord(**record.model_dump())
+            for key, record in model.accumulation_diagnostics.items()
         },
     )
 

@@ -5,12 +5,19 @@ never real DHM values (constraint 1). Depends on the dev-only `xlsxwriter`
 group; imported by tests only, never by `run.py` or `evaluate.py`.
 """
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownArgumentType=false
+# Precedent: src/sapphire_flow/adapters/meteoswiss_nwp.py:1 — xarray ships
+# partial type stubs; the same three rules are relaxed repo-wide for every
+# adapter that touches it (Plan 174 M-A5's ERA5-Land fixture builder here).
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 import polars as pl
+import xarray as xr
 
 from scripts.dhm_precip.loader import EXPECTED_WORKBOOK_COLUMNS, TIME_COLUMN
 
@@ -98,3 +105,118 @@ def write_synthetic_coordinates(path: Path, *, usable_columns: tuple[str, ...]) 
         }
     )
     rows.write_csv(path)
+
+
+# --- Plan 174 (M-A5) task 2a — synthetic ERA5-Land D9-schema NetCDF fixture ---
+#
+# Conforms exactly to M-A4's (Plan 171) `validate_output_schema` /
+# `validate_output_encoding` (`scripts/dhm_precip/era5_deaccumulate.py`,
+# `scripts/dhm_precip/era5_transform.py`) — extraction (M-A5) reads real M-A4
+# products, so its own fixtures must satisfy the SAME schema, over a small
+# sub-box rather than the full acquired study area (constraint 1: never real
+# coordinates or real data in a committed test).
+
+Era5FixtureDefect = Literal[
+    "nan_patch", "gap", "duplicate_stamp", "non_hourly_stride", "truncated_year"
+]
+
+_HOUR = np.timedelta64(1, "h")
+_FIXTURE_PERIOD_ENDING_CONVENTION = "hour t covers t-1 -> t (UTC)"
+
+
+def build_era5_land_product_fixture(
+    *,
+    year: int = 2021,
+    area: tuple[float, float, float, float] = (26.2, 85.0, 26.0, 85.2),
+    ramp_intercept: float = 0.5,
+    ramp_lat_coeff: float = 1.0,
+    ramp_lon_coeff: float = 0.1,
+    defect: Era5FixtureDefect | None = None,
+    defect_cell: tuple[int, int] = (1, 1),
+) -> xr.Dataset:
+    """A D9-schema-conformant `precipitation` (mm) product over `area`
+    (north, west, south, east — D2 order; a small 3x3-node sub-box at the
+    real 0.1 deg spacing, cell-centre registered, by default), one full
+    calendar `year`, filled with a KNOWN ANALYTIC linear ramp
+    `intercept + lat_coeff*i + lon_coeff*j` (time-invariant — both nearest
+    and bilinear are then hand-computable at any station). `defect` mutates
+    the clean base to the named invalid variant (2a: "each defective variant
+    fails [validation] for the expected reason")."""
+    from scripts.dhm_precip.era5_deaccumulate import (
+        ACCUMULATION_RULE_ID,
+        OUTPUT_SCHEMA_VERSION,
+    )
+    from scripts.dhm_precip.era5_request import expected_grid_shape
+    from scripts.dhm_precip.era5_transform import TRANSFORM_VERSION
+
+    north, west, south, east = area
+    lat_count, lon_count = expected_grid_shape(area)
+    lat = np.round(np.linspace(south, north, lat_count), 10)
+    lon = np.round(np.linspace(west, east, lon_count), 10)
+
+    start = np.datetime64(f"{year:04d}-01-01T00:00:00")
+    end = np.datetime64(f"{year:04d}-12-31T23:00:00")
+    n_hours = int((end - start) / _HOUR) + 1
+    valid_time = start + np.arange(n_hours) * _HOUR
+
+    ramp = (
+        ramp_intercept
+        + ramp_lat_coeff * np.arange(lat_count)[:, None]
+        + (ramp_lon_coeff * np.arange(lon_count)[None, :])
+    )
+    values = (
+        np.broadcast_to(ramp, (n_hours, lat_count, lon_count)).astype(np.float32).copy()
+    )
+
+    if defect == "nan_patch":
+        i, j = defect_cell
+        values[:, i, j] = np.nan
+
+    if defect == "duplicate_stamp":
+        valid_time = valid_time.copy()
+        valid_time[1] = valid_time[0]
+    elif defect == "non_hourly_stride":
+        valid_time = valid_time.copy()
+        valid_time[len(valid_time) // 2] += np.timedelta64(30, "m")
+    elif defect == "gap":
+        keep = np.ones(n_hours, dtype=bool)
+        keep[len(valid_time) // 2] = False
+        valid_time = valid_time[keep]
+        values = values[keep]
+    elif defect == "truncated_year":
+        valid_time = valid_time[:-1]
+        values = values[:-1]
+
+    ds = xr.Dataset(
+        {"precipitation": (["valid_time", "latitude", "longitude"], values)},
+        coords={"valid_time": valid_time, "latitude": lat, "longitude": lon},
+    )
+    ds["precipitation"].attrs["units"] = "mm"
+    ds.attrs.update(
+        {
+            "period_ending_convention": _FIXTURE_PERIOD_ENDING_CONVENTION,
+            "accumulation_rule": ACCUMULATION_RULE_ID,
+            "transform_version": TRANSFORM_VERSION,
+            "output_schema_version": OUTPUT_SCHEMA_VERSION,
+            "source_dataset": "reanalysis-era5-land",
+        }
+    )
+    return ds
+
+
+def write_era5_land_product_fixture(ds: xr.Dataset, path: Path) -> None:
+    """Writes `ds` with `valid_time` pinned to the SAME CF epoch encoding
+    M-A4's real transform writes (`hours since 1970-01-01`, `int64` —
+    `scripts/dhm_precip/era5_transform.py:_TIME_ENCODING_UNITS`), so a
+    reopened extraction-side epoch/dtype check (D5.0) passes exactly as it
+    would for a real product. Compression/chunking are NOT pinned here —
+    extraction (M-A5) never re-asserts M-A4's own storage-encoding contract
+    (`validate_output_encoding`), only the UTC-epoch semantics it reads."""
+    encoding = {
+        "valid_time": {
+            "units": "hours since 1970-01-01 00:00:00",
+            "dtype": "int64",
+        }
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ds.to_netcdf(path, engine="h5netcdf", encoding=encoding)

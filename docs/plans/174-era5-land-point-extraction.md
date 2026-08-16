@@ -83,12 +83,13 @@ M-A5. A scope correction that lives only in this plan is a scope correction nobo
 
 ## Problem
 
-M-A4 built the acquisition and left a per-year gridded product at
+M-A4 built the acquisition and transform pipeline that PRODUCES a per-year gridded product at
 `data/dhm_precip/era5_land/hourly_mm/era5_land_tp_mm_{year}.nc`
 (`scripts/dhm_precip/era5_manifest.py:48`) — hourly, mm, period-ending UTC, on a 0.1° grid over
-26–31 N / 80–89 E (`scripts/dhm_precip/era5_request.py:29`). M-A6 needs those values **at the
-gauges**, not on the grid. Turning a 0.1° field into 26 point series requires choosing an operator,
-and that choice is not neutral for this dataset.
+26–31 N / 80–89 E (`scripts/dhm_precip/era5_request.py:29`). *(m-3: no such file has actually been
+produced yet — Plan 171's real-data run (Task 4b) has not run; see Constraint 1.)* M-A6 needs those
+values **at the gauges**, not on the grid. Turning a 0.1° field into 26 point series requires choosing
+an operator, and that choice is not neutral for this dataset.
 
 ## Measured facts this plan rests on
 
@@ -169,7 +170,9 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   it," which contradicted the owner's accepted DEM fallback in the same decision and left the
   fallback with no acquisition path at all.)*
   Task 1a is a probe whose **only** exit is a frozen, committed `OrographySpec` record — the same
-  discipline Plan 171 used to freeze the CDS payload (`docs/plans/171-era5-land-acquisition.md:340-355`).
+  discipline Plan 171 used to freeze the CDS payload (m-4, corrected citation:
+  `docs/plans/171-era5-land-acquisition.md:92-94`, "## Observed CDS payload — supplied by the
+  operator" — the previous citation, `:340-355`, is D11's manifest-atomicity discipline, unrelated).
   It **must** resolve to exactly one of two branches, and "stop" is not one of them:
 
   **Branch A — model orography (preferred).** ERA5-Land's static surface geopotential. If it is
@@ -366,8 +369,10 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     *A version bump alone forces regeneration*, exactly as `transform_identity` does
     (`scripts/dhm_precip/era5_manifest.py:110-115`).
   **Publication is a bundle, and per-file `os.replace` is not atomic across a bundle** (review
-  finding — M-A4 gets away with it because its unit *is* one file plus a manifest;
-  `scripts/dhm_precip/era5_transform.py:336`). Therefore:
+  finding — M-A4 gets away with it because its unit *is* one file plus a manifest; the actual
+  `os.replace`-via-`publish_atomic` call is `scripts/dhm_precip/era5_transform.py:366`, m-4 corrected
+  citation — the previous citation, `:336`, is the `to_netcdf` write call, not the publish step).
+  Therefore:
   write **all** outputs into a staging directory keyed by the extraction identity
   (`…/era5_land/points/.staging/<extraction_identity>/`), reopen-and-validate every file there, then
   publish the completed directory once, then switch the pointer. Three constraints the previous
@@ -547,8 +552,9 @@ real M-A4 product (gated on Plan 171 Task 4b); any network call not named in the
 a synthetic 0.01° source raster with a known analytic surface aggregates to **hand-computed** 0.1°
 means; a **geopotential-valued** input converts to metres at `g0` and a metres-valued input declared
 as geopotential **raises** the magnitude check; a re-fetch whose sha256 disagrees with the **existing
-`OrographySourceRecord`** raises `Era5OrographyError` before any read (a first fetch, with no prior
-record, succeeds and writes one); a target cell with 10 % no-data area is **NaN and flagged**, while
+`OrographySourceRecord`** raises `Era5OrographyError` before the payload is decoded (m-2: checksumming
+necessarily reads raw bytes — the guarantee is no *decode* of those bytes as a raster happens first; a
+first fetch, with no prior record, succeeds and writes one); a target cell with 10 % no-data area is **NaN and flagged**, while
 2 % aggregates over the remainder and sets the flag; an aggregated grid whose lat/lon vectors differ
 from the 2a fixture's in the last element by 1e-6 deg **raises**; the happy path reopens and
 revalidates.
@@ -593,7 +599,7 @@ later tests assume, not in some other way).
 coverage, **CF-encoded naive-denoting-UTC per D5.0** (epoch encoding + semantic UTC attribute, never
 a tz-aware dtype); whole-0.1° cell-centre registration asserted against the product's own coordinate
 vector; required attrs present and equal to the expected literals; per-file sha256 checked against
-the acquisition manifest before any read.
+the acquisition manifest before the payload is decoded (m-2).
 *Out of scope:* claiming these establish the physical stamp semantics (D5.2 does that, via 1c).
 *Target files:* `scripts/dhm_precip/era5_extract.py`.
 *Verification (red-first):* `uv run pytest tests/unit/scripts/test_era5_extract.py -k validate` —
@@ -774,6 +780,54 @@ choosing.
 
 The residual unknown is otherwise technical, not a decision: **how ERA5-Land's static orography is
 actually obtained** (task 1a), which is why 1a is a probe whose exit is a frozen spec.
+
+## Observed orography route — probed 2026-08-16 (task 1a, task 5a self-record)
+
+**Branch A (model orography) is reachable — no operator act needed, no owner question to answer.**
+The "new owner question" above (whether to accept a Branch-B account registration) turned out moot:
+the probe found Branch A reachable on the first try, so the question raised in "Owner decisions" was
+never reached.
+
+Probed live against the public CDS dataset pages and ECMWF's parameter database (constraint 3,
+"verify against the service, not the documentation"):
+
+- The `reanalysis-era5-land` dataset's own download-form variable list
+  (`https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=download`) includes
+  `"geopotential"` under its "Invariant" field group, alongside `total_precipitation`'s own group —
+  the SAME dataset id, SAME CDS client (`cdsapi.Client()`), SAME licence Plan 171 already accepted
+  (P0). No second account, no second licence, no second service.
+- ECMWF's parameter database (`https://codes.ecmwf.int/parameter-database/api/v1/param/129`, param
+  129, shortName `z`) documents geopotential as "the gravitational potential energy of a unit mass...
+  relative to mean sea level... The geopotential height can be calculated by dividing the geopotential
+  by the Earth's gravitational acceleration, g (=9.80665 m s-2)... often referred to as the orography."
+  Units (`unit_id` 15, `https://codes.ecmwf.int/parameter-database/api/v1/unit/15`) are `m**2 s**-2`,
+  confirming D3a's declared `Φ/g0` conversion with `g0 = 9.80665 m s⁻²` exactly.
+- The producer states the vertical reference as "relative to mean sea level" and does not name a
+  specific geoid realisation (EGM96/EGM2008) — recorded verbatim as `VerticalDatum.LOCAL_MSL` rather
+  than guessing a geoid model the producer itself does not commit to (the same honesty D3b applies to
+  the station side).
+- Because `geopotential` is an invariant field of the SAME `reanalysis-era5-land` dataset, it is
+  delivered on the identical 0.1° ERA5-Land grid already used for `total_precipitation`
+  (`scripts/dhm_precip/era5_request.py:37`) — the aggregation rule therefore degenerates to the
+  identity case of the one general area-weighted-mean aggregator 1b implements (a single source cell,
+  weight 1, per target cell). 1b's exact-grid-vector check (D3a) is the real proof of this, run once
+  the raster is actually materialised.
+
+**Branch B was not evaluated.** Branch A satisfied D3a's "no operator act" test on the first probe, so
+the ordered DEM candidate list's acceptance criteria were never applied to any candidate — the
+rejected-candidate log is empty by construction, not by omission.
+
+**Frozen record:** `scripts/dhm_precip/era5_orography_spec.py::OBSERVED_OROGRAPHY_SPEC` (the same
+content as above, as code — `product_id="reanalysis-era5-land:geopotential"`, `source =
+OrographySource.MODEL_OROGRAPHY`, `conversion_rule = OrographyConversionRule.GEOPOTENTIAL_G0`,
+`vertical_reference = VerticalDatum.LOCAL_MSL`, `rejected_candidates=()`). Neither branch has been
+downloaded: this freezes the ROUTE only. Materialisation (1b) is gated on an operator step, exactly
+like Plan 171's Task 4b — no credentials are available to this implementer.
+
+**4b (real-data run) has not yet been executed** — it is an operator step gated on Plan 171 Task 4b
+producing the six real annual `hourly_mm` products, neither of which exists at implementation time.
+This section will be updated with the real-data results (finite counts, elevation table summary,
+sensitivity envelope, checksums, cited diagnostic record) once an operator runs it.
 
 ```json
 {

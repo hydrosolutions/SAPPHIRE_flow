@@ -49,6 +49,75 @@ class AccumulationConvention(StrEnum):
     UNKNOWN = "unknown"
 
 
+class OrographySource(StrEnum):
+    """Plan 174 (M-A5) D3a — which physical quantity a station's
+    `orography_elev_m` actually is. Model orography is what the ERA5-Land
+    land-surface scheme ran on; a DEM proxy is what the terrain actually is.
+    The distinction is load-bearing (never a bool): a downstream consumer
+    must not read the elevation-mismatch number without reading which of
+    these two it is measuring against."""
+
+    MODEL_OROGRAPHY = "MODEL_OROGRAPHY"
+    DEM_PROXY = "DEM_PROXY"
+
+
+class VerticalDatum(StrEnum):
+    """Plan 174 (M-A5) D3b — the vertical reference of an elevation value.
+    `UNKNOWN` is the honest value for the station side today (DHM has not
+    stated one); the orography side carries whichever this StrEnum member
+    the producer's own documentation states, recorded verbatim (D3a)."""
+
+    EGM96 = "EGM96"
+    EGM2008 = "EGM2008"
+    WGS84_ELLIPSOID = "WGS84_ELLIPSOID"
+    LOCAL_MSL = "LOCAL_MSL"
+    UNKNOWN = "UNKNOWN"
+
+
+class ExtractionOperator(StrEnum):
+    """Plan 174 (M-A5) D1/D1a — the two point-extraction operators. `NEAREST`
+    is THE operator (D1, locked); `BILINEAR` exists only as D1a's
+    sensitivity comparand, never as an alternate primary."""
+
+    NEAREST = "NEAREST"
+    BILINEAR = "BILINEAR"
+
+
+class DatumReconciliationStatus(StrEnum):
+    """Plan 174 (M-A5) D3b/M-8 — whether a station's `elev_mismatch_m` sits
+    on a common vertical reference. `station_elevation_datum` is `UNKNOWN`
+    today (DHM has not stated one), so this is `UNRECONCILED` for every row
+    until M-D2 (or DHM) states a datum AND it agrees with the orography
+    side's — never a bool, per CLAUDE.md, and never silently assumed."""
+
+    RECONCILED = "RECONCILED"
+    UNRECONCILED = "UNRECONCILED"
+
+
+class SensitivityScope(StrEnum):
+    """Plan 174 (M-A5) D9/D1a — `operator_sensitivity.csv`'s `scope` column."""
+
+    STATION = "STATION"
+    ACROSS_STATION = "ACROSS_STATION"
+
+
+class SensitivityStatistic(StrEnum):
+    """Plan 174 (M-A5) D9/D1a — `operator_sensitivity.csv`'s `statistic`
+    column."""
+
+    QUANTILE = "QUANTILE"
+    WET_MEAN_INTENSITY = "WET_MEAN_INTENSITY"
+    WET_FREQUENCY = "WET_FREQUENCY"
+
+
+class SensitivityDeltaUnit(StrEnum):
+    """Plan 174 (M-A5) D9 — `operator_sensitivity.csv`'s `delta_unit` column
+    (wet frequency is a FRACTION, not mm/h — a review finding, M-9/D9)."""
+
+    MM_PER_H = "MM_PER_H"
+    FRACTION = "FRACTION"
+
+
 class Grain(StrEnum):
     """D6b — the three named grains. Every expectation declares its grain."""
 
