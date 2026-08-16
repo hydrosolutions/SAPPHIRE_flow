@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-16
 plan: 163
 title: Dead-man's switch — so a dead watchdog stops looking like a healthy system
@@ -12,7 +12,8 @@ supersedes: []
 # Plan 163 — Dead-man's switch + HTTP hardening
 
 ## Status
-**DRAFT** (2026-08-16). Operational reliability (category **A**). Responds to a **live, ongoing** incident.
+**READY** (2026-08-16) — D5 closed by the owner; independently reviewed (4 blockers + 8 majors folded, including
+a heartbeat contract that was wrong in the first draft). Operational reliability (category **A**). Responds to a **live, ongoing** incident.
 
 ## Problem
 
@@ -120,14 +121,17 @@ second opinion — not as the only one.)
   is git-ignored and absent in CI and in every dev checkout.
 - **D4 — the ping must never be able to break the watchdog.** A dead-man outage taking down the process it
   monitors would be perverse. All failures are caught, logged and reported as `False`.
-- **⛔ D5 — MUST BE CLOSED BEFORE READY (not host acceptance).** *(Review blocker: the provider's period, grace,
-  channel attachment and first-ping arming behaviour are part of the safety mechanism itself — a plan that leaves
-  them open is not buildable-to-safe.)* Record the configured values in this plan, confirm the Slack **and**
-  email integrations are attached **to this check**, and document whether a never-pinged "NEW" check alerts at
-  all (this likely explains why the 2026-08-14 test DOWN alert never arrived) plus the explicit arming step.
-  **Owner input still required:** Recommend **15 min** (3× the 300 s `StartInterval`) so one slow tick
-  does not page. Also confirm the check's **Period** is 5 min — a new Healthchecks check defaults to **1 day /
-  1 h grace**, which would have delayed the test alert by a day and may be why the test DOWN alert never arrived.
+- **✅ D5 — CLOSED (owner, 2026-08-16).** Check configured **Period = 5 min, Grace = 15 min** exactly as
+  recommended (3× the 300 s `StartInterval`, so one slow tick does not page), with Slack and email integrations
+  attached. **The owner observed it working on 2026-08-15.**
+  **What this proves — and it is the half we could not otherwise test:** the test ping on 2026-08-14 (HTTP 200
+  from the mini) followed by silence produced a real DOWN notification. So *ping → check → DOWN → delivery* is
+  **verified end-to-end**, not assumed. An earlier note in this plan speculated the check might still be on
+  Healthchecks' new-check defaults (1 day / 1 h) and that this explained a missing alert; **that was wrong** —
+  the alert was simply due at 14:23 UTC, shortly after it was last looked for.
+  **The one link still unproven is the watchdog emitting the ping at all** — which is exactly what T2 builds.
+  *Residual, deploy-time only (not a blocker):* confirm the DOWN notification lands in **both** Slack **and**
+  email, since two off-box channels is the property that survives a single-vendor outage.
 
 ## Tasks
 
@@ -234,9 +238,11 @@ see the note below), `ruff format --check` + `ruff check`, pyright ratchet, `plu
    Plan 158 T5 is the durable fix.
 2. Deploy, then confirm `watchdog.deadman_ping_attempted pinged=True` in the log and a green check in the
    dashboard.
-3. **Prove the alarm, do not assume it:** stop the watchdog deliberately, confirm the DOWN alert arrives in
-   **both** Slack and email within grace, then restart and confirm recovery. The test ping on 2026-08-14 returned
-   HTTP 200 but **no DOWN alert was ever observed** — so the alerting half of this chain is still unproven.
+3. **Prove the remaining link.** The alerting half (*ping → DOWN → delivery*) is **already verified** (D5). What
+   deployment must still prove is that **the watchdog itself pings on every completed tick**: confirm
+   `watchdog.deadman_ping_attempted pinged=True` in the log and the check going green, then stop the watchdog
+   deliberately and confirm DOWN arrives within grace in **both** Slack and email, then restart and confirm
+   recovery.
 
 ## Notes
 
