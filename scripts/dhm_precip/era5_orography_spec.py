@@ -69,10 +69,17 @@ from scripts.dhm_precip.domain_types import OrographySource, VerticalDatum
 G0_M_PER_S2 = 9.80665
 
 # D3a: "the aggregation rule (frozen, identical for both branches where
-# applicable)" — area-weighted mean of source cells whose centres fall
-# inside the target 0.1 deg ERA5-Land cell. One id, mirroring
+# applicable)" — the UNWEIGHTED arithmetic mean of the source cells whose
+# centres fall inside the target 0.1 deg ERA5-Land cell. One id, mirroring
 # `era5_deaccumulate.ACCUMULATION_RULE_ID`'s naming convention.
-AGGREGATION_RULE_ID = "era5_land_orography_area_weighted_mean_v1"
+#
+# CORRECTED 2026-08-16: the id previously said "area_weighted_mean", which
+# the implementation never was. The plan's accepted resolution is to name
+# the rule for what it does, not to implement weighting — `cos(lat)` varies
+# ~0.17 % within one 0.1 deg cell, negligible against intra-cell relief of
+# hundreds of metres. The id is written into the raster's attrs and into
+# the extraction manifest, so it must not assert an unused method.
+AGGREGATION_RULE_ID = "era5_land_orography_mean_of_contained_cells_v1"
 
 OROGRAPHY_SCHEMA_VERSION = "1"
 OROGRAPHY_CODE_VERSION = "1"

@@ -3,8 +3,8 @@ orography raster per the frozen `OrographySpec` (1a).
 
 D3a: `OrographySpec` (1a) describes the ROUTE; this module describes what
 was actually MATERIALISED (`OrographySourceRecord`) and performs the
-conversion + area-weighted aggregation to the ERA5-Land 0.1 deg grid, with
-the no-data policy and the exact-grid-vector post-condition.
+conversion + `mean_of_contained_cells` aggregation to the ERA5-Land 0.1 deg
+grid, with the no-data policy and the exact-grid-vector post-condition.
 
 Per-station lookup and per-station finiteness are explicitly OUT of scope
 here (they are 3a's job, `era5_extract.py`) — this module validates only the
@@ -40,28 +40,48 @@ from scripts.dhm_precip.era5_orography_spec import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 log = structlog.get_logger(__name__)
 
 _GRID_TOLERANCE_DEG = 1e-6
 DEFAULT_NO_DATA_THRESHOLD_FRACTION = 0.05
-# D3a Branch A magnitude sanity, per the plan's own stated bands ("Nepal
-# box: metres ⇒ tens to thousands; geopotential ⇒ 10⁴-10⁵"). Residual risk
-# (recorded, not silently fixed): Nepal's measured elevation range (67-3700
-# m, "Measured facts" table) implies REAL geopotential as low as ~657
-# (67 * g0), below this band's 1e4 floor — a genuine low-elevation station
-# cell could trip this as a false positive. Best-effort defense-in-depth
-# per D3a's own framing as a "sanity check", not a guaranteed classifier;
-# flagged for the real-data operator run (4b) to watch for.
-_METRES_PLAUSIBLE_RANGE = (0.0, 9999.0)
-_GEOPOTENTIAL_PLAUSIBLE_RANGE = (10000.0, 100000.0)
+
+# D3a Branch A magnitude discrimination — CORRECTED 2026-08-16 (blocker B1).
+# The original band bounded the field MINIMUM at 1e4, but the acquired box
+# (26-31 N) contains the Terai lowlands at ~60 m, i.e. ~588 m2 s-2, so
+# `10000 <= 588` is false and Branch A raised on EVERY real field. The
+# minimum carries no signal: it is small under BOTH units. The MAXIMUM is
+# unambiguous — Everest is 8,849 m but 86,779 m2 s-2 — so that is what
+# classifies the field, and the declared `conversion_rule` must AGREE with
+# the classification.
+_GEOPOTENTIAL_MAX_THRESHOLD = 9_999.0
+
+# The only surviving lower bound: reject the PHYSICALLY IMPOSSIBLE, which is
+# what catches an unmasked no-data sentinel such as -32768.
+_MIN_PLAUSIBLE_METRES = -500.0
+_MIN_PLAUSIBLE_GEOPOTENTIAL = -5_000.0
 
 _OROGRAPHY_CODE_VERSION = "1"
 
+# M-8 / D7 — the FROZEN orography raster schema, hashed into
+# `orography_identity` so a silent change of variable name, dims, dtype or
+# mask variable forces regeneration instead of being adopted invisibly.
+OROGRAPHY_RASTER_SCHEMA: dict[str, object] = {
+    "elevation_variable": "orography_elev_m",
+    "elevation_dtype": "float32",
+    "elevation_units": "m",
+    "no_data_fraction_variable": "no_data_fraction",
+    "no_data_fraction_dtype": "float32",
+    "mask_variable": "no_data_flag",
+    "mask_dtype": "bool",
+    "dims": ["latitude", "longitude"],
+    "schema_version": OROGRAPHY_SCHEMA_VERSION,
+}
 
-def orography_identity(spec: OrographySpec) -> str:
+
+def orography_route_identity(spec: OrographySpec) -> str:
     """D7 — sha256(canonical-JSON of every `OrographySpec` field, plus the
     orography schema/code versions). A version bump alone forces
     regeneration, mirroring `era5_manifest.transform_identity`."""
@@ -91,6 +111,28 @@ def orography_identity(spec: OrographySpec) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def orography_identity(
+    *,
+    route_identity: str,
+    source_file_sha256s: Sequence[str],
+    raster_sha256: str,
+) -> str:
+    """D7 (CORRECTED 2026-08-16, blocker B2) — the composite identity
+    `extraction_identity` consumes: the route identity PLUS every
+    `OrographySourceRecord` file sha256, the derived raster's own sha256 and
+    the frozen raster schema (M-8). A route-only identity let a source file
+    whose bytes changed at the same URL keep its identity, so the stale
+    raster was silently reused."""
+    payload: dict[str, object] = {
+        "orography_route_identity": route_identity,
+        "source_file_sha256s": sorted(source_file_sha256s),
+        "raster_sha256": raster_sha256,
+        "raster_schema": OROGRAPHY_RASTER_SCHEMA,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 # --- OrographySourceRecord (1b's deliverable — what was materialised) ---
 
 
@@ -103,9 +145,30 @@ class DownloadedFileRecord:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class FetchedOrographySource:
+    """What `fetch_orography_source` can know BEFORE the raster exists: the
+    route it was fetched under and the bytes it actually got."""
+
+    orography_route_identity: str
+    downloaded_files: tuple[DownloadedFileRecord, ...]
+    fetched_at: datetime
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class OrographySourceRecord:
+    """D7 (corrected 2026-08-16) — the MATERIALISED record. Carries both
+    identities: the route-only one (computable at 1a) and the composite one
+    that additionally covers every downloaded file's sha256, the derived
+    raster's own sha256 and the frozen raster schema (computable only once
+    the bytes exist). `extraction_identity` consumes the composite."""
+
+    orography_route_identity: str
     orography_identity: str
     downloaded_files: tuple[DownloadedFileRecord, ...]
+    raster_path: str
+    """Relative to the data root."""
+    raster_sha256: str
+    raster_schema_version: str
     fetched_at: datetime
 
 
@@ -117,8 +180,11 @@ def orography_source_record_path(data_root: Path) -> Path:
     return orography_dir(data_root) / "orography_source_record.json"
 
 
-def orography_raster_path(data_root: Path, *, identity: str) -> Path:
-    return orography_dir(data_root) / f"{identity}.nc"
+def orography_raster_path(data_root: Path, *, route_identity: str) -> Path:
+    """Keyed by the ROUTE identity, not the composite one — the composite
+    identity covers the raster's own sha256 (D7), so it cannot also name the
+    file that produces it."""
+    return orography_dir(data_root) / f"{route_identity}.nc"
 
 
 class _DownloadedFileRecordModel(BaseModel):
@@ -128,17 +194,25 @@ class _DownloadedFileRecordModel(BaseModel):
 
 
 class _OrographySourceRecordModel(BaseModel):
+    orography_route_identity: str
     orography_identity: str
     downloaded_files: list[_DownloadedFileRecordModel]
+    raster_path: str
+    raster_sha256: str
+    raster_schema_version: str
     fetched_at: datetime
 
 
 def write_orography_source_record(record: OrographySourceRecord, path: Path) -> None:
     model = _OrographySourceRecordModel(
+        orography_route_identity=record.orography_route_identity,
         orography_identity=record.orography_identity,
         downloaded_files=[
             _DownloadedFileRecordModel(**asdict(f)) for f in record.downloaded_files
         ],
+        raster_path=record.raster_path,
+        raster_sha256=record.raster_sha256,
+        raster_schema_version=record.raster_schema_version,
         fetched_at=record.fetched_at,
     )
     tmp = tmp_path_for(path)
@@ -174,10 +248,14 @@ def read_orography_source_record(path: Path) -> OrographySourceRecord | None:
             f"orography source record at {path} is unreadable: {exc}"
         ) from exc
     return OrographySourceRecord(
+        orography_route_identity=model.orography_route_identity,
         orography_identity=model.orography_identity,
         downloaded_files=tuple(
             DownloadedFileRecord(**f.model_dump()) for f in model.downloaded_files
         ),
+        raster_path=model.raster_path,
+        raster_sha256=model.raster_sha256,
+        raster_schema_version=model.raster_schema_version,
         fetched_at=model.fetched_at,
     )
 
@@ -206,14 +284,14 @@ def fetch_orography_source(
     downloader: OrographyDownloader,
     data_root: Path,
     clock: Callable[[], datetime],
-) -> OrographySourceRecord:
-    """1b — fetch per the frozen spec, then write the record. A re-run
-    verifies observed hashes against the EXISTING record (an unexplained
-    change in a "static" source is a typed failure) rather than assuming a
-    prior fetch was good."""
-    identity = orography_identity(spec)
-    record_path = orography_source_record_path(data_root)
-    existing = read_orography_source_record(record_path)
+) -> FetchedOrographySource:
+    """1b — fetch per the frozen spec. A re-run verifies observed hashes
+    against the EXISTING record (an unexplained change in a "static" source
+    is a typed failure) rather than assuming a prior fetch was good. The
+    persisted `OrographySourceRecord` is written by `materialise_orography`,
+    which is the first point at which the composite identity (D7) exists."""
+    route_identity = orography_route_identity(spec)
+    existing = read_orography_source_record(orography_source_record_path(data_root))
 
     dest_dir = orography_dir(data_root) / "raw"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -234,7 +312,7 @@ def fetch_orography_source(
             )
         )
 
-    if existing is not None and existing.orography_identity == identity:
+    if existing is not None and existing.orography_route_identity == route_identity:
         existing_by_path = {f.path: f for f in existing.downloaded_files}
         for new_file in files:
             prior = existing_by_path.get(new_file.path)
@@ -246,44 +324,68 @@ def fetch_orography_source(
                     "source"
                 )
 
-    record = OrographySourceRecord(
-        orography_identity=identity,
+    log.info(
+        "era5.orography.fetched",
+        orography_route_identity=route_identity,
+        n_files=len(files),
+    )
+    return FetchedOrographySource(
+        orography_route_identity=route_identity,
         downloaded_files=tuple(files),
         fetched_at=clock(),
     )
-    write_orography_source_record(record, record_path)
-    log.info("era5.orography.fetched", orography_identity=identity, n_files=len(files))
-    return record
 
 
 # --- convert (D3a) ---
 
 
+def classify_field_units(field_max: float) -> OrographyConversionRule:
+    """D3a (CORRECTED 2026-08-16) — discriminate on the MAXIMUM. Everest is
+    8,849 m but 86,779 m2 s-2, so a max above ~1e4 can only be geopotential;
+    the field MINIMUM carries no signal at all (the Terai is ~60 m / ~588
+    m2 s-2, small under both units), which is what made the original
+    min-bound raise on every real field."""
+    if field_max > _GEOPOTENTIAL_MAX_THRESHOLD:
+        return OrographyConversionRule.GEOPOTENTIAL_G0
+    return OrographyConversionRule.IDENTITY
+
+
 def convert_field(raw_values: np.ndarray, *, spec: OrographySpec) -> np.ndarray:
-    """D3a — apply the frozen conversion rule, with the magnitude sanity
-    check performed BEFORE the conversion is trusted: a retrieved field
-    whose magnitude is inconsistent with the declared unit is a typed
+    """D3a — apply the frozen conversion rule, with the unit classification
+    checked BEFORE the conversion is trusted: a retrieved field whose
+    magnitude classifies as the other unit than the one declared is a typed
     failure, never a silent divide."""
     finite = raw_values[np.isfinite(raw_values)]
     if finite.size == 0:
         raise Era5OrographyError("source raster has no finite values to convert")
-    lo, hi = float(np.min(finite)), float(np.max(finite))
+    field_min, field_max = float(np.min(finite)), float(np.max(finite))
+
+    observed = classify_field_units(field_max)
+    if observed != spec.conversion_rule:
+        raise Era5OrographyError(
+            f"source field maximum {field_max} classifies the field as "
+            f"{observed.value!r}, but the frozen OrographySpec declares "
+            f"{spec.conversion_rule.value!r} — the declared conversion rule "
+            "must agree with the observed magnitude (D3a); refusing to "
+            "convert"
+        )
+
     if spec.conversion_rule == OrographyConversionRule.GEOPOTENTIAL_G0:
-        plo, phi = _GEOPOTENTIAL_PLAUSIBLE_RANGE
-        if not (plo <= lo and hi <= phi):
+        if field_min < _MIN_PLAUSIBLE_GEOPOTENTIAL:
             raise Era5OrographyError(
-                f"source field magnitude [{lo}, {hi}] is inconsistent with "
-                f"the declared geopotential_g0 conversion rule (expected "
-                f"roughly [{plo}, {phi}]) — refusing to silently divide by g0"
+                f"source field minimum {field_min} m2 s-2 is physically "
+                f"impossible for surface geopotential (< "
+                f"{_MIN_PLAUSIBLE_GEOPOTENTIAL}) — an unmasked no-data "
+                "sentinel is the likely cause (D3a)"
             )
         return raw_values / G0_M_PER_S2
+
     # OrographyConversionRule.IDENTITY
-    plo, phi = _METRES_PLAUSIBLE_RANGE
-    if not (plo <= lo and hi <= phi):
+    if field_min < _MIN_PLAUSIBLE_METRES:
         raise Era5OrographyError(
-            f"source field magnitude [{lo}, {hi}] is inconsistent with the "
-            f"declared identity (already-metres) conversion rule (expected "
-            f"roughly [{plo}, {phi}])"
+            f"source field minimum {field_min} m is physically impossible "
+            f"for a surface elevation (< {_MIN_PLAUSIBLE_METRES}) — an "
+            "unmasked no-data sentinel is the likely cause (D3a)"
         )
     return raw_values
 
@@ -294,8 +396,8 @@ def convert_field(raw_values: np.ndarray, *, spec: OrographySpec) -> np.ndarray:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AggregationResult:
     values: np.ndarray
-    """(n_target_lat, n_target_lon) — area-weighted mean of valid source
-    cells, or NaN per the no-data policy."""
+    """(n_target_lat, n_target_lon) — arithmetic mean of the valid source
+    cells contained by each target cell, or NaN per the no-data policy."""
     no_data_fraction: np.ndarray
     """Same shape — fraction of contributing source cells that were NaN."""
     flagged: np.ndarray
@@ -313,13 +415,20 @@ def aggregate_to_grid(
     target_spacing_deg: float,
     no_data_threshold_fraction: float = DEFAULT_NO_DATA_THRESHOLD_FRACTION,
 ) -> AggregationResult:
-    """D3a — area-weighted arithmetic mean of source cells whose centres
-    fall inside the target 0.1 deg cell (source cells are uniform area, so
-    an unweighted mean of the valid ones IS the area-weighted mean).
+    """D3a — `mean_of_contained_cells`: the UNWEIGHTED arithmetic mean of
+    the source cells whose centres fall inside the target 0.1 deg cell.
+
+    Named for what it is (corrected 2026-08-16). The rule was previously
+    called "area-weighted", which the implementation never was — and the
+    plan's accepted resolution is to correct the CLAIM rather than
+    implement weighting, because `cos(lat)` varies ~0.17 % across one 0.1
+    deg cell, negligible against hundreds of metres of intra-cell relief.
+    The manifest and the raster attrs must therefore not assert a method
+    that was not used.
 
     No-data policy: any contributing NaN source cell aggregates over the
     valid remainder and sets `flagged`; >`no_data_threshold_fraction`
-    no-data by area, or zero valid source cells, emits NaN (still flagged).
+    no-data, or zero valid source cells, emits NaN (still flagged).
     """
     n_tlat, n_tlon = target_lat.size, target_lon.size
     lat_idx = np.round((source_lat - target_lat[0]) / target_spacing_deg).astype(int)
@@ -424,10 +533,12 @@ def build_orography_dataset(
     return ds
 
 
-def write_orography_raster(ds: xr.Dataset, *, data_root: Path, identity: str) -> str:
+def write_orography_raster(
+    ds: xr.Dataset, *, data_root: Path, route_identity: str
+) -> str:
     """Atomic tmp -> reopen-and-validate -> `os.replace`; returns the sha256
     of the published file."""
-    final_path = orography_raster_path(data_root, identity=identity)
+    final_path = orography_raster_path(data_root, route_identity=route_identity)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_path_for(final_path)
     tmp_path.unlink(missing_ok=True)
@@ -458,15 +569,18 @@ def materialise_orography(
     target_spacing_deg: float,
     clock: Callable[[], datetime],
     no_data_threshold_fraction: float = DEFAULT_NO_DATA_THRESHOLD_FRACTION,
-) -> tuple[OrographySourceRecord, str]:
+) -> OrographySourceRecord:
     """1b's full driver: fetch -> convert -> aggregate -> write -> reopen ->
-    revalidate against the D9 product's own grid. `raw_reader` returns
-    (values, lat, lon) for the first downloaded file — injected so tests
-    never need a real GRIB/GeoTIFF/NetCDF parser for a specific format."""
-    source_record = fetch_orography_source(
+    revalidate against the D9 product's own grid, then write the
+    `OrographySourceRecord` carrying BOTH D7 identities. `raw_reader`
+    returns (values, lat, lon) for the first downloaded file — injected so
+    tests never need a real GRIB/GeoTIFF/NetCDF parser for a specific
+    format."""
+    fetched = fetch_orography_source(
         spec, downloader=downloader, data_root=data_root, clock=clock
     )
-    raw_path = data_root / source_record.downloaded_files[0].path
+    route_identity = fetched.orography_route_identity
+    raw_path = data_root / fetched.downloaded_files[0].path
     values, src_lat, src_lon = raw_reader(raw_path)
     converted = convert_field(values, spec=spec)
     aggregation = aggregate_to_grid(
@@ -481,12 +595,10 @@ def materialise_orography(
     ds = build_orography_dataset(
         aggregation, target_lat=expected_lat, target_lon=expected_lon, spec=spec
     )
-    sha256 = write_orography_raster(
-        ds, data_root=data_root, identity=source_record.orography_identity
+    raster_sha256 = write_orography_raster(
+        ds, data_root=data_root, route_identity=route_identity
     )
-    final_path = orography_raster_path(
-        data_root, identity=source_record.orography_identity
-    )
+    final_path = orography_raster_path(data_root, route_identity=route_identity)
     with xr.open_dataset(final_path, engine="h5netcdf") as reopened:
         reopened.load()
         assert_grid_matches(
@@ -495,4 +607,70 @@ def materialise_orography(
             expected_lat=expected_lat,
             expected_lon=expected_lon,
         )
-    return source_record, sha256
+    record = OrographySourceRecord(
+        orography_route_identity=route_identity,
+        orography_identity=orography_identity(
+            route_identity=route_identity,
+            source_file_sha256s=[f.sha256 for f in fetched.downloaded_files],
+            raster_sha256=raster_sha256,
+        ),
+        downloaded_files=fetched.downloaded_files,
+        raster_path=str(final_path.relative_to(data_root)),
+        raster_sha256=raster_sha256,
+        raster_schema_version=OROGRAPHY_SCHEMA_VERSION,
+        fetched_at=fetched.fetched_at,
+    )
+    write_orography_source_record(record, orography_source_record_path(data_root))
+    return record
+
+
+def verify_orography_materialisation(
+    record: OrographySourceRecord, *, data_root: Path
+) -> None:
+    """D7 (CORRECTED 2026-08-16, blocker B2) — "a materialised raster is
+    never trusted because a file of the right name exists". On EVERY run,
+    re-verify every source file's sha256 against the record, the raster's
+    own sha256 against the record, and that the composite identity
+    recomputes from those bytes. Any mismatch is a typed failure, never a
+    silent reuse."""
+    for downloaded in record.downloaded_files:
+        path = data_root / downloaded.path
+        if not path.exists():
+            raise Era5OrographyError(
+                f"orography source file {downloaded.path!r} recorded in the "
+                "OrographySourceRecord is missing from disk"
+            )
+        actual = checksum_file(path)
+        if actual != downloaded.sha256:
+            raise Era5OrographyError(
+                f"orography source file {downloaded.path!r} has sha256 "
+                f"{actual}, but the OrographySourceRecord says "
+                f"{downloaded.sha256} — the materialised source changed "
+                "under us (D7)"
+            )
+
+    raster_path = data_root / record.raster_path
+    if not raster_path.exists():
+        raise Era5OrographyError(
+            f"derived orography raster {record.raster_path!r} recorded in the "
+            "OrographySourceRecord is missing from disk"
+        )
+    raster_sha256 = checksum_file(raster_path)
+    if raster_sha256 != record.raster_sha256:
+        raise Era5OrographyError(
+            f"derived orography raster {record.raster_path!r} has sha256 "
+            f"{raster_sha256}, but the OrographySourceRecord says "
+            f"{record.raster_sha256} — refusing to reuse a stale raster (D7)"
+        )
+
+    recomputed = orography_identity(
+        route_identity=record.orography_route_identity,
+        source_file_sha256s=[f.sha256 for f in record.downloaded_files],
+        raster_sha256=raster_sha256,
+    )
+    if recomputed != record.orography_identity:
+        raise Era5OrographyError(
+            f"orography_identity does not recompute from the materialised "
+            f"bytes: recorded {record.orography_identity}, recomputed "
+            f"{recomputed} (D7)"
+        )

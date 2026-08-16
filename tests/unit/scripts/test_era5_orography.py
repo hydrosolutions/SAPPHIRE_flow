@@ -19,10 +19,13 @@ from scripts.dhm_precip.era5_orography import (
     convert_field,
     fetch_orography_source,
     materialise_orography,
-    orography_identity,
+    orography_raster_path,
+    orography_route_identity,
     read_orography_source_record,
+    verify_orography_materialisation,
 )
 from scripts.dhm_precip.era5_orography_spec import (
+    AGGREGATION_RULE_ID,
     G0_M_PER_S2,
     OBSERVED_OROGRAPHY_SPEC,
     OrographyConversionRule,
@@ -53,7 +56,7 @@ def _spec(**overrides: object) -> OrographySpec:
         vertical_reference=VerticalDatum.LOCAL_MSL,
         units="m**2 s**-2",
         no_data_sentinel="NaN",
-        aggregation_rule_id="era5_land_orography_area_weighted_mean_v1",
+        aggregation_rule_id=AGGREGATION_RULE_ID,
         conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0,
         probe_date=date(2026, 8, 16),
     )
@@ -115,20 +118,36 @@ class TestOrographySpec:
 # --- 1b: identity ---
 
 
-class TestOrographyIdentity:
+class TestOrographyRouteIdentity:
     def test_identity_changes_when_any_field_changes(self) -> None:
         base = _spec()
-        base_id = orography_identity(base)
+        base_id = orography_route_identity(base)
         for changed in (
             replace(base, product_id="different"),
             replace(base, licence_version="2.0"),
             replace(base, conversion_rule=OrographyConversionRule.IDENTITY),
         ):
-            assert orography_identity(changed) != base_id
+            assert orography_route_identity(changed) != base_id
 
     def test_identity_deterministic(self) -> None:
         spec = _spec()
-        assert orography_identity(spec) == orography_identity(spec)
+        assert orography_route_identity(spec) == orography_route_identity(spec)
+
+
+class TestAggregationRuleIdDoesNotClaimWeighting:
+    """Fix #8 — the aggregation is an UNWEIGHTED mean of the source cells
+    contained by each target cell. `cos(lat)` varies ~0.17 % inside one 0.1
+    deg cell, negligible against intra-cell relief, so the plan's accepted
+    resolution is to CORRECT THE CLAIM rather than implement weighting. The
+    rule id is written into the raster's attrs and into the manifest, so it
+    must not assert a method that was not used."""
+
+    def test_rule_id_says_mean_of_contained_cells(self) -> None:
+        assert AGGREGATION_RULE_ID == "era5_land_orography_mean_of_contained_cells_v1"
+        assert "weighted" not in AGGREGATION_RULE_ID
+
+    def test_observed_spec_carries_the_corrected_rule_id(self) -> None:
+        assert OBSERVED_OROGRAPHY_SPEC.aggregation_rule_id == AGGREGATION_RULE_ID
 
 
 # --- 1b: convert_field (D3a magnitude sanity check) ---
@@ -159,8 +178,48 @@ class TestConvertField:
     def test_geopotential_valued_field_declared_identity_raises(self) -> None:
         spec = _spec(conversion_rule=OrographyConversionRule.IDENTITY)
         geopotential_valued = np.array([9806.65, 19613.3, 88000.0])
-        with pytest.raises(Era5OrographyError, match="magnitude"):
+        with pytest.raises(Era5OrographyError, match="classif|magnitude"):
             convert_field(geopotential_valued, spec=spec)
+
+    def test_real_nepal_box_geopotential_including_the_terai_converts(self) -> None:
+        """Blocker B1 (corrected D3a) — the acquired box 26-31 N contains the
+        Terai lowlands at ~60 m, i.e. ~588 m2 s-2. A band that bounded the
+        field MINIMUM at 1e4 raised on EVERY real field. The discriminator is
+        the MAXIMUM: Everest's ~86,779 m2 s-2 is unambiguous under either
+        unit, the minimum carries no signal at all."""
+        spec = _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0)
+        phi = np.array([60.0, 1364.0, 3700.0, 8849.0]) * G0_M_PER_S2
+        out = convert_field(phi, spec=spec)
+        assert out == pytest.approx([60.0, 1364.0, 3700.0, 8849.0])
+
+    def test_real_nepal_box_metres_field_including_the_terai_passes_identity(
+        self,
+    ) -> None:
+        spec = _spec(conversion_rule=OrographyConversionRule.IDENTITY)
+        metres = np.array([60.0, 1364.0, 3700.0, 8849.0])
+        assert convert_field(metres, spec=spec) == pytest.approx(metres)
+
+    def test_sea_level_zero_minimum_is_not_rejected(self) -> None:
+        """A coastal/lowland cell at exactly 0 m must not trip the sanity
+        bound — only the PHYSICALLY IMPOSSIBLE is rejected (corrected D3a)."""
+        spec = _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0)
+        phi = np.array([0.0, 8849.0 * G0_M_PER_S2])
+        assert convert_field(phi, spec=spec)[0] == pytest.approx(0.0)
+
+    def test_unmasked_no_data_sentinel_in_a_geopotential_field_raises(self) -> None:
+        """The one thing the lower bound still exists for: an unmasked
+        -32768 sentinel that survived into the field."""
+        spec = _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0)
+        with pytest.raises(Era5OrographyError, match="physically impossible"):
+            convert_field(
+                np.array([-32768.0, 8849.0 * G0_M_PER_S2]),
+                spec=spec,
+            )
+
+    def test_unmasked_no_data_sentinel_in_a_metres_field_raises(self) -> None:
+        spec = _spec(conversion_rule=OrographyConversionRule.IDENTITY)
+        with pytest.raises(Era5OrographyError, match="physically impossible"):
+            convert_field(np.array([-32768.0, 3700.0]), spec=spec)
 
 
 # --- 1b: aggregate_to_grid (D3a, red-first: hand-computed) ---
@@ -356,39 +415,118 @@ class TestFetchOrographySource:
 # --- 1b: end-to-end materialise (happy path reopens + revalidates) ---
 
 
+_TARGET_LAT = np.array([26.0, 26.1, 26.2])
+_TARGET_LON = np.array([85.0, 85.1, 85.2])
+_SPACING = 0.1
+
+
+def _synthetic_source(*, elevation_offset_m: float = 2000.0):
+    n = 5
+    sub = _SPACING / n
+    src_lat = np.concatenate(
+        [t - _SPACING / 2 + sub / 2 + np.arange(n) * sub for t in _TARGET_LAT]
+    )
+    src_lon = np.concatenate(
+        [t - _SPACING / 2 + sub / 2 + np.arange(n) * sub for t in _TARGET_LON]
+    )
+    lat_grid, lon_grid = np.meshgrid(src_lat, src_lon, indexing="ij")
+    phi = G0_M_PER_S2 * (2.0 * lat_grid + 3.0 * lon_grid + elevation_offset_m)
+    return phi, src_lat, src_lon
+
+
+def _materialise(
+    tmp_path: Path,
+    *,
+    payload: bytes = b"placeholder",
+    elevation_offset_m: float = 2000.0,
+):
+    phi, src_lat, src_lon = _synthetic_source(elevation_offset_m=elevation_offset_m)
+
+    def raw_reader(_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return phi, src_lat, src_lon
+
+    return materialise_orography(
+        _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0),
+        downloader=_FakeDownloader(payloads={"raw.nc": payload}),
+        raw_reader=raw_reader,
+        data_root=tmp_path,
+        expected_lat=_TARGET_LAT,
+        expected_lon=_TARGET_LON,
+        target_spacing_deg=_SPACING,
+        clock=_CLOCK,
+    )
+
+
 class TestMaterialiseOrography:
     def test_happy_path_reopens_and_revalidates(self, tmp_path: Path) -> None:
-        target_lat = np.array([26.0, 26.1, 26.2])
-        target_lon = np.array([85.0, 85.1, 85.2])
-        spacing = 0.1
-        n = 5
-        sub = spacing / n
-        src_lat = np.concatenate(
-            [t - spacing / 2 + sub / 2 + np.arange(n) * sub for t in target_lat]
+        record = _materialise(tmp_path)
+        assert record.raster_sha256
+        assert record.orography_route_identity == orography_route_identity(
+            _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0)
         )
-        src_lon = np.concatenate(
-            [t - spacing / 2 + sub / 2 + np.arange(n) * sub for t in target_lon]
+        assert record.orography_identity != record.orography_route_identity
+
+
+class TestOrographyIdentityCoversTheMaterialisedBytes:
+    """Blocker B2 (corrected D7) — `orography_identity` must cover the ROUTE
+    *plus* every downloaded file's sha256, the derived raster's own sha256
+    and the frozen raster schema. A route-only identity means a source file
+    whose bytes change at the same URL keeps the same identity and the stale
+    raster is silently reused."""
+
+    def test_changed_source_bytes_change_the_identity(self, tmp_path: Path) -> None:
+        first = _materialise(tmp_path / "a", payload=b"source-bytes-v1")
+        second = _materialise(tmp_path / "b", payload=b"source-bytes-v2")
+        # Same route, same derived raster — only the SOURCE BYTES differ.
+        assert first.orography_route_identity == second.orography_route_identity
+        assert first.raster_sha256 == second.raster_sha256
+        assert first.orography_identity != second.orography_identity
+
+    def test_changed_derived_raster_changes_the_identity(self, tmp_path: Path) -> None:
+        first = _materialise(tmp_path / "a", elevation_offset_m=2000.0)
+        second = _materialise(tmp_path / "b", elevation_offset_m=2500.0)
+        assert first.orography_route_identity == second.orography_route_identity
+        assert first.raster_sha256 != second.raster_sha256
+        assert first.orography_identity != second.orography_identity
+
+    def test_identical_inputs_reproduce_the_identity(self, tmp_path: Path) -> None:
+        first = _materialise(tmp_path / "a")
+        second = _materialise(tmp_path / "b")
+        assert first.orography_identity == second.orography_identity
+
+
+class TestVerifyOrographyMaterialisation:
+    """D7 — "a materialised raster is never trusted because a file of the
+    right name exists". Every run re-verifies the source hashes and the
+    raster's own sha256; a mismatch is a TYPED failure, never silent reuse."""
+
+    def test_untouched_materialisation_verifies(self, tmp_path: Path) -> None:
+        record = _materialise(tmp_path)
+        verify_orography_materialisation(record, data_root=tmp_path)
+
+    def test_tampered_raster_raises(self, tmp_path: Path) -> None:
+        record = _materialise(tmp_path)
+        raster = orography_raster_path(
+            tmp_path, route_identity=record.orography_route_identity
         )
-        lat_grid, lon_grid = np.meshgrid(src_lat, src_lon, indexing="ij")
-        phi = G0_M_PER_S2 * (2.0 * lat_grid + 3.0 * lon_grid + 2000.0)
+        raster.write_bytes(raster.read_bytes() + b"tamper")
+        with pytest.raises(Era5OrographyError, match="raster"):
+            verify_orography_materialisation(record, data_root=tmp_path)
 
-        spec = _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0)
+    def test_tampered_source_file_raises(self, tmp_path: Path) -> None:
+        record = _materialise(tmp_path)
+        raw = tmp_path / record.downloaded_files[0].path
+        raw.write_bytes(b"tampered source bytes")
+        with pytest.raises(Era5OrographyError, match="source file"):
+            verify_orography_materialisation(record, data_root=tmp_path)
 
-        def raw_reader(_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            return phi, src_lat, src_lon
-
-        record, sha256 = materialise_orography(
-            spec,
-            downloader=_FakeDownloader(payloads={"raw.nc": b"placeholder"}),
-            raw_reader=raw_reader,
-            data_root=tmp_path,
-            expected_lat=target_lat,
-            expected_lon=target_lon,
-            target_spacing_deg=spacing,
-            clock=_CLOCK,
-        )
-        assert sha256
-        assert record.orography_identity == orography_identity(spec)
+    def test_record_whose_identity_does_not_recompute_raises(
+        self, tmp_path: Path
+    ) -> None:
+        record = _materialise(tmp_path)
+        forged = replace(record, orography_identity="0" * 64)
+        with pytest.raises(Era5OrographyError, match="identity"):
+            verify_orography_materialisation(forged, data_root=tmp_path)
 
 
 class TestPlanSelfRecord:
