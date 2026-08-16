@@ -31,6 +31,16 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   600, NOT a Docker/Compose mount — the watchdog is a launchd host process, same convention as
   `./secrets/slack_webhook_url`). Missing/unreadable/empty falls back to the pre-existing unauthenticated
   probe-failure path (`found=False`), never a crash.
+- **Dead-man's-switch ping URL (Plan 163)**: same HOST-secret-file convention as the two secrets
+  above — `./secrets/deadman_url` (chmod 600, git-ignored). It is a **bearer capability**: anyone
+  holding the URL can ping the external check and thereby *mask* an outage, so it is handled with the
+  same care as the Slack webhook (never logged, never committed). Missing/empty/unreadable/undecodable
+  ⇒ the watchdog emits no heartbeat and raises no error (feature-off by default in dev/CI, where the
+  file is absent). All outbound HTTP call sites in `ops/watchdog.py` (health probe, BAFU-detail probe,
+  Slack POST, dead-man POST) catch `httpx.HTTPError`, `httpx.InvalidURL` (verified NOT a subclass of
+  `HTTPError`), `OSError` (covers `ssl.SSLError`/socket errors) and `UnicodeError` (malformed IDNA), plus
+  a final defensive `except Exception` — never `BaseException` — so a malformed hand-pasted URL cannot
+  kill a watchdog tick.
 - **Every other endpoint requires a valid, non-expired, non-disabled key** — the JSON `/api/v1/...`
   API, the legacy `.json` exports, and every HTML router (`/tables/`, `/stations/`, `/forecasts/`,
   `/models/`, the dashboard). The legacy HTML/browser routers and the `.json` exports that share a

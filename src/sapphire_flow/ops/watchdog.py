@@ -38,6 +38,21 @@ BAFU LINDAS observation archive collector (`flows/collect_bafu_observations.py`,
 check_type=bafu_observation_freshness) — additive only; the forecast block
 above is untouched. See § Follow-up in Plan 136 for a deferred table-driven
 generalization of the two near-identical blocks.
+
+Plan 163 adds a dead-man's switch: after every tick that COMPLETES AND
+PERSISTS its state, the watchdog POSTs an empty heartbeat to an off-box
+URL read from ``./secrets/deadman_url`` (missing/empty/unreadable/
+undecodable -> no ping, no error). The ping is unconditional on check
+OUTCOME (an unhealthy stack still pings — Slack is the channel for
+*detected* failure, the dead-man is the channel for a watchdog that dies
+before it can report anything) but conditional on the tick having reached
+persistence: anything that raises earlier in the tick correctly suppresses
+the heartbeat, since a missing heartbeat is the intended failure signal.
+Plan 163 also hardens every outbound HTTP call (health probe, BAFU-detail
+probe, Slack POST, dead-man POST) against more than ``httpx.HTTPError`` —
+malformed hand-pasted URLs (``httpx.InvalidURL``, not an ``HTTPError``
+subclass), transport/SSL/socket failures (``OSError``) and malformed
+IDNA/unicode input (``UnicodeError``) must never kill a tick.
 """
 
 from __future__ import annotations
@@ -69,6 +84,11 @@ DEFAULT_SLACK_PATH = Path("./secrets/slack_webhook_url")
 # HOST secret (not a Docker/Compose mount), same convention as
 # DEFAULT_SLACK_PATH — the watchdog is a launchd host process.
 DEFAULT_PROBE_TOKEN_PATH = Path("./secrets/health_probe_token")
+# Plan 163: dead-man's switch ping URL — same convention as the two paths
+# above (HOST secret, chmod 600, git-ignored, launchd host process reads
+# `./secrets/` directly). A bearer capability: anyone holding it can ping
+# and thereby mask an outage.
+DEFAULT_DEADMAN_PATH = Path("./secrets/deadman_url")
 # Same base as DEFAULT_HEALTH_URL — the JSON API route lives under the same
 # `/api/v1` prefix as `/health`, just with a `/detail` suffix + query params.
 DEFAULT_BAFU_HEALTH_DETAIL_URL = (
@@ -107,7 +127,24 @@ BAFU_STALE_THRESHOLD = timedelta(hours=3)
 BAFU_OBS_STALE_THRESHOLD = timedelta(hours=3)
 HEALTH_CHECK_TIMEOUT_S = 5.0
 SLACK_POST_TIMEOUT_S = 5.0
+# Plan 163: dead-man ping timeout. Worst-case sequential tick budget is
+# health (5s) + BAFU forecast (5s) + BAFU obs (5s) + up to 4 Slack posts
+# (5s each, only paid when an alert fires) + this ping (5s) = well under
+# the plist's 300 s `StartInterval` even in the all-failing, all-alerting
+# case (~45s), so a slow dead-man endpoint cannot cause tick overlap.
+DEADMAN_POST_TIMEOUT_S = 5.0
 ALERT_REPEAT_EVERY = 6  # every 6th consecutive failure (~30 min at 5 min tick)
+
+# Plan 163 T1: the exception set an outbound HTTP call site must contain so
+# a malformed URL or transport failure can never kill a watchdog tick.
+# httpx.HTTPError does NOT cover httpx.InvalidURL (verified in this repo's
+# httpx 0.28.1: `issubclass(httpx.InvalidURL, httpx.HTTPError)` is False),
+# nor transport/SSL/socket setup failures (surface as OSError — ssl.SSLError
+# and socket errors are OSError subclasses), nor malformed Unicode/IDNA
+# input (UnicodeError). Every call site also adds a final defensive
+# `except Exception` (never `BaseException`, which would swallow
+# KeyboardInterrupt) as a containment boundary of last resort.
+_HTTP_CALL_EXCEPTIONS = (httpx.HTTPError, httpx.InvalidURL, OSError, UnicodeError)
 
 
 BackupNotificationKind = Literal["stale", "recovered"]
@@ -208,10 +245,19 @@ SlackPoster = Callable[[str, str], bool]
 
 
 def probe_health(url: str, *, client: httpx.Client | None = None) -> HealthProbeResult:
-    """Synchronous HTTP probe. Returns ok=True only on 2xx + status=='ok'."""
+    """Synchronous HTTP probe. Returns ok=True only on 2xx + status=='ok'.
+
+    Plan 163 T1: the exception boundary wraps client construction, the
+    request, response handling AND owned-client cleanup — client
+    construction happens inside the ``try`` (not before it) because
+    construction itself can raise (bad `timeout`, transport setup), and an
+    exception there must not escape uncaught either.
+    """
     owns_client = client is None
-    c = client or httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
+    c: httpx.Client | None = client
     try:
+        if c is None:
+            c = httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
         resp = c.get(url)
         status = resp.status_code
         if status < 200 or status >= 300:
@@ -228,10 +274,13 @@ def probe_health(url: str, *, client: httpx.Client | None = None) -> HealthProbe
                 ok=False, http_status=status, error=f"body_status:{body_status}"
             )
         return HealthProbeResult(ok=True, http_status=status)
-    except httpx.HTTPError as exc:
+    except _HTTP_CALL_EXCEPTIONS as exc:
         return HealthProbeResult(ok=False, http_status=None, error=str(exc))
+    except Exception as exc:  # defensive containment boundary, never BaseException
+        log.error("watchdog.probe_health_unexpected_error", error=str(exc))
+        return HealthProbeResult(ok=False, http_status=None, error=f"unexpected: {exc}")
     finally:
-        if owns_client:
+        if owns_client and c is not None:
             c.close()
 
 
@@ -258,11 +307,17 @@ def probe_bafu_freshness(
     None so a pre-auth deployment (or a missing/unreadable/empty token
     file) degrades to the prior unauthenticated 401 → found=False path
     rather than crashing the watchdog tick.
+
+    Plan 163 T1: same exception boundary shape as `probe_health` — client
+    construction, request, response handling and owned-client cleanup are
+    all inside the guarded region.
     """
     owns_client = client is None
-    c = client or httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
+    c: httpx.Client | None = client
     headers = {"Authorization": f"Bearer {token}"} if token else None
     try:
+        if c is None:
+            c = httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
         resp = c.get(url, headers=headers)
         status_code = resp.status_code
         if status_code < 200 or status_code >= 300:
@@ -300,12 +355,17 @@ def probe_bafu_freshness(
         return BafuFreshnessResult(
             found=True, checked_at=checked_at, status=status, error=None
         )
-    except httpx.HTTPError as exc:
+    except _HTTP_CALL_EXCEPTIONS as exc:
         return BafuFreshnessResult(
             found=False, checked_at=None, status=None, error=str(exc)
         )
+    except Exception as exc:  # defensive containment boundary, never BaseException
+        log.error("watchdog.probe_bafu_freshness_unexpected_error", error=str(exc))
+        return BafuFreshnessResult(
+            found=False, checked_at=None, status=None, error=f"unexpected: {exc}"
+        )
     finally:
-        if owns_client:
+        if owns_client and c is not None:
             c.close()
 
 
@@ -371,12 +431,31 @@ def read_probe_token(path: Path) -> str | None:
     return value or None
 
 
+def read_deadman_url(path: Path) -> str | None:
+    """Return a stripped dead-man ping URL, or None if the file is
+    missing/empty/unreadable/undecodable (Plan 163, mirrors
+    `read_slack_webhook`/`read_probe_token`). `Path.read_text()` can raise
+    `UnicodeError` on invalid bytes, not only `OSError` — both must degrade
+    to "no URL configured", never crash the tick."""
+    if not path.exists():
+        return None
+    try:
+        value = path.read_text().strip()
+    except (OSError, UnicodeError) as exc:
+        log.warning("watchdog.deadman_url_read_failed", path=str(path), error=str(exc))
+        return None
+    return value or None
+
+
 def default_slack_poster(url: str, message: str) -> bool:
     payload = {"text": message}
     try:
         resp = httpx.post(url, json=payload, timeout=SLACK_POST_TIMEOUT_S)
-    except httpx.HTTPError as exc:
+    except _HTTP_CALL_EXCEPTIONS as exc:
         log.warning("watchdog.slack_post_failed", error=str(exc))
+        return False
+    except Exception as exc:  # defensive containment boundary, never BaseException
+        log.error("watchdog.slack_post_unexpected_error", error=str(exc))
         return False
     if resp.status_code >= 300:
         log.warning(
@@ -386,6 +465,28 @@ def default_slack_poster(url: str, message: str) -> bool:
         )
         return False
     return True
+
+
+DeadmanPoster = Callable[[str], bool]
+"""(ping_url) -> posted_successfully. Raises nothing."""
+
+
+def default_deadman_poster(url: str) -> bool:
+    """POST an empty body to the dead-man ping URL. Success is
+    `200 <= status < 300`. Never raises (Plan 163 D4: a dead-man outage
+    must never be able to break the process it monitors)."""
+    try:
+        resp = httpx.post(url, timeout=DEADMAN_POST_TIMEOUT_S)
+    except _HTTP_CALL_EXCEPTIONS as exc:
+        log.warning("watchdog.deadman_post_failed", error=str(exc))
+        return False
+    except Exception as exc:  # defensive containment boundary, never BaseException
+        log.error("watchdog.deadman_post_unexpected_error", error=str(exc))
+        return False
+    if 200 <= resp.status_code < 300:
+        return True
+    log.warning("watchdog.deadman_post_failed", http_status=resp.status_code)
+    return False
 
 
 def should_alert_health(
@@ -539,6 +640,32 @@ class WatchdogConfig:
     # Plan 147 Slice C: admin-scoped probe token for the now-authenticated
     # `/health/detail`.
     probe_token_path: Path = DEFAULT_PROBE_TOKEN_PATH
+    # Plan 163: dead-man's-switch ping URL.
+    deadman_url_path: Path = DEFAULT_DEADMAN_PATH
+
+
+def _safe_slack_post(poster: SlackPoster, url: str, message: str) -> bool:
+    """Plan 163 T3: an INJECTED `slack_poster` is untrusted at this boundary
+    — `default_slack_poster` itself never raises, but a caller-supplied
+    fake or a future poster implementation might. Without this, an
+    unexpected exception here would exit `run_once` before
+    `backup_notification_pending` is updated and persisted, losing the
+    Plan 162 Phase A delivery-failure-survival transition."""
+    try:
+        return poster(url, message)
+    except Exception as exc:  # defensive: converts delivery exceptions to False
+        log.warning("watchdog.slack_post_unexpected_error", error=str(exc))
+        return False
+
+
+def _safe_deadman_post(poster: DeadmanPoster, url: str) -> bool:
+    """Same containment as `_safe_slack_post`, for the injected dead-man
+    poster: a raising poster must never propagate out of `run_once`."""
+    try:
+        return poster(url)
+    except Exception as exc:  # defensive: converts delivery exceptions to False
+        log.warning("watchdog.deadman_post_unexpected_error", error=str(exc))
+        return False
 
 
 def run_once(
@@ -550,6 +677,7 @@ def run_once(
     hostname: str | None = None,
     bafu_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
     bafu_obs_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
+    deadman_poster: DeadmanPoster = default_deadman_poster,
 ) -> WatchdogState:
     """Single watchdog tick. Returns the updated state (also persisted)."""
     now = clock()
@@ -584,7 +712,7 @@ def run_once(
             message = _format_health_alert(hostname=host, now=now, probe=result)
             log.warning("watchdog.health_failure_alert", message=message)
         if webhook:
-            posted = slack_poster(webhook, message)
+            posted = _safe_slack_post(slack_poster, webhook, message)
             log.info("watchdog.slack_post_attempted", posted=posted)
         else:
             log.info("watchdog.slack_skipped_log_only")
@@ -632,7 +760,7 @@ def run_once(
             log.info("watchdog.backup_recovery_alert", message=message)
 
         if webhook:
-            posted = slack_poster(webhook, message)
+            posted = _safe_slack_post(slack_poster, webhook, message)
             log.info("watchdog.slack_post_attempted", posted=posted)
             state = replace(
                 state,
@@ -716,7 +844,7 @@ def run_once(
             )
             log.warning("watchdog.bafu_degraded_alert", message=message)
         if webhook:
-            posted = slack_poster(webhook, message)
+            posted = _safe_slack_post(slack_poster, webhook, message)
             log.info("watchdog.slack_post_attempted", posted=posted)
         else:
             log.info("watchdog.slack_skipped_log_only")
@@ -779,7 +907,7 @@ def run_once(
             )
             log.warning("watchdog.bafu_obs_degraded_alert", message=message)
         if webhook:
-            posted = slack_poster(webhook, message)
+            posted = _safe_slack_post(slack_poster, webhook, message)
             log.info("watchdog.slack_post_attempted", posted=posted)
         else:
             log.info("watchdog.slack_skipped_log_only")
@@ -793,6 +921,26 @@ def run_once(
         state = replace(state, consecutive_bafu_obs_failures=0)
 
     state.dump(config.state_path)
+
+    # --- Dead-man's switch heartbeat (Plan 163) -----------------------------
+    # THE HEARTBEAT CONTRACT: exactly once after every tick that completed
+    # AND persisted successfully — regardless of unhealthy check results or
+    # failed Slack delivery, but NOT if the tick raised. This block is
+    # placed strictly after `state.dump(...)` and is the LAST thing
+    # `run_once` does: everything above it (hostname lookup, state load,
+    # probes, Slack posts, persistence itself) can raise, and if it does the
+    # absent heartbeat is the correct signal — do NOT move this into a
+    # `finally` or wrap the whole function in a blanket try/except, either
+    # of which would mark a crashed/incomplete tick as healthy (a false
+    # all-clear). Reading the URL and pinging happen after persistence so a
+    # slow or hanging ping can never block or corrupt the state write.
+    deadman_url = read_deadman_url(config.deadman_url_path)
+    if deadman_url:
+        pinged = _safe_deadman_post(deadman_poster, deadman_url)
+        log.info("watchdog.deadman_ping_attempted", pinged=pinged)
+    else:
+        log.info("watchdog.deadman_ping_skipped_no_url")
+
     return state
 
 
@@ -850,6 +998,15 @@ def main(argv: list[str] | None = None) -> int:
             f"mount; default: {DEFAULT_PROBE_TOKEN_PATH})"
         ),
     )
+    parser.add_argument(
+        "--deadman-url-path",
+        default=str(DEFAULT_DEADMAN_PATH),
+        help=(
+            "Path to a file containing the dead-man's-switch ping URL "
+            "(chmod 600, HOST secret, git-ignored). Missing/empty/unreadable "
+            f"-> no ping, no error (default: {DEFAULT_DEADMAN_PATH})"
+        ),
+    )
     args = parser.parse_args(argv)
 
     configure_cli_logging("INFO")
@@ -862,6 +1019,7 @@ def main(argv: list[str] | None = None) -> int:
         bafu_health_detail_url=args.bafu_health_detail_url,
         bafu_obs_health_detail_url=args.bafu_obs_health_detail_url,
         probe_token_path=Path(args.probe_token_path),
+        deadman_url_path=Path(args.deadman_url_path),
     )
 
     probe_token = read_probe_token(config.probe_token_path)

@@ -196,7 +196,12 @@ token at boot.
 4. **Repo path check** — warns if not at `/Users/sapphire/SAPPHIRE_flow`.
 5. **Secrets** — `mkdir -p secrets && chmod 700`; generates
    `secrets/db_password` with `openssl rand -base64 32` if absent;
-   reports whether `secrets/slack_webhook_url` is configured.
+   reports whether `secrets/slack_webhook_url` is configured. (Plan 163:
+   the dead-man's-switch ping URL, `secrets/deadman_url`, is **not**
+   provisioned by this script — it is staged manually by an operator from
+   the Healthchecks.io check, same chmod-600/git-ignored convention as the
+   Slack webhook. Absent ⇒ the watchdog runs without a heartbeat, no
+   error.)
 6. **USB disk** — verifies
    `/Volumes/sapphire-backup/pg_dumps/.sapphire-backup-volume` exists.
 7. **CAMELS-CH** — verifies `~/camels-ch` exists and is non-empty.
@@ -266,11 +271,19 @@ Two agents, user-context (`gui/$(id -u)`):
   Desktop never came up); it does NOT relaunch after a clean
   `up -d` exit.
 - **`ch.hydrosolutions.sapphire-watchdog`** — runs
-  `uv run python -m sapphire_flow.ops.watchdog` every 300 s. Probes
-  `/api/v1/health`, checks `pg_dumps/*.dump` mtimes against a 26 h
-  threshold, posts Slack alerts with hysteresis (1st failure, every
-  6th thereafter, and recovery). Without `secrets/slack_webhook_url`
-  the watchdog runs log-only.
+  `uv run python -m sapphire_flow.ops.watchdog` every 300 s
+  (`RunAtLoad = true`, so the first tick fires on launchd bootstrap
+  rather than waiting a full interval). Probes `/api/v1/health`, checks
+  `pg_dumps/*.dump` mtimes against a 26 h threshold, posts Slack alerts
+  with hysteresis (1st failure, every 6th thereafter, and recovery).
+  Without `secrets/slack_webhook_url` the watchdog runs log-only.
+  **Plan 163**: after every tick that completes and persists its state,
+  the watchdog also POSTs an empty heartbeat to the dead-man's-switch URL
+  in `secrets/deadman_url` (Healthchecks.io) — an unhealthy stack still
+  pings (the heartbeat means "the tick ran", not "the stack is healthy");
+  a tick that raises before persisting does not, which is the correct
+  failure signal. Without `secrets/deadman_url` no ping is attempted, no
+  error. See `docs/plans/163-watchdog-deadman-and-http-hardening.md`.
 
 ### Watchdog log rotation (manual, one-time)
 
@@ -494,6 +507,48 @@ You can simulate a failure by stopping the API:
 docker compose -f docker-compose.yml -f docker-compose.macmini.yml \
     stop api
 # wait 5 min for the next watchdog tick; Slack alert should arrive
+```
+
+### Dead-man's switch isn't pinging (Plan 163)
+
+```bash
+tail -100 ~/Library/Logs/sapphire-watchdog.log
+```
+
+Look for `watchdog.deadman_ping_attempted pinged=True` on every tick. If
+you see `watchdog.deadman_ping_skipped_no_url`, `secrets/deadman_url`
+isn't configured:
+
+```bash
+echo 'https://hc-ping.com/<your-check-uuid>' > secrets/deadman_url
+chmod 600 secrets/deadman_url
+launchctl kickstart -k gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog
+tail -f ~/Library/Logs/sapphire-watchdog.log
+```
+
+If `pinged=False` (the ping was attempted but failed — not the same as
+"no URL configured"), diagnose egress before assuming the watchdog is at
+fault: a blocked ping and a dead watchdog are indistinguishable from the
+Healthchecks.io side (both produce silence), so **check egress first**:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST --max-time 10 \
+    "$(cat secrets/deadman_url)"
+# 200 => network is fine, the watchdog itself is the problem
+# anything else => egress, not the watchdog (proxy, TLS interception, allow-list)
+```
+
+To rehearse the actual alert path, stop the watchdog LaunchAgent and
+confirm Healthchecks.io reports DOWN within its configured grace period
+(5 min period / 15 min grace as configured 2026-08-16), in **both** Slack
+and email:
+
+```bash
+launchctl bootout gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog
+# wait past the grace period; confirm DOWN notification in Slack + email
+launchctl bootstrap gui/$(id -u) \
+    ~/Library/LaunchAgents/ch.hydrosolutions.sapphire-watchdog.plist
+# confirm recovery
 ```
 
 ### Direct-invoke flows (Plan 060 D4)

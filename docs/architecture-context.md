@@ -483,6 +483,8 @@ flowchart TD
 
 **Prefect dependency limitation**: Flow 4 itself runs in Prefect. If the Prefect worker crashes, Flow 4 stops running and pipeline issues go undetected. Mitigation: the FastAPI `/api/v1/health` endpoint includes a `prefect_worker` status check (see DR plan) and the host-level cron watchdog (independent of Docker) polls this endpoint. This means Prefect worker failure is detected within 5 minutes even when Flow 4 is down.
 
+**Who watches the watchdog (Plan 163)**: the host-level watchdog itself is a launchd LaunchAgent, which dies with the login session (e.g. a deferred macOS update triggering a restart) — and a dead watchdog produces the same silence as a healthy one, indistinguishable without an independent signal. After every tick that completes and persists its state, the watchdog POSTs an off-box dead-man's-switch heartbeat (Healthchecks.io); the external service alerts (Slack + email) when a heartbeat stops arriving, closing the "watchdog died and nobody noticed" gap the 29-July 14-day outage exposed. This is orthogonal to the Slack alerts above: a ping means "the tick ran," not "the stack is healthy" — an unhealthy stack still pings, and only a tick that raises before persisting withholds the heartbeat.
+
 #### Steps
 
 | # | Step | Layer | Input | Output |
