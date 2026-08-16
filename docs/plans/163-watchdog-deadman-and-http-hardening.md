@@ -56,6 +56,45 @@ The watchdog emits a heartbeat to an off-box service on every tick; if the watch
 the host is off, that service alerts through a channel **that does not depend on the mini**. No malformed URL can
 terminate a tick.
 
+## Network model — the staging host is INSIDE the company network and stays there
+
+**Requirement:** the mini is a company-internal machine and must **not** become publicly reachable. This design
+satisfies that, and the constraint is what makes a heartbeat the right shape rather than an incidental detail.
+
+- **Outbound-only.** The watchdog runs *on* the mini and POSTs out to the provider. **Nothing connects in** — no
+  port forwarding, no inbound firewall rule, no public DNS, no reverse tunnel. The host's exposure is unchanged.
+- **The alternative would not work here.** External *polling* (a service that probes the mini) requires inbound
+  reachability, which is unavailable and undesirable. Push/heartbeat is the standard answer for hosts behind
+  NAT/firewalls, and it is why this is a dead-man's switch rather than an uptime check.
+- **The watchdog's other checks are already local** — it probes `http://localhost:8000`. It needs **zero**
+  inbound connectivity.
+- **Verified, not assumed:** a POST from the mini to the staged ping URL returned **HTTP 200 in 0.073 s**
+  (2026-08-14), proving egress to `hc-ping.com` is permitted from inside the company network today.
+- **What leaves the network:** an **empty POST** — no payload, no database content, no hostnames. The provider
+  learns only *"this check was pinged"*, the source IP, and a timestamp. Note the ping URL is a **bearer
+  capability**: anyone holding it can ping and thereby *mask* an outage, so it lives in `secrets/deadman_url`
+  (mode 600, git-ignored) and is treated like the Slack webhook.
+
+**⚠️ Risk this creates, and it is a real one.** If egress is ever filtered — a new proxy, TLS interception, an
+allow-list change — the pings stop, and **a blocked ping is indistinguishable from a dead watchdog**: both
+produce silence and both fire the alarm. That is the *safe* direction (a false alarm, never a false all-clear),
+but it means the host-side diagnosis must check egress first:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' -X POST --max-time 10 "$(cat secrets/deadman_url)"
+```
+
+`200` ⇒ the network is fine and the watchdog really is down. Anything else ⇒ egress, not the watchdog. If the
+network ever requires a proxy, `httpx` needs `HTTPS_PROXY` in the watchdog's environment; no proxy is required
+today.
+
+**Considered and rejected as the primary: self-hosting the monitor inside the company network.** It removes the
+third-party dependency and keeps everything internal — but an internal monitor **dies with the site**, so a power
+cut, a network failure or an office-wide outage would take down the watchdog *and* its watcher together, which
+is one of the failure modes we most want to catch. A hosted external endpoint is the only version that survives
+losing the building. (Healthchecks is open-source, so an *additional* internal instance is possible later as a
+second opinion — not as the only one.)
+
 ## Non-goals
 
 - **The system-domain (LaunchDaemon) conversion** — stays Plan 158 T5. Note the dead-man's switch **works
