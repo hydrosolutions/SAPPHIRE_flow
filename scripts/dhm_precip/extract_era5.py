@@ -75,6 +75,7 @@ from scripts.dhm_precip.era5_errors import (  # noqa: E402
 from scripts.dhm_precip.era5_extract import (  # noqa: E402
     ExtractedSeries,
     StationGridElevationRow,
+    assert_expected_station_cardinality,
     assert_extraction_source_valid,
     assert_no_missing_primary,
     assert_source_checksum,
@@ -127,6 +128,8 @@ from scripts.dhm_precip.params import DEFAULT_PARAMS  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from scripts.dhm_precip.params import DhmPrecipParams
 
 log = structlog.get_logger(__name__)
 
@@ -237,8 +240,10 @@ def run(
     coords_path: Path | None = None,
     expected_stations: frozenset[Station] | None = None,
     request_area: tuple[float, float, float, float] | None = None,
+    params: DhmPrecipParams | None = None,
 ) -> int:
     data_root: Path = args.data_root
+    resolved_params = params if params is not None else DEFAULT_PARAMS
     resolved_clock: Callable[[], datetime] = (
         clock if clock is not None else (lambda: datetime.now(UTC))
     )
@@ -290,6 +295,13 @@ def run(
         expected_stations
         if expected_stations is not None
         else _default_expected_stations()
+    )
+    # D8/2d — the cardinality tripwire fires on the BOUNDARY INPUT, before
+    # any extraction: equality against a self-supplied inventory is not a
+    # constraint, so the count is pinned independently.
+    assert_expected_station_cardinality(
+        resolved_expected_stations,
+        expected_count=resolved_params.expected_station_count,
     )
     stations = load_expected_station_coordinates(
         resolved_coords_path, expected_stations=resolved_expected_stations
@@ -364,7 +376,7 @@ def run(
         orography_vertical_reference=OBSERVED_OROGRAPHY_SPEC.vertical_reference,
     )
     sensitivity = build_operator_sensitivity_table(
-        merged_nearest, merged_bilinear, params=DEFAULT_PARAMS
+        merged_nearest, merged_bilinear, params=resolved_params
     )
 
     identity = extraction_identity(
@@ -372,15 +384,15 @@ def run(
         coordinate_table_sha256=coordinate_table_sha256,
         source_sha256s=source_sha256s,
         orography_identity=oro_identity,
-        jjas_months=DEFAULT_PARAMS.jjas_months,
-        djf_months=DEFAULT_PARAMS.djf_months,
-        mam_months=DEFAULT_PARAMS.mam_months,
-        on_months=DEFAULT_PARAMS.on_months,
-        wet_threshold_mm_per_h=DEFAULT_PARAMS.wet_threshold_mm_per_h,
-        wet_threshold_side=DEFAULT_PARAMS.wet_threshold_side,
-        zero_policy=DEFAULT_PARAMS.zero_policy,
-        quantile_definition=DEFAULT_PARAMS.quantile_definition,
-        quantile_grid=DEFAULT_PARAMS.quantile_grid,
+        jjas_months=resolved_params.jjas_months,
+        djf_months=resolved_params.djf_months,
+        mam_months=resolved_params.mam_months,
+        on_months=resolved_params.on_months,
+        wet_threshold_mm_per_h=resolved_params.wet_threshold_mm_per_h,
+        wet_threshold_side=resolved_params.wet_threshold_side,
+        zero_policy=resolved_params.zero_policy,
+        quantile_definition=resolved_params.quantile_definition,
+        quantile_grid=resolved_params.quantile_grid,
         station_elevation_datum=str(VerticalDatum.UNKNOWN),
         orography_elevation_datum=str(OBSERVED_OROGRAPHY_SPEC.vertical_reference),
         output_schema_version=OUTPUT_SCHEMA_VERSION,
@@ -433,12 +445,16 @@ def run(
         generated_at=resolved_clock(),
     )
     write_extraction_manifest(manifest, staging / "extraction_manifest.json")
-    reopen_and_validate_bundle(staging, expected_station_count=len(stations.by_station))
+    # The PINNED count (D8/2d), not `len(stations)` — comparing the bundle
+    # against the very inventory that produced it validates nothing.
+    reopen_and_validate_bundle(
+        staging, expected_station_count=resolved_params.expected_station_count
+    )
     final_dir = publish_bundle(
         staging,
         data_root=data_root,
         identity=identity,
-        expected_station_count=len(stations.by_station),
+        expected_station_count=resolved_params.expected_station_count,
         clock_now=resolved_clock(),
     )
 

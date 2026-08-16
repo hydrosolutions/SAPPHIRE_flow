@@ -313,6 +313,36 @@ def load_expected_station_coordinates(
         raise StationSetMismatchError(str(exc)) from exc
 
 
+def assert_expected_station_cardinality(
+    expected_stations: frozenset[Station], *, expected_count: int
+) -> None:
+    """D8/2d (CORRECTED 2026-08-16, blocker) — pin the CARDINALITY
+    independently of the inventory, BEFORE any extraction.
+
+    2d admitted the workbook-derived usable-station inventory as this plan's
+    single boundary input, which removed the only thing pinning the count:
+    the loader checks the extracted set *equals* the inventory, and an
+    inventory of 25 satisfies that perfectly. A workbook that silently
+    yields 25 stations would extract 25 and publish happily, because the
+    publication check compares against `len(stations)` — i.e. against
+    itself. Equality to a self-supplied list is not a constraint.
+
+    `expected_count` is deliberately a hard-coded number on the frozen
+    parameter object (`DhmPrecipParams.expected_station_count = 26`) and NOT
+    derived: it is a tripwire on the boundary input, and deriving it from
+    the same source it guards would defeat it. If the delivery legitimately
+    changes size, the number is updated in one place, as a visible decision.
+    """
+    actual = len(expected_stations)
+    if actual != expected_count:
+        raise StationSetMismatchError(
+            f"the workbook-derived usable-station inventory has {actual} "
+            f"stations, but Plan 174 D8/2d pins expected_station_count="
+            f"{expected_count}; refusing to extract (a self-supplied "
+            "inventory cannot validate its own size)"
+        )
+
+
 # --- 3a: per-station grid + elevation table ---
 
 

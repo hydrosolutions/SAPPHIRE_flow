@@ -33,6 +33,7 @@ from scripts.dhm_precip.era5_errors import (
     StationSetMismatchError,
 )
 from scripts.dhm_precip.era5_extract import (
+    assert_expected_station_cardinality,
     assert_extraction_source_valid,
     assert_no_missing_primary,
     assert_registration,
@@ -273,6 +274,35 @@ class TestStationSet:
             path, expected_stations=frozenset({Station("A")})
         )
         assert table.stations == (Station("A"),)
+
+
+class TestExpectedStationCardinalityTripwire:
+    """D8/2d (CORRECTED 2026-08-16, blocker) — the single-inventory decision
+    removed the only thing pinning the COUNT. The loader checks the extracted
+    set *equals* the inventory, and an inventory of 25 satisfies that
+    perfectly: a workbook that silently yields 25 stations extracts 25 and
+    publishes happily. Equality to a self-supplied list is not a constraint,
+    so the count is pinned independently, on the frozen parameter object, as
+    a tripwire on the boundary input."""
+
+    def test_the_pinned_count_is_twenty_six(self) -> None:
+        assert DEFAULT_PARAMS.expected_station_count == 26
+
+    @pytest.mark.parametrize("n", [25, 27])
+    def test_an_inventory_of_the_wrong_size_raises_naming_the_count(
+        self, n: int
+    ) -> None:
+        inventory = frozenset(Station(f"S{i}") for i in range(n))
+        with pytest.raises(StationSetMismatchError, match=str(n)):
+            assert_expected_station_cardinality(
+                inventory, expected_count=DEFAULT_PARAMS.expected_station_count
+            )
+
+    def test_an_inventory_of_exactly_the_pinned_size_passes(self) -> None:
+        inventory = frozenset(Station(f"S{i}") for i in range(26))
+        assert_expected_station_cardinality(
+            inventory, expected_count=DEFAULT_PARAMS.expected_station_count
+        )
 
 
 # --- 3a: per-station grid + elevation table ---

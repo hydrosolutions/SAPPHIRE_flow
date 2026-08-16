@@ -3,6 +3,7 @@ exit codes (D7/D9/D10). All fixtures are synthetic (constraint 1/2)."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -32,6 +33,7 @@ from scripts.dhm_precip.fixtures import (
     build_era5_land_product_fixture,
     write_era5_land_product_fixture,
 )
+from scripts.dhm_precip.params import DEFAULT_PARAMS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -133,7 +135,19 @@ def _build_data_root(tmp_path: Path, *, ramp_intercept: float = 0.5) -> Path:
     return data_root
 
 
-def _run_all(data_root: Path, *, ramp_intercept: float = 0.5) -> int:
+# The synthetic box holds 2 stations, not the production 26, so the D8/2d
+# cardinality tripwire is re-pinned on the injected frozen parameter object
+# (never bypassed — the CLI still enforces whatever the object says).
+_TEST_PARAMS = replace(DEFAULT_PARAMS, expected_station_count=2)
+
+
+def _run_all(
+    data_root: Path,
+    *,
+    ramp_intercept: float = 0.5,  # noqa: ARG001
+    expected_stations: frozenset[Station] | None = None,
+    params: object | None = None,
+) -> int:
     # Through `main()` (not `run()` directly) so exceptions are translated
     # to exit codes exactly as the real CLI entry point does (D9).
     return extract_era5.main(
@@ -142,8 +156,13 @@ def _run_all(data_root: Path, *, ramp_intercept: float = 0.5) -> int:
         orography_downloader=_FakeOrographyDownloader(),
         orography_raw_reader=_fake_raw_reader,
         coords_path=data_root / "station_coordinates.csv",
-        expected_stations=frozenset({Station("A"), Station("B")}),
+        expected_stations=(
+            expected_stations
+            if expected_stations is not None
+            else frozenset({Station("A"), Station("B")})
+        ),
         request_area=_AREA,
+        params=params if params is not None else _TEST_PARAMS,
     )
 
 
@@ -224,6 +243,27 @@ class TestPublishBundle:
         )
         write_manifest_atomic(stripped, manifest_path_for(data_root))
         assert _run_all(data_root) == 4
+
+    def test_inventory_of_the_wrong_size_exits_4_before_any_extraction(
+        self, tmp_path: Path
+    ) -> None:
+        """D8/2d (blocker) — the count is pinned INDEPENDENTLY of the
+        inventory. Here the coordinate table and the inventory agree
+        perfectly (they are both {A}), which is exactly the state the old
+        equality check waved through; the pinned count of 2 must still stop
+        the run, and stop it before anything is published."""
+        data_root = _build_data_root(tmp_path)
+        pl.DataFrame(
+            {
+                "station": ["A"],
+                "excel_col": ["A (mm)"],
+                "lat": [26.05],
+                "lon": [85.05],
+                "elev": [1500.0],
+            }
+        ).write_csv(data_root / "station_coordinates.csv")
+        assert _run_all(data_root, expected_stations=frozenset({Station("A")})) == 4
+        assert not current_pointer_path(data_root).exists()
 
     def test_station_outside_grid_exits_4(self, tmp_path: Path) -> None:
         data_root = _build_data_root(tmp_path)
