@@ -694,6 +694,17 @@ Independent of Docker and Prefect. A cron job on the host VM:
 > sketch above is the general-VM-deployment design intent. Both share the same `/health` +
 > `/health/detail` contract described below.
 
+**Plan 163 — dead-man's switch:** the launchd watchdog answers "who watches the watchdog" — a
+LaunchAgent dies with the login session, and a dead watchdog produces the same silence as a healthy
+one. After every tick that completes and persists its state, the watchdog POSTs an empty heartbeat to
+an off-box URL read from the HOST secret file `./secrets/deadman_url` (chmod 600, same convention as
+`slack_webhook_url`/`health_probe_token`; missing/empty/unreadable/undecodable ⇒ no ping, no error).
+The external provider (Healthchecks.io) alerts through Slack + email when the heartbeat stops arriving
+— independent of the mini and of Docker/Prefect. A ping means "the tick ran," not "the stack is
+healthy": an unhealthy stack still pings, and only a tick that raises before persisting withholds the
+heartbeat. See `docs/plans/163-watchdog-deadman-and-http-hardening.md` and
+`docs/deployment/mac-mini-staging.md` § Dead-man's switch isn't pinging.
+
 ## Access-token pepper + probe-token rotation (Plan 147 Slice C, REALIZED)
 
 Two host/Docker secrets `/health/detail`-auth introduces:

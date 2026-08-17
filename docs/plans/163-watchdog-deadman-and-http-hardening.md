@@ -15,6 +15,57 @@ supersedes: []
 **READY** (2026-08-16) — D5 closed by the owner; independently reviewed (4 blockers + 8 majors folded, including
 a heartbeat contract that was wrong in the first draft). Operational reliability (category **A**). Responds to a **live, ongoing** incident.
 
+**Post-implementation fixer round (2026-08-16), independent Codex review over the committed diff — 3 majors + 1
+minor resolved:**
+1. **(major) Owned-client cleanup could still escape T1's boundary.** `probe_health`/`probe_bafu_freshness` guarded
+   the request but not an owned client's `finally`-block `close()` — an `OSError` there would override a
+   successful `return` (or an already-caught request exception) and kill the tick. Both `close()` calls are now
+   wrapped in the same `_HTTP_CALL_EXCEPTIONS` + defensive `except Exception` boundary. Locked by
+   `TestOwnedClientCleanupHardeningProbeHealth`/`...ProbeBafuFreshness` (fake owned client, `get()` succeeds,
+   `close()` raises) — proven RED against the pre-fix code (stash-fix/run/restore).
+2. **(major) Heartbeat-ordering tests didn't actually prove ping-after-persist.** The existing raising-poster/
+   raising-probe tests would have passed even if the ping were moved to immediately *before* `state.dump(...)`.
+   Added `test_ping_observes_state_already_persisted_on_disk` (the injected poster asserts the state file already
+   holds this tick's persisted content when invoked) and
+   `test_dump_failure_before_persistence_suppresses_heartbeat` (monkeypatches `WatchdogState.dump` to raise;
+   asserts the exception propagates and zero pings occur).
+3. **(major) Ordinary unit tests could ping the REAL production dead-man URL.** `_config()`'s `WatchdogConfig` left
+   `deadman_url_path` at its default (`DEFAULT_DEADMAN_PATH`, a *relative* `./secrets/deadman_url`) — on a
+   checkout where that host secret is present (e.g. the mac-mini), every `run_once` test not overriding
+   `deadman_poster` would fire a real heartbeat via `default_deadman_poster`. `_config()` now points
+   `deadman_url_path` at a `tmp_path` file that is never written; the two hand-reconstructed `WatchdogConfig(...)`
+   test configs (which silently dropped this and every other field not listed) now use `dataclasses.replace(base,
+   ...)` instead.
+4. **(minor) No test locked the dead-man poster's timeout/empty-body.** Added
+   `test_posts_empty_body_with_the_5s_timeout_constant`, asserting `timeout == DEADMAN_POST_TIMEOUT_S == 5.0` and
+   the absence of `json`/`data`/`content`/`files` kwargs on the captured `httpx.post` call.
+
+**Second post-implementation fixer round (2026-08-16), 3 minors closing the last gaps in the "never raises"
+contract:**
+1. **(minor) The existence preflight sat OUTSIDE the guard.** `read_deadman_url` called `Path.exists()` before the
+   `(OSError, UnicodeError)` `try` — on Python 3.12 `exists()` can itself re-raise a non-ignored `OSError` (e.g. a
+   permission error on a parent directory). Fixed by dropping the preflight entirely and calling `read_text()`
+   directly inside the guard (a missing file now degrades via `FileNotFoundError`, an `OSError` subclass, like
+   every other unreadable case). Locked by
+   `TestReadDeadmanUrl::test_existence_preflight_permission_error_does_not_raise` — proven RED against the
+   pre-fix code (stash-fix/run/restore).
+2. **(minor) Response handling lived outside the single adapter boundary.** `default_slack_poster` and
+   `default_deadman_poster` accessed `resp.status_code`/`resp.text` AFTER their `try` block, so an unexpected
+   response-access exception could still escape despite the "never raises" promise (masked only because
+   `run_once`'s `_safe_slack_post`/`_safe_deadman_post` wrappers contained the damage for that one caller). Moved
+   all response handling inside each function's `try`. Locked by
+   `TestResponseHandlingInsideGuardDefaultSlackPoster` (status_code-access-raises, text-access-raises) and
+   `TestResponseHandlingInsideGuardDefaultDeadmanPoster` (status_code-access-raises) — proven RED against the
+   pre-fix code.
+3. **(minor) Exception safety was integration-tested at only one of four Slack call sites.** Only the backup
+   branch (`TestSlackExceptionDuringBackupTransition`) had a raising-poster test proving `_safe_slack_post` usage;
+   a regression reintroducing a raw `slack_poster(...)` call in the health, BAFU-forecast or BAFU-observation
+   branch would have passed every other existing test. Added
+   `TestRaisingSlackPosterAcrossAllFourAlertBranches`, a `pytest.mark.parametrize` over all four branches
+   asserting state is persisted and exactly one heartbeat is attempted in each case — verified to fail when any
+   one of the four `_safe_slack_post(...)` call sites is manually reverted to a raw `slack_poster(...)` call
+   (checked all four independently, restored after each).
+
 ## Problem
 
 **The mac-mini watchdog has been silent since ~03:54 on 2026-08-16.** It had been posting a stale-backup alert

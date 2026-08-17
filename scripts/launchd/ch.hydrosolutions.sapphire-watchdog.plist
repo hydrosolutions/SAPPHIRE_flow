@@ -12,7 +12,13 @@
          access-token raw key the watchdog sends as `Authorization: Bearer`
          on its /health/detail probes. See docs/standards/cicd.md
          § Access-token pepper + probe-token rotation for the bootstrap +
-         rotation runbook. -->
+         rotation runbook.
+         Plan 163: --deadman-url-path is passed EXPLICITLY the same way. It
+         resolves to the HOST secret file ./secrets/deadman_url — a
+         Healthchecks.io ping URL the watchdog POSTs to after every tick
+         that completes and persists. Missing/empty/unreadable -> no ping,
+         no error (feature-off by default in dev/CI, where the file is
+         absent). -->
     <key>ProgramArguments</key>
     <array>
         <string>/Users/sapphire/.local/bin/uv</string>
@@ -23,6 +29,8 @@
         <string>sapphire_flow.ops.watchdog</string>
         <string>--probe-token-path</string>
         <string>./secrets/health_probe_token</string>
+        <string>--deadman-url-path</string>
+        <string>./secrets/deadman_url</string>
     </array>
     <key>StartInterval</key>
     <integer>300</integer>
@@ -32,8 +40,12 @@
     <string>/Users/sapphire/Library/Logs/sapphire-watchdog.log</string>
     <key>StandardErrorPath</key>
     <string>/Users/sapphire/Library/Logs/sapphire-watchdog.log</string>
+    <!-- Plan 163 T4: RunAtLoad true so the first tick (and the first
+         heartbeat) fires on launchd bootstrap rather than waiting a full
+         StartInterval (300s) for the next scheduled tick — relevant for
+         deployment validation and after any watchdog restart. -->
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
     <key>UserName</key>
     <string>sapphire</string>
 </dict>

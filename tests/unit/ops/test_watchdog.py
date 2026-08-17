@@ -7,6 +7,8 @@ respx/httpx_mock/freezegun.
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace as _replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003 — used at runtime in helper
 
@@ -21,7 +23,10 @@ from sapphire_flow.ops.watchdog import (
     HealthProbeResult,
     WatchdogConfig,
     WatchdogState,
+    default_slack_poster,
     newest_backup_mtime,
+    probe_bafu_freshness,
+    probe_health,
     read_probe_token,
     read_slack_webhook,
     run_once,
@@ -129,6 +134,18 @@ def _config(tmp: Path, *, backup_dir: Path | None = None) -> WatchdogConfig:
         backup_dir=backup_dir or (tmp / "pg_dumps_missing"),
         state_path=state_path,
         slack_path=slack_path,
+        # Plan 163 fixer round: isolate every ordinary test from the REAL
+        # production dead-man URL/poster. `WatchdogConfig.deadman_url_path`
+        # defaults to the RELATIVE `DEFAULT_DEADMAN_PATH`
+        # ("./secrets/deadman_url"); on a checkout where that host secret is
+        # present (e.g. the mac-mini), every `run_once` test that doesn't
+        # override `deadman_poster` would resolve it and fire a REAL
+        # heartbeat at the production Healthchecks check via the real
+        # `default_deadman_poster` — masking an actually-dead watchdog.
+        # Point at a tmp_path file that is never written, so
+        # `read_deadman_url` always returns None for the ~100 tests that use
+        # this helper without opting into `_config_with_deadman`.
+        deadman_url_path=tmp / "deadman_url_not_configured",
     )
 
 
@@ -1157,12 +1174,12 @@ class TestRunOnceBafuFreshness:
     def test_overridden_health_url_retargets_bafu_probe(self, tmp_path: Path) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
         base = _config(tmp_path, backup_dir=backup_dir)
-        cfg = WatchdogConfig(
-            health_url="http://custom:9000/api/v1/health",
-            backup_dir=base.backup_dir,
-            state_path=base.state_path,
-            slack_path=base.slack_path,
-        )
+        # `replace()`, not a manual field-by-field reconstruction: a manual
+        # rebuild silently drops any field `_config` sets that isn't listed
+        # here (it already did, for `deadman_url_path` — see the Plan 163
+        # fixer round note on `_config`), re-pointing this test at the REAL
+        # default `./secrets/deadman_url` production URL.
+        cfg = _replace(base, health_url="http://custom:9000/api/v1/health")
         cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
         captured: dict[str, str] = {}
 
@@ -1348,12 +1365,9 @@ class TestRunOnceBafuObsFreshness:
     ) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
         base = _config(tmp_path, backup_dir=backup_dir)
-        cfg = WatchdogConfig(
-            health_url="http://custom:9000/api/v1/health",
-            backup_dir=base.backup_dir,
-            state_path=base.state_path,
-            slack_path=base.slack_path,
-        )
+        # `replace()`, not a manual field-by-field reconstruction — see the
+        # sibling forecast-probe test above for why.
+        cfg = _replace(base, health_url="http://custom:9000/api/v1/health")
         cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
         captured: dict[str, str] = {}
 
@@ -1678,6 +1692,845 @@ class TestWatchdogStateBafuObsBackwardCompat:
         assert s.consecutive_bafu_obs_failures == 0
         assert s.consecutive_bafu_failures == 1
         assert s.consecutive_health_failures == 2
+
+
+# ---------- Plan 163 T1: malformed-URL hardening across all outbound sites ----
+#
+# httpx.InvalidURL is NOT a subclass of httpx.HTTPError (verified in this
+# repo's httpx 0.28.1: `issubclass(httpx.InvalidURL, httpx.HTTPError)` is
+# False) — a malformed hand-pasted URL must not raise out of ANY outbound
+# HTTP call site. Two distinct malformed URLs exercise two distinct
+# exception classes that the pre-Plan-163 `except httpx.HTTPError` did not
+# cover:
+#   - `http://[::1`      -> httpx.InvalidURL directly (malformed IPv6 host)
+#   - `http://xn--/`      -> idna.core.IDNAError, a UnicodeError subclass,
+#                            NOT an httpx.HTTPError/InvalidURL subclass
+# Per-site: one generic test does not prove all three call sites guard the
+# boundary independently (see harness note at the top of this file).
+
+
+_INVALID_URL_MALFORMED = "http://[::1"
+_IDNA_UNICODE_ERROR_MALFORMED = "http://xn--/"
+
+
+class TestMalformedUrlHardeningDefaultSlackPoster:
+    def test_invalid_url_returns_false_not_raises(self) -> None:
+        assert default_slack_poster(_INVALID_URL_MALFORMED, "test message") is False
+
+    def test_idna_unicode_error_returns_false_not_raises(self) -> None:
+        assert (
+            default_slack_poster(_IDNA_UNICODE_ERROR_MALFORMED, "test message") is False
+        )
+
+
+class TestMalformedUrlHardeningProbeHealth:
+    def test_invalid_url_returns_not_ok_not_raises(self) -> None:
+        result = probe_health(_INVALID_URL_MALFORMED)
+        assert result.ok is False
+        assert result.http_status is None
+
+    def test_idna_unicode_error_returns_not_ok_not_raises(self) -> None:
+        result = probe_health(_IDNA_UNICODE_ERROR_MALFORMED)
+        assert result.ok is False
+        assert result.http_status is None
+
+
+class TestMalformedUrlHardeningProbeBafuFreshness:
+    def test_invalid_url_returns_not_found_not_raises(self) -> None:
+        result = probe_bafu_freshness(_INVALID_URL_MALFORMED)
+        assert result.found is False
+
+    def test_idna_unicode_error_returns_not_found_not_raises(self) -> None:
+        result = probe_bafu_freshness(_IDNA_UNICODE_ERROR_MALFORMED)
+        assert result.found is False
+
+
+# ---------- Plan 163 fixer round: owned-client cleanup must not override --
+#            a successful (or already-caught) result -----------------------
+#
+# `probe_health`/`probe_bafu_freshness` construct their `httpx.Client`
+# INSIDE the guarded region when the caller doesn't inject one ("owns" it)
+# and close() it in `finally`. Left unguarded, an exception from that
+# close() call REPLACES whatever the try block already produced (a `return`
+# or a caught-and-handled request exception) and escapes the boundary these
+# functions exist to provide. These tests use a fake, injected-via-monkeypatch
+# `httpx.Client` whose `.get()` succeeds normally but whose `.close()`
+# raises — proving the CALLER-VISIBLE result is unaffected.
+
+
+class _FakeHealthResponse:
+    status_code = 200
+
+    def json(self) -> dict[str, str]:
+        return {"status": "ok"}
+
+
+class _FakeClientCloseRaises:
+    """A fake owned `httpx.Client` whose `get()` succeeds but `close()`
+    raises `OSError` — simulates a half-torn-down transport."""
+
+    def __init__(self, *_a: object, **_k: object) -> None:
+        pass
+
+    def get(self, url: str, **_k: object) -> _FakeHealthResponse:
+        return _FakeHealthResponse()
+
+    def close(self) -> None:
+        raise OSError("transport already closed")
+
+
+class TestOwnedClientCleanupHardeningProbeHealth:
+    def test_close_failure_does_not_override_a_successful_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        monkeypatch.setattr(watchdog_module.httpx, "Client", _FakeClientCloseRaises)
+
+        result = probe_health("http://localhost:8000/api/v1/health")
+
+        assert result.ok is True
+        assert result.http_status == 200
+
+
+class _FakeBafuResponse:
+    status_code = 200
+
+    def json(self) -> dict[str, object]:
+        return {
+            "items": [
+                {"checked_at": "2026-04-22T12:00:00+00:00", "status": "ok"},
+            ]
+        }
+
+
+class _FakeBafuClientCloseRaises:
+    """Same shape as `_FakeClientCloseRaises`, returning a BAFU-detail-shaped
+    payload instead of a health payload."""
+
+    def __init__(self, *_a: object, **_k: object) -> None:
+        pass
+
+    def get(self, url: str, **_k: object) -> _FakeBafuResponse:
+        return _FakeBafuResponse()
+
+    def close(self) -> None:
+        raise OSError("transport already closed")
+
+
+class TestOwnedClientCleanupHardeningProbeBafuFreshness:
+    def test_close_failure_does_not_override_a_successful_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        monkeypatch.setattr(watchdog_module.httpx, "Client", _FakeBafuClientCloseRaises)
+
+        result = probe_bafu_freshness(
+            "http://localhost:8000/api/v1/health/detail"
+            "?check_type=bafu_forecast_freshness&limit=1"
+        )
+
+        assert result.found is True
+        assert result.status == "ok"
+
+
+class TestMalformedUrlHardeningDefaultDeadmanPoster:
+    """Bonus: same boundary, the fourth outbound call site added by Plan
+    163 T2 (not one of the three the plan enumerates for T1, but built on
+    the identical `_HTTP_CALL_EXCEPTIONS` boundary, so it must behave the
+    same way)."""
+
+    def test_invalid_url_returns_false_not_raises(self) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        try:
+            default_deadman_poster = watchdog_module.default_deadman_poster
+        except AttributeError:
+            pytest.fail("default_deadman_poster not implemented (Plan 163 T2)")
+        assert default_deadman_poster(_INVALID_URL_MALFORMED) is False
+
+
+# ---------- Plan 163 fixer round (minor 2): response handling must live -----
+#            INSIDE the single adapter boundary, not after it -------------
+#
+# `default_slack_poster`/`default_deadman_poster` promise to "never raise".
+# The buggy implementation caught request exceptions but then accessed
+# `resp.status_code`/`resp.text` OUTSIDE the `try` — an unexpected exception
+# from either escapes uncaught. This is currently MASKED for `run_once`
+# because its `_safe_slack_post`/`_safe_deadman_post` wrappers contain the
+# damage — but the functions themselves promise never to raise, and any
+# other caller (including tests, and any future caller) relies on that
+# promise directly, not on `run_once`'s wrapper.
+
+
+class _StatusCodeAccessRaises:
+    """A fake httpx response whose `.status_code` property raises when
+    accessed — simulates an unexpected response-object defect."""
+
+    @property
+    def status_code(self) -> int:
+        raise RuntimeError("status_code access exploded")
+
+
+class _SlackTextAccessRaises:
+    """A fake httpx response with a normal (failing) `status_code` but a
+    `.text` property that raises — reaches the `resp.text[:200]` line in
+    `default_slack_poster`'s failure-logging branch specifically."""
+
+    status_code = 500
+
+    @property
+    def text(self) -> str:
+        raise RuntimeError("text access exploded")
+
+
+class TestResponseHandlingInsideGuardDefaultSlackPoster:
+    def test_status_code_access_raises_returns_false_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        monkeypatch.setattr(
+            watchdog_module.httpx,
+            "post",
+            lambda *a, **k: _StatusCodeAccessRaises(),
+        )
+        assert default_slack_poster("https://hooks.slack.com/x", "msg") is False
+
+    def test_text_access_raises_returns_false_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        monkeypatch.setattr(
+            watchdog_module.httpx, "post", lambda *a, **k: _SlackTextAccessRaises()
+        )
+        assert default_slack_poster("https://hooks.slack.com/x", "msg") is False
+
+
+class TestResponseHandlingInsideGuardDefaultDeadmanPoster:
+    def test_status_code_access_raises_returns_false_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        try:
+            default_deadman_poster = watchdog_module.default_deadman_poster
+        except AttributeError:
+            pytest.fail("default_deadman_poster not implemented (Plan 163 T2)")
+        monkeypatch.setattr(
+            watchdog_module.httpx,
+            "post",
+            lambda *a, **k: _StatusCodeAccessRaises(),
+        )
+        assert default_deadman_poster("https://hc-ping.com/x") is False
+
+
+# ---------- Plan 163 T2: read_deadman_url ----------------------------------
+
+
+class TestReadDeadmanUrl:
+    """Mirrors TestReadSlackWebhook/TestReadProbeToken — the dead-man ping
+    URL is the same HOST-secret-file convention. `read_deadman_url` must
+    ALSO handle UnicodeError (undecodable bytes), which
+    `read_slack_webhook`/`read_probe_token` do not need to (Plan 163 T4)."""
+
+    @staticmethod
+    def _read(path: Path) -> str | None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        try:
+            read_deadman_url = watchdog_module.read_deadman_url
+        except AttributeError:
+            pytest.fail("read_deadman_url not implemented (Plan 163 T2)")
+        return read_deadman_url(path)
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        assert self._read(tmp_path / "nope") is None
+
+    def test_empty_file_returns_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("")
+        assert self._read(p) is None
+
+    def test_whitespace_only_returns_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("   \n  \n")
+        assert self._read(p) is None
+
+    def test_populated_returns_stripped(self, tmp_path: Path) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("https://hc-ping.com/abc-123-def\n")
+        assert self._read(p) == "https://hc-ping.com/abc-123-def"
+
+    def test_undecodable_bytes_return_none(self, tmp_path: Path) -> None:
+        # Path.read_text() can raise UnicodeDecodeError (a UnicodeError) on
+        # invalid bytes, not only OSError.
+        p = tmp_path / "deadman_url"
+        p.write_bytes(b"\xff\xfe\x00\x01 not valid utf-8 \x80\x81")
+        assert self._read(p) is None
+
+    def test_unreadable_file_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("https://hc-ping.com/abc\n")
+
+        def _raise(self: Path, *args: object, **kwargs: object) -> str:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "read_text", _raise)
+        assert self._read(p) is None
+
+    def test_existence_preflight_permission_error_does_not_raise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 163 fixer round (minor 1): the buggy implementation called
+        `path.exists()` as a preflight OUTSIDE the `(OSError, UnicodeError)`
+        guard. On Python 3.12, `exists()` (which calls `stat()`) can itself
+        re-raise a non-ignored `OSError` — e.g. a permission error on a
+        parent directory — escaping uncaught and violating the documented
+        "unreadable => None, no error" contract. The fixed implementation
+        must not call `exists()`/`stat()` at all: it reads directly inside
+        the guard, so a nonexistent (or otherwise inaccessible) path
+        degrades to "unreadable" => None like every other case, without
+        ever touching `exists()`/`stat()`.
+
+        Patches BOTH `Path.exists` and `Path.stat` to raise `PermissionError`
+        (the real-world shape of a parent-directory permission error) and
+        points at a path whose parent directory does not exist either, so
+        the fixed code's `read_text()` call fails on its own merits
+        (`FileNotFoundError`, an `OSError` subclass) without depending on
+        `exists()`/`stat()` ever being called.
+        """
+
+        def _raise(self: Path, *args: object, **kwargs: object) -> object:
+            raise PermissionError("permission denied for parent directory")
+
+        monkeypatch.setattr(Path, "exists", _raise)
+        monkeypatch.setattr(Path, "stat", _raise)
+
+        p = tmp_path / "unreadable_parent" / "deadman_url"
+        assert self._read(p) is None
+
+
+# ---------- Plan 163 T2: default_deadman_poster success band ----------------
+
+
+class TestDefaultDeadmanPoster:
+    """Success is `200 <= status < 300`, not merely `not (status >= 300)`
+    (Plan 163 T4) — a 1xx informational status must not count as success."""
+
+    @staticmethod
+    def _poster() -> object:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        try:
+            return watchdog_module.default_deadman_poster
+        except AttributeError:
+            pytest.fail("default_deadman_poster not implemented (Plan 163 T2)")
+
+    def test_200_is_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        class _FakeResponse:
+            status_code = 200
+
+        monkeypatch.setattr(
+            watchdog_module.httpx, "post", lambda *a, **k: _FakeResponse()
+        )
+        assert self._poster()("https://hc-ping.com/x") is True
+
+    def test_300_is_not_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        class _FakeResponse:
+            status_code = 300
+
+        monkeypatch.setattr(
+            watchdog_module.httpx, "post", lambda *a, **k: _FakeResponse()
+        )
+        assert self._poster()("https://hc-ping.com/x") is False
+
+    def test_100_is_not_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        class _FakeResponse:
+            status_code = 100
+
+        monkeypatch.setattr(
+            watchdog_module.httpx, "post", lambda *a, **k: _FakeResponse()
+        )
+        assert self._poster()("https://hc-ping.com/x") is False
+
+    def test_posts_empty_body_with_the_5s_timeout_constant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 163 fixer round: nothing previously asserted on the
+        `httpx.post` call itself — a fake `resp` swallowing all args/kwargs
+        would still pass every test above even if the timeout were dropped
+        or changed, or if a payload (json/data/content/files) were added,
+        which would violate D2b/the 'empty POST, no payload' network-model
+        claim."""
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        captured: dict[str, object] = {}
+
+        class _FakeResponse:
+            status_code = 200
+
+        def _fake_post(url: str, **kwargs: object) -> _FakeResponse:
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return _FakeResponse()
+
+        monkeypatch.setattr(watchdog_module.httpx, "post", _fake_post)
+        assert self._poster()("https://hc-ping.com/x") is True
+
+        assert captured["url"] == "https://hc-ping.com/x"
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs.get("timeout") == watchdog_module.DEADMAN_POST_TIMEOUT_S
+        assert watchdog_module.DEADMAN_POST_TIMEOUT_S == 5.0
+        assert "json" not in kwargs
+        assert "data" not in kwargs
+        assert "content" not in kwargs
+        assert "files" not in kwargs
+
+
+# ---------- Plan 163 T2/T3: run_once dead-man heartbeat contract ------------
+#
+# THE HEARTBEAT CONTRACT: exactly once after every tick that COMPLETES AND
+# PERSISTS successfully — regardless of unhealthy check results or failed
+# Slack delivery, but NOT if the tick raised before persistence. A `finally`
+# heartbeat would be a bug: it would mark a crashed/incomplete tick as
+# healthy (a false all-clear) — the exact class of failure this plan exists
+# to eliminate.
+
+
+class _DeadmanRecorder:
+    def __init__(self, succeed: bool = True) -> None:
+        self.calls: list[str] = []
+        self.succeed = succeed
+
+    def __call__(self, url: str) -> bool:
+        self.calls.append(url)
+        return self.succeed
+
+
+class _RaisingDeadmanPoster:
+    def __call__(self, url: str) -> bool:
+        raise RuntimeError("deadman endpoint exploded")
+
+
+class _RaisingSlackPoster:
+    def __call__(self, url: str, message: str) -> bool:
+        raise RuntimeError("slack endpoint exploded")
+
+
+class _RaisingProbe:
+    def __call__(self, url: str) -> HealthProbeResult:
+        raise RuntimeError("probe exploded before persistence")
+
+
+def _write_deadman_url(
+    tmp: Path, url: str = "https://hc-ping.com/test-check-id"
+) -> Path:
+    p = tmp / "deadman_url"
+    p.write_text(url + "\n")
+    return p
+
+
+def _config_with_deadman(
+    tmp_path: Path,
+    *,
+    deadman_path: Path | None = None,
+    backup_dir: Path | None = None,
+) -> WatchdogConfig:
+    base = _config(tmp_path, backup_dir=backup_dir)
+    try:
+        return _replace(
+            base, deadman_url_path=deadman_path or (tmp_path / "no_deadman_url_here")
+        )
+    except TypeError:
+        pytest.fail("WatchdogConfig.deadman_url_path not implemented (Plan 163 T4)")
+
+
+class TestRunOnceDeadmanHeartbeat:
+    def test_url_file_present_pings_exactly_once(self, tmp_path: Path) -> None:
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(tmp_path, deadman_path=deadman_path)
+        deadman = _DeadmanRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert deadman.calls == ["https://hc-ping.com/test-check-id"]
+
+    def test_url_file_absent_zero_pings_no_error(self, tmp_path: Path) -> None:
+        cfg = _config_with_deadman(tmp_path)  # deadman path never written
+        deadman = _DeadmanRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert deadman.calls == []
+
+    def test_unhealthy_tick_still_pings(self, tmp_path: Path) -> None:
+        # The case most likely to be broken by a well-meaning refactor: an
+        # UNHEALTHY tick (failing health probe) must still emit the
+        # heartbeat — a ping means "the tick completed", NOT "the stack is
+        # healthy" (Plan 163 D2).
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(tmp_path, deadman_path=deadman_path)
+        deadman = _DeadmanRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_fail_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert len(deadman.calls) == 1
+
+    def test_raising_deadman_poster_does_not_propagate_and_state_persisted(
+        self, tmp_path: Path
+    ) -> None:
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(tmp_path, deadman_path=deadman_path)
+
+        # Must NOT raise.
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=_RaisingDeadmanPoster(),
+        )
+
+        assert cfg.state_path.exists()
+
+    def test_tick_that_raises_before_persistence_does_not_ping(
+        self, tmp_path: Path
+    ) -> None:
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(tmp_path, deadman_path=deadman_path)
+        deadman = _DeadmanRecorder()
+
+        with pytest.raises(RuntimeError, match="probe exploded"):
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_RaisingProbe(),
+                slack_poster=_SlackRecorder(),
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                deadman_poster=deadman,
+            )
+
+        assert deadman.calls == []
+
+    def test_ping_observes_state_already_persisted_on_disk(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 163 fixer round: none of the tests above actually prove the
+        ping happens AFTER `state.dump(...)` — they only prove it happens
+        (or doesn't) for a given outcome, which would equally pass if the
+        implementation pinged immediately BEFORE `state.dump(...)` (the
+        plan's central false-all-clear bug: an implementation that pings
+        before persisting would mark an incomplete tick healthy). This test
+        fails under that bug: the injected poster inspects the state file
+        AT THE MOMENT it is invoked and requires it to already exist with
+        this tick's persisted content.
+        """
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(tmp_path, deadman_path=deadman_path)
+        assert not cfg.state_path.exists()
+
+        observed: dict[str, object] = {}
+
+        def _poster(url: str) -> bool:
+            observed["state_persisted"] = cfg.state_path.exists()
+            if cfg.state_path.exists():
+                payload = json.loads(cfg.state_path.read_text())
+                observed["consecutive_health_failures"] = payload[
+                    "consecutive_health_failures"
+                ]
+            return True
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_fail_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=_poster,
+        )
+
+        assert observed["state_persisted"] is True
+        # A failing health probe on a fresh state increments the counter to
+        # 1 — proves the poster sees THIS tick's write, not a stale/absent
+        # file merely left over from a previous test.
+        assert observed["consecutive_health_failures"] == 1
+
+    def test_dump_failure_before_persistence_suppresses_heartbeat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Locks the other half of the same ordering claim: if
+        `state.dump(...)` itself raises (persistence did NOT complete), the
+        exception must propagate out of `run_once` (contract: 'NOT if the
+        tick raised') and the dead-man poster must never be called —
+        proving the ping is gated on `dump()` actually succeeding, not just
+        textually placed after the call.
+        """
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(tmp_path, deadman_path=deadman_path)
+        deadman = _DeadmanRecorder()
+
+        def _raise_dump(self: WatchdogState, path: Path) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(WatchdogState, "dump", _raise_dump)
+
+        with pytest.raises(OSError, match="disk full"):
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_ok_probe,
+                slack_poster=_SlackRecorder(),
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                deadman_poster=deadman,
+            )
+
+        assert deadman.calls == []
+
+
+class TestSlackExceptionDuringBackupTransition:
+    """Plan 163 T3 — an UNEXPECTED Slack-poster exception during a backup
+    stale/recovered transition must not exit `run_once` before
+    `backup_notification_pending` is updated AND persisted (the Plan 162
+    Phase A delivery-failure-survival transition), and the dead-man
+    heartbeat must still be attempted exactly once."""
+
+    def test_raising_slack_delivery_preserves_pending_and_still_pings(
+        self, tmp_path: Path
+    ) -> None:
+        # No dumps present at all -> newest_backup_mtime returns None ->
+        # is_stale=True on a state that starts with no prior incident, so
+        # this tick owes exactly one "stale" notification.
+        missing_backup_dir = tmp_path / "pg_dumps_missing"
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(
+            tmp_path, deadman_path=deadman_path, backup_dir=missing_backup_dir
+        )
+        cfg.slack_path.write_text("https://hooks.slack.com/services/T00/B00/XXX\n")
+        deadman = _DeadmanRecorder()
+
+        # Must NOT raise even though the Slack poster explodes while
+        # attempting the stale-backup alert.
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_RaisingSlackPoster(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert state.backup_notification_pending == "stale"
+        reloaded = WatchdogState.load(cfg.state_path)
+        assert reloaded.backup_notification_pending == "stale"
+        assert len(deadman.calls) == 1
+
+
+def _check_health_branch_state(state: WatchdogState) -> None:
+    assert state.consecutive_health_failures == 1
+
+
+def _check_backup_branch_state(state: WatchdogState) -> None:
+    assert state.backup_notification_pending == "stale"
+
+
+def _check_bafu_forecast_branch_state(state: WatchdogState) -> None:
+    assert state.consecutive_bafu_failures == 1
+
+
+def _check_bafu_observation_branch_state(state: WatchdogState) -> None:
+    assert state.consecutive_bafu_obs_failures == 1
+
+
+class TestRaisingSlackPosterAcrossAllFourAlertBranches:
+    """Plan 163 fixer round (minor 3): `TestSlackExceptionDuringBackupTransition`
+    above locks the raising-poster scenario for exactly ONE of the four
+    Slack call sites (backup). A regression reintroducing a RAW
+    `slack_poster(...)` call — instead of the `_safe_slack_post(...)`
+    wrapper — in the health, BAFU-forecast or BAFU-observation branch would
+    pass every OTHER existing test, because none of them drives a raising
+    poster through those three branches. Parameterizes the identical
+    scenario across all four sites: each case's own hysteresis/pending
+    field must be correctly PERSISTED to disk, and exactly one dead-man
+    heartbeat must be attempted, even though the Slack poster explodes.
+
+    Each case is set up so ONLY its target branch's condition triggers an
+    alert (the other three checks report healthy/fresh), isolating which
+    call site is actually exercised.
+    """
+
+    @pytest.mark.parametrize(
+        ("probe", "bafu_probe", "bafu_obs_probe", "backup_fresh", "check"),
+        [
+            pytest.param(
+                _fail_probe,
+                _bafu_ok_probe,
+                _bafu_obs_ok_probe,
+                True,
+                _check_health_branch_state,
+                id="health",
+            ),
+            pytest.param(
+                _ok_probe,
+                _bafu_ok_probe,
+                _bafu_obs_ok_probe,
+                False,
+                _check_backup_branch_state,
+                id="backup",
+            ),
+            pytest.param(
+                _ok_probe,
+                _bafu_stale_probe,
+                _bafu_obs_ok_probe,
+                True,
+                _check_bafu_forecast_branch_state,
+                id="bafu_forecast",
+            ),
+            pytest.param(
+                _ok_probe,
+                _bafu_ok_probe,
+                _bafu_obs_stale_probe,
+                True,
+                _check_bafu_observation_branch_state,
+                id="bafu_observation",
+            ),
+        ],
+    )
+    def test_raising_slack_poster_persists_state_and_pings_once(
+        self,
+        tmp_path: Path,
+        probe: object,
+        bafu_probe: object,
+        bafu_obs_probe: object,
+        backup_fresh: bool,
+        check: object,
+    ) -> None:
+        backup_dir = (
+            _make_fresh_backup(tmp_path, hours_ago=1.0)
+            if backup_fresh
+            else tmp_path / "pg_dumps_missing"
+        )
+        deadman_path = _write_deadman_url(tmp_path)
+        cfg = _config_with_deadman(
+            tmp_path, deadman_path=deadman_path, backup_dir=backup_dir
+        )
+        cfg.slack_path.write_text("https://hooks.slack.com/services/T00/B00/XXX\n")
+        deadman = _DeadmanRecorder()
+
+        # Must NOT raise, regardless of which branch's Slack call explodes.
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=probe,  # type: ignore[arg-type]
+            slack_poster=_RaisingSlackPoster(),
+            bafu_probe=bafu_probe,  # type: ignore[arg-type]
+            bafu_obs_probe=bafu_obs_probe,  # type: ignore[arg-type]
+            deadman_poster=deadman,
+        )
+
+        check(state)  # type: ignore[operator]
+        reloaded = WatchdogState.load(cfg.state_path)
+        check(reloaded)  # type: ignore[operator]
+        assert len(deadman.calls) == 1
+
+
+# ---------- Plan 163 T4: CLI wiring for --deadman-url-path -------------------
+
+
+class TestMainCliDeadmanWiring:
+    """`plutil -lint` on the plist proves XML validity, not that the
+    parsed `--deadman-url-path` value reaches `run_once`'s config — this
+    closes that specific gap."""
+
+    def test_deadman_url_path_flag_reaches_run_once_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        captured: dict[str, WatchdogConfig] = {}
+
+        def _fake_run_once(
+            *, config: WatchdogConfig, **_kwargs: object
+        ) -> WatchdogState:
+            captured["config"] = config
+            return WatchdogState()
+
+        monkeypatch.setattr(watchdog_module, "run_once", _fake_run_once)
+        monkeypatch.setattr(
+            watchdog_module, "configure_cli_logging", lambda *_a, **_k: None
+        )
+
+        custom_path = tmp_path / "custom_deadman_url"
+        exit_code = watchdog_module.main(["--deadman-url-path", str(custom_path)])
+
+        assert exit_code == 0
+        assert captured["config"].deadman_url_path == custom_path
+
+    def test_default_deadman_url_path_is_the_module_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        captured: dict[str, WatchdogConfig] = {}
+
+        def _fake_run_once(
+            *, config: WatchdogConfig, **_kwargs: object
+        ) -> WatchdogState:
+            captured["config"] = config
+            return WatchdogState()
+
+        monkeypatch.setattr(watchdog_module, "run_once", _fake_run_once)
+        monkeypatch.setattr(
+            watchdog_module, "configure_cli_logging", lambda *_a, **_k: None
+        )
+
+        exit_code = watchdog_module.main([])
+
+        assert exit_code == 0
+        assert captured["config"].deadman_url_path == Path(
+            str(watchdog_module.DEFAULT_DEADMAN_PATH)
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
