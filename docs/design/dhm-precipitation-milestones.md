@@ -83,7 +83,7 @@ a *distribution* decision of the same class.
 is already decided: never commit, synthetic fixtures only.
 
 ### M-D2 · Station coordinates and elevation
-**Depends: —** Hard-blocks M-A5, M-A6 and M-A8. *(Not M-A7 — that needs no coordinates.)*
+**Depends: —** Hard-blocks M-A5, M-A5b, M-A6 and M-A8. *(Not M-A7 — that needs no coordinates.)*
 **LANDED 2026-08-13** — coordinates and elevations for all 26 live stations, verified against the
 live station set (exact match, all inside Nepal, no duplicate locations). Stored **untracked** at
 `data/dhm_precip/station_coordinates.csv`.
@@ -305,32 +305,50 @@ Extract ERA5-Land at the 26 station locations.
 **Choose the extraction operator explicitly** (OD-1) — nearest cell centre, containing cell, or
 bilinear. Unlike the polygon route this is a one-line parameter and **cheaply reversible**, so the
 decision is no longer front-loaded; but it must still be stated, and its consequences measured.
-Record the ERA5 grid coordinates and **model orography elevation** per station, quantify the
-station-to-grid elevation mismatch, and run at least one sensitivity comparison against a second
-operator.
+**Decided (Plan 174, D1): nearest cell centre is THE operator**, locked before any numbers were seen
+— precipitation is not a smooth field, and bilinear (a convex combination of four cells) cannot
+preserve a cell-scale maximum, biasing exactly the tail this track cares about. Record the ERA5 grid
+coordinates and **model orography elevation** per station (with an `orography_source` enum —
+`MODEL_OROGRAPHY` or `DEM_PROXY`, a public-DEM fallback with a named, criteria-gated candidate list,
+Plan 174 D3a), quantify the station-to-grid elevation mismatch (both sides carrying an explicit
+vertical-datum enum — the station side is `UNKNOWN` until M-D2 or DHM states one, Plan 174 D3b), and
+run at least one sensitivity comparison against bilinear, reported as a **named operator-sensitivity
+envelope** (never an uncertainty band, never a decision gate — Plan 174 D1a).
 
-**Also extract IMERG at the same 26 points** (owner 2026-08-13). Nearly free once the extraction
-pipeline exists, and it converts M-A6 into a **three-way comparison — gauge vs ERA5-Land vs IMERG**.
-Use **IMERG Final** here (this is characterisation, not the D4 adjudication role that required
-satellite-only independence — and our track dropped adjudication when wholesale zero-run removal was
-chosen). Record the product version and the same grid/elevation diagnostics as for ERA5-Land.
+**IMERG split out — Plan 174 (2026-08-16).** An earlier revision of this section made "also extract
+IMERG at the same 26 points" part of this milestone's exit. Plan 174 corrected that: no implemented,
+frozen IMERG acquisition pipeline exists (a documented survey of access routes is not code), and the
+remaining work is a **different shape** from ERA5-Land's — half-hourly native resolution needing
+aggregation to hourly, and a rate (mm/hr) convention rather than an accumulation, so none of the
+ERA5-Land deaccumulation logic transfers. IMERG acquisition + extraction is its own milestone,
+**M-A5b** (below). The rationale for wanting IMERG at all (satellite diurnal-phase trustworthiness at
+our elevations; the Dawadi-vs-Adhikari peak-timing discrepancy) is unchanged and now lives there.
 
-Rationale, and what it buys without committing to any correction design:
-- **Tests whether satellite diurnal phase is trustworthy at OUR stations and OUR elevations.** Hunt
-  et al. note GPM-IMERG *"performance falls at higher elevations or when quantifying extreme
-  precipitation events"* — the caveat matters most exactly where Dudh Koshi sits.
-- **Settles a live discrepancy in the Nepali literature on our own data**: Dawadi et al. (IMERG) put
-  the national monsoon peak near midnight; Adhikari et al. (63 gauges) put it at 21:00. Our
-  elevation-stratified result suggests sampling explains the gap — a station network over-represents
-  the hills, an area-weighted satellite includes the Terai. Testable here.
-- **Preserves the strongest Phase-2 option** (below) by measurement rather than assumption.
+**Exit:** extracted ERA5-Land series (nearest, primary) + named operator, recorded in the extraction
+manifest, never implied by code + per-station elevation mismatch table (`orography_source`, product
+id/version, both vertical-datum enums) + the operator-sensitivity envelope, all regenerable from the
+committed pipeline into an identity-addressed bundle. **Not** IMERG (M-A5b) and **not** the
+Kirtipur/Khumaltar gauge-pair diagnostic (that needs the M-A3 mask, so it moved to M-A6, below).
 
-**Exit:** extracted ERA5-Land **and IMERG** series + named operator + per-station elevation mismatch
-table + the operator-sensitivity comparison, all regenerable from the committed pipeline.
+### M-A5b · IMERG acquisition + extraction
+**Depends: M-D2.** Mirrors M-A4 → M-A5 for IMERG: acquisition (half-hourly, mm/hr rate convention,
+aggregate to hourly — none of ERA5-Land's deaccumulation logic transfers) then point extraction at the
+26 station locations, using **IMERG Final** (characterisation, not the D4 adjudication role that
+required satellite-only independence — our track dropped adjudication when wholesale zero-run removal
+was chosen). Record the product version and the same grid/elevation diagnostics as M-A5's ERA5-Land
+side. Split from M-A5 by Plan 174 (2026-08-16): the milestone doc previously named this "nearly free
+once the extraction pipeline exists," which undercounted a distinct acquisition shape (see M-A5
+above). No plan has been written for this milestone yet.
+
+**Exit:** extracted IMERG series + named operator + per-station elevation mismatch table + the
+operator-sensitivity comparison, all regenerable from the committed pipeline — the same shape as
+M-A5's exit, for IMERG.
 
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC
 axis, so the gauge side must be normalised before any pairing.)* **The point of this track.**
+**Two-way now** (gauge vs ERA5-Land); **three-way once M-A5b lands** (adds IMERG) — M-A5b is not a
+dependency of this milestone's current exit, only of its eventual three-way extension.
 
 Scale- and season-stratified per vision D3, under rules 1–3. Warm season quantitative; cold-season
 high-altitude qualitative only (D6). ERA5-Land is never a QC input (D4).
@@ -347,8 +365,21 @@ information. Characterise it via extraction-operator sensitivity (M-A5), station
 difference, within-cell topographic spread and neighbouring-cell variability — and label it a
 characterisation, not a decomposition (this downgrades vision D3a's wording).
 
+**Within-cell observed gauge variability (Plan 174 D6 handoff).** Kirtipur and Khumaltar fall in one
+ERA5-Land 0.1° cell, 4.33 km apart, 30 m different in elevation — ERA5 returns one identical series
+for both, so their gauge-side disagreement is the only empirical representativeness signal this track
+can compute. It belongs here, not in M-A5, because it needs the M-A3 mask (M-A5's D4 forbids
+gauge/mask coupling) and both stations' measurement error confounds it — Khumaltar alone swings 294 mm
+(2023) to 1,504 mm (2024), an undocumented-cause but disqualifying-for-a-"clean-bound" 5x inter-annual
+change. Compute it on timestamps **retained by the M-A3 mask for both stations simultaneously**,
+report the common-retained-hour count and each station's exposure alongside every statistic, and state
+the implication only in its conditional form: *if both gauges are unbiased over the retained sample,
+half the observed pair discrepancy is a lower bound on the within-cell representativeness contribution
+at ~4.3 km separation.* **n = 1 pair, one valley, one separation — never a network-wide estimate.**
+
 **Exit:** error characterisation; every result signed per D6 (a post-QC gauge total is a *lower
-bound*), carrying the selection caveat, its named estimand, and the retained fraction it rests on.
+bound*), carrying the selection caveat, its named estimand, and the retained fraction it rests on;
+plus the within-cell observed gauge variability figure above, with its honest limits attached.
 
 ### M-A7 · Temporal characterisation
 **Depends: M-A2, M-A3.** Parallel to M-A5/M-A6.
@@ -559,6 +590,7 @@ proving the intended binding rather than treating "unused" as an invariant.
     {"id": "M-A3",  "depends_on": ["M-A2", "M-I1"]},
     {"id": "M-A4",  "depends_on": []},
     {"id": "M-A5",  "depends_on": ["M-D2", "M-A4"]},
+    {"id": "M-A5b", "depends_on": ["M-D2"]},
     {"id": "M-I2",  "depends_on": ["M-D1", "M-A3"]},
     {"id": "M-A6",  "depends_on": ["M-A3", "M-A5"]},
     {"id": "M-A7",  "depends_on": ["M-A2", "M-A3"]},
@@ -608,7 +640,8 @@ Unblocked regardless: **M-D1, M-D3, M-A1, M-A4, M-I1, M-I3.**
 ## Phase-2 hypothesis: satellite-informed diurnal correction (recorded 2026-08-13)
 
 **Recorded as a hypothesis, not a decision** — vision D7 still holds that Phase 1 commits to no
-correction design. M-A5's IMERG extraction exists to let M-A6 *measure* whether this is viable.
+correction design. M-A5b's IMERG extraction exists to let M-A6 *measure* whether this is viable, once
+M-A5b lands (Plan 174 split IMERG out of M-A5 — see M-A5/M-A5b above).
 
 **The idea.** Use a satellite-derived diurnal climatology to redistribute an IFS 3 h/6 h basin total
 across hours, instead of inheriting IFS's own (badly displaced) timing. Its decisive advantage over
@@ -621,7 +654,7 @@ hour). Disaggregating a 3 h/6 h total is the former, which is the tractable one.
 
 **Three conditions it must clear before anyone builds it:**
 1. **Satellite phase must be trustworthy at our elevations** — IMERG performance degrades at high
-   elevation and passive-microwave retrieval is weak over snow and ice. M-A5/M-A6 test this directly.
+   elevation and passive-microwave retrieval is weak over snow and ice. M-A5b/M-A6 test this directly.
 2. **The satellite-vs-gauge phase discrepancy must be explained** (midnight vs 21:00, above). Treating
    satellite phase as truth while it disagrees with gauges at the national scale is unsafe.
 3. **It must matter hydrologically.** Dudh Koshi is ~4,000 km² with a response time of order 12–24 h;
@@ -662,8 +695,9 @@ Phase 1 commits to no correction design.
   (rule 1); every masked-sample result must state the fraction removed.
 - ~~M-I1 ships ahead of its data path~~ — **closed by OD-3**: M-A3 exercises it on real data.
 - **The extraction operator still shapes the answer**, even though it is now cheap to change: an
-  ERA5-Land cell averages ~110 km² of Himalayan relief. M-A5's sensitivity comparison bounds this;
-  it does not remove it.
+  ERA5-Land cell averages ~110 km² of Himalayan relief. M-A5's sensitivity comparison **quantifies
+  operator spread** as a named envelope (Plan 174 D1a — not an uncertainty bound and not a decision
+  gate: nearest is locked, D1); it does not remove the underlying representativeness gap.
 - **No effort estimates anywhere**, so "critical path" remains an assertion about topology.
 - **We validate ERA5-Land the dataset, not ERA5-Land as our pipeline delivers it.** Our models are
   forced through the Gateway; this track reads CDS. Parity between the two is a real question, parked

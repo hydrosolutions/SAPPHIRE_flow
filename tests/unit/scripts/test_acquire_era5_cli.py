@@ -659,8 +659,10 @@ class TestDiagnoseStage:
     -acquired-on-disk) raw window rather than left as dead code reachable
     only from synthetic-fixture unit tests."""
 
-    def _write_diagnosable_raw(self, tmp_path: Path, *, reset_hour: int) -> None:
-        valid_time = np.datetime64("2021-10-01T00:00") + np.arange(24 * 5) * _HOUR
+    def _write_diagnosable_raw(
+        self, tmp_path: Path, *, reset_hour: int, n_days: int = 31
+    ) -> None:
+        valid_time = np.datetime64("2021-10-01T00:00") + np.arange(24 * n_days) * _HOUR
         rng = np.random.default_rng(0)
         true_mm_1d = rng.uniform(0.1, 2.0, size=valid_time.size)
         true_mm = np.broadcast_to(
@@ -693,6 +695,45 @@ class TestDiagnoseStage:
         )
         ds["tp"].attrs["units"] = "m"
         ds.to_netcdf(path)
+        # B5/M-7 — `--stage diagnose` now reconciles the raw file against the
+        # acquisition manifest's own sha256 BEFORE decoding it, so the
+        # window must carry real acquisition provenance. A hand-placed file
+        # with no recorded origin is exactly what an untrustworthy gate
+        # accepts.
+        self._record_raw_window(tmp_path, window=window, path=path)
+
+    def _record_raw_window(
+        self, tmp_path: Path, *, window: AcquisitionWindow, path: Path
+    ) -> None:
+        from scripts.dhm_precip.era5_manifest import (
+            Era5ProvenanceManifest,
+            RawWindowRecord,
+            checksum_file,
+            load_operator_provenance,
+            manifest_path_for,
+            with_raw_window,
+            write_manifest_atomic,
+        )
+
+        provenance = load_operator_provenance(_write_provenance(tmp_path))
+        manifest = Era5ProvenanceManifest(
+            dataset="reanalysis-era5-land",
+            client_package_version="0.7.7",
+            operator_provenance=provenance,
+        )
+        manifest = with_raw_window(
+            manifest,
+            RawWindowRecord(
+                window_id=window.window_id,
+                dataset="reanalysis-era5-land",
+                request_payload={},
+                raw_request_identity="r",
+                sha256=checksum_file(path),
+                client_package_version="0.7.7",
+                downloaded_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        )
+        write_manifest_atomic(manifest, manifest_path_for(tmp_path))
 
     def test_confirms_d6_convention_and_succeeds(self, tmp_path: Path) -> None:
         self._write_diagnosable_raw(tmp_path, reset_hour=1)  # D6's own rule
@@ -731,6 +772,169 @@ class TestDiagnoseStage:
         )
         with pytest.raises(Era5TransformFailedError):
             run(args)
+
+    def test_diagnose_without_an_explicit_window_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """M-7/B5 — with no `--window` the stage resolved ALL eight D4
+        windows, including the one-hour boundary window the diagnostic must
+        reject. Exactly one explicit approved window is now required."""
+        self._write_diagnosable_raw(tmp_path, reset_hour=1)
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(NonExpressibleWindowError, match="exactly one"):
+            run(args)
+
+    def test_diagnose_of_two_windows_is_rejected(self, tmp_path: Path) -> None:
+        self._write_diagnosable_raw(tmp_path, reset_hour=1)
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--window",
+                "2021-11",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(NonExpressibleWindowError, match="exactly one"):
+            run(args)
+
+    def test_diagnose_of_the_one_hour_edge_window_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        self._write_diagnosable_raw(tmp_path, reset_hour=1)
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2026-01-01T00",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(NonExpressibleWindowError, match="whole month or year"):
+            run(args)
+
+    def test_diagnose_reconciles_the_sha256_before_decoding_the_payload(
+        self, tmp_path: Path
+    ) -> None:
+        """B5 — the diagnostic decoded the raw file and only then checksummed
+        it, so a file that disagreed with its acquisition manifest still
+        produced a record. The tampered payload here is not even valid
+        NetCDF: if the reconcile ran after the decode, the error would be a
+        decoder error rather than the typed checksum failure."""
+        self._write_diagnosable_raw(tmp_path, reset_hour=1)
+        window = AcquisitionWindow(year=2021, month=10)
+        raw_artifact_path(window.window_id, tmp_path).write_bytes(b"not a netcdf file")
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(Era5TransformFailedError, match="sha256"):
+            run(args)
+
+    def test_diagnose_of_a_window_with_no_acquisition_provenance_is_a_storage_error(
+        self, tmp_path: Path
+    ) -> None:
+        self._write_diagnosable_raw(tmp_path, reset_hour=1)
+        from scripts.dhm_precip.era5_manifest import manifest_path_for
+
+        manifest_path_for(tmp_path).unlink()
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        assert _invoke(args) == 5
+
+    def test_diagnose_of_a_sample_below_the_pinned_minimum_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        self._write_diagnosable_raw(tmp_path, reset_hour=1, n_days=5)
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(Era5TransformFailedError, match="sample_size_days"):
+            run(args)
+
+    def test_a_passing_diagnose_run_writes_a_record_that_gates_a_publish(
+        self, tmp_path: Path
+    ) -> None:
+        """The whole point of 1c: the record it writes must satisfy the
+        (now strict) passing predicate M-A5 consumes."""
+        from scripts.dhm_precip.era5_manifest import (
+            manifest_path_for,
+            passing_accumulation_diagnostic,
+            read_manifest,
+        )
+
+        self._write_diagnosable_raw(tmp_path, reset_hour=1)
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        assert run(args) == 0
+        manifest = read_manifest(manifest_path_for(tmp_path))
+        assert manifest is not None
+        assert manifest.accumulation_diagnostics["2021-10"].source_sha256
+        assert (
+            passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is not None
+        )
 
     def test_missing_raw_artifact_is_a_storage_error(self, tmp_path: Path) -> None:
         provenance = _write_provenance(tmp_path)

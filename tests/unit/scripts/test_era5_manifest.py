@@ -10,6 +10,8 @@ import pytest
 
 from scripts.dhm_precip.era5_errors import Era5StorageError
 from scripts.dhm_precip.era5_manifest import (
+    MIN_DIAGNOSTIC_SAMPLE_DAYS,
+    AccumulationDiagnosticRecord,
     Era5ProvenanceManifest,
     OperatorProvenance,
     PackingAccounting,
@@ -17,12 +19,14 @@ from scripts.dhm_precip.era5_manifest import (
     TransformYearRecord,
     checksum_file,
     load_operator_provenance,
+    passing_accumulation_diagnostic,
     publish_atomic,
     raw_request_identity,
     raw_window_is_current,
     read_manifest,
     transform_identity,
     transform_year_is_current,
+    with_accumulation_diagnostic,
     with_raw_window,
     with_transform_year,
     write_manifest_atomic,
@@ -227,6 +231,142 @@ class TestAtomicManifestWriter:
         read_back = read_manifest(path)
         assert read_back == original
         assert read_back.raw_windows == {}
+
+
+class TestAccumulationDiagnosticRecord:
+    """Plan 174 (M-A5) task 1c."""
+
+    def _manifest(self, *, raw_sha256: str | None = "a" * 64) -> Era5ProvenanceManifest:
+        """B5 — the passing predicate cross-checks the diagnostic's
+        `source_sha256` against the manifest's OWN raw-window record, so the
+        fixture must carry one. `raw_sha256=None` models a manifest with no
+        acquisition provenance for the diagnosed window."""
+        manifest = Era5ProvenanceManifest(
+            dataset="reanalysis-era5-land",
+            client_package_version="0.7.7",
+            operator_provenance=_PROVENANCE,
+        )
+        if raw_sha256 is None:
+            return manifest
+        return with_raw_window(
+            manifest,
+            RawWindowRecord(
+                window_id="2021-10",
+                dataset="reanalysis-era5-land",
+                request_payload={},
+                raw_request_identity="r",
+                sha256=raw_sha256,
+                client_package_version="0.7.7",
+                downloaded_at=datetime(2026, 8, 16, tzinfo=UTC),
+            ),
+        )
+
+    def _record(self, **overrides: object) -> AccumulationDiagnosticRecord:
+        base: dict[str, object] = {
+            "window_id": "2021-10",
+            "source_sha256": "a" * 64,
+            "reset_hour": 1,
+            "terminal_hour": 0,
+            "monotone_within_day": True,
+            "sample_size_days": 31,
+            "recorded_at": datetime(2026, 8, 16, tzinfo=UTC),
+        }
+        base.update(overrides)
+        return AccumulationDiagnosticRecord(**base)  # type: ignore[arg-type]
+
+    def test_round_trips_through_the_manifest(self, tmp_path: Path) -> None:
+        manifest = with_accumulation_diagnostic(self._manifest(), self._record())
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(manifest, path)
+        read_back = read_manifest(path)
+        assert read_back == manifest
+        assert read_back.accumulation_diagnostics["2021-10"] == self._record()
+
+    def test_manifest_written_before_this_change_still_loads(
+        self, tmp_path: Path
+    ) -> None:
+        # A manifest JSON with NO "accumulation_diagnostics" key at all (the
+        # exact shape of a pre-1c manifest on disk) must load, defaulting to
+        # {} rather than raising.
+        import json
+
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(), path)
+        raw = json.loads(path.read_text())
+        del raw["accumulation_diagnostics"]
+        path.write_text(json.dumps(raw))
+
+        read_back = read_manifest(path)
+        assert read_back is not None
+        assert read_back.accumulation_diagnostics == {}
+        assert passing_accumulation_diagnostic(read_back, expected_reset_hour=1) is None
+
+    def test_passing_diagnostic_is_found(self) -> None:
+        manifest = with_accumulation_diagnostic(self._manifest(), self._record())
+        found = passing_accumulation_diagnostic(manifest, expected_reset_hour=1)
+        assert found is not None
+        assert found.window_id == "2021-10"
+
+    def test_non_monotone_diagnostic_is_not_passing(self) -> None:
+        manifest = with_accumulation_diagnostic(
+            self._manifest(), self._record(monotone_within_day=False)
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_wrong_reset_hour_diagnostic_is_not_passing(self) -> None:
+        manifest = with_accumulation_diagnostic(
+            self._manifest(), self._record(reset_hour=3, terminal_hour=2)
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_no_diagnostic_at_all_is_absent_not_raising(self) -> None:
+        manifest = self._manifest()
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_terminal_hour_inconsistent_with_the_reset_hour_is_not_passing(
+        self,
+    ) -> None:
+        """B5 — the predicate ignored `terminal_hour` entirely, so a record
+        whose own fields contradict each other (hand-edited, or written by a
+        different diagnostic version) counted as passing."""
+        manifest = with_accumulation_diagnostic(
+            self._manifest(), self._record(terminal_hour=7)
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_sample_size_below_the_pinned_minimum_is_not_passing(self) -> None:
+        """B5/M-7 — a one-hour edge window yields `sample_size_days=0` and
+        used to satisfy the gate."""
+        manifest = with_accumulation_diagnostic(
+            self._manifest(),
+            self._record(sample_size_days=MIN_DIAGNOSTIC_SAMPLE_DAYS - 1),
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_sample_size_exactly_at_the_pinned_minimum_passes(self) -> None:
+        manifest = with_accumulation_diagnostic(
+            self._manifest(), self._record(sample_size_days=MIN_DIAGNOSTIC_SAMPLE_DAYS)
+        )
+        assert (
+            passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is not None
+        )
+
+    def test_source_sha256_disagreeing_with_the_raw_window_record_is_not_passing(
+        self,
+    ) -> None:
+        """B5 — the predicate ignored `source_sha256`, so a diagnostic run
+        against bytes that are not the ones the manifest records for that
+        window still gated a publish."""
+        manifest = with_accumulation_diagnostic(
+            self._manifest(raw_sha256="b" * 64), self._record(source_sha256="a" * 64)
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
+
+    def test_a_diagnostic_with_no_raw_window_provenance_is_not_passing(self) -> None:
+        manifest = with_accumulation_diagnostic(
+            self._manifest(raw_sha256=None), self._record()
+        )
+        assert passing_accumulation_diagnostic(manifest, expected_reset_hour=1) is None
 
 
 class TestResumeChecks:

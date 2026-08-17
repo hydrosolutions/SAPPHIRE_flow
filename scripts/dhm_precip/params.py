@@ -157,7 +157,22 @@ class DhmPrecipParams:
     passes). Measured worst case at the 7-day threshold is 0.830 (Lete) — this
     is a safeguard against a pathological case, not a filter expected to fire."""
 
+    # --- Plan 174 (M-A5) D8/2d — station-set cardinality tripwire ---
+    expected_station_count: int = 26
+    """The number of usable DHM stations the ERA5-Land point extraction
+    expects from its workbook-derived boundary inventory. Deliberately
+    hard-coded and NOT derived: 2d admitted a single inventory source, so
+    the loader's "extracted set equals the inventory" check is satisfied by
+    an inventory of any size. This pins the count independently, as a
+    tripwire on the boundary input. If a delivery legitimately changes size,
+    this number is updated here, once, as a visible decision."""
+
     def __post_init__(self) -> None:
+        if self.expected_station_count < 1:
+            raise ValueError(
+                f"expected_station_count must be >= 1, "
+                f"got {self.expected_station_count}"
+            )
         if not (self.wet_threshold_mm_per_h > 0.0):
             raise ValueError(
                 f"wet_threshold_mm_per_h must be positive, "

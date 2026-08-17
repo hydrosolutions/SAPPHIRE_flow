@@ -1,7 +1,7 @@
 ---
 status: READY
 created: 2026-08-15
-revised: 2026-08-16
+revised: 2026-08-16 (post-implementation review — 4 plan-level blockers corrected)
 plan: 174
 title: M-A5 — ERA5-Land point extraction at the 26 station locations
 scope: Extract the M-A4 hourly-mm ERA5-Land product at the 26 gauge locations with a NAMED, recorded extraction operator; acquire and freeze an orography source; record per-station grid coordinates and orography elevation; quantify station-to-grid elevation mismatch; run an operator-sensitivity comparison; propagate the IMERG scope split into the milestone doc. Explicitly NOT the gauge-vs-ERA5 comparison (M-A6), NOT IMERG (split to its own plan — no acquisition path exists), NOT any QC-mask application (the mask is the gauge side; pairing is M-A6), NOT the Kirtipur/Khumaltar gauge-pair diagnostic (moved to M-A6 — see D6), NOT a correction design.
@@ -19,6 +19,149 @@ Gated by one `/plan` round that **stalled** (3 rounds; 4 blockers, 11 majors). I
 was sound and is kept; **all four blockers were defects in machinery the loop itself invented**, and
 each is resolved above by removing structure rather than adding more (D5.0, the `OrographySpec` /
 `OrographySourceRecord` split, 1b's narrowed scope, D7's three publication corrections).
+
+**Post-implementation fixer round (2026-08-17), against commit `63d88a7`.** An independent Codex pass
+over the committed diff found 3 blockers, 4 majors and 1 minor, all now fixed in code with locking
+tests (test-soundness proven fail-against-buggy for every correctness fix):
+
+- **D7 P7a's "ASSERT AGREEMENT" decision was documented but not implemented** —
+  `RealOrographyDownloader.download()` still took `spec: object` and ignored it (`# noqa: ARG002`,
+  the exact defect the grill-me decision above was written to remove). Fixed:
+  `_assert_spec_matches_request` (`extract_era5.py`) asserts `product_id`/`download_url` before any
+  CDS request, and the manifest's `orography_spec.provenance` now labels
+  `MACHINE_VERIFIED_SPEC_FIELDS` vs `OPERATOR_ATTESTED_SPEC_FIELDS` per P7a.
+- **P7's own live instance — `zero_policy` — was still hashed-but-unread.** Fixed: the quantile
+  population in `_add_quantile_rows` now branches on `params.zero_policy`
+  (`era5_extract.build_operator_sensitivity_table`); `n_wet_nearest`/`n_wet_bilinear` still report the
+  literal wet-hour counts regardless of policy. `quantile_definition` and `_xarray_encoding` now read
+  the frozen parameter/spec objects instead of duplicating literals, and `extraction_identity`'s
+  payload is split into labelled `value_inputs`/`invalidation_inputs` (P7a).
+- **`reopen_and_validate_bundle` (P4a) validated far less than D9 declares** — no station
+  uniqueness/equality across the series and elevation table, no required-column/enum checks, no
+  series dims/dtype/time-axis/encoding/attrs checks, no manifest-identity-consistency check. Fixed:
+  one shared D9 validator in `era5_extract_manifest.py` now covers all of it; a malformed bundle that
+  previously published cleanly (the `{station, marker}`-only shape the old test fixture used) is now
+  refused.
+- **M-8's raster schema was pinned but never enforced on reuse** — `verify_orography_materialisation`
+  never reopened the raster or checked `raster_schema_version`. Fixed: `assert_orography_raster_schema`
+  (`era5_orography.py`) is now the one validator run both after write and on every reuse; the schema
+  itself grew an encoding/compression policy and a required-attrs list.
+- Three further majors: `build_station_grid_elevation_table` now reads its nearest-cell indices off the
+  already-computed primary `ExtractedSeries` instead of an independent `np.argmin` lookup (the two
+  could disagree on an exact grid-midpoint tie-break); non-finite gating/accounting now uses
+  `np.isfinite` (an isolated `+inf`/`-inf` previously passed the D11.2 gate silently, tracked via a new
+  `ExtractedSeries.n_inf` field); the real orography raw reader now handles a service-shaped
+  `z(valid_time, latitude, longitude)` response instead of only ever stripping a literal `time` dim.
+- Minor: a missing annual product now exits 2 (`ExtractionInputAbsentError`), not 5.
+
+**Second post-implementation fixer round (2026-08-17), against commit `a88c477`.** An independent
+Codex pass over the committed diff found 3 more blockers and 4 more majors, all now fixed with locking
+tests (test-soundness proven fail-against-buggy for every correctness fix, several via real
+`threading.Barrier` concurrency, not simulation):
+
+- **P1a's run-number reservation was still identity-scoped, not identity-independent** — it reserved a
+  number by `mkdir`ing the identity-labelled directory `<NNNN>-<identity>/` directly, so two
+  DIFFERENT identities racing for the same `NNNN` both succeeded (their paths never collide) and were
+  both assigned run number 0000 — the exact ambiguous order P1a exists to rule out, moved one layer
+  down. Fixed (see the corrected P1a text above): an identity-independent `.run-<NNNN>.reserve` marker
+  (`os.open(..., O_CREAT | O_EXCL)`) is reserved BEFORE the identity-labelled `mkdir`.
+- **The D9 bundle validator still had real gaps** despite the previous round's "one shared validator"
+  fix: `valid_time` was checked only STRICTLY INCREASING, not exactly hourly; the frozen encoding spec
+  checked only `zlib`, not `complevel`/`_FillValue`/`chunksizes`; enum columns silently `drop_nulls()`d
+  before comparing, so an entirely-null column passed; the sensitivity STATION-scope station set was
+  checked as a SUBSET (`<=`) of the series' stations, not exact equality, and nothing checked that
+  every station carried the same row count (the "complete matrix"); and publication validated only the
+  manifest's `extraction_identity` STRING, never that `orography_spec`/`orography_source_record`/
+  `accumulation_diagnostic`/`station_accounting` were actually populated (an empty `{}` published
+  cleanly). Fixed: all of the above are now checked in `reopen_and_validate_bundle`; the shared test
+  fixture (`_write_payload_files`) is rewritten to write through `points_xarray_encoding` — the SAME
+  production spec the validator checks against — so the "valid" fixture can no longer drift from what
+  the real writer emits.
+- **`ExtractionManifest` omitted the very inputs it hashed** — seasons, thresholds, `zero_policy`, the
+  quantile grid, output format/encoding and both datum inputs were part of `extraction_identity` but
+  nowhere else recorded, so the digest could not be independently recomputed or interpreted downstream.
+  Fixed: `ExtractionIdentityInputs` is now the ONE typed snapshot both `extraction_identity` (digest)
+  and the new `ExtractionManifest.identity_inputs` field (recorded snapshot) read;
+  `recompute_extraction_identity` closes the loop. Publication requires `identity_inputs` to be
+  structurally complete (not byte-equal to the identity string, deliberately — P3 keeps
+  `extraction_identity` a LABEL, and several publication-MECHANICS tests intentionally use short
+  human-readable labels that were never meant to recompute from anything).
+- **Two identity inputs the writer never actually read**: `_FillValue` was hard-coded
+  (`float("nan")`) instead of read from `POINTS_OUTPUT_ENCODING_SPEC`, and the precipitation dtype cast
+  was a separately hard-coded `np.float32` literal independent of `output_dtype`. Fixed: the encoding
+  spec now lives in `era5_extract_manifest.py` (the module that also validates against it) and both the
+  writer and the identity read the SAME dict; extract_era5.py re-exports the historical names.
+- **Same-identity concurrent runs shared and destructively reused one staging directory**
+  (`.staging/<identity>/`, `rmtree`d and recreated on every call) — a later run could delete or
+  interleave an earlier run's staged payload. Fixed: staging is now a fresh, per-invocation-unique
+  directory (`.staging/<identity>--<token>/`).
+- **The orography reuse validator still had real gaps**: the frozen schema's `encoding` block
+  (compression, fill policy) was hashed into `orography_identity` but never enforced on reopen; the
+  required-attrs check verified PRESENCE only, never agreement with the CURRENT spec's values; and
+  `assert_grid_matches` ran once at write time but never again on reuse, so a rehashed raster with
+  uncompressed encoding, wrong provenance attrs, or shifted coordinates still passed reuse. Fixed:
+  `assert_orography_raster_schema` gained optional `spec`/`expected_lat`/`expected_lon` parameters that
+  both write and reuse now always supply.
+- **The orography re-fetch verification only compared hashes for files present in the OLD record** —
+  an added, removed or renamed file was silently accepted. Fixed: the complete `{path: (sha256, size)}`
+  mapping is compared for equality.
+
+**Third post-implementation fixer round (2026-08-17), against commit `5ab9c6c`.** An independent Codex
+pass over the committed diff found 2 more blockers and 5 more majors (plus 1 minor and a version/tag
+housekeeping finding), all now fixed with locking tests (test-soundness proven fail-against-buggy for
+every correctness fix):
+
+- **`download_url` was falsely labelled MACHINE-VERIFIED** — the assertion compared
+  `spec.download_url` against a SECOND hardcoded module constant that `cdsapi.Client().retrieve()`
+  never reads at all (`retrieve()` takes only a dataset name and a payload dict; no URL is ever
+  consumed), so the "verification" was a tautology between two literals this module itself wrote — a
+  mutated `download_url` test could never have caught a downloader issuing the wrong real request.
+  Fixed: `download_url` moves to `OPERATOR_ATTESTED_SPEC_FIELDS`; the ACTUAL request
+  (`_build_geopotential_request`, capturing dataset/variable/area) is what gets recorded, in a new
+  `effective_cds_request` provenance field, and a new test captures the REAL `cdsapi.Client().retrieve()`
+  call arguments (via a patched fake client) and asserts against them directly — the request, not two
+  matching constants.
+- **P4's publication predicate accepted truncated and semantically invalid series** —
+  `_assert_series_schema` checked only that adjacent `valid_time` stamps were hourly, never the axis's
+  actual LENGTH, never that the two series (nearest/bilinear) shared one axis, never that the PRIMARY
+  series was non-finite-free on reopen (D11.2 was checked only in memory, before writing), and never the
+  pinned `valid_time` units/dtype or the fixed-length `station` encoding. The suite's own
+  `_write_payload_files` fixture (3 hours) proved the gap: a severely truncated bundle published as
+  "valid". Fixed: `_assert_series_schema` now takes `expected_hour_count` (computed by the CLI from
+  `STUDY_YEARS` via the new `era5_request.expected_total_hours`) and `require_finite` (True for nearest
+  only), and checks coverage, cross-series axis equality, primary finiteness, `valid_time`
+  units/dtype, and `station` fixed-length encoding — six new locking tests, one per gap.
+- **The sensitivity "complete matrix" validator checked only equal ROW COUNTS** — one arbitrary q0.5
+  row per station plus one summary row passed; two stations reporting entirely DIFFERENT quantiles
+  (equal counts, different content) passed undetected, and nothing validated ACROSS_STATION coverage at
+  all. Fixed: the validator now derives the exact `(season, statistic, quantile)` composite-key SET per
+  station (also catching within-station duplicate keys), requires every station's key set to be
+  IDENTICAL, and requires the ACROSS_STATION key set to equal it exactly.
+- **Manifest provenance/accounting validation remained presence-only** — it did not require the P7a
+  `provenance` labels or `rejected_candidates`, permitted an empty or malformed `downloaded_files` list,
+  never checked the accumulation diagnostic's VALUES (a recorded FAILING diagnostic still published),
+  and accepted an arbitrary `station_accounting` operator/station map with counts that did not reconcile
+  to `n_hours`. Fixed: `_assert_required_sections_present` now checks all of the above, cross-referencing
+  the series' own station set.
+- **Live orography acquisition failures could escape the typed CLI contract** — `cdsapi.Client()`
+  construction and `.retrieve()` were unguarded, unlike the established acquisition client
+  (`era5_acquire.RealCdsClient`): missing credentials or a transport error could surface as an arbitrary
+  exception (exit 1) with an un-redacted message. Fixed: both are wrapped into `Era5OrographyError` (exit
+  3) with `redact_secrets` applied.
+- **P7 still hashed value inputs the writers/computation did not read**: `semantic_timezone_attr` was
+  hashed but the writer read a separately duplicated module constant; `output_format` was hashed while
+  the writer always hard-codes `h5netcdf` (no second format is implemented to branch on);
+  `DELTA_STATISTICS` affects only the identity, never what gets computed; orography `elevation_units`
+  was hashed while the writer hard-coded `"m"` and validation never checked the written attribute. Fixed:
+  the writer now reads `semantic_timezone_attr`/`elevation_units` from the SAME frozen spec dicts that
+  are hashed (removing the duplicated constants); `output_format`/`delta_statistics` — genuinely
+  unread by any branch — move to `invalidation_inputs` (P7a's own escape hatch, mirroring
+  `output_schema_version`); the orography validator now checks `elevation_units` on every reopen.
+- **Minor**: exact ties (`delta == 0.0`) were counted as a POSITIVE sign in `sign_agreement_fraction`,
+  so an all-tied population reported `1.0`, misleadingly implying systematic ordering. Fixed: ties are
+  excluded from the majority-sign vote; an all-tied population reports `None` (no direction).
+- **Version/tag housekeeping**: this fixer round folds its own patch bump and tag into the commit
+  sequence per CLAUDE.md's mandatory version-bump workflow.
 
 ### Residual review findings — KNOWN, accepted into implementation
 
@@ -39,12 +182,92 @@ them deliberately rather than rediscovering them.
 | m-3 | The Problem section says M-A4 "left" the products on disk; Constraint 1 correctly says none exists yet | Internal contradiction — fix the Problem wording |
 | m-4 | Two stale citations (the Plan 171 "freeze payload" precedent, and the per-file `os.replace` line reference) | Repoint to the real locations |
 
-**Proportionality note, on the record.** At ~760 lines this plan is heavy for work whose core is
-"extract a grid at 26 points," and M-12 is a symptom. The orography Branch-A/Branch-B probe carries
-most of the weight (two of the four blockers lived there). Dropping Branch A — the owner has already
-accepted a DEM proxy — would collapse that apparatus, at the cost of measuring terrain rather than
-what the land-surface scheme actually ran on. Raised and **not** taken; recorded here so the trade
-stays visible.
+### ⛔ FOUR REVIEW ROUNDS — and the publication model was redesigned, not patched again
+
+| Round | Found | Outcome |
+|---|---|---|
+| 1 (2026-08-16) | **5 blockers, 5 majors, 2 minors** — against a fully green 3,753-test suite with clean `ruff`/`pyright`. **4 of 5 blockers were defects in THIS PLAN**, not the code | plan corrected first (`a9cca25`), then a 12-commit fixer round |
+| 2 | 2 blockers, 5 majors, 1 minor — including the reuse guard checking the wrong thing, so B2 returned one layer up | plan corrected (`b7009e0`); adopt path cut |
+| 3 | 2 blockers, 1 major — **one of them created by the cut I recommended** (the quarantine/`CURRENT` window), plus 1 of 8 deleted tests covering surviving behaviour | escalated to a design review |
+| 4 (grill-me, 2026-08-17) | the same defect class had moved **down into acquisition** (`RealOrographyDownloader` ignoring `spec`) | **publication model REDESIGNED — P1–P7 in D7** |
+
+**The pattern, stated plainly:** every round added a *check* at one layer while the layer beneath
+stayed free to diverge, so the defect relocated instead of disappearing — identity clause → reuse
+guard → downloader. **P1, P4 and P7 remove possibilities rather than check for them**, which is the
+only thing that has actually broken the chain. Only Blocker 1's fix stays a check, deliberately.
+
+### Round-1 detail (2026-08-16) — 5 blockers, 5 majors, 2 minors
+
+Commit `50dd58d` builds the plan and the **full suite is green (3,753 passed, 0 failed)** with
+`ruff`/`pyright`/ratchet clean. It was nevertheless **never reviewed** by the workflow (escalated at
+round 0), and the implementer self-reports `acceptanceTestsRedFirst: false` for most of Phase 2–4.
+An independent Codex pass plus a manual read then found the following.
+
+**Four of the five blockers are defects in THIS PLAN, not in the code.** Every one of them survived a
+fully green suite, because a suite written against a wrong spec cannot fail on it. Each is corrected
+in place above:
+
+| # | Blocker | Origin | Corrected in |
+|---|---|---|---|
+| B1 | Geopotential band bounded the field **minimum**; the Terai (~588 m² s⁻²) is in the box ⇒ Branch A raises on **every** real run | **this plan** | D3a |
+| B2 | `orography_identity` covers the route only — a changed source byte-for-byte keeps the identity, stale raster silently reused | **this plan** (the D3a spec/record split moved the hashes out and D7 was not updated — the two clauses contradicted each other) | D7 |
+| B3 | "Adopt if the manifest reconciles" was never defined; an **empty payload map reconciles vacuously** and the adopt path **deletes the fresh complete bundle** | **this plan** | D7.3 |
+| B4 | Cardinality 26 never enforced — equality against a self-supplied inventory is not a constraint | **this plan** (the 2d single-source decision removed the only pin) | D8/2d |
+| B5 | Accumulation diagnostic still not a trustworthy gate: decodes before reconciling the manifest sha256, and the passing predicate ignores `source_sha256`, `terminal_hour`, `sample_size_days` | **recorded as M-7 and set READY over it** | below |
+
+**B5 is a process failure, not a spec bug.** M-7 was written into the residual table with the
+disposition "fix in 1c" and READY was set anyway. It came back as a blocker. **Recording a known
+defect is not handling it** — a residual that is load-bearing for correctness must either be fixed
+before READY or explicitly descoped, never carried as a note. ⇒ **1c is now a required task with
+explicit criteria:** exactly one approved `--window`; reconcile its sha256 **before** decoding; the
+passing predicate must include `source_sha256`, `terminal_hour` and a minimum `sample_size_days`;
+records stored per window.
+
+**Majors, all required in the fixer round:** `zero_policy` hashed-but-unapplied (D1a, corrected
+above) · sign-agreement and excluded-hour grain (D1a, corrected above) · the manifest omitting
+`OrographySpec` fields, source file hashes/sizes and D11's per-station `n_hours`/`n_finite`/`n_nan`
+and first/last-NaN stamps · the D9 NetCDF schema not implemented (variable-length station strings
+instead of fixed-length, no semantic UTC attribute, encoding absent from the identity).
+
+**Downgraded on inspection:** the "area-weighted" aggregation is genuinely unweighted, but within one
+0.1° cell `cos(lat)` varies ~0.17% — negligible against hundreds of metres of intra-cell relief.
+⇒ **Correct the claim, do not implement weighting**; rename the rule to what it is
+(`mean_of_contained_cells`) so the manifest stops asserting a method that was not used.
+
+**Minors:** `Era5AcquisitionError` precedes its `Era5StorageError` subclass in the CLI's exit-code
+dispatch, so storage errors exit 4 instead of 5, and raw `OSError` escapes to 1 · **and one test that
+proves nothing**: `tests/unit/scripts/test_era5_extract.py:312` asserts
+`elev_mismatch_m == row.station_elev_m − row.orography_elev_m`, recomputing the implementation's own
+formula from its own output — it passes against any wrong orography cell. It must assert an
+**independently derived** expected cell and value, and the required 1 m haversine tolerance.
+
+**The lesson worth keeping:** a green suite plus clean static gates said nothing about any of this.
+The defects lived in the specification and in tests written after the code, which is precisely the
+pair that a test run cannot separate. [[feedback_independent_review_beats_automated_loop]]
+
+**Proportionality note, on the record.** This plan is heavy for work whose core is "extract a grid at
+26 points," and M-12 is a symptom. The orography Branch-A/Branch-B probe carries most of the weight
+(two of the four blockers lived there).
+
+**Cutting Branch A was proposed on 2026-08-16 and REJECTED — settled, do not re-open.** The proposal
+rested on Branch A's "reachability / credential stall risk" and on its share of the blockers. **Task
+1a's probe had already retired the first reason** and the reviewer proposing the cut had not read it:
+
+- `geopotential` is an **invariant field of the SAME `reanalysis-era5-land` dataset** — same dataset
+  id, same `cdsapi.Client()`, **same licence already accepted in Plan 171 P0**. No second account, no
+  second service, no operator act.
+- Same dataset ⇒ **identical 0.1° grid**, so aggregation degenerates to the identity case (one source
+  cell per target cell, weight 1).
+
+⇒ The cut would have **increased** complexity, not reduced it: Branch B means an external DEM on a
+*different* grid (COP-DEM 90 m / GMTED 7.5″ / ETOPO 15″) needing real reprojection, real
+area-weighted aggregation, a no-data policy that actually binds, and possibly a new raster dependency
+that constraint 5 warns against — while also downgrading the measured quantity from **model terrain**
+to **terrain**. B1 and B2 are fixed above and neither fix requires Branch A to go.
+
+**Rule this illustrates:** a proportionality argument must be checked against the probe results
+already in the document. "This apparatus is where the blockers were" is not sufficient grounds to
+delete it — the blockers were cheap spec fixes, not structural cost. [[feedback_verify_before_folding]]
 
 ## Scope correction this plan makes to the milestone
 
@@ -83,12 +306,13 @@ M-A5. A scope correction that lives only in this plan is a scope correction nobo
 
 ## Problem
 
-M-A4 built the acquisition and left a per-year gridded product at
+M-A4 built the acquisition and transform pipeline that PRODUCES a per-year gridded product at
 `data/dhm_precip/era5_land/hourly_mm/era5_land_tp_mm_{year}.nc`
 (`scripts/dhm_precip/era5_manifest.py:48`) — hourly, mm, period-ending UTC, on a 0.1° grid over
-26–31 N / 80–89 E (`scripts/dhm_precip/era5_request.py:29`). M-A6 needs those values **at the
-gauges**, not on the grid. Turning a 0.1° field into 26 point series requires choosing an operator,
-and that choice is not neutral for this dataset.
+26–31 N / 80–89 E (`scripts/dhm_precip/era5_request.py:29`). *(m-3: no such file has actually been
+produced yet — Plan 171's real-data run (Task 4b) has not run; see Constraint 1.)* M-A6 needs those
+values **at the gauges**, not on the grid. Turning a 0.1° field into 26 point series requires choosing
+an operator, and that choice is not neutral for this dataset.
 
 ## Measured facts this plan rests on
 
@@ -140,7 +364,21 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     reported per season and for JJAS specifically
   - **zero / wet-hour policy** — `wet_threshold_mm_per_h = 0.2` with `wet_threshold_side = ">="`
     (`scripts/dhm_precip/params.py:43-44`) and `zero_policy = "exclude_zero"`
-    (`scripts/dhm_precip/params.py:48`)
+    (`scripts/dhm_precip/params.py:48`).
+    **⛔ CORRECTED 2026-08-16 — pinned, hashed into the identity, and then NOT APPLIED.** The
+    implementation computes every quantile over all common-finite hours, while the manifest records
+    `zero_policy="exclude_zero"` — **the artefact asserts a policy the computation did not use.**
+    Two consequences, the second worse than the first: ERA5-Land is dry most hours, so the lower half
+    of the grid collapses toward 0.0 for both operators; and the numbers become **incomparable with
+    every other quantile in this track** — all eight M-A1 intensity expectations state
+    `zero_policy = "exclude_zero"` over *"JJAS wet-hour (≥ 0.2 mm/h) non-null observations"*
+    (`scripts/dhm_precip/expectations.toml:284,303,322,341,781,800,819,835`), which is exactly the
+    population M-A6 will want to compare against.
+    ⇒ **Quantiles are computed on the WET-HOUR population** (`value >= 0.2`, per operator), never on
+    all finite hours. **A parameter that is hashed into the identity but never read is worse than an
+    unpinned one** — it is false provenance. The acceptance test must assert the *population*, not
+    merely that `quantile_grid` was used (`tests/unit/scripts/test_era5_extract.py:386` asserts only
+    the grid, which is why this survived a green suite).
   - **quantile definition and grid** — `quantile_definition = "linear"`
     (`scripts/dhm_precip/params.py:47`) and the existing
     `quantile_grid = (0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999)`
@@ -148,7 +386,16 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   - **delta statistic** — per station and per quantile, report both the **absolute difference**
     `nearest − bilinear` (mm/h) and the **ratio** `nearest / bilinear`, plus the **sign-agreement
     fraction** across stations at each quantile (which is what tells us whether any ordering is
-    systematic at all); wet-hour mean intensity and wet-hour frequency reported the same way
+    systematic at all); wet-hour mean intensity and wet-hour frequency reported the same way.
+    **⛔ CORRECTED 2026-08-16 — both accounting columns are computed at the wrong grain.**
+    Sign agreement is produced only at a hard-coded `q=0.5`, leaving it null for the other seven
+    quantiles *and* for both wet-hour statistics — so the one column that reveals whether an ordering
+    is systematic is absent everywhere it matters (D1's bilinear-damps-the-tail question lives at
+    q0.99/q0.999, not the median). And a **single global excluded-hour count is copied onto every
+    row**, so a station-and-season figure silently reports a whole-run total.
+    ⇒ **`sign_agreement_fraction` is computed for EVERY (season, statistic, quantile) combination**
+    on `ACROSS_STATION` rows, and **`n_hours_excluded` / `n_hours_common_finite` are computed at each
+    row's own grain** — per station and season for `STATION` rows, per season for `ACROSS_STATION`.
 
 - **D2 — "Containing cell" and "nearest cell centre" are NOT the same operator and must not be
   conflated.** ERA5-Land values are cell-centre-registered on whole-0.1° nodes. "Nearest node" and
@@ -169,7 +416,9 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   it," which contradicted the owner's accepted DEM fallback in the same decision and left the
   fallback with no acquisition path at all.)*
   Task 1a is a probe whose **only** exit is a frozen, committed `OrographySpec` record — the same
-  discipline Plan 171 used to freeze the CDS payload (`docs/plans/171-era5-land-acquisition.md:340-355`).
+  discipline Plan 171 used to freeze the CDS payload (m-4, corrected citation:
+  `docs/plans/171-era5-land-acquisition.md:92-94`, "## Observed CDS payload — supplied by the
+  operator" — the previous citation, `:340-355`, is D11's manifest-atomicity discipline, unrelated).
   It **must** resolve to exactly one of two branches, and "stop" is not one of them:
 
   **Branch A — model orography (preferred).** ERA5-Land's static surface geopotential. If it is
@@ -177,8 +426,29 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   **Unit conversion is mandatory and part of the spec:** the field is *surface geopotential*
   Φ in m² s⁻², and elevation is `z = Φ / g0` with **`g0 = 9.80665 m s⁻²`** (the WMO standard
   gravity). The spec records whether the retrieved field is geopotential or already metres; a
-  retrieved field whose magnitude is inconsistent with the declared unit (Nepal box: metres ⇒ tens to
-  thousands; geopotential ⇒ 10⁴–10⁵) is a **typed failure**, not a silent divide.
+  retrieved field whose magnitude is inconsistent with the declared unit is a **typed failure**, not
+  a silent divide.
+
+  **⛔ CORRECTED 2026-08-16 — the first band was wrong and would have failed every real run.**
+  The original wording ("Nepal box: metres ⇒ tens to thousands; geopotential ⇒ 10⁴–10⁵") was applied
+  as a bound on the field **minimum**, and the acquired box (26–31 N) contains the **Terai lowlands**:
+
+  | | elevation | geopotential = z·g0 |
+  |---|---|---|
+  | Terai lowland (in box) | ~60 m | **~588 m² s⁻²** |
+  | Everest | 8,849 m | ~86,779 m² s⁻² |
+
+  `10000 <= 588` is false, so **Branch A raises `Era5OrographyError` on any real field.** Synthetic
+  fixtures were chosen in-band, so no test catches it.
+
+  **The minimum carries no signal — it is small under both units. Discriminate on the MAXIMUM:**
+  - `field_max > 9_999` ⇒ the field is **geopotential** (Everest ⇒ ~86,779) → apply `Φ/g0`
+  - `field_max <= 9_999` ⇒ the field is **already metres** (Everest ⇒ 8,849) → identity
+  - the declared `conversion_rule` must **agree** with that classification, else typed failure —
+    this is the check, replacing the min-bound entirely
+  - a lower sanity bound may only reject the physically impossible: `field_min < -500 m`
+    (or `< -5000 m² s⁻²`) ⇒ typed failure, which catches an unmasked no-data sentinel such as −32768
+
   Vertical reference: as documented by the producer, recorded verbatim in the spec.
 
   **Branch B — public DEM proxy (owner-accepted fallback, taken whenever Branch A needs a further
@@ -224,8 +494,12 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   in a "static" source is a typed failure), which is the check the previous wording was reaching for.
 
   *Aggregation / resampling rule (frozen, identical for both branches where applicable):*
-  reproject to EPSG:4326 if not already; then **area-weighted arithmetic mean of source cells whose
-  centres fall inside the 0.1° ERA5-Land cell**, computed per ERA5-Land cell over the acquired box.
+  reproject to EPSG:4326 if not already; then **`mean_of_contained_cells` — the (unweighted)
+  arithmetic mean of source cells whose centres fall inside the 0.1° ERA5-Land cell**, computed per
+  ERA5-Land cell over the acquired box. *(Renamed 2026-08-16 per the "Downgraded on inspection"
+  finding above: the rule was called "area-weighted" and never was; `cos(lat)` varies ~0.17 % across
+  one 0.1° cell, negligible against hundreds of metres of intra-cell relief, so the CLAIM is
+  corrected rather than weighting implemented.)*
   **No-data policy:** a target cell with **any** contributing no-data source cell is aggregated over
   the valid remainder and **flagged**; a target cell with **>5 % no-data by area, or zero valid
   source cells, is emitted as NaN and is a typed failure if any station's cell is affected.**
@@ -354,39 +628,275 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   Mirror M-A4's two-identity pattern (`scripts/dhm_precip/era5_manifest.py:87`, `:95`), extended
   where review showed M-A4's shape is insufficient here.
   **Two identities:**
-  - `orography_identity` = sha256(canonical-JSON of the frozen `OrographySpec` — every field in D3a,
-    including source sha256s, CRS, vertical reference, units, no-data sentinel, aggregation rule,
-    conversion rule, product version — plus `orography_schema_version` and `orography_code_version`).
+  - **⛔ CORRECTED 2026-08-16 — this clause contradicted D3a and opened a provenance hole.** It said
+    `orography_identity` = sha256 of the `OrographySpec` "**including source sha256s**" — but the D3a
+    fix had just *moved* those hashes out of `OrographySpec` into `OrographySourceRecord`. The
+    implementation resolved the contradiction by following D3a, so the identity covers the **route
+    only**. Consequence: **a source file whose bytes change at the same URL does not change the
+    identity**, and the stale raster is silently reused. Split cleanly instead:
+    - `orography_route_identity` = sha256(canonical-JSON of `OrographySpec` — product id + version,
+      URL/tile pattern, licence, CRS, vertical reference, units, no-data sentinel, aggregation rule,
+      conversion rule, probe date, rejected-candidate log — plus `orography_schema_version` and
+      `orography_code_version`). Computable at **1a**, before anything is downloaded.
+      **⚠️ ONE constant, not two** *(minor, 2026-08-17)*: `era5_orography.py` kept a **private
+      duplicate** `_OROGRAPHY_CODE_VERSION` and hashed *that*, so bumping the public
+      `era5_orography_spec.OROGRAPHY_CODE_VERSION` — the documented one an operator would bump —
+      invalidated nothing. The route identity hashes the **public** constant; there is no second copy.
+    - `orography_identity` = sha256(`orography_route_identity` **+ every `OrographySourceRecord`
+      file sha256 + the derived raster's own sha256 + the frozen raster schema** — variable name,
+      dims, dtype, encoding, mask/flag variable, per M-8). Computable only at **1b**, which is where
+      the materialised bytes first exist. This is the one `extraction_identity` consumes.
+      **⚠️ HASH THE ASSOCIATION, NOT THE MULTISET** *(correctness, 2026-08-17)*: the source hashes
+      enter as an **ordered mapping `{relative_path: sha256}`**, canonicalised by key. The first
+      implementation hashed `sorted(<bare list of hashes>)`, which discarded *which file each hash
+      belonged to* — so **exchanging the bytes of two source files left the identity unchanged** and a
+      stale raster was reused for a materially different source set. A duplicated path is a typed
+      failure (it would collapse two entries into one).
+    - **A materialised raster is never trusted because a file of the right name exists.** On every
+      run, re-verify the source hashes against the record and the raster's own sha256 against the
+      manifest; a mismatch is a typed failure, not a silent reuse.
+
+    - **⛔ BLOCKER, 2026-08-17 — the reuse guard checked the wrong thing, so B2 came back one level
+      up.** The fix above made the *identity* cover the materialised bytes, but the code that decides
+      whether to materialise at all (`extract_era5.py:331`) reuses **any** record that merely has a
+      `raster_path` set, without ever comparing its `orography_route_identity` to the current
+      `OBSERVED_OROGRAPHY_SPEC`. So changing the frozen spec — a new URL, product version, vertical
+      reference or conversion rule — silently reuses the raster built from the OLD route, while the
+      extraction manifest serialises the NEW spec. **The artefact then states provenance it does not
+      have**, which is the same defect class the identity split was introduced to remove.
+      ⇒ **Before any reuse, recompute `orography_route_identity(OBSERVED_OROGRAPHY_SPEC)` and require
+      it to equal the record's.** A mismatch means the route changed: re-materialise (do not raise —
+      a changed spec is a legitimate, expected event; a stale raster is not). Verification must
+      recompute from the **current** spec, never from the identity stored in the record, or it just
+      re-confirms the stale value.
+
+    - **⛔ BLOCKER, 2026-08-17 (round 4) — the same defect moved DOWN INTO ACQUISITION.** With the
+      reuse guard fixed, a spec change now correctly re-materialises — but
+      `RealOrographyDownloader.download()` (`extract_era5.py:258`) **takes `spec` and ignores it**,
+      hard-coding `reanalysis-era5-land` / `geopotential` / `DEFAULT_REQUEST_SPEC.area`, with
+      `# noqa: ARG002` silencing the linter that reported exactly this. So a changed spec
+      re-materialises **the same old product** and records the **new** spec; verification passes
+      because the hashes are internally consistent with each other. **False provenance again, one
+      layer lower** — the fourth consecutive round of it. The test misses it because its fake also
+      ignores `spec`.
+
+      **Root cause is a type gap, not a coding slip.** `OrographySpec` *cannot* express a CDS request:
+      it carries `product_id: str` (set to the colon-joined `"reanalysis-era5-land:geopotential"`) and
+      no typed dataset/variable field, so the downloader could only honour it by splitting a string on
+      a colon — the raw-primitive-past-the-boundary pattern CLAUDE.md forbids.
+
+      ⇒ **Decision (grill-me 2026-08-17): ASSERT AGREEMENT; do not build a request-builder.** The
+      downloader **is** the source of truth for the request; the spec labels it. Before requesting,
+      assert the spec's `product_id` and `download_url` match what this downloader actually asks for,
+      and raise a typed error otherwise. **A spec change then fails loudly instead of recording false
+      provenance.** The fake in the tests must assert the same, or the test can never catch this.
+      **Deliberately NOT the type-driven alternative** (typed `cds_dataset`/`cds_variable` fields plus
+      request construction): with Branch B cut there is exactly **one** route, so a request-builder
+      buys flexibility nothing needs — and this plan's whole history is that the apparatus, not the
+      absence of it, is the risk.
+
+      **⚠️ That assertion NARROWS the false provenance; it does not remove it — and the residue must be
+      labelled, not asserted.** *(Blocker, slim review 2026-08-17.)* `OrographySpec` also claims
+      `product_version` (`era5_orography_spec.py:116`), and **CDS offers no way to select a product
+      version**: change that field alone and the `product_id`/`download_url` assertions still pass, the
+      downloader issues the same request, and the manifest claims a version nothing verified. A longer
+      assertion list cannot fix this, because there is nothing in the request to compare against.
+      ⇒ **Split the spec's fields by who can vouch for them**, which is P7a's distinction applied to
+      provenance rather than to identity:
+      - **Machine-verified** — `product_id`, `download_url`, the request `area`, the conversion rule:
+        asserted against what the downloader actually asks for; a mismatch is a typed failure.
+      - **Operator-attested** — `product_version`, `licence_*`, `vertical_reference`, `source_crs`:
+        recorded from the 1a probe and **explicitly marked in the manifest as attested, not verified.**
+        The pipeline cannot check them, and an artefact that says "verified" about a field nothing
+        verified is the same defect in a new costume.
+      **This is the fifth appearance of one defect class.** Each round removed the *instance* and left
+      the *class*, because the class is "the artefact's claims are broader than the code's guarantees".
+      Labelling the unverifiable residue is what finally makes the claim and the guarantee the same
+      size.
   - `extraction_identity` = sha256(canonical-JSON of **every value-affecting input**):
-    operator id · station-coordinate-table sha256 · the **list of source product sha256s consumed**
+    operator id · station-coordinate-table sha256 · the source product sha256s consumed as a
+    **`{year: sha256}` mapping** (`source_sha256s_by_year`), canonicalised by key — *not* a bare list:
+    a sorted list of hashes cannot say which year each product's bytes belonged to, so **two years'
+    products exchanged left the identity unchanged** (same defect class as the orography mapping
+    above, fixed 2026-08-17)
     (validated against the acquisition manifest before use, never trusted from the filename) ·
     `orography_identity` · the D1a sensitivity-parameter snapshot (seasons, wet threshold + side,
     zero policy, quantile definition + grid, delta statistics) · the datum enums of D3b ·
     `output_schema_version` · output format/dtype/**full** encoding spec · `extraction_code_version`.
     *A version bump alone forces regeneration*, exactly as `transform_identity` does
     (`scripts/dhm_precip/era5_manifest.py:110-115`).
-  **Publication is a bundle, and per-file `os.replace` is not atomic across a bundle** (review
-  finding — M-A4 gets away with it because its unit *is* one file plus a manifest;
-  `scripts/dhm_precip/era5_transform.py:336`). Therefore:
-  write **all** outputs into a staging directory keyed by the extraction identity
-  (`…/era5_land/points/.staging/<extraction_identity>/`), reopen-and-validate every file there, then
-  publish the completed directory once, then switch the pointer. Three constraints the previous
-  revision got wrong (**blocker, folded from review**):
 
-  1. **The manifest hashes PAYLOAD FILES ONLY — never itself, never the pointer.** "Every output's
-     sha256" included `extraction_manifest.json` and `CURRENT`, which is not constructible: a
-     manifest cannot contain its own hash. The manifest lives *inside* the identity directory and
-     covers the payload artefacts beside it.
-  2. **The pointer lives at `…/era5_land/points/CURRENT`, one level ABOVE the identity
-     directories.** The previous revision placed it inside `<extraction_identity>/`, where it can
-     only ever name its own parent and therefore selects nothing. It is written adjacent-temp +
-     `os.replace` (a file, so genuinely atomic).
-  3. **`os.replace` cannot replace a non-empty directory with another non-empty directory.** So the
-     "regenerate an existing identity" path is not a replace at all. If `<extraction_identity>/`
-     already exists: **validate and adopt it** if its manifest reconciles, otherwise **quarantine it**
-     (rename to `<extraction_identity>.orphan-<n>/`) and publish fresh. A staging directory with no
-     pointer is unreferenced garbage the next run deletes; a published directory with no matching
-     manifest entry is **re-validated, never assumed good** (Plan 171 D11's rule).
+  - **P7 — AN IDENTITY MAY HASH ONLY INPUTS THAT ARE ACTUALLY READ.** *(Rule, grill-me 2026-08-17 —
+    this generalises the defect class the whole plan kept producing.)*
+    A parameter hashed into an identity but never consulted is **false provenance by construction**:
+    the artefact asserts its output depends on something the code does not read. It is the same defect
+    as B1, B2, the "area-weighted" claim and the round-4 downloader — stated as a rule so it stops
+    recurring.
+    **Live instance to fix: `zero_policy`.** It is pinned, hashed into `extraction_identity` and
+    written to the manifest, but **never read** — the wet-hour filter at `era5_extract.py:535` is
+    unconditional. ⇒ **Make the code read it**: the filter becomes conditional on
+    `params.zero_policy`, which keeps today's pinned behaviour (`"exclude_zero"`) while making the
+    hashed dependency real. Removing it from the identity instead would lose the recorded fact that
+    the quantiles *are* wet-hour-only, which M-A6 needs in order to compare against M-A1's eight
+    wet-hour expectations.
+    **Standing obligation:** anything added to an identity must have a test that changes the identity
+    by changing that input *and* changes an output. If no such test can be written, the field does not
+    belong in the identity.
+
+    **P7a — Two kinds of identity input, because P7 as first written contradicted D7.**
+    *(Major, slim review 2026-08-17.)* D7 requires that *"a version bump alone forces regeneration"* —
+    but a **behaviour-neutral** `extraction_code_version` bump produces byte-identical payloads, so
+    "changing this input must change an output" is **unsatisfiable** for exactly the fields whose whole
+    purpose is invalidation. Counting the identity, path or manifest as the changed output makes the
+    test tautological. The rule therefore distinguishes:
+    - **Value-determining inputs** (operator, thresholds, quantile grid, source hashes, `zero_policy`,
+      the datum enums): P7 binds in full — a test must change the input **and** an output.
+    - **Invalidation inputs** (`extraction_code_version`, `output_schema_version`,
+      `orography_schema_version`): exempt from the output-change obligation, because they exist to
+      force regeneration rather than to determine a value. They must be **explicitly labelled as such
+      in the identity payload**, so the exemption is visible and cannot be used to smuggle a
+      value-determining field past the rule.
+    **The distinction is the point:** an unread *value-determining* field is false provenance; an
+    unread *invalidation* field is a cache key doing its job. `zero_policy` is the former, which is why
+    the fix is to read it rather than to exempt it.
+  **Publication is a bundle, and per-file `os.replace` is not atomic across a bundle** (M-A4 gets
+  away with it because its unit *is* one file plus a manifest; the actual `os.replace`-via-
+  `publish_atomic` call is `scripts/dhm_precip/era5_transform.py:366`).
+
+  ## ⛔ PUBLICATION MODEL REDESIGNED — grill-me, owner decisions 2026-08-17
+
+  **Four independent review rounds each found a blocker in this apparatus, and every fix relocated
+  the defect one layer down** (identity clause → reuse guard → downloader). The cause was structural:
+  each fix added a *check* at one layer while the layer beneath stayed free to diverge. The redesign
+  below removes possibilities instead of checking for them.
+
+  **The guarantee is now stated, and it is deliberately the weakest useful one.** After any run,
+  **exactly one complete, validated bundle is discoverable**; a crash may leave debris but can never
+  leave a state where no complete bundle can be found. It is explicitly **NOT** "a reader at any
+  instant sees either the old or the new bundle" — that guarantee was assumed, never required.
+  **Verified 2026-08-17: `CURRENT` is read by NOTHING in production** — `extract_era5.py:553` only
+  *logs* the published directory; the pointer's only readers are the tests that assert the pointer
+  works. Four rounds of defects were incurred protecting a reader that does not exist.
+
+  - **P1 — The published directory is per-run unique: `…/era5_land/points/<NNNN>-<extraction_identity>/`,**
+    where `NNNN` is the next free zero-padded integer. **`os.replace` therefore never faces a
+    non-empty target**, so there is no rename, no quarantine, no `.orphan-<n>`, and no window. This
+    *deletes* the previous blocker rather than fixing it: quarantining the directory named by
+    `CURRENT` and then crashing before the replace left `CURRENT` resolving to nothing, and "switch
+    the pointer last" could not help because a same-identity re-run never changes the pointer's value.
+    Needs no clock, so **frozen-clock tests cannot collide** — a timestamped scheme would have
+    reintroduced the same-name collision inside the test suite.
+
+    **P1a — Allocate the integer through an IDENTITY-INDEPENDENT atomic reservation, never by
+    `mkdir`ing the identity-labelled directory directly.**
+    *(Blocker, slim review 2026-08-17: "next free integer" as written is racy — two runs can both
+    observe `0007` as free; with different identities both publish and P6's "highest NNNN" becomes
+    ambiguous, and with the same identity one `os.replace` meets the other's non-empty target and
+    fails.)*
+    ⚠️ **Corrected again (blocker, 2026-08-17 fixer round).** The first fix above was still wrong: it
+    reserved the number by `Path.mkdir(exist_ok=False)`ing `<NNNN>-<identity>/` **directly** — atomic
+    for one identity, but two DIFFERENT identities racing for the same `NNNN` `mkdir` two DIFFERENT
+    paths (`0000-a`, `0000-b`) that never contend, so **both succeed** and both are assigned run
+    number `0000`: exactly the ambiguous, identity-dependent order P1a exists to rule out, just moved
+    one layer down. The number itself must be the ONE thing every identity contends for, independent
+    of what it will publish under: `allocate_published_dir` now reserves `<NNNN>` via an
+    identity-independent `.run-<NNNN>.reserve` marker (`os.open(..., O_CREAT | O_EXCL)`, atomic at the
+    OS level) **before** `mkdir`ing the identity-labelled directory. The reservation marker is never
+    deleted (removing it after success would re-open the identical race for a late competitor for the
+    same number), so — contrary to the retracted claim above — this scheme **is** a reservation file,
+    deliberately. Proven under real concurrency (`threading.Barrier`, several identities released
+    together) in `tests/unit/scripts/test_era5_extract_manifest.py::TestPerRunUniquePublication`.
+    The bundle is then assembled **into** that reserved directory, so publication is the reservation
+    plus the content write, not a directory `os.replace` at all.
+  - **P2 — `CURRENT` is DELETED.** Nothing reads it. Discovery is *the highest `NNNN` whose manifest
+    validates*. Nothing is ever renamed, moved, or destroyed; older bundles simply remain.
+  - **P3 — Identity is a LABEL, not a key.** Verified: `published_dir(identity)` is called in exactly
+    one place — `publish_bundle` itself, to decide where to write. **Nothing ever looks up a directory
+    by identity.** With adoption cut its cache-key role is gone; it stays in the directory name for
+    human browsing and in the manifest for provenance.
+  - **P4 — Validation moves INSIDE `publish_bundle`.** It calls `reopen_and_validate_bundle` on the
+    staging directory itself and refuses to publish on failure. Previously the guarantee was
+    *conventional* — the caller had to remember — so removing or reordering that call left every
+    publication test green while an invalid bundle could be published. **This is the pattern-breaker:
+    a guarantee enforced by construction cannot be skipped by a future caller.**
+
+    **P4a — Publish-time validation must apply EXACTLY the check discovery applies, including
+    `payload_sha256s` reconciliation.** *(Blocker, slim review 2026-08-17 — P4 and P6 contradicted each
+    other.)* Verified: `reopen_and_validate_bundle` (`era5_extract_manifest.py:333`) checks file
+    presence, readability, row and station counts, and **never reconciles `payload_sha256s`**. So a
+    payload modified after its hash was computed **passes publication and then fails discovery** —
+    leaving, on a first run, *no discoverable bundle at all*, which is precisely the guarantee P1/P2
+    exist to provide.
+    ⇒ The validator reconciles every payload sha256 against the manifest, and **publication and
+    discovery share one predicate** — not two implementations that can drift. If discovery would
+    reject it, publication must reject it first.
+
+    **P4b — THE VALIDATOR'S REMIT IS BOUNDED, AND THIS IS THE STOPPING RULE.**
+    *(Added 2026-08-17 after the review loop STALLED at round 5 — nine rounds total on this one
+    subsystem.)*
+    **A validator detects a CORRUPT or INCOMPLETE bundle. It does not RE-DERIVE the computation.**
+
+    In scope, and complete as written: every payload file present · readable · reopens under its
+    declared schema · row/station counts and cadence as declared · **every payload sha256 reconciles
+    with the manifest** (P4a) · the manifest parses.
+
+    **Out of scope, permanently:** re-deriving station accounting from the series it was computed
+    from · recomputing the sensitivity table during validation · authenticating the manifest against
+    its own recorded inputs · any check whose implementation is "compute the output again and compare".
+
+    **Why this must be written down.** Round 5's residual findings asked for exactly those things.
+    They are individually reasonable and collectively unbounded: **a validator can always be shown not
+    to re-derive one more thing, so there is no fixed point short of recomputing everything** — at
+    which point the checker is a second implementation that can itself be wrong, and needs its own
+    checker. That is why the loop stalled rather than converged, and why a sixth round would not have
+    helped.
+    **The bound is justified, not merely convenient:** a sha256 over every payload already detects any
+    corruption of the bytes. What re-derivation would additionally catch is a *computation* error — and
+    the defence against that is a **value-locking unit test on the computation** (see the sensitivity
+    numeric locks), not a second copy of the computation running at publish time.
+    ⇒ A future finding of the form "the validator does not also check X, which it could recompute" is
+    **answered by this rule**, not by extending the validator. Reopening it requires a stated reason
+    why byte-integrity plus a value-locking test is insufficient for that specific X.
+  - **P5 — The manifest hashes PAYLOAD FILES ONLY, never itself.** A manifest cannot contain its own
+    hash. It lives inside the bundle directory and covers the payload artefacts beside it.
+  - **P6 — Discovery is NOT implemented here.** The convention above is documented and that is all;
+    **M-A6 implements reading when it has a real consumer with real requirements.** Writing a
+    discovery helper now would repeat the exact mistake `CURRENT` embodied — machinery built for a
+    reader that does not exist. The bundle is self-describing (numbered directory + manifest), so
+    nothing is lost by waiting.
+    ⚠️ **Consequence, accepted:** the tests inspect the directory layout *directly* rather than
+    through a production helper. The layout convention is therefore load-bearing for the suite while
+    having no production reader — which is why it is pinned here as a contract rather than left as an
+    implementation detail.
+
+  **Cost, stated:** every run leaves a new numbered directory, so disk grows monotonically under
+  repeated runs and nothing is ever cleaned up automatically. Accepted — disk is cheap, ~15 s per run
+  over 26 stations, and an accumulating series is a *visible* record of what was run, which both the
+  adopt path and the overwrite-in-place alternative would have hidden. **Extended (2026-08-17 fixer
+  round):** the same acceptance now covers staging — a per-invocation-unique staging directory means a
+  crashed run's staged payload is never automatically cleaned up either, and the identity-independent
+  `.run-<NNNN>.reserve` markers (P1a) are never deleted. All three are unreferenced garbage under a
+  unique name; none is ever read by production code again.
+
+  **Deletion is deletion:** `_quarantine`, the `.orphan-<n>` search, `current_pointer_path` and the
+  publication tests written for them are **removed, not left unused**. Dead code encoding a removed
+  decision is how `_manifest_reconciles` nearly survived, and how B1 would have survived the Branch A
+  discussion.
+
+  ### (history — SUPERSEDED by P1–P6 above; kept because the sequence is the lesson)
+
+  **Adoption existed only to make a re-run cheap; it was never a correctness requirement.** Its
+  three-round history is why P1–P6 remove possibilities rather than add checks:
+
+  | Round | State | What the next review found |
+  |---|---|---|
+  | 1 | "adopt if its manifest reconciles" | **undefined** — an empty payload map reconciled vacuously, and the adopt path then *deleted the freshly generated complete bundle* |
+  | 2 | reconcile defined as four clauses | **clause 4 did not bite** — the D9 validator checked only variable presence, row counts and CSV readability, so a schema-invalid bundle was still adoptable |
+  | 3 | adopt path cut; quarantine made unconditional | **the cut introduced a new window** — quarantining the directory named by `CURRENT` and crashing before the replace left `CURRENT` resolving to nothing |
+
+  Round 3's fix was mine, and it created the defect P1 now deletes. That is the whole argument for
+  the redesign: **three consecutive attempts to make adoption safe each moved the failure instead of
+  removing it**, and the fourth only worked because it stopped defending a guarantee nobody needed.
 
 - **D8 — Station identity is the coordinate table's `station` column,** the same key the gauge side
   uses (`scripts/dhm_precip/loader.py:251` loads and validates it; `:306` already asserts the
@@ -396,7 +906,8 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
 
 - **D9 — The outputs, the layout and the CLI are part of the contract, not an implementation
   detail.** *(New — the previous revision named no schemas, so "regenerable" was unverifiable.)*
-  Under `data/dhm_precip/era5_land/points/<extraction_identity>/`:
+  Under `data/dhm_precip/era5_land/points/<NNNN>-<extraction_identity>/` (P1 — per-run unique, so
+  `os.replace` never faces a non-empty target):
 
   | Artefact | Format | Key / dims | Required columns / vars |
   |---|---|---|---|
@@ -404,13 +915,12 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   | `series_bilinear.nc` | NetCDF | same | same — the sensitivity comparand only (D1a), never the primary |
   | `station_grid_elevation.csv` | CSV | one row per station, **26 rows** | `station`, `lat`, `lon`, `grid_lat`, `grid_lon`, `grid_i`, `grid_j`, `offset_km`, `station_elev_m`, `station_elevation_datum`, `orography_elev_m`, `orography_elevation_datum`, `orography_source` (enum), `orography_product_id`, `orography_product_version`, `elev_mismatch_m`, `datum_reconciled` (enum), `shared_cell_id`, `stations_in_cell` |
   | `operator_sensitivity.csv` | CSV | `(scope, station, season, statistic, quantile)` | `scope` enum {`STATION`, `ACROSS_STATION`} · `station` (null when `ACROSS_STATION`) · `season` · `statistic` enum {`QUANTILE`, `WET_MEAN_INTENSITY`, `WET_FREQUENCY`} · `quantile` (null unless `QUANTILE`) · `nearest_value`, `bilinear_value` · `delta_absolute` + `delta_unit` enum {`MM_PER_H`, `FRACTION`} (**wet frequency is a fraction, not mm/h** — the previous single `delta_mm_per_h` column mislabelled it) · `ratio` (null when the bilinear denominator is 0) · `n_hours_common_finite` · `n_hours_excluded` (D11.3) · `n_wet_nearest`, `n_wet_bilinear` (**both**, since the wet set differs by operator — one `n_wet_hours` was ambiguous) · `sign_agreement_fraction` (populated only on `ACROSS_STATION` rows) |
-  | `extraction_manifest.json` | JSON | — | both identities, operator id, every input sha256, **the payload artefacts' sha256s only — never its own, never the pointer's** (D7.1), the cited `AccumulationDiagnosticRecord`, the frozen `OrographySpec` + `OrographySourceRecord`, injected-clock timestamps |
+  | `extraction_manifest.json` | JSON | — | both identities, operator id, every input sha256, **the payload artefacts' sha256s only — never its own** (P5), the cited `AccumulationDiagnosticRecord`, the frozen `OrographySpec` + `OrographySourceRecord`, `station_accounting`, injected-clock timestamps, and (⚠️ **added, major, 2026-08-17 fixer round**) `identity_inputs` — the COMPLETE `ExtractionIdentityInputs.canonical_payload()` snapshot `extraction_identity` was computed from. Without this the digest hashed seasons, thresholds, `zero_policy`, the quantile grid, output format/encoding and both datum inputs that were nowhere else visible, so a reader could not recompute or even interpret it (`recompute_extraction_identity`); `publish_bundle` refuses a bundle whose `identity_inputs` is absent or structurally incomplete |
 
-  And **one level above**, outside the identity directories (D7.2):
-
-  | Artefact | Format | Location | Contents |
-  |---|---|---|---|
-  | `CURRENT` | text pointer | `data/dhm_precip/era5_land/points/CURRENT` | the published extraction identity — the single atomic switch. **Not** inside `<extraction_identity>/`, where it could only name its own parent |
+  **There is NO pointer file.** An earlier revision specified a `CURRENT` pointer here; it is deleted
+  (P2) — nothing read it, and defending its crash-atomicity cost four rounds of blockers. Discovery is
+  the **highest `NNNN` whose manifest validates**, and it is a documented convention rather than
+  shipped code (P6).
 
   **CLI:** `scripts/dhm_precip/extract_era5.py`, mirroring `acquire_era5.py`'s shape —
   `--stage {orography,extract,sensitivity,all}`, `--data-root`, `--out`.
@@ -536,7 +1046,7 @@ for the synthetic D9 fixture it validates against)*
 *In scope:* fetch per the frozen `OrographySpec`; **write the `OrographySourceRecord`** (observed
 sha256s, sizes, injected-clock fetch time), and on a re-run verify observed hashes against the
 existing record; apply the conversion rule (`Φ/g0` with `g0 = 9.80665`, or identity) with the
-magnitude sanity check of D3a; reproject if needed; area-weighted-mean aggregate to the ERA5-Land
+magnitude sanity check of D3a; reproject if needed; mean-of-contained-cells aggregate (NOT area-weighted — see D3a) to the ERA5-Land
 0.1° grid; apply the no-data policy; assert coordinate-vector equality **against the synthetic
 D9-schema fixture from 2a**; write
 `data/dhm_precip/era5_land/orography/<orography_identity>.nc` + its record.
@@ -547,8 +1057,9 @@ real M-A4 product (gated on Plan 171 Task 4b); any network call not named in the
 a synthetic 0.01° source raster with a known analytic surface aggregates to **hand-computed** 0.1°
 means; a **geopotential-valued** input converts to metres at `g0` and a metres-valued input declared
 as geopotential **raises** the magnitude check; a re-fetch whose sha256 disagrees with the **existing
-`OrographySourceRecord`** raises `Era5OrographyError` before any read (a first fetch, with no prior
-record, succeeds and writes one); a target cell with 10 % no-data area is **NaN and flagged**, while
+`OrographySourceRecord`** raises `Era5OrographyError` before the payload is decoded (m-2: checksumming
+necessarily reads raw bytes — the guarantee is no *decode* of those bytes as a raster happens first; a
+first fetch, with no prior record, succeeds and writes one); a target cell with 10 % no-data area is **NaN and flagged**, while
 2 % aggregates over the remainder and sets the flag; an aggregated grid whose lat/lon vectors differ
 from the 2a fixture's in the last element by 1e-6 deg **raises**; the happy path reopens and
 revalidates.
@@ -593,7 +1104,7 @@ later tests assume, not in some other way).
 coverage, **CF-encoded naive-denoting-UTC per D5.0** (epoch encoding + semantic UTC attribute, never
 a tz-aware dtype); whole-0.1° cell-centre registration asserted against the product's own coordinate
 vector; required attrs present and equal to the expected literals; per-file sha256 checked against
-the acquisition manifest before any read.
+the acquisition manifest before the payload is decoded (m-2).
 *Out of scope:* claiming these establish the physical stamp semantics (D5.2 does that, via 1c).
 *Target files:* `scripts/dhm_precip/era5_extract.py`.
 *Verification (red-first):* `uv run pytest tests/unit/scripts/test_era5_extract.py -k validate` —
@@ -632,6 +1143,18 @@ the "renamed station raises" case below is not merely untested, it is **impossib
 this plan**, passed in and recorded in the manifest — rather than inventing a second, divergent
 canonical list. (A committed canonical inventory is the tidier long-run answer, but it duplicates a
 fact the workbook already owns and would silently rot against it; that belongs to M-I2, not here.)
+
+**⛔ CORRECTED 2026-08-16 — that decision removed the only thing pinning the COUNT.** With a single
+source, the loader checks the extracted set *equals the inventory* — and an inventory of 25 satisfies
+that perfectly. A workbook that silently yields 25 stations extracts 25 and publishes happily; the
+publication check compares against `len(stations)`, i.e. against itself. Equality to a self-supplied
+list is not a constraint.
+⇒ **Pin the cardinality independently of the inventory.** `expected_station_count = 26` on the frozen
+parameter object; the run raises `StationSetMismatchError` if the workbook-derived inventory is not
+exactly that size, **before** any extraction, naming the count it got. This is deliberately a
+hard-coded number and not derived — it is a *tripwire on the boundary input*, and deriving it from
+the same source it guards would defeat it. If the delivery legitimately changes size, the number is
+updated in one place, as a visible decision.
 *In scope:* load the coordinate table via the existing `load_station_coordinates`, passing the
 workbook-derived inventory; assert the extracted station set **equals** it; assert exactly 26 rows,
 no duplicate station, one row per station in every emitted table; wrap the loader's existing
@@ -672,27 +1195,54 @@ changes the result); on a constructed field where bilinear provably exceeds near
 and undershoots at another, the **sign-agreement fraction is 0.5** and no output field or column name
 implies a winner; hours NaN under bilinear are excluded from **both** operators' statistics and the
 excluded count is reported; season assignment matches `scripts/dhm_precip/seasons.py`.
+⚠️ **Added (correctness, 2026-08-17) — the VALUES must be locked, not only the populations.** The
+verification above asserted populations, counts and sign agreement but **no numeric output**, so a
+reversed subtraction, an inverted ratio or a wet mean over the wrong population all passed. 3b is the
+table M-A6 consumes, so a **hand-computed fixture** (values derivable on paper, written in the test as
+arithmetic — never copied from an implementation run) pins, for all three `SensitivityStatistic`
+kinds: `nearest_value` · `bilinear_value` · `delta_absolute` **including its direction**
+(`nearest − bilinear`) · `ratio` **including its direction**, plus **null on a zero denominator**
+(distinct from null on an empty population) · `delta_unit` (`MM_PER_H` for QUANTILE and
+WET_MEAN_INTENSITY, **`FRACTION`** for WET_FREQUENCY) · `n_wet_nearest`/`n_wet_bilinear` on a fixture
+where the two wet populations **differ in size** · `sign_agreement_fraction` on an `ACROSS_STATION`
+row. Test soundness is proved by **mutation**: flipping the delta subtraction order, inverting the
+ratio, or computing the wet mean over all hours instead of the wet subset must each turn the lock RED.
 
 ### Phase 4 — publish
 
 **4a — extraction identity, bundle publication, manifest.** *(depends on 3a, 3b)*
-*In scope:* both identities of D7; the identity-addressed staging directory, reopen-and-validate of
-every file, per-output sha256, directory `os.replace`, `CURRENT` pointer written last; the D5.2
-prerequisite check (refuse to publish a real-data run without a passing `AccumulationDiagnosticRecord`
-from 1c); recovery of an orphaned staging directory and of a published directory with no manifest
-entry.
+*In scope:* both identities of D7; the staging directory; **`publish_bundle` calls
+`reopen_and_validate_bundle` on staging itself and refuses to publish on failure (P4)**; per-payload
+sha256 (P5); publication to the **per-run numbered directory `<NNNN>-<identity>/` (P1)** via
+`os.replace` onto a name that cannot already exist; the D5.2 prerequisite check (refuse to publish a
+real-data run without a passing `AccumulationDiagnosticRecord` from 1c).
+⚠️ **Corrected (major, 2026-08-17 fixer round).** Staging used to be the SHARED path
+`.staging/<identity>/`, `rmtree`d and recreated on every call under that identity — so two concurrent
+runs under the SAME identity could delete or interleave each other's staged payload. Staging is now a
+FRESH, per-invocation-unique directory (`.staging/<identity>--<token>/`); there is nothing stale to
+delete first, so "deletion of a staging directory left by a crash" no longer applies — a crashed run's
+staging directory is unreferenced garbage under its own unique name, left in place (disk is cheap; see
+the "cost, stated" note below, which now also covers staging).
+*Removed from scope by the 2026-08-17 redesign:* the `CURRENT` pointer (P2 — deleted), quarantine /
+`.orphan-<n>` (P1 — nothing is ever renamed), adoption of an existing directory, and any discovery
+helper (P6 — convention only).
 *Out of scope:* changing Plan 171's manifest writer or the M-A4 product layout.
 *Target files:* `scripts/dhm_precip/era5_extract_manifest.py`, `scripts/dhm_precip/extract_era5.py`
 (CLI, D9), `scripts/dhm_precip/era5_errors.py`.
 *Verification (red-first):* `uv run pytest tests/unit/scripts/test_extract_era5_cli.py
 tests/unit/scripts/test_era5_extract.py -k publish` — changing **each** identity input in turn
 (operator, coordinate-table sha, a source sha, the orography identity, the quantile grid, the schema
-version, the code version) yields a **different** `extraction_identity` and a **new** directory, and
-the previous one survives; a crash simulated **between** the directory replace and the pointer write
-leaves the previous `CURRENT` intact and the next run re-validates rather than trusting the orphan; a
-staging directory left by a crash is deleted, not published; a real-data run with no passing
-diagnostic record exits **4**; each typed failure of D9 maps to its exit code (2/3/4/5) and `--help`
-exits 0.
+version, the code version) yields a **different** `extraction_identity`; **every run yields a new
+`<NNNN>-` directory and every previous bundle survives untouched** (P1); **a re-run with identical
+inputs publishes `<NNNN+1>-<same identity>` and renames nothing** (the round-3 window is now
+unrepresentable, so it is tested by absence: no `.orphan-*` path is ever created); **`publish_bundle`
+refuses a staging directory that fails `reopen_and_validate_bundle`, proven by calling it with a
+malformed series** (P4 — this replaces the coverage lost when the wrong-station-count test was
+deleted); concurrent same-identity staging never collides or interleaves (proven under real
+concurrency, `TestStagingDirIsolation`); a real-data run with no passing diagnostic record exits
+**4**; each typed failure of D9 maps to its exit code (2/3/4/5) and `--help` exits 0.
+**Per P7:** each identity-input case above must also show a **changed output**, not merely a changed
+hash — an input that cannot change an output does not belong in the identity.
 
 **4b — real-data run.** *(operator step; **gated on Plan 171 Task 4b**, not 2b — D10.)*
 *In scope:* a human with the six annual products on disk exports `DHM_PRECIP_ERA5_ROOT` and runs
@@ -774,6 +1324,54 @@ choosing.
 
 The residual unknown is otherwise technical, not a decision: **how ERA5-Land's static orography is
 actually obtained** (task 1a), which is why 1a is a probe whose exit is a frozen spec.
+
+## Observed orography route — probed 2026-08-16 (task 1a, task 5a self-record)
+
+**Branch A (model orography) is reachable — no operator act needed, no owner question to answer.**
+The "new owner question" above (whether to accept a Branch-B account registration) turned out moot:
+the probe found Branch A reachable on the first try, so the question raised in "Owner decisions" was
+never reached.
+
+Probed live against the public CDS dataset pages and ECMWF's parameter database (constraint 3,
+"verify against the service, not the documentation"):
+
+- The `reanalysis-era5-land` dataset's own download-form variable list
+  (`https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=download`) includes
+  `"geopotential"` under its "Invariant" field group, alongside `total_precipitation`'s own group —
+  the SAME dataset id, SAME CDS client (`cdsapi.Client()`), SAME licence Plan 171 already accepted
+  (P0). No second account, no second licence, no second service.
+- ECMWF's parameter database (`https://codes.ecmwf.int/parameter-database/api/v1/param/129`, param
+  129, shortName `z`) documents geopotential as "the gravitational potential energy of a unit mass...
+  relative to mean sea level... The geopotential height can be calculated by dividing the geopotential
+  by the Earth's gravitational acceleration, g (=9.80665 m s-2)... often referred to as the orography."
+  Units (`unit_id` 15, `https://codes.ecmwf.int/parameter-database/api/v1/unit/15`) are `m**2 s**-2`,
+  confirming D3a's declared `Φ/g0` conversion with `g0 = 9.80665 m s⁻²` exactly.
+- The producer states the vertical reference as "relative to mean sea level" and does not name a
+  specific geoid realisation (EGM96/EGM2008) — recorded verbatim as `VerticalDatum.LOCAL_MSL` rather
+  than guessing a geoid model the producer itself does not commit to (the same honesty D3b applies to
+  the station side).
+- Because `geopotential` is an invariant field of the SAME `reanalysis-era5-land` dataset, it is
+  delivered on the identical 0.1° ERA5-Land grid already used for `total_precipitation`
+  (`scripts/dhm_precip/era5_request.py:37`) — the aggregation rule therefore degenerates to the
+  identity case of the one general mean-of-contained-cells aggregator 1b implements (a single source cell,
+  weight 1, per target cell). 1b's exact-grid-vector check (D3a) is the real proof of this, run once
+  the raster is actually materialised.
+
+**Branch B was not evaluated.** Branch A satisfied D3a's "no operator act" test on the first probe, so
+the ordered DEM candidate list's acceptance criteria were never applied to any candidate — the
+rejected-candidate log is empty by construction, not by omission.
+
+**Frozen record:** `scripts/dhm_precip/era5_orography_spec.py::OBSERVED_OROGRAPHY_SPEC` (the same
+content as above, as code — `product_id="reanalysis-era5-land:geopotential"`, `source =
+OrographySource.MODEL_OROGRAPHY`, `conversion_rule = OrographyConversionRule.GEOPOTENTIAL_G0`,
+`vertical_reference = VerticalDatum.LOCAL_MSL`, `rejected_candidates=()`). Neither branch has been
+downloaded: this freezes the ROUTE only. Materialisation (1b) is gated on an operator step, exactly
+like Plan 171's Task 4b — no credentials are available to this implementer.
+
+**4b (real-data run) has not yet been executed** — it is an operator step gated on Plan 171 Task 4b
+producing the six real annual `hourly_mm` products, neither of which exists at implementation time.
+This section will be updated with the real-data results (finite counts, elevation table summary,
+sensitivity envelope, checksums, cited diagnostic record) once an operator runs it.
 
 ```json
 {
