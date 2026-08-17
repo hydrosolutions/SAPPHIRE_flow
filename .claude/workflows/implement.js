@@ -239,7 +239,9 @@ const implementerReport = await agent(
   `confirm it FAILS against the buggy/absent code (stash the impl, keep the test, run it, expect RED), then ` +
   `restore. This is CODE, so follow the FULL mandatory version workflow (CLAUDE.md §Version Bumping): ` +
   `uv run bump-my-version bump patch; STAGE the version files with your changes; commit with a conventional ` +
-  `message on the CURRENT branch; then TAG it — git tag v$(uv run bump-my-version show current_version). ` +
+  `message on the CURRENT branch. **DO NOT TAG** — per PR #149 the version bump goes in the commit, but the ` +
+  `tag is applied on \`main\` AFTER merge, never on a feature branch (tagging a feature branch collides with ` +
+  `parallel sessions, which has happened repeatedly). ` +
   `HOLD-AT-PR (HARD): commit + tag LOCALLY only — do NOT push, do NOT open a PR, do NOT merge. If a phase ` +
   `cannot be implemented as written (the plan is wrong against the real code), STOP and report the deviation ` +
   `rather than silently working around it. Return the report: changedFiles, commandsRun (each gate + ` +
@@ -392,8 +394,8 @@ while (round < maxRounds) {
     `docs (CLAUDE.md §Documentation Hygiene). For each locking test of a CORRECTNESS/BUG fix, PROVE it is sound: ` +
     `confirm the test FAILS against the buggy code (stash the fix, keep the test, run it — expect RED), then ` +
     `restore. Re-run the exit gates (ruff/pyright/pytest) until green. Follow the FULL version workflow: ` +
-    `uv run bump-my-version bump patch; STAGE the version files; commit on the CURRENT branch; then TAG — ` +
-    `git tag v$(uv run bump-my-version show current_version). HOLD-AT-PR: commit + tag LOCALLY only — no ` +
+    `uv run bump-my-version bump patch; STAGE the version files; commit on the CURRENT branch. **DO NOT TAG** ` +
+    `— per PR #149 tags go on \`main\` after merge, never on a feature branch. HOLD-AT-PR: commit LOCALLY only — no ` +
     `push/PR/merge. If a finding is WRONG, do NOT comply blindly — record it in disputedFindings with why. ` +
     `Return: changelog, testSoundnessProved (true if every correctness/bug-fix locking test was shown ` +
     `fail-against-buggy, OR none needed), lockingTestProofs, disputedFindings.`,
