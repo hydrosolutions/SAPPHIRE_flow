@@ -27,9 +27,26 @@ RUN mkdir -p src/sapphire_flow && touch src/sapphire_flow/__init__.py
 # once recap-dg-client publishes to the hydrosolutions private package
 # index and this can install as a wheel with no source build, drop this
 # step (IT-specialist Plan 080-style follow-up).
+# aquacast (Plan 159 D17/T2) is the SECOND private git dependency. It is an
+# OPTIONAL extra: only the forecast-cycle worker image installs it, because it
+# pulls torch and the whole ML stack. Pass `--build-arg WITH_AQUACAST=1` plus the
+# secret to build that variant:
+#   docker build --build-arg WITH_AQUACAST=1 \
+#     --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN \
+#     --secret id=aquacast_token,env=AQUACAST_TOKEN .
+# Without the arg the extra is skipped and no aquacast token is needed at all,
+# which is what the default/ingest images want.
+ARG WITH_AQUACAST=0
+
 RUN --mount=type=secret,id=recap_dg_client_token \
+    --mount=type=secret,id=aquacast_token,required=false \
     git config --global url."https://x-access-token:$(cat /run/secrets/recap_dg_client_token)@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git" \
-    && uv sync --frozen --no-dev \
+    && if [ "$WITH_AQUACAST" = "1" ]; then \
+         git config --global url."https://x-access-token:$(cat /run/secrets/aquacast_token)@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git" \
+         && uv sync --frozen --no-dev --extra aquacast; \
+       else \
+         uv sync --frozen --no-dev; \
+       fi \
     && rm -f /root/.gitconfig
 
 COPY src/ src/
