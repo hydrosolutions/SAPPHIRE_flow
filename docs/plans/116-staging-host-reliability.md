@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-14
 plan: 116
 title: Silent-success detection — flows must assert they did work
@@ -9,6 +9,12 @@ blocks: []
 ---
 
 # Plan 116 — Silent-success detection
+
+## ✅ READY (owner-confirmed 2026-08-17) — BUILD SCOPE IS THE SLICE ONLY
+
+Reviewed for correctness with an explicit do-not-over-engineer constraint; three defects found and folded
+(a false gap claim of mine, an insufficient backfill fix, and a stale acceptance test). The slice below is the
+**only** thing being built.
 
 ## ⚠️ Re-scoped 2026-08-17 — read this before the July text below
 
