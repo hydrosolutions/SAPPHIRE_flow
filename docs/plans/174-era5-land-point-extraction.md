@@ -541,6 +541,25 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
       request construction): with Branch B cut there is exactly **one** route, so a request-builder
       buys flexibility nothing needs — and this plan's whole history is that the apparatus, not the
       absence of it, is the risk.
+
+      **⚠️ That assertion NARROWS the false provenance; it does not remove it — and the residue must be
+      labelled, not asserted.** *(Blocker, slim review 2026-08-17.)* `OrographySpec` also claims
+      `product_version` (`era5_orography_spec.py:116`), and **CDS offers no way to select a product
+      version**: change that field alone and the `product_id`/`download_url` assertions still pass, the
+      downloader issues the same request, and the manifest claims a version nothing verified. A longer
+      assertion list cannot fix this, because there is nothing in the request to compare against.
+      ⇒ **Split the spec's fields by who can vouch for them**, which is P7a's distinction applied to
+      provenance rather than to identity:
+      - **Machine-verified** — `product_id`, `download_url`, the request `area`, the conversion rule:
+        asserted against what the downloader actually asks for; a mismatch is a typed failure.
+      - **Operator-attested** — `product_version`, `licence_*`, `vertical_reference`, `source_crs`:
+        recorded from the 1a probe and **explicitly marked in the manifest as attested, not verified.**
+        The pipeline cannot check them, and an artefact that says "verified" about a field nothing
+        verified is the same defect in a new costume.
+      **This is the fifth appearance of one defect class.** Each round removed the *instance* and left
+      the *class*, because the class is "the artefact's claims are broader than the code's guarantees".
+      Labelling the unverifiable residue is what finally makes the claim and the guarantee the same
+      size.
   - `extraction_identity` = sha256(canonical-JSON of **every value-affecting input**):
     operator id · station-coordinate-table sha256 · the **list of source product sha256s consumed**
     (validated against the acquisition manifest before use, never trusted from the filename) ·
@@ -566,6 +585,23 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     **Standing obligation:** anything added to an identity must have a test that changes the identity
     by changing that input *and* changes an output. If no such test can be written, the field does not
     belong in the identity.
+
+    **P7a — Two kinds of identity input, because P7 as first written contradicted D7.**
+    *(Major, slim review 2026-08-17.)* D7 requires that *"a version bump alone forces regeneration"* —
+    but a **behaviour-neutral** `extraction_code_version` bump produces byte-identical payloads, so
+    "changing this input must change an output" is **unsatisfiable** for exactly the fields whose whole
+    purpose is invalidation. Counting the identity, path or manifest as the changed output makes the
+    test tautological. The rule therefore distinguishes:
+    - **Value-determining inputs** (operator, thresholds, quantile grid, source hashes, `zero_policy`,
+      the datum enums): P7 binds in full — a test must change the input **and** an output.
+    - **Invalidation inputs** (`extraction_code_version`, `output_schema_version`,
+      `orography_schema_version`): exempt from the output-change obligation, because they exist to
+      force regeneration rather than to determine a value. They must be **explicitly labelled as such
+      in the identity payload**, so the exemption is visible and cannot be used to smuggle a
+      value-determining field past the rule.
+    **The distinction is the point:** an unread *value-determining* field is false provenance; an
+    unread *invalidation* field is a cache key doing its job. `zero_policy` is the former, which is why
+    the fix is to read it rather than to exempt it.
   **Publication is a bundle, and per-file `os.replace` is not atomic across a bundle** (M-A4 gets
   away with it because its unit *is* one file plus a manifest; the actual `os.replace`-via-
   `publish_atomic` call is `scripts/dhm_precip/era5_transform.py:366`).
@@ -593,6 +629,17 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     the pointer last" could not help because a same-identity re-run never changes the pointer's value.
     Needs no clock, so **frozen-clock tests cannot collide** — a timestamped scheme would have
     reintroduced the same-name collision inside the test suite.
+
+    **P1a — Allocate the integer by `mkdir(exist_ok=False)`, never by scan-then-create.**
+    *(Blocker, slim review 2026-08-17: "next free integer" as written is racy — two runs can both
+    observe `0007` as free; with different identities both publish and P6's "highest NNNN" becomes
+    ambiguous, and with the same identity one `os.replace` meets the other's non-empty target and
+    fails.)* `Path.mkdir(exist_ok=False)` is **atomic**: attempt `<NNNN>-<identity>/`, and on
+    `FileExistsError` increment and retry. The winner of the race owns the number by construction, so
+    no lock, no reservation file and no single-writer precondition is required — which is why this is
+    preferred over merely *documenting* that the pipeline is single-writer.
+    The bundle is then assembled **into** that reserved directory, so publication is the reservation
+    plus the content write, not a directory `os.replace` at all.
   - **P2 — `CURRENT` is DELETED.** Nothing reads it. Discovery is *the highest `NNNN` whose manifest
     validates*. Nothing is ever renamed, moved, or destroyed; older bundles simply remain.
   - **P3 — Identity is a LABEL, not a key.** Verified: `published_dir(identity)` is called in exactly
@@ -604,6 +651,17 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     *conventional* — the caller had to remember — so removing or reordering that call left every
     publication test green while an invalid bundle could be published. **This is the pattern-breaker:
     a guarantee enforced by construction cannot be skipped by a future caller.**
+
+    **P4a — Publish-time validation must apply EXACTLY the check discovery applies, including
+    `payload_sha256s` reconciliation.** *(Blocker, slim review 2026-08-17 — P4 and P6 contradicted each
+    other.)* Verified: `reopen_and_validate_bundle` (`era5_extract_manifest.py:333`) checks file
+    presence, readability, row and station counts, and **never reconciles `payload_sha256s`**. So a
+    payload modified after its hash was computed **passes publication and then fails discovery** —
+    leaving, on a first run, *no discoverable bundle at all*, which is precisely the guarantee P1/P2
+    exist to provide.
+    ⇒ The validator reconciles every payload sha256 against the manifest, and **publication and
+    discovery share one predicate** — not two implementations that can drift. If discovery would
+    reject it, publication must reject it first.
   - **P5 — The manifest hashes PAYLOAD FILES ONLY, never itself.** A manifest cannot contain its own
     hash. It lives inside the bundle directory and covers the payload artefacts beside it.
   - **P6 — Discovery is NOT implemented here.** The convention above is documented and that is all;
