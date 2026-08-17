@@ -380,7 +380,11 @@ services:
       # Plan 146 D2: recap-Gateway snow-reanalysis ingest — a distinct time
       # from ingest-weather-history so the two never contend for the DB.
       SCHEDULE_INGEST_SNOW_REANALYSIS: ${SCHEDULE_INGEST_SNOW_REANALYSIS:-0 5 * * *}
-      SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-5 * * * *}
+      # Plan 175 D4/T4: NOT `5 * * * *` — that minute is also hit by every
+      # `*/5` ingest tick, which collided every hour against LINDAS's 3-
+      # request burst ceiling. `37` is clear of every `*/5` boundary and of
+      # the `0 * * * *` forecast collector.
+      SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-37 * * * *}
     depends_on:
       postgres:
         condition: service_healthy

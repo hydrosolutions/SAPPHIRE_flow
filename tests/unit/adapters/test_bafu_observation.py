@@ -282,6 +282,34 @@ class TestHttpFailuresRaiseAdapterError:
         assert len(spy.calls) == 2  # slept before each retry, not after success
         assert {row.gauge_code for row in rows} == {"2135"}
 
+    def test_all_retryable_failures_make_exactly_max_retries_plus_one_attempts(
+        self,
+    ) -> None:
+        """T2 test-soundness note: a success-path retry test cannot detect a
+        RETAINED outer loop wrapping the new limiter — the helper succeeds on
+        the first outer iteration regardless, so nesting adds no attempts and
+        no sleeps and a success-path test passes either way. This must be an
+        EXHAUSTION test asserting the exact HTTP attempt count: a retained
+        outer `for attempt in range(self._max_retries + 1)` around the new
+        helper would nest retry budgets (up to (max_retries+1)**2 attempts)
+        and this test would fail RED against that regression."""
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(503, text="always fails")
+
+        spy = _SleepSpy()
+        adapter = _make_adapter(handler, sleeper=spy, max_retries=2)
+
+        with pytest.raises(AdapterError):
+            adapter.fetch_all_observations()
+
+        # max_retries=2 -> exactly 3 HTTP attempts, 2 retry sleeps. A nested
+        # outer loop would make 3*3=9 attempts instead.
+        assert calls["n"] == 3
+        assert len(spy.calls) == 2
+
 
 class TestMalformedBindingRaisesAdapterError:
     """Locks the blocker fix: a malformed binding (missing key, non-numeric

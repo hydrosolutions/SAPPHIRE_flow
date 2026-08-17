@@ -180,7 +180,12 @@ class TestHydroScraperAdapter:
                 ),
             }
         )
-        adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
+        # Plan 175 T3: a no-op sleeper — the 500 now retries through the
+        # shared limiter, and this test must not perform real multi-second
+        # sleeps waiting for the retry cap.
+        adapter = HydroScraperAdapter(
+            endpoint=_ENDPOINT, http_client=client, sleeper=lambda _seconds: None
+        )
         since: dict[StationId, UtcDatetime] = {
             _STATION_1_ID: _SINCE,
             _STATION_2_ID: _SINCE,
@@ -285,7 +290,11 @@ class TestHydroScraperAdapter:
                 ),
             }
         )
-        adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
+        # Plan 175 T3: no-op sleeper — see test_single_station_failure_others_
+        # succeed above for why.
+        adapter = HydroScraperAdapter(
+            endpoint=_ENDPOINT, http_client=client, sleeper=lambda _seconds: None
+        )
 
         with structlog.testing.capture_logs() as captured:
             obs = adapter.fetch_observations(

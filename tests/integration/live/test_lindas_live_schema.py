@@ -28,13 +28,16 @@ See Plan 058 §T1 for the recommended roster-widening follow-up.
 from __future__ import annotations
 
 import math
+import time
 from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
 import pytest
 
+from sapphire_flow.adapters.bafu_observation import BafuObservationAdapter
 from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
+from sapphire_flow.adapters.lindas_rate_limiter import LINDAS_RETRY_FLOOR_S
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import GeoCoord
 from sapphire_flow.types.enums import (
@@ -242,3 +245,35 @@ class TestLiveLindasSchema:
                 f"station {obs.station_id}: unexpected parameter {obs.parameter!r} — "
                 "LINDAS schema may have changed"
             )
+
+
+@pytest.mark.live_lindas
+class TestLiveLindasRateLimit:
+    """Plan 175 T6 — the only test that would catch BAFU changing the
+    measured burst ceiling (docs/decisions/bafu-lindas-rate-limit.md). This
+    test is ITSELF a LINDAS caller (D6), so it goes through the same shared
+    limiter as every other caller — otherwise the gate would become a
+    source of the 429s it exists to prevent.
+    """
+
+    def test_burst_of_calls_beyond_the_bucket_all_eventually_succeed(self) -> None:
+        client = httpx.Client(timeout=_LIVE_TIMEOUT_S)
+        adapter = BafuObservationAdapter(endpoint=_ENDPOINT, http_client=client)
+
+        n_calls = 5  # > the measured burst-3 ceiling
+        started_at = time.monotonic()
+        for _ in range(n_calls):
+            rows = adapter.fetch_all_observations()
+            assert rows, "whole-graph fetch returned zero rows"
+        elapsed_s = time.monotonic() - started_at
+
+        # n_calls beyond the burst-3 capacity must each pay at least the
+        # retry floor in pacing — if BAFU raised the ceiling this bound
+        # would no longer bind and this assertion is the signal to update
+        # bafu-lindas-rate-limit.md, not to weaken this test.
+        min_expected_s = (n_calls - 3) * LINDAS_RETRY_FLOOR_S
+        assert elapsed_s >= min_expected_s, (
+            f"{n_calls} calls completed in {elapsed_s:.1f}s — expected pacing "
+            f"to take at least {min_expected_s:.1f}s if the burst-3 ceiling "
+            "still holds"
+        )

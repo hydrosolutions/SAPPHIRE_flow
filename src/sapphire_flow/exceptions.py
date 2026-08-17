@@ -43,6 +43,29 @@ class BudgetExceededError(AdapterError):
     """Local size or file-count guard tripped; not a retriable external-source error."""
 
 
+class LindasRateLimitExhaustedError(AdapterError):
+    """A LINDAS request via ``adapters.lindas_rate_limiter`` could not
+    succeed within the retry budget (Plan 175 D7) — either the bounded
+    attempt count or the bounded wall-clock deadline was hit first.
+    Callers translate this into their own adapter-specific error/outcome
+    shape; it is never allowed to propagate raw past an adapter boundary."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: int,
+        last_status: int | None,
+        last_exc: Exception | None,
+        bound: Literal["attempts", "deadline"],
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.last_status = last_status
+        self.last_exc = last_exc
+        self.bound = bound
+
+
 class DiskSoftLimitError(AdapterError):
     """Free disk space below soft threshold; NWP fetch degraded to runoff-only."""
 

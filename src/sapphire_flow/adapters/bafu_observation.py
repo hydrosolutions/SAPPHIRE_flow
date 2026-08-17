@@ -31,7 +31,11 @@ import structlog
 from pydantic import BaseModel, ValidationError
 
 from sapphire_flow import __version__
-from sapphire_flow.exceptions import AdapterError
+from sapphire_flow.adapters.lindas_rate_limiter import (
+    LindasLimiterConfig,
+    TokenBucketLindasLimiter,
+)
+from sapphire_flow.exceptions import AdapterError, LindasRateLimitExhaustedError
 from sapphire_flow.types.bafu_observation import (
     BafuObservationParameter,
     BafuObservationRow,
@@ -41,6 +45,7 @@ from sapphire_flow.types.datetime import ensure_utc
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sapphire_flow.adapters.lindas_rate_limiter import LindasRateLimiter
     from sapphire_flow.types.bafu_observation import LindasKind
 
 log = structlog.get_logger(__name__)
@@ -93,16 +98,22 @@ class BafuObservationAdapter:
         http_client: httpx.Client,
         *,
         sleeper: Callable[[float], None] = time.sleep,
-        retry_delay_seconds: float = 1.0,
         max_retries: int = 2,
+        limiter: LindasRateLimiter | None = None,
     ) -> None:
         if not endpoint.startswith("https://"):
             raise ValueError(f"SPARQL endpoint must use HTTPS, got: {endpoint!r}")
         self._endpoint = endpoint
         self._http_client = http_client
-        self._sleeper = sleeper
-        self._retry_delay_seconds = retry_delay_seconds
         self._max_retries = max_retries
+        # Plan 175 T1: one shared limiter owns pacing + 429/5xx/transport
+        # retry (D2/D3). `max_retries` retries means `max_retries + 1` total
+        # HTTP attempts — mirrored here so this adapter's public constructor
+        # keeps its existing meaning.
+        self._limiter: LindasRateLimiter = limiter or TokenBucketLindasLimiter(
+            config=LindasLimiterConfig(max_attempts=max_retries + 1),
+            sleeper=sleeper,
+        )
 
     def fetch_all_observations(self) -> list[BafuObservationRow]:
         rows, _raw_payload = self.fetch_all_observations_with_raw()
@@ -242,57 +253,44 @@ class BafuObservationAdapter:
         return rows
 
     def _post_with_retries(self, query: str) -> httpx.Response:
-        """POST the whole-graph query with a bounded retry cap (T3: a polite
-        client with a request cap/retry), mirroring
-        ``BafuForecastAdapter._get_with_retries``. Any network/HTTP failure
-        (including a non-2xx status) is normalized to ``AdapterError`` so the
-        collector flow's CRITICAL heartbeat is never silently skipped."""
-        last_exc: Exception | None = None
-        for attempt in range(self._max_retries + 1):
-            try:
-                response = self._http_client.post(
-                    self._endpoint,
-                    data={"query": query},
-                    headers={
-                        "Accept": "application/sparql-results+json",
-                        "User-Agent": USER_AGENT,
-                    },
-                )
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                log.warning(
-                    "bafu_observation.request_failed",
-                    endpoint=self._endpoint,
-                    attempt=attempt,
-                    error=str(exc),
-                )
-                if attempt < self._max_retries:
-                    self._sleeper(self._retry_delay_seconds)
-                continue
+        """POST the whole-graph query through the shared LINDAS limiter
+        (Plan 175 T1/D2/D3/D7): 429/5xx/transport failures are paced and
+        retried within a bounded attempt count and wall-clock deadline. Any
+        network/HTTP failure (including a non-2xx status) is normalized to
+        ``AdapterError`` so the collector flow's CRITICAL heartbeat is never
+        silently skipped."""
 
-            if response.status_code >= 500 and attempt < self._max_retries:
-                log.warning(
-                    "bafu_observation.request_retrying",
-                    endpoint=self._endpoint,
-                    status_code=response.status_code,
-                    attempt=attempt,
-                )
-                self._sleeper(self._retry_delay_seconds)
-                continue
+        def send() -> httpx.Response:
+            return self._http_client.post(
+                self._endpoint,
+                data={"query": query},
+                headers={
+                    "Accept": "application/sparql-results+json",
+                    "User-Agent": USER_AGENT,
+                },
+            )
 
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
+        try:
+            response = self._limiter.call(send)
+        except LindasRateLimitExhaustedError as exc:
+            if exc.last_status is not None:
                 raise AdapterError(
                     f"BAFU LINDAS whole-graph request to {self._endpoint} "
-                    f"failed with status {response.status_code}: {exc}"
+                    f"failed with status {exc.last_status}: {exc}"
                 ) from exc
-            return response
+            raise AdapterError(
+                f"BAFU LINDAS whole-graph request to {self._endpoint} failed "
+                f"after {exc.attempts} attempt(s): {exc.last_exc}"
+            ) from exc
 
-        raise AdapterError(
-            f"BAFU LINDAS whole-graph request to {self._endpoint} failed "
-            f"after {self._max_retries + 1} attempt(s): {last_exc}"
-        ) from last_exc
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise AdapterError(
+                f"BAFU LINDAS whole-graph request to {self._endpoint} "
+                f"failed with status {response.status_code}: {exc}"
+            ) from exc
+        return response
 
     @staticmethod
     def _parse_subject(subject: str) -> tuple[str, LindasKind]:

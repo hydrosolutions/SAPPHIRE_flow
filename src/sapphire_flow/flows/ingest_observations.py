@@ -20,7 +20,13 @@ from sapphire_flow.services.qc_datum import (
     shift_observations_for_water_level_datum,
 )
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import GaugingStatus, QcStatus, StationKind
+from sapphire_flow.types.enums import (
+    GaugingStatus,
+    PipelineCheckType,
+    PipelineHealthStatus,
+    QcStatus,
+    StationKind,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
@@ -32,7 +38,12 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
     from sapphire_flow.types.ids import StationId
-    from sapphire_flow.types.observation import Observation, RawObservation
+    from sapphire_flow.types.observation import (
+        HydroScraperBatchResult,
+        Observation,
+        RawObservation,
+        StationFetchOutcome,
+    )
     from sapphire_flow.types.station import StationConfig
 
 log = structlog.get_logger(__name__)
@@ -128,8 +139,88 @@ def _fetch_observations_task(
     adapter: HydroScraperAdapter,
     station_configs: list[StationConfig],
     since: dict[StationId, UtcDatetime],
-) -> list[RawObservation]:
-    return adapter.fetch_observations(station_configs, since)
+) -> HydroScraperBatchResult:
+    # Plan 175 T3: the typed batch method, NOT the `StationDataSource`
+    # Protocol's list façade — per-station failure causes (D9) are only
+    # observable here, and this flow needs them to report a truthful
+    # `stations_failed` (D8) instead of silently swallowing failures.
+    return adapter.fetch_observations_batch(station_configs, since)
+
+
+def _fetch_health_detail(
+    outcomes: tuple[StationFetchOutcome, ...],
+) -> dict[str, object]:
+    failed = [o for o in outcomes if o.failure_cause is not None]
+    failure_counts: dict[str, int] = {}
+    for outcome in failed:
+        if outcome.failure_cause is None:
+            continue
+        cause_value = outcome.failure_cause.value
+        failure_counts[cause_value] = failure_counts.get(cause_value, 0) + 1
+    return {
+        "stations_polled": len(outcomes),
+        "stations_fetch_failed": len(failed),
+        "failure_counts_by_cause": failure_counts,
+        "failed_station_ids": sorted(str(o.station_id) for o in failed),
+    }
+
+
+def _fetch_health_status(
+    *, stations_polled: int, stations_fetch_failed: int
+) -> PipelineHealthStatus:
+    # T3 design detail (plan §Residual forks #2): with a handful of onboarded
+    # stations an absolute-count rule is honest where a percentage threshold
+    # would be noise. "Any failure is invisible" is the defect being fixed —
+    # so any nonzero failure count is at least WARNING; every eligible
+    # station failing is CRITICAL (the whole run produced nothing).
+    if stations_fetch_failed == 0:
+        return PipelineHealthStatus.OK
+    if stations_polled > 0 and stations_fetch_failed >= stations_polled:
+        return PipelineHealthStatus.CRITICAL
+    return PipelineHealthStatus.WARNING
+
+
+def _append_fetch_health_record(
+    pipeline_health_store: object | None,
+    *,
+    checked_at: UtcDatetime,
+    outcomes: tuple[StationFetchOutcome, ...],
+) -> None:
+    # Best-effort (mirrors flows/collect_bafu_observations.py's identically
+    # -shaped helper): a health-store outage must never fail the ingest run
+    # itself, and unit tests that don't inject a store simply no-op here.
+    if pipeline_health_store is None:
+        return
+    append = getattr(pipeline_health_store, "append_health_record", None)
+    if not callable(append):
+        return
+
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
+
+    detail = _fetch_health_detail(outcomes)
+    status = _fetch_health_status(
+        stations_polled=detail["stations_polled"],  # type: ignore[arg-type]
+        stations_fetch_failed=detail["stations_fetch_failed"],  # type: ignore[arg-type]
+    )
+    try:
+        append(
+            PipelineHealthRecord(
+                check_type=PipelineCheckType.OBSERVATION_INGEST_FETCH,
+                checked_at=checked_at,
+                status=status,
+                subject="ingest_observations",
+                detail=detail,
+                cycle_time=None,
+                created_at=checked_at,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort telemetry write
+        log.warning(
+            "pipeline.health_record_write_failed",
+            check_type=PipelineCheckType.OBSERVATION_INGEST_FETCH.value,
+            subject="ingest_observations",
+            error=str(exc),
+        )
 
 
 @task(
@@ -408,6 +499,7 @@ def ingest_observations_flow(
     deployment_config: object = None,
     clock: object = None,
     formula_store: object = None,
+    pipeline_health_store: object = None,
     context_window_hours: float = 2.0,
     default_lookback_hours: float = 1.0,
 ) -> IngestResult:
@@ -426,6 +518,8 @@ def ingest_observations_flow(
         baseline_store = stores["baseline_store"]  # type: ignore[assignment]
         alert_store = stores["alert_store"]  # type: ignore[assignment]
         formula_store = stores["formula_store"]  # type: ignore[assignment]
+        if pipeline_health_store is None:
+            pipeline_health_store = stores["pipeline_health_store"]  # type: ignore[assignment]
 
     if adapter is None:
         import httpx
@@ -495,8 +589,27 @@ def ingest_observations_flow(
         since[station.id] = latest if latest is not None else default_since
 
     # --- Step 2.1: Fetch observations ---
-    raw_obs = _fetch_observations_task(adapter, eligible, since)
+    batch_result = _fetch_observations_task(adapter, eligible, since)
+    raw_obs = batch_result.observations
     log.info("ingest.fetch_complete", observations=len(raw_obs))
+
+    # D8: the fetch health record is written IMMEDIATELY after fetch
+    # reconciliation — before store/QC — so a later storage or QC failure
+    # can never suppress this signal. This is the fix for T3's defect: a
+    # mass-429 run used to report success because `raw_obs` being empty
+    # short-circuited before any failure was ever recorded.
+    _append_fetch_health_record(
+        pipeline_health_store,
+        checked_at=now,
+        outcomes=batch_result.outcomes,
+    )
+    fetch_failed = batch_result.failed
+    fetch_failed_station_ids = {o.station_id for o in fetch_failed}
+    fetch_errors = tuple(
+        f"fetch failed for {o.station_id}: {o.failure_cause.value} "  # type: ignore[union-attr]
+        f"({o.failure_detail})"
+        for o in fetch_failed
+    )
 
     if not raw_obs:
         log.info("ingest.no_new_data")
@@ -508,8 +621,8 @@ def ingest_observations_flow(
             qc_passed=0,
             qc_failed=0,
             qc_suspect=0,
-            stations_failed=0,
-            errors=(),
+            stations_failed=len(fetch_failed_station_ids),
+            errors=fetch_errors,
         )
 
     # --- Step 2.2: Store raw observations ---
@@ -528,6 +641,7 @@ def ingest_observations_flow(
 
     totals = {"passed": 0, "failed": 0, "suspect": 0}
     errors: list[str] = []
+    qc_failed_station_ids: set[StationId] = set()
 
     for station_id, parameter in station_params:
         try:
@@ -552,6 +666,7 @@ def ingest_observations_flow(
                 error=str(exc),
             )
             errors.append(f"QC failed for {station_id}/{parameter}: {exc}")
+            qc_failed_station_ids.add(station_id)
 
     log.info(
         "ingest.qc_complete",
@@ -602,6 +717,9 @@ def ingest_observations_flow(
         log.debug("ingest.observation_alerts_disabled")
 
     # --- Result ---
+    # D8: stations_failed is the UNION of fetch failures and QC-task
+    # exceptions — a station can fail either way, and both must count.
+    all_failed_station_ids = fetch_failed_station_ids | qc_failed_station_ids
     result = IngestResult(
         stations_polled=len(eligible),
         observations_fetched=len(raw_obs),
@@ -610,8 +728,8 @@ def ingest_observations_flow(
         qc_passed=totals["passed"],
         qc_failed=totals["failed"],
         qc_suspect=totals["suspect"],
-        stations_failed=len(errors),
-        errors=tuple(errors),
+        stations_failed=len(all_failed_station_ids),
+        errors=fetch_errors + tuple(errors),
         observations_derived=derived["derived"],
         observations_missing=derived["missing"],
     )
