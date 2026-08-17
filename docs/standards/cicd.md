@@ -727,7 +727,7 @@ Two host/Docker secrets `/health/detail`-auth introduces:
 | Secret | Where | Purpose |
 |---|---|---|
 | `access_token_pepper` | Docker secret, `./secrets/access_token_pepper`, mounted ONLY into the `api` service | HMAC-SHA-256 pepper for `access_tokens.token_hash` (R1). The API/token-CLI fail closed (refuse to boot/run) without it. |
-| `health_probe_token` | HOST secret file, `./secrets/health_probe_token` (chmod 600) — NOT a Docker/Compose mount | An `admin`-scoped access-token raw key. Read directly by the launchd watchdog host process (`ops/watchdog.py:read_probe_token`, same convention as `./secrets/slack_webhook_url`) and sent as `Authorization: Bearer <token>` on both BAFU freshness probes against the now-authenticated `/health/detail`. |
+| `health_probe_token` | HOST secret file, `./secrets/health_probe_token` (chmod 600) — NOT a Docker/Compose mount | An `admin`-scoped access-token raw key. Read directly by the launchd watchdog host process (`ops/watchdog.py:read_probe_token`, same convention as `./secrets/slack_webhook_url`) and sent as `Authorization: Bearer <token>` on all three freshness probes (the two BAFU checks plus, as of **Plan 116**, the forecast-production `forecast_freshness` check) against the now-authenticated `/health/detail`. |
 
 ### First deploy
 

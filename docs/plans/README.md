@@ -301,3 +301,23 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 ## Archived
 
 See [archive/](archive/) for completed and archived plans (76 entries).
+
+## Superseded / stranded branches (recorded 2026-08-17)
+
+**`docs/plan-158-session-independence` — SUPERSEDED, do not build from it.** Its plan docs live only on that
+branch and were never on `main`; it is now **82+ commits behind**. Everything operationally load-bearing in it
+has been rebuilt on current `main` instead, because the branch had diverged too far to merge:
+
+| Plan 158 task | Delivered by |
+|---|---|
+| T1 — dead-man ping | **Plan 163** (merged, PR #162) |
+| T1b — forecast-production freshness | **Plan 116** (merged, PR #167) — *small version; the `(station, model, parameter)` coverage ledger was deliberately excluded after it drew 5 blockers* |
+| T2/T3/T5 — watchdog in the system domain | **Plan 164** (READY — console runbook + fresh-host installer guard) |
+
+**Still unique to that branch, if anyone wants it:** the Docker endpoint contract (`scripts/launchd/docker-endpoint.sh`,
+`SAPPHIRE_DOCKER_BIN`/`SAPPHIRE_DOCKER_HOST`), the `bootstrap-mac-mini.sh` service-account and teardown fixes,
+and the excluded coverage ledger. Extract deliberately; do not merge the branch.
+
+**⚠️ Plan-number collision:** that branch also contains a `159-headless-container-runtime-migration.md`, while
+`main`'s **159** is `aquacast shim (in-repo optional extra) + forecast-cycle worker image` — a different plan by
+another session. Renumber the headless-runtime plan if it is ever revived.
