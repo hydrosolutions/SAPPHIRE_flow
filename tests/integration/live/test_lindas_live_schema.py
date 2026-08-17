@@ -257,7 +257,23 @@ class TestLiveLindasRateLimit:
     """
 
     def test_burst_of_calls_beyond_the_bucket_all_eventually_succeed(self) -> None:
-        client = httpx.Client(timeout=_LIVE_TIMEOUT_S)
+        """Major fix: elapsed time alone cannot prove proactive pacing is
+        doing anything — if BAFU's own 429-retry-and-recover behaviour
+        happens to take about as long as our pacing would, this assertion
+        stays green even with pacing silently removed, and it stays green
+        even if BAFU quietly raises its ceiling (our bucket would just pace
+        more calls than strictly necessary, still burning >= the expected
+        wall-clock). The only signal that isolates "we paced correctly" from
+        "we got rate-limited and recovered" is the actual response statuses:
+        a correctly paced operational caller should see ZERO 429s."""
+        statuses: list[int] = []
+
+        def _record_status(response: httpx.Response) -> None:
+            statuses.append(response.status_code)
+
+        client = httpx.Client(
+            timeout=_LIVE_TIMEOUT_S, event_hooks={"response": [_record_status]}
+        )
         adapter = BafuObservationAdapter(endpoint=_ENDPOINT, http_client=client)
 
         n_calls = 5  # > the measured burst-3 ceiling
@@ -267,10 +283,18 @@ class TestLiveLindasRateLimit:
             assert rows, "whole-graph fetch returned zero rows"
         elapsed_s = time.monotonic() - started_at
 
-        # n_calls beyond the burst-3 capacity must each pay at least the
-        # retry floor in pacing — if BAFU raised the ceiling this bound
-        # would no longer bind and this assertion is the signal to update
-        # bafu-lindas-rate-limit.md, not to weaken this test.
+        assert 429 not in statuses, (
+            f"{statuses.count(429)} of {len(statuses)} underlying HTTP "
+            f"response(s) came back 429 across {n_calls} calls — proactive "
+            f"pacing did not prevent rate limiting (statuses: {statuses})"
+        )
+
+        # Secondary, informational bound: n_calls beyond the burst-3 capacity
+        # must each pay at least the retry floor in pacing. This is NOT the
+        # primary gate (see docstring) — if BAFU raised the ceiling this
+        # bound stops binding tightly, which is a prompt to update
+        # bafu-lindas-rate-limit.md, not evidence pacing regressed on its
+        # own (the 429-free assertion above is what actually proves that).
         min_expected_s = (n_calls - 3) * LINDAS_RETRY_FLOOR_S
         assert elapsed_s >= min_expected_s, (
             f"{n_calls} calls completed in {elapsed_s:.1f}s — expected pacing "

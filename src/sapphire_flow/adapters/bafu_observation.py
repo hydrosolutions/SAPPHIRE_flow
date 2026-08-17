@@ -260,7 +260,7 @@ class BafuObservationAdapter:
         ``AdapterError`` so the collector flow's CRITICAL heartbeat is never
         silently skipped."""
 
-        def send() -> httpx.Response:
+        def send(remaining_s: float) -> httpx.Response:
             return self._http_client.post(
                 self._endpoint,
                 data={"query": query},
@@ -268,6 +268,7 @@ class BafuObservationAdapter:
                     "Accept": "application/sparql-results+json",
                     "User-Agent": USER_AGENT,
                 },
+                timeout=remaining_s,
             )
 
         try:

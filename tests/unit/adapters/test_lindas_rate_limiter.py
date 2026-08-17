@@ -64,7 +64,8 @@ def _limiter(module, *, clock: _FakeClock, sleeper: _SleepSpy, **config_kwargs):
 def _responses(*statuses: int, headers: dict[str, str] | None = None):  # type: ignore[no-untyped-def]
     queue = list(statuses)
 
-    def send() -> httpx.Response:
+    def send(remaining_s: float) -> httpx.Response:
+        del remaining_s
         status = queue.pop(0)
         return httpx.Response(status, headers=headers or {})
 
@@ -110,7 +111,8 @@ class TestRetryAfterHonoured:
         future = _START + timedelta(seconds=10)
         header_value = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
 
-        def send() -> httpx.Response:
+        def send(remaining_s: float) -> httpx.Response:
+            del remaining_s
             first = not send.called  # type: ignore[attr-defined]
             send.called = True  # type: ignore[attr-defined]
             if first:
@@ -157,6 +159,31 @@ class TestRetryAfterHonoured:
 
         assert spy.calls == [module.LINDAS_RETRY_FLOOR_S]
 
+    def test_retry_after_zero_is_clamped_up_to_the_floor(self) -> None:
+        # Minor fix: `Retry-After: 0` is just as untrusted as an oversized
+        # value — honouring it verbatim would let the retry loop hammer the
+        # endpoint faster than its measured refill floor.
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        send = _responses(429, 200, headers={"Retry-After": "0"})
+        limiter.call(send)
+
+        assert spy.calls == [module.LINDAS_RETRY_FLOOR_S]
+
+    def test_retry_after_one_second_is_clamped_up_to_the_floor(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        send = _responses(429, 200, headers={"Retry-After": "1"})
+        limiter.call(send)
+
+        assert spy.calls == [module.LINDAS_RETRY_FLOOR_S]
+
 
 class TestD7Blocker:
     """Locks the folded D7 blocker: an unbounded Retry-After must never
@@ -182,7 +209,8 @@ class TestD7Blocker:
         # High attempt cap so the DEADLINE bound is what fires, not attempts.
         limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=50)
 
-        def send() -> httpx.Response:
+        def send(remaining_s: float) -> httpx.Response:
+            del remaining_s
             return httpx.Response(429, headers={"Retry-After": "86400"})
 
         with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
@@ -194,6 +222,94 @@ class TestD7Blocker:
         # nowhere close to 50 attempts worth of real waiting.
         assert all(c == module.LINDAS_MAX_DELAY_S for c in spy.calls)
         assert len(spy.calls) < 50
+
+    def test_bucket_starvation_counts_against_the_deadline(self) -> None:
+        # Blocker fix: `start` must be captured BEFORE `_acquire_token()`,
+        # not after — otherwise a starved bucket's wait is free real
+        # wall-clock time the deadline never sees. Deadline (3s) is smaller
+        # than one refill period (4s default floor), so the SECOND call's
+        # bucket wait alone must already exceed the deadline.
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)  # paired: the bucket-wait sleep really
+        # advances simulated time, the way a real `time.sleep` would.
+        limiter = _limiter(
+            module,
+            clock=clock,
+            sleeper=spy,
+            capacity=1,
+            total_deadline_s=3.0,
+            max_attempts=50,
+        )
+        limiter.call(_responses(200))  # drains the sole starting token
+
+        with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
+            # Must wait ~1 refill period (4s) to reacquire a token — that
+            # wait alone already exceeds the 3s deadline, so this must raise
+            # before ever attempting an HTTP request.
+            limiter.call(_responses(200))
+
+        assert exc_info.value.bound == "deadline"
+        assert exc_info.value.attempts == 0
+
+    def test_slow_send_never_lets_total_elapsed_exceed_the_deadline(self) -> None:
+        """A `send` that honours its remaining-budget argument (as a real
+        HTTP client would via a `timeout=` override) can never itself
+        overrun the deadline — proving `call()` bounds elapsed time even
+        when each individual attempt is slow, not just when attempts are
+        cheap and the loop count is what mattered."""
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(
+            module, clock=clock, sleeper=spy, max_attempts=1000, total_deadline_s=120.0
+        )
+
+        def budget_honouring_send(remaining_s: float) -> httpx.Response:
+            # Simulates an HTTP client bounded by the timeout it was handed:
+            # it cannot advance the clock past what it was told remained.
+            clock.advance(min(50.0, remaining_s))
+            return httpx.Response(429)
+
+        with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
+            limiter.call(budget_honouring_send)
+
+        elapsed_s = (clock.now - _START).total_seconds()
+        assert exc_info.value.bound == "deadline"
+        assert elapsed_s <= 120.0
+
+
+class TestCrossCallBucketSync:
+    """Locks the major fix: a 429 is upstream proof the local bucket's token
+    count no longer reflects reality — a call() that retries spends real
+    upstream capacity the bucket only ever charged once for. Without
+    draining on 429, that unaccounted capacity lets subsequent independent
+    calls() slip through immediately, recreating the 429 cascade."""
+
+    def test_429_then_success_still_paces_the_next_calls(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        # Call A: first attempt 429 (real upstream request #1), retry
+        # succeeds (real upstream request #2) — two real HTTP attempts, but
+        # the bucket only ever charged one token up front.
+        response_a = limiter.call(_responses(429, 200))
+        assert response_a.status_code == 200
+        sleeps_after_a = len(spy.calls)
+
+        # Three more logical calls, sent back-to-back immediately after A.
+        for _ in range(3):
+            response = limiter.call(_responses(200))
+            assert response.status_code == 200
+
+        # Real upstream (capacity 3, refill ~1/floor) was drained to 0 by
+        # the 429 and only had time to refill ~1 slot before these three ran
+        # — at least two of them must still be paced, not sent instantly
+        # (the pre-fix bucket model let all three through with zero waits).
+        extra_sleeps = len(spy.calls) - sleeps_after_a
+        assert extra_sleeps >= 2
 
 
 class TestNonRetryableStatus:
@@ -217,7 +333,8 @@ class TestExhaustion:
         spy = _SleepSpy(clock)
         limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=3)
 
-        def send() -> httpx.Response:
+        def send(remaining_s: float) -> httpx.Response:
+            del remaining_s
             return httpx.Response(429)
 
         with pytest.raises(LindasRateLimitExhaustedError) as exc_info:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from sapphire_flow.adapters.lindas_rate_limiter import (
     LindasLimiterConfig,
@@ -146,11 +146,12 @@ class HydroScraperAdapter:
                 failure_detail=str(exc),
             )
 
-        def send() -> httpx.Response:
+        def send(remaining_s: float) -> httpx.Response:
             return self._http_client.post(
                 self._endpoint,
                 data={"query": query},
                 headers={"Accept": "application/sparql-results+json"},
+                timeout=remaining_s,
             )
 
         try:
@@ -217,7 +218,29 @@ class HydroScraperAdapter:
                 failure_detail=str(exc),
             )
 
-        observations, cause, detail = self._parse_bindings_typed(bindings, station_id)
+        try:
+            observations, cause, detail = self._parse_bindings_typed(
+                bindings, station_id
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            # Major fix: `_parse_bindings_typed` already validates most shape
+            # problems internally and returns a typed MALFORMED_RESPONSE, but
+            # this is a last-resort backstop — an unanticipated shape must
+            # become a typed failure, never an uncaught exception that aborts
+            # the whole batch before its per-station health record is
+            # written (the T3 silent-health-gap this plan closed).
+            log.warning(
+                "observation.fetch_failed",
+                station_id=str(station_id),
+                error=str(exc),
+                failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE.value,
+            )
+            return StationFetchOutcome(
+                station_id=station_id,
+                observations=(),
+                failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE,
+                failure_detail=f"unparseable bindings: {exc}",
+            )
         duration_ms = round((time.perf_counter() - t0) * 1000, 1)
         log.info(
             "observation.fetch_completed",
@@ -239,22 +262,41 @@ class HydroScraperAdapter:
             station_kind=station_kind.value,
         )
         query = self._build_sparql_query(site_code, station_kind)
-        try:
-            response = self._http_client.post(
+
+        def send(remaining_s: float) -> httpx.Response:
+            return self._http_client.post(
                 self._endpoint,
                 data={"query": query},
                 headers={"Accept": "application/sparql-results+json"},
+                timeout=remaining_s,
             )
-        except httpx.RequestError as exc:
-            log.error(
-                "observation.verify_gauge_failed",
+
+        # Major fix: this probe used to POST directly, bypassing the shared
+        # limiter entirely — a transient 429 was reported straight back as
+        # "unreachable" instead of being paced/retried like every other
+        # LINDAS caller (D6's "every in-process production LINDAS request
+        # goes through one injectable limiter").
+        try:
+            response = self._limiter.call(send)
+        except LindasRateLimitExhaustedError as exc:
+            if exc.last_exc is not None:
+                log.error(
+                    "observation.verify_gauge_failed",
+                    site_code=site_code,
+                    station_kind=station_kind.value,
+                    error=str(exc),
+                )
+                raise AdapterError(
+                    f"LINDAS probe network failure for {site_code!r}: {exc.last_exc}"
+                ) from exc
+            log.info(
+                "observation.verify_gauge_completed",
                 site_code=site_code,
                 station_kind=station_kind.value,
-                error=str(exc),
+                status_code=exc.last_status,
+                reachable=False,
             )
-            raise AdapterError(
-                f"LINDAS probe network failure for {site_code!r}: {exc}"
-            ) from exc
+            return False
 
         status_code = response.status_code
         if not (200 <= status_code < 300):
@@ -318,21 +360,53 @@ class HydroScraperAdapter:
         """Plan 175 D9 — splits what the pre-Plan-175 ``_parse_bindings``
         collapsed into a single empty list: NO_DATA (legitimately empty/
         incomplete bindings) vs MALFORMED_RESPONSE (an unparseable
-        timestamp)."""
+        timestamp, or — major fix — any other shape LINDAS's response could
+        take: not a list, a binding missing ``predicate``/``object``, a
+        non-dict binding, or a non-numeric parameter value). ``bindings`` is
+        untyped ``Any`` at the boundary (straight out of
+        ``response.json()``); every failure mode here must become a typed
+        MALFORMED_RESPONSE, never an uncaught KeyError/TypeError/ValueError
+        that would abort the whole batch before its health record is
+        written."""
+        # The `list[dict[str, Any]]` annotation is aspirational — `bindings`
+        # is really `Any` at runtime (straight out of `response.json()`,
+        # itself untyped), so the isinstance check is NOT statically
+        # redundant despite what the local annotation claims.
+        if not isinstance(bindings, list):  # pyright: ignore[reportUnnecessaryIsInstance]
+            return (
+                [],
+                FetchOutcomeCause.MALFORMED_RESPONSE,
+                f"bindings must be a list, got {type(bindings).__name__}",
+            )
+
         prefix = f"{_DIMENSION_URL}/"
         timestamp_str: str | None = None
         param_values: dict[str, float] = {}
 
         for raw in bindings:
-            parsed = SparqlBinding(
-                predicate=raw["predicate"]["value"],
-                object=raw["object"]["value"],
-            )
+            try:
+                parsed = SparqlBinding(
+                    predicate=raw["predicate"]["value"],
+                    object=raw["object"]["value"],
+                )
+            except (KeyError, TypeError, ValidationError) as exc:
+                return (
+                    [],
+                    FetchOutcomeCause.MALFORMED_RESPONSE,
+                    f"malformed binding {raw!r}: {exc}",
+                )
             local_name = parsed.predicate.removeprefix(prefix)
             if local_name == "measurementTime":
                 timestamp_str = parsed.object
             elif local_name in self._PARAM_MAP:
-                param_values[self._PARAM_MAP[local_name]] = float(parsed.object)
+                try:
+                    param_values[self._PARAM_MAP[local_name]] = float(parsed.object)
+                except (TypeError, ValueError) as exc:
+                    return (
+                        [],
+                        FetchOutcomeCause.MALFORMED_RESPONSE,
+                        f"non-numeric {local_name}: {parsed.object!r} ({exc})",
+                    )
 
         if timestamp_str is None or not param_values:
             return [], FetchOutcomeCause.NO_DATA, "no usable bindings in response"

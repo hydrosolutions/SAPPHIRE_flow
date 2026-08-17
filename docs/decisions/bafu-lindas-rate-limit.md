@@ -103,6 +103,54 @@ later without touching any caller — but that is not built now; the residual
 risk is a late/overlapping run landing on the same minute as another LINDAS
 caller by coincidence, which schedule separation makes rare, not impossible.
 
+## Fixer-round hardening (post-implementation review)
+
+A multi-model review of the Plan 175 diff (Claude design + independent Codex
+pass) found the deadline, cross-call pacing, and failure-taxonomy guarantees
+above were each true in the common case but not enforced/tested at the edges.
+Fixed in the same PR:
+
+- **The 120 s deadline now covers bucket acquisition, not just retries.**
+  `TokenBucketLindasLimiter.call` previously started its clock AFTER
+  `_acquire_token()` returned, so a starved bucket's wait was free real time
+  the deadline never saw. `start` now precedes token acquisition, and the
+  remaining budget is checked before every attempt (including the first) and
+  handed to `send` so a slow HTTP call can bound its own `timeout=`.
+- **A 429 now drains the local bucket to zero.** A `call()` that retried
+  (429 → sleep → 200) had only ever charged the bucket one token for two real
+  HTTP attempts — the next independent `call()` could see stale token credit
+  and fire immediately, recreating the exact cascade this module exists to
+  prevent. A 429 response is treated as upstream proof the bucket is actually
+  empty right now and drains the local count accordingly.
+- **`Retry-After` below the measured floor is now clamped UP, not honoured.**
+  `Retry-After: 0` or `1` used to produce a sub-floor sleep; the floor clamp
+  now applies symmetrically (never below `LINDAS_RETRY_FLOOR_S`, never above
+  `LINDAS_MAX_DELAY_S`).
+- **`HydroScraperAdapter.verify_gauge_reachable` now routes through the shared
+  limiter.** It previously POSTed directly, so a transient 429 was reported
+  straight back as "unreachable" instead of being paced/retried — the one gap
+  in the "every method goes through the limiter" claim above.
+- **Malformed LINDAS bindings can no longer escape `_parse_bindings_typed` as
+  an uncaught exception.** A non-list `bindings`, a binding missing
+  `predicate`/`object`, a non-dict binding item, or a non-numeric parameter
+  value now all resolve to a typed `MALFORMED_RESPONSE` outcome (with an
+  outer try/except backstop in `_fetch_one` for anything still unanticipated)
+  instead of aborting the whole batch before that station's health record is
+  written.
+- **Exhausted failures now carry the last HTTP status in `failure_detail`.**
+  An exhausted 503 used to produce a generic "exhausted after N attempts"
+  message with no status code; both exhaustion messages in
+  `lindas_rate_limiter.py` now include `last_status`.
+- **`tests/integration/live/test_lindas_live_schema.py`'s burst test now
+  asserts on actual response statuses (zero 429s), not elapsed time alone** —
+  elapsed time can look identical whether proactive pacing is working or
+  BAFU's own 429-retry-and-recover is doing the work, so it could not by
+  itself prove pacing was still in effect.
+
+None of this changes the measured contract table above or the architecture
+(still process-local, D6). See `lindas_rate_limiter.py`'s module docstring for
+the authoritative up-to-date behavior.
+
 ## Escalation
 
 The 429 ceiling is undocumented by BAFU. If it is ever observed to have

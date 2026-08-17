@@ -865,8 +865,10 @@ for the separate Monday-publish transient this subsystem must not be confused wi
 
 - **All in-process production LINDAS callers go through the shared limiter.** The
   verified caller set (Plan 175 D6): `adapters/bafu_observation.py`,
-  `adapters/hydro_scraper.py`, `tools/record_fixtures.py` (constructs
-  `HydroScraperAdapter` and calls `fetch_observations`), and
+  `adapters/hydro_scraper.py` (**every** public method, including
+  `verify_gauge_reachable` — fixer-round hardening closed a gap where that probe
+  POSTed directly), `tools/record_fixtures.py` (constructs `HydroScraperAdapter`
+  and calls `fetch_observations`), and
   `tests/integration/live/test_lindas_live_schema.py`. A new LINDAS caller that
   builds its own `httpx.Client` POST instead of going through one of these two
   adapters silently re-opens the collision this subsystem exists to close.
@@ -875,8 +877,19 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   cross-process safety rests on schedule separation (the two cron minutes), not on
   the limiter. Do not treat the limiter as a substitute for schedule separation.
 - **`Retry-After` is untrusted input.** Any change to the limiter's parsing must keep
-  the clamp (`LINDAS_MAX_DELAY_S`) and the total wall-clock deadline
-  (`LINDAS_TOTAL_DEADLINE_S`) — both independent of the attempt-count bound.
+  the clamp (`LINDAS_MAX_DELAY_S`), the floor (`LINDAS_RETRY_FLOOR_S` — a
+  `Retry-After` value BELOW the floor is clamped UP, not honoured verbatim), and the
+  total wall-clock deadline (`LINDAS_TOTAL_DEADLINE_S`) — both delay bounds
+  independent of the attempt-count bound.
+- **The 120 s deadline covers bucket wait too, and a 429 drains the local bucket.**
+  `TokenBucketLindasLimiter.call` starts its clock BEFORE `_acquire_token()`, not
+  after, and hands `send` the remaining budget on every attempt so a slow HTTP call
+  can bound its own timeout. A 429 response drains the local token count to zero
+  (upstream proof the bucket is actually empty) so a `call()` that needed several
+  retries does not leave the next independent `call()` free to spend tokens the
+  local model never actually charged for those extra attempts. Do not reorder
+  `start`/`_acquire_token()` or drop the 429 drain without re-reading
+  `lindas_rate_limiter.py`'s module docstring.
 - **The fetch health record is written IMMEDIATELY after fetch reconciliation, before
   store/QC.** Moving it later would let a downstream storage/QC failure suppress the
   one signal this subsystem exists to guarantee.

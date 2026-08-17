@@ -24,6 +24,22 @@ concurrency limit) can be substituted without touching any caller.
   response's ``Retry-After`` (D7), never by the bucket. Retry backoff already
   waits at or above the bucket's own refill period, so gating retries through
   the bucket a second time would only double-count the same wait.
+
+**The 120 s deadline covers the ENTIRE call, including bucket wait.**
+``call()`` starts its clock before ``_acquire_token()``, not after, and
+re-checks the remaining budget before every attempt (including the first) —
+a starved bucket counts against the deadline exactly like a slow retry
+sequence does. ``send`` receives that remaining budget (seconds) on every
+invocation so it can bound its own HTTP timeout; a caller-side network stack
+that ignores it is the one thing this module cannot force from outside a
+synchronous call.
+
+**A 429 proves the upstream bucket is empty, not just this process's local
+count.** ``call()`` drains its local bucket to zero the instant a 429 comes
+back, regardless of how many tokens the local model thought were left. A
+``call()`` that took several retryable attempts (each a real HTTP request the
+upstream bucket paid for) must not leave the next independent ``call()`` free
+to spend tokens the local bucket never actually charged for those attempts.
 """
 
 from __future__ import annotations
@@ -90,12 +106,16 @@ class LindasRateLimiter(Protocol):
     """Small Protocol (D6) so a cross-process limiter can be dropped in
     later without touching any adapter."""
 
-    def call(self, send: Callable[[], httpx.Response]) -> httpx.Response:
+    def call(self, send: Callable[[float], httpx.Response]) -> httpx.Response:
         """Run ``send`` (one HTTP attempt) under pacing + 429/5xx/transport
-        retry. Returns the first non-retryable response (any status,
-        including a non-2xx the caller must still ``raise_for_status()``
-        itself). Raises ``LindasRateLimitExhaustedError`` if every attempt was
-        retryable and either bound (attempts, wall-clock deadline) was hit.
+        retry. ``send`` receives the remaining wall-clock budget in seconds
+        (this call's total deadline minus elapsed so far) so it can bound its
+        own request timeout — the limiter cannot otherwise stop a single
+        blocking HTTP call from overrunning the deadline. Returns the first
+        non-retryable response (any status, including a non-2xx the caller
+        must still ``raise_for_status()`` itself). Raises
+        ``LindasRateLimitExhaustedError`` if every attempt was retryable and
+        either bound (attempts, wall-clock deadline) was hit.
         """
         raise NotImplementedError
 
@@ -115,7 +135,11 @@ def _parse_retry_after(
         seconds = float(int(stripped))
         if seconds < 0:
             return floor_s
-        return min(seconds, max_delay_s)
+        # D7 floor: never accept an upstream-supplied wait shorter than the
+        # measured refill floor either — a `Retry-After: 0` or `1` is just as
+        # untrusted as an oversized one, and honouring it verbatim would let
+        # the retry loop hammer the endpoint faster than it can recover.
+        return min(max(seconds, floor_s), max_delay_s)
 
     try:
         parsed = email.utils.parsedate_to_datetime(stripped)
@@ -126,7 +150,7 @@ def _parse_retry_after(
     delta_s = (parsed - now).total_seconds()
     if delta_s <= 0:
         return floor_s
-    return min(delta_s, max_delay_s)
+    return min(max(delta_s, floor_s), max_delay_s)
 
 
 class TokenBucketLindasLimiter:
@@ -146,17 +170,45 @@ class TokenBucketLindasLimiter:
         self._tokens: float = float(self._config.capacity)
         self._last_refill: UtcDatetime = self._clock()
 
-    def call(self, send: Callable[[], httpx.Response]) -> httpx.Response:
-        self._acquire_token()
+    def call(self, send: Callable[[float], httpx.Response]) -> httpx.Response:
+        # Blocker fix: timing starts BEFORE token acquisition, so a starved
+        # bucket's wait counts against the 120 s deadline exactly like a slow
+        # retry sequence does — previously `start` was set only after
+        # `_acquire_token()` returned, letting that wait happen for free.
         start = self._clock()
+        self._acquire_token()
         attempt = 0
         last_status: int | None = None
         last_exc: Exception | None = None
         while True:
             attempt += 1
+            elapsed_s = (self._clock() - start).total_seconds()
+            remaining_s = self._config.total_deadline_s - elapsed_s
+            if remaining_s <= 0:
+                completed = attempt - 1
+                log.warning(
+                    "lindas.exhausted",
+                    attempts=completed,
+                    last_status=last_status,
+                    bound="deadline",
+                    elapsed_s=elapsed_s,
+                )
+                raise LindasRateLimitExhaustedError(
+                    f"LINDAS request exceeded its {self._config.total_deadline_s}s "
+                    f"total deadline before attempt {attempt} "
+                    f"(last_status={last_status}, bound=deadline)",
+                    attempts=completed,
+                    last_status=last_status,
+                    last_exc=last_exc,
+                    bound="deadline",
+                )
+
             response: httpx.Response | None
             try:
-                response = send()
+                # Blocker fix: `send` is handed the remaining budget so it can
+                # bound its own HTTP timeout — the limiter cannot otherwise
+                # stop one blocking request from overrunning the deadline.
+                response = send(remaining_s)
             except httpx.HTTPError as exc:
                 last_exc = exc
                 last_status = None
@@ -166,6 +218,15 @@ class TokenBucketLindasLimiter:
                 last_status = response.status_code
                 if not _is_retryable_status(response.status_code):
                     return response
+                if response.status_code == 429:
+                    # Major fix: a 429 is upstream proof the bucket is
+                    # actually empty right now, regardless of what the local
+                    # token count says — this call may have already made
+                    # several real HTTP attempts against the shared budget
+                    # while only ever charging it for one. Drain the local
+                    # model to match reality so the NEXT independent call()
+                    # cannot spend tokens that were never really available.
+                    self._drain(self._clock())
 
             delay = self._compute_delay(response)
             elapsed_s = (self._clock() - start).total_seconds()
@@ -179,7 +240,8 @@ class TokenBucketLindasLimiter:
                 )
                 raise LindasRateLimitExhaustedError(
                     f"LINDAS request exhausted after {attempt} attempt(s) "
-                    "without a non-retryable response",
+                    "without a non-retryable response "
+                    f"(last_status={last_status}, bound=attempts)",
                     attempts=attempt,
                     last_status=last_status,
                     last_exc=last_exc,
@@ -195,7 +257,8 @@ class TokenBucketLindasLimiter:
                 )
                 raise LindasRateLimitExhaustedError(
                     f"LINDAS request exceeded its {self._config.total_deadline_s}s "
-                    f"total deadline after {attempt} attempt(s)",
+                    f"total deadline after {attempt} attempt(s) "
+                    f"(last_status={last_status}, bound=deadline)",
                     attempts=attempt,
                     last_status=last_status,
                     last_exc=last_exc,
@@ -233,6 +296,15 @@ class TokenBucketLindasLimiter:
         self._sleeper(wait)
         self._refill(self._clock())
         self._tokens = max(0.0, self._tokens - 1.0)
+
+    def _drain(self, now: UtcDatetime) -> None:
+        """Zero the local bucket at ``now`` — used when a 429 proves the
+        upstream bucket is actually empty. Refills forward from this point,
+        so the next independent ``call()`` only gets credit for elapsed time
+        genuinely observed after the drain."""
+        self._refill(now)
+        self._tokens = 0.0
+        self._last_refill = now
 
     def _refill(self, now: UtcDatetime) -> None:
         elapsed_s = (now - self._last_refill).total_seconds()

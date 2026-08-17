@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from urllib.parse import parse_qs
 
 import httpx
@@ -8,9 +9,12 @@ import pytest
 
 from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
 from sapphire_flow.exceptions import AdapterError
-from sapphire_flow.types.enums import StationKind
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.enums import FetchOutcomeCause, StationKind
+from tests.conftest import make_station_config
 
 _ENDPOINT = "https://lindas.admin.ch/query"
+_SINCE: UtcDatetime = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
 
 
 def _sparql_body_with_bindings(count: int) -> dict[str, object]:
@@ -37,9 +41,19 @@ def _sparql_body_with_bindings(count: int) -> dict[str, object]:
     }
 
 
-def _make_adapter(handler: httpx.MockTransport) -> HydroScraperAdapter:
+def _make_adapter(
+    handler: httpx.MockTransport, *, max_retries: int = 2
+) -> HydroScraperAdapter:
     client = httpx.Client(transport=handler)
-    return HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
+    # A no-op sleeper: several tests below now exercise real limiter retries
+    # (a 500/429 is retryable), and a unit test must never perform real
+    # multi-second sleeps waiting for the retry cap.
+    return HydroScraperAdapter(
+        endpoint=_ENDPOINT,
+        http_client=client,
+        sleeper=lambda _seconds: None,
+        max_retries=max_retries,
+    )
 
 
 class TestVerifyGaugeReachable:
@@ -152,3 +166,222 @@ class TestVerifyGaugeReachable:
 
         adapter = _make_adapter(httpx.MockTransport(handler))
         assert adapter.verify_gauge_reachable("2091", StationKind.RIVER) is False
+
+    def test_429_then_200_is_paced_through_the_shared_limiter(self) -> None:
+        """Major fix: this probe used to POST directly, bypassing the shared
+        limiter — a transient 429 was reported straight back as
+        'unreachable' instead of being retried like every other LINDAS
+        caller. Exact attempt count proves it now goes through `call()`."""
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return httpx.Response(429)
+            return httpx.Response(200, json=_sparql_body_with_bindings(1))
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        assert adapter.verify_gauge_reachable("2091", StationKind.RIVER) is True
+        assert attempts == 2
+
+    def test_429_exhaustion_returns_false_not_unreachable_on_first_429(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), max_retries=1)
+        assert adapter.verify_gauge_reachable("2091", StationKind.RIVER) is False
+
+    def test_persistent_transport_error_raises_adapter_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route to host", request=request)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), max_retries=1)
+        with pytest.raises(AdapterError, match="LINDAS probe network failure"):
+            adapter.verify_gauge_reachable("2091", StationKind.RIVER)
+
+
+def _batch_adapter(
+    handler: httpx.MockTransport, *, max_retries: int = 1
+) -> HydroScraperAdapter:
+    client = httpx.Client(transport=handler)
+    return HydroScraperAdapter(
+        endpoint=_ENDPOINT,
+        http_client=client,
+        sleeper=lambda _seconds: None,
+        max_retries=max_retries,
+    )
+
+
+def _fetch_one_outcome(adapter: HydroScraperAdapter, code: str = "2044"):  # type: ignore[no-untyped-def]
+    station = make_station_config(code=code)
+    result = adapter.fetch_observations_batch([station], {station.id: _SINCE})
+    assert len(result.outcomes) == 1
+    return result.outcomes[0]
+
+
+class TestBatchFailureCauseMapping:
+    """Major fix (D9 taxonomy): exercises the REAL `_fetch_one` cause
+    mapping through `fetch_observations_batch` with a mocked HTTP transport
+    — the pre-existing tests only asserted on the `fetch_observations` list
+    façade (`obs == []`), which cannot distinguish WHY a station failed.
+    Verified by mutation: swapping RATE_LIMITED/HTTP_STATUS_ERROR in
+    `hydro_scraper.py`'s cause ternary must break one of these."""
+
+    def test_exhausted_429_maps_to_rate_limited(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429)
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.RATE_LIMITED
+        assert outcome.observations == ()
+
+    def test_exhausted_503_maps_to_http_status_error_and_carries_the_code(
+        self,
+    ) -> None:
+        # Also locks the minor fix: the exhausted failure_detail must carry
+        # the last HTTP status, not just a generic "exhausted" message.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503)
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.HTTP_STATUS_ERROR
+        assert outcome.failure_detail is not None
+        assert "503" in outcome.failure_detail
+
+    def test_non_retryable_403_maps_to_http_status_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403)
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.HTTP_STATUS_ERROR
+
+    def test_persistent_transport_error_maps_to_transport_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route to host", request=request)
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.TRANSPORT_ERROR
+
+    def test_empty_bindings_maps_to_no_data(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": []}})
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.NO_DATA
+        assert outcome.observations == ()
+
+    def test_unparseable_timestamp_maps_to_malformed_response(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": {
+                        "bindings": [
+                            {
+                                "predicate": {
+                                    "value": (
+                                        "https://environment.ld.admin.ch/foen/hydro"
+                                        "/dimension/measurementTime"
+                                    )
+                                },
+                                "object": {"value": "not-a-timestamp"},
+                            },
+                            {
+                                "predicate": {
+                                    "value": (
+                                        "https://environment.ld.admin.ch/foen/hydro"
+                                        "/dimension/discharge"
+                                    )
+                                },
+                                "object": {"value": "42.0"},
+                            },
+                        ]
+                    }
+                },
+            )
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+
+class TestMalformedBindingsSurviveAsTypedFailures:
+    """Major fix: malformed bindings used to escape `_parse_bindings_typed`
+    as an uncaught KeyError/TypeError/ValueError, aborting the whole batch
+    (and every other station in it) before any health record was written."""
+
+    def test_bindings_missing_predicate_key(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"results": {"bindings": [{"object": {"value": "x"}}]}}
+            )
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+    def test_bindings_is_none(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": None}})
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+    def test_bindings_is_not_a_list(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": {"oops": 1}}})
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+    def test_nonnumeric_param_value(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            dim = "https://environment.ld.admin.ch/foen/hydro/dimension"
+            return httpx.Response(
+                200,
+                json={
+                    "results": {
+                        "bindings": [
+                            {
+                                "predicate": {"value": f"{dim}/measurementTime"},
+                                "object": {"value": "2024-06-15T10:00:00+00:00"},
+                            },
+                            {
+                                "predicate": {"value": f"{dim}/discharge"},
+                                "object": {"value": "not-a-number"},
+                            },
+                        ]
+                    }
+                },
+            )
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+    def test_binding_item_is_not_a_dict(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": ["not-a-dict"]}})
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
