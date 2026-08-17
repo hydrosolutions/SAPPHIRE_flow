@@ -586,6 +586,211 @@ def _two_station_table() -> pl.DataFrame:
     return build_operator_sensitivity_table(nearest, bilinear, params=DEFAULT_PARAMS)
 
 
+def _hours(n: int) -> np.ndarray:
+    """`n` consecutive JJAS hours from 2021-06-01T00 (season is fixed so the
+    season grain is not what any assertion below turns on)."""
+    return np.array(
+        [np.datetime64("2021-06-01T00:00") + np.timedelta64(h, "h") for h in range(n)]
+    )
+
+
+def _sensitivity_of(
+    values: dict[str, tuple[list[float], list[float]]],
+    *,
+    params: DhmPrecipParams = DEFAULT_PARAMS,
+) -> pl.DataFrame:
+    """station -> (nearest values, bilinear values), one series per operator."""
+    nearest = {
+        Station(name): _series(
+            Station(name),
+            ExtractionOperator.NEAREST,
+            _hours(len(near)),
+            np.array(near),
+        )
+        for name, (near, _) in values.items()
+    }
+    bilinear = {
+        Station(name): _series(
+            Station(name),
+            ExtractionOperator.BILINEAR,
+            _hours(len(bil)),
+            np.array(bil),
+        )
+        for name, (_, bil) in values.items()
+    }
+    return build_operator_sensitivity_table(nearest, bilinear, params=params)
+
+
+def _row(
+    table: pl.DataFrame, *, statistic: str, station: str | None, quantile: float | None
+) -> dict[str, object]:
+    frame = table.filter(
+        (pl.col("season") == "JJAS")
+        & (pl.col("statistic") == statistic)
+        & (pl.col("scope") == ("ACROSS_STATION" if station is None else "STATION"))
+    )
+    frame = (
+        frame.filter(pl.col("station").is_null())
+        if station is None
+        else frame.filter(pl.col("station") == station)
+    )
+    frame = (
+        frame.filter(pl.col("quantile").is_null())
+        if quantile is None
+        else frame.filter(pl.col("quantile") == quantile)
+    )
+    assert frame.height == 1, f"expected exactly one row, got {frame.height}"
+    return frame.row(0, named=True)
+
+
+class TestSensitivityValuesAgainstHandComputedArithmetic:
+    """D1a — the NUMBERS, not the plumbing. Every assertion below is stated
+    as the arithmetic it should be, never as a value copied out of an
+    implementation run, because M-A6 reads these four columns directly: a
+    reversed subtraction (`bilinear - nearest`), an inverted ratio
+    (`bilinear / nearest`), a wet mean taken over the wrong population or a
+    `delta_unit` mislabelled on the frequency row would all have passed the
+    previous test set, which asserted only populations, counts and sign
+    agreement.
+
+    Fixture (five JJAS hours at station A, two at station B; wet threshold
+    `>= 0.2 mm/h`, `zero_policy="exclude_zero"`, `quantile_definition=
+    "linear"`, all from `DEFAULT_PARAMS`):
+
+        A  nearest  [1.0, 2.0, 4.0, 8.0, 0.0]   wet -> 1, 2, 4, 8   (4 hours)
+        A  bilinear [0.5, 1.5, 4.0, 0.1, 0.0]   wet -> 0.5, 1.5, 4  (3 hours)
+        B  nearest  [1.0, 2.0]                  wet -> 1, 2
+        B  bilinear [3.0, 4.0]                  wet -> 3, 4
+
+    The two operators' wet populations differ in SIZE at A (4 vs 3), and the
+    per-station delta signs OPPOSE each other (A positive, B negative), so
+    every direction-sensitive column is pinned by a value that changes if the
+    direction flips.
+    """
+
+    A_NEAREST = [1.0, 2.0, 4.0, 8.0, 0.0]
+    A_BILINEAR = [0.5, 1.5, 4.0, 0.1, 0.0]
+    B_NEAREST = [1.0, 2.0]
+    B_BILINEAR = [3.0, 4.0]
+
+    def _table(self) -> pl.DataFrame:
+        return _sensitivity_of(
+            {
+                "A": (self.A_NEAREST, self.A_BILINEAR),
+                "B": (self.B_NEAREST, self.B_BILINEAR),
+            }
+        )
+
+    def test_median_row_values_delta_and_ratio(self) -> None:
+        # linear interpolation at q=0.5 over the WET population:
+        #   nearest  [1, 2, 4, 8] -> midpoint of 2 and 4
+        #   bilinear [0.5, 1.5, 4] -> the middle order statistic, 1.5
+        expected_nearest = (2.0 + 4.0) / 2
+        expected_bilinear = 1.5
+        row = _row(self._table(), statistic="QUANTILE", station="A", quantile=0.5)
+        assert row["nearest_value"] == pytest.approx(expected_nearest)
+        assert row["bilinear_value"] == pytest.approx(expected_bilinear)
+        # DIRECTION: nearest - bilinear, positive here; the reverse is -1.5.
+        assert row["delta_absolute"] == pytest.approx(
+            expected_nearest - expected_bilinear
+        )
+        assert row["delta_absolute"] > 0.0
+        # DIRECTION: nearest / bilinear = 2.0; the inverse is 0.5.
+        assert row["ratio"] == pytest.approx(expected_nearest / expected_bilinear)
+        assert row["ratio"] > 1.0
+        assert row["delta_unit"] == "MM_PER_H"
+        # The two wet populations DIFFER in size, so a row that silently
+        # shared one population would be visible here.
+        assert row["n_wet_nearest"] == 4
+        assert row["n_wet_bilinear"] == 3
+        assert row["n_hours_common_finite"] == 5
+        assert row["n_hours_excluded"] == 0
+
+    def test_wet_mean_intensity_row_values_delta_and_ratio(self) -> None:
+        expected_nearest = (1.0 + 2.0 + 4.0 + 8.0) / 4
+        expected_bilinear = (0.5 + 1.5 + 4.0) / 3
+        row = _row(
+            self._table(),
+            statistic="WET_MEAN_INTENSITY",
+            station="A",
+            quantile=None,
+        )
+        assert row["nearest_value"] == pytest.approx(expected_nearest)  # 3.75
+        assert row["bilinear_value"] == pytest.approx(expected_bilinear)  # 2.0
+        assert row["delta_absolute"] == pytest.approx(
+            expected_nearest - expected_bilinear
+        )
+        assert row["delta_absolute"] > 0.0
+        assert row["ratio"] == pytest.approx(expected_nearest / expected_bilinear)
+        assert row["ratio"] > 1.0
+        assert row["delta_unit"] == "MM_PER_H"
+        assert row["n_wet_nearest"] == 4
+        assert row["n_wet_bilinear"] == 3
+        # Distinct from the median row above (3.0 / 1.5) — a swapped
+        # statistic would otherwise be invisible.
+        assert row["nearest_value"] != pytest.approx((2.0 + 4.0) / 2)
+
+    def test_wet_frequency_row_values_delta_ratio_and_unit(self) -> None:
+        expected_nearest = 4 / 5
+        expected_bilinear = 3 / 5
+        row = _row(self._table(), statistic="WET_FREQUENCY", station="A", quantile=None)
+        assert row["nearest_value"] == pytest.approx(expected_nearest)  # 0.8
+        assert row["bilinear_value"] == pytest.approx(expected_bilinear)  # 0.6
+        assert row["delta_absolute"] == pytest.approx(
+            expected_nearest - expected_bilinear
+        )
+        assert row["delta_absolute"] > 0.0
+        assert row["ratio"] == pytest.approx(expected_nearest / expected_bilinear)
+        assert row["ratio"] > 1.0
+        # A FRACTION, never mm/h — the one row whose unit differs, and the
+        # one a copy-paste of the wet-mean row would get wrong.
+        assert row["delta_unit"] == "FRACTION"
+
+    def test_the_opposing_station_carries_the_negative_delta(self) -> None:
+        """The sign is a property of the DATA, not of the column: station B's
+        bilinear exceeds its nearest, so its delta must be negative and its
+        ratio below 1. Together with station A this pins the direction from
+        both sides."""
+        row = _row(self._table(), statistic="QUANTILE", station="B", quantile=0.5)
+        expected_nearest = (1.0 + 2.0) / 2
+        expected_bilinear = (3.0 + 4.0) / 2
+        assert row["nearest_value"] == pytest.approx(expected_nearest)  # 1.5
+        assert row["bilinear_value"] == pytest.approx(expected_bilinear)  # 3.5
+        assert row["delta_absolute"] == pytest.approx(
+            expected_nearest - expected_bilinear
+        )
+        assert row["delta_absolute"] < 0.0
+        assert row["ratio"] == pytest.approx(expected_nearest / expected_bilinear)
+        assert row["ratio"] < 1.0
+
+    def test_across_station_sign_agreement_is_half_on_the_opposing_pair(self) -> None:
+        """A's median delta is positive and B's is negative, so exactly one of
+        the two stations carries the majority sign: 1/2."""
+        row = _row(self._table(), statistic="QUANTILE", station=None, quantile=0.5)
+        assert row["sign_agreement_fraction"] == pytest.approx(1 / 2)
+        assert row["n_hours_common_finite"] == 5 + 2
+
+    def test_ratio_is_null_on_a_zero_denominator_but_the_delta_is_not(self) -> None:
+        """A zero bilinear wet FREQUENCY is a real, reportable value (0.0),
+        so the delta stays a number while the ratio must be null rather than
+        an infinity or a silently substituted 1.0. The wet MEAN over an empty
+        population is a different null: there is no value to divide at all."""
+        table = _sensitivity_of({"Z": ([1.0, 2.0], [0.0, 0.1])})
+        freq = _row(table, statistic="WET_FREQUENCY", station="Z", quantile=None)
+        assert freq["nearest_value"] == pytest.approx(2 / 2)
+        assert freq["bilinear_value"] == pytest.approx(0 / 2)
+        assert freq["delta_absolute"] == pytest.approx(1.0 - 0.0)
+        assert freq["ratio"] is None
+        assert freq["n_wet_nearest"] == 2
+        assert freq["n_wet_bilinear"] == 0
+
+        mean = _row(table, statistic="WET_MEAN_INTENSITY", station="Z", quantile=None)
+        assert mean["nearest_value"] == pytest.approx((1.0 + 2.0) / 2)
+        assert mean["bilinear_value"] is None
+        assert mean["delta_absolute"] is None
+        assert mean["ratio"] is None
+
+
 class TestOperatorSensitivityEnvelope:
     def test_quantile_grid_matches_default_params(self) -> None:
         ds = _clean_ds()

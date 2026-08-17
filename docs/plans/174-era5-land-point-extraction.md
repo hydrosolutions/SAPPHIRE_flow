@@ -1195,6 +1195,18 @@ changes the result); on a constructed field where bilinear provably exceeds near
 and undershoots at another, the **sign-agreement fraction is 0.5** and no output field or column name
 implies a winner; hours NaN under bilinear are excluded from **both** operators' statistics and the
 excluded count is reported; season assignment matches `scripts/dhm_precip/seasons.py`.
+⚠️ **Added (correctness, 2026-08-17) — the VALUES must be locked, not only the populations.** The
+verification above asserted populations, counts and sign agreement but **no numeric output**, so a
+reversed subtraction, an inverted ratio or a wet mean over the wrong population all passed. 3b is the
+table M-A6 consumes, so a **hand-computed fixture** (values derivable on paper, written in the test as
+arithmetic — never copied from an implementation run) pins, for all three `SensitivityStatistic`
+kinds: `nearest_value` · `bilinear_value` · `delta_absolute` **including its direction**
+(`nearest − bilinear`) · `ratio` **including its direction**, plus **null on a zero denominator**
+(distinct from null on an empty population) · `delta_unit` (`MM_PER_H` for QUANTILE and
+WET_MEAN_INTENSITY, **`FRACTION`** for WET_FREQUENCY) · `n_wet_nearest`/`n_wet_bilinear` on a fixture
+where the two wet populations **differ in size** · `sign_agreement_fraction` on an `ACROSS_STATION`
+row. Test soundness is proved by **mutation**: flipping the delta subtraction order, inverting the
+ratio, or computing the wet mean over all hours instead of the wet subset must each turn the lock RED.
 
 ### Phase 4 — publish
 
