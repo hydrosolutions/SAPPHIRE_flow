@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 _BASE_KWARGS: dict[str, object] = {
     "operator_id": "NEAREST",
     "coordinate_table_sha256": "a" * 64,
-    "source_sha256s": ("b" * 64, "c" * 64),
+    "source_sha256s_by_year": {"2001": "b" * 64, "2002": "c" * 64},
     "orography_identity": "d" * 64,
     "jjas_months": (6, 7, 8, 9),
     "djf_months": (12, 1, 2),
@@ -71,7 +71,7 @@ class TestExtractionIdentityCoversEveryDeclaredInput:
         [
             ("operator_id", "BILINEAR"),
             ("coordinate_table_sha256", "z" * 64),
-            ("source_sha256s", ("z" * 64,)),
+            ("source_sha256s_by_year", {"2001": "z" * 64}),
             ("orography_identity", "z" * 64),
             ("jjas_months", (7, 8, 9)),
             ("djf_months", (1, 2)),
@@ -97,6 +97,33 @@ class TestExtractionIdentityCoversEveryDeclaredInput:
         base = extraction_identity(**_BASE_KWARGS)
         changed = extraction_identity(**{**_BASE_KWARGS, field: override})
         assert base != changed, f"{field} is not covered by extraction_identity"
+
+    def test_swapping_two_years_source_hashes_changes_the_identity(self) -> None:
+        """D7 — the identity must cover WHICH YEAR each product hash belongs
+        to, not merely the multiset of hashes. `sorted(source_sha256s)` over
+        a bare list discarded that association, so exchanging the BYTES of
+        two annual products (2001 holding 2002's content and vice versa)
+        left `extraction_identity` unchanged — a materially different input
+        set published under an already-used identity."""
+        swapped = extraction_identity(
+            **{
+                **_BASE_KWARGS,
+                "source_sha256s_by_year": {"2001": "c" * 64, "2002": "b" * 64},
+            }
+        )
+        assert extraction_identity(**_BASE_KWARGS) != swapped
+
+    def test_the_year_hash_mapping_is_hashed_order_independently(self) -> None:
+        """The mapping's KEY ORDER is an accident of iteration, not an
+        input: the same (year -> sha256) associations must reproduce the
+        same digest however the mapping was built."""
+        reordered = extraction_identity(
+            **{
+                **_BASE_KWARGS,
+                "source_sha256s_by_year": {"2002": "c" * 64, "2001": "b" * 64},
+            }
+        )
+        assert extraction_identity(**_BASE_KWARGS) == reordered
 
 
 _STATIONS = ("alpha", "beta")
@@ -268,7 +295,7 @@ def _write_manifest(
             extraction_identity=identity,
             operator_id="NEAREST",
             coordinate_table_sha256="a" * 64,
-            source_sha256s=("b" * 64,),
+            source_sha256s_by_year={"2001": "b" * 64},
             payload_sha256s=payload_sha256s,
             orography_spec=_MANIFEST_OROGRAPHY_SPEC,
             orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
@@ -1033,7 +1060,7 @@ class TestPublishEnforcesRemainingD9Invariants:
                 extraction_identity=identity,
                 operator_id="NEAREST",
                 coordinate_table_sha256="a" * 64,
-                source_sha256s=("b" * 64,),
+                source_sha256s_by_year={"2001": "b" * 64},
                 payload_sha256s=_payload_sha256s(staging),
                 orography_spec={},  # empty — previously published cleanly
                 orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
@@ -1059,7 +1086,7 @@ class TestPublishEnforcesRemainingD9Invariants:
                 extraction_identity=identity,
                 operator_id="NEAREST",
                 coordinate_table_sha256="a" * 64,
-                source_sha256s=("b" * 64,),
+                source_sha256s_by_year={"2001": "b" * 64},
                 payload_sha256s=_payload_sha256s(staging),
                 orography_spec=_MANIFEST_OROGRAPHY_SPEC,
                 orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
@@ -1085,7 +1112,7 @@ class TestPublishEnforcesRemainingD9Invariants:
                 extraction_identity=identity,
                 operator_id="NEAREST",
                 coordinate_table_sha256="a" * 64,
-                source_sha256s=("b" * 64,),
+                source_sha256s_by_year={"2001": "b" * 64},
                 payload_sha256s=_payload_sha256s(staging),
                 orography_spec=_MANIFEST_OROGRAPHY_SPEC,
                 orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
@@ -1128,7 +1155,7 @@ class TestPublishEnforcesProvenanceAndAccountingValues:
                 extraction_identity=identity,
                 operator_id="NEAREST",
                 coordinate_table_sha256="a" * 64,
-                source_sha256s=("b" * 64,),
+                source_sha256s_by_year={"2001": "b" * 64},
                 payload_sha256s=_payload_sha256s(staging),
                 orography_spec=orography_spec
                 if orography_spec is not None

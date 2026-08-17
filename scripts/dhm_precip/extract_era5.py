@@ -527,7 +527,10 @@ def run(
 
     nearest_parts: dict[Station, list[ExtractedSeries]] = {}
     bilinear_parts: dict[Station, list[ExtractedSeries]] = {}
-    source_sha256s: list[str] = []
+    # D7 (CORRECTED 2026-08-17) — keyed BY YEAR, because a bare list of
+    # hashes cannot say which year each product's bytes belonged to: two
+    # years' products exchanged left the identity unchanged.
+    source_sha256s_by_year: dict[str, str] = {}
 
     for year in STUDY_YEARS:
         product_path = product_artifact_path(year, data_root)
@@ -548,7 +551,7 @@ def run(
                 f"{product_path} (D9 exit code 2: inputs absent)"
             )
         assert_source_checksum(product_path, expected_sha256=record.sha256)
-        source_sha256s.append(record.sha256)
+        source_sha256s_by_year[str(year)] = record.sha256
         with xr.open_dataset(product_path, engine="h5netcdf") as reopened:
             ds = reopened.load()
         assert_extraction_source_valid(ds, expected_year=year, expected_area=area)
@@ -591,7 +594,7 @@ def run(
     identity_inputs = ExtractionIdentityInputs(
         operator_id=str(ExtractionOperator.NEAREST),
         coordinate_table_sha256=coordinate_table_sha256,
-        source_sha256s=tuple(source_sha256s),
+        source_sha256s_by_year=dict(source_sha256s_by_year),
         orography_identity=oro_identity,
         jjas_months=tuple(resolved_params.jjas_months),
         djf_months=tuple(resolved_params.djf_months),
@@ -625,7 +628,7 @@ def run(
         extraction_identity=identity,
         operator_id=str(ExtractionOperator.NEAREST),
         coordinate_table_sha256=coordinate_table_sha256,
-        source_sha256s=tuple(source_sha256s),
+        source_sha256s_by_year=dict(source_sha256s_by_year),
         payload_sha256s=payload_sha256s,
         orography_spec=_orography_spec_payload(OBSERVED_OROGRAPHY_SPEC),
         orography_source_record={

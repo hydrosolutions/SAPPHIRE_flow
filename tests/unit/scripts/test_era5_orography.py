@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from scripts.dhm_precip import era5_orography, era5_orography_spec
 from scripts.dhm_precip.domain_types import OrographySource, VerticalDatum
 from scripts.dhm_precip.era5_errors import Era5OrographyError
 from scripts.dhm_precip.era5_orography import (
@@ -21,6 +22,7 @@ from scripts.dhm_precip.era5_orography import (
     convert_field,
     fetch_orography_source,
     materialise_orography,
+    orography_identity,
     orography_raster_path,
     orography_route_identity,
     read_orography_source_record,
@@ -554,6 +556,33 @@ class TestMaterialiseOrography:
         assert record.orography_identity != record.orography_route_identity
 
 
+class TestOrographyCodeVersionIsASingleConstant:
+    """D7 — "a version bump alone forces regeneration". A private duplicate
+    of `OROGRAPHY_CODE_VERSION` inside `era5_orography` was the value
+    actually hashed into `orography_route_identity`, so bumping the PUBLIC
+    constant (`era5_orography_spec.OROGRAPHY_CODE_VERSION` — the documented
+    one an operator would bump) invalidated nothing at all."""
+
+    def test_bumping_the_code_version_changes_the_route_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        before = orography_route_identity(_MATERIALISED_SPEC)
+        # `raising=False` so this assertion — not an AttributeError — is what
+        # fails when the identity reads some other constant; the companion
+        # test below pins WHICH constant that name must be.
+        monkeypatch.setattr(
+            era5_orography, "OROGRAPHY_CODE_VERSION", "999", raising=False
+        )
+        assert orography_route_identity(_MATERIALISED_SPEC) != before
+
+    def test_the_hashed_constant_is_the_public_one(self) -> None:
+        assert (
+            era5_orography.OROGRAPHY_CODE_VERSION
+            is era5_orography_spec.OROGRAPHY_CODE_VERSION
+        )
+        assert not hasattr(era5_orography, "_OROGRAPHY_CODE_VERSION")
+
+
 class TestOrographyIdentityCoversTheMaterialisedBytes:
     """Blocker B2 (corrected D7) — `orography_identity` must cover the ROUTE
     *plus* every downloaded file's sha256, the derived raster's own sha256
@@ -580,6 +609,43 @@ class TestOrographyIdentityCoversTheMaterialisedBytes:
         first = _materialise(tmp_path / "a")
         second = _materialise(tmp_path / "b")
         assert first.orography_identity == second.orography_identity
+
+    def test_swapping_two_source_hashes_between_their_files_changes_it(self) -> None:
+        """D7 — the identity must cover WHICH FILE each hash belongs to, not
+        merely the multiset of hashes. `sorted(source_file_sha256s)` over a
+        bare list discarded the association entirely, so exchanging the
+        BYTES of two source files (each file now holding the other's
+        content) left `orography_identity` unchanged — a stale raster is
+        then silently reused for a materially different source set."""
+        route = "r" * 64
+        raster = "s" * 64
+        first = orography_identity(
+            route_identity=route,
+            source_file_sha256s={"tile_a.nc": "a" * 64, "tile_b.nc": "b" * 64},
+            raster_sha256=raster,
+        )
+        swapped = orography_identity(
+            route_identity=route,
+            source_file_sha256s={"tile_a.nc": "b" * 64, "tile_b.nc": "a" * 64},
+            raster_sha256=raster,
+        )
+        assert first != swapped
+
+    def test_the_mapping_is_hashed_order_independently(self) -> None:
+        """The KEY ORDER of the mapping is an accident of iteration, not an
+        input: the same (path -> sha256) associations must reproduce the
+        same identity however the mapping was built."""
+        route = "r" * 64
+        raster = "s" * 64
+        assert orography_identity(
+            route_identity=route,
+            source_file_sha256s={"tile_a.nc": "a" * 64, "tile_b.nc": "b" * 64},
+            raster_sha256=raster,
+        ) == orography_identity(
+            route_identity=route,
+            source_file_sha256s={"tile_b.nc": "b" * 64, "tile_a.nc": "a" * 64},
+            raster_sha256=raster,
+        )
 
 
 class TestVerifyOrographyMaterialisation:

@@ -512,7 +512,7 @@ class TestPublishBundle:
         base_kwargs: dict[str, object] = {
             "operator_id": "NEAREST",
             "coordinate_table_sha256": "a" * 64,
-            "source_sha256s": ("b" * 64,),
+            "source_sha256s_by_year": {"2001": "b" * 64},
             "orography_identity": "c" * 64,
             "jjas_months": (6, 7, 8, 9),
             "djf_months": (12, 1, 2),

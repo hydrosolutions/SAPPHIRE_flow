@@ -34,13 +34,14 @@ from scripts.dhm_precip.era5_errors import Era5OrographyError, Era5StorageError
 from scripts.dhm_precip.era5_manifest import checksum_file, publish_atomic, tmp_path_for
 from scripts.dhm_precip.era5_orography_spec import (
     G0_M_PER_S2,
+    OROGRAPHY_CODE_VERSION,
     OROGRAPHY_SCHEMA_VERSION,
     OrographyConversionRule,
     OrographySpec,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
 log = structlog.get_logger(__name__)
@@ -63,7 +64,12 @@ _GEOPOTENTIAL_MAX_THRESHOLD = 9_999.0
 _MIN_PLAUSIBLE_METRES = -500.0
 _MIN_PLAUSIBLE_GEOPOTENTIAL = -5_000.0
 
-_OROGRAPHY_CODE_VERSION = "1"
+# NOTE (2026-08-17) — a PRIVATE duplicate `_OROGRAPHY_CODE_VERSION = "1"`
+# used to live here and was the value hashed into `orography_route_identity`,
+# while `era5_orography_spec.OROGRAPHY_CODE_VERSION` (the public, documented
+# constant an operator would bump) was hashed nowhere. Bumping the public
+# constant therefore invalidated nothing. There is now exactly ONE constant,
+# imported above.
 
 # M-8 / D7 — the FROZEN orography raster schema, hashed into
 # `orography_identity` so a silent change of variable name, dims, dtype or
@@ -282,7 +288,7 @@ def orography_route_identity(spec: OrographySpec) -> str:
             for c in spec.rejected_candidates
         ],
         "orography_schema_version": OROGRAPHY_SCHEMA_VERSION,
-        "orography_code_version": _OROGRAPHY_CODE_VERSION,
+        "orography_code_version": OROGRAPHY_CODE_VERSION,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
@@ -291,7 +297,7 @@ def orography_route_identity(spec: OrographySpec) -> str:
 def orography_identity(
     *,
     route_identity: str,
-    source_file_sha256s: Sequence[str],
+    source_file_sha256s: Mapping[str, str],
     raster_sha256: str,
 ) -> str:
     """D7 (CORRECTED 2026-08-16, blocker B2) — the composite identity
@@ -299,10 +305,19 @@ def orography_identity(
     `OrographySourceRecord` file sha256, the derived raster's own sha256 and
     the frozen raster schema (M-8). A route-only identity let a source file
     whose bytes changed at the same URL keep its identity, so the stale
-    raster was silently reused."""
+    raster was silently reused.
+
+    CORRECTED 2026-08-17 — `source_file_sha256s` is a MAPPING
+    `{relative_path: sha256}`, never a bare list. `sorted([...])` over the
+    hashes alone discarded WHICH FILE each hash belonged to, so exchanging
+    the BYTES of two source files (each now holding the other's content)
+    left the identity unchanged and the stale raster was reused for a
+    materially different source set. The mapping is canonicalised by KEY
+    (`sort_keys=True` recurses into it), so iteration order is not an input
+    but the path -> hash ASSOCIATION is."""
     payload: dict[str, object] = {
         "orography_route_identity": route_identity,
-        "source_file_sha256s": sorted(source_file_sha256s),
+        "source_file_sha256s": dict(source_file_sha256s),
         "raster_sha256": raster_sha256,
         "raster_schema": OROGRAPHY_RASTER_SCHEMA,
     }
@@ -351,6 +366,25 @@ class OrographySourceRecord:
     """Relative to the data root."""
     raster_sha256: str | None = None
     raster_schema_version: str | None = None
+
+
+def source_file_sha256_map(
+    downloaded_files: Sequence[DownloadedFileRecord],
+) -> dict[str, str]:
+    """The `{relative_path: sha256}` mapping `orography_identity` hashes. A
+    duplicated path would silently COLLAPSE two records into one entry —
+    losing exactly the association the mapping exists to preserve — so it is
+    a typed failure instead."""
+    mapping: dict[str, str] = {}
+    for record in downloaded_files:
+        if record.path in mapping:
+            raise Era5OrographyError(
+                f"orography source file path {record.path!r} appears more "
+                "than once in the OrographySourceRecord — one path cannot "
+                "carry two sha256s (D7)"
+            )
+        mapping[record.path] = record.sha256
+    return mapping
 
 
 def orography_dir(data_root: Path) -> Path:
@@ -851,7 +885,7 @@ def materialise_orography(
         fetched,
         orography_identity=orography_identity(
             route_identity=route_identity,
-            source_file_sha256s=[f.sha256 for f in fetched.downloaded_files],
+            source_file_sha256s=source_file_sha256_map(fetched.downloaded_files),
             raster_sha256=raster_sha256,
         ),
         raster_path=str(final_path.relative_to(data_root)),
@@ -972,7 +1006,7 @@ def verify_orography_materialisation(
         # From the CURRENT spec (equal to the record's, asserted above) —
         # never from the identity stored in the record.
         route_identity=current_route_identity,
-        source_file_sha256s=[f.sha256 for f in record.downloaded_files],
+        source_file_sha256s=source_file_sha256_map(record.downloaded_files),
         raster_sha256=raster_sha256,
     )
     if recomputed != record.orography_identity:

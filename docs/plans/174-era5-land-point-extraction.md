@@ -638,10 +638,20 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
       URL/tile pattern, licence, CRS, vertical reference, units, no-data sentinel, aggregation rule,
       conversion rule, probe date, rejected-candidate log — plus `orography_schema_version` and
       `orography_code_version`). Computable at **1a**, before anything is downloaded.
+      **⚠️ ONE constant, not two** *(minor, 2026-08-17)*: `era5_orography.py` kept a **private
+      duplicate** `_OROGRAPHY_CODE_VERSION` and hashed *that*, so bumping the public
+      `era5_orography_spec.OROGRAPHY_CODE_VERSION` — the documented one an operator would bump —
+      invalidated nothing. The route identity hashes the **public** constant; there is no second copy.
     - `orography_identity` = sha256(`orography_route_identity` **+ every `OrographySourceRecord`
       file sha256 + the derived raster's own sha256 + the frozen raster schema** — variable name,
       dims, dtype, encoding, mask/flag variable, per M-8). Computable only at **1b**, which is where
       the materialised bytes first exist. This is the one `extraction_identity` consumes.
+      **⚠️ HASH THE ASSOCIATION, NOT THE MULTISET** *(correctness, 2026-08-17)*: the source hashes
+      enter as an **ordered mapping `{relative_path: sha256}`**, canonicalised by key. The first
+      implementation hashed `sorted(<bare list of hashes>)`, which discarded *which file each hash
+      belonged to* — so **exchanging the bytes of two source files left the identity unchanged** and a
+      stale raster was reused for a materially different source set. A duplicated path is a typed
+      failure (it would collapse two entries into one).
     - **A materialised raster is never trusted because a file of the right name exists.** On every
       run, re-verify the source hashes against the record and the raster's own sha256 against the
       manifest; a mismatch is a typed failure, not a silent reuse.
@@ -704,7 +714,11 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
       Labelling the unverifiable residue is what finally makes the claim and the guarantee the same
       size.
   - `extraction_identity` = sha256(canonical-JSON of **every value-affecting input**):
-    operator id · station-coordinate-table sha256 · the **list of source product sha256s consumed**
+    operator id · station-coordinate-table sha256 · the source product sha256s consumed as a
+    **`{year: sha256}` mapping** (`source_sha256s_by_year`), canonicalised by key — *not* a bare list:
+    a sorted list of hashes cannot say which year each product's bytes belonged to, so **two years'
+    products exchanged left the identity unchanged** (same defect class as the orography mapping
+    above, fixed 2026-08-17)
     (validated against the acquisition manifest before use, never trusted from the filename) ·
     `orography_identity` · the D1a sensitivity-parameter snapshot (seasons, wet threshold + side,
     zero policy, quantile definition + grid, delta statistics) · the datum enums of D3b ·

@@ -279,7 +279,7 @@ _EXPECTED_VALUE_INPUT_KEYS: frozenset[str] = frozenset(
     {
         "operator_id",
         "coordinate_table_sha256",
-        "source_sha256s",
+        "source_sha256s_by_year",
         "orography_identity",
         "seasons",
         "wet_threshold_mm_per_h",
@@ -336,7 +336,11 @@ class ExtractionIdentityInputs:
 
     operator_id: str
     coordinate_table_sha256: str
-    source_sha256s: tuple[str, ...]
+    source_sha256s_by_year: Mapping[str, str]
+    """CORRECTED 2026-08-17 — `{year: sha256}`, never a bare list of hashes.
+    `sorted(source_sha256s)` discarded WHICH YEAR each product hash belonged
+    to, so exchanging the bytes of two annual products left
+    `extraction_identity` unchanged."""
     orography_identity: str
     jjas_months: tuple[int, ...]
     djf_months: tuple[int, ...]
@@ -373,7 +377,7 @@ class ExtractionIdentityInputs:
         value_inputs: dict[str, object] = {
             "operator_id": self.operator_id,
             "coordinate_table_sha256": self.coordinate_table_sha256,
-            "source_sha256s": sorted(self.source_sha256s),
+            "source_sha256s_by_year": dict(self.source_sha256s_by_year),
             "orography_identity": self.orography_identity,
             "seasons": {
                 "jjas_months": list(self.jjas_months),
@@ -460,7 +464,7 @@ def extraction_identity(
     *,
     operator_id: str,
     coordinate_table_sha256: str,
-    source_sha256s: Sequence[str],
+    source_sha256s_by_year: Mapping[str, str],
     orography_identity: str,
     jjas_months: Sequence[int],
     djf_months: Sequence[int],
@@ -486,7 +490,7 @@ def extraction_identity(
     return ExtractionIdentityInputs(
         operator_id=operator_id,
         coordinate_table_sha256=coordinate_table_sha256,
-        source_sha256s=tuple(source_sha256s),
+        source_sha256s_by_year=dict(source_sha256s_by_year),
         orography_identity=orography_identity,
         jjas_months=tuple(jjas_months),
         djf_months=tuple(djf_months),
@@ -516,7 +520,9 @@ class ExtractionManifest:
     extraction_identity: str
     operator_id: str
     coordinate_table_sha256: str
-    source_sha256s: tuple[str, ...]
+    source_sha256s_by_year: dict[str, str]
+    """Year -> the acquired annual product's sha256. A bare list of hashes
+    (CORRECTED 2026-08-17) could not say which year each belonged to."""
     payload_sha256s: dict[str, str]
     """Filename (relative to this identity directory) -> sha256."""
     orography_spec: dict[str, object]
@@ -554,7 +560,7 @@ class _ExtractionManifestModel(BaseModel):
     extraction_identity: str
     operator_id: str
     coordinate_table_sha256: str
-    source_sha256s: list[str]
+    source_sha256s_by_year: dict[str, str]
     payload_sha256s: dict[str, str]
     orography_spec: dict[str, object]
     orography_source_record: dict[str, object]
@@ -570,7 +576,7 @@ def write_extraction_manifest(manifest: ExtractionManifest, path: Path) -> None:
         extraction_identity=manifest.extraction_identity,
         operator_id=manifest.operator_id,
         coordinate_table_sha256=manifest.coordinate_table_sha256,
-        source_sha256s=list(manifest.source_sha256s),
+        source_sha256s_by_year=dict(manifest.source_sha256s_by_year),
         payload_sha256s=dict(manifest.payload_sha256s),
         orography_spec=manifest.orography_spec,
         orography_source_record=manifest.orography_source_record,
@@ -609,7 +615,7 @@ def read_extraction_manifest(path: Path) -> ExtractionManifest | None:
         extraction_identity=model.extraction_identity,
         operator_id=model.operator_id,
         coordinate_table_sha256=model.coordinate_table_sha256,
-        source_sha256s=tuple(model.source_sha256s),
+        source_sha256s_by_year=dict(model.source_sha256s_by_year),
         payload_sha256s=dict(model.payload_sha256s),
         orography_spec=model.orography_spec,
         orography_source_record=model.orography_source_record,
