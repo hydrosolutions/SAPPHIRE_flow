@@ -816,6 +816,33 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     ⇒ The validator reconciles every payload sha256 against the manifest, and **publication and
     discovery share one predicate** — not two implementations that can drift. If discovery would
     reject it, publication must reject it first.
+
+    **P4b — THE VALIDATOR'S REMIT IS BOUNDED, AND THIS IS THE STOPPING RULE.**
+    *(Added 2026-08-17 after the review loop STALLED at round 5 — nine rounds total on this one
+    subsystem.)*
+    **A validator detects a CORRUPT or INCOMPLETE bundle. It does not RE-DERIVE the computation.**
+
+    In scope, and complete as written: every payload file present · readable · reopens under its
+    declared schema · row/station counts and cadence as declared · **every payload sha256 reconciles
+    with the manifest** (P4a) · the manifest parses.
+
+    **Out of scope, permanently:** re-deriving station accounting from the series it was computed
+    from · recomputing the sensitivity table during validation · authenticating the manifest against
+    its own recorded inputs · any check whose implementation is "compute the output again and compare".
+
+    **Why this must be written down.** Round 5's residual findings asked for exactly those things.
+    They are individually reasonable and collectively unbounded: **a validator can always be shown not
+    to re-derive one more thing, so there is no fixed point short of recomputing everything** — at
+    which point the checker is a second implementation that can itself be wrong, and needs its own
+    checker. That is why the loop stalled rather than converged, and why a sixth round would not have
+    helped.
+    **The bound is justified, not merely convenient:** a sha256 over every payload already detects any
+    corruption of the bytes. What re-derivation would additionally catch is a *computation* error — and
+    the defence against that is a **value-locking unit test on the computation** (see the sensitivity
+    numeric locks), not a second copy of the computation running at publish time.
+    ⇒ A future finding of the form "the validator does not also check X, which it could recompute" is
+    **answered by this rule**, not by extending the validator. Reopening it requires a stated reason
+    why byte-integrity plus a value-locking test is insufficient for that specific X.
   - **P5 — The manifest hashes PAYLOAD FILES ONLY, never itself.** A manifest cannot contain its own
     hash. It lives inside the bundle directory and covers the payload artefacts beside it.
   - **P6 — Discovery is NOT implemented here.** The convention above is documented and that is all;
