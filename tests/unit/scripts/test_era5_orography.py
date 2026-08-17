@@ -15,6 +15,7 @@ import xarray as xr
 from scripts.dhm_precip.domain_types import OrographySource, VerticalDatum
 from scripts.dhm_precip.era5_errors import Era5OrographyError
 from scripts.dhm_precip.era5_orography import (
+    _orography_write_encoding,
     aggregate_to_grid,
     assert_grid_matches,
     convert_field,
@@ -431,6 +432,67 @@ class TestFetchOrographySource:
                 clock=_CLOCK,
             )
 
+    def test_rerun_with_an_added_file_raises(self, tmp_path: Path) -> None:
+        """MAJOR (2026-08-17 review) — the old comparison only walked the
+        NEW file list looking up a prior entry by path, so a file that
+        appeared in the re-fetch but was absent from the existing record was
+        never compared against anything and silently accepted."""
+        spec = _spec()
+        fetch_orography_source(
+            spec,
+            downloader=_FakeDownloader(payloads={"raw.nc": b"hello"}),
+            data_root=tmp_path,
+            clock=_CLOCK,
+        )
+        with pytest.raises(Era5OrographyError, match="added"):
+            fetch_orography_source(
+                spec,
+                downloader=_FakeDownloader(
+                    payloads={"raw.nc": b"hello", "extra.nc": b"surprise"}
+                ),
+                data_root=tmp_path,
+                clock=_CLOCK,
+            )
+
+    def test_rerun_with_a_removed_file_raises(self, tmp_path: Path) -> None:
+        """MAJOR (2026-08-17 review) — the old comparison never walked the
+        EXISTING record's files at all, so a file the re-fetch dropped was
+        never noticed."""
+        spec = _spec()
+        fetch_orography_source(
+            spec,
+            downloader=_FakeDownloader(
+                payloads={"raw.nc": b"hello", "extra.nc": b"surprise"}
+            ),
+            data_root=tmp_path,
+            clock=_CLOCK,
+        )
+        with pytest.raises(Era5OrographyError, match="removed"):
+            fetch_orography_source(
+                spec,
+                downloader=_FakeDownloader(payloads={"raw.nc": b"hello"}),
+                data_root=tmp_path,
+                clock=_CLOCK,
+            )
+
+    def test_rerun_with_a_renamed_file_raises(self, tmp_path: Path) -> None:
+        """A renamed file is simultaneously an add and a remove — both must
+        be caught even though every byte's sha256 is unchanged."""
+        spec = _spec()
+        fetch_orography_source(
+            spec,
+            downloader=_FakeDownloader(payloads={"raw.nc": b"hello"}),
+            data_root=tmp_path,
+            clock=_CLOCK,
+        )
+        with pytest.raises(Era5OrographyError, match="added.*removed|removed.*added"):
+            fetch_orography_source(
+                spec,
+                downloader=_FakeDownloader(payloads={"raw_renamed.nc": b"hello"}),
+                data_root=tmp_path,
+                clock=_CLOCK,
+            )
+
 
 # --- 1b: end-to-end materialise (happy path reopens + revalidates) ---
 
@@ -528,7 +590,11 @@ class TestVerifyOrographyMaterialisation:
     def test_untouched_materialisation_verifies(self, tmp_path: Path) -> None:
         record = _materialise(tmp_path)
         verify_orography_materialisation(
-            record, data_root=tmp_path, spec=_MATERIALISED_SPEC
+            record,
+            data_root=tmp_path,
+            spec=_MATERIALISED_SPEC,
+            expected_lat=_TARGET_LAT,
+            expected_lon=_TARGET_LON,
         )
 
     def test_tampered_raster_raises(self, tmp_path: Path) -> None:
@@ -539,7 +605,11 @@ class TestVerifyOrographyMaterialisation:
         raster.write_bytes(raster.read_bytes() + b"tamper")
         with pytest.raises(Era5OrographyError, match="raster"):
             verify_orography_materialisation(
-                record, data_root=tmp_path, spec=_MATERIALISED_SPEC
+                record,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
             )
 
     def test_tampered_source_file_raises(self, tmp_path: Path) -> None:
@@ -548,7 +618,11 @@ class TestVerifyOrographyMaterialisation:
         raw.write_bytes(b"tampered source bytes")
         with pytest.raises(Era5OrographyError, match="source file"):
             verify_orography_materialisation(
-                record, data_root=tmp_path, spec=_MATERIALISED_SPEC
+                record,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
             )
 
     def test_record_whose_identity_does_not_recompute_raises(
@@ -558,7 +632,11 @@ class TestVerifyOrographyMaterialisation:
         forged = replace(record, orography_identity="0" * 64)
         with pytest.raises(Era5OrographyError, match="identity"):
             verify_orography_materialisation(
-                forged, data_root=tmp_path, spec=_MATERIALISED_SPEC
+                forged,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
             )
 
     def test_a_record_from_another_route_cannot_verify(self, tmp_path: Path) -> None:
@@ -573,7 +651,11 @@ class TestVerifyOrographyMaterialisation:
         )
         with pytest.raises(Era5OrographyError, match="route"):
             verify_orography_materialisation(
-                record, data_root=tmp_path, spec=changed_route
+                record,
+                data_root=tmp_path,
+                spec=changed_route,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
             )
 
 
@@ -688,7 +770,11 @@ class TestOrographyRasterSchemaEnforcement:
         forged = replace(record, raster_schema_version="999")
         with pytest.raises(Era5OrographyError, match="raster_schema_version"):
             verify_orography_materialisation(
-                forged, data_root=tmp_path, spec=_MATERIALISED_SPEC
+                forged,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
             )
 
     def test_reuse_reopens_and_rejects_a_raster_with_a_broken_schema(
@@ -711,7 +797,110 @@ class TestOrographyRasterSchemaEnforcement:
         forged = replace(record, raster_sha256=checksum_file(raster_path))
         with pytest.raises(Era5OrographyError, match="no_data_flag"):
             verify_orography_materialisation(
-                forged, data_root=tmp_path, spec=_MATERIALISED_SPEC
+                forged,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
+            )
+
+    def test_reuse_rejects_a_rehashed_raster_written_uncompressed(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review) — the frozen schema hashes an
+        `encoding` block (compression, fill policy) into `orography_identity`
+        that reuse never actually enforced on reopen: a rehashed raster
+        written WITHOUT compression, but otherwise schema-valid, used to
+        pass reuse despite the identity claiming a compressed encoding."""
+        from scripts.dhm_precip.era5_manifest import checksum_file
+
+        record = _materialise(tmp_path)
+        raster_path = tmp_path / record.raster_path  # type: ignore[operator]
+        with xr.open_dataset(raster_path, engine="h5netcdf") as reopened:
+            loaded = reopened.load()
+        raster_path.unlink()
+        # xarray reuses a reopened DataArray's OWN `.encoding` by default,
+        # so it must be cleared explicitly to actually write uncompressed —
+        # otherwise `to_netcdf` silently re-applies the original zlib
+        # encoding it just read back.
+        for var_name in loaded.data_vars:
+            loaded[var_name].encoding = {}
+        # Rewritten byte-for-byte-equivalent, uncompressed — the schema's
+        # required variables/dims/dtypes/attrs are all still intact, only
+        # the encoding differs.
+        loaded.to_netcdf(raster_path, engine="h5netcdf")
+        forged = replace(record, raster_sha256=checksum_file(raster_path))
+        with pytest.raises(Era5OrographyError, match="zlib|encoding"):
+            verify_orography_materialisation(
+                forged,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
+            )
+
+    def test_reuse_rejects_a_rehashed_raster_with_shifted_coordinates(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review) — `assert_grid_matches` ran once, at
+        write time, inside `materialise_orography`; reuse never re-ran it,
+        so a rehashed raster whose lat/lon vectors had shifted away from the
+        expected D9 product grid still passed reuse."""
+        from scripts.dhm_precip.era5_manifest import checksum_file
+
+        record = _materialise(tmp_path)
+        raster_path = tmp_path / record.raster_path  # type: ignore[operator]
+        with xr.open_dataset(raster_path, engine="h5netcdf") as reopened:
+            loaded = reopened.load()
+        shifted = loaded.assign_coords(latitude=loaded["latitude"].values + 0.05)
+        raster_path.unlink()
+        shifted.to_netcdf(
+            raster_path,
+            engine="h5netcdf",
+            encoding={
+                k: v for k, v in _orography_write_encoding().items() if k in shifted
+            },
+        )
+        forged = replace(record, raster_sha256=checksum_file(raster_path))
+        with pytest.raises(Era5OrographyError, match="latitude"):
+            verify_orography_materialisation(
+                forged,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
+            )
+
+    def test_reuse_rejects_a_rehashed_raster_with_wrong_provenance_attrs(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review) — required attrs were checked for
+        PRESENCE only, never for agreement with the CURRENT spec, so a
+        rehashed raster claiming a different `orography_product_version`
+        still passed reuse."""
+        from scripts.dhm_precip.era5_manifest import checksum_file
+
+        record = _materialise(tmp_path)
+        raster_path = tmp_path / record.raster_path  # type: ignore[operator]
+        with xr.open_dataset(raster_path, engine="h5netcdf") as reopened:
+            loaded = reopened.load()
+        loaded.attrs["orography_product_version"] = "some-other-version"
+        raster_path.unlink()
+        loaded.to_netcdf(
+            raster_path,
+            engine="h5netcdf",
+            encoding={
+                k: v for k, v in _orography_write_encoding().items() if k in loaded
+            },
+        )
+        forged = replace(record, raster_sha256=checksum_file(raster_path))
+        with pytest.raises(Era5OrographyError, match="orography_product_version"):
+            verify_orography_materialisation(
+                forged,
+                data_root=tmp_path,
+                spec=_MATERIALISED_SPEC,
+                expected_lat=_TARGET_LAT,
+                expected_lon=_TARGET_LON,
             )
 
 

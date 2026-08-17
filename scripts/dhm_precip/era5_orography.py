@@ -103,14 +103,92 @@ OROGRAPHY_RASTER_SCHEMA: dict[str, object] = {
 }
 
 
-def assert_orography_raster_schema(ds: xr.Dataset) -> None:
+def _assert_orography_encoding(ds: xr.Dataset) -> None:
+    """MAJOR (2026-08-17 review) — the frozen schema's `encoding` block
+    (compression/fill policy) is hashed into `orography_identity` but was
+    never enforced on reopen: a rehashed raster written with uncompressed
+    encoding or a different fill policy still passed reuse, because nothing
+    compared the reopened `.encoding` against the declared schema."""
+    schema_encoding: dict[str, dict[str, object]] = OROGRAPHY_RASTER_SCHEMA[  # type: ignore[assignment]
+        "encoding"
+    ]
+    for var_name, expected in schema_encoding.items():
+        if var_name not in ds:
+            continue
+        enc = ds[var_name].encoding
+        expected_zlib = bool(expected.get("zlib", False))
+        if bool(enc.get("zlib")) != expected_zlib:
+            raise Era5OrographyError(
+                f"orography raster variable {var_name!r} has zlib="
+                f"{enc.get('zlib')!r} on reopen, expected {expected_zlib!r} "
+                "(M-8's frozen encoding spec)"
+            )
+        expected_complevel = expected.get("complevel")
+        if (
+            expected_complevel is not None
+            and enc.get("complevel") != expected_complevel
+        ):
+            raise Era5OrographyError(
+                f"orography raster variable {var_name!r} has complevel="
+                f"{enc.get('complevel')!r} on reopen, expected "
+                f"{expected_complevel!r} (M-8's frozen encoding spec)"
+            )
+        if expected.get("_FillValue") == "NaN":
+            fill = enc.get("_FillValue")
+            if fill is None or not np.isnan(float(fill)):
+                raise Era5OrographyError(
+                    f"orography raster variable {var_name!r} has "
+                    f"_FillValue={fill!r} on reopen, expected NaN (M-8's "
+                    "frozen encoding spec)"
+                )
+
+
+def _assert_orography_provenance_matches_spec(
+    ds: xr.Dataset, *, spec: OrographySpec
+) -> None:
+    """MAJOR (2026-08-17 review) — required-attrs was checked for PRESENCE
+    only, never for agreement with the CURRENT frozen spec, so a raster
+    carrying wrong (but present) provenance values would pass reuse."""
+    expected: dict[str, str] = {
+        "orography_source": str(spec.source),
+        "orography_product_id": spec.product_id,
+        "orography_product_version": spec.product_version,
+        "orography_vertical_reference": str(spec.vertical_reference),
+        "orography_aggregation_rule": spec.aggregation_rule_id,
+        "orography_schema_version": OROGRAPHY_SCHEMA_VERSION,
+    }
+    mismatched = {
+        k: (ds.attrs.get(k), v) for k, v in expected.items() if ds.attrs.get(k) != v
+    }
+    if mismatched:
+        raise Era5OrographyError(
+            "orography raster attrs disagree with the current OrographySpec: "
+            f"{mismatched} (M-8)"
+        )
+
+
+def assert_orography_raster_schema(
+    ds: xr.Dataset,
+    *,
+    spec: OrographySpec | None = None,
+    expected_lat: np.ndarray | None = None,
+    expected_lon: np.ndarray | None = None,
+) -> None:
     """M-8/D7 — the ONE frozen-schema validator, run both after write
     (`write_orography_raster`) and on every reuse
     (`verify_orography_materialisation`): required variables, exact
     dims/order, dtypes, the mask/no-data invariant (a NaN elevation cell
     must be flagged), and the required provenance attrs. A schema
     divergence here is exactly the drift `orography_identity` claims to
-    cover but that nothing previously checked on reopen."""
+    cover but that nothing previously checked on reopen.
+
+    `spec`/`expected_lat`/`expected_lon` are optional so direct structural
+    tests can call this without a full spec+grid in hand; every REAL
+    production call site (write and reuse) supplies all three, so the
+    encoding, provenance-value and coordinate-vector checks below always run
+    in practice (2026-08-17 review — a rehashed raster with uncompressed
+    encoding, shifted coordinates or wrong provenance values used to pass
+    reuse despite the identity claiming otherwise)."""
     variable_checks = (
         (OROGRAPHY_RASTER_SCHEMA["elevation_variable"], "elevation_dtype"),
         (
@@ -154,6 +232,17 @@ def assert_orography_raster_schema(ds: xr.Dataset) -> None:
         raise Era5OrographyError(
             "orography raster has NaN elevation cell(s) not marked in "
             "'no_data_flag' — the mask/no-data invariant is violated (M-8)"
+        )
+
+    if spec is not None:
+        _assert_orography_encoding(ds)
+        _assert_orography_provenance_matches_spec(ds, spec=spec)
+    if expected_lat is not None and expected_lon is not None:
+        assert_grid_matches(
+            np.asarray(ds["latitude"].values),
+            np.asarray(ds["longitude"].values),
+            expected_lat=expected_lat,
+            expected_lon=expected_lon,
         )
 
 
@@ -394,16 +483,30 @@ def fetch_orography_source(
         )
 
     if existing is not None and existing.orography_route_identity == route_identity:
-        existing_by_path = {f.path: f for f in existing.downloaded_files}
-        for new_file in files:
-            prior = existing_by_path.get(new_file.path)
-            if prior is not None and prior.sha256 != new_file.sha256:
-                raise Era5OrographyError(
-                    f"re-fetch of {new_file.path!r} disagrees with the "
-                    f"existing OrographySourceRecord ({new_file.sha256} != "
-                    f"{prior.sha256}) — an unexplained change in a static "
-                    "source"
-                )
+        # MAJOR (2026-08-17 review) — this used to compare hashes only for
+        # paths present in BOTH records: an ADDED file was never checked
+        # against anything, and a REMOVED file was never checked at all
+        # (the loop only ever walked the NEW `files`). Compare the complete
+        # {path: (sha256, size)} mapping for equality so an added, removed
+        # or renamed file is caught too, not only a changed one.
+        existing_by_path = {
+            f.path: (f.sha256, f.size_bytes) for f in existing.downloaded_files
+        }
+        new_by_path = {f.path: (f.sha256, f.size_bytes) for f in files}
+        if existing_by_path != new_by_path:
+            added = sorted(set(new_by_path) - set(existing_by_path))
+            removed = sorted(set(existing_by_path) - set(new_by_path))
+            changed = sorted(
+                p
+                for p in set(existing_by_path) & set(new_by_path)
+                if existing_by_path[p] != new_by_path[p]
+            )
+            raise Era5OrographyError(
+                "re-fetch of the orography source disagrees with the "
+                "existing OrographySourceRecord under the SAME route — "
+                f"added={added} removed={removed} changed={changed} (an "
+                "unexplained change in a static source)"
+            )
 
     record = OrographySourceRecord(
         orography_route_identity=route_identity,
@@ -633,7 +736,11 @@ def _orography_write_encoding() -> dict[str, dict[str, object]]:
 
 
 def write_orography_raster(
-    ds: xr.Dataset, *, data_root: Path, route_identity: str
+    ds: xr.Dataset,
+    *,
+    data_root: Path,
+    route_identity: str,
+    spec: OrographySpec | None = None,
 ) -> str:
     """Atomic tmp -> reopen-and-validate -> `os.replace`; returns the sha256
     of the published file.
@@ -643,7 +750,10 @@ def write_orography_raster(
     `orography_elev_m` was present on reopen. It now writes from the single
     frozen `OROGRAPHY_RASTER_SCHEMA` encoding and runs the SAME full-schema
     validator (`assert_orography_raster_schema`) that reuse now also
-    runs — one validator, never two that can drift."""
+    runs — one validator, never two that can drift. `spec`, when supplied
+    (every real caller does — `materialise_orography` below), also validates
+    the written encoding and provenance attrs match the CURRENT frozen spec,
+    not merely their own presence."""
     final_path = orography_raster_path(data_root, route_identity=route_identity)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_path_for(final_path)
@@ -658,7 +768,7 @@ def write_orography_raster(
     try:
         with xr.open_dataset(tmp_path, engine="h5netcdf") as reopened:
             loaded = reopened.load()
-            assert_orography_raster_schema(loaded)
+            assert_orography_raster_schema(loaded, spec=spec)
         sha256 = checksum_file(tmp_path)
         publish_atomic(tmp_path, final_path)
     finally:
@@ -705,7 +815,7 @@ def materialise_orography(
         aggregation, target_lat=expected_lat, target_lon=expected_lon, spec=spec
     )
     raster_sha256 = write_orography_raster(
-        ds, data_root=data_root, route_identity=route_identity
+        ds, data_root=data_root, route_identity=route_identity, spec=spec
     )
     final_path = orography_raster_path(data_root, route_identity=route_identity)
     with xr.open_dataset(final_path, engine="h5netcdf") as reopened:
@@ -732,7 +842,12 @@ def materialise_orography(
 
 
 def verify_orography_materialisation(
-    record: OrographySourceRecord, *, data_root: Path, spec: OrographySpec
+    record: OrographySourceRecord,
+    *,
+    data_root: Path,
+    spec: OrographySpec,
+    expected_lat: np.ndarray,
+    expected_lon: np.ndarray,
 ) -> str:
     """D7 (CORRECTED 2026-08-16, blocker B2) — "a materialised raster is
     never trusted because a file of the right name exists". On EVERY run,
@@ -756,7 +871,15 @@ def verify_orography_materialisation(
     schema-broken raster, was silently trusted. Every reuse now (a) checks
     the record's claimed `raster_schema_version` against the CURRENT frozen
     schema, and (b) reopens the raster and runs the SAME
-    `assert_orography_raster_schema` validator write-time uses."""
+    `assert_orography_raster_schema` validator write-time uses.
+
+    MAJOR (2026-08-17 review) — that reopen used to skip the encoding,
+    provenance-attr-value and coordinate-vector checks entirely (it called
+    `assert_orography_raster_schema` with no `spec`/grid), so a rehashed
+    raster with uncompressed encoding, shifted coordinates, or provenance
+    attrs that disagree with the CURRENT spec still passed reuse. `spec` was
+    already required here; `expected_lat`/`expected_lon` are now required
+    too, and every check `assert_orography_raster_schema` can run is run."""
     current_route_identity = orography_route_identity(spec)
     if record.orography_route_identity != current_route_identity:
         raise Era5OrographyError(
@@ -817,7 +940,12 @@ def verify_orography_materialisation(
             "written to a stale schema (M-8)"
         )
     with xr.open_dataset(raster_path, engine="h5netcdf") as reopened:
-        assert_orography_raster_schema(reopened.load())
+        assert_orography_raster_schema(
+            reopened.load(),
+            spec=spec,
+            expected_lat=expected_lat,
+            expected_lon=expected_lon,
+        )
 
     recomputed = orography_identity(
         # From the CURRENT spec (equal to the record's, asserted above) —

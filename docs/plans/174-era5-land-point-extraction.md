@@ -54,6 +54,58 @@ tests (test-soundness proven fail-against-buggy for every correctness fix):
   `z(valid_time, latitude, longitude)` response instead of only ever stripping a literal `time` dim.
 - Minor: a missing annual product now exits 2 (`ExtractionInputAbsentError`), not 5.
 
+**Second post-implementation fixer round (2026-08-17), against commit `a88c477`.** An independent
+Codex pass over the committed diff found 3 more blockers and 4 more majors, all now fixed with locking
+tests (test-soundness proven fail-against-buggy for every correctness fix, several via real
+`threading.Barrier` concurrency, not simulation):
+
+- **P1a's run-number reservation was still identity-scoped, not identity-independent** — it reserved a
+  number by `mkdir`ing the identity-labelled directory `<NNNN>-<identity>/` directly, so two
+  DIFFERENT identities racing for the same `NNNN` both succeeded (their paths never collide) and were
+  both assigned run number 0000 — the exact ambiguous order P1a exists to rule out, moved one layer
+  down. Fixed (see the corrected P1a text above): an identity-independent `.run-<NNNN>.reserve` marker
+  (`os.open(..., O_CREAT | O_EXCL)`) is reserved BEFORE the identity-labelled `mkdir`.
+- **The D9 bundle validator still had real gaps** despite the previous round's "one shared validator"
+  fix: `valid_time` was checked only STRICTLY INCREASING, not exactly hourly; the frozen encoding spec
+  checked only `zlib`, not `complevel`/`_FillValue`/`chunksizes`; enum columns silently `drop_nulls()`d
+  before comparing, so an entirely-null column passed; the sensitivity STATION-scope station set was
+  checked as a SUBSET (`<=`) of the series' stations, not exact equality, and nothing checked that
+  every station carried the same row count (the "complete matrix"); and publication validated only the
+  manifest's `extraction_identity` STRING, never that `orography_spec`/`orography_source_record`/
+  `accumulation_diagnostic`/`station_accounting` were actually populated (an empty `{}` published
+  cleanly). Fixed: all of the above are now checked in `reopen_and_validate_bundle`; the shared test
+  fixture (`_write_payload_files`) is rewritten to write through `points_xarray_encoding` — the SAME
+  production spec the validator checks against — so the "valid" fixture can no longer drift from what
+  the real writer emits.
+- **`ExtractionManifest` omitted the very inputs it hashed** — seasons, thresholds, `zero_policy`, the
+  quantile grid, output format/encoding and both datum inputs were part of `extraction_identity` but
+  nowhere else recorded, so the digest could not be independently recomputed or interpreted downstream.
+  Fixed: `ExtractionIdentityInputs` is now the ONE typed snapshot both `extraction_identity` (digest)
+  and the new `ExtractionManifest.identity_inputs` field (recorded snapshot) read;
+  `recompute_extraction_identity` closes the loop. Publication requires `identity_inputs` to be
+  structurally complete (not byte-equal to the identity string, deliberately — P3 keeps
+  `extraction_identity` a LABEL, and several publication-MECHANICS tests intentionally use short
+  human-readable labels that were never meant to recompute from anything).
+- **Two identity inputs the writer never actually read**: `_FillValue` was hard-coded
+  (`float("nan")`) instead of read from `POINTS_OUTPUT_ENCODING_SPEC`, and the precipitation dtype cast
+  was a separately hard-coded `np.float32` literal independent of `output_dtype`. Fixed: the encoding
+  spec now lives in `era5_extract_manifest.py` (the module that also validates against it) and both the
+  writer and the identity read the SAME dict; extract_era5.py re-exports the historical names.
+- **Same-identity concurrent runs shared and destructively reused one staging directory**
+  (`.staging/<identity>/`, `rmtree`d and recreated on every call) — a later run could delete or
+  interleave an earlier run's staged payload. Fixed: staging is now a fresh, per-invocation-unique
+  directory (`.staging/<identity>--<token>/`).
+- **The orography reuse validator still had real gaps**: the frozen schema's `encoding` block
+  (compression, fill policy) was hashed into `orography_identity` but never enforced on reopen; the
+  required-attrs check verified PRESENCE only, never agreement with the CURRENT spec's values; and
+  `assert_grid_matches` ran once at write time but never again on reuse, so a rehashed raster with
+  uncompressed encoding, wrong provenance attrs, or shifted coordinates still passed reuse. Fixed:
+  `assert_orography_raster_schema` gained optional `spec`/`expected_lat`/`expected_lon` parameters that
+  both write and reuse now always supply.
+- **The orography re-fetch verification only compared hashes for files present in the OLD record** —
+  an added, removed or renamed file was silently accepted. Fixed: the complete `{path: (sha256, size)}`
+  mapping is compared for equality.
+
 ### Residual review findings — KNOWN, accepted into implementation
 
 Not folded above. The owner set READY with these open; they are recorded so the implementer meets
@@ -664,14 +716,25 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     Needs no clock, so **frozen-clock tests cannot collide** — a timestamped scheme would have
     reintroduced the same-name collision inside the test suite.
 
-    **P1a — Allocate the integer by `mkdir(exist_ok=False)`, never by scan-then-create.**
+    **P1a — Allocate the integer through an IDENTITY-INDEPENDENT atomic reservation, never by
+    `mkdir`ing the identity-labelled directory directly.**
     *(Blocker, slim review 2026-08-17: "next free integer" as written is racy — two runs can both
     observe `0007` as free; with different identities both publish and P6's "highest NNNN" becomes
     ambiguous, and with the same identity one `os.replace` meets the other's non-empty target and
-    fails.)* `Path.mkdir(exist_ok=False)` is **atomic**: attempt `<NNNN>-<identity>/`, and on
-    `FileExistsError` increment and retry. The winner of the race owns the number by construction, so
-    no lock, no reservation file and no single-writer precondition is required — which is why this is
-    preferred over merely *documenting* that the pipeline is single-writer.
+    fails.)*
+    ⚠️ **Corrected again (blocker, 2026-08-17 fixer round).** The first fix above was still wrong: it
+    reserved the number by `Path.mkdir(exist_ok=False)`ing `<NNNN>-<identity>/` **directly** — atomic
+    for one identity, but two DIFFERENT identities racing for the same `NNNN` `mkdir` two DIFFERENT
+    paths (`0000-a`, `0000-b`) that never contend, so **both succeed** and both are assigned run
+    number `0000`: exactly the ambiguous, identity-dependent order P1a exists to rule out, just moved
+    one layer down. The number itself must be the ONE thing every identity contends for, independent
+    of what it will publish under: `allocate_published_dir` now reserves `<NNNN>` via an
+    identity-independent `.run-<NNNN>.reserve` marker (`os.open(..., O_CREAT | O_EXCL)`, atomic at the
+    OS level) **before** `mkdir`ing the identity-labelled directory. The reservation marker is never
+    deleted (removing it after success would re-open the identical race for a late competitor for the
+    same number), so — contrary to the retracted claim above — this scheme **is** a reservation file,
+    deliberately. Proven under real concurrency (`threading.Barrier`, several identities released
+    together) in `tests/unit/scripts/test_era5_extract_manifest.py::TestPerRunUniquePublication`.
     The bundle is then assembled **into** that reserved directory, so publication is the reservation
     plus the content write, not a directory `os.replace` at all.
   - **P2 — `CURRENT` is DELETED.** Nothing reads it. Discovery is *the highest `NNNN` whose manifest
@@ -711,7 +774,11 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   **Cost, stated:** every run leaves a new numbered directory, so disk grows monotonically under
   repeated runs and nothing is ever cleaned up automatically. Accepted — disk is cheap, ~15 s per run
   over 26 stations, and an accumulating series is a *visible* record of what was run, which both the
-  adopt path and the overwrite-in-place alternative would have hidden.
+  adopt path and the overwrite-in-place alternative would have hidden. **Extended (2026-08-17 fixer
+  round):** the same acceptance now covers staging — a per-invocation-unique staging directory means a
+  crashed run's staged payload is never automatically cleaned up either, and the identity-independent
+  `.run-<NNNN>.reserve` markers (P1a) are never deleted. All three are unreferenced garbage under a
+  unique name; none is ever read by production code again.
 
   **Deletion is deletion:** `_quarantine`, the `.orphan-<n>` search, `current_pointer_path` and the
   publication tests written for them are **removed, not left unused**. Dead code encoding a removed
@@ -750,7 +817,7 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   | `series_bilinear.nc` | NetCDF | same | same — the sensitivity comparand only (D1a), never the primary |
   | `station_grid_elevation.csv` | CSV | one row per station, **26 rows** | `station`, `lat`, `lon`, `grid_lat`, `grid_lon`, `grid_i`, `grid_j`, `offset_km`, `station_elev_m`, `station_elevation_datum`, `orography_elev_m`, `orography_elevation_datum`, `orography_source` (enum), `orography_product_id`, `orography_product_version`, `elev_mismatch_m`, `datum_reconciled` (enum), `shared_cell_id`, `stations_in_cell` |
   | `operator_sensitivity.csv` | CSV | `(scope, station, season, statistic, quantile)` | `scope` enum {`STATION`, `ACROSS_STATION`} · `station` (null when `ACROSS_STATION`) · `season` · `statistic` enum {`QUANTILE`, `WET_MEAN_INTENSITY`, `WET_FREQUENCY`} · `quantile` (null unless `QUANTILE`) · `nearest_value`, `bilinear_value` · `delta_absolute` + `delta_unit` enum {`MM_PER_H`, `FRACTION`} (**wet frequency is a fraction, not mm/h** — the previous single `delta_mm_per_h` column mislabelled it) · `ratio` (null when the bilinear denominator is 0) · `n_hours_common_finite` · `n_hours_excluded` (D11.3) · `n_wet_nearest`, `n_wet_bilinear` (**both**, since the wet set differs by operator — one `n_wet_hours` was ambiguous) · `sign_agreement_fraction` (populated only on `ACROSS_STATION` rows) |
-  | `extraction_manifest.json` | JSON | — | both identities, operator id, every input sha256, **the payload artefacts' sha256s only — never its own** (P5), the cited `AccumulationDiagnosticRecord`, the frozen `OrographySpec` + `OrographySourceRecord`, injected-clock timestamps |
+  | `extraction_manifest.json` | JSON | — | both identities, operator id, every input sha256, **the payload artefacts' sha256s only — never its own** (P5), the cited `AccumulationDiagnosticRecord`, the frozen `OrographySpec` + `OrographySourceRecord`, `station_accounting`, injected-clock timestamps, and (⚠️ **added, major, 2026-08-17 fixer round**) `identity_inputs` — the COMPLETE `ExtractionIdentityInputs.canonical_payload()` snapshot `extraction_identity` was computed from. Without this the digest hashed seasons, thresholds, `zero_policy`, the quantile grid, output format/encoding and both datum inputs that were nowhere else visible, so a reader could not recompute or even interpret it (`recompute_extraction_identity`); `publish_bundle` refuses a bundle whose `identity_inputs` is absent or structurally incomplete |
 
   **There is NO pointer file.** An earlier revision specified a `CURRENT` pointer here; it is deleted
   (P2) — nothing read it, and defending its crash-atomicity cost four rounds of blockers. Discovery is
@@ -1038,8 +1105,14 @@ excluded count is reported; season assignment matches `scripts/dhm_precip/season
 `reopen_and_validate_bundle` on staging itself and refuses to publish on failure (P4)**; per-payload
 sha256 (P5); publication to the **per-run numbered directory `<NNNN>-<identity>/` (P1)** via
 `os.replace` onto a name that cannot already exist; the D5.2 prerequisite check (refuse to publish a
-real-data run without a passing `AccumulationDiagnosticRecord` from 1c); deletion of a staging
-directory left by a crash.
+real-data run without a passing `AccumulationDiagnosticRecord` from 1c).
+⚠️ **Corrected (major, 2026-08-17 fixer round).** Staging used to be the SHARED path
+`.staging/<identity>/`, `rmtree`d and recreated on every call under that identity — so two concurrent
+runs under the SAME identity could delete or interleave each other's staged payload. Staging is now a
+FRESH, per-invocation-unique directory (`.staging/<identity>--<token>/`); there is nothing stale to
+delete first, so "deletion of a staging directory left by a crash" no longer applies — a crashed run's
+staging directory is unreferenced garbage under its own unique name, left in place (disk is cheap; see
+the "cost, stated" note below, which now also covers staging).
 *Removed from scope by the 2026-08-17 redesign:* the `CURRENT` pointer (P2 — deleted), quarantine /
 `.orphan-<n>` (P1 — nothing is ever renamed), adoption of an existing directory, and any discovery
 helper (P6 — convention only).
@@ -1055,9 +1128,9 @@ inputs publishes `<NNNN+1>-<same identity>` and renames nothing** (the round-3 w
 unrepresentable, so it is tested by absence: no `.orphan-*` path is ever created); **`publish_bundle`
 refuses a staging directory that fails `reopen_and_validate_bundle`, proven by calling it with a
 malformed series** (P4 — this replaces the coverage lost when the wrong-station-count test was
-deleted); a staging directory left by a crash is deleted, not published; a real-data run with no
-passing diagnostic record exits **4**; each typed failure of D9 maps to its exit code (2/3/4/5) and
-`--help` exits 0.
+deleted); concurrent same-identity staging never collides or interleaves (proven under real
+concurrency, `TestStagingDirIsolation`); a real-data run with no passing diagnostic record exits
+**4**; each typed failure of D9 maps to its exit code (2/3/4/5) and `--help` exits 0.
 **Per P7:** each identity-input case above must also show a **changed output**, not merely a changed
 hash — an input that cannot change an output does not belong in the identity.
 

@@ -654,7 +654,7 @@ hour). Disaggregating a 3 h/6 h total is the former, which is the tractable one.
 
 **Three conditions it must clear before anyone builds it:**
 1. **Satellite phase must be trustworthy at our elevations** — IMERG performance degrades at high
-   elevation and passive-microwave retrieval is weak over snow and ice. M-A5/M-A6 test this directly.
+   elevation and passive-microwave retrieval is weak over snow and ice. M-A5b/M-A6 test this directly.
 2. **The satellite-vs-gauge phase discrepancy must be explained** (midnight vs 21:00, above). Treating
    satellite phase as truth while it disagrees with gauges at the national scale is unsafe.
 3. **It must matter hydrologically.** Dudh Koshi is ~4,000 km² with a response time of order 12–24 h;

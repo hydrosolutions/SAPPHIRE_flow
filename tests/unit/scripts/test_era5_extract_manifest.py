@@ -16,6 +16,7 @@ import pytest
 from scripts.dhm_precip.era5_errors import ExtractionPostConditionError
 from scripts.dhm_precip.era5_extract_manifest import (
     D9_PAYLOAD_FILES,
+    ExtractionIdentityInputs,
     ExtractionManifest,
     checksum_file,
     extraction_identity,
@@ -23,6 +24,7 @@ from scripts.dhm_precip.era5_extract_manifest import (
     prepare_staging_dir,
     publish_bundle,
     read_extraction_manifest,
+    recompute_extraction_identity,
     write_extraction_manifest,
 )
 
@@ -104,27 +106,25 @@ _CLOCK_NOW = datetime(2026, 8, 16, tzinfo=UTC)
 def _write_payload_files(directory: Path, *, marker: str = "x") -> None:
     """A REAL D9 payload set — the P4a reconcile check AND the full D9
     schema validator (station uniqueness/equality, required columns/enum
-    values, series dims/dtype/time-axis/encoding/attributes) both run the
-    same reopen-and-validate bundle validator the staging path must pass,
-    so a two-column stub is no longer sufficient (that stub is exactly what
-    `TestPublishEnforcesFullD9Schema` below proves used to publish)."""
+    values, series dims/dtype/time-axis/encoding/attributes, the STATION-
+    scope sensitivity matrix) both run the same reopen-and-validate bundle
+    validator the staging path must pass, so a two-column stub is no longer
+    sufficient (that stub is exactly what `TestPublishEnforcesFullD9Schema`
+    below proves used to publish). The series are written through
+    `points_xarray_encoding` — the SAME production spec the reopen validator
+    checks against — so this fixture can never drift from what the real
+    writer emits."""
     import numpy as np
     import polars as pl
     import xarray as xr
+
+    from scripts.dhm_precip.era5_extract_manifest import points_xarray_encoding
 
     valid_time = np.array(
         ["2021-01-01T00", "2021-01-01T01", "2021-01-01T02"], dtype="datetime64[ns]"
     )
     values = np.zeros((len(_STATIONS), valid_time.size), dtype=np.float32)
-    encoding = {
-        "precipitation_mm_per_h": {
-            "dtype": "float32",
-            "zlib": True,
-            "complevel": 4,
-            "_FillValue": float("nan"),
-        },
-        "valid_time": {"units": "hours since 1970-01-01 00:00:00", "dtype": "int64"},
-    }
+    encoding = points_xarray_encoding((len(_STATIONS), valid_time.size))
     for name in ("series_nearest.nc", "series_bilinear.nc"):
         ds = xr.Dataset(
             {"precipitation_mm_per_h": (["station", "valid_time"], values)},
@@ -156,29 +156,94 @@ def _write_payload_files(directory: Path, *, marker: str = "x") -> None:
             "marker": [marker, marker],
         }
     ).write_csv(directory / "station_grid_elevation.csv")
+    # A genuinely complete sensitivity matrix (M-BLOCKER, 2026-08-17
+    # review): a STATION-scope row for EVERY station (exact-set equality,
+    # not a subset), with the SAME row count per station (self-consistency
+    # completeness), plus the ACROSS_STATION summary row.
     pl.DataFrame(
         {
-            "scope": ["ACROSS_STATION"],
-            "station": [None],
-            "season": ["ALL"],
-            "statistic": ["QUANTILE"],
-            "quantile": [0.5],
-            "nearest_value": [1.0],
-            "bilinear_value": [1.0],
-            "delta_absolute": [0.0],
-            "delta_unit": ["MM_PER_H"],
-            "ratio": [1.0],
-            "n_hours_common_finite": [3],
-            "n_hours_excluded": [0],
-            "n_wet_nearest": [1],
-            "n_wet_bilinear": [1],
-            "sign_agreement_fraction": [1.0],
+            "scope": ["STATION", "STATION", "ACROSS_STATION"],
+            "station": [*_STATIONS, None],
+            "season": ["ALL", "ALL", "ALL"],
+            "statistic": ["QUANTILE", "QUANTILE", "QUANTILE"],
+            "quantile": [0.5, 0.5, 0.5],
+            "nearest_value": [1.0, 1.0, 1.0],
+            "bilinear_value": [1.0, 1.0, 1.0],
+            "delta_absolute": [0.0, 0.0, 0.0],
+            "delta_unit": ["MM_PER_H", "MM_PER_H", "MM_PER_H"],
+            "ratio": [1.0, 1.0, 1.0],
+            "n_hours_common_finite": [3, 3, 3],
+            "n_hours_excluded": [0, 0, 0],
+            "n_wet_nearest": [1, 1, 1],
+            "n_wet_bilinear": [1, 1, 1],
+            "sign_agreement_fraction": [None, None, 1.0],
         }
     ).write_csv(directory / "operator_sensitivity.csv")
 
 
 def _payload_sha256s(directory: Path) -> dict[str, str]:
     return {name: checksum_file(directory / name) for name in D9_PAYLOAD_FILES}
+
+
+_MANIFEST_IDENTITY_INPUTS: dict[str, object] = ExtractionIdentityInputs(
+    **_BASE_KWARGS  # type: ignore[arg-type]
+).canonical_payload()
+_MANIFEST_OROGRAPHY_SPEC: dict[str, object] = {
+    "source": "MODEL_OROGRAPHY",
+    "product_id": "reanalysis-era5-land:geopotential",
+    "product_version": "v1",
+    "download_url": "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land",
+    "licence_name": "Licence to use Copernicus Products",
+    "licence_version": "1.0",
+    "licence_url": "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=licence",
+    "source_crs": "WGS84 (EPSG:4326)",
+    "vertical_reference": "LOCAL_MSL",
+    "units": "m**2 s**-2",
+    "no_data_sentinel": "NaN",
+    "aggregation_rule_id": "era5_land_orography_mean_of_contained_cells_v1",
+    "conversion_rule": "geopotential_g0",
+    "probe_date": "2026-08-16",
+}
+_MANIFEST_OROGRAPHY_SOURCE_RECORD: dict[str, object] = {
+    "orography_route_identity": "r" * 64,
+    "orography_identity": "o" * 64,
+    "fetched_at": _CLOCK_NOW.isoformat(),
+    "downloaded_files": [{"path": "raw.nc", "sha256": "d" * 64, "size_bytes": 1}],
+    "raster_path": "orography.nc",
+    "raster_sha256": "e" * 64,
+    "raster_schema_version": "1",
+}
+_MANIFEST_ACCUMULATION_DIAGNOSTIC: dict[str, object] = {
+    "window_id": "2021-oct",
+    "source_sha256": "f" * 64,
+    "reset_hour": 0,
+    "terminal_hour": 23,
+    "monotone_within_day": True,
+    "sample_size_days": 31,
+    "recorded_at": _CLOCK_NOW.isoformat(),
+}
+_MANIFEST_STATION_ACCOUNTING: dict[str, dict[str, dict[str, object]]] = {
+    "NEAREST": {
+        station: {
+            "n_hours": 3,
+            "n_finite": 3,
+            "n_nan": 0,
+            "first_nan_valid_time": None,
+            "last_nan_valid_time": None,
+        }
+        for station in _STATIONS
+    },
+    "BILINEAR": {
+        station: {
+            "n_hours": 3,
+            "n_finite": 3,
+            "n_nan": 0,
+            "first_nan_valid_time": None,
+            "last_nan_valid_time": None,
+        }
+        for station in _STATIONS
+    },
+}
 
 
 def _write_manifest(
@@ -192,9 +257,11 @@ def _write_manifest(
             coordinate_table_sha256="a" * 64,
             source_sha256s=("b" * 64,),
             payload_sha256s=payload_sha256s,
-            orography_spec={},
-            orography_source_record={},
-            accumulation_diagnostic={},
+            orography_spec=_MANIFEST_OROGRAPHY_SPEC,
+            orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
+            accumulation_diagnostic=_MANIFEST_ACCUMULATION_DIAGNOSTIC,
+            station_accounting=_MANIFEST_STATION_ACCOUNTING,
+            identity_inputs=_MANIFEST_IDENTITY_INPUTS,
             generated_at=_CLOCK_NOW,
         ),
         directory / "extraction_manifest.json",
@@ -247,6 +314,76 @@ class TestPublishBundleMechanics:
         manifest = read_extraction_manifest(staged / "extraction_manifest.json")
         assert manifest is not None
         assert "extraction_manifest.json" not in manifest.payload_sha256s
+
+
+class TestStagingDirIsolation:
+    """MAJOR (2026-08-17 review) — `staging_dir` used to be
+    `.staging/<identity>`, SHARED by every run under that identity, and
+    `prepare_staging_dir` `rmtree`d whatever was already there before
+    recreating it. Two concurrent SAME-identity runs could therefore delete
+    or interleave each other's staged payload. Each call now allocates a
+    fresh, per-invocation-unique directory."""
+
+    def test_two_calls_under_the_same_identity_get_different_directories(
+        self, tmp_path: Path
+    ) -> None:
+        first = prepare_staging_dir(tmp_path, identity="same-id")
+        second = prepare_staging_dir(tmp_path, identity="same-id")
+        assert first != second
+        assert first.exists()
+        assert second.exists()
+
+    def test_preparing_a_second_staging_dir_does_not_delete_the_first(
+        self, tmp_path: Path
+    ) -> None:
+        first = prepare_staging_dir(tmp_path, identity="same-id")
+        (first / "marker.txt").write_text("first")
+        second = prepare_staging_dir(tmp_path, identity="same-id")
+        (second / "marker.txt").write_text("second")
+        # BUG (pre-fix): the second call `rmtree`d the shared directory the
+        # first call was still using, deleting "first"'s content.
+        assert (first / "marker.txt").read_text() == "first"
+        assert (second / "marker.txt").read_text() == "second"
+
+    def test_concurrent_same_identity_staging_never_collides_or_interleaves(
+        self, tmp_path: Path
+    ) -> None:
+        """Proven under REAL concurrency: several threads, all preparing a
+        staging directory under the SAME identity, released from a barrier
+        together. Every thread's own marker file must survive untouched —
+        against the old shared-path `rmtree` design, a LATER thread deletes
+        an EARLIER thread's directory out from under it, deterministically
+        losing markers (not merely a flaky interleaving)."""
+        import threading
+
+        n_threads = 8
+        barrier = threading.Barrier(n_threads)
+        results: list[Path | None] = [None] * n_threads
+        errors: list[BaseException] = []
+
+        def _prepare(i: int) -> None:
+            barrier.wait()
+            try:
+                staging = prepare_staging_dir(tmp_path, identity="same-id")
+                (staging / "marker.txt").write_text(str(i))
+                results[i] = staging
+            except BaseException as exc:  # noqa: BLE001 - surfaced on the main thread
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_prepare, args=(i,)) for i in range(n_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors
+        paths = [p for p in results if p is not None]
+        assert len(paths) == n_threads
+        assert len({str(p) for p in paths}) == n_threads
+        for i, staging in enumerate(paths):
+            assert (staging / "marker.txt").read_text() == str(i)
 
 
 class TestPerRunUniquePublication:
@@ -302,23 +439,91 @@ class TestPerRunUniquePublication:
         """P1a — allocation must be robust to a race: a concurrent winner
         can reserve a number AFTER this process's scan already ran (the scan
         is only an optimisation, per P1a). Simulate that by stubbing the
-        scan to report no existing numbers while `0000-abc123` already
-        exists on disk. The allocator's `mkdir(exist_ok=False)` must hit
-        `FileExistsError`, retry to `0001-abc123`, succeed, and never touch
-        the concurrently-reserved directory."""
+        scan to report no existing numbers while `.run-0000.reserve`
+        already exists on disk (the IDENTITY-INDEPENDENT marker a
+        concurrent winner would have created). The allocator must hit
+        `FileExistsError` reserving 0000, retry to 0001, succeed, and never
+        touch the concurrently-reserved marker."""
         import scripts.dhm_precip.era5_extract_manifest as manifest_mod
 
         manifest_mod.points_root(tmp_path).mkdir(parents=True, exist_ok=True)
-        (manifest_mod.points_root(tmp_path) / "0000-abc123").mkdir()
-        monkeypatch.setattr(manifest_mod, "_existing_run_numbers", lambda _root: [])
+        reservation = manifest_mod.points_root(tmp_path) / ".run-0000.reserve"
+        reservation.touch()
+        monkeypatch.setattr(manifest_mod, "_taken_run_numbers", lambda _root: [])
 
         final_dir = _publish(
             _staged_bundle(tmp_path, identity="abc123"), tmp_path, "abc123"
         )
         assert final_dir.name == "0001-abc123"
-        # The concurrently-reserved directory is untouched (still empty).
-        assert (
-            list((manifest_mod.points_root(tmp_path) / "0000-abc123").iterdir()) == []
+        # The concurrently-reserved marker is untouched, and no directory
+        # for run number 0000 was ever created.
+        assert reservation.exists()
+        assert not (manifest_mod.points_root(tmp_path) / "0000-abc123").exists()
+
+    def test_two_different_identities_racing_for_the_same_number_diverge(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review) — the OLD allocator reserved a
+        number by `mkdir`ing the IDENTITY-LABELLED directory directly, so
+        two DIFFERENT identities could both `mkdir` `0000-<identity>`
+        successfully (the paths never collide) and both be assigned run
+        number 0000 — an ambiguous, identity-dependent order. Simulate the
+        race directly: pre-create the identity-INDEPENDENT reservation
+        marker `.run-0000.reserve` (as if a concurrent process racing under
+        a DIFFERENT identity had already won number 0000), then allocate
+        under identity "b". It must land on 0001, never 0000, and no
+        `0000-b` directory may ever exist."""
+        import scripts.dhm_precip.era5_extract_manifest as manifest_mod
+
+        manifest_mod.points_root(tmp_path).mkdir(parents=True, exist_ok=True)
+        (manifest_mod.points_root(tmp_path) / ".run-0000.reserve").touch()
+
+        target = manifest_mod.allocate_published_dir(tmp_path, identity="b")
+        assert target.name == "0001-b"
+        assert not (manifest_mod.points_root(tmp_path) / "0000-b").exists()
+
+    def test_concurrent_allocation_under_different_identities_never_collides(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review), proven under REAL concurrency (not a
+        simulated pre-existing marker): several threads, each allocating
+        under a DIFFERENT identity, released from a barrier at the same
+        instant. Every result must land on a DISTINCT run number. Against
+        the OLD (buggy) allocator this is not flaky — it fails
+        deterministically, because every thread's scan sees an empty
+        `points_root` and each then `mkdir`s its OWN identity-labelled
+        `0000-identity-i` path, which never collide with each other."""
+        import threading
+
+        import scripts.dhm_precip.era5_extract_manifest as manifest_mod
+
+        n_threads = 8
+        barrier = threading.Barrier(n_threads)
+        results: list[Path | None] = [None] * n_threads
+        errors: list[BaseException] = []
+
+        def _allocate(i: int) -> None:
+            barrier.wait()
+            try:
+                results[i] = manifest_mod.allocate_published_dir(
+                    tmp_path, identity=f"identity-{i}"
+                )
+            except BaseException as exc:  # noqa: BLE001 - surfaced on the main thread
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_allocate, args=(i,)) for i in range(n_threads)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors
+        run_numbers = [int(p.name.split("-", 1)[0]) for p in results if p is not None]
+        assert len(run_numbers) == n_threads
+        assert len(set(run_numbers)) == n_threads, (
+            f"expected {n_threads} distinct run numbers, got {run_numbers}"
         )
 
 
@@ -438,3 +643,253 @@ class TestPublishEnforcesFullD9Schema:
         with pytest.raises(ExtractionPostConditionError, match="required column"):
             _publish(staging, tmp_path, "missing-columns")
         assert _published_dirs(tmp_path) == []
+
+
+class TestPublishEnforcesRemainingD9Invariants:
+    """BLOCKER (2026-08-17 review) — the validator checked only INCREASING
+    (not exactly hourly/equal) series axes, accepted a sensitivity station
+    set that was merely a SUBSET, permitted NULL enum columns, and validated
+    only the manifest identity STRING — never the required provenance/
+    accounting sections. Each case below passed the OLD validator (proven
+    by stashing this fix and re-running); each must now be refused."""
+
+    def _series_with(
+        self, staging: Path, *, name: str, valid_time_stamps: tuple[str, ...]
+    ) -> None:
+        import numpy as np
+        import xarray as xr
+
+        from scripts.dhm_precip.era5_extract_manifest import points_xarray_encoding
+
+        valid_time = np.array(valid_time_stamps, dtype="datetime64[ns]")
+        values = np.zeros((len(_STATIONS), valid_time.size), dtype=np.float32)
+        ds = xr.Dataset(
+            {"precipitation_mm_per_h": (["station", "valid_time"], values)},
+            coords={"station": list(_STATIONS), "valid_time": valid_time},
+        )
+        ds["valid_time"].attrs["timezone"] = "UTC"
+        ds.to_netcdf(
+            staging / name,
+            engine="h5netcdf",
+            encoding=points_xarray_encoding(values.shape),
+        )
+
+    def test_a_gap_in_the_valid_time_axis_is_refused(self, tmp_path: Path) -> None:
+        identity = "gap-axis"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        # 00, 01, 03 — skips 02: strictly increasing, but not hourly.
+        self._series_with(
+            staging,
+            name="series_nearest.nc",
+            valid_time_stamps=("2021-01-01T00", "2021-01-01T01", "2021-01-01T03"),
+        )
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="hourly"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_wrong_compression_level_on_reopen_is_refused(self, tmp_path: Path) -> None:
+        import numpy as np
+        import xarray as xr
+
+        from scripts.dhm_precip.era5_extract_manifest import points_xarray_encoding
+
+        identity = "wrong-complevel"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        valid_time = np.array(
+            ["2021-01-01T00", "2021-01-01T01", "2021-01-01T02"],
+            dtype="datetime64[ns]",
+        )
+        values = np.zeros((len(_STATIONS), valid_time.size), dtype=np.float32)
+        encoding = points_xarray_encoding(values.shape)
+        encoding["precipitation_mm_per_h"]["complevel"] = 1  # frozen spec says 4
+        ds = xr.Dataset(
+            {"precipitation_mm_per_h": (["station", "valid_time"], values)},
+            coords={"station": list(_STATIONS), "valid_time": valid_time},
+        )
+        ds["valid_time"].attrs["timezone"] = "UTC"
+        ds.to_netcdf(
+            staging / "series_nearest.nc", engine="h5netcdf", encoding=encoding
+        )
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="complevel"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_null_orography_source_in_the_elevation_csv_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        header = (
+            "station,lat,lon,grid_lat,grid_lon,grid_i,grid_j,offset_km,"
+            "station_elev_m,station_elevation_datum,orography_elev_m,"
+            "orography_elevation_datum,orography_source,orography_product_id,"
+            "orography_product_version,elev_mismatch_m,datum_reconciled,"
+            "shared_cell_id,stations_in_cell\n"
+        )
+        # orography_source deliberately BLANK for 'alpha'.
+        row_alpha = (
+            "alpha,26.0,85.0,26.0,85.0,0,0,0.0,1500.0,UNKNOWN,1490.0,"
+            "LOCAL_MSL,,p,1,10.0,UNRECONCILED,0_0,1\n"
+        )
+        row_beta = (
+            "beta,26.1,85.1,26.1,85.1,1,1,0.0,1900.0,UNKNOWN,1880.0,"
+            "LOCAL_MSL,MODEL_OROGRAPHY,p,1,20.0,UNRECONCILED,1_1,1\n"
+        )
+        identity = "null-enum"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        (staging / "station_grid_elevation.csv").write_text(
+            header + row_alpha + row_beta
+        )
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="null"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_sensitivity_missing_one_stations_rows_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """A merely-SUBSET station set (missing 'beta' entirely) used to be
+        accepted (`<=`); it must now be refused — exact equality."""
+        import polars as pl
+
+        identity = "sensitivity-subset"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        frame = pl.read_csv(staging / "operator_sensitivity.csv")
+        frame = frame.filter(
+            (pl.col("scope") != "STATION") | (pl.col("station") == "alpha")
+        )
+        frame.write_csv(staging / "operator_sensitivity.csv")
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="station set"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_sensitivity_uneven_row_counts_per_station_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Every station present, but 'alpha' carries an EXTRA row 'beta'
+        lacks — the complete station/season/statistic/quantile matrix
+        self-consistency check must catch this even though the station SET
+        is equal."""
+        import polars as pl
+
+        identity = "sensitivity-uneven"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        frame = pl.read_csv(staging / "operator_sensitivity.csv")
+        extra_alpha_row = frame.filter(
+            (pl.col("scope") == "STATION") & (pl.col("station") == "alpha")
+        )
+        frame = pl.concat([frame, extra_alpha_row])
+        frame.write_csv(staging / "operator_sensitivity.csv")
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="row counts"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_manifest_with_an_incomplete_orography_spec_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "incomplete-orography-spec"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        write_extraction_manifest(
+            ExtractionManifest(
+                orography_identity="o",
+                extraction_identity=identity,
+                operator_id="NEAREST",
+                coordinate_table_sha256="a" * 64,
+                source_sha256s=("b" * 64,),
+                payload_sha256s=_payload_sha256s(staging),
+                orography_spec={},  # empty — previously published cleanly
+                orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
+                accumulation_diagnostic=_MANIFEST_ACCUMULATION_DIAGNOSTIC,
+                station_accounting=_MANIFEST_STATION_ACCOUNTING,
+                identity_inputs=_MANIFEST_IDENTITY_INPUTS,
+                generated_at=_CLOCK_NOW,
+            ),
+            staging / "extraction_manifest.json",
+        )
+        with pytest.raises(ExtractionPostConditionError, match="orography_spec"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_manifest_with_an_empty_station_accounting_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "empty-station-accounting"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        write_extraction_manifest(
+            ExtractionManifest(
+                orography_identity="o",
+                extraction_identity=identity,
+                operator_id="NEAREST",
+                coordinate_table_sha256="a" * 64,
+                source_sha256s=("b" * 64,),
+                payload_sha256s=_payload_sha256s(staging),
+                orography_spec=_MANIFEST_OROGRAPHY_SPEC,
+                orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
+                accumulation_diagnostic=_MANIFEST_ACCUMULATION_DIAGNOSTIC,
+                station_accounting={},  # empty — previously published cleanly
+                identity_inputs=_MANIFEST_IDENTITY_INPUTS,
+                generated_at=_CLOCK_NOW,
+            ),
+            staging / "extraction_manifest.json",
+        )
+        with pytest.raises(ExtractionPostConditionError, match="station_accounting"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_manifest_with_incomplete_identity_inputs_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "incomplete-identity-inputs"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        write_extraction_manifest(
+            ExtractionManifest(
+                orography_identity="o",
+                extraction_identity=identity,
+                operator_id="NEAREST",
+                coordinate_table_sha256="a" * 64,
+                source_sha256s=("b" * 64,),
+                payload_sha256s=_payload_sha256s(staging),
+                orography_spec=_MANIFEST_OROGRAPHY_SPEC,
+                orography_source_record=_MANIFEST_OROGRAPHY_SOURCE_RECORD,
+                accumulation_diagnostic=_MANIFEST_ACCUMULATION_DIAGNOSTIC,
+                station_accounting=_MANIFEST_STATION_ACCOUNTING,
+                identity_inputs={},  # empty — the digest becomes uninterpretable
+                generated_at=_CLOCK_NOW,
+            ),
+            staging / "extraction_manifest.json",
+        )
+        with pytest.raises(ExtractionPostConditionError, match="identity_inputs"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+
+class TestExtractionIdentityRecomputation:
+    """MAJOR (2026-08-17 review) — `extraction_identity` disappeared once
+    computed: nothing downstream could recompute or interpret the digest.
+    `ExtractionIdentityInputs` + `recompute_extraction_identity` close that
+    gap; this proves the round-trip actually works and actually detects a
+    mutation."""
+
+    def test_recompute_matches_the_original_digest(self) -> None:
+        inputs = ExtractionIdentityInputs(**_BASE_KWARGS)  # type: ignore[arg-type]
+        original = extraction_identity(**_BASE_KWARGS)  # type: ignore[arg-type]
+        assert recompute_extraction_identity(inputs.canonical_payload()) == original
+
+    def test_recompute_detects_a_mutated_snapshot(self) -> None:
+        inputs = ExtractionIdentityInputs(**_BASE_KWARGS)  # type: ignore[arg-type]
+        original = extraction_identity(**_BASE_KWARGS)  # type: ignore[arg-type]
+        payload = inputs.canonical_payload()
+        payload["value_inputs"]["wet_threshold_mm_per_h"] = 999.0  # type: ignore[index]
+        assert recompute_extraction_identity(payload) != original

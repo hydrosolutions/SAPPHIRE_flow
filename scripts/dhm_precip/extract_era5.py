@@ -94,9 +94,13 @@ from scripts.dhm_precip.era5_extract import (  # noqa: E402
 )
 from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
     D9_PAYLOAD_FILES,
+    POINTS_OUTPUT_ENCODING_SPEC,
+    POINTS_SEMANTIC_TIMEZONE,
+    POINTS_TIME_UNITS,
+    ExtractionIdentityInputs,
     ExtractionManifest,
     checksum_file,
-    extraction_identity,
+    points_xarray_encoding,
     prepare_staging_dir,
     publish_bundle,
     write_extraction_manifest,
@@ -184,68 +188,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# --- D9/D7 - the frozen on-disk encoding spec for the points bundle ---
-#
-# MAJOR (2026-08-16): the identity's "full encoding spec" previously carried
-# only the `valid_time` units/dtype, so a change to the precipitation fill
-# value, compression, chunking or the station encoding produced the SAME
-# `extraction_identity` and the stale bundle was reused. Mirrors M-A4's own
-# `era5_transform._OUTPUT_ENCODING_SPEC`.
-#
-# Chunking is declared as a POLICY (one station, one station-year per chunk)
-# rather than a literal shape, because the hour count depends on the study
-# years; `_xarray_encoding` clamps it to the array actually being written.
-_POINTS_CHUNK_STATIONS = 1
-_POINTS_CHUNK_HOURS = 8760
-_SEMANTIC_TIMEZONE = "UTC"
-_POINTS_TIME_UNITS = "hours since 1970-01-01 00:00:00"
-
-POINTS_OUTPUT_ENCODING_SPEC: dict[str, dict[str, object]] = {
-    "precipitation_mm_per_h": {
-        "dtype": "float32",
-        "zlib": True,
-        "complevel": 4,
-        "chunk_stations": _POINTS_CHUNK_STATIONS,
-        "chunk_hours": _POINTS_CHUNK_HOURS,
-        "_FillValue": "NaN",
-    },
-    "valid_time": {
-        "units": _POINTS_TIME_UNITS,
-        "dtype": "int64",
-        "semantic_timezone_attr": _SEMANTIC_TIMEZONE,
-    },
-    "station": {"dtype": "S1", "fixed_length": True},
-}
-
-
-def _xarray_encoding(shape: tuple[int, ...]) -> dict[str, dict[str, object]]:
-    """Translate the frozen spec into the encoding dict the pinned encoder
-    takes, clamping the declared chunk policy to the array being written.
-
-    MAJOR (2026-08-17) — this used to duplicate the literal encoding values
-    (dtype/zlib/complevel/units/etc.) instead of READING
-    `POINTS_OUTPUT_ENCODING_SPEC` — the very spec `extraction_identity`
-    hashes. A change to one and not the other would silently write an
-    on-disk encoding the identity does not actually describe. Deriving from
-    the single spec here removes that possibility."""
-    n_stations, n_hours = shape
-    precip_spec = POINTS_OUTPUT_ENCODING_SPEC["precipitation_mm_per_h"]
-    time_spec = POINTS_OUTPUT_ENCODING_SPEC["valid_time"]
-    station_spec = POINTS_OUTPUT_ENCODING_SPEC["station"]
-    return {
-        "precipitation_mm_per_h": {
-            "dtype": precip_spec["dtype"],
-            "zlib": precip_spec["zlib"],
-            "complevel": precip_spec["complevel"],
-            "chunksizes": (
-                min(precip_spec["chunk_stations"], n_stations),  # type: ignore[arg-type]
-                min(precip_spec["chunk_hours"], n_hours),  # type: ignore[arg-type]
-            ),
-            "_FillValue": float("nan"),
-        },
-        "valid_time": {"units": time_spec["units"], "dtype": time_spec["dtype"]},
-        "station": {"dtype": station_spec["dtype"]},
-    }
+# D9/D7 - the frozen on-disk encoding spec for the points bundle now lives
+# in `era5_extract_manifest.py` (MAJOR, 2026-08-17 review) — it is the ONE
+# module that both the writer below and the reopen-and-validate bundle
+# schema check read, so the two can never drift on what "the frozen
+# encoding" actually is. Re-exported here under their historical names so
+# existing callers (including `extract_era5.POINTS_OUTPUT_ENCODING_SPEC` in
+# tests) keep working unchanged.
+_SEMANTIC_TIMEZONE = POINTS_SEMANTIC_TIMEZONE
+_POINTS_TIME_UNITS = POINTS_TIME_UNITS
+_xarray_encoding = points_xarray_encoding
 
 
 def _default_expected_stations() -> frozenset[Station]:
@@ -476,7 +428,11 @@ def run(
     # right name exists": re-verify on EVERY run, freshly derived or reused,
     # and against the CURRENT spec rather than the record's own claim.
     oro_identity = verify_orography_materialisation(
-        source_record, data_root=data_root, spec=OBSERVED_OROGRAPHY_SPEC
+        source_record,
+        data_root=data_root,
+        spec=OBSERVED_OROGRAPHY_SPEC,
+        expected_lat=expected_lat,
+        expected_lon=expected_lon,
     )
     log.info("era5_extract.cli.orography_ready", orography_identity=oro_identity)
 
@@ -581,27 +537,37 @@ def run(
         merged_nearest, merged_bilinear, params=resolved_params
     )
 
-    identity = extraction_identity(
+    # MAJOR (2026-08-17 review) — a single typed `ExtractionIdentityInputs`
+    # snapshot is now the ONE source for both the digest (`.digest()`,
+    # equal to `extraction_identity(**kwargs)`) and the manifest's
+    # `identity_inputs` (`.canonical_payload()`), so the two can never
+    # disagree on what was actually hashed. `output_dtype` is read from
+    # `POINTS_OUTPUT_ENCODING_SPEC` — the SAME spec the writer below reads —
+    # rather than a separately hard-coded literal that could drift from it.
+    identity_inputs = ExtractionIdentityInputs(
         operator_id=str(ExtractionOperator.NEAREST),
         coordinate_table_sha256=coordinate_table_sha256,
-        source_sha256s=source_sha256s,
+        source_sha256s=tuple(source_sha256s),
         orography_identity=oro_identity,
-        jjas_months=resolved_params.jjas_months,
-        djf_months=resolved_params.djf_months,
-        mam_months=resolved_params.mam_months,
-        on_months=resolved_params.on_months,
+        jjas_months=tuple(resolved_params.jjas_months),
+        djf_months=tuple(resolved_params.djf_months),
+        mam_months=tuple(resolved_params.mam_months),
+        on_months=tuple(resolved_params.on_months),
         wet_threshold_mm_per_h=resolved_params.wet_threshold_mm_per_h,
         wet_threshold_side=resolved_params.wet_threshold_side,
         zero_policy=resolved_params.zero_policy,
         quantile_definition=resolved_params.quantile_definition,
-        quantile_grid=resolved_params.quantile_grid,
+        quantile_grid=tuple(resolved_params.quantile_grid),
         station_elevation_datum=str(VerticalDatum.UNKNOWN),
         orography_elevation_datum=str(OBSERVED_OROGRAPHY_SPEC.vertical_reference),
         output_schema_version=OUTPUT_SCHEMA_VERSION,
         output_format="netcdf4_h5netcdf",
-        output_dtype="float32",
+        output_dtype=str(
+            POINTS_OUTPUT_ENCODING_SPEC["precipitation_mm_per_h"]["dtype"]
+        ),
         output_encoding=POINTS_OUTPUT_ENCODING_SPEC,
     )
+    identity = identity_inputs.digest()
 
     staging = prepare_staging_dir(data_root, identity=identity)
     _write_series_netcdf(staging / "series_nearest.nc", merged_nearest)
@@ -646,6 +612,7 @@ def run(
                 for station, series in sorted(merged_bilinear.items())
             },
         },
+        identity_inputs=identity_inputs.canonical_payload(),
         generated_at=resolved_clock(),
     )
     write_extraction_manifest(manifest, staging / "extraction_manifest.json")
@@ -765,8 +732,17 @@ def _write_series_netcdf(
     """
     stations = sorted(by_station)
     valid_time = by_station[stations[0]].valid_time
+    # MAJOR (2026-08-17 review) — the dtype cast used to be a separately
+    # hard-coded `np.float32` literal, independent of
+    # `POINTS_OUTPUT_ENCODING_SPEC["precipitation_mm_per_h"]["dtype"]` (the
+    # very value `output_dtype` hashes into `extraction_identity`). Deriving
+    # the cast from the SAME spec means a spec change actually changes the
+    # on-disk bytes, not merely the identity string.
+    precip_dtype = np.dtype(
+        POINTS_OUTPUT_ENCODING_SPEC["precipitation_mm_per_h"]["dtype"]  # type: ignore[arg-type]
+    )
     values = np.stack([by_station[s].values for s in stations], axis=0).astype(
-        np.float32
+        precip_dtype
     )
     ds = xr.Dataset(
         {"precipitation_mm_per_h": (["station", "valid_time"], values)},

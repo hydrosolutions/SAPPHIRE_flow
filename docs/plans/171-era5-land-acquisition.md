@@ -4,7 +4,7 @@ created: 2026-08-13
 revised: 2026-08-13
 plan: 171
 title: M-A4 — ERA5-Land acquisition for the DHM precipitation comparison
-scope: A committed, parameterised, resumable acquisition of hourly ERA5-Land total precipitation over a Nepal bounding box for 2020-2025 from the Copernicus CDS — raw accumulations retained and checksummed, then deaccumulated and unit-converted by a separately re-runnable local transform — stored under data/dhm_precip/ with a provenance manifest. Explicitly NOT point extraction (M-A5), NOT the gauge comparison (M-A6), NOT IMERG acquisition (M-A5's plan).
+scope: A committed, parameterised, resumable acquisition of hourly ERA5-Land total precipitation over a Nepal bounding box for 2020-2025 from the Copernicus CDS — raw accumulations retained and checksummed, then deaccumulated and unit-converted by a separately re-runnable local transform — stored under data/dhm_precip/ with a provenance manifest. Explicitly NOT point extraction (M-A5), NOT the gauge comparison (M-A6), NOT IMERG acquisition (M-A5b's plan).
 depends_on: [170]
 blocks: [M-A5, M-A6]
 source: docs/design/dhm-precipitation-milestones.md
@@ -393,7 +393,7 @@ gate tasks 2b and 4b.
 
 ## Out of scope
 
-Point extraction at station locations (M-A5) · IMERG acquisition (M-A5's plan) · **any gauge
+Point extraction at station locations (M-A5) · IMERG acquisition (M-A5b's plan) · **any gauge
 comparison, including event-level spot-checks (M-A6)** · bias correction of any kind · adding
 ERA5-Land to the operational forcing path · changing Plan 170's non-atomic manifest writer.
 

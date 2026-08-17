@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime  # noqa: TC003 - pydantic must resolve this at runtime
 from typing import TYPE_CHECKING
@@ -75,6 +75,76 @@ D9_PAYLOAD_FILES: tuple[str, ...] = (
     "operator_sensitivity.csv",
 )
 
+# --- D9/D7 — the frozen on-disk encoding spec for the points bundle. ---
+#
+# MAJOR (2026-08-17 review) — this used to live in `extract_era5.py`, where
+# the WRITER (`_write_series_netcdf`/`_xarray_encoding`) partly duplicated it
+# as separate hard-coded literals (`_FillValue`, the semantic timezone attr)
+# instead of reading them from here, so an identity field could change
+# without the on-disk bytes changing to match (violating P7: "an identity
+# may hash only inputs that are actually read"). Moved HERE — the one module
+# that also validates the reopened bundle against it (`_assert_series_schema`
+# below) — so the writer, the identity and the validator all read the SAME
+# spec; nothing can drift between them.
+_POINTS_CHUNK_STATIONS = 1
+_POINTS_CHUNK_HOURS = 8760
+POINTS_SEMANTIC_TIMEZONE = "UTC"
+POINTS_TIME_UNITS = "hours since 1970-01-01 00:00:00"
+
+POINTS_OUTPUT_ENCODING_SPEC: dict[str, dict[str, object]] = {
+    "precipitation_mm_per_h": {
+        "dtype": "float32",
+        "zlib": True,
+        "complevel": 4,
+        "chunk_stations": _POINTS_CHUNK_STATIONS,
+        "chunk_hours": _POINTS_CHUNK_HOURS,
+        "_FillValue": "NaN",
+    },
+    "valid_time": {
+        "units": POINTS_TIME_UNITS,
+        "dtype": "int64",
+        "semantic_timezone_attr": POINTS_SEMANTIC_TIMEZONE,
+    },
+    "station": {"dtype": "S1", "fixed_length": True},
+}
+
+
+def points_xarray_encoding(shape: tuple[int, int]) -> dict[str, dict[str, object]]:
+    """Translate the frozen `POINTS_OUTPUT_ENCODING_SPEC` into the encoding
+    dict the pinned xarray/h5netcdf encoder takes, clamping the declared
+    chunk policy to the array actually being written. The ONE place that
+    reads the spec to produce on-disk bytes — `extraction_identity`'s
+    `output_encoding` input and this function must never diverge, because
+    they now read the same dict."""
+    n_stations, n_hours = shape
+    precip_spec = POINTS_OUTPUT_ENCODING_SPEC["precipitation_mm_per_h"]
+    time_spec = POINTS_OUTPUT_ENCODING_SPEC["valid_time"]
+    station_spec = POINTS_OUTPUT_ENCODING_SPEC["station"]
+    if not station_spec.get("fixed_length"):
+        # P7 — a declared-but-unread identity input is exactly the drift
+        # this move exists to remove; `fixed_length=False` has no
+        # implementation here, so refuse to write under a spec claiming it.
+        raise ExtractionPostConditionError(
+            "POINTS_OUTPUT_ENCODING_SPEC['station']['fixed_length'] is "
+            "False, but only a fixed-length station encoding (dtype='S1') "
+            "is implemented (D9)"
+        )
+    fill_value = float(precip_spec["_FillValue"])  # type: ignore[arg-type]
+    return {
+        "precipitation_mm_per_h": {
+            "dtype": precip_spec["dtype"],
+            "zlib": precip_spec["zlib"],
+            "complevel": precip_spec["complevel"],
+            "chunksizes": (
+                min(precip_spec["chunk_stations"], n_stations),  # type: ignore[arg-type]
+                min(precip_spec["chunk_hours"], n_hours),  # type: ignore[arg-type]
+            ),
+            "_FillValue": fill_value,
+        },
+        "valid_time": {"units": time_spec["units"], "dtype": time_spec["dtype"]},
+        "station": {"dtype": station_spec["dtype"]},
+    }
+
 
 _RUN_NUMBER_WIDTH = 4
 _MAX_RUN_NUMBER = 10**_RUN_NUMBER_WIDTH - 1
@@ -84,8 +154,13 @@ def points_root(data_root: Path) -> Path:
     return data_root / "era5_land" / "points"
 
 
-def staging_dir(data_root: Path, *, identity: str) -> Path:
-    return points_root(data_root) / ".staging" / identity
+def staging_dir(data_root: Path, *, identity: str, token: str) -> Path:
+    """MAJOR (2026-08-17 review) — a shared `.staging/<identity>` path let
+    two concurrent runs under the SAME identity destructively `rmtree` and
+    interleave each other's staged payload. `token` makes the directory
+    unique PER INVOCATION, not merely per identity, so no two runs — same
+    identity or not — ever share one."""
+    return points_root(data_root) / ".staging" / f"{identity}--{token}"
 
 
 def published_dir(data_root: Path, *, run_number: int, identity: str) -> Path:
@@ -96,46 +171,96 @@ def published_dir(data_root: Path, *, run_number: int, identity: str) -> Path:
     return points_root(data_root) / f"{run_number:0{_RUN_NUMBER_WIDTH}d}-{identity}"
 
 
-def _existing_run_numbers(data_root: Path) -> list[int]:
+def _reservation_path(data_root: Path, *, run_number: int) -> Path:
+    return points_root(data_root) / f".run-{run_number:0{_RUN_NUMBER_WIDTH}d}.reserve"
+
+
+def _taken_run_numbers(data_root: Path) -> list[int]:
+    """Both PUBLISHED directories and outstanding `.run-<NNNN>.reserve`
+    markers claim a run number. A `.reserve` left by a crashed run (the
+    process died between reserving the number and `mkdir`ing the
+    identity-labelled directory) permanently retires that number rather
+    than leaving it free for a future scan to reclaim — consistent with
+    P1's own rule that a number, once claimed, is never reused."""
     root = points_root(data_root)
     if not root.exists():
         return []
     numbers: list[int] = []
     for child in root.iterdir():
-        if not child.is_dir() or child.name == ".staging":
-            continue
-        prefix = child.name.split("-", 1)[0]
-        if prefix.isdigit():
-            numbers.append(int(prefix))
+        name = child.name
+        if child.is_dir():
+            if name == ".staging":
+                continue
+            prefix = name.split("-", 1)[0]
+            if prefix.isdigit():
+                numbers.append(int(prefix))
+        elif name.startswith(".run-") and name.endswith(".reserve"):
+            middle = name[len(".run-") : -len(".reserve")]
+            if middle.isdigit():
+                numbers.append(int(middle))
     return numbers
 
 
-def allocate_published_dir(data_root: Path, *, identity: str) -> Path:
-    """P1a — allocate the next free run number by `mkdir(exist_ok=False)`,
-    which is ATOMIC, never by "scan for a free number, then create it": two
-    runs can otherwise both observe the same number as free. The scan below
-    is only an optimisation (start just past the highest number seen); the
-    actual race is resolved by retrying on `FileExistsError`, so the winner
-    of any race owns the number by construction and the loser simply moves
-    on to the next candidate. No lock, no reservation file, no single-writer
-    precondition is required."""
-    points_root(data_root).mkdir(parents=True, exist_ok=True)
-    candidate = max(_existing_run_numbers(data_root), default=-1) + 1
+def _reserve_run_number(data_root: Path) -> int:
+    """BLOCKER (2026-08-17 review) — the previous allocator reserved a
+    number by `mkdir`ing the IDENTITY-LABELLED target directory
+    (`<NNNN>-<identity>`) directly. Two concurrent runs racing for the SAME
+    `NNNN` under DIFFERENT identities then both succeeded — `mkdir` on
+    `0000-a` and `mkdir` on `0000-b` never contend, so both were assigned
+    run number 0000: an ambiguous, identity-dependent order, exactly what
+    P1a promises never happens.
+
+    Reservation must therefore be IDENTITY-INDEPENDENT: an exclusively
+    created `.run-<NNNN>.reserve` marker, keyed on the number alone, is the
+    one atomic object every racing identity contends for regardless of what
+    it will eventually publish under. `os.open(..., O_CREAT | O_EXCL)` is
+    atomic at the OS level; the loser of a race hits `FileExistsError` on
+    the reservation file itself and simply retries the next candidate — the
+    scan below is only an optimisation (start just past the highest number
+    seen), never the source of truth for which numbers are taken."""
+    root = points_root(data_root)
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = max(_taken_run_numbers(data_root), default=-1) + 1
     while candidate <= _MAX_RUN_NUMBER:
-        target = published_dir(data_root, run_number=candidate, identity=identity)
+        reservation = _reservation_path(data_root, run_number=candidate)
         try:
-            target.mkdir(parents=False, exist_ok=False)
+            fd = os.open(str(reservation), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             candidate += 1
             continue
         except OSError as exc:
             raise Era5StorageError(
-                f"failed to reserve published directory {target}: {exc}"
+                f"failed to reserve run number {candidate} at {reservation}: {exc}"
             ) from exc
-        return target
-    raise Era5StorageError(
-        f"no free run number <= {_MAX_RUN_NUMBER} under {points_root(data_root)}"
-    )
+        os.close(fd)
+        return candidate
+    raise Era5StorageError(f"no free run number <= {_MAX_RUN_NUMBER} under {root}")
+
+
+def allocate_published_dir(data_root: Path, *, identity: str) -> Path:
+    """P1a — allocate the next free run number through the
+    IDENTITY-INDEPENDENT atomic reservation above, then `mkdir(exist_ok=
+    False)` the identity-labelled directory that number publishes at.
+    Because the NUMBER itself is exclusively reserved first, two different
+    identities can never be allocated the same one — the defect an
+    identity-scoped `mkdir` race left open (2026-08-17 review).
+
+    The reservation marker is deliberately left in place forever, even
+    after the directory is created: removing it would re-open the exact
+    same race for a LATE-arriving competitor for the same number (its
+    `mkdir` target differs by identity, so it would not collide with the
+    now-published directory either — the marker, not the directory, is the
+    one thing every identity contends for, so it must stay live for as long
+    as the number could ever be asked for again)."""
+    run_number = _reserve_run_number(data_root)
+    target = published_dir(data_root, run_number=run_number, identity=identity)
+    try:
+        target.mkdir(parents=False, exist_ok=False)
+    except OSError as exc:
+        raise Era5StorageError(
+            f"failed to create reserved published directory {target}: {exc}"
+        ) from exc
+    return target
 
 
 def manifest_filename() -> str:
@@ -144,6 +269,166 @@ def manifest_filename() -> str:
 
 def _canonical_json(obj: object) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+
+
+_EXPECTED_VALUE_INPUT_KEYS: frozenset[str] = frozenset(
+    {
+        "operator_id",
+        "coordinate_table_sha256",
+        "source_sha256s",
+        "orography_identity",
+        "seasons",
+        "wet_threshold_mm_per_h",
+        "wet_threshold_side",
+        "zero_policy",
+        "quantile_definition",
+        "quantile_grid",
+        "delta_statistics",
+        "station_elevation_datum",
+        "orography_elevation_datum",
+        "output_format",
+        "output_dtype",
+        "output_encoding",
+    }
+)
+_EXPECTED_INVALIDATION_INPUT_KEYS: frozenset[str] = frozenset(
+    {"output_schema_version", "extraction_code_version"}
+)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ExtractionIdentityInputs:
+    """D7/P7a — the ONE canonical, typed snapshot of every input
+    `extraction_identity` hashes.
+
+    MAJOR (2026-08-17 review) — the identity used to disappear once
+    computed: `extraction_identity` built its canonical JSON inline from an
+    untyped local dict and threw it away, so nothing downstream (including
+    `ExtractionManifest`, which never recorded these fields at all) could
+    recompute or even INTERPRET the digest — seasons, thresholds,
+    `zero_policy`, the quantile grid, output format/encoding and both datum
+    inputs were hashed but nowhere else visible. This type is now the ONE
+    source both `extraction_identity` (to compute the digest) and
+    `ExtractionManifest.identity_inputs` (to record the inputs alongside
+    it) read, via `canonical_payload()`/`digest()`, so a manifest reader can
+    recompute (`recompute_extraction_identity`) and interpret the digest
+    without having been the writer."""
+
+    operator_id: str
+    coordinate_table_sha256: str
+    source_sha256s: tuple[str, ...]
+    orography_identity: str
+    jjas_months: tuple[int, ...]
+    djf_months: tuple[int, ...]
+    mam_months: tuple[int, ...]
+    on_months: tuple[int, ...]
+    wet_threshold_mm_per_h: float
+    wet_threshold_side: str
+    zero_policy: str
+    quantile_definition: str
+    quantile_grid: tuple[float, ...]
+    station_elevation_datum: str
+    orography_elevation_datum: str
+    output_schema_version: str
+    output_format: str
+    output_dtype: str
+    output_encoding: Mapping[str, object]
+    extraction_code_version: str = EXTRACTION_CODE_VERSION
+
+    def canonical_payload(self) -> dict[str, object]:
+        """P7a — split into two explicitly labelled halves. `value_inputs`
+        are inputs the computation actually reads (P7's standing
+        obligation: a test must change the input AND change an output);
+        `invalidation_inputs` (`output_schema_version`/
+        `extraction_code_version`) exist ONLY to force regeneration on a
+        behaviour-neutral bump, so "changing this input must change an
+        output" is unsatisfiable for them by design — labelling them makes
+        that exemption visible instead of silently smuggling a
+        value-determining field past P7's rule."""
+        value_inputs: dict[str, object] = {
+            "operator_id": self.operator_id,
+            "coordinate_table_sha256": self.coordinate_table_sha256,
+            "source_sha256s": sorted(self.source_sha256s),
+            "orography_identity": self.orography_identity,
+            "seasons": {
+                "jjas_months": list(self.jjas_months),
+                "djf_months": list(self.djf_months),
+                "mam_months": list(self.mam_months),
+                "on_months": list(self.on_months),
+            },
+            "wet_threshold_mm_per_h": self.wet_threshold_mm_per_h,
+            "wet_threshold_side": self.wet_threshold_side,
+            "zero_policy": self.zero_policy,
+            "quantile_definition": self.quantile_definition,
+            "quantile_grid": list(self.quantile_grid),
+            "delta_statistics": list(DELTA_STATISTICS),
+            "station_elevation_datum": self.station_elevation_datum,
+            "orography_elevation_datum": self.orography_elevation_datum,
+            "output_format": self.output_format,
+            "output_dtype": self.output_dtype,
+            "output_encoding": dict(self.output_encoding),
+        }
+        invalidation_inputs: dict[str, object] = {
+            "output_schema_version": self.output_schema_version,
+            "extraction_code_version": self.extraction_code_version,
+        }
+        return {
+            "value_inputs": value_inputs,
+            "invalidation_inputs": invalidation_inputs,
+        }
+
+    def digest(self) -> str:
+        canonical = _canonical_json(self.canonical_payload())
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def recompute_extraction_identity(identity_inputs: Mapping[str, object]) -> str:
+    """The recomputation half of D7's identity: given the canonical
+    `{"value_inputs": ..., "invalidation_inputs": ...}` payload a manifest
+    records (`ExtractionManifest.identity_inputs`), recompute the digest a
+    reader can compare against `ExtractionManifest.extraction_identity`
+    WITHOUT needing to have been the writer — the gap the previous
+    implementation left open (2026-08-17 review)."""
+    return hashlib.sha256(_canonical_json(identity_inputs).encode()).hexdigest()
+
+
+def assert_identity_inputs_complete(identity_inputs: Mapping[str, object]) -> None:
+    """MAJOR (2026-08-17 review) — a published bundle must carry the
+    COMPLETE canonical snapshot its `extraction_identity` was computed from,
+    not merely the digest string. Structural completeness (every declared
+    input key present) is enforced on every publication (`publish_bundle`);
+    digest-equality against `extraction_identity` is left to callers that
+    want it (`recompute_extraction_identity`) rather than forced here,
+    because `extraction_identity` is deliberately a LABEL (P3) — some
+    callers (tests exercising publication MECHANICS, not identity fidelity)
+    legitimately use a short human-readable label that was never meant to
+    recompute from anything."""
+    if set(identity_inputs) != {"value_inputs", "invalidation_inputs"}:
+        raise ExtractionPostConditionError(
+            "extraction manifest's identity_inputs has top-level key(s) "
+            f"{sorted(identity_inputs)}, expected exactly "
+            "{'value_inputs', 'invalidation_inputs'} (D7/P7a)"
+        )
+    value_inputs = identity_inputs["value_inputs"]
+    invalidation_inputs = identity_inputs["invalidation_inputs"]
+    if not isinstance(value_inputs, dict) or not isinstance(invalidation_inputs, dict):
+        raise ExtractionPostConditionError(
+            "extraction manifest's identity_inputs.value_inputs/"
+            "invalidation_inputs must both be objects (D7/P7a)"
+        )
+    missing_value = _EXPECTED_VALUE_INPUT_KEYS - set(value_inputs)
+    if missing_value:
+        raise ExtractionPostConditionError(
+            "extraction manifest's identity_inputs.value_inputs is missing "
+            f"key(s) {sorted(missing_value)} (D7/P7a) — the digest cannot "
+            "be interpreted downstream without them"
+        )
+    missing_invalidation = _EXPECTED_INVALIDATION_INPUT_KEYS - set(invalidation_inputs)
+    if missing_invalidation:
+        raise ExtractionPostConditionError(
+            "extraction manifest's identity_inputs.invalidation_inputs is "
+            f"missing key(s) {sorted(missing_invalidation)} (D7/P7a)"
+        )
 
 
 def extraction_identity(
@@ -169,50 +454,32 @@ def extraction_identity(
     output_encoding: Mapping[str, object],
     extraction_code_version: str = EXTRACTION_CODE_VERSION,
 ) -> str:
-    """D7 — sha256(canonical-JSON of every VALUE-AFFECTING input). A version
-    bump alone (`extraction_code_version`) forces regeneration, mirroring
-    `era5_manifest.transform_identity`.
-
-    P7a (major, slim review 2026-08-17) — the payload is split into two
-    explicitly labelled halves. `value_inputs` are inputs the computation
-    actually reads (P7's standing obligation: a test must change the input
-    AND change an output); `invalidation_inputs`
-    (`output_schema_version`/`extraction_code_version`) exist ONLY to force
-    regeneration on a behaviour-neutral bump, so "changing this input must
-    change an output" is unsatisfiable for them by design — labelling them
-    makes that exemption visible instead of silently smuggling a
-    value-determining field past P7's rule."""
-    value_inputs: dict[str, object] = {
-        "operator_id": operator_id,
-        "coordinate_table_sha256": coordinate_table_sha256,
-        "source_sha256s": sorted(source_sha256s),
-        "orography_identity": orography_identity,
-        "seasons": {
-            "jjas_months": list(jjas_months),
-            "djf_months": list(djf_months),
-            "mam_months": list(mam_months),
-            "on_months": list(on_months),
-        },
-        "wet_threshold_mm_per_h": wet_threshold_mm_per_h,
-        "wet_threshold_side": wet_threshold_side,
-        "zero_policy": zero_policy,
-        "quantile_definition": quantile_definition,
-        "quantile_grid": list(quantile_grid),
-        "delta_statistics": list(DELTA_STATISTICS),
-        "station_elevation_datum": station_elevation_datum,
-        "orography_elevation_datum": orography_elevation_datum,
-        "output_format": output_format,
-        "output_dtype": output_dtype,
-        "output_encoding": dict(output_encoding),
-    }
-    invalidation_inputs: dict[str, object] = {
-        "output_schema_version": output_schema_version,
-        "extraction_code_version": extraction_code_version,
-    }
-    canonical = _canonical_json(
-        {"value_inputs": value_inputs, "invalidation_inputs": invalidation_inputs}
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    """D7 — sha256(canonical-JSON of every VALUE-AFFECTING input), via
+    `ExtractionIdentityInputs.digest()`. A version bump alone
+    (`extraction_code_version`) forces regeneration, mirroring
+    `era5_manifest.transform_identity`."""
+    return ExtractionIdentityInputs(
+        operator_id=operator_id,
+        coordinate_table_sha256=coordinate_table_sha256,
+        source_sha256s=tuple(source_sha256s),
+        orography_identity=orography_identity,
+        jjas_months=tuple(jjas_months),
+        djf_months=tuple(djf_months),
+        mam_months=tuple(mam_months),
+        on_months=tuple(on_months),
+        wet_threshold_mm_per_h=wet_threshold_mm_per_h,
+        wet_threshold_side=wet_threshold_side,
+        zero_policy=zero_policy,
+        quantile_definition=quantile_definition,
+        quantile_grid=tuple(quantile_grid),
+        station_elevation_datum=station_elevation_datum,
+        orography_elevation_datum=orography_elevation_datum,
+        output_schema_version=output_schema_version,
+        output_format=output_format,
+        output_dtype=output_dtype,
+        output_encoding=output_encoding,
+        extraction_code_version=extraction_code_version,
+    ).digest()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -245,6 +512,15 @@ class ExtractionManifest:
     the manifest either way" (D11.2), so they are reported for BOTH
     operators, including bilinear's counted missing-neighbour NaNs
     (D11.3)."""
+    identity_inputs: dict[str, object] = field(default_factory=dict)
+    """MAJOR (2026-08-17 review) — `ExtractionIdentityInputs.canonical_
+    payload()`: the complete `{"value_inputs": ..., "invalidation_inputs":
+    ...}` snapshot `extraction_identity` was computed from. Without this the
+    digest hashed seasons, thresholds, `zero_policy`, the quantile grid,
+    output format/encoding and both datum inputs that disappeared once
+    computed — nothing downstream could recompute or even interpret them.
+    Structural completeness is enforced on every publication
+    (`assert_identity_inputs_complete`, called from `publish_bundle`)."""
     generated_at: datetime
 
 
@@ -259,6 +535,7 @@ class _ExtractionManifestModel(BaseModel):
     orography_source_record: dict[str, object]
     accumulation_diagnostic: dict[str, object]
     station_accounting: dict[str, dict[str, dict[str, object]]] = {}
+    identity_inputs: dict[str, object] = {}
     generated_at: datetime
 
 
@@ -274,6 +551,7 @@ def write_extraction_manifest(manifest: ExtractionManifest, path: Path) -> None:
         orography_source_record=manifest.orography_source_record,
         accumulation_diagnostic=manifest.accumulation_diagnostic,
         station_accounting=manifest.station_accounting,
+        identity_inputs=manifest.identity_inputs,
         generated_at=manifest.generated_at,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -312,6 +590,7 @@ def read_extraction_manifest(path: Path) -> ExtractionManifest | None:
         orography_source_record=model.orography_source_record,
         accumulation_diagnostic=model.accumulation_diagnostic,
         station_accounting=model.station_accounting,
+        identity_inputs=model.identity_inputs,
         generated_at=model.generated_at,
     )
 
@@ -328,12 +607,26 @@ def checksum_file(path: Path) -> str:
 
 
 def prepare_staging_dir(data_root: Path, *, identity: str) -> Path:
-    """A staging directory left by a crashed prior run is unreferenced
-    garbage — delete it, never resume/publish it."""
-    staging = staging_dir(data_root, identity=identity)
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True, exist_ok=True)
+    """MAJOR (2026-08-17 review) — every call allocates a FRESH,
+    per-invocation-unique staging directory (`staging_dir`'s `token`), never
+    the old shared `.staging/<identity>` path: two concurrent SAME-identity
+    runs could previously `rmtree` and interleave each other's staged
+    payload. Because the name is unique, there is nothing stale to delete
+    first: `mkdir(exist_ok=False)` fails loudly on the astronomically
+    unlikely token collision rather than silently reusing another run's
+    directory. A staging directory left by a crashed prior run is
+    unreferenced garbage under its own unique name — nothing ever looks it
+    up again, so (as before) it is never resumed or published, only now it
+    is also never deleted by a LATER run (there is no shared name left to
+    collide with)."""
+    token = uuid.uuid4().hex[:16]
+    staging = staging_dir(data_root, identity=identity, token=token)
+    try:
+        staging.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        raise Era5StorageError(
+            f"failed to create staging directory {staging}: {exc}"
+        ) from exc
     return staging
 
 
@@ -440,6 +733,102 @@ _VALID_SENSITIVITY_STATISTICS = {m.value for m in SensitivityStatistic}
 _VALID_SENSITIVITY_DELTA_UNITS = {m.value for m in SensitivityDeltaUnit}
 
 
+# BLOCKER (2026-08-17 review) — publication validated only the manifest's
+# `extraction_identity` STRING, never that the provenance/accounting
+# sections it is supposed to carry were actually populated: an empty `{}`
+# for `orography_spec`/`orography_source_record`/`accumulation_diagnostic`,
+# or an empty `station_accounting`, used to publish successfully. These key
+# sets mirror exactly what `extract_era5.py`'s real writer populates.
+_REQUIRED_OROGRAPHY_SPEC_KEYS: frozenset[str] = frozenset(
+    {
+        "source",
+        "product_id",
+        "product_version",
+        "download_url",
+        "licence_name",
+        "licence_version",
+        "licence_url",
+        "source_crs",
+        "vertical_reference",
+        "units",
+        "no_data_sentinel",
+        "aggregation_rule_id",
+        "conversion_rule",
+        "probe_date",
+    }
+)
+_REQUIRED_OROGRAPHY_SOURCE_RECORD_KEYS: frozenset[str] = frozenset(
+    {
+        "orography_route_identity",
+        "orography_identity",
+        "fetched_at",
+        "downloaded_files",
+        "raster_path",
+        "raster_sha256",
+        "raster_schema_version",
+    }
+)
+_REQUIRED_ACCUMULATION_DIAGNOSTIC_KEYS: frozenset[str] = frozenset(
+    {
+        "window_id",
+        "source_sha256",
+        "reset_hour",
+        "terminal_hour",
+        "monotone_within_day",
+        "sample_size_days",
+        "recorded_at",
+    }
+)
+_REQUIRED_STATION_ACCOUNTING_ENTRY_KEYS: frozenset[str] = frozenset(
+    {"n_hours", "n_finite", "n_nan", "first_nan_valid_time", "last_nan_valid_time"}
+)
+
+
+def _assert_required_sections_present(manifest: ExtractionManifest) -> None:
+    missing_spec = _REQUIRED_OROGRAPHY_SPEC_KEYS - set(manifest.orography_spec)
+    if missing_spec:
+        raise ExtractionPostConditionError(
+            f"extraction manifest's orography_spec is missing key(s) "
+            f"{sorted(missing_spec)} (D9)"
+        )
+    missing_record = _REQUIRED_OROGRAPHY_SOURCE_RECORD_KEYS - set(
+        manifest.orography_source_record
+    )
+    if missing_record:
+        raise ExtractionPostConditionError(
+            "extraction manifest's orography_source_record is missing "
+            f"key(s) {sorted(missing_record)} (D9)"
+        )
+    missing_diag = _REQUIRED_ACCUMULATION_DIAGNOSTIC_KEYS - set(
+        manifest.accumulation_diagnostic
+    )
+    if missing_diag:
+        raise ExtractionPostConditionError(
+            "extraction manifest's accumulation_diagnostic is missing "
+            f"key(s) {sorted(missing_diag)} (D9)"
+        )
+    if not manifest.station_accounting:
+        raise ExtractionPostConditionError(
+            "extraction manifest's station_accounting is empty — D11 "
+            "requires per-operator, per-station accounting for BOTH "
+            "operators"
+        )
+    for operator_id, by_station in manifest.station_accounting.items():
+        if not by_station:
+            raise ExtractionPostConditionError(
+                f"extraction manifest's station_accounting[{operator_id!r}] "
+                "is empty (D11)"
+            )
+        for station, entry in by_station.items():
+            missing_entry = _REQUIRED_STATION_ACCOUNTING_ENTRY_KEYS - set(entry)
+            if missing_entry:
+                raise ExtractionPostConditionError(
+                    "extraction manifest's station_accounting"
+                    f"[{operator_id!r}][{station!r}] is missing key(s) "
+                    f"{sorted(missing_entry)} (D11)"
+                )
+
+
 def _assert_columns_present(
     frame: object, *, required: tuple[str, ...], label: str
 ) -> None:
@@ -453,8 +842,18 @@ def _assert_columns_present(
 def _assert_enum_column(
     frame: object, *, column: str, valid: set[str], label: str
 ) -> None:
-    observed = {v for v in frame[column].drop_nulls().to_list() if v is not None}  # type: ignore[index]
-    bad = observed - valid
+    """BLOCKER (2026-08-17 review) — this used to `drop_nulls()` before
+    comparing, so a column that was entirely `null` (or partially so) passed
+    silently: an enum column is required precisely because every row must
+    declare which of a fixed set of values applies, and a null is not one of
+    them."""
+    values = frame[column].to_list()  # type: ignore[index]
+    if any(v is None for v in values):
+        raise ExtractionPostConditionError(
+            f"{label}.{column} has null value(s) — every row must declare "
+            f"one of the enum values {sorted(valid)} (D9)"
+        )
+    bad = set(values) - valid
     if bad:
         raise ExtractionPostConditionError(
             f"{label}.{column} has value(s) {sorted(bad)} outside the "
@@ -501,21 +900,54 @@ def _assert_series_schema(path: Path, *, expected_station_count: int) -> set[str
                 f"{path.name} has duplicate station entries: {stations} (D8/D9)"
             )
         valid_time = loaded["valid_time"].values
+        # BLOCKER (2026-08-17 review) — this only checked the axis was
+        # STRICTLY INCREASING (any positive gap passed). D5.0/D9 declare the
+        # axis "exactly hourly with no gaps"; check the actual spacing, not
+        # merely its sign.
         if valid_time.size > 1:
             diffs = np.diff(valid_time.astype("datetime64[s]"))
-            if not bool(np.all(diffs > np.timedelta64(0, "s"))):
+            if not bool(np.all(diffs == np.timedelta64(3600, "s"))):
                 raise ExtractionPostConditionError(
-                    f"{path.name} 'valid_time' is not strictly increasing (D9)"
+                    f"{path.name} 'valid_time' is not exactly hourly with "
+                    "no gaps (D9/D5.0)"
                 )
         if loaded["valid_time"].attrs.get("timezone") != "UTC":
             raise ExtractionPostConditionError(
                 f"{path.name} 'valid_time' is missing the semantic UTC "
                 "attribute (D9/D5.0)"
             )
-        if not var.encoding.get("zlib"):
+        # BLOCKER (2026-08-17 review) — the frozen `POINTS_OUTPUT_ENCODING_
+        # SPEC` is hashed whole into `extraction_identity`, but only `zlib`
+        # was ever checked on reopen: a rehashed series written with the
+        # wrong compression level, fill value or chunking still published.
+        precip_spec = POINTS_OUTPUT_ENCODING_SPEC["precipitation_mm_per_h"]
+        if bool(var.encoding.get("zlib")) is not True:
             raise ExtractionPostConditionError(
                 f"{path.name} 'precipitation_mm_per_h' is not zlib-compressed "
                 "on reopen (D9's frozen encoding spec)"
+            )
+        if var.encoding.get("complevel") != precip_spec["complevel"]:
+            raise ExtractionPostConditionError(
+                f"{path.name} 'precipitation_mm_per_h' has complevel="
+                f"{var.encoding.get('complevel')!r} on reopen, expected "
+                f"{precip_spec['complevel']!r} (D9's frozen encoding spec)"
+            )
+        fill = var.encoding.get("_FillValue")
+        if fill is None or not np.isnan(float(fill)):
+            raise ExtractionPostConditionError(
+                f"{path.name} 'precipitation_mm_per_h' has _FillValue="
+                f"{fill!r} on reopen, expected NaN (D9's frozen encoding spec)"
+            )
+        expected_chunks = (
+            min(precip_spec["chunk_stations"], len(stations)),  # type: ignore[arg-type]
+            min(precip_spec["chunk_hours"], int(valid_time.size)),  # type: ignore[arg-type]
+        )
+        actual_chunks = var.encoding.get("chunksizes")
+        if actual_chunks is None or tuple(actual_chunks) != expected_chunks:
+            raise ExtractionPostConditionError(
+                f"{path.name} 'precipitation_mm_per_h' has chunksizes="
+                f"{actual_chunks!r} on reopen, expected {expected_chunks!r} "
+                "(D9's frozen encoding spec)"
             )
     return set(stations)
 
@@ -629,17 +1061,37 @@ def reopen_and_validate_bundle(
         valid=_VALID_SENSITIVITY_DELTA_UNITS,
         label="operator_sensitivity.csv",
     )
-    sensitivity_stations = {
-        v
-        for v in sensitivity.filter(pl.col("scope") == "STATION")["station"]
-        .drop_nulls()
-        .to_list()
-    }
-    if not sensitivity_stations <= nearest_stations:
+    station_rows = sensitivity.filter(pl.col("scope") == "STATION")
+    sensitivity_stations = {v for v in station_rows["station"].drop_nulls().to_list()}
+    # BLOCKER (2026-08-17 review) — this used to accept a MERELY-SUBSET
+    # station set (`<=`), so a writer that silently dropped a station's rows
+    # still published. The real writer (`build_operator_sensitivity_table`)
+    # always emits STATION-scope rows for every extracted station, so exact
+    # equality is the correct — and achievable — invariant.
+    if sensitivity_stations != nearest_stations:
         raise ExtractionPostConditionError(
-            "operator_sensitivity.csv references station(s) outside the "
-            f"series' station set: "
-            f"{sorted(sensitivity_stations - nearest_stations)} (D8/D9)"
+            "operator_sensitivity.csv's STATION-scope station set does not "
+            f"equal the series' station set: {sorted(sensitivity_stations)} "
+            f"vs {sorted(nearest_stations)} (D8/D9)"
+        )
+    # BLOCKER (2026-08-17 review) — "the complete station/season/statistic/
+    # quantile matrix": every station must carry the SAME number of
+    # STATION-scope rows (the same season/statistic/quantile combination
+    # set) — a partial writer that silently dropped rows for one station
+    # only used to publish undetected.
+    station_row_counts = station_rows.group_by("station").agg(pl.len().alias("n"))
+    counts_by_station = dict(
+        zip(
+            station_row_counts["station"].to_list(),
+            station_row_counts["n"].to_list(),
+            strict=True,
+        )
+    )
+    if len(set(counts_by_station.values())) > 1:
+        raise ExtractionPostConditionError(
+            "operator_sensitivity.csv's STATION-scope rows are not "
+            "complete for every station — row counts per station differ: "
+            f"{counts_by_station} (D9)"
         )
 
     manifest_path = directory / manifest_filename()
@@ -655,6 +1107,11 @@ def reopen_and_validate_bundle(
             f"this bundle is being published under {identity!r} (manifest "
             "identity consistency)"
         )
+    # BLOCKER (2026-08-17 review) — publication used to validate only the
+    # identity STRING, never that the provenance/accounting sections the
+    # manifest is supposed to carry were actually populated.
+    _assert_required_sections_present(manifest)
+    assert_identity_inputs_complete(manifest.identity_inputs)
 
     # P4a — the same predicate discovery would apply: every D9 payload
     # file's sha256 must reconcile against what the manifest recorded.
