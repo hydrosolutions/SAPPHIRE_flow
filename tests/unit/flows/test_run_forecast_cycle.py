@@ -1063,6 +1063,22 @@ class _RaisingAdapter:
         raise self._exc
 
 
+class _AlwaysRaisingForecastStore:
+    """Wraps a ``FakeForecastStore``, raising on every ``store_forecast``
+    call — Plan 116's acceptance scenario: a TOTAL ``store_forecast``
+    failure. Delegates every other method (including read paths the flow
+    doesn't call here) to the inner fake."""
+
+    def __init__(self) -> None:
+        self._inner = FakeForecastStore()
+
+    def store_forecast(self, forecast: object) -> object:
+        raise StoreError("simulated total store_forecast failure")
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
 def _only_nwp_delivery_record(
     health_store: FakePipelineHealthStore,
 ) -> PipelineHealthRecord:
@@ -3350,6 +3366,350 @@ enabled = false
         assert records[0].detail["reason"] == "all_models_failed"
         assert records[0].detail["assigned_models"] == [str(_MODEL_ID)]
         assert records[0].detail["nwp_enabled"] is True
+
+    # --- Plan 116: forecast-cycle-freshness heartbeat -----------------------
+    # (``PipelineCheckType.FORECAST_FRESHNESS``) — a cycle that persists ZERO
+    # forecasts must emit a CRITICAL record; a cycle that persists at least
+    # one must emit OK; a run with an explicit ``cycle_time`` (backfill/
+    # replay) must emit no record at all; and this is a SEPARATE contract
+    # from ``ForecastCycleHealth`` — a DEGRADED-but-forecasts-stored cycle
+    # must still read OK here. These stay methods of ``TestForecastCycle``
+    # (not a new top-level class) so they share its fixtures/imports.
+
+    def test_total_store_forecast_failure_emits_critical_freshness_record(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=_AlwaysRaisingForecastStore(),  # type: ignore[arg-type]
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 0
+        assert any("Store failed" in err for err in result.errors)
+
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["forecasts_stored"] == 0
+        assert records[0].cycle_time == _NOW
+        assert records[0].subject == "forecast_cycle"
+
+    def test_forecasts_stored_emits_ok_freshness_record(self) -> None:
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 1
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.OK
+        assert records[0].detail["forecasts_stored"] == 1
+
+    def test_explicit_cycle_time_backfill_emits_no_freshness_record(self) -> None:
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        # Zero forecasts stored (a total store failure) — this WOULD be
+        # CRITICAL for a current/scheduled run. Passing an explicit
+        # `cycle_time` marks this as a backfill/replay run, which must
+        # suppress the heartbeat entirely rather than manufacture a false
+        # alarm over currently-healthy production (fetch_recent orders by
+        # checked_at, not cycle_time).
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=_AlwaysRaisingForecastStore(),  # type: ignore[arg-type]
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            cycle_time="2026-01-01T00:00:00+00:00",
+        )
+
+        assert result.forecasts_stored == 0
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert records == []
+
+    def test_degraded_but_forecasts_stored_does_not_alarm_freshness(self) -> None:
+        """Requirement 1: FORECAST_FRESHNESS is a SEPARATE contract from
+        ``ForecastCycleHealth``. Reuses the station-dark scenario (one dark
+        station degrades the cycle) alongside a healthy station that DOES
+        store a forecast — the cycle reads DEGRADED, but freshness must
+        still read OK, not CRITICAL."""
+        sid_dark = StationId(uuid4())
+        sid_ok = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid_dark,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_artifact=False,
+        )
+        _build_station_and_stores(
+            sid_ok,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.health is ForecastCycleHealth.DEGRADED
+        assert result.forecasts_stored == 1
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.OK
+
+    def test_no_operational_stations_emits_critical_freshness_record(self) -> None:
+        """Requirement 3: a cycle with no operational stations is
+        execution-healthy (``ForecastCycleHealth.HEALTHY``) but
+        product-dark — the freshness heartbeat must still be CRITICAL, not
+        skipped."""
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={},
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.health is ForecastCycleHealth.HEALTHY
+        assert result.forecasts_stored == 0
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+
+    def test_nwp_fetch_failed_abort_emits_critical_freshness_record(self) -> None:
+        """The Plan 100 blackout shape: NWP fetch fails hard and the cycle
+        aborts before Phase B. Zero forecasts stored — must still be
+        CRITICAL, not silently skipped because the abort path returns
+        early."""
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=_RaisingAdapter(RuntimeError("simulated NWP fetch failure")),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.health is ForecastCycleHealth.FAILED
+        assert result.forecasts_stored == 0
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
 
     def test_climatology_floor_writes_forecast_when_nwp_off_and_skill_fails(
         self,

@@ -278,6 +278,17 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   `_fetch_obs_timestamps_task.submit` (the only concurrency in the flow)
 - drift guard: `_check_fallback_priority_drift`
 - health: `_forecast_cycle_health` → `ForecastCycleResult`
+- freshness heartbeat (Plan 116): `_emit_forecast_freshness_record` — writes
+  `PipelineCheckType.FORECAST_FRESHNESS` (CRITICAL when `forecasts_stored ==
+  0` at every return point, including the no-operational-stations and
+  hard-NWP-abort early returns; OK otherwise). A SEPARATE contract from
+  `ForecastCycleHealth` — never keys off `health`/`_forecast_cycle_health`.
+  Suppressed entirely (no record at all) when the flow's `cycle_time`
+  parameter is explicitly set (backfill/replay), since
+  `PipelineHealthStore.fetch_recent` orders by `checked_at` not
+  `cycle_time` and would otherwise let a backfill masquerade as "latest".
+  Probed by the watchdog's THIRD freshness block (see the **Infra / ops
+  deployment** map).
 - snow-forecast wiring (Plan 145): `_compute_required_snow` (pre-Phase-A,
   per-station required future-snow variables from ACTIVE assignments' resolved
   models' `future_dynamic_features` ∩ `SNOW_CANONICAL_PARAMETERS`) →
@@ -569,7 +580,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - **Caddy edge**: `caddy` + `Caddyfile` — 80/443, `SAPPHIRE_DOMAIN`-gated TLS, CSP + security headers (no HSTS). The Prefect UI is **not** proxied (SSH-tunnel only); new public routes go here.
 - **Overlays**: `docker-compose.dev.yml`, `docker-compose.staging.yml`, `docker-compose.macmini.yml` — **not auto-merged**; the exact `-f` set is chosen per invocation.
 - **DB migrations**: `alembic/versions/` + `alembic.ini`, run as `alembic upgrade head` in the `init` service, as the DB OWNER role, before the role bootstrap and registration. `sapphire_api`/`sapphire_worker` have no DDL privilege — a migration run under a scoped role fails closed.
-- **Host startup (Mac mini)**: `scripts/launchd/*.plist` → `start-sapphire.sh` (the sole `docker compose … up -d` per reboot), `install-launchd.sh`, `bootstrap-mac-mini.sh`; the watchdog surface = `src/sapphire_flow/ops/watchdog.py` + `scripts/launchd/watchdog.sh` + operator-created host secrets `secrets/slack_webhook_url` and (Plan 163) `secrets/deadman_url` + a manually-installed `newsyslog` log-rotation conf. The `cicd.md` systemd unit is an **illustration, not shipped**. Plan 163 adds an off-box dead-man's-switch heartbeat (Healthchecks.io) posted after every tick that completes and persists — feature-off when `secrets/deadman_url` is absent (dev/CI) — and hardens all four outbound HTTP call sites (health probe, BAFU-detail probe, Slack POST, dead-man POST) against `httpx.InvalidURL`/`OSError`/`UnicodeError`, none of which `httpx.HTTPError` alone covers; the guarded boundary also covers owned-`httpx.Client` cleanup (`finally`-block `close()`), not just the request.
+- **Host startup (Mac mini)**: `scripts/launchd/*.plist` → `start-sapphire.sh` (the sole `docker compose … up -d` per reboot), `install-launchd.sh`, `bootstrap-mac-mini.sh`; the watchdog surface = `src/sapphire_flow/ops/watchdog.py` + `scripts/launchd/watchdog.sh` + operator-created host secrets `secrets/slack_webhook_url` and (Plan 163) `secrets/deadman_url` + a manually-installed `newsyslog` log-rotation conf. The `cicd.md` systemd unit is an **illustration, not shipped**. Plan 163 adds an off-box dead-man's-switch heartbeat (Healthchecks.io) posted after every tick that completes and persists — feature-off when `secrets/deadman_url` is absent (dev/CI) — and hardens all four outbound HTTP call sites (health probe, BAFU-detail probe, Slack POST, dead-man POST) against `httpx.InvalidURL`/`OSError`/`UnicodeError`, none of which `httpx.HTTPError` alone covers; the guarded boundary also covers owned-`httpx.Client` cleanup (`finally`-block `close()`), not just the request. **Plan 116** adds a THIRD freshness block (`forecast_freshness_probe`, same generic `probe_bafu_freshness` shape, `consecutive_forecast_freshness_failures` hysteresis counter) probing `PipelineCheckType.FORECAST_FRESHNESS` — the forecast cycle (`flows/run_forecast_cycle.py`) emits that record itself (CRITICAL when a run persists zero forecasts, OK otherwise; a run invoked with an explicit `cycle_time`, i.e. backfill/replay, emits none). Deliberately a SEPARATE contract from `ForecastCycleHealth` — a DEGRADED-but-forecasts-stored cycle must not trip this alarm.
 
 **Downstream consumers to inspect when behavior changes:**
 

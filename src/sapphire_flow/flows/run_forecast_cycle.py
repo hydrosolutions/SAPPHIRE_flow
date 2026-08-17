@@ -595,6 +595,54 @@ def _model_alert_eligibility(
     raise ConfigurationError(f"model {model_id} has no declared AlertEligibility")
 
 
+def _emit_forecast_freshness_record(
+    pipeline_health_store: object | None,
+    *,
+    cycle_time_param: str | None,
+    resolved_cycle_time: UtcDatetime,
+    forecasts_stored: int,
+    checked_at: UtcDatetime,
+) -> None:
+    """Plan 116: FORECAST_FRESHNESS heartbeat — a SEPARATE contract from
+    ``ForecastCycleHealth`` above. ``health`` encodes operational
+    *quality*, and DEGRADED is deliberately used (and locked by existing
+    tests) for snow loss, partial NWP delivery and fallback-priority
+    drift EVEN WHEN forecasts were stored fine — mapping those onto a
+    freshness alarm would page on every degraded-but-working cycle. This
+    answers a narrower, product-facing question instead: did the cycle
+    persist ANY forecast at all? A cycle that stores zero forecasts —
+    including one with no operational stations, or one that aborts before
+    ever reaching Phase B — is CRITICAL; storing at least one is OK. No
+    partial-coverage state is tracked here (that is the explicitly
+    out-of-scope per-product coverage ledger).
+
+    Runs invoked with an explicit ``cycle_time`` (backfill/replay) do NOT
+    emit this record at all: ``PipelineHealthStore.fetch_recent`` orders
+    by ``checked_at``, not ``cycle_time``, and the watchdog probe asks for
+    ``limit=1`` — so a backfill written "now" would become the "latest"
+    record and could report a false stale/critical alarm over a
+    currently-healthy production cycle. Scheduled/current cycles (no
+    explicit ``cycle_time`` argument) still age by their own
+    ``resolved_cycle_time``.
+    """
+    if cycle_time_param is not None:
+        return
+    status = (
+        PipelineHealthStatus.CRITICAL
+        if forecasts_stored == 0
+        else PipelineHealthStatus.OK
+    )
+    _append_pipeline_health_record(
+        pipeline_health_store,
+        check_type=PipelineCheckType.FORECAST_FRESHNESS,
+        checked_at=checked_at,
+        status=status,
+        subject="forecast_cycle",
+        detail=cast("dict[str, object]", {"forecasts_stored": forecasts_stored}),
+        cycle_time=resolved_cycle_time,
+    )
+
+
 def _append_pipeline_health_record(
     pipeline_health_store: object | None,
     *,
@@ -1743,6 +1791,13 @@ def run_forecast_cycle_flow(
 
         if not operational:
             log.info("forecast_cycle.no_operational_stations")
+            _emit_forecast_freshness_record(
+                pipeline_health_store,
+                cycle_time_param=cycle_time,
+                resolved_cycle_time=resolved_cycle_time,
+                forecasts_stored=0,
+                checked_at=clock(),
+            )
             return ForecastCycleResult(
                 cycle_time=resolved_cycle_time,
                 health=ForecastCycleHealth.HEALTHY,
@@ -1947,6 +2002,13 @@ def run_forecast_cycle_flow(
                     )
             if nwp_outcome is None:
                 log.error("forecast_cycle.nwp_fetch_failed_aborting")
+                _emit_forecast_freshness_record(
+                    pipeline_health_store,
+                    cycle_time_param=cycle_time,
+                    resolved_cycle_time=resolved_cycle_time,
+                    forecasts_stored=0,
+                    checked_at=clock(),
+                )
                 return ForecastCycleResult(
                     cycle_time=resolved_cycle_time,
                     health=ForecastCycleHealth.FAILED,
@@ -2622,6 +2684,14 @@ def run_forecast_cycle_flow(
             log.info("alerts.check_completed", duration_ms=alert_duration_ms)
 
         total_ms = round((time.perf_counter() - flow_t0) * 1000, 1)
+
+        _emit_forecast_freshness_record(
+            pipeline_health_store,
+            cycle_time_param=cycle_time,
+            resolved_cycle_time=resolved_cycle_time,
+            forecasts_stored=forecasts_stored,
+            checked_at=clock(),
+        )
 
         result = ForecastCycleResult(
             cycle_time=resolved_cycle_time,
