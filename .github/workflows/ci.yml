@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Plan 159 follow-up. `uv.lock` carries a PRIVATE git dependency (aquacast, an
+# optional extra). `uv sync --frozen` honours the lock and never fetches it, but a
+# bare `uv run` re-resolves and DOES try to clone it — which fails with
+# "could not read Username" on any runner without an aquacast token. Setting
+# UV_FROZEN makes every uv invocation respect the lock, so CI needs no aquacast
+# credential unless it actually installs the extra.
+env:
+  UV_FROZEN: "1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
