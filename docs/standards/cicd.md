@@ -439,7 +439,10 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 3 | `integration` | `uv sync --frozen` | `unit` | `uv sync` | No |
 | 3 | `integration` | `uv run pytest tests/integration/ -v -m "not slow"` | `unit` | `uv run pytest tests/integration/ -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
 | 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | `unit` | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
-| 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan, `uses:`) | `unit` | `trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
+| 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | `unit` | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
+| 4 | `build-image-and-scan` | `trivy convert --format table ... --exit-code 1` (the gate; `run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json` | No (but requires trivy installed) |
+| 4 | `build-image-and-scan` | `trivy convert --format sarif` (`run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format sarif --scanners vuln,secret --severity HIGH,CRITICAL --output trivy-image.sarif trivy-image.json` | No (but requires trivy installed) |
+| 4 | `build-image-and-scan` | `github/codeql-action/upload-sarif` (`uses:`; Plan 180 T2) | Convert report to SARIF | n/a | Yes — writes to the GitHub code-scanning API, needs `security-events: write` on the job token |
 | 4 | `build-image-and-scan` | `anchore/sbom-action` (`uses:`) — generate SBOM with syft | `unit` | `syft sapphire-flow:local -o cyclonedx-json > sbom.cdx.json` | No (but requires syft installed) |
 | 5 | `e2e` | _(not yet implemented — dangling comment at line 206 of ci.yml)_ | `unit`, `integration`, `build-image-and-scan` | n/a | n/a |
 | **dependency-safety.yml** (Plan 119) | | | | | |
@@ -513,11 +516,23 @@ not modify CI behaviour.
 The image-build-and-scan tier added by Plan 064 sits between `integration` and `e2e`. Operational shape:
 
 - Runs `docker build` against the multi-stage `Dockerfile`, tagging the result `sapphire-flow:ci-${{ github.sha }}` local to the runner.
-- Runs `trivy image` against the locally built image (`HIGH,CRITICAL`, `--ignore-unfixed`) to catch OS-level CVEs the `trivy fs` scan in the `lint` tier cannot see.
+- Scans the locally built image with Trivy, restructured (Plan 180) into **scan-once/derive-many** so a
+  gate failure explains itself in the job log instead of printing a bare `exit code 1`:
+  1. `trivy image --format json` writes one non-gating report (`ignore-unfixed: true`, all severities).
+  2. `trivy convert --format table --exit-code 1` — **the gate** — renders the human-readable table
+     straight to the job log (CVE id, package, installed/fixed version) from that same report, and fails
+     the job on `HIGH,CRITICAL`.
+  3. `trivy convert --format sarif` derives the SARIF from the same report, whether or not step 2 failed.
+  4. `github/codeql-action/upload-sarif` publishes it to the GitHub Security tab, again independent of
+     step 2's outcome — the failure-path run is the one an investigator actually needs to see.
+
+  Deriving every output from one report (rather than re-scanning on the failure path) is what makes the
+  printed table and the uploaded SARIF provably the same data as what failed the gate. Policy rationale
+  (severity thresholds, `.trivyignore` discipline) lives in `security.md` § CVE scanning layers.
 - Runs `syft` (via `anchore/sbom-action`) to produce a CycloneDX JSON SBOM, uploaded as the `sbom-cyclonedx` workflow artifact on every run.
 - `e2e` gates on this job succeeding (`needs: [unit, integration, build-image-and-scan]`) — a failing CVE scan or SBOM step blocks the capstone suite.
 
-All three steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
+All steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
 
 ### Slow + live test tiers
 

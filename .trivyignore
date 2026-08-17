@@ -1,5 +1,14 @@
 # Known-accepted CVEs. Every entry MUST carry a dated comment explaining why
 # it is ignored and when to re-review. No undated entries. See Plan 064 A2.
+#
+# `ignore-unfixed: true` on every Trivy scan already excludes every CVE with
+# no published fix before either scan can report it — so an entry here can
+# never legitimately read "no fix yet". The one case this file is for: a fix
+# DOES exist upstream but we cannot adopt it (e.g. it ships in a package
+# suite we do not track, or a Python dependency we cannot move yet). See
+# docs/standards/security.md § CVE scanning layers for the full policy
+# (Plan 180 D2/D3). The re-review date on each entry is a dated COMMENT, not
+# an enforced check — nothing currently re-checks it automatically.
 
 # --- No active entries as of 2026-06-02 ---
 # The base image was re-pinned to the python:3.12.13-slim debian 13.5 rebuild
@@ -13,4 +22,4 @@
 #     fixed in libcap2 1:2.75-10+deb13u1, present in the 13.5 rebuild.
 # A fresh `trivy image` scan of the rebuilt base reports 0 HIGH/CRITICAL.
 # Re-populate this file (with dated comments) only when a future scan surfaces
-# an accepted, not-yet-fixed CVE.
+# a HIGH/CRITICAL CVE that has a published fix we cannot adopt.
