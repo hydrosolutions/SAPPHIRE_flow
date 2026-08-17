@@ -70,13 +70,16 @@ conversion never leaves the host with zero watchdogs or two.
 
 ## Requirements folded from the Plan 158 reviews (do not rediscover these)
 
-**⛔ R1 (BLOCKER) — rollback cannot undo a bootstrapped-but-not-enabled daemon.** If
+**⛔ R1 (BLOCKER) — AMENDED by round 2: the enable-before-bootstrap order in T2 step 5 REMOVES this specific
+window.** The original hazard (kept for the reasoning, and because rollback must still handle a bootstrapped job): If
 `launchctl bootstrap system` SUCCEEDS and `launchctl enable` then FAILS, rollback runs with the new job
 **already loaded** and never boots it out. Reinstall path: the restore's own `bootstrap` then fails against the
 already-loaded label, leaving the **new, disabled** daemon. First-migration path: it re-bootstraps the legacy GUI
 agent **alongside** the loaded system daemon — **two watchdogs**, the precise thing D2 forbids.
-**Required:** boot out and *verify removal of* any newly bootstrapped system job at the top of rollback, before
-restoring anything; require the rollback's `enable` to succeed.
+**Required, as amended:** rollback removes the system job **only when a bootstrap actually succeeded and a later
+step then failed**, verifies that removal, restores the **prior enabled/disabled override** (tri-state), and
+re-registers the previous job. Enabling first means a *disabled-then-failed-bootstrap* can no longer strand a
+loaded-but-disabled daemon.
 
 **⛔ R2 — resolve the SERVICE ACCOUNT explicitly; not `$HOME`, not `SUDO_USER`.** `$HOME` is root's under
 `sudo`; `SUDO_USER` is whichever admin typed sudo, while the daemon runs as `sapphire`. Resolve one explicit
@@ -100,55 +103,108 @@ user directories.
 **R6 — a `--label` selector**, so the watchdog can be converted alone; the current installer processes every
 entry in `PLISTS`.
 
-**R7 — delete the backup only after real verification**, not after mere `bootstrap`/`enable`: kickstart with a
-**fresh invocation marker**, exit status 0, the expected tick log line, **and** (new, now that Plan 163 has
-landed) `watchdog.deadman_ping_attempted pinged=True`.
+**R7 — delete the backup only after real verification**, not after mere `bootstrap`/`enable`. **AMENDED by
+round 2: NOT by `kickstart`** (see T3 — it kills the run it measures). Verification is the `--invocation-id`
+nonce in a completion event, exit status 0, and `watchdog.deadman_ping_attempted pinged=True`.
 
 ## Tasks
 
-### T1 — service-account resolution (foundation for everything else)
+> **Rewritten 2026-08-17 after round 2.** The previous T2/T3 text prescribed the **opposite** migration order to
+> R12 and still mandated `kickstart`, which R13 forbids. That is the same stale-text-vs-new-decision
+> contradiction that bit Plan 162 twice. **These tasks are now the single migration spec; R1 and R7 are amended
+> in place below.** There is exactly ONE verification mechanism, not alternatives.
 
-A resolver returning `(user, uid, home)` per R2, with rejection on lookup failure, non-absolute home, or UID
-mismatch. Every `$HOME`-derived path in the installer goes through it.
+### T0 — classify the baseline BEFORE anything (round-2 blocker)
 
-**Red-first:** with `HOME=/var/root` and the resolver returning the service home, assert the installer touches
-the **service** home and leaves `/var/root/Library` **untouched** — the 158 build's test collapsed the two, so it
-passed against the bug.
+**The real host is neither "currently active" nor "fresh" — it is installed-but-SILENT** (the agent has emitted
+nothing since ~03:54 on 2026-08-16). A migration written only for "stop the running one, start the new one" does
+not describe the state we will actually meet. Classify and branch explicitly:
 
-### T2 — system-domain install, transactionally (R1, R3, R4, R6)
+| Baseline | Meaning |
+|---|---|
+| **loaded-and-fresh** | agent loaded, recent successful tick — the textbook case |
+| **loaded-but-unhealthy** | loaded but not ticking (**expected on this host**) |
+| **plist-only / unloaded** | plist present, no registration |
+| **conflicting domains** | present in *both* gui and system |
+| **truly fresh** | nothing installed |
 
-Install the watchdog plist to `/Library/LaunchDaemons`, `root:wheel`, `0644`; bootstrap into `system`; enable;
-remove the GUI agent and **verify** it is gone. Ordering: back up → install → bootstrap → enable → verify → only
-then remove the legacy agent → only then discard the backup.
+**Required:** either restore and prove a **fresh legacy run** before migrating normally, or enter an explicit
+**degraded-recovery mode** whose rollback truthfully returns only to the *degraded* baseline — it must not claim
+to restore a working watchdog that was never working.
 
-**Red-first, and these are the cases the 158 build shipped unproven:**
-(a) `bootstrap` succeeds, `enable` fails → rollback leaves **exactly one** working watchdog and **no** loaded
-new job; (b) same for the reinstall path (a pre-existing daemon plist is restored with ownership/mode and
-re-bootstrapped); (c) a failure while backing up leaves the existing watchdog **running**.
-A **stateful `launchctl` stub** is required — a stub that always succeeds cannot exercise any of this.
+### T1 — service-account resolution (unchanged; foundation for everything else)
 
-### T3 — verification that proves the daemon actually works (R7)
+Per R2. **Red-first:** with `HOME=/var/root` and the resolver returning the service home, assert the installer
+touches the **service** home and leaves `/var/root/Library` untouched.
 
-`launchctl print system/<label>` loaded with `UserName = <service account>`; **not** present in
-`gui/<uid>`; kickstart against a **fresh invocation marker** (so a stale prior exit status cannot satisfy the
-gate) then assert `last exit status = 0`; the tick log advances; and the dead-man ping fires.
+### T2 — the migration, in this exact order (supersedes the earlier T2; R12 amended)
 
-### T4 — docs
+1. Lock; resolve account + label (R14); classify baseline (T0).
+2. Preflight every file, secret, directory, command and the **rendered** plist (R15) — fail before any mutation.
+3. Capture both domains' loaded state and **enabled state as TRI-STATE** — explicitly disabled / explicitly
+   enabled / no override — never conflating "missing GUI domain" with "enabled". Back up every plist **plus
+   metadata**.
+4. **Stage the new plist in an UNSCANNED temporary location, not `/Library/LaunchDaemons`** (round-2 blocker):
+   staging into a scanned directory means a failure or SSH loss before bootout leaves an **unverified daemon
+   that loads beside the GUI agent at the next reboot**. **Arm rollback BEFORE the first persistent mutation**
+   and trap `EXIT`, `HUP`, `INT`, `TERM`.
+5. **`launchctl enable system/<label>` FIRST** — confirmed correct macOS 26 semantics: enabling clears the
+   persistent disabled override **without loading** the service, and a disabled service cannot bootstrap. This
+   removes R1's bootstrap-then-enable window entirely. **Rollback must restore the prior override** if a later
+   step fails.
+6. **Quiesce the old agent before removing it** (round-2 major): disable its scheduling, wait **boundedly** for
+   `state = not running`, *then* boot out — otherwise the bootout can kill an in-flight run **mid-state-write**,
+   which is R13's hazard reintroduced.
+7. Verify the old **service target** is absent — `launchctl print <domain>/<label>` fails **while the parent
+   domain is separately proven reachable**. **Do not** claim "the domain is absent": the `system` domain always
+   exists and `gui/<uid>` persists while the user is logged in. Never grep human-readable output.
+8. **`launchctl bootstrap system`** — after removal, deliberately. **A brief GAP is safer than an OVERLAP**
+   (confirmed): `RunAtLoad=true` + `StartInterval=300` mean an overlapping pair would race the **shared state
+   file**.
+9. Verify per T3.
+10. **Delete the legacy plist file** (its *service* was already removed at step 6) and discard backups **only**
+    after final one-domain verification (R7, amended: no kickstart).
 
-`docs/deployment/mac-mini-staging.md` (the conversion + rollback procedure), `docs/standards/cicd.md`,
-`docs/touchpoint-maps.md`.
+**⚠️ The gap is real and must be bounded.** D2 (never two) and D3 (never zero) **cannot both hold** across a
+cross-domain transition. Steps 6–9 have no watchdog running; normally seconds, but a failure can stretch it
+through verification and rollback. It can miss a 300 s tick, a dead-man ping, and any transient outage that
+begins and ends inside it. **Required:** an explicit outage deadline, and **D3 rescoped to terminal
+postconditions for *handled* failures and signals** — power loss and `SIGKILL` cannot be made atomic without
+durable recovery machinery, and the plan must stop implying otherwise.
 
-## Exit gates
+### T3 — verification: ONE mechanism (R7 and R13 amended; no kickstart)
 
-`shellcheck` + `bash -n` on the installer; `plutil -lint` on the plist; the new unit suite; full
-`uv run pytest` **with an isolated `PREFECT_HOME`** (see [[project_prefect_home_test_contention]]); ruff; pyright
-ratchet. **Every red-first case above proven RED against current main.**
+**`kickstart -k` is forbidden** — `RunAtLoad=true` means bootstrap *already* triggers an invocation, so
+kickstarting kills the run being measured, possibly mid-state-write, and launchd throttling then delays the
+replacement.
 
-## Host acceptance (requires mini access)
+**A pre-bootstrap run counter does not work either** (round-2 major): it does not exist after deliberate service
+removal and resets across re-bootstrap; a byte offset alone cannot identify a *completed* invocation.
 
-Convert, then **log out and back in** — the watchdog must still be running and pinging. Then reboot and confirm
-the same. Confirm `gui/<uid>` has no duplicate. Rollback rehearsal: force a failure and confirm exactly one
-watchdog survives.
+**Required:** add **`--invocation-id`** to the watchdog CLI plus **structured start and completion events**, with
+completion emitted **only after `run_once()` returns successfully**. Verify the nonce **exclusively** in
+post-offset events, together with launchd's stopped state and exit status. Record the log **inode and size**, not
+just an offset, and fail or re-base explicitly if either changes (rotation/truncation).
+
+Acceptance: loaded in `system` with `UserName = <service account>`; absent from `gui/<uid>`; a completed
+invocation carrying our nonce; exit status 0; and `watchdog.deadman_ping_attempted pinged=True`.
+
+### T4 — test harness + a PRIVILEGED host gate (round-2 major)
+
+The unprivileged fake harness (fakes for `dscl`, `id`, `launchctl`, `plutil`, injectable roots, **ordering
+assertions**) is buildable and covers transaction logic — but it **cannot** validate real system-domain
+authorization, `root:wheel`, `UserName`, TCC, or GUI-domain availability. A **privileged host smoke gate** is
+therefore required, not optional.
+
+**Access reality — decide before scheduling the work:** system-domain `launchctl` **can** run over SSH, but needs
+an up-front root check, pre-authorised `sudo`/PTY, signal-safe execution and a reconnect plan. **Console or
+Screen Sharing (or MDM) is required for TCC prompts and for the literal logout/login test** — so this cannot be
+completed end-to-end over SSH alone.
+
+### T5 — docs
+
+`docs/deployment/mac-mini-staging.md` (conversion, rollback, and the degraded-baseline path),
+`docs/standards/cicd.md`, `docs/touchpoint-maps.md`.
 
 ## ✅ The working-directory question — RESOLVED by review (was the open question)
 
