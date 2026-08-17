@@ -33,16 +33,21 @@ evidence of needing."* That is exactly why this re-scope removes rather than add
 
 ## The slice — forecast production freshness
 
-**The gap, verified on `main` 2026-08-17:** the watchdog checks API health, backup staleness and the two **BAFU
-collector** freshness checks. **Nothing checks our own forecast cycle.** If `run_forecast_cycle` stopped
-producing forecasts, the API would stay healthy, BAFU collectors would keep running, backups would succeed, the
-dead-man would keep pinging — and the product would be silently dead. `grep forecast_freshness src/` on main
-returns **nothing**.
+**The gap, corrected 2026-08-17 after review.** The watchdog checks API health, backup staleness and the two
+**BAFU collector** freshness checks. **No forecast-production heartbeat is consumed by the watchdog**, so if
+`run_forecast_cycle` stopped producing, the API would stay healthy, BAFU collectors would keep running, backups
+would succeed, the dead-man would keep pinging — and the product would be silently dead.
+
+*My earlier description of this gap was wrong and is corrected here:* I claimed `grep forecast_freshness src/`
+returns nothing on main. **It does not** — `PipelineCheckType.FORECAST_FRESHNESS` **already exists**
+(`types/enums.py:172`). I had grepped two specific files and generalised to the whole tree without running that
+command. **Only the emitter and the watchdog probe are missing**, which makes this slice smaller than stated.
 
 **Salvage, do not rewrite.** The implementation exists on the `docs/plan-158-session-independence` branch (T1b),
-built and reviewed, but stranded 72 commits behind: `PipelineCheckType.FORECAST_FRESHNESS` (`types/enums.py:154`),
-the emitter in `flows/run_forecast_cycle.py`, and the watchdog probe (39 references in `ops/watchdog.py`). Port
-it onto current `main` the way Plan 163 ported the dead-man ping.
+built and reviewed, but stranded **82** commits behind: `PipelineCheckType.FORECAST_FRESHNESS` (`types/enums.py:154`),
+the emitter in `flows/run_forecast_cycle.py`, and the watchdog probe. Port it onto current `main` the way Plan
+163 ported the dead-man ping — and **fit the watchdog side into Plan 162/163's current notification handling
+rather than copying it wholesale**, since both rewrote that file after the branch forked.
 
 **⛔ Port the SMALL version. The 158 branch's coverage ledger is NOT in scope.** Its
 `(station, model, parameter)` identity tracking drew **five blockers across two reviews** and is the single
@@ -58,11 +63,23 @@ remove-mandate review *first*, not after three rounds of additions.
 - **`FORECAST_FRESHNESS` is a SEPARATE contract from `ForecastCycleHealth`.** Existing tests deliberately lock
   `DEGRADED` for snow loss, partial NWP and fallback drift *even when forecasts were stored*; mapping those onto
   a freshness alarm would turn every degraded-but-working cycle into a page.
-- **Freshness must be judged on the cycle's own time, not wall-clock arrival** — a late or backfilled historical
-  cycle must not reset freshness.
+- **⛔ Backfill/replay runs must NOT emit the heartbeat at all** (corrected — "judge it on the cycle's own time"
+  was **not sufficient**). `PipelineHealthStore.fetch_recent` orders by **`checked_at`**, not `cycle_time`
+  (`store/pipeline_health_store.py:33`), and the probe asks for `limit=1`. So a backfill written *now* becomes
+  the "latest" record and would report **stale** even while current production is perfectly healthy — a false
+  alarm manufactured by a maintenance task. Scheduled/current cycles still age by their own `cycle_time`; runs
+  with an explicit `cycle_time` simply do not emit this record.
 
-**Acceptance (from this plan's own §Verification, which is better than anything I would have written):** drop the
-`-nwp` overlay and **the forecast cycle must go red.** That tests the monitoring, not the pipeline.
+**⛔ Acceptance — REPLACED. The July version is stale and would prove nothing.** I praised it as "better than
+anything I would have written"; it is also **invalid on current main**. There is no separate `-nwp` overlay any
+more — NWP lives in the consolidated Mac-mini overlay with `SAPPHIRE_REQUIRE_NWP: "1"`
+(`docker-compose.macmini.yml:26`), so disabling it either trips the configuration guard or permits a
+runoff-only fallback. **Zero forecasts is not guaranteed**, so the test could pass or fail for reasons unrelated
+to this check.
+
+**Replacement:** induce a **total `store_forecast` failure**, then assert (a) a **fresh `CRITICAL`
+`FORECAST_FRESHNESS` record** is written, and (b) **the watchdog treats it as failed**. Note precisely what must
+go red: **the watchdog signal** — not Prefect's flow state, and not `ForecastCycleHealth`.
 
 ## Follow-ons (explicitly out of the build slice)
 
