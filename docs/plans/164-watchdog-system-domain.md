@@ -150,10 +150,96 @@ Convert, then **log out and back in** — the watchdog must still be running and
 the same. Confirm `gui/<uid>` has no duplicate. Rollback rehearsal: force a failure and confirm exactly one
 watchdog survives.
 
-## Open question for the owner
+## ✅ The working-directory question — RESOLVED by review (was the open question)
 
-**Does the daemon need the same working directory and relative `secrets/` paths it has today?** The agent runs
-with the repo as its working directory, and the plist passes relative paths (`./secrets/deadman_url`). A system
-daemon's working directory differs, so this likely needs `WorkingDirectory` in the plist or absolute paths —
-**decide before build**, because getting it wrong means the daemon starts and silently finds no webhook and no
-dead-man URL, which would look exactly like a healthy quiet system.
+**My framing was half wrong.** The relative secret paths are **not** the danger: the plist already sets an
+absolute `WorkingDirectory` (`ch.hydrosolutions.sapphire-watchdog.plist:37`), so a verbatim conversion leaves
+`--probe-token-path` and `--deadman-url-path` resolving **correctly**. They become silently wrong only if that
+key is ever removed or changed.
+
+**The actual hard failures are two different paths:**
+
+**⛔ R8 (BLOCKER) — the state file is `HOME`-derived** (`watchdog.py:85`, `Path.home()`). A daemon whose `HOME`
+becomes `/var/root` **cannot persist there** — a hard failure — and a daemon with a *different* `HOME` starts
+from a **fresh state file**, silently discarding the notification hysteresis that Plans 162 and 163 spent three
+review rounds building (pending/recovery-pending, alert-once). Losing it means re-alerting and a broken
+recovery path. **Required:** pass an absolute `--state-path` of the existing
+`/Users/<service>/.sapphire-watchdog-state.json`; verify it is readable/writable **as the service account** and
+that its parent exists; and **test that migration AND rollback keep using the same file.**
+
+**⛔ R9 (BLOCKER) — the installer provisions `${HOME}/Library/Logs`** (`install-launchd.sh:23`), which under
+`sudo` creates **root's** log directory. The plist's log paths are absolute (`:39`) and therefore fine — but only
+**if the service account's log directory exists**. If it does not, the daemon **fails to launch outright**.
+**Required:** provision the absolute service-account log directory, owned by the service account (per R5,
+create-only-if-missing, no recursive re-owning).
+
+**Decision — do BOTH, not either:** keep `WorkingDirectory` (it is what makes `uv run` resolve the project) **and**
+pass absolute, service-account-resolved `--slack-path`, `--probe-token-path`, `--deadman-url-path` and
+`--state-path`. Never rely on the daemon's `HOME`.
+
+**⚠️ R10 — the startup assertion must be SELECTIVE, and this is a trap.** My instinct was "fail loudly on any
+unresolvable configured secret". That would **break Plan 163 D3**: `--deadman-url-path` is always configured in
+the plist but is *legitimately absent* in dev/CI, where feature-off is the documented, tested behaviour. Assert
+only on paths declared **required**; absent-by-design must stay silent. Note the assertion is also **not
+sufficient** on its own — it cannot catch a bad state, log or executable path.
+
+## Further requirements from the same review
+
+**⛔ R11 (BLOCKER) — `UserName=<service account>` is necessary but does NOT prove access.** Same UID normally
+grants the same POSIX access, but it still fails if a secret is root-owned, a parent directory is not
+traversable, or the state/log target is not writable — and **the service UID does not inherit GUI-process TCC
+grants**, so anything under a privacy-protected location can be denied even with the correct UID. (We already
+lost a `du` to a mode-700 directory this week; same class.) **Required:** *before stopping the old job*, run
+access checks **as the service account** for the executable, the repository, all three secrets, the state file
+and its parent, and the log directory — and make a real system-domain read/write/ping check part of host
+acceptance.
+
+**R12 — the transactional sequence, explicitly ordered** (supersedes the looser ordering in T2):
+lock the installer → resolve account + selected label → preflight every file, secret, directory, command and the
+rendered plist → capture **both** domains' loaded/enabled state and back up every existing plist **plus
+metadata** → stage the new daemon plist **without loading it** → boot out the currently active watchdog and
+**verify its domain is absent** → `enable system/<label>` **before** bootstrap, then bootstrap → verify a fresh
+completed invocation, tick, and successful dead-man attempt → remove the legacy agent **and verify removal** →
+delete backups **only** after the final one-domain verification.
+On any failure after the bootout step, rollback must first boot out and **verify removal of** any new system
+job, restore persistent enable state and plist metadata, re-bootstrap the previously active job, and **verify a
+fresh successful run**. A fresh host with no previous job is a **distinct baseline**, not a degenerate case.
+
+**R13 — verification must not kill the run it is measuring.** `RunAtLoad` is `true`, so bootstrap **already
+triggers an invocation**; an immediate `kickstart -k` can **kill that run mid-flight**, possibly while it is
+persisting state, and launchd throttling then delays the replacement. **Required:** record a pre-bootstrap run
+counter and log byte offset (or add an explicit invocation identifier — the CLI has none today), poll with a
+**bounded timeout** for a *strictly newer completed* run, then check its exit status and only post-marker log
+events.
+
+**R14 — selector semantics before side effects.** The installer currently processes all three plists
+unconditionally, and under `sudo` its `$HOME`/`id -u` logic targets **root**. Parse and validate `--label`
+**before any filesystem or launchctl mutation**; require the exact watchdog label for this conversion path;
+guarantee non-selected jobs receive **no** copies, bootouts, bootstraps, directory changes or warnings; and
+either reject an unqualified "install all" for this migration or implement explicit per-label domain dispatch.
+
+**R15 — fresh-host ordering.** The installer today deliberately allows installation before the probe token
+exists, which conflicts with strict daemon startup. Document and test the sequence: service account + repository
+→ all production secrets with correct ownership/mode → state and log locations → *then* bootstrap. Missing
+prerequisites must fail **before** any launchctl mutation.
+
+**R16 — scheduling and logs.** Assert in plist tests that `StartInterval=300`, `RunAtLoad=true` and `KeepAlive`
+is **absent/false** (adding `KeepAlive` to a one-shot program would cause rapid-restart behaviour). Define
+expected **boot-time degradation**: the daemon starts before Docker and the network are ready, so its first
+ticks legitimately fail — that must not be read as an outage. The shared stdout/stderr log is currently
+**unbounded**; add or document a rotation policy with retention and ownership.
+
+**Minors:** `watchdog.sh` sets the repo directory and passes only the probe-token path, leaving Slack and
+dead-man implicit — once absolute daemon arguments exist, either mirror them or document the wrapper as
+non-production. The installer header says "two LaunchAgents" while listing three. If the plist becomes rendered
+from resolved paths, `plutil` must validate the **rendered** artifact, not just the checked-in source.
+
+### Test harness (R2/R12/R13 depend on it, and main has NO test file for this installer)
+
+Name the file and build an **unprivileged temporary-root harness** with fakes for `dscl`, `id`, `launchctl`,
+`plutil` and failure injection. **Assert command ORDERING, not only final state.** Cover: first migration,
+system reinstall, fresh host, bootstrap/enable/verification failure, legacy bootout/removal failure, backup
+failure, rollback restoration **and metadata**, missing/unreadable secrets, wrong `HOME`, invalid selector,
+concurrent invocation, and proof that **non-selected plists are untouched**. The R1 test must make a duplicate
+bootstrap **fail** and verify the new system job is booted out *before* old-job restoration.
+
