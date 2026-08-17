@@ -1,9 +1,14 @@
 """Plan 180: the CI vulnerability gate must say what it found.
 
-Prose assertions on the real ``ci.yml`` / ``.trivyignore`` / ``security.md`` /
-``docs/plans/064-supply-chain-hardening.md`` text — the same "single selector
-each, not a bespoke parser" style as
-``tests/unit/tooling/test_recap_wheel_guard.py`` (Plan 082 Task 2H).
+Structural assertions over the parsed ``ci.yml`` (steps selected by ``id``/
+``uses``, never by regex over the raw text — a regex keyed on a substring
+like ``"trivy convert"`` can match an explanatory comment instead of the real
+step, and a non-greedy span stops at the first flag it is told to find,
+silently ignoring anything after it) plus prose assertions on
+``.trivyignore`` / ``security.md`` / ``docs/plans/064-supply-chain-hardening.md``
+— the same "single selector each, not a bespoke parser" style as
+``tests/unit/tooling/test_recap_wheel_guard.py`` (Plan 082 Task 2H), now via
+``yaml.safe_load`` like ``tests/unit/test_compose_schedule_default.py``.
 
 These lock the incident's two root causes staying fixed:
 
@@ -12,15 +17,21 @@ These lock the incident's two root causes staying fixed:
    *and* gates, which is what printed nothing but ``exit code 1`` in the
    2026-08-17 incident.
 2. The SARIF must reach GitHub code scanning via
-   ``github/codeql-action/upload-sarif``, including on the failure path.
+   ``github/codeql-action/upload-sarif``, including on the failure path —
+   proved by actually evaluating the `if:` expressions against representative
+   step-outcome scenarios, not by pattern-matching the condition string.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_JOB_NAME = "build-image-and-scan"
 
 
 def _ci_yml_text() -> str:
@@ -39,29 +50,66 @@ def _plan_064_text() -> str:
     return (_REPO_ROOT / "docs/plans/064-supply-chain-hardening.md").read_text()
 
 
-def _build_image_and_scan_job_text() -> str:
-    """Slice out just the `build-image-and-scan:` job body.
+def _build_image_and_scan_job() -> dict[str, Any]:
+    workflow = yaml.safe_load(_ci_yml_text())
+    return workflow["jobs"][_JOB_NAME]
 
-    Avoids false negatives/positives from the unrelated `lint` job's
-    filesystem-scan Trivy step, which the plan explicitly does not touch.
+
+def _steps_by_id(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {step["id"]: step for step in job["steps"] if step.get("id")}
+
+
+def _step_by_id(job: dict[str, Any], step_id: str) -> dict[str, Any]:
+    steps = _steps_by_id(job)
+    assert step_id in steps, f"no step with id: {step_id!r} in job {_JOB_NAME!r}"
+    return steps[step_id]
+
+
+def _step_by_uses_prefix(job: dict[str, Any], prefix: str) -> dict[str, Any]:
+    for step in job["steps"]:
+        if str(step.get("uses", "")).startswith(prefix):
+            return step
+    raise AssertionError(
+        f"no step with `uses:` starting {prefix!r} in job {_JOB_NAME!r}"
+    )
+
+
+def _eval_gha_if(expr: str, *, job_status: str, outcomes: dict[str, str]) -> bool:
+    """Evaluate the small subset of GitHub Actions `if:` syntax this workflow uses.
+
+    ``job_status`` is what ``cancelled()``/``success()``/``failure()`` (called
+    with no arguments) resolve against — GitHub Actions defines those as the
+    status of the job *as of this point*, not any single prior step.
+    ``outcomes`` maps step id -> 'success' | 'failure' | 'skipped', used for
+    ``steps.<id>.outcome`` references.
     """
-    text = _ci_yml_text()
-    start = text.index("build-image-and-scan:")
-    # Bounded by the next top-level job's leading comment block.
-    end = text.index("\n  e2e:") if "\n  e2e:" in text else len(text)
-    return text[start:end]
+    body = expr.strip()
+    if body.startswith("${{") and body.endswith("}}"):
+        body = body[3:-2].strip()
+    body = re.sub(r"steps\.([A-Za-z0-9_-]+)\.outcome", r"steps['\1']", body)
+    body = body.replace("!=", "__NE__").replace("!", " not ").replace("__NE__", "!=")
+    body = body.replace("&&", " and ").replace("||", " or ")
+    namespace = {
+        "cancelled": lambda: job_status == "cancelled",
+        "success": lambda: job_status == "success",
+        "failure": lambda: job_status == "failure",
+        "always": lambda: True,
+        "steps": outcomes,
+    }
+    return bool(eval(body, {"__builtins__": {}}, namespace))  # noqa: S307 - fixed test-only grammar
 
 
 class TestScanOnceDeriveMany:
     """T1 — restructure the image-scan gate into scan-once/derive-many."""
 
     def test_report_step_writes_json_and_is_explicitly_non_gating(self) -> None:
-        job = _build_image_and_scan_job_text()
-        assert re.search(r"format:\s*json", job), (
-            "expected a `trivy image` step writing a JSON report — the single "
+        job = _build_image_and_scan_job()
+        report = _step_by_id(job, "trivy-scan")["with"]
+        assert report["format"] == "json", (
+            "expected the report step to write a JSON report — the single "
             "source the table/SARIF/gate all derive from"
         )
-        assert re.search(r'exit-code:\s*"0"', job), (
+        assert report["exit-code"] == "0", (
             "the report-writing step must be EXPLICITLY non-gating "
             '(exit-code: "0"), per the plan\'s trap #1 — it must say which '
             "failure mode it means, not omit exit-code and rely on an "
@@ -69,56 +117,76 @@ class TestScanOnceDeriveMany:
         )
 
     def test_report_step_keeps_ignore_unfixed_true(self) -> None:
-        job = _build_image_and_scan_job_text()
-        assert "format: json" in job, (
-            "no JSON-report step found — cannot check ignore-unfixed near it"
-        )
-        json_step_start = job.index("format: json")
-        # ignore-unfixed must be configured on/near the JSON-writing step,
-        # since `trivy convert` has no --ignore-unfixed flag at all — it can
-        # only be applied at scan time (verified empirically, Plan 180 T1).
-        window = job[json_step_start : json_step_start + 800]
-        assert "ignore-unfixed: true" in window, (
+        job = _build_image_and_scan_job()
+        report = _step_by_id(job, "trivy-scan")["with"]
+        # ignore-unfixed must live on the report step: `trivy convert` has no
+        # --ignore-unfixed flag at all — it can only be applied at scan time
+        # (verified empirically, Plan 180 T1).
+        assert report["ignore-unfixed"] is True, (
             "ignore-unfixed must stay true on the report step — T1 changes "
             "*where output goes*, never *what counts as a finding*"
         )
 
     def test_gate_is_a_convert_invocation_that_prints_a_table(self) -> None:
-        job = _build_image_and_scan_job_text()
-        assert "trivy convert" in job, (
+        job = _build_image_and_scan_job()
+        gate = _step_by_id(job, "trivy-gate-table")
+        run_text = gate["run"]
+        assert "trivy convert" in run_text, (
             "D1: gate on `trivy convert`, not the original scan step — "
             "keeping the old gate re-introduces the divergence this design "
             "removes"
         )
-        gate_match = re.search(r"trivy convert[^\n]*(?:\n[^\n]*)*?--exit-code 1", job)
-        assert gate_match, "no `trivy convert ... --exit-code 1` gate found"
-        gate_text = gate_match.group(0)
-        assert "--format table" in gate_text, (
+        assert "--format table" in run_text, (
             "the gate must render `table` — the same command that fails the "
             "job must be the one that prints the human-readable findings"
         )
-        assert "--output" not in gate_text and " -o " not in gate_text, (
+        assert "--exit-code 1" in run_text, (
+            "the gate step must fail the job on a finding"
+        )
+        assert "trivy-image.json" in run_text, (
+            "the gate must convert the SAME report the scan step wrote"
+        )
+        # Checked over the step's FULL run text (not a regex span truncated
+        # at the first `--exit-code 1`) so a flag added anywhere else in the
+        # command — e.g. `--output silent.txt` after --exit-code — is caught.
+        assert (
+            "--output" not in run_text
+            and re.search(r"(?:^|\s)-o(?:\s|$)", run_text) is None
+        ), (
             "the gate must print straight to the job log (no file output) — "
             "a file-output invocation is exactly what printed nothing in "
             "the 2026-08-17 incident"
         )
 
-    def test_no_step_combines_sarif_format_with_a_gating_exit_code(self) -> None:
-        """Regression lock for the exact incident shape: format: sarif +
-        output-to-file + exit-code: "1", which prints nothing to the log."""
-        job = _build_image_and_scan_job_text()
-        for step_text in re.split(r"\n(?=      - name:)", job):
-            if re.search(r"format:\s*sarif", step_text):
-                assert not re.search(r'exit-code:\s*"?1"?\s*$', step_text, re.M), (
-                    "a SARIF-writing step must never also be the gate: "
-                    f"{step_text[:200]!r}"
-                )
+    def test_no_step_combines_sarif_output_with_a_gating_exit_code(self) -> None:
+        """Regression lock for the exact incident shape: a SARIF-writing step
+        (`with: {format: sarif}` on the action-form, or `--format sarif` on
+        the CLI-form `trivy convert` this plan introduced) that ALSO gates
+        via a nonzero exit-code, which prints nothing to the log."""
+        job = _build_image_and_scan_job()
+        for step in job["steps"]:
+            with_: dict[str, Any] = step.get("with", {}) or {}
+            run_text: str = step.get("run", "") or ""
+            declares_sarif = (
+                with_.get("format") == "sarif" or "--format sarif" in run_text
+            )
+            if not declares_sarif:
+                continue
+            action_exit_code = str(with_.get("exit-code", "0"))
+            assert action_exit_code == "0", (
+                f"step {step.get('name')!r} writes SARIF and also gates via "
+                "`with: exit-code` — a SARIF-writing step must never be the gate"
+            )
+            assert "--exit-code" not in run_text, (
+                f"step {step.get('name')!r} writes SARIF via `trivy convert "
+                "--format sarif` and also passes --exit-code — a SARIF-writing "
+                "step must never be the gate"
+            )
 
     def test_severity_filter_present_on_the_gate(self) -> None:
-        job = _build_image_and_scan_job_text()
-        gate_match = re.search(r"trivy convert[^\n]*(?:\n[^\n]*)*?--exit-code 1", job)
-        assert gate_match
-        assert "--severity HIGH,CRITICAL" in gate_match.group(0), (
+        job = _build_image_and_scan_job()
+        run_text = _step_by_id(job, "trivy-gate-table")["run"]
+        assert "--severity HIGH,CRITICAL" in run_text, (
             "the severity filter must be applied on the convert/gate path "
             "directly — `limit-severities-for-sarif` only ever governed the "
             "SARIF-writing path per its own comment, and does not carry the "
@@ -130,53 +198,19 @@ class TestSarifReachesCodeScanning:
     """T2 — upload the SARIF to code scanning, including on failure."""
 
     def test_upload_sarif_action_present(self) -> None:
-        job = _build_image_and_scan_job_text()
-        assert "github/codeql-action/upload-sarif@" in job, (
-            "the workflow never calls github/codeql-action/upload-sarif — "
-            "SARIF's only consumer today is upload-artifact, which archives "
-            "a zip nothing reads (the incident's second root cause)"
-        )
+        job = _build_image_and_scan_job()
+        # Raises AssertionError with a clear message if absent.
+        _step_by_uses_prefix(job, "github/codeql-action/upload-sarif@")
 
     def test_upload_sarif_references_the_trivy_image_sarif_file(self) -> None:
-        job = _build_image_and_scan_job_text()
-        assert "github/codeql-action/upload-sarif@" in job, (
-            "upload-sarif step is missing entirely — cannot check what it references"
-        )
-        idx = job.index("github/codeql-action/upload-sarif@")
-        window = job[idx : idx + 400]
-        assert "trivy-image.sarif" in window
-
-    def test_upload_sarif_step_is_not_success_only(self) -> None:
-        """It must run on the failure path (that's the run that matters)."""
-        job = _build_image_and_scan_job_text()
-        assert "github/codeql-action/upload-sarif@" in job, (
-            "upload-sarif step is missing entirely — cannot check its `if:`"
-        )
-        idx = job.index("github/codeql-action/upload-sarif@")
-        # Look at the step block: from the preceding "- name:"/"if:" lines
-        # up to the `uses:` line itself.
-        preceding = job[:idx]
-        step_start = preceding.rindex("\n      - name:")
-        step_block = job[step_start:idx]
-        assert "if:" in step_block, (
-            "the upload-sarif step needs an explicit `if:` that survives a "
-            "prior step failing (e.g. `!cancelled()` / `always()`) — the "
-            "default implicit `success()` condition would skip it exactly "
-            "on the failure path that matters"
-        )
-        assert re.search(r"success\(\)\s*$", step_block.strip()) is None
-        assert "always()" in step_block or "cancelled()" in step_block
+        job = _build_image_and_scan_job()
+        upload = _step_by_uses_prefix(job, "github/codeql-action/upload-sarif@")
+        assert upload["with"]["sarif_file"] == "trivy-image.sarif"
 
     def test_upload_sarif_has_no_blanket_continue_on_error(self) -> None:
-        job = _build_image_and_scan_job_text()
-        assert "github/codeql-action/upload-sarif@" in job, (
-            "upload-sarif step is missing entirely — cannot check its continue-on-error"
-        )
-        idx = job.index("github/codeql-action/upload-sarif@")
-        preceding = job[:idx]
-        step_start = preceding.rindex("\n      - name:")
-        window = job[step_start : idx + 400]
-        assert "continue-on-error: true" not in window, (
+        job = _build_image_and_scan_job()
+        upload = _step_by_uses_prefix(job, "github/codeql-action/upload-sarif@")
+        assert upload.get("continue-on-error") is not True, (
             "a blanket continue-on-error on the upload would permanently "
             "hide a broken upload (bad token, malformed SARIF, path typo) — "
             "the same silent-failure class this plan exists to close, moved "
@@ -184,11 +218,76 @@ class TestSarifReachesCodeScanning:
         )
 
     def test_job_declares_security_events_write_permission(self) -> None:
-        job = _build_image_and_scan_job_text()
-        assert "security-events: write" in job, (
+        job = _build_image_and_scan_job()
+        assert job.get("permissions", {}).get("security-events") == "write", (
             "upload-sarif requires the security-events: write permission on "
             "the job's GITHUB_TOKEN"
         )
+
+
+class TestFailurePathReallyPublishes:
+    """T2 (failure path) — proved by EVALUATING the `if:` expressions of the
+    SARIF-conversion step and the code-scanning upload step against
+    representative step-outcome scenarios, not by matching substrings in the
+    condition text. This is what actually distinguishes a correct condition
+    from a plausible-looking-but-wrong one: `if: ${{ cancelled() }}` and
+    `if: ${{ !cancelled() && success() }}` both "mention" cancelled()/lack a
+    bare success()-only form, yet both would skip the gate-failed scenario
+    below — this class fails on either of those.
+    """
+
+    def _conditions(self) -> tuple[str, str]:
+        # GitHub Actions' own default when a step omits `if:` entirely is a
+        # bare `success()` — that IS the incident's failure mode (removing
+        # the override silently restores it), so a missing key must resolve
+        # to that string, never raise or skip the check.
+        job = _build_image_and_scan_job()
+        sarif_if = _step_by_id(job, "trivy-sarif").get("if", "success()")
+        upload_if = _step_by_uses_prefix(job, "github/codeql-action/upload-sarif@").get(
+            "if", "success()"
+        )
+        return sarif_if, upload_if
+
+    def test_gate_failed_not_cancelled_conversion_and_upload_both_run(self) -> None:
+        """The failure path that matters: a real CVE tripped the gate."""
+        sarif_if, upload_if = self._conditions()
+        outcomes = {"trivy-scan": "success", "trivy-gate-table": "failure"}
+        sarif_runs = _eval_gha_if(sarif_if, job_status="failure", outcomes=outcomes)
+        assert sarif_runs, "SARIF conversion must still run when the gate step failed"
+        outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
+        assert upload_runs, "the SARIF upload must still run when the gate step failed"
+
+    def test_scan_itself_failed_neither_conversion_nor_upload_run(self) -> None:
+        """An operational scan failure (not a finding) must not fabricate a
+        report from a JSON file that was never written."""
+        sarif_if, upload_if = self._conditions()
+        outcomes = {"trivy-scan": "failure"}
+        sarif_runs = _eval_gha_if(sarif_if, job_status="failure", outcomes=outcomes)
+        assert not sarif_runs, (
+            "conversion must not run off a report the scan never wrote"
+        )
+        outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
+        assert not upload_runs, "upload must not run without a SARIF file to upload"
+
+    def test_cancelled_run_neither_conversion_nor_upload_run(self) -> None:
+        sarif_if, upload_if = self._conditions()
+        outcomes = {"trivy-scan": "cancelled"}
+        sarif_runs = _eval_gha_if(sarif_if, job_status="cancelled", outcomes=outcomes)
+        assert not sarif_runs, "a cancelled run must not still convert/upload"
+        outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="cancelled", outcomes=outcomes)
+        assert not upload_runs
+
+    def test_normal_success_conversion_and_upload_both_run(self) -> None:
+        sarif_if, upload_if = self._conditions()
+        outcomes = {"trivy-scan": "success", "trivy-gate-table": "success"}
+        sarif_runs = _eval_gha_if(sarif_if, job_status="success", outcomes=outcomes)
+        assert sarif_runs
+        outcomes["trivy-sarif"] = "success" if sarif_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="success", outcomes=outcomes)
+        assert upload_runs
 
 
 class TestTrivyignorePolicyIsInternallyConsistent:
