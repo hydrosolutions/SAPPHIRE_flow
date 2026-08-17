@@ -75,19 +75,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gosu curl postgresql-client-16 libexpat1 libgeos-c1v5 libeccodes0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Apply Debian SECURITY updates on top of the pinned base. The base digest is
-# pinned deliberately for reproducibility, which means it lags trixie-security
-# by however long the upstream python image takes to rebuild — and CI's Trivy
-# gate fails on any fixable HIGH/CRITICAL in the meantime, on EVERY branch.
+# Apply available package upgrades on top of the pinned base. The base digest is
+# pinned deliberately for reproducibility, which means it lags trixie-security by
+# however long the upstream python image takes to rebuild — and CI's Trivy gate
+# then fails on a fixable HIGH/CRITICAL until it catches up.
 #
 # Concretely (2026-08-17): CVE-2026-53615 in util-linux/bsdutils. The base still
 # ships 2.41-5; trixie-security has 2.41.5-0+deb13u1. Re-pinning the base does
 # NOT help — the current `python:3.14-slim` carries the same unpatched version.
 #
-# `upgrade` (not `dist-upgrade`) and security-only, so this cannot pull in new
-# packages or cross a major version; it only moves already-installed packages to
-# their patched builds. Reproducibility is preserved by the pinned base plus the
-# lockfile — this layer only ever applies security patches on top.
+# WHAT THIS ACTUALLY DOES, precisely — an earlier version of this comment claimed
+# "security-only", which is false and is corrected here:
+#   * It upgrades already-installed packages from EVERY configured feed — Debian
+#     main, trixie-security, AND the PGDG repo added above — not security alone.
+#     An earlier draft restricted the source list; that was dropped as fragile,
+#     and this comment failed to follow.
+#   * `upgrade` (not `dist-upgrade`) will NOT add or remove packages. The
+#     corollary is that it silently LEAVES A PACKAGE UNCHANGED when its fix needs
+#     another package's install status to change — so it does not absorb every
+#     fixable finding, and Trivy remains the backstop that catches the remainder.
+#   * It therefore INCREASES build drift rather than preserving reproducibility:
+#     two builds of the same digest at different times can differ. That is the
+#     accepted live-OS-feed residual risk already recorded in
+#     `docs/standards/security.md` § Accepted residual risk, widened slightly.
+#
+# Scope of the CI symptom, also corrected: CI runs on pushes to `main` and on
+# pull-request events, so a new advisory does not retroactively flip completed
+# checks — it fails the NEXT run of each.
 RUN apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
