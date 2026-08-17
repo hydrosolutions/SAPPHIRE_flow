@@ -147,11 +147,18 @@ class HydroScraperAdapter:
             )
 
         def send(remaining_s: float) -> httpx.Response:
+            # Blocker fix (round 2): deliberately NOT threaded into
+            # `timeout=` — HTTPX 0.28 applies a single float independently to
+            # each of connect/read/write/pool, so doing so would let ONE
+            # phase wait up to the full remaining budget while REPLACING this
+            # client's own (stricter) configured timeout. The aggregate 120 s
+            # deadline is enforced by the limiter's deadline-runner wrapper
+            # around this call instead (see lindas_rate_limiter.py).
+            del remaining_s
             return self._http_client.post(
                 self._endpoint,
                 data={"query": query},
                 headers={"Accept": "application/sparql-results+json"},
-                timeout=remaining_s,
             )
 
         try:
@@ -204,7 +211,15 @@ class HydroScraperAdapter:
 
         try:
             bindings = response.json()["results"]["bindings"]
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:
+            # Major fix (round 2): TypeError covers a wrong-SHAPED (but
+            # valid-JSON) envelope — a top-level list (`[]["results"]`), a
+            # `results` that is itself a list (`[]["bindings"]`), or
+            # `{"results": null}` (`None["bindings"]`) — where indexing with
+            # a string key raises TypeError, not KeyError/ValueError. Must be
+            # caught here so it becomes a typed MALFORMED_RESPONSE outcome,
+            # never a bare TypeError that aborts the whole batch before this
+            # station's health record is written.
             log.warning(
                 "observation.fetch_failed",
                 station_id=str(station_id),
@@ -264,11 +279,14 @@ class HydroScraperAdapter:
         query = self._build_sparql_query(site_code, station_kind)
 
         def send(remaining_s: float) -> httpx.Response:
+            # Blocker fix (round 2): see the comment in `_fetch_one`'s `send`
+            # — the deadline is enforced by the limiter's deadline-runner
+            # wrapper, not by threading `remaining_s` into `timeout=`.
+            del remaining_s
             return self._http_client.post(
                 self._endpoint,
                 data={"query": query},
                 headers={"Accept": "application/sparql-results+json"},
-                timeout=remaining_s,
             )
 
         # Major fix: this probe used to POST directly, bypassing the shared
@@ -311,7 +329,10 @@ class HydroScraperAdapter:
 
         try:
             bindings = response.json()["results"]["bindings"]
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:
+            # Major fix (round 2): same wrong-shaped-envelope TypeError gap
+            # as `_fetch_one` above — a top-level list/None `results` must
+            # resolve to `reachable=False`, never escape as a raw TypeError.
             log.info(
                 "observation.verify_gauge_completed",
                 site_code=site_code,

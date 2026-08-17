@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.forecast import ForeignForecast
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
-    from sapphire_flow.types.observation import RawObservation
+    from sapphire_flow.types.observation import HydroScraperBatchResult, RawObservation
     from sapphire_flow.types.pipeline import FlowRunStatus
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
     from sapphire_flow.types.weather import (
@@ -69,6 +69,26 @@ class StationDataSource(Protocol):
         station_configs: list[StationConfig],
         since: dict[StationId, UtcDatetime],
     ) -> list[RawObservation]:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class BatchStationDataSource(Protocol):
+    """Minor fix (Plan 175 round 2) — narrow capability Protocol for the
+    per-station-outcome batch fetch `ingest_observations_flow` actually
+    calls. NOT part of `StationDataSource` (touchpoint-maps.md: widening that
+    Protocol was the explicit rejected alternative) — `fetch_observations_batch`
+    stays an ADDITION any `StationDataSource` implementation may also offer.
+    `HydroScraperAdapter` and `ReplayStationAdapter` both satisfy this; a
+    `StationDataSource` that only implements the base Protocol does not, and
+    should not be handed to `ingest_observations_flow` as its `adapter=`.
+    """
+
+    def fetch_observations_batch(
+        self,
+        station_configs: list[StationConfig],
+        since: dict[StationId, UtcDatetime],
+    ) -> HydroScraperBatchResult:
         raise NotImplementedError
 
 

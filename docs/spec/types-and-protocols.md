@@ -3409,14 +3409,14 @@ class StationDataSource(Protocol):
 
 `RawObservation` and `Observation` are defined in the Entity types section above.
 
-**Plan 175 T3 — `HydroScraperAdapter.fetch_observations_batch` (NOT part of this
-Protocol).** `fetch_observations` stays exactly as above — the locked shape every
-`StationDataSource` caller (the recorder, the replay adapter, every test fake)
-already depends on. `HydroScraperAdapter` additionally exposes a
-HydroScraper-specific typed batch method the operational ingest flow calls
-instead, so a mass-429 run can report which stations failed and why instead of
-collapsing every failure into the same empty result the façade already returns
-for "nothing new published":
+**Plan 175 T3 — `fetch_observations_batch` / `BatchStationDataSource` (NOT part of
+this Protocol).** `fetch_observations` stays exactly as above — the locked shape
+every `StationDataSource` caller (the recorder, every test fake) depends on.
+`ingest_observations_flow` calls `fetch_observations_batch` EXCLUSIVELY (T3), so
+any adapter constructed as its `adapter=` argument must offer it — this is a
+narrow ADDITIONAL capability, not a `StationDataSource` requirement, captured by
+its own Protocol so a type checker can verify it instead of relying on an
+`AttributeError` at runtime:
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -3432,23 +3432,39 @@ class HydroScraperBatchResult:
     # .observations -> flat list[RawObservation] (what fetch_observations() returns)
     # .failed -> tuple[StationFetchOutcome, ...] where failure_cause is not None
 
-class HydroScraperAdapter:
+class BatchStationDataSource(Protocol):
     def fetch_observations_batch(
         self,
         station_configs: list[StationConfig],
         since: dict[StationId, UtcDatetime],
     ) -> HydroScraperBatchResult: ...
+
+class HydroScraperAdapter:
+    def fetch_observations_batch(...) -> HydroScraperBatchResult: ...
         # fetch_observations() delegates to this and returns .observations —
         # both go through the SAME shared LindasRateLimiter (D6), so no
         # caller of either method escapes pacing.
+
+class ReplayStationAdapter:
+    def fetch_observations_batch(...) -> HydroScraperBatchResult: ...
+        # Plan 175 round 2: a thin per-station regrouping of the results
+        # fetch_observations() already computes — NOT a second parse/filter
+        # implementation. Added because `ingest_observations_flow` calling
+        # this method exclusively meant a `StationDataSource` that only
+        # implemented the base Protocol (this adapter, pre-round-2) raised
+        # `AttributeError` if ever handed to the flow as `adapter=`.
 ```
 
 `FetchOutcomeCause` is defined above alongside `PipelineCheckType`. Widening the
 `StationDataSource` Protocol itself to carry this shape was the explicit
-alternative and was rejected — it would require updating the Protocol, this
-spec, the fixture recorder (`tools/record_fixtures.py`), the replay adapter, and
-every fake/caller in one change, for a shape only one caller (the operational
-ingest flow) needs.
+alternative and was rejected — it would force every `StationDataSource`
+implementation to grow this method (or a default/`NotImplementedError` stub)
+whether or not it is ever used as `ingest_observations_flow`'s adapter, entangling
+the base fetch contract with one flow's typed per-station accounting.
+`BatchStationDataSource` gives that flow's parameter an honest type without that
+cost — `HydroScraperAdapter` and `ReplayStationAdapter` both satisfy it; a
+`StationDataSource` implementation that does not is a caller bug if handed to
+`ingest_observations_flow`, not a Protocol violation.
 
 #### WeatherReanalysisSource
 

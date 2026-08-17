@@ -56,9 +56,22 @@ class _SleepSpy:
             self._clock.advance(seconds)
 
 
-def _limiter(module, *, clock: _FakeClock, sleeper: _SleepSpy, **config_kwargs):  # type: ignore[no-untyped-def]
+def _limiter(  # type: ignore[no-untyped-def]
+    module,
+    *,
+    clock: _FakeClock,
+    sleeper: _SleepSpy,
+    deadline_runner=None,
+    **config_kwargs,
+):
     config = module.LindasLimiterConfig(**config_kwargs)
-    return module.TokenBucketLindasLimiter(config=config, clock=clock, sleeper=sleeper)
+    kwargs = {"config": config, "clock": clock, "sleeper": sleeper}
+    # Only forwarded when a test explicitly injects one — keeps every
+    # pre-existing call site working unchanged against a limiter build that
+    # does not yet know about `deadline_runner`.
+    if deadline_runner is not None:
+        kwargs["deadline_runner"] = deadline_runner
+    return module.TokenBucketLindasLimiter(**kwargs)
 
 
 def _responses(*statuses: int, headers: dict[str, str] | None = None):  # type: ignore[no-untyped-def]
@@ -70,6 +83,32 @@ def _responses(*statuses: int, headers: dict[str, str] | None = None):  # type: 
         return httpx.Response(status, headers=headers or {})
 
     return send
+
+
+def _slow_deadline_runner(
+    clock: _FakeClock, sleeper: _SleepSpy, *, response_delay_s: float
+):  # type: ignore[no-untyped-def]
+    """Deterministic (fake-clock, no real threads) stand-in for
+    `_run_with_deadline`'s hard-cutoff semantics: if `send` would take
+    `response_delay_s` to answer and that exceeds the attempt's remaining
+    budget, the calling side must get control back at EXACTLY `remaining_s`
+    (never later) with a timeout — never wait out `send`'s full delay and
+    never return whatever `send` eventually produces. This is exactly what
+    the real thread-join primitive guarantees: the calling thread's wait is
+    bounded to `remaining_s` regardless of what the background thread is
+    still doing."""
+
+    def runner(send, remaining_s: float):  # type: ignore[no-untyped-def]
+        if response_delay_s > remaining_s:
+            sleeper(remaining_s)
+            raise httpx.TimeoutException(
+                f"simulated deadline overrun ({response_delay_s}s > "
+                f"{remaining_s}s remaining)"
+            )
+        sleeper(response_delay_s)
+        return send(remaining_s)
+
+    return runner
 
 
 _START = datetime(2026, 8, 17, 8, 0, 0, tzinfo=UTC)
@@ -311,6 +350,35 @@ class TestCrossCallBucketSync:
         extra_sleeps = len(spy.calls) - sleeps_after_a
         assert extra_sleeps >= 2
 
+    def test_429_then_success_paces_the_very_next_call_by_itself(self) -> None:
+        """Round-2 major fix: the retry's SUCCESSFUL attempt (429 -> sleep ->
+        200) also spends a real upstream token, but pre-fix the bucket was
+        only ever charged once per call() (at the very start) — so by the
+        time the retry backoff sleep had elapsed one whole refill period, the
+        local model believed a FULL extra token had accrued that upstream
+        never actually had spare. That let the very next independent call()
+        send immediately, unpaced. Acquiring a token before EVERY attempt
+        (including the retry) closes this: the retry's acquire consumes the
+        refilled token itself, so the bucket is honestly at 0 when call() B
+        starts, not falsely at 1."""
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        response_a = limiter.call(_responses(429, 200))
+        assert response_a.status_code == 200
+        sleeps_after_a = len(spy.calls)
+
+        response_b = limiter.call(_responses(200))
+
+        assert response_b.status_code == 200
+        assert len(spy.calls) > sleeps_after_a, (
+            "the call immediately following a recovered 429 must itself be "
+            "paced, not sent on phantom bucket credit left over from the "
+            "retry's real (but never locally charged) HTTP attempt"
+        )
+
 
 class TestNonRetryableStatus:
     def test_404_is_returned_immediately_with_zero_sleep(self) -> None:
@@ -363,3 +431,165 @@ class TestBucketPacing:
         expected_paced_calls = n - capacity
         assert len(spy.calls) >= expected_paced_calls
         assert all(c >= module.LINDAS_RETRY_FLOOR_S for c in spy.calls)
+
+
+class TestDeadlineActuallyEnforced:
+    """Round-2 blocker fix: `timeout=remaining_s` on an HTTP client call does
+    NOT bound that call's wall-clock time to `remaining_s` — HTTPX applies
+    the value independently to each of connect/read/write/pool, so a request
+    slow across more than one phase can still overrun the deadline even
+    though each individual phase stayed under it. `call()` now runs `send`
+    through a `deadline_runner` (`_run_with_deadline` in production; a
+    deterministic fake here) that enforces a real hard cutoff instead. These
+    tests inject the fake and assert on `call()`'s own reaction: it must
+    never return a too-late response, and elapsed time must never exceed the
+    configured deadline."""
+
+    def test_a_slow_response_that_would_eventually_succeed_is_never_returned(
+        self,
+    ) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        # `send` would take 200s to answer (and WOULD succeed if awaited) —
+        # far longer than the 30s deadline below.
+        runner = _slow_deadline_runner(clock, spy, response_delay_s=200.0)
+        limiter = _limiter(
+            module,
+            clock=clock,
+            sleeper=spy,
+            deadline_runner=runner,
+            total_deadline_s=30.0,
+            max_attempts=5,
+        )
+
+        with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
+            limiter.call(_responses(200))
+
+        assert exc_info.value.bound == "deadline"
+        elapsed_s = (clock.now - _START).total_seconds()
+        assert elapsed_s <= 30.0
+
+    def test_a_request_slow_across_multiple_phases_still_bounds_to_the_deadline(
+        self,
+    ) -> None:
+        # Models a request that is merely slow (not hung) across MORE THAN
+        # ONE HTTPX phase — e.g. a slow connect followed by a slow read, each
+        # individually under a generous per-phase timeout, whose SUM still
+        # overruns the call's remaining budget. `timeout=remaining_s` cannot
+        # catch this (each phase re-arms independently); the deadline runner
+        # bounds total attempt time directly instead.
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        runner = _slow_deadline_runner(clock, spy, response_delay_s=90.0)
+        limiter = _limiter(
+            module,
+            clock=clock,
+            sleeper=spy,
+            deadline_runner=runner,
+            total_deadline_s=60.0,
+            max_attempts=5,
+        )
+
+        with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
+            limiter.call(_responses(200))
+
+        assert exc_info.value.bound == "deadline"
+        elapsed_s = (clock.now - _START).total_seconds()
+        assert elapsed_s <= 60.0
+
+
+class TestDeadlineRunnerPrimitive:
+    """Exercises the REAL `_run_with_deadline` (the production
+    `deadline_runner` default) directly, through actual OS threads — this
+    is the one deliberate exception to this file's "fakes only, never real
+    time" rule, because the property under test (a background thread cannot
+    be prevented from continuing, but the JOINING thread's wait can be
+    bounded) is inherent to the concurrency primitive itself and cannot be
+    expressed through the fake clock. Durations are kept small (well under
+    1s) to stay fast."""
+
+    def test_a_fast_send_returns_its_response_normally(self) -> None:
+        module = _import_module()
+
+        def fast_send(remaining_s: float) -> httpx.Response:
+            del remaining_s
+            return httpx.Response(200)
+
+        response = module._run_with_deadline(fast_send, 5.0)  # noqa: SLF001
+
+        assert response.status_code == 200
+
+    def test_a_hanging_send_does_not_block_the_caller_past_the_deadline(
+        self,
+    ) -> None:
+        import time as _time
+
+        module = _import_module()
+
+        def hanging_send(remaining_s: float) -> httpx.Response:
+            del remaining_s
+            _time.sleep(5.0)  # never observed by the assertions below
+            return httpx.Response(200)
+
+        started = _time.perf_counter()
+        with pytest.raises(httpx.TimeoutException):
+            module._run_with_deadline(hanging_send, 0.05)  # noqa: SLF001
+        elapsed_s = _time.perf_counter() - started
+
+        # The calling thread must return near the 0.05s budget, not wait out
+        # the background thread's full 5s sleep.
+        assert elapsed_s < 1.0
+
+    def test_a_send_that_raises_forwards_the_original_exception(self) -> None:
+        module = _import_module()
+
+        def failing_send(remaining_s: float) -> httpx.Response:
+            del remaining_s
+            raise httpx.ConnectError("no route to host")
+
+        with pytest.raises(httpx.ConnectError):
+            module._run_with_deadline(failing_send, 5.0)  # noqa: SLF001
+
+
+class TestRetryAfterOverflowGuard:
+    """Major fix: an absurdly large numeric `Retry-After` must clamp to
+    `LINDAS_MAX_DELAY_S`, not escape `_parse_retry_after` as a raw
+    OverflowError (from `float()` of a huge-but-valid Python int) or
+    ValueError (from `int()`'s own digit-count limit on a truly enormous
+    string)."""
+
+    def test_a_few_hundred_digit_retry_after_clamps_to_the_max_delay(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        # 400 digits: well within Python's int-string conversion limit (so
+        # `int()` succeeds), but far past float's ~308-digit max magnitude —
+        # `float(int(...))` raises OverflowError here pre-fix.
+        huge_digits = "7" * 400
+        send = _responses(429, 200, headers={"Retry-After": huge_digits})
+
+        limiter.call(send)
+
+        assert spy.calls == [module.LINDAS_MAX_DELAY_S]
+
+    def test_a_retry_after_beyond_pythons_int_string_limit_clamps_to_the_max_delay(
+        self,
+    ) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        # Past CPython's default int-string-conversion digit limit (4300) —
+        # `int()` itself raises ValueError here pre-fix, before `float()` is
+        # even reached.
+        absurd_digits = "9" * 5000
+        send = _responses(429, 200, headers={"Retry-After": absurd_digits})
+
+        limiter.call(send)
+
+        assert spy.calls == [module.LINDAS_MAX_DELAY_S]

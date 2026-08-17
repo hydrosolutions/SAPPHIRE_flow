@@ -167,6 +167,22 @@ class TestVerifyGaugeReachable:
         adapter = _make_adapter(httpx.MockTransport(handler))
         assert adapter.verify_gauge_reachable("2091", StationKind.RIVER) is False
 
+    def test_top_level_response_is_a_list_returns_false(self) -> None:
+        # Major fix (round 2): same wrong-shaped-envelope TypeError gap as
+        # `_fetch_one` — `[]["results"]` raises TypeError, not KeyError.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=[])
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        assert adapter.verify_gauge_reachable("2091", StationKind.RIVER) is False
+
+    def test_results_key_is_null_returns_false(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": None})
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        assert adapter.verify_gauge_reachable("2091", StationKind.RIVER) is False
+
     def test_429_then_200_is_paced_through_the_shared_limiter(self) -> None:
         """Major fix: this probe used to POST directly, bypassing the shared
         limiter — a transient 429 was reported straight back as
@@ -380,6 +396,42 @@ class TestMalformedBindingsSurviveAsTypedFailures:
     def test_binding_item_is_not_a_dict(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"results": {"bindings": ["not-a-dict"]}})
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+    def test_top_level_response_is_a_list(self) -> None:
+        # Major fix (round 2): `response.json()` returning a top-level LIST
+        # is valid JSON but `[]["results"]` raises TypeError (list indices
+        # must be integers), not KeyError/ValueError — previously escaped
+        # the `except (ValueError, KeyError)` guard entirely.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=[])
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+    def test_results_key_is_null(self) -> None:
+        # Major fix (round 2): `{"results": null}` extracts cleanly to
+        # `None`, then `None["bindings"]` raises TypeError.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": None})
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+    def test_results_key_is_a_list(self) -> None:
+        # Major fix (round 2): `{"results": []}` extracts to a LIST, then
+        # `[]["bindings"]` raises TypeError (same class of bug, one level
+        # deeper than the top-level-list case above).
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": []})
 
         adapter = _batch_adapter(httpx.MockTransport(handler))
         outcome = _fetch_one_outcome(adapter)

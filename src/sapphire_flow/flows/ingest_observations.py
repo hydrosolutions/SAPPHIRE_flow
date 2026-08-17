@@ -29,7 +29,7 @@ from sapphire_flow.types.enums import (
 )
 
 if TYPE_CHECKING:
-    from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
+    from sapphire_flow.protocols.adapters import BatchStationDataSource
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.observation_store import PgObservationStore
@@ -136,7 +136,7 @@ def _resolve_fetch_observations_run_name() -> str:
     cache_policy=NO_CACHE,
 )
 def _fetch_observations_task(
-    adapter: HydroScraperAdapter,
+    adapter: BatchStationDataSource,
     station_configs: list[StationConfig],
     since: dict[StationId, UtcDatetime],
 ) -> HydroScraperBatchResult:
@@ -144,6 +144,9 @@ def _fetch_observations_task(
     # Protocol's list façade — per-station failure causes (D9) are only
     # observable here, and this flow needs them to report a truthful
     # `stations_failed` (D8) instead of silently swallowing failures.
+    # Minor fix (round 2): typed against `BatchStationDataSource` (a narrow
+    # capability Protocol), not the concrete `HydroScraperAdapter` — any
+    # adapter offering this method (e.g. `ReplayStationAdapter`) works here.
     return adapter.fetch_observations_batch(station_configs, since)
 
 

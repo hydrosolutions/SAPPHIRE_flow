@@ -15,24 +15,39 @@ Protocol so a future cross-process implementation (e.g. a Prefect global
 concurrency limit) can be substituted without touching any caller.
 
 **Two independent waits, not one:**
-- *Bucket pacing* — ``call()`` acquires one token at the very start, before
-  its first attempt. This paces the rate of independent ``call()``
-  invocations (e.g. many stations polled in a tight loop) against each
-  other. It fires at most once per ``call()``.
+- *Bucket pacing* — ``call()`` acquires one token before EVERY attempt,
+  including retries (fixer round 2), not just the call's first. This paces
+  the rate of independent ``call()`` invocations (e.g. many stations polled
+  in a tight loop) against each other, AND makes sure a retried attempt —
+  which spends a second real upstream request — is charged against the local
+  model too. Charging only the first attempt let a ``call()`` that retried
+  leave phantom credit for the next independent ``call()`` to spend
+  immediately, recreating the exact 429 cascade this module exists to
+  prevent.
 - *Retry backoff* — once a request fails retryably, the wait before the next
   attempt is governed entirely by :data:`LINDAS_RETRY_FLOOR_S` / the
   response's ``Retry-After`` (D7), never by the bucket. Retry backoff already
-  waits at or above the bucket's own refill period, so gating retries through
-  the bucket a second time would only double-count the same wait.
+  waits at or above the bucket's own refill period, so the per-attempt token
+  acquisition above should normally find a token already refilled and NOT add
+  an extra wait on top of the backoff — it exists to charge the token, not to
+  gate the retry a second time.
 
-**The 120 s deadline covers the ENTIRE call, including bucket wait.**
-``call()`` starts its clock before ``_acquire_token()``, not after, and
-re-checks the remaining budget before every attempt (including the first) —
-a starved bucket counts against the deadline exactly like a slow retry
-sequence does. ``send`` receives that remaining budget (seconds) on every
-invocation so it can bound its own HTTP timeout; a caller-side network stack
-that ignores it is the one thing this module cannot force from outside a
-synchronous call.
+**The 120 s deadline covers the ENTIRE call, including bucket wait — and is
+actually enforced, not just checked.** ``call()`` starts its clock before
+token acquisition, not after, and re-checks the remaining budget before every
+attempt (including the first) AND again after token acquisition (which can
+itself wait) — a starved bucket counts against the deadline exactly like a
+slow retry sequence does. ``send`` is never invoked directly: it runs through
+``_run_with_deadline`` (or an injected ``deadline_runner``), which executes it
+on a background thread and joins with a hard ``remaining_s`` timeout. This is
+the actual enforcement mechanism — passing ``timeout=`` values to an HTTP
+client only bounds each connect/read/write/pool phase INDEPENDENTLY (HTTPX
+0.28 applies one float across all four), so a request slow across more than
+one phase could otherwise still overrun the deadline even though each phase
+individually stayed under it. The calling thread returns within
+``remaining_s`` regardless of what the background thread is still doing; an
+abandoned thread is daemonic and exits on its own once the HTTP client's own
+(independently configured, stricter) phase timeout eventually fires.
 
 **A 429 proves the upstream bucket is empty, not just this process's local
 count.** ``call()`` drains its local bucket to zero the instant a 429 comes
@@ -45,6 +60,7 @@ to spend tokens the local bucket never actually charged for those attempts.
 from __future__ import annotations
 
 import email.utils
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -132,7 +148,17 @@ def _parse_retry_after(
     — never trust the header past those bounds."""
     stripped = header.strip()
     if stripped.isdigit():
-        seconds = float(int(stripped))
+        try:
+            seconds = float(int(stripped))
+        except (OverflowError, ValueError):
+            # Major fix: a `Retry-After` with hundreds of digits converts to
+            # a Python int fine (arbitrary precision) but `float()` of that
+            # int raises OverflowError once it exceeds float's ~1.8e308
+            # range; a string past CPython's int-string-conversion digit
+            # limit (default 4300) raises ValueError out of `int()` itself.
+            # Both are untrusted-input shapes (D7) that must clamp, never
+            # escape as a raw exception past this boundary.
+            return max_delay_s
         if seconds < 0:
             return floor_s
         # D7 floor: never accept an upstream-supplied wait shorter than the
@@ -153,6 +179,43 @@ def _parse_retry_after(
     return min(max(delta_s, floor_s), max_delay_s)
 
 
+def _run_with_deadline(
+    send: Callable[[float], httpx.Response], remaining_s: float
+) -> httpx.Response:
+    """Default ``deadline_runner`` (blocker fix, round 2): the actual
+    enforcement mechanism for the 120 s wall-clock deadline. Runs ``send`` on
+    a background thread and joins with a hard ``remaining_s`` timeout — this
+    bounds the CALLING thread's wait to ``remaining_s`` regardless of which
+    HTTP phase (connect/read/write/pool) ``send`` is blocked in, which
+    passing ``timeout=`` to an HTTP client cannot do (HTTPX 0.28 applies a
+    single float independently to each phase, not to the request as a
+    whole). The background thread is daemonic; if it never returns, it is
+    abandoned and exits on its own once the HTTP client's own configured
+    phase timeout eventually fires — this function's caller has already
+    moved on.
+    """
+    outcome: list[httpx.Response | BaseException] = []
+
+    def _runner() -> None:
+        try:
+            outcome.append(send(remaining_s))
+        except BaseException as exc:  # noqa: BLE001 - forwarded to the joiner
+            outcome.append(exc)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join(remaining_s)
+    if thread.is_alive():
+        raise httpx.TimeoutException(
+            f"LINDAS request did not complete within its {remaining_s:.1f}s "
+            "remaining deadline budget"
+        )
+    result = outcome[0]
+    if isinstance(result, BaseException):
+        raise result
+    return result
+
+
 class TokenBucketLindasLimiter:
     """Process-local token-bucket limiter (D6) — capacity 3, refill 1 per
     ``LINDAS_RETRY_FLOOR_S``, plus D7-bounded 429/5xx/transport retry."""
@@ -163,12 +226,50 @@ class TokenBucketLindasLimiter:
         config: LindasLimiterConfig | None = None,
         clock: Callable[[], UtcDatetime] = lambda: ensure_utc(datetime.now(UTC)),
         sleeper: Callable[[float], None] = time.sleep,
+        deadline_runner: Callable[
+            [Callable[[float], httpx.Response], float], httpx.Response
+        ]
+        | None = None,
     ) -> None:
         self._config = config or LindasLimiterConfig()
         self._clock = clock
         self._sleeper = sleeper
+        # Injectable (testability — CLAUDE.md DI convention) so unit tests
+        # can simulate a slow/hanging `send` deterministically via the fake
+        # clock instead of real threads + real wall-clock sleeps.
+        self._deadline_runner = deadline_runner or _run_with_deadline
         self._tokens: float = float(self._config.capacity)
         self._last_refill: UtcDatetime = self._clock()
+
+    def _remaining_or_raise(
+        self,
+        *,
+        start: UtcDatetime,
+        attempt: int,
+        last_status: int | None,
+        last_exc: Exception | None,
+    ) -> float:
+        elapsed_s = (self._clock() - start).total_seconds()
+        remaining_s = self._config.total_deadline_s - elapsed_s
+        if remaining_s <= 0:
+            completed = attempt - 1
+            log.warning(
+                "lindas.exhausted",
+                attempts=completed,
+                last_status=last_status,
+                bound="deadline",
+                elapsed_s=elapsed_s,
+            )
+            raise LindasRateLimitExhaustedError(
+                f"LINDAS request exceeded its {self._config.total_deadline_s}s "
+                f"total deadline before attempt {attempt} "
+                f"(last_status={last_status}, bound=deadline)",
+                attempts=completed,
+                last_status=last_status,
+                last_exc=last_exc,
+                bound="deadline",
+            )
+        return remaining_s
 
     def call(self, send: Callable[[float], httpx.Response]) -> httpx.Response:
         # Blocker fix: timing starts BEFORE token acquisition, so a starved
@@ -176,39 +277,34 @@ class TokenBucketLindasLimiter:
         # retry sequence does — previously `start` was set only after
         # `_acquire_token()` returned, letting that wait happen for free.
         start = self._clock()
-        self._acquire_token()
         attempt = 0
         last_status: int | None = None
         last_exc: Exception | None = None
         while True:
             attempt += 1
-            elapsed_s = (self._clock() - start).total_seconds()
-            remaining_s = self._config.total_deadline_s - elapsed_s
-            if remaining_s <= 0:
-                completed = attempt - 1
-                log.warning(
-                    "lindas.exhausted",
-                    attempts=completed,
-                    last_status=last_status,
-                    bound="deadline",
-                    elapsed_s=elapsed_s,
-                )
-                raise LindasRateLimitExhaustedError(
-                    f"LINDAS request exceeded its {self._config.total_deadline_s}s "
-                    f"total deadline before attempt {attempt} "
-                    f"(last_status={last_status}, bound=deadline)",
-                    attempts=completed,
-                    last_status=last_status,
-                    last_exc=last_exc,
-                    bound="deadline",
-                )
+            remaining_s = self._remaining_or_raise(
+                start=start, attempt=attempt, last_status=last_status, last_exc=last_exc
+            )
+
+            # Major fix (round 2): a token is acquired before EVERY attempt,
+            # not just the call's first — a retried HTTP request also spends
+            # real upstream capacity, and if the local bucket only ever
+            # charges once per call() the next independent call() inherits
+            # phantom credit for every retry the previous call() made. The
+            # wait this can force is itself deadline-aware (never sleeps past
+            # the remaining budget).
+            self._acquire_token(deadline_remaining_s=remaining_s)
+            remaining_s = self._remaining_or_raise(
+                start=start, attempt=attempt, last_status=last_status, last_exc=last_exc
+            )
 
             response: httpx.Response | None
             try:
-                # Blocker fix: `send` is handed the remaining budget so it can
-                # bound its own HTTP timeout — the limiter cannot otherwise
-                # stop one blocking request from overrunning the deadline.
-                response = send(remaining_s)
+                # Blocker fix: `send` never runs on the calling thread
+                # directly — `_deadline_runner` bounds its wall-clock time to
+                # `remaining_s` regardless of which HTTP phase it is blocked
+                # in (see module docstring / `_run_with_deadline`).
+                response = self._deadline_runner(send, remaining_s)
             except httpx.HTTPError as exc:
                 last_exc = exc
                 last_status = None
@@ -287,12 +383,18 @@ class TokenBucketLindasLimiter:
             floor_s=floor,
         )
 
-    def _acquire_token(self) -> None:
+    def _acquire_token(self, *, deadline_remaining_s: float) -> None:
         self._refill(self._clock())
         if self._tokens >= 1.0:
             self._tokens -= 1.0
             return
         wait = (1.0 - self._tokens) * self._config.refill_period_s
+        # Blocker fix (round 2): never sleep past the call's remaining
+        # wall-clock budget — an empty bucket's wait must count against the
+        # 120 s deadline like everything else, not silently exceed it via one
+        # unbounded sleep. The subsequent `_remaining_or_raise` check catches
+        # a capped wait that still wasn't enough.
+        wait = min(wait, max(deadline_remaining_s, 0.0))
         self._sleeper(wait)
         self._refill(self._clock())
         self._tokens = max(0.0, self._tokens - 1.0)

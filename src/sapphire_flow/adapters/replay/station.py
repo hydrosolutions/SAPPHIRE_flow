@@ -7,8 +7,12 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import AdapterError, ConfigurationError
-from sapphire_flow.types.enums import ObservationSource
-from sapphire_flow.types.observation import RawObservation
+from sapphire_flow.types.enums import FetchOutcomeCause, ObservationSource
+from sapphire_flow.types.observation import (
+    HydroScraperBatchResult,
+    RawObservation,
+    StationFetchOutcome,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -110,3 +114,55 @@ class ReplayStationAdapter:
             station_count=len(station_configs),
         )
         return results
+
+    def fetch_observations_batch(
+        self,
+        station_configs: list[StationConfig],
+        since: dict[StationId, UtcDatetime],
+    ) -> HydroScraperBatchResult:
+        """Minor fix (Plan 175 round 2) — `BatchStationDataSource` capability
+        (`protocols/adapters.py`) so this adapter stays usable as
+        `ingest_observations_flow`'s `adapter=` argument: T3 changed that
+        flow to call `fetch_observations_batch` exclusively, which this
+        class did not previously implement (an `AttributeError` any
+        `StationDataSource`-conforming replay/test double would have hit).
+        A thin per-station regrouping of `fetch_observations`'s exact
+        filtering/parsing behavior — NOT a second implementation to drift
+        from the first."""
+        try:
+            observations = self.fetch_observations(station_configs, since)
+        except AdapterError as exc:
+            # A fixture-wide parse failure (e.g. an unknown ObservationSource
+            # value) previously aborted the whole batch. Report it against
+            # every requested station so a health record still reflects the
+            # failure, instead of it raising past the StationDataSource
+            # boundary this method exists to give per-station accounting for.
+            return HydroScraperBatchResult(
+                outcomes=tuple(
+                    StationFetchOutcome(
+                        station_id=sc.id,
+                        observations=(),
+                        failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE,
+                        failure_detail=str(exc),
+                    )
+                    for sc in station_configs
+                )
+            )
+
+        by_station: dict[StationId, list[RawObservation]] = {
+            sc.id: [] for sc in station_configs
+        }
+        for obs in observations:
+            by_station.setdefault(obs.station_id, []).append(obs)
+
+        return HydroScraperBatchResult(
+            outcomes=tuple(
+                StationFetchOutcome(
+                    station_id=sc.id,
+                    observations=tuple(by_station.get(sc.id, [])),
+                    failure_cause=None,
+                    failure_detail=None,
+                )
+                for sc in station_configs
+            )
+        )

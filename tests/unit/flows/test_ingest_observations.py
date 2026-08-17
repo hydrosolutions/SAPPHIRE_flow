@@ -4,6 +4,9 @@ import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import polars as pl
+
+from sapphire_flow.adapters.replay.station import ReplayStationAdapter
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
     _load_adapter_endpoint,
@@ -111,6 +114,19 @@ def _make_obs(
         value=value,
         source=ObservationSource.MEASURED,
     )
+
+
+def _write_replay_fixture(path: Path, rows: list[dict]) -> None:  # type: ignore[type-arg]
+    pl.DataFrame(
+        rows,
+        schema={
+            "station_code": pl.Utf8,
+            "timestamp": pl.Datetime("us", "UTC"),
+            "parameter": pl.Utf8,
+            "value": pl.Float64,
+            "source": pl.Utf8,
+        },
+    ).write_parquet(path)
 
 
 class TestIngestObservationsFlow:
@@ -636,6 +652,53 @@ class TestIngestObservationsFlow:
         assert result.observations_stored == 2
         assert result.qc_passed == 2
         assert result.qc_failed == 0
+
+
+class TestIngestObservationsFlowWithReplayAdapter:
+    """Minor fix (Plan 175 round 2) — flow-plus-replay regression test.
+    `_fetch_observations_task` used to type its `adapter` param as the
+    concrete `HydroScraperAdapter` and the flow always calls
+    `fetch_observations_batch` (T3); `ReplayStationAdapter` — a real
+    `StationDataSource`-conforming adapter used across replay/reference-
+    fixture tooling (Plans 019/020/021/045) — did not implement that method
+    and would raise `AttributeError` if ever handed to this flow as
+    `adapter=`. Exercises the REAL `ReplayStationAdapter`, not a fake, so a
+    regression here cannot be masked by only updating `FakeStationDataSource`.
+    """
+
+    def test_replay_adapter_is_a_valid_flow_adapter(self, tmp_path: Path) -> None:
+        s1 = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))
+        station_store = FakeStationStore()
+        station_store.store_station(s1)
+
+        fixture = tmp_path / "obs.parquet"
+        _write_replay_fixture(
+            fixture,
+            [
+                {
+                    "station_code": "2135",
+                    "timestamp": _NOW - timedelta(minutes=30),
+                    "parameter": "discharge",
+                    "value": 114.0,
+                    "source": "measured",
+                }
+            ],
+        )
+        adapter = ReplayStationAdapter(fixture, simulated_time=_fixed_clock)
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=FakeObservationStore(),
+            baseline_store=FakeClimBaselineStore(),
+            adapter=adapter,
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert isinstance(result, IngestResult)
+        assert result.stations_polled == 1
+        assert result.observations_fetched == 1
+        assert result.stations_failed == 0
 
 
 class TestLoadAdapterEndpoint:

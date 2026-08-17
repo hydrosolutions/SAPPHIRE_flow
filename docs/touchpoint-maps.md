@@ -838,12 +838,18 @@ for the separate Monday-publish transient this subsystem must not be confused wi
 
 **Core implementation touchpoints:**
 
-- `TokenBucketLindasLimiter.call` — pacing (token-bucket acquire, once per top-level
-  call) + bounded 429/5xx/transport retry (attempt cap AND wall-clock deadline,
-  independently)
+- `TokenBucketLindasLimiter.call` — pacing (token-bucket acquire, once per HTTP
+  attempt, including retries — round 2) + bounded 429/5xx/transport retry (attempt
+  cap AND wall-clock deadline, independently), with `send` run through
+  `_run_with_deadline` (or an injected `deadline_runner`) for the actual deadline
+  enforcement, not just a check
 - `BafuObservationAdapter._post_with_retries` / `HydroScraperAdapter._fetch_one` —
   both translate `LindasRateLimitExhausted` into their own error shape
   (`AdapterError` for the collector; `StationFetchOutcome.failure_cause` for ingest)
+- `protocols/adapters.py`'s `BatchStationDataSource` — narrow capability Protocol
+  for `fetch_observations_batch`; `HydroScraperAdapter` and `ReplayStationAdapter`
+  both satisfy it (round 2 — `ingest_observations_flow`'s `adapter=` parameter is
+  typed against this, not the concrete `HydroScraperAdapter`)
 - `ingest_observations_flow` — fetch → `_append_fetch_health_record` (BEFORE
   store/QC) → store → QC → result union of fetch + QC failures
 - the two cron defaults, each living in TWO places (compose init env + the Python
@@ -856,10 +862,13 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   wired yet — Plan 175 § Residual forks #1)
 - `/api/v1/health/detail` and the dashboard health page, the only current visibility
   for `OBSERVATION_INGEST_FETCH`
-- `tools/record_fixtures.py` and the live LINDAS schema test — both construct
-  `HydroScraperAdapter`/`BafuObservationAdapter` directly and get the default
-  limiter by construction; changing the default limiter config changes their
-  behavior too
+- `tools/record_fixtures.py` constructs `HydroScraperAdapter`/`BafuObservationAdapter`
+  directly and gets the default limiter by construction; changing the default
+  limiter config changes its behavior too. The live LINDAS schema test
+  (`test_lindas_live_schema.py`) instead shares ONE `TokenBucketLindasLimiter`
+  instance (a module-scoped fixture) across every adapter it builds (round 2) — a
+  fresh-per-class limiter let one test's real upstream consumption go unseen by
+  the next, producing a predictable 429 the zero-429 assertion could not survive
 
 **Contracts that must not change silently:**
 
@@ -880,23 +889,39 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   the clamp (`LINDAS_MAX_DELAY_S`), the floor (`LINDAS_RETRY_FLOOR_S` — a
   `Retry-After` value BELOW the floor is clamped UP, not honoured verbatim), and the
   total wall-clock deadline (`LINDAS_TOTAL_DEADLINE_S`) — both delay bounds
-  independent of the attempt-count bound.
-- **The 120 s deadline covers bucket wait too, and a 429 drains the local bucket.**
-  `TokenBucketLindasLimiter.call` starts its clock BEFORE `_acquire_token()`, not
-  after, and hands `send` the remaining budget on every attempt so a slow HTTP call
-  can bound its own timeout. A 429 response drains the local token count to zero
-  (upstream proof the bucket is actually empty) so a `call()` that needed several
-  retries does not leave the next independent `call()` free to spend tokens the
-  local model never actually charged for those extra attempts. Do not reorder
-  `start`/`_acquire_token()` or drop the 429 drain without re-reading
-  `lindas_rate_limiter.py`'s module docstring.
+  independent of the attempt-count bound. This includes a numeric value large
+  enough to overflow `float()` or exceed CPython's int-string-conversion digit
+  limit (round 2) — both must clamp to `LINDAS_MAX_DELAY_S`, never raise past
+  `_parse_retry_after`.
+- **The 120 s deadline covers bucket wait too, and is enforced by a real hard
+  cutoff, not a checked-after-the-fact bound.** `TokenBucketLindasLimiter.call`
+  starts its clock BEFORE token acquisition, not after, and re-checks the
+  remaining budget before every attempt. `send` itself is never invoked directly —
+  it runs through `_run_with_deadline` (or an injected `deadline_runner`), which
+  joins a background thread with a hard `remaining_s` timeout (round 2: passing
+  `timeout=remaining_s` into an HTTP client's `.post()` does NOT bound total
+  wall-clock time — HTTPX applies that value independently per connect/read/
+  write/pool phase). Neither `BafuObservationAdapter` nor `HydroScraperAdapter`
+  passes `timeout=remaining_s` to its HTTP client anymore; the client's own
+  configured timeout governs each phase instead. A 429 response drains the local
+  token count to zero (upstream proof the bucket is actually empty), AND (round 2)
+  a token is acquired before EVERY attempt including retries — not just the call's
+  first — so a `call()` that retried does not leave the next independent `call()`
+  free to spend a token the local model never actually charged for that retry's
+  real HTTP attempt. Do not reorder `start`/token acquisition, drop the 429 drain,
+  revert to per-call (not per-attempt) acquisition, or reintroduce
+  `timeout=remaining_s` without re-reading `lindas_rate_limiter.py`'s module
+  docstring.
 - **The fetch health record is written IMMEDIATELY after fetch reconciliation, before
   store/QC.** Moving it later would let a downstream storage/QC failure suppress the
   one signal this subsystem exists to guarantee.
 - **`StationDataSource.fetch_observations` keeps its locked list-only shape.** The
-  typed per-station outcome (`fetch_observations_batch`) is a HydroScraper-specific
-  ADDITION, not a Protocol change — widening the Protocol itself was the explicit
-  rejected alternative (see `docs/spec/types-and-protocols.md` § StationDataSource).
+  typed per-station outcome (`fetch_observations_batch`, captured by the narrow
+  `BatchStationDataSource` Protocol) is an ADDITION any `StationDataSource`
+  implementation may also offer — `HydroScraperAdapter` and (round 2)
+  `ReplayStationAdapter` both do — not a `StationDataSource` Protocol change;
+  widening that Protocol itself was the explicit rejected alternative (see
+  `docs/spec/types-and-protocols.md` § StationDataSource).
 - **The per-station fan-out does not scale past a handful of stations (D5,
   deferred).** `docs/v0-scope.md`'s ~1000-station target is NOT met by this
   subsystem's polling model — see `bafu-lindas-rate-limit.md` for the arithmetic.

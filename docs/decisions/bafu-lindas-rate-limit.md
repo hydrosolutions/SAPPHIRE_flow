@@ -151,6 +151,79 @@ None of this changes the measured contract table above or the architecture
 (still process-local, D6). See `lindas_rate_limiter.py`'s module docstring for
 the authoritative up-to-date behavior.
 
+## Second fixer-round hardening (independent Codex pass over the fixer-round diff)
+
+A further review of the round-1 fixer diff (Claude design + an independent
+Codex pass) found the deadline enforcement was CHECKED but not truly
+ENFORCED, the cross-call bucket sync still leaked one call's worth of
+credit, and two more untrusted-input/shape edges were unguarded. Fixed in
+the same round:
+
+- **The 120 s deadline is now actually enforced, not just checked.**
+  Passing `timeout=remaining_s` to an HTTPX request does NOT bound that
+  request's wall-clock time to `remaining_s` — HTTPX 0.28 applies a single
+  float independently to each of connect/read/write/pool, so a request slow
+  across more than one phase could still overrun the deadline (and it
+  replaced each caller's own, stricter, already-configured client timeout
+  with up to 120 s per phase). `TokenBucketLindasLimiter.call` now runs
+  `send` through `_run_with_deadline` (or an injected `deadline_runner`),
+  which executes it on a background thread and joins with a hard
+  `remaining_s` timeout — the calling thread returns within budget
+  regardless of which phase `send` is blocked in. `BafuObservationAdapter`
+  and `HydroScraperAdapter` no longer pass `timeout=remaining_s` at all; the
+  HTTP client's own configured timeout governs each phase, and the deadline
+  runner bounds the aggregate. Bucket-starvation waits are capped the same
+  way (`_acquire_token(deadline_remaining_s=...)`).
+- **A token is now acquired before EVERY attempt, not just the call's
+  first.** A retried HTTP request also spends real upstream capacity; only
+  charging the call's first attempt meant a `call()` that retried (429 →
+  sleep → 200) left the local bucket believing a full extra token had
+  accrued that upstream never actually had spare — the VERY NEXT independent
+  `call()` would send unpaced and could hit another preventable 429. The
+  per-attempt acquisition normally finds the token already refilled by the
+  retry backoff (which already waits at or above one refill period) and
+  costs no extra wait; it exists to charge the token, not to gate the retry
+  a second time.
+- **A few-hundred-to-several-thousand-digit `Retry-After` now clamps to
+  `LINDAS_MAX_DELAY_S` instead of raising.** `float(int(header))` raises
+  `OverflowError` once the (arbitrary-precision) Python int exceeds float's
+  ~308-digit magnitude; a string past CPython's int-string-conversion digit
+  limit (default 4300) raises `ValueError` out of `int()` itself before
+  `float()` is even reached. Both are untrusted-input shapes (D7) that must
+  clamp, not escape past this boundary and suppress the collector's
+  heartbeat.
+- **`HydroScraperAdapter`'s two malformed-envelope guards now catch
+  `TypeError` too.** `response.json()["results"]["bindings"]` raises
+  `TypeError` (not `KeyError`/`ValueError`) for a wrong-SHAPED but
+  valid-JSON envelope — a top-level list, `{"results": null}`, or
+  `{"results": []}` — since indexing a list/`None` with a string key is a
+  `TypeError`. Both `_fetch_one` and `verify_gauge_reachable` had this gap;
+  both now resolve to `MALFORMED_RESPONSE` / `reachable=False` instead of
+  aborting the batch before a health record is written.
+- **The live burst test no longer starts from a phantom-full bucket.**
+  `TestLiveLindasSchema` and `TestLiveLindasRateLimit` used to each build
+  their own default (fresh, capacity-3) limiter — so the rate-limit test's
+  zero-429 assertion started immediately after the schema test had already
+  spent the REAL upstream bucket on 7 live requests, with the local model
+  having no idea. Both test classes now share one `TokenBucketLindasLimiter`
+  instance (a module-scoped fixture) injected via each adapter's `limiter=`
+  parameter, so the local model tracks the real upstream state across every
+  request the module makes.
+- **`ReplayStationAdapter` now implements `fetch_observations_batch`.**
+  `ingest_observations_flow` calls that method exclusively (T3); any
+  `StationDataSource`-conforming adapter that only implements the base
+  Protocol's `fetch_observations` — `ReplayStationAdapter`, used across
+  replay/reference-fixture tooling (Plans 019/020/021/045) — would raise
+  `AttributeError` if ever handed to the flow as `adapter=`. A new narrow
+  `BatchStationDataSource` Protocol (`protocols/adapters.py`) documents the
+  capability without widening `StationDataSource` itself (that widening was
+  already the explicitly rejected alternative — see
+  `docs/spec/types-and-protocols.md` § StationDataSource / touchpoint-maps.md).
+
+None of this changes the measured contract table above or the architecture
+(still process-local, D6). See `lindas_rate_limiter.py`'s module docstring
+for the authoritative up-to-date behavior.
+
 ## Escalation
 
 The 429 ceiling is undocumented by BAFU. If it is ever observed to have
