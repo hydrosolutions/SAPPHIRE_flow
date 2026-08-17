@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-14
 plan: 116
 title: Silent-success detection — flows must assert they did work

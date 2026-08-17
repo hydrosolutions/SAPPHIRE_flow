@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-08-14
 plan: 161
 title: DATABASE_URL credential handling — a `/` in the password silently killed every backup
@@ -12,6 +12,10 @@ supersedes: []
 # Plan 161 — DATABASE_URL credential handling
 
 ## Status
+**PARTIAL — T1 merged 2026-08-16 as PR #152 (`7fdee00`) and DEPLOYED (mini 0.1.721).** T2
+(construct-don't-splice at both producer sites) and T3 (alert hysteresis, absorbed by Plan 162) remain OPEN.
+⚠️ Until T2 lands, **do not set a DB password by hand** — `make_url` silently truncates at an `@`.
+
 **READY** (2026-08-14) — T1 **BUILT, MERGED (#152) and DEPLOYED** (mini at 0.1.721, alembic 0048).
 **T1 is confirmed working — and deploying it uncovered two further defects, T4 and T5, both live.**
 Backups are still failing: T4 blocks them, and T5 means the failure is now *silent*. Next build scope: **T4+T5**. Operational reliability (category **A**). Fixes a **live, ongoing** backup outage:

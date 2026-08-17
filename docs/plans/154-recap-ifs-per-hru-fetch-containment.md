@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-11
 plan: 154
 title: Recap IFS fetch containment — one station's missing data must not degrade the whole cycle
@@ -12,6 +12,8 @@ supersedes: []
 # Plan 154 — Recap IFS fetch containment
 
 ## Status
+**COMPLETE — merged 2026-08-13 as PR #144 (`0de0b0f`).** Status line was stale until 2026-08-17.
+
 **READY** (owner-ratified 2026-08-12). A standalone operational-reliability fix (category **A**), independent of the
 forecast-cycle redesign. No open questions: D10 answered by the owner, the requirement-driven variable selection it
 raised split out as a follow-on, and the full adversarial review's blocker + two majors folded in.
