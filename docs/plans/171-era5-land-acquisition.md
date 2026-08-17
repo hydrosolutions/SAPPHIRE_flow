@@ -41,6 +41,23 @@ independent Codex, repo-grounded) of the committed implementation raised 2 block
   through the generic keyword classifier's unclassified-failure fallback (exit 3); manifest/provenance
   reads and writes, and the checksum/publish primitives, wrap `OSError` as `Era5StorageError` (exit 5);
   `main()` also catches a bare `OSError` as a backstop.
+
+- **⛔ CORRECTED 2026-08-17 — `403` IS NOT EXCLUSIVELY AN AUTH SIGNAL, AND THE CLASSIFIER SAID IT WAS.**
+  `_AUTH_TOKENS` (`scripts/dhm_precip/era5_acquire.py:74-81`) contains the bare substring `"403"` and
+  is tested **first**, so the real 4b failure —
+  `403 Forbidden … cost limits exceeded. Your request is too large, please reduce your selection.` —
+  was reported as **`Era5CredentialsError: CDS authentication failed`** and exit **2**. Both are wrong:
+  the credentials were valid (2b had just used them successfully minutes earlier), and exit 2 means
+  "inputs absent". **An operator hitting this goes hunting for a credential problem that does not
+  exist**, which is the worst property an error message can have.
+  The classifier's own docstring conceded it was *"untested against the live CDS API"* — this was its
+  first real contact, and it misclassified on the first real failure.
+  ⇒ **Inspect the BODY before the STATUS.** A new `_TOO_LARGE_TOKENS` bucket (`cost limit`,
+  `too large`, `reduce your selection`) is tested **before** `_AUTH_TOKENS` and maps to a distinct
+  `Era5RequestTooLargeError` whose message names the window and says to reduce the window granularity
+  (D4). Status codes are a fallback for an unrecognised body, never the primary discriminator.
+  **Test with the verbatim observed string**, not a paraphrase — a keyword classifier is only ever as
+  good as the real messages it has been shown, and this one had been shown none.
 - `--window`'s CLI grammar is a full-match parser (an hour suffix or trailing junk is rejected, not
   silently widened to the whole month/year); `--stage transform`'s year-scoping now derives from EVERY
   resolved window (any granularity), and an out-of-range resolved year is rejected rather than a
@@ -216,6 +233,52 @@ gate tasks 2b and 4b.
   **1 Jan 2026 00 UTC** window — each still one window, one payload, one artifact.
   Net effect: **eight windows, eight payloads, eight raw artifacts**, and no cardinality branch
   anywhere downstream.
+
+  ## ⛔ D4 CORRECTED 2026-08-17 — A CALENDAR YEAR EXCEEDS THE CDS COST LIMIT
+
+  **Observed on the first real 4b attempt** (task 2b having already succeeded on a single month):
+
+  ```
+  403 Forbidden … cost limits exceeded
+  Your request is too large, please reduce your selection.
+  ```
+
+  CDS enforces a per-request ceiling on **field count**, not bytes. One month is **744** hourly fields
+  and succeeds (2b: 5.22 MB, ~3 min). One year is **8,760** fields and is **rejected outright**, so
+  the year-per-window design above **cannot execute at all**. The `~165 MB per year` figure was never
+  the binding constraint; nobody had asked CDS.
+  *(This is the third time on this track that "verify against the service, not the documentation" has
+  caught a design that reasoned from the docs — after the accumulation convention and the CDS payload
+  shape. The pattern is now reliable enough to plan around: any CDS-shaped claim is indicative until a
+  real request confirms it.)*
+
+  ### The corrected unit: acquire MONTHLY, transform ANNUALLY
+
+  - **Acquisition window = one calendar month.** 72 windows for 2020–2025, plus the two edge-context
+    windows D6 needs (**Dec 2019**, and **1 Jan 2026 00 UTC**) — which were already month-or-smaller
+    and are unaffected. The month is *proven*, not estimated: 2b ran one.
+  - **The transform stays YEAR-granular.** Product year *Y* is assembled from **its 12 monthly raw
+    artifacts plus the boundary context** — December of *Y−1* and the 00 UTC stamp of 1 Jan *Y+1* —
+    rather than from one yearly raw file plus neighbours. One product per year, unchanged; only what
+    it reads changes.
+  - **The `23 → 00 → 01` seam now also falls at every MONTH boundary, not just each year boundary.**
+    This is the substantive consequence and the main correctness risk of the change: D6's rule (day *D*
+    runs `01 UTC D … 00 UTC D+1`) means the last accumulation day of any month closes at `00 UTC` on
+    the **1st of the next month**, which lives in a *different artifact*. The transform must therefore
+    join across monthly files exactly as it already joins across yearly ones — the mechanism exists,
+    it now runs 12× as often. Every month seam must be covered by the conservation post-condition,
+    not just the two year edges.
+  - **Unchanged:** whole-calendar-unit windows (D2's Cartesian constraint is satisfied by a month at
+    least as well as by a year); one window = one payload = one artifact; `raw_request_identity` and
+    `transform_identity` keep their split (D5), so this re-slicing invalidates the **raw** checkpoints
+    but the transform contract is untouched.
+  - **Cost:** ~72 requests at ~5 MB (~370 MB total), each queued separately. At 2b's ~3 min per
+    request that is plausibly 2–4 hours wall-clock, dominated by queue time rather than transfer.
+
+  **Rejected alternative — probe for the largest window CDS accepts** (quarterly might pass): it
+  trades a smaller plan change for an unknown number of probe requests against a limit ECMWF can
+  revise without notice, leaving the plan resting on an undocumented threshold. The month is proven
+  and is a natural calendar unit; take the certainty.
 
 - **D5 — Idempotent and resumable, keyed on **two separate identities** — one per stage.**
   A single identity spanning both stages would make a transform-only change invalidate the *raw*
