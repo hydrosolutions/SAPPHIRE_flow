@@ -2596,9 +2596,16 @@ def run_forecast_cycle_flow(
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
-                            except StoreError:
-                                raise
                             except Exception as exc:
+                                # Fixer round (major): a StoreError here must
+                                # NOT propagate — a total forecast_store
+                                # outage in a group-only deployment would
+                                # otherwise crash the whole flow before it
+                                # ever reaches `_emit_forecast_freshness_record`
+                                # at the bottom, leaving the watchdog blind
+                                # (see the group-only acceptance test). This
+                                # now matches the station path above, which
+                                # has never special-cased StoreError here.
                                 log.warning(
                                     "forecast_cycle.store_forecast_failed",
                                     station_id=str(sid),

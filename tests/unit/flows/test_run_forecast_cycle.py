@@ -3711,6 +3711,86 @@ enabled = false
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.CRITICAL
 
+    def test_group_only_total_store_forecast_failure_emits_critical_freshness_record(
+        self,
+    ) -> None:
+        """Fixer round (major): a group-only deployment (no station-level
+        model assignments — every station is served exclusively through
+        `discover_group_runs`) must ALSO reach the freshness emitter on a
+        total `store_forecast` failure. Before the fix, the group
+        forecast-store loop special-cased `StoreError` with a bare
+        `raise`, which propagated all the way out of the flow (there is no
+        function-level `except` around the flow body, only a `finally`)
+        and skipped `_emit_forecast_freshness_record` entirely — the
+        watchdog would then see only the previous heartbeat, not this
+        cycle's total failure."""
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (sid_a, sid_b):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                seed_model_assignment=False,
+                seed_artifact=False,
+            )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid_a, sid_b}),
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=_AlwaysRaisingForecastStore(),  # type: ignore[arg-type]
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            group_store=group_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 0
+        assert any("Store failed" in err for err in result.errors)
+
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["forecasts_stored"] == 0
+        assert records[0].subject == "forecast_cycle"
+
     def test_climatology_floor_writes_forecast_when_nwp_off_and_skill_fails(
         self,
         tmp_path: Path,
