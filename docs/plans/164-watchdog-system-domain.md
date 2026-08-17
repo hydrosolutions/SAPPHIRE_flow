@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-17
 plan: 164
 title: Run the watchdog as a LaunchDaemon so it stops dying with the login session
@@ -12,8 +12,10 @@ supersedes: []
 # Plan 164 — Watchdog as a LaunchDaemon
 
 ## Status
-**DRAFT** (2026-08-17). Operational reliability (category **A**). **Rewritten after a third review round whose
-mandate was to REMOVE rather than add** — it cut 12 of 16 requirements and 5 of 6 tasks. This is the small
+**READY** (2026-08-17). Operational reliability (category **A**). Four review rounds: two adversarial, one
+proportionality pass that **cut 12 of 16 requirements and 5 of 6 tasks**, and a final targeted pass that returned
+**one** correction (step 7's `bootstrap` argument form) and confirmed the rest executable as written.
+**Rewritten after the round whose mandate was to REMOVE rather than add** — it cut 12 of 16 requirements and 5 of 6 tasks. This is the small
 version. The larger design is in git history; do not re-inflate without a reason.
 
 ## Problem
@@ -64,8 +66,14 @@ Already true and also load-bearing: `/Library/LaunchDaemons` with `root:wheel` `
 4. **Keep** the legacy LaunchAgent plist; disable its GUI label so it cannot reload.
 5. Install the daemon plist to `/Library/LaunchDaemons`, `root:wheel`, `0644`.
 6. Wait until the old job is **not running**, then boot it out — do not kill it mid-state-write.
-7. `launchctl enable`, then `bootstrap system/ch.hydrosolutions.sapphire-watchdog`. **Do not `kickstart`** —
-   `RunAtLoad=true` already triggers a run, and kickstarting would kill the run being measured.
+7. Enable, then bootstrap. **`bootstrap` takes a DOMAIN target plus the plist PATH — not a service target**
+   (verified against `launchctl` usage on macOS 26.6.1, the build pending on this host):
+   ```sh
+   sudo launchctl enable system/ch.hydrosolutions.sapphire-watchdog
+   sudo launchctl bootstrap system /Library/LaunchDaemons/ch.hydrosolutions.sapphire-watchdog.plist
+   ```
+   **Do not `kickstart`** — `RunAtLoad=true` already triggers a run, and kickstarting would kill the run being
+   measured.
 8. From a log tail started **after** GUI removal, observe `deadman_ping_attempted pinged=true` and exit 0.
 9. Verify the **system** label present and the **GUI** label absent. Then test **logout** and **reboot**.
 10. Delete the legacy plist **only after** acceptance passes.
@@ -81,7 +89,8 @@ prerequisites — secrets, directories, resolved account via `id` (not a generic
 `launchctl` mutation.
 
 **Test:** a fresh install succeeds; an install against an existing or conflicting registration **refuses and
-mutates nothing**.
+mutates nothing** — which requires preflighting **all** conflict checks *before* the first change, not aborting
+partway through.
 
 ## Acceptance
 
