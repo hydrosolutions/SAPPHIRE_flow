@@ -39,7 +39,21 @@ them deliberately rather than rediscovering them.
 | m-3 | The Problem section says M-A4 "left" the products on disk; Constraint 1 correctly says none exists yet | Internal contradiction — fix the Problem wording |
 | m-4 | Two stale citations (the Plan 171 "freeze payload" precedent, and the per-file `os.replace` line reference) | Repoint to the real locations |
 
-### ⛔ POST-IMPLEMENTATION REVIEW (2026-08-16) — 5 blockers, 5 majors, 2 minors
+### ⛔ FOUR REVIEW ROUNDS — and the publication model was redesigned, not patched again
+
+| Round | Found | Outcome |
+|---|---|---|
+| 1 (2026-08-16) | **5 blockers, 5 majors, 2 minors** — against a fully green 3,753-test suite with clean `ruff`/`pyright`. **4 of 5 blockers were defects in THIS PLAN**, not the code | plan corrected first (`a9cca25`), then a 12-commit fixer round |
+| 2 | 2 blockers, 5 majors, 1 minor — including the reuse guard checking the wrong thing, so B2 returned one layer up | plan corrected (`b7009e0`); adopt path cut |
+| 3 | 2 blockers, 1 major — **one of them created by the cut I recommended** (the quarantine/`CURRENT` window), plus 1 of 8 deleted tests covering surviving behaviour | escalated to a design review |
+| 4 (grill-me, 2026-08-17) | the same defect class had moved **down into acquisition** (`RealOrographyDownloader` ignoring `spec`) | **publication model REDESIGNED — P1–P7 in D7** |
+
+**The pattern, stated plainly:** every round added a *check* at one layer while the layer beneath
+stayed free to diverge, so the defect relocated instead of disappearing — identity clause → reuse
+guard → downloader. **P1, P4 and P7 remove possibilities rather than check for them**, which is the
+only thing that has actually broken the chain. Only Blocker 1's fix stays a check, deliberately.
+
+### Round-1 detail (2026-08-16) — 5 blockers, 5 majors, 2 minors
 
 Commit `50dd58d` builds the plan and the **full suite is green (3,753 passed, 0 failed)** with
 `ruff`/`pyright`/ratchet clean. It was nevertheless **never reviewed** by the workflow (escalated at
@@ -502,6 +516,31 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
       a changed spec is a legitimate, expected event; a stale raster is not). Verification must
       recompute from the **current** spec, never from the identity stored in the record, or it just
       re-confirms the stale value.
+
+    - **⛔ BLOCKER, 2026-08-17 (round 4) — the same defect moved DOWN INTO ACQUISITION.** With the
+      reuse guard fixed, a spec change now correctly re-materialises — but
+      `RealOrographyDownloader.download()` (`extract_era5.py:258`) **takes `spec` and ignores it**,
+      hard-coding `reanalysis-era5-land` / `geopotential` / `DEFAULT_REQUEST_SPEC.area`, with
+      `# noqa: ARG002` silencing the linter that reported exactly this. So a changed spec
+      re-materialises **the same old product** and records the **new** spec; verification passes
+      because the hashes are internally consistent with each other. **False provenance again, one
+      layer lower** — the fourth consecutive round of it. The test misses it because its fake also
+      ignores `spec`.
+
+      **Root cause is a type gap, not a coding slip.** `OrographySpec` *cannot* express a CDS request:
+      it carries `product_id: str` (set to the colon-joined `"reanalysis-era5-land:geopotential"`) and
+      no typed dataset/variable field, so the downloader could only honour it by splitting a string on
+      a colon — the raw-primitive-past-the-boundary pattern CLAUDE.md forbids.
+
+      ⇒ **Decision (grill-me 2026-08-17): ASSERT AGREEMENT; do not build a request-builder.** The
+      downloader **is** the source of truth for the request; the spec labels it. Before requesting,
+      assert the spec's `product_id` and `download_url` match what this downloader actually asks for,
+      and raise a typed error otherwise. **A spec change then fails loudly instead of recording false
+      provenance.** The fake in the tests must assert the same, or the test can never catch this.
+      **Deliberately NOT the type-driven alternative** (typed `cds_dataset`/`cds_variable` fields plus
+      request construction): with Branch B cut there is exactly **one** route, so a request-builder
+      buys flexibility nothing needs — and this plan's whole history is that the apparatus, not the
+      absence of it, is the risk.
   - `extraction_identity` = sha256(canonical-JSON of **every value-affecting input**):
     operator id · station-coordinate-table sha256 · the **list of source product sha256s consumed**
     (validated against the acquisition manifest before use, never trusted from the filename) ·
@@ -510,56 +549,97 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     `output_schema_version` · output format/dtype/**full** encoding spec · `extraction_code_version`.
     *A version bump alone forces regeneration*, exactly as `transform_identity` does
     (`scripts/dhm_precip/era5_manifest.py:110-115`).
-  **Publication is a bundle, and per-file `os.replace` is not atomic across a bundle** (review
-  finding — M-A4 gets away with it because its unit *is* one file plus a manifest; the actual
-  `os.replace`-via-`publish_atomic` call is `scripts/dhm_precip/era5_transform.py:366`, m-4 corrected
-  citation — the previous citation, `:336`, is the `to_netcdf` write call, not the publish step).
-  Therefore:
-  write **all** outputs into a staging directory keyed by the extraction identity
-  (`…/era5_land/points/.staging/<extraction_identity>/`), reopen-and-validate every file there, then
-  publish the completed directory once, then switch the pointer. Three constraints the previous
-  revision got wrong (**blocker, folded from review**):
 
-  1. **The manifest hashes PAYLOAD FILES ONLY — never itself, never the pointer.** "Every output's
-     sha256" included `extraction_manifest.json` and `CURRENT`, which is not constructible: a
-     manifest cannot contain its own hash. The manifest lives *inside* the identity directory and
-     covers the payload artefacts beside it.
-  2. **The pointer lives at `…/era5_land/points/CURRENT`, one level ABOVE the identity
-     directories.** The previous revision placed it inside `<extraction_identity>/`, where it can
-     only ever name its own parent and therefore selects nothing. It is written adjacent-temp +
-     `os.replace` (a file, so genuinely atomic).
-  3. **`os.replace` cannot replace a non-empty directory with another non-empty directory**, so the
-     "regenerate an existing identity" path is not a replace.
+  - **P7 — AN IDENTITY MAY HASH ONLY INPUTS THAT ARE ACTUALLY READ.** *(Rule, grill-me 2026-08-17 —
+    this generalises the defect class the whole plan kept producing.)*
+    A parameter hashed into an identity but never consulted is **false provenance by construction**:
+    the artefact asserts its output depends on something the code does not read. It is the same defect
+    as B1, B2, the "area-weighted" claim and the round-4 downloader — stated as a rule so it stops
+    recurring.
+    **Live instance to fix: `zero_policy`.** It is pinned, hashed into `extraction_identity` and
+    written to the manifest, but **never read** — the wet-hour filter at `era5_extract.py:535` is
+    unconditional. ⇒ **Make the code read it**: the filter becomes conditional on
+    `params.zero_policy`, which keeps today's pinned behaviour (`"exclude_zero"`) while making the
+    hashed dependency real. Removing it from the identity instead would lose the recorded fact that
+    the quantiles *are* wet-hour-only, which M-A6 needs in order to compare against M-A1's eight
+    wet-hour expectations.
+    **Standing obligation:** anything added to an identity must have a test that changes the identity
+    by changing that input *and* changes an output. If no such test can be written, the field does not
+    belong in the identity.
+  **Publication is a bundle, and per-file `os.replace` is not atomic across a bundle** (M-A4 gets
+  away with it because its unit *is* one file plus a manifest; the actual `os.replace`-via-
+  `publish_atomic` call is `scripts/dhm_precip/era5_transform.py:366`).
 
-     ## ⛔ THE ADOPT-EXISTING-BUNDLE PATH IS CUT — owner decision 2026-08-17
+  ## ⛔ PUBLICATION MODEL REDESIGNED — grill-me, owner decisions 2026-08-17
 
-     **There is no adoption. A run always publishes what it just generated and validated.** If
-     `<extraction_identity>/` already exists it is **unconditionally quarantined** (renamed to
-     `<extraction_identity>.orphan-<n>/`) and the fresh bundle is published in its place. No
-     reconcile function, no adopt branch, no conditional discard of staging.
+  **Four independent review rounds each found a blocker in this apparatus, and every fix relocated
+  the defect one layer down** (identity clause → reuse guard → downloader). The cause was structural:
+  each fix added a *check* at one layer while the layer beneath stayed free to diverge. The redesign
+  below removes possibilities instead of checking for them.
 
-     **Why — three review rounds all found blockers in this one branch.** It began as "adopt if its
-     manifest reconciles", which was undefined and let an **empty payload map reconcile vacuously**
-     while *deleting the freshly generated complete bundle*. The fix defined reconcile as four
-     clauses, the fourth being "the D9 bundle validator passes" — and the next round found that
-     **clause 4 does not bite**, because the validator checks only variable presence, row counts and
-     CSV readability, not station encoding, UTC metadata, the time axis or required columns. So a
-     schema-invalid bundle could still be adopted. Each fix moved the defect rather than removing it.
+  **The guarantee is now stated, and it is deliberately the weakest useful one.** After any run,
+  **exactly one complete, validated bundle is discoverable**; a crash may leave debris but can never
+  leave a state where no complete bundle can be found. It is explicitly **NOT** "a reader at any
+  instant sees either the old or the new bundle" — that guarantee was assumed, never required.
+  **Verified 2026-08-17: `CURRENT` is read by NOTHING in production** — `extract_era5.py:553` only
+  *logs* the published directory; the pointer's only readers are the tests that assert the pointer
+  works. Four rounds of defects were incurred protecting a reader that does not exist.
 
-     **What the cut buys.** Adoption existed only to make a re-run cheap. It was never a correctness
-     requirement — this is an offline research pipeline whose whole run takes ~15 s on 26 stations,
-     so regenerating is cheaper than the machinery that avoided it. Deleting the branch removes, in
-     one move: the reconcile function, all four clauses, the validator-strength question that
-     clause 4 depended on, and the ordering hazard between discarding staging and adopting.
+  - **P1 — The published directory is per-run unique: `…/era5_land/points/<NNNN>-<extraction_identity>/`,**
+    where `NNNN` is the next free zero-padded integer. **`os.replace` therefore never faces a
+    non-empty target**, so there is no rename, no quarantine, no `.orphan-<n>`, and no window. This
+    *deletes* the previous blocker rather than fixing it: quarantining the directory named by
+    `CURRENT` and then crashing before the replace left `CURRENT` resolving to nothing, and "switch
+    the pointer last" could not help because a same-identity re-run never changes the pointer's value.
+    Needs no clock, so **frozen-clock tests cannot collide** — a timestamped scheme would have
+    reintroduced the same-name collision inside the test suite.
+  - **P2 — `CURRENT` is DELETED.** Nothing reads it. Discovery is *the highest `NNNN` whose manifest
+    validates*. Nothing is ever renamed, moved, or destroyed; older bundles simply remain.
+  - **P3 — Identity is a LABEL, not a key.** Verified: `published_dir(identity)` is called in exactly
+    one place — `publish_bundle` itself, to decide where to write. **Nothing ever looks up a directory
+    by identity.** With adoption cut its cache-key role is gone; it stays in the directory name for
+    human browsing and in the manifest for provenance.
+  - **P4 — Validation moves INSIDE `publish_bundle`.** It calls `reopen_and_validate_bundle` on the
+    staging directory itself and refuses to publish on failure. Previously the guarantee was
+    *conventional* — the caller had to remember — so removing or reordering that call left every
+    publication test green while an invalid bundle could be published. **This is the pattern-breaker:
+    a guarantee enforced by construction cannot be skipped by a future caller.**
+  - **P5 — The manifest hashes PAYLOAD FILES ONLY, never itself.** A manifest cannot contain its own
+    hash. It lives inside the bundle directory and covers the payload artefacts beside it.
+  - **P6 — Discovery is NOT implemented here.** The convention above is documented and that is all;
+    **M-A6 implements reading when it has a real consumer with real requirements.** Writing a
+    discovery helper now would repeat the exact mistake `CURRENT` embodied — machinery built for a
+    reader that does not exist. The bundle is self-describing (numbered directory + manifest), so
+    nothing is lost by waiting.
+    ⚠️ **Consequence, accepted:** the tests inspect the directory layout *directly* rather than
+    through a production helper. The layout convention is therefore load-bearing for the suite while
+    having no production reader — which is why it is pinned here as a contract rather than left as an
+    implementation detail.
 
-     **What this does NOT relax.** The staging bundle must still pass reopen-and-validate *before*
-     publication — the fresh path's guarantees are unchanged. Quarantined directories are left on
-     disk, never deleted, so a bundle is never destroyed; and `CURRENT` is still switched last.
+  **Cost, stated:** every run leaves a new numbered directory, so disk grows monotonically under
+  repeated runs and nothing is ever cleaned up automatically. Accepted — disk is cheap, ~15 s per run
+  over 26 stations, and an accumulating series is a *visible* record of what was run, which both the
+  adopt path and the overwrite-in-place alternative would have hidden.
 
-     **Cost, stated:** a re-run with an unchanged identity does redundant work and leaves an
-     `.orphan-<n>` directory behind. Accepted deliberately — disk is cheap, and an operator seeing
-     accumulating orphans is a *visible* signal that something is re-running, which the silent adopt
-     path hid.
+  **Deletion is deletion:** `_quarantine`, the `.orphan-<n>` search, `current_pointer_path` and the
+  publication tests written for them are **removed, not left unused**. Dead code encoding a removed
+  decision is how `_manifest_reconciles` nearly survived, and how B1 would have survived the Branch A
+  discussion.
+
+  ### (history — SUPERSEDED by P1–P6 above; kept because the sequence is the lesson)
+
+  **Adoption existed only to make a re-run cheap; it was never a correctness requirement.** Its
+  three-round history is why P1–P6 remove possibilities rather than add checks:
+
+  | Round | State | What the next review found |
+  |---|---|---|
+  | 1 | "adopt if its manifest reconciles" | **undefined** — an empty payload map reconciled vacuously, and the adopt path then *deleted the freshly generated complete bundle* |
+  | 2 | reconcile defined as four clauses | **clause 4 did not bite** — the D9 validator checked only variable presence, row counts and CSV readability, so a schema-invalid bundle was still adoptable |
+  | 3 | adopt path cut; quarantine made unconditional | **the cut introduced a new window** — quarantining the directory named by `CURRENT` and crashing before the replace left `CURRENT` resolving to nothing |
+
+  Round 3's fix was mine, and it created the defect P1 now deletes. That is the whole argument for
+  the redesign: **three consecutive attempts to make adoption safe each moved the failure instead of
+  removing it**, and the fourth only worked because it stopped defending a guarantee nobody needed.
 
 - **D8 — Station identity is the coordinate table's `station` column,** the same key the gauge side
   uses (`scripts/dhm_precip/loader.py:251` loads and validates it; `:306` already asserts the
@@ -569,7 +649,8 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
 
 - **D9 — The outputs, the layout and the CLI are part of the contract, not an implementation
   detail.** *(New — the previous revision named no schemas, so "regenerable" was unverifiable.)*
-  Under `data/dhm_precip/era5_land/points/<extraction_identity>/`:
+  Under `data/dhm_precip/era5_land/points/<NNNN>-<extraction_identity>/` (P1 — per-run unique, so
+  `os.replace` never faces a non-empty target):
 
   | Artefact | Format | Key / dims | Required columns / vars |
   |---|---|---|---|
@@ -577,13 +658,12 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   | `series_bilinear.nc` | NetCDF | same | same — the sensitivity comparand only (D1a), never the primary |
   | `station_grid_elevation.csv` | CSV | one row per station, **26 rows** | `station`, `lat`, `lon`, `grid_lat`, `grid_lon`, `grid_i`, `grid_j`, `offset_km`, `station_elev_m`, `station_elevation_datum`, `orography_elev_m`, `orography_elevation_datum`, `orography_source` (enum), `orography_product_id`, `orography_product_version`, `elev_mismatch_m`, `datum_reconciled` (enum), `shared_cell_id`, `stations_in_cell` |
   | `operator_sensitivity.csv` | CSV | `(scope, station, season, statistic, quantile)` | `scope` enum {`STATION`, `ACROSS_STATION`} · `station` (null when `ACROSS_STATION`) · `season` · `statistic` enum {`QUANTILE`, `WET_MEAN_INTENSITY`, `WET_FREQUENCY`} · `quantile` (null unless `QUANTILE`) · `nearest_value`, `bilinear_value` · `delta_absolute` + `delta_unit` enum {`MM_PER_H`, `FRACTION`} (**wet frequency is a fraction, not mm/h** — the previous single `delta_mm_per_h` column mislabelled it) · `ratio` (null when the bilinear denominator is 0) · `n_hours_common_finite` · `n_hours_excluded` (D11.3) · `n_wet_nearest`, `n_wet_bilinear` (**both**, since the wet set differs by operator — one `n_wet_hours` was ambiguous) · `sign_agreement_fraction` (populated only on `ACROSS_STATION` rows) |
-  | `extraction_manifest.json` | JSON | — | both identities, operator id, every input sha256, **the payload artefacts' sha256s only — never its own, never the pointer's** (D7.1), the cited `AccumulationDiagnosticRecord`, the frozen `OrographySpec` + `OrographySourceRecord`, injected-clock timestamps |
+  | `extraction_manifest.json` | JSON | — | both identities, operator id, every input sha256, **the payload artefacts' sha256s only — never its own** (P5), the cited `AccumulationDiagnosticRecord`, the frozen `OrographySpec` + `OrographySourceRecord`, injected-clock timestamps |
 
-  And **one level above**, outside the identity directories (D7.2):
-
-  | Artefact | Format | Location | Contents |
-  |---|---|---|---|
-  | `CURRENT` | text pointer | `data/dhm_precip/era5_land/points/CURRENT` | the published extraction identity — the single atomic switch. **Not** inside `<extraction_identity>/`, where it could only name its own parent |
+  **There is NO pointer file.** An earlier revision specified a `CURRENT` pointer here; it is deleted
+  (P2) — nothing read it, and defending its crash-atomicity cost four rounds of blockers. Discovery is
+  the **highest `NNNN` whose manifest validates**, and it is a documented convention rather than
+  shipped code (P6).
 
   **CLI:** `scripts/dhm_precip/extract_era5.py`, mirroring `acquire_era5.py`'s shape —
   `--stage {orography,extract,sensitivity,all}`, `--data-root`, `--out`.
@@ -862,23 +942,32 @@ excluded count is reported; season assignment matches `scripts/dhm_precip/season
 ### Phase 4 — publish
 
 **4a — extraction identity, bundle publication, manifest.** *(depends on 3a, 3b)*
-*In scope:* both identities of D7; the identity-addressed staging directory, reopen-and-validate of
-every file, per-output sha256, directory `os.replace`, `CURRENT` pointer written last; the D5.2
-prerequisite check (refuse to publish a real-data run without a passing `AccumulationDiagnosticRecord`
-from 1c); recovery of an orphaned staging directory and of a published directory with no manifest
-entry.
+*In scope:* both identities of D7; the staging directory; **`publish_bundle` calls
+`reopen_and_validate_bundle` on staging itself and refuses to publish on failure (P4)**; per-payload
+sha256 (P5); publication to the **per-run numbered directory `<NNNN>-<identity>/` (P1)** via
+`os.replace` onto a name that cannot already exist; the D5.2 prerequisite check (refuse to publish a
+real-data run without a passing `AccumulationDiagnosticRecord` from 1c); deletion of a staging
+directory left by a crash.
+*Removed from scope by the 2026-08-17 redesign:* the `CURRENT` pointer (P2 — deleted), quarantine /
+`.orphan-<n>` (P1 — nothing is ever renamed), adoption of an existing directory, and any discovery
+helper (P6 — convention only).
 *Out of scope:* changing Plan 171's manifest writer or the M-A4 product layout.
 *Target files:* `scripts/dhm_precip/era5_extract_manifest.py`, `scripts/dhm_precip/extract_era5.py`
 (CLI, D9), `scripts/dhm_precip/era5_errors.py`.
 *Verification (red-first):* `uv run pytest tests/unit/scripts/test_extract_era5_cli.py
 tests/unit/scripts/test_era5_extract.py -k publish` — changing **each** identity input in turn
 (operator, coordinate-table sha, a source sha, the orography identity, the quantile grid, the schema
-version, the code version) yields a **different** `extraction_identity` and a **new** directory, and
-the previous one survives; a crash simulated **between** the directory replace and the pointer write
-leaves the previous `CURRENT` intact and the next run re-validates rather than trusting the orphan; a
-staging directory left by a crash is deleted, not published; a real-data run with no passing
-diagnostic record exits **4**; each typed failure of D9 maps to its exit code (2/3/4/5) and `--help`
-exits 0.
+version, the code version) yields a **different** `extraction_identity`; **every run yields a new
+`<NNNN>-` directory and every previous bundle survives untouched** (P1); **a re-run with identical
+inputs publishes `<NNNN+1>-<same identity>` and renames nothing** (the round-3 window is now
+unrepresentable, so it is tested by absence: no `.orphan-*` path is ever created); **`publish_bundle`
+refuses a staging directory that fails `reopen_and_validate_bundle`, proven by calling it with a
+malformed series** (P4 — this replaces the coverage lost when the wrong-station-count test was
+deleted); a staging directory left by a crash is deleted, not published; a real-data run with no
+passing diagnostic record exits **4**; each typed failure of D9 maps to its exit code (2/3/4/5) and
+`--help` exits 0.
+**Per P7:** each identity-input case above must also show a **changed output**, not merely a changed
+hash — an input that cannot change an output does not belong in the identity.
 
 **4b — real-data run.** *(operator step; **gated on Plan 171 Task 4b**, not 2b — D10.)*
 *In scope:* a human with the six annual products on disk exports `DHM_PRECIP_ERA5_ROOT` and runs
