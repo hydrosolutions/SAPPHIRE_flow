@@ -149,6 +149,24 @@ class TestAggregationRuleIdDoesNotClaimWeighting:
     def test_observed_spec_carries_the_corrected_rule_id(self) -> None:
         assert OBSERVED_OROGRAPHY_SPEC.aggregation_rule_id == AGGREGATION_RULE_ID
 
+    def test_the_plan_names_the_same_rule_as_the_code(self) -> None:
+        """The rule id travels into the raster attrs and the extraction
+        manifest, so the plan and the code must not drift apart on what it
+        is. Two plan references still said "area-weighted" after the rename
+        and were corrected on 2026-08-17; this keeps them corrected."""
+        from pathlib import Path
+
+        text = (
+            Path(__file__).resolve().parents[3]
+            / "docs"
+            / "plans"
+            / "174-era5-land-point-extraction.md"
+        ).read_text()
+        assert "`mean_of_contained_cells` — the (unweighted)" in text
+        assert "area_weighted" not in text
+        assert "area-weighted-mean aggregate" not in text
+        assert "area-weighted-mean aggregator" not in text
+
 
 # --- 1b: convert_field (D3a magnitude sanity check) ---
 
