@@ -34,6 +34,21 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
+- **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
+  (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
+  alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).
+  Adds an off-box dead-man's-switch heartbeat (Healthchecks.io) POSTed after every
+  tick that COMPLETES AND PERSISTS its state — an unhealthy stack still pings
+  (Slack is the *detected-failure* channel, the dead-man is the
+  *watchdog-died-before-it-could-report* channel), but a tick that raises before
+  persistence correctly emits no heartbeat, never placed in a `finally` (which
+  would falsely mark a crashed tick healthy). Also hardens all four outbound HTTP
+  call sites (health probe, BAFU-detail probe, Slack POST, dead-man POST) against
+  `httpx.InvalidURL` (verified NOT a subclass of `httpx.HTTPError`), `OSError`
+  and `UnicodeError` — a malformed hand-pasted URL could otherwise kill a tick at
+  exactly the moment it tries to report an outage. Routes all four Slack call
+  sites through a safety helper so an unexpected delivery exception can no longer
+  lose Plan 162 Phase A's `backup_notification_pending` transition.
 - **160** — BAFU forecast adapter schema-drift resilience — `READY, implemented
   (hold-at-PR)` — fixes the live BAFU forecast collector outage (dead since
   2026-08-12 ~16:00 UTC, caught by the Plan 158 Slack alert): BAFU added the icon
