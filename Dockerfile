@@ -74,6 +74,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       gosu curl postgresql-client-16 libexpat1 libgeos-c1v5 libeccodes0 \
     && rm -rf /var/lib/apt/lists/*
+
+# Apply Debian SECURITY updates on top of the pinned base. The base digest is
+# pinned deliberately for reproducibility, which means it lags trixie-security
+# by however long the upstream python image takes to rebuild — and CI's Trivy
+# gate fails on any fixable HIGH/CRITICAL in the meantime, on EVERY branch.
+#
+# Concretely (2026-08-17): CVE-2026-53615 in util-linux/bsdutils. The base still
+# ships 2.41-5; trixie-security has 2.41.5-0+deb13u1. Re-pinning the base does
+# NOT help — the current `python:3.14-slim` carries the same unpatched version.
+#
+# `upgrade` (not `dist-upgrade`) and security-only, so this cannot pull in new
+# packages or cross a major version; it only moves already-installed packages to
+# their patched builds. Reproducibility is preserved by the pinned base plus the
+# lockfile — this layer only ever applies security patches on top.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
 # libexpat1: runtime dependency of rasterio's binary extensions (via rioxarray in the
 # gridded-NWP extractor). Added 2026-04-19 as an A3 step-8 finding.
 # libgeos-c1v5: provides libgeos_c.so.1 required by exactextract (used by
