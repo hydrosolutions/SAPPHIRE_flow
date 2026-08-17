@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 import pytest
 
 from scripts.dhm_precip import extract_era5
-from scripts.dhm_precip.era5_extract_manifest import current_pointer_path, points_root
+from scripts.dhm_precip.era5_extract_manifest import points_root
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DHM_PRECIP_ERA5_ROOT"),
@@ -43,8 +43,20 @@ def test_real_data_extraction_publishes_a_complete_bundle() -> None:
     exit_code = extract_era5.run(args, clock=lambda: datetime.now(UTC))
     assert exit_code == 0
 
-    identity = current_pointer_path(data_root).read_text().strip()
-    published = points_root(data_root) / identity
+    # P6 — discovery is a documented convention, not production code: the
+    # highest `NNNN` whose manifest is present. There is no `CURRENT`
+    # pointer (P2).
+    candidates = sorted(
+        (
+            p
+            for p in points_root(data_root).iterdir()
+            if p.is_dir() and p.name != ".staging"
+        ),
+        key=lambda p: p.name,
+    )
+    published = next(
+        p for p in reversed(candidates) if (p / "extraction_manifest.json").exists()
+    )
 
     elevation = pl.read_csv(published / "station_grid_elevation.csv")
     assert elevation.height == 26, "expected exactly 26 stations (D8)"

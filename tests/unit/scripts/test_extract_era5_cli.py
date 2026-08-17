@@ -14,7 +14,7 @@ import xarray as xr
 
 from scripts.dhm_precip import extract_era5
 from scripts.dhm_precip.domain_types import Station
-from scripts.dhm_precip.era5_extract_manifest import current_pointer_path, points_root
+from scripts.dhm_precip.era5_extract_manifest import points_root
 from scripts.dhm_precip.era5_manifest import (
     AccumulationDiagnosticRecord,
     Era5ProvenanceManifest,
@@ -158,6 +158,26 @@ def _build_data_root(tmp_path: Path, *, ramp_intercept: float = 0.5) -> Path:
 _TEST_PARAMS = replace(DEFAULT_PARAMS, expected_station_count=2)
 
 
+def _published_dirs(data_root: Path) -> list[Path]:
+    root = points_root(data_root)
+    if not root.exists():
+        return []
+    return sorted(
+        (p for p in root.iterdir() if p.is_dir() and p.name != ".staging"),
+        key=lambda p: p.name,
+    )
+
+
+def _latest_published_dir(data_root: Path) -> Path:
+    """P6 — discovery is a documented convention, not production code: the
+    highest `NNNN` whose manifest is present. Tests inspect the directory
+    layout directly (the accepted consequence of P6 — see the plan)."""
+    for candidate in reversed(_published_dirs(data_root)):
+        if (candidate / "extraction_manifest.json").exists():
+            return candidate
+    raise AssertionError(f"no published bundle found under {points_root(data_root)}")
+
+
 def _run_all(
     data_root: Path,
     *,
@@ -235,11 +255,11 @@ class TestCliHelp:
 
 
 class TestPublishBundle:
-    def test_happy_path_publishes_and_sets_current(self, tmp_path: Path) -> None:
+    def test_happy_path_publishes_a_numbered_bundle(self, tmp_path: Path) -> None:
         data_root = _build_data_root(tmp_path)
         assert _run_all(data_root) == 0
-        current = current_pointer_path(data_root).read_text().strip()
-        published = points_root(data_root) / current
+        published = _latest_published_dir(data_root)
+        assert published.name.startswith("0000-")
         for name in (
             "series_nearest.nc",
             "series_bilinear.nc",
@@ -251,29 +271,31 @@ class TestPublishBundle:
         elevation = pl.read_csv(published / "station_grid_elevation.csv")
         assert elevation.height == 2
 
-    def test_rerun_with_unchanged_inputs_republishes_and_quarantines_the_prior(
+    def test_rerun_with_unchanged_inputs_publishes_a_new_numbered_directory(
         self, tmp_path: Path
     ) -> None:
-        """D7.3 (owner decision 2026-08-17) — adoption is CUT. The re-run
-        computes the same identity, quarantines the bundle already published
-        under it and publishes its own; `CURRENT` still names that identity,
-        and the quarantined one is left on disk."""
+        """P1/P1a/P2 (redesigned 2026-08-17) — there is no adoption, no
+        quarantine and no `CURRENT` pointer. A re-run with identical inputs
+        computes the SAME `extraction_identity` but is allocated the NEXT
+        free run number; the first bundle is left completely untouched, and
+        no `.orphan-*` path is ever created (the round-3 window is
+        unrepresentable now — tested here by absence)."""
         data_root = _build_data_root(tmp_path)
         assert _run_all(data_root) == 0
-        first_identity = current_pointer_path(data_root).read_text().strip()
-        assert _run_all(data_root) == 0
-        second_identity = current_pointer_path(data_root).read_text().strip()
-        assert first_identity == second_identity
+        first = _latest_published_dir(data_root)
+        first_identity = first.name.split("-", 1)[1]
 
-        identity_dirs = sorted(
-            p.name
-            for p in points_root(data_root).iterdir()
-            if p.is_dir() and p.name != ".staging"
-        )
-        assert identity_dirs == sorted([first_identity, f"{first_identity}.orphan-0"])
-        # The quarantined bundle is intact — quarantine never deletes.
-        orphan = points_root(data_root) / f"{first_identity}.orphan-0"
-        assert (orphan / "extraction_manifest.json").exists()
+        assert _run_all(data_root) == 0
+        second = _latest_published_dir(data_root)
+        second_identity = second.name.split("-", 1)[1]
+        assert first_identity == second_identity
+        assert first.name != second.name
+
+        published = sorted(p.name for p in _published_dirs(data_root))
+        assert published == [f"0000-{first_identity}", f"0001-{first_identity}"]
+        assert not any("orphan" in name for name in published)
+        # The first bundle survives, complete and unmodified.
+        assert (first / "extraction_manifest.json").exists()
         # No staging directory is left behind by the publish.
         assert not (points_root(data_root) / ".staging" / first_identity).exists()
 
@@ -282,7 +304,7 @@ class TestPublishBundle:
     ) -> None:
         data_root = _build_data_root(tmp_path, ramp_intercept=0.5)
         assert _run_all(data_root, ramp_intercept=0.5) == 0
-        first_identity = current_pointer_path(data_root).read_text().strip()
+        first_identity = _latest_published_dir(data_root).name.split("-", 1)[1]
 
         # Changing a value-affecting input (a source sha256, via a different
         # ramp) must change extraction_identity — the source product's own
@@ -292,7 +314,7 @@ class TestPublishBundle:
             tmp_path.with_name(tmp_path.name + "-2"), ramp_intercept=9.0
         )
         assert _run_all(data_root2, ramp_intercept=9.0) == 0
-        second_identity = current_pointer_path(data_root2).read_text().strip()
+        second_identity = _latest_published_dir(data_root2).name.split("-", 1)[1]
         assert first_identity != second_identity
 
     def test_no_passing_diagnostic_record_exits_4(self, tmp_path: Path) -> None:
@@ -332,7 +354,7 @@ class TestPublishBundle:
             }
         ).write_csv(data_root / "station_coordinates.csv")
         assert _run_all(data_root, expected_stations=frozenset({Station("A")})) == 4
-        assert not current_pointer_path(data_root).exists()
+        assert _published_dirs(data_root) == []
 
     def test_manifest_carries_the_full_required_provenance(
         self, tmp_path: Path
@@ -348,10 +370,8 @@ class TestPublishBundle:
 
         data_root = _build_data_root(tmp_path)
         assert _run_all(data_root) == 0
-        current = current_pointer_path(data_root).read_text().strip()
-        manifest = json.loads(
-            (points_root(data_root) / current / "extraction_manifest.json").read_text()
-        )
+        published = _latest_published_dir(data_root)
+        manifest = json.loads((published / "extraction_manifest.json").read_text())
 
         # 1. EVERY OrographySpec field, not four of them.
         spec = manifest["orography_spec"]
@@ -428,10 +448,10 @@ class TestPublishBundle:
 
         data_root = _build_data_root(tmp_path)
         assert _run_all(data_root) == 0
-        current = current_pointer_path(data_root).read_text().strip()
+        published = _latest_published_dir(data_root)
 
         for name in ("series_nearest.nc", "series_bilinear.nc"):
-            path = points_root(data_root) / current / name
+            path = published / name
             with h5py.File(path, "r") as raw:
                 station = raw["station"]
                 # Fixed-length: an |S1 char array over a string dimension,
@@ -598,10 +618,8 @@ class TestOrographyRouteChangeForcesRematerialisation:
         )
         assert orography_raster_path(data_root, route_identity=route_b).exists()
 
-        current = current_pointer_path(data_root).read_text().strip()
-        manifest = json.loads(
-            (points_root(data_root) / current / "extraction_manifest.json").read_text()
-        )
+        published = _latest_published_dir(data_root)
+        manifest = json.loads((published / "extraction_manifest.json").read_text())
         assert manifest["orography_spec"]["product_version"] == spec_b.product_version
         assert (
             manifest["orography_source_record"]["orography_route_identity"] == route_b

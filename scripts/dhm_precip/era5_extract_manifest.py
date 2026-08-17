@@ -1,12 +1,26 @@
 """Plan 174 (M-A5) task 4a — D7's two identities, the identity-addressed
 bundle publication, and the extraction manifest.
 
-Mirrors `era5_manifest.py`'s atomic tmp -> reopen-and-validate -> publish
-discipline, extended for a MULTI-FILE bundle (D7): every output is written
-into a staging directory keyed by `extraction_identity`, reopened and
-validated there, then the whole directory is published as a unit and the
-`CURRENT` pointer (one level ABOVE the identity directories, D7.2) is
-switched last.
+**Publication model — P1-P6 (redesigned 2026-08-17, grill-me).** Four
+independent review rounds each found a blocker in an "adopt if the manifest
+reconciles" / `CURRENT`-pointer / quarantine design, and every fix relocated
+the defect one layer down instead of removing it. The redesign removes
+possibilities instead of adding checks:
+
+- **P1/P1a** — the published directory is per-run UNIQUE:
+  `<NNNN>-<extraction_identity>/`, with `NNNN` allocated by
+  `mkdir(exist_ok=False)` (never scan-then-create, which races). `os.replace`
+  therefore never faces a non-empty target — there is no rename, no
+  quarantine, no `.orphan-<n>`, no window.
+- **P2** — there is no `CURRENT` pointer. Nothing in production reads one.
+  Discovery is "the highest `NNNN` whose manifest validates" — a documented
+  convention (P6), not code here.
+- **P3** — `extraction_identity` is a LABEL (directory name + manifest
+  provenance), never a lookup key.
+- **P4/P4a** — validation moves INSIDE `publish_bundle`, applying EXACTLY
+  the predicate discovery would apply (including `payload_sha256s`
+  reconciliation), so publication and discovery can never drift apart.
+- **P5** — the manifest hashes the payload artefacts only, never itself.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -45,13 +59,17 @@ DELTA_STATISTICS: tuple[str, ...] = ("absolute", "ratio", "sign_agreement")
 EXTRACTION_CODE_VERSION = "1"
 
 # D9's payload set, EXACTLY — the artefacts the extraction manifest hashes
-# beside itself (D7.1: never its own hash, never the pointer's).
+# beside itself (P5: never its own hash).
 D9_PAYLOAD_FILES: tuple[str, ...] = (
     "series_nearest.nc",
     "series_bilinear.nc",
     "station_grid_elevation.csv",
     "operator_sensitivity.csv",
 )
+
+
+_RUN_NUMBER_WIDTH = 4
+_MAX_RUN_NUMBER = 10**_RUN_NUMBER_WIDTH - 1
 
 
 def points_root(data_root: Path) -> Path:
@@ -62,12 +80,54 @@ def staging_dir(data_root: Path, *, identity: str) -> Path:
     return points_root(data_root) / ".staging" / identity
 
 
-def published_dir(data_root: Path, *, identity: str) -> Path:
-    return points_root(data_root) / identity
+def published_dir(data_root: Path, *, run_number: int, identity: str) -> Path:
+    """P1 — the per-run unique published directory name: a zero-padded run
+    number joined to the (label-only, P3) identity. Two different inputs
+    always sort by run order; the SAME inputs re-run still get a fresh
+    number (P1a), so this can never collide with an existing directory."""
+    return points_root(data_root) / f"{run_number:0{_RUN_NUMBER_WIDTH}d}-{identity}"
 
 
-def current_pointer_path(data_root: Path) -> Path:
-    return points_root(data_root) / "CURRENT"
+def _existing_run_numbers(data_root: Path) -> list[int]:
+    root = points_root(data_root)
+    if not root.exists():
+        return []
+    numbers: list[int] = []
+    for child in root.iterdir():
+        if not child.is_dir() or child.name == ".staging":
+            continue
+        prefix = child.name.split("-", 1)[0]
+        if prefix.isdigit():
+            numbers.append(int(prefix))
+    return numbers
+
+
+def allocate_published_dir(data_root: Path, *, identity: str) -> Path:
+    """P1a — allocate the next free run number by `mkdir(exist_ok=False)`,
+    which is ATOMIC, never by "scan for a free number, then create it": two
+    runs can otherwise both observe the same number as free. The scan below
+    is only an optimisation (start just past the highest number seen); the
+    actual race is resolved by retrying on `FileExistsError`, so the winner
+    of any race owns the number by construction and the loser simply moves
+    on to the next candidate. No lock, no reservation file, no single-writer
+    precondition is required."""
+    points_root(data_root).mkdir(parents=True, exist_ok=True)
+    candidate = max(_existing_run_numbers(data_root), default=-1) + 1
+    while candidate <= _MAX_RUN_NUMBER:
+        target = published_dir(data_root, run_number=candidate, identity=identity)
+        try:
+            target.mkdir(parents=False, exist_ok=False)
+        except FileExistsError:
+            candidate += 1
+            continue
+        except OSError as exc:
+            raise Era5StorageError(
+                f"failed to reserve published directory {target}: {exc}"
+            ) from exc
+        return target
+    raise Era5StorageError(
+        f"no free run number <= {_MAX_RUN_NUMBER} under {points_root(data_root)}"
+    )
 
 
 def manifest_filename() -> str:
@@ -137,7 +197,7 @@ def extraction_identity(
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ExtractionManifest:
     """D9's `extraction_manifest.json` — the payload artefacts' sha256s
-    ONLY, never its own hash, never the pointer's (D7.1)."""
+    ONLY, never its own hash (P5)."""
 
     orography_identity: str
     extraction_identity: str
@@ -256,83 +316,54 @@ def prepare_staging_dir(data_root: Path, *, identity: str) -> Path:
     return staging
 
 
-def _quarantine(directory: Path) -> Path:
-    n = 0
-    while True:
-        candidate = directory.with_name(f"{directory.name}.orphan-{n}")
-        if not candidate.exists():
-            os.replace(directory, candidate)
-            return candidate
-        n += 1
-
-
 def publish_bundle(
     staged_dir: Path,
     *,
     data_root: Path,
     identity: str,
+    expected_station_count: int,
 ) -> Path:
-    """D7 — publish the completed staging directory as a unit, then switch
-    the `CURRENT` pointer last.
+    """P1/P4 — validate the staged bundle FIRST, refusing to publish on
+    failure (P4/P4a: this call applies EXACTLY the predicate discovery
+    would apply, including `payload_sha256s` reconciliation — publication
+    and discovery share one predicate, never two that can drift). Only on a
+    passing validation does it allocate a per-run-unique numbered directory
+    (P1a) and move the validated content into it.
 
-    **There is no adoption** (D7.3, owner decision 2026-08-17). A run always
-    publishes the bundle it just generated and validated: if `<identity>/`
-    already exists it is quarantined UNCONDITIONALLY as
-    `<identity>.orphan-<n>` and the fresh bundle takes its place (`os.replace`
-    cannot swap a non-empty directory for another non-empty one, so the
-    rename is what makes room).
-
-    Adoption began as "adopt if the manifest reconciles" and three review
-    rounds each found a blocker inside that one branch — a vacuously
-    reconciling empty payload map that then *deleted the fresh complete
-    bundle*, then a fourth reconcile clause whose validator was too weak to
-    bite. It was only ever an optimisation (~15 s to regenerate), never a
-    correctness requirement, so the branch is deleted rather than patched
-    again. Quarantined directories are never removed: a bundle is never
-    destroyed, and accumulating orphans are a visible re-run signal.
-
-    Unchanged: the caller must have passed `reopen_and_validate_bundle` on
-    the staging directory BEFORE this call, and `CURRENT` is still switched
-    last, adjacent-temp + `os.replace`.
+    `os.replace` here never faces a non-empty target: `allocate_published_dir`
+    reserves the target via `mkdir(exist_ok=False)` immediately before the
+    move, so the directory is freshly created and empty, owned by this call
+    alone. There is no `CURRENT` pointer (P2), no quarantine and no
+    `.orphan-<n>` (P1 — a fresh numbered directory can never collide with a
+    prior bundle, so there is nothing to displace), and no adoption of an
+    existing bundle (D7.3, cut before this redesign for the same reason:
+    three review rounds each found a blocker inside that one branch).
+    Every previous bundle is left untouched.
     """
-    final_dir = published_dir(data_root, identity=identity)
-    if final_dir.exists():
-        quarantined = _quarantine(final_dir)
-        log.info(
-            "era5_extract.publish.quarantined_prior_bundle",
-            identity=identity,
-            quarantined_as=quarantined.name,
-        )
-    os.replace(staged_dir, final_dir)
-
-    pointer_path = current_pointer_path(data_root)
-    tmp_pointer = pointer_path.with_name(pointer_path.name + ".tmp")
+    reopen_and_validate_bundle(
+        staged_dir, expected_station_count=expected_station_count
+    )
+    final_dir = allocate_published_dir(data_root, identity=identity)
     try:
-        pointer_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_pointer.write_text(identity)
-        os.replace(tmp_pointer, pointer_path)
+        os.replace(staged_dir, final_dir)
     except OSError as exc:
         raise Era5StorageError(
-            f"failed to publish CURRENT pointer at {pointer_path}: {exc}"
+            f"failed to publish bundle from {staged_dir} to {final_dir}: {exc}"
         ) from exc
+    log.info(
+        "era5_extract.publish.published",
+        identity=identity,
+        published_dir=str(final_dir),
+    )
     return final_dir
 
 
-def read_current_identity(data_root: Path) -> str | None:
-    pointer_path = current_pointer_path(data_root)
-    try:
-        if not pointer_path.exists():
-            return None
-        return pointer_path.read_text().strip()
-    except OSError as exc:
-        raise Era5StorageError(
-            f"failed to read CURRENT pointer at {pointer_path}: {exc}"
-        ) from exc
-
-
 def reopen_and_validate_bundle(directory: Path, *, expected_station_count: int) -> None:
-    """4a — reopen-and-validate every staged file before it is trusted
-    (mirrors M-A4's own reopen-after-write discipline)."""
+    """4a/P4a — reopen-and-validate every staged file before it is trusted
+    (mirrors M-A4's own reopen-after-write discipline), INCLUDING a full
+    `payload_sha256s` reconciliation against the manifest: a payload
+    modified after its hash was computed must fail HERE, not silently pass
+    publication and only fail a later discovery read (P4a)."""
     import polars as pl
     import xarray as xr
 
@@ -374,7 +405,25 @@ def reopen_and_validate_bundle(directory: Path, *, expected_station_count: int) 
     pl.read_csv(sensitivity_path)  # readable at all is the post-condition here
 
     manifest_path = directory / manifest_filename()
-    if read_extraction_manifest(manifest_path) is None:
+    manifest = read_extraction_manifest(manifest_path)
+    if manifest is None:
         raise ExtractionPostConditionError(
             f"staged bundle missing {manifest_filename()}"
         )
+
+    # P4a — the same predicate discovery would apply: every D9 payload
+    # file's sha256 must reconcile against what the manifest recorded.
+    for name in D9_PAYLOAD_FILES:
+        expected = manifest.payload_sha256s.get(name)
+        if expected is None:
+            raise ExtractionPostConditionError(
+                f"extraction manifest at {manifest_path} records no sha256 "
+                f"for {name!r} (P4a)"
+            )
+        actual = checksum_file(directory / name)
+        if actual != expected:
+            raise ExtractionPostConditionError(
+                f"{name} sha256 {actual} does not match the manifest's "
+                f"recorded {expected} — payload was modified after its "
+                "hash was computed (P4a)"
+            )

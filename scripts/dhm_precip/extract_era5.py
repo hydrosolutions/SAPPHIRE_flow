@@ -2,8 +2,12 @@
 
 Extracts the M-A4 hourly-mm ERA5-Land product (Plan 171) at the 26 gauge
 locations, under both the `nearest` (D1, primary) and `bilinear` (D1a,
-sensitivity comparand) operators, publishing an identity-addressed bundle
-(D7/D9) under `data/dhm_precip/era5_land/points/<extraction_identity>/`.
+sensitivity comparand) operators, publishing a per-run-unique, identity-
+labelled bundle (D7/D9/P1) under
+`data/dhm_precip/era5_land/points/<NNNN>-<extraction_identity>/`. There is
+no `CURRENT` pointer (P2) and no adoption of an existing bundle (D7.3); a
+re-run with identical inputs is allocated the next free run number and
+every previous bundle is left untouched.
 
 Usage:
     uv run python scripts/dhm_precip/extract_era5.py --stage orography
@@ -94,7 +98,6 @@ from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
     extraction_identity,
     prepare_staging_dir,
     publish_bundle,
-    reopen_and_validate_bundle,
     write_extraction_manifest,
 )
 from scripts.dhm_precip.era5_manifest import (  # noqa: E402
@@ -539,12 +542,16 @@ def run(
     write_extraction_manifest(manifest, staging / "extraction_manifest.json")
     # The PINNED count (D8/2d), not `len(stations)` — comparing the bundle
     # against the very inventory that produced it validates nothing.
-    reopen_and_validate_bundle(
-        staging, expected_station_count=resolved_params.expected_station_count
+    # P4/P4a — `publish_bundle` validates (including payload_sha256
+    # reconciliation) INSIDE itself and refuses to publish on failure, then
+    # allocates a per-run-unique numbered directory (P1/P1a). No adoption,
+    # no quarantine, no `CURRENT` pointer (D7.3, P1-P6).
+    final_dir = publish_bundle(
+        staging,
+        data_root=data_root,
+        identity=identity,
+        expected_station_count=resolved_params.expected_station_count,
     )
-    # D7.3 — no adoption: an existing `<identity>/` is quarantined and THIS
-    # bundle, already reopen-and-validated above, is the published one.
-    final_dir = publish_bundle(staging, data_root=data_root, identity=identity)
 
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

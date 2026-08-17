@@ -13,15 +13,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from scripts.dhm_precip.era5_errors import ExtractionPostConditionError
 from scripts.dhm_precip.era5_extract_manifest import (
     D9_PAYLOAD_FILES,
     ExtractionManifest,
     checksum_file,
-    current_pointer_path,
     extraction_identity,
+    points_root,
     prepare_staging_dir,
     publish_bundle,
-    published_dir,
     read_extraction_manifest,
     write_extraction_manifest,
 )
@@ -160,7 +160,9 @@ def _staged_bundle(data_root: Path, *, identity: str, marker: str = "x") -> Path
 
 
 def _publish(staged: Path, data_root: Path, identity: str) -> Path:
-    return publish_bundle(staged, data_root=data_root, identity=identity)
+    return publish_bundle(
+        staged, data_root=data_root, identity=identity, expected_station_count=2
+    )
 
 
 def _marker_of(directory: Path) -> str:
@@ -171,108 +173,134 @@ def _marker_of(directory: Path) -> str:
     )
 
 
-def _orphans(data_root: Path) -> list[str]:
-    return [
-        p.name
-        for p in (data_root / "era5_land" / "points").iterdir()
-        if "orphan" in p.name
-    ]
+def _published_dirs(data_root: Path) -> list[str]:
+    root = points_root(data_root)
+    if not root.exists():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and p.name != ".staging")
 
 
 class TestPublishBundleMechanics:
-    def test_publish_sets_current_pointer(self, tmp_path: Path) -> None:
+    def test_publish_creates_a_numbered_directory_named_by_the_identity(
+        self, tmp_path: Path
+    ) -> None:
         staged = _staged_bundle(tmp_path, identity="abc123")
-        _publish(staged, tmp_path, "abc123")
-        assert current_pointer_path(tmp_path).read_text().strip() == "abc123"
-        assert published_dir(tmp_path, identity="abc123").exists()
+        final_dir = _publish(staged, tmp_path, "abc123")
+        assert final_dir.name == "0000-abc123"
+        assert final_dir.exists()
+        for name in D9_PAYLOAD_FILES:
+            assert (final_dir / name).exists(), name
 
-    def test_manifest_never_hashes_itself_or_the_pointer(self, tmp_path: Path) -> None:
+    def test_manifest_never_hashes_itself(self, tmp_path: Path) -> None:
         staged = _staged_bundle(tmp_path, identity="abc123")
         manifest = read_extraction_manifest(staged / "extraction_manifest.json")
         assert manifest is not None
         assert "extraction_manifest.json" not in manifest.payload_sha256s
-        assert "CURRENT" not in manifest.payload_sha256s
 
 
-class TestPublicationIsAlwaysTheFreshBundle:
-    """D7.3 (owner decision 2026-08-17) — **the adopt-existing-bundle path is
-    CUT**. There is no reconcile function, no adopt branch and no conditional
-    discard of staging: a run always publishes the bundle it just generated
-    and validated, and an existing `<identity>/` is quarantined
-    unconditionally. Three review rounds each found a blocker inside that one
-    branch (vacuous empty-payload reconcile; a validator too weak to bite);
-    deleting the branch removes the defect class instead of moving it.
+class TestPerRunUniquePublication:
+    """P1/P1a/P2 (redesigned 2026-08-17) — **there is no adoption, no
+    quarantine and no `CURRENT` pointer.** Every run publishes into a fresh,
+    per-run-unique numbered directory; every previous bundle is left
+    untouched, and nothing is ever renamed after the fact. Three review
+    rounds each found a blocker inside the old "adopt if the manifest
+    reconciles" / quarantine design; the redesign removes the branch and the
+    window instead of patching either again.
     """
 
-    def test_an_intact_published_bundle_is_quarantined_anyway(
+    def test_rerun_with_the_same_identity_gets_a_new_run_number(
         self, tmp_path: Path
     ) -> None:
-        """The exact case adoption existed for — the published bundle is
-        complete, its hashes match and it passes the D9 validator. It is
-        quarantined regardless, and the FRESH bundle is what `CURRENT`
-        names."""
-        _publish(
-            _staged_bundle(tmp_path, identity="same-id", marker="stale"),
+        first = _publish(
+            _staged_bundle(tmp_path, identity="same-id", marker="first"),
             tmp_path,
             "same-id",
         )
-        final_dir = _publish(
-            _staged_bundle(tmp_path, identity="same-id", marker="fresh"),
+        second = _publish(
+            _staged_bundle(tmp_path, identity="same-id", marker="second"),
             tmp_path,
             "same-id",
         )
-        assert _orphans(tmp_path) == ["same-id.orphan-0"]
-        assert "fresh" in (final_dir / "station_grid_elevation.csv").read_text()
-        assert current_pointer_path(tmp_path).read_text().strip() == "same-id"
+        assert first.name == "0000-same-id"
+        assert second.name == "0001-same-id"
+        # The first bundle survives completely untouched — nothing renamed,
+        # nothing quarantined, nothing deleted.
+        assert first.exists()
+        assert _marker_of(first) == "first"
+        assert _marker_of(second) == "second"
+        assert _published_dirs(tmp_path) == ["0000-same-id", "0001-same-id"]
+        # No `.orphan-*` path is ever created — the round-3 window is
+        # unrepresentable now, tested here by absence.
+        assert not any("orphan" in name for name in _published_dirs(tmp_path))
 
-    def test_quarantined_bundles_accumulate_and_are_never_deleted(
+    def test_different_identities_each_get_their_own_numbered_directory(
         self, tmp_path: Path
     ) -> None:
-        """`.orphan-<n>` takes the first free n, and a quarantined bundle is
-        left on disk untouched — a bundle is never destroyed, and the
-        accumulating orphans are the visible signal the silent adopt path
-        hid."""
-        for marker in ("first", "second", "third"):
-            _publish(
-                _staged_bundle(tmp_path, identity="same-id", marker=marker),
-                tmp_path,
-                "same-id",
-            )
+        first = _publish(_staged_bundle(tmp_path, identity="id-a"), tmp_path, "id-a")
+        second = _publish(_staged_bundle(tmp_path, identity="id-b"), tmp_path, "id-b")
+        assert first.name == "0000-id-a"
+        assert second.name == "0001-id-b"
 
-        assert sorted(_orphans(tmp_path)) == [
-            "same-id.orphan-0",
-            "same-id.orphan-1",
-        ]
-        assert _marker_of(published_dir(tmp_path, identity="same-id.orphan-0")) == (
-            "first"
-        )
-        assert _marker_of(published_dir(tmp_path, identity="same-id.orphan-1")) == (
-            "second"
-        )
-        assert _marker_of(published_dir(tmp_path, identity="same-id")) == "third"
+    def test_there_is_no_current_pointer_file(self, tmp_path: Path) -> None:
+        _publish(_staged_bundle(tmp_path, identity="abc123"), tmp_path, "abc123")
+        assert not (points_root(tmp_path) / "CURRENT").exists()
 
-    def test_the_published_directory_is_exactly_the_staged_one(
-        self, tmp_path: Path
+    def test_run_number_allocation_retries_past_a_concurrent_reservation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Nothing of the prior directory survives into the published one —
-        no stray file is inherited, and an incomplete prior bundle can never
-        be published in place of the fresh one."""
-        _publish(
-            _staged_bundle(tmp_path, identity="same-id", marker="stale"),
-            tmp_path,
-            "same-id",
-        )
-        published = published_dir(tmp_path, identity="same-id")
-        (published / "stray.csv").write_text("a\n1\n")
-        for name in D9_PAYLOAD_FILES:
-            (published / name).unlink()
+        """P1a — allocation must be robust to a race: a concurrent winner
+        can reserve a number AFTER this process's scan already ran (the scan
+        is only an optimisation, per P1a). Simulate that by stubbing the
+        scan to report no existing numbers while `0000-abc123` already
+        exists on disk. The allocator's `mkdir(exist_ok=False)` must hit
+        `FileExistsError`, retry to `0001-abc123`, succeed, and never touch
+        the concurrently-reserved directory."""
+        import scripts.dhm_precip.era5_extract_manifest as manifest_mod
+
+        manifest_mod.points_root(tmp_path).mkdir(parents=True, exist_ok=True)
+        (manifest_mod.points_root(tmp_path) / "0000-abc123").mkdir()
+        monkeypatch.setattr(manifest_mod, "_existing_run_numbers", lambda _root: [])
 
         final_dir = _publish(
-            _staged_bundle(tmp_path, identity="same-id", marker="fresh"),
-            tmp_path,
-            "same-id",
+            _staged_bundle(tmp_path, identity="abc123"), tmp_path, "abc123"
         )
-        assert sorted(p.name for p in final_dir.iterdir()) == sorted(
-            [*D9_PAYLOAD_FILES, "extraction_manifest.json"]
+        assert final_dir.name == "0001-abc123"
+        # The concurrently-reserved directory is untouched (still empty).
+        assert (
+            list((manifest_mod.points_root(tmp_path) / "0000-abc123").iterdir()) == []
         )
-        assert _marker_of(final_dir) == "fresh"
+
+
+class TestPublishRefusesAnInvalidBundle:
+    """P4/P4a — validation moves INSIDE `publish_bundle`, applying exactly
+    the predicate discovery would apply. A staging directory that fails
+    validation is never allocated a numbered directory at all — nothing is
+    published, and no partial bundle is left where discovery could find it.
+    """
+
+    def test_publish_refuses_a_malformed_staged_bundle(self, tmp_path: Path) -> None:
+        staged = _staged_bundle(tmp_path, identity="broken")
+        (staged / "series_nearest.nc").unlink()
+        with pytest.raises(ExtractionPostConditionError, match="series_nearest.nc"):
+            _publish(staged, tmp_path, "broken")
+        # Nothing was published — no numbered directory was ever created.
+        assert _published_dirs(tmp_path) == []
+
+    def test_publish_refuses_a_payload_modified_after_its_hash_was_computed(
+        self, tmp_path: Path
+    ) -> None:
+        """P4a — the manifest's `payload_sha256s` must reconcile against the
+        actual file bytes. A payload edited after `write_extraction_manifest`
+        ran must fail publication, not merely a later discovery read."""
+        staged = _staged_bundle(tmp_path, identity="tampered")
+        # Same row count (2 stations, so the reopen shape check still
+        # passes) but different CONTENT than what the manifest's sha256 was
+        # computed over — this must be caught by the P4a reconciliation.
+        (staged / "station_grid_elevation.csv").write_text(
+            "station,marker\nalpha,tampered\nbeta,tampered\n"
+        )
+        with pytest.raises(
+            ExtractionPostConditionError, match="station_grid_elevation.csv"
+        ):
+            _publish(staged, tmp_path, "tampered")
+        assert _published_dirs(tmp_path) == []
