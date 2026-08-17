@@ -86,6 +86,16 @@ def _eval_gha_if(expr: str, *, job_status: str, outcomes: dict[str, str]) -> boo
     body = expr.strip()
     if body.startswith("${{") and body.endswith("}}"):
         body = body[3:-2].strip()
+
+    # GitHub prepends an implicit `success()` to any `if:` that contains NO status
+    # function — so `steps.x.outcome == 'success'` alone still skips once an earlier
+    # step has failed. Modelling this matters: without it a condition that drops
+    # `!cancelled()` would pass here while real Actions silently skips the step after
+    # the gate fails, which is exactly the invisible-failure class Plan 180 exists to
+    # close. See the plan's "Traps" §1.
+    has_status_fn = re.search(r"\b(success|failure|cancelled|always)\s*\(", body)
+    if not has_status_fn and job_status != "success":
+        return False
     body = re.sub(r"steps\.([A-Za-z0-9_-]+)\.outcome", r"steps['\1']", body)
     body = body.replace("!=", "__NE__").replace("!", " not ").replace("__NE__", "!=")
     body = body.replace("&&", " and ").replace("||", " or ")
@@ -338,4 +348,37 @@ class TestPlan064D4Reconciled:
             "Plan 064 D4 said both scans 'fail CI on HIGH+ unfixed', but "
             "both run --ignore-unfixed, which excludes exactly those — two "
             "authoritative docs must not disagree (Plan 180 trap #4)"
+        )
+
+
+class TestTheHelperModelsImplicitSuccess:
+    """Review blocker (Plan 180): the `if:` evaluator must reproduce GitHub's
+    implicit `success()`, or a condition that drops its status function passes
+    here while real Actions skips the step after the gate fails — reintroducing
+    the invisible failure this plan exists to close."""
+
+    def test_a_condition_without_a_status_function_is_skipped_after_a_failure(
+        self,
+    ) -> None:
+        # The exact counterexample from the review: looks correct, is not.
+        assert not _eval_gha_if(
+            "${{ steps.trivy-scan.outcome == 'success' }}",
+            job_status="failure",
+            outcomes={"trivy-scan": "success"},
+        )
+
+    def test_the_same_condition_still_runs_while_the_job_is_healthy(self) -> None:
+        assert _eval_gha_if(
+            "${{ steps.trivy-scan.outcome == 'success' }}",
+            job_status="success",
+            outcomes={"trivy-scan": "success"},
+        )
+
+    def test_an_explicit_status_function_suppresses_the_implicit_gate(self) -> None:
+        """What the shipped workflow actually uses — `!cancelled()` keeps the step
+        running after the gate fails, which is the whole point."""
+        assert _eval_gha_if(
+            "${{ !cancelled() && steps.trivy-scan.outcome == 'success' }}",
+            job_status="failure",
+            outcomes={"trivy-scan": "success"},
         )
