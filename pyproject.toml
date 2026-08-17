@@ -16,7 +16,14 @@ dependencies = [
     "dask[array]>=2024.1.0",
     "eccodes>=2.46.0",
     "exactextract>=0.3",
-    "fastapi>=0.135.2",
+    # Upper bounds added by Plan 159 T1. Declaring ANY optional extra makes uv
+    # re-resolve the whole graph, and with open floors it jumps to newest: adding
+    # the `aquacast` extra moved prefect 3.6->3.8, which pulled fastapi to 0.141,
+    # where route attributes changed so `route.path` is None. That silently empties
+    # `_classify_routes` in tests/unit/api/test_security.py — a SECURITY test that
+    # would then pass while asserting over an empty set. Pinned to what main runs so
+    # this change stays additive; upgrading either is deliberate work of its own.
+    "fastapi>=0.135.2,<0.136",
     "fastexcel>=0.20.2",
     "forecastinterface",
     "geoalchemy2>=0.18.4",
@@ -31,7 +38,7 @@ dependencies = [
     "orjson",
     "platformdirs>=4.0",
     "polars>=1.41.2",
-    "prefect>=3.0",
+    "prefect==3.6.23",
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",
     "pygments>=2.20.0",
@@ -77,6 +84,16 @@ dev = [
 
 [tool.uv]
 required-version = "==0.11.7"
+# Plan 159 T0e. aquacast floors `rich>=15.0.0`, prefect 3.6.23 caps `rich<15` —
+# unsatisfiable together, and the maintainer who could relax it is away. Overridden
+# rather than letting the resolver drag prefect forward (and fastapi with it, where
+# route attributes change and silently empty the API auth-matrix test).
+#
+# Safe for OUR use: aquacast imports rich only in `logging_config.py` (console log
+# handler) and `training/callbacks.py` (progress bars). The shim uses
+# `aquacast.operational.*` only, which does not import rich — verified.
+# REMOVE this the moment aquacast relaxes the floor.
+override-dependencies = ["rich>=14,<15"]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -86,6 +103,7 @@ default = true
 [tool.uv.sources]
 forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface", tag = "v0.1.19" }
 recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "9340e4025e05a72729d93d1d6881abcd5f298ff1" }
+aquacast = { git = "https://github.com/hydrosolutions/aquacast.git", rev = "1937794c8a055d8f1b572cc7f18b4f50be0c436e" }
 
 [tool.ruff]
 target-version = "py311"
@@ -137,6 +155,13 @@ filename = "src/sapphire_flow/__init__.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
 
+[project.optional-dependencies]
+# Plan 159 D17: the aquacast shim lives in this repo, but its dependency
+# stack (torch, flashrnn, laplace-torch, curvlinops, sklearn, scipy,
+# matplotlib) must NOT land in the base install or the `default`/`ingest`
+# workers -- only in the forecast-cycle worker image (Plan 157 D13).
+aquacast = ["aquacast"]
+
 [project.entry-points."sapphire_flow.models"]
 linear_regression_daily = "sapphire_flow.models.linear_regression_daily:LinearRegressionDaily"
 climatology_fallback = "sapphire_flow.models.climatology_fallback:ClimatologyFallbackModel"
@@ -144,3 +169,7 @@ persistence_fallback = "sapphire_flow.models.persistence_fallback:PersistenceFal
 nwp_regression = "sapphire_flow.models.nwp_regression:NwpRegression"
 nwp_rainfall_runoff = "sapphire_flow.models.nwp_regression:NwpRainfallRunoff"
 seasonal_precip_runoff_regression = "sapphire_flow.models.nwp_regression:SeasonalPrecipRunoffRegression"
+# Plan 159 T1: resolves ONLY with the `aquacast` extra installed. Without it the import
+# fails and discover_models skips this entry point — which is why the base package stays
+# importable and every other model still discovers.
+cmal_pool_pt = "sapphire_flow.models.aquacast:CmalPoolPT"

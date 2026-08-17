@@ -262,6 +262,56 @@ Resolution order, so the interim path disappears on its own the moment aquacast 
 - **Delete-on-arrival.** This table is removed when aquacast declares `AT_MOST`, not kept "just in
   case". Its docstring must say so.
 
+## T0e — ⚠️ D17 IS IN QUESTION: aquacast and our Prefect stack conflict (2026-08-16)
+
+**Found by CI failing on the T1 shim PR (#160), then isolated locally.** This is a **hard
+dependency conflict**, not a lockfile mistake, and it is the strongest evidence yet on the in-repo
+vs external question.
+
+```
+aquacast==0.1.343 depends on rich>=15.0.0
+prefect==3.6.23   depends on rich>=11.0,<15.0
+→ unsatisfiable
+```
+
+**So we cannot pin Prefect to the version main runs and take aquacast at the same time.** uv's
+resolver states it outright. The nearest resolvable point is `prefect>=3.0,<3.7` → **3.6.29 + rich
+15**, and adding the extra also forces **pyarrow 23 → 25** (aquacast requires `>=24`).
+
+### The damage, measured under control
+- Letting the resolver run free took **prefect 3.6→3.8**, which pulled **fastapi 0.135→0.141**.
+  FastAPI changed route attributes there so `route.path` is `None`, which **silently empties
+  `_classify_routes`** in `tests/unit/api/test_security.py` — a **security** test that would then
+  pass while asserting over an empty set. It failed loudly here only because the expected set is
+  non-empty.
+- Even with fastapi pinned back and prefect held inside 3.6, **18 forecast-cycle tests still fail**
+  on `Flow run parameters must be less than 524,288 bytes (got 606,404)`. **Controlled comparison,
+  same machine and same moment: `main` passes 132/132 in 82 s; the branch fails 18.** So this is a
+  real regression from the dependency set, not the machine contention that was corrupting earlier
+  local runs (a parallel session was running its own suite — see the note below).
+
+### This is exactly the cost an external distribution avoids
+D17 chose in-repo because **testability** was the deciding factor, and that reasoning still holds.
+What was NOT visible then is that in-repo also means **our orchestration and web stack version
+cadence is coupled to an ML research library's**. A separate distribution has its own lockfile and
+cannot move ours.
+
+**Three ways forward — owner decision:**
+1. **Ask aquacast to relax `rich>=15.0.0`** (cheapest by far, if it is not load-bearing — `rich` is
+   terminal formatting). If it relaxes to `>=14`, the conflict may dissolve entirely. **Try this
+   first**; it is one line in a repo we already have an open PR against.
+2. **Upgrade our Prefect + FastAPI deliberately** — fix `_classify_routes` for the new route API,
+   diagnose the flow-run payload growth, validate Prefect 3.8. Real work, and it permanently ties
+   our infra cadence to aquacast's.
+3. **Reopen D17** and take the shim external after all, accepting the testability cost Plan 157
+   documented.
+
+### Note on local test runs
+A parallel session (`sapphire-plan173`) runs its own full suite on this machine. Concurrent runs
+produced **228 failures in 81 minutes**, and earlier 54 and 21. **Local full-suite results are not
+trustworthy while that is happening — CI is the reliable signal.** An earlier claim in this session
+that "main is red" was wrong for exactly this reason; main's CI is green.
+
 ## Tasks
 
 ### T1 — the aquacast shim (IN THIS REPO, optional extra — see D17)
