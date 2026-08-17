@@ -595,6 +595,65 @@ def _model_alert_eligibility(
     raise ConfigurationError(f"model {model_id} has no declared AlertEligibility")
 
 
+def _emit_forecast_freshness_record(
+    pipeline_health_store: object | None,
+    *,
+    cycle_time_param: str | None,
+    resolved_cycle_time: UtcDatetime,
+    forecasts_stored: int,
+    checked_at: UtcDatetime,
+    force_critical: bool = False,
+) -> None:
+    """Plan 116: FORECAST_FRESHNESS heartbeat — a SEPARATE contract from
+    ``ForecastCycleHealth`` above. ``health`` encodes operational
+    *quality*, and DEGRADED is deliberately used (and locked by existing
+    tests) for snow loss, partial NWP delivery and fallback-priority
+    drift EVEN WHEN forecasts were stored fine — mapping those onto a
+    freshness alarm would page on every degraded-but-working cycle. This
+    answers a narrower, product-facing question instead: did the cycle
+    persist ANY forecast at all? A cycle that stores zero forecasts —
+    including one with no operational stations, or one that aborts before
+    ever reaching Phase B — is CRITICAL; storing at least one is OK. No
+    partial-coverage state is tracked here (that is the explicitly
+    out-of-scope per-product coverage ledger).
+
+    ``force_critical`` covers a THIRD case beyond the plain forecasts_stored
+    count: a mid-cycle fatal ``StoreError`` (Plan 116 fixer round, major 1).
+    A cycle that crashes out on a store outage never reaches a normal
+    end-of-cycle accounting, so the ordinary "any success so far is OK"
+    heuristic below does not apply — some earlier forecast(s) may well have
+    stored fine before the fatal one, but the cycle itself did not complete
+    normally and must not read as healthy. The caller emits this from the
+    ``except StoreError`` handler, with ``forecasts_stored`` still recorded
+    in ``detail`` for diagnostics, immediately before re-raising.
+
+    Runs invoked with an explicit ``cycle_time`` (backfill/replay) do NOT
+    emit this record at all: ``PipelineHealthStore.fetch_recent`` orders
+    by ``checked_at``, not ``cycle_time``, and the watchdog probe asks for
+    ``limit=1`` — so a backfill written "now" would become the "latest"
+    record and could report a false stale/critical alarm over a
+    currently-healthy production cycle. Scheduled/current cycles (no
+    explicit ``cycle_time`` argument) still age by their own
+    ``resolved_cycle_time``.
+    """
+    if cycle_time_param is not None:
+        return
+    status = (
+        PipelineHealthStatus.CRITICAL
+        if force_critical or forecasts_stored == 0
+        else PipelineHealthStatus.OK
+    )
+    _append_pipeline_health_record(
+        pipeline_health_store,
+        check_type=PipelineCheckType.FORECAST_FRESHNESS,
+        checked_at=checked_at,
+        status=status,
+        subject="forecast_cycle",
+        detail=cast("dict[str, object]", {"forecasts_stored": forecasts_stored}),
+        cycle_time=resolved_cycle_time,
+    )
+
+
 def _append_pipeline_health_record(
     pipeline_health_store: object | None,
     *,
@@ -1743,6 +1802,13 @@ def run_forecast_cycle_flow(
 
         if not operational:
             log.info("forecast_cycle.no_operational_stations")
+            _emit_forecast_freshness_record(
+                pipeline_health_store,
+                cycle_time_param=cycle_time,
+                resolved_cycle_time=resolved_cycle_time,
+                forecasts_stored=0,
+                checked_at=clock(),
+            )
             return ForecastCycleResult(
                 cycle_time=resolved_cycle_time,
                 health=ForecastCycleHealth.HEALTHY,
@@ -1947,6 +2013,13 @@ def run_forecast_cycle_flow(
                     )
             if nwp_outcome is None:
                 log.error("forecast_cycle.nwp_fetch_failed_aborting")
+                _emit_forecast_freshness_record(
+                    pipeline_health_store,
+                    cycle_time_param=cycle_time,
+                    resolved_cycle_time=resolved_cycle_time,
+                    forecasts_stored=0,
+                    checked_at=clock(),
+                )
                 return ForecastCycleResult(
                     cycle_time=resolved_cycle_time,
                     health=ForecastCycleHealth.FAILED,
@@ -2390,6 +2463,12 @@ def run_forecast_cycle_flow(
                     group_id=str(group.id),
                     model_id=str(model_id),
                 )
+                # Fixer round (blocker, take 3): must be bound before the
+                # `try` below can raise anything, so the `except Exception`
+                # handler at the bottom of this loop iteration can always
+                # read it safely — see the store_forecast loop further
+                # down, which is the only place that sets it True.
+                fatal_group_store_failure = False
                 try:
                     group_assignments = group_store.fetch_group_model_assignments(  # type: ignore[union-attr]
                         group.id
@@ -2534,15 +2613,44 @@ def run_forecast_cycle_flow(
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
-                            except StoreError:
-                                raise
                             except Exception as exc:
+                                # Fixer round (blocker, take 3): the prior
+                                # round's `except StoreError` branch never
+                                # fired for a REAL database failure — the
+                                # Pg-backed forecast_store does not
+                                # translate SQLAlchemy exceptions
+                                # (OperationalError, IntegrityError, ...)
+                                # into StoreError, so those fell straight
+                                # through into a swallow-and-continue branch
+                                # here, reproducing the exact silent-failure
+                                # bug this feature exists to detect. The
+                                # try above contains ONLY the store call, so
+                                # there is no recoverable case to carve out:
+                                # ANY exception here means a group forecast
+                                # failed to persist mid-cycle. Emit the
+                                # freshness record using `forecasts_stored`
+                                # as it stands at this moment (so the
+                                # watchdog is never blind), forced CRITICAL
+                                # (a mid-cycle fatal crash is never "OK"
+                                # merely because an earlier group forecast
+                                # in the same cycle happened to store
+                                # first), then RE-RAISE so the fatal storage
+                                # signal still propagates.
                                 log.warning(
-                                    "forecast_cycle.store_forecast_failed",
+                                    "forecast_cycle.group_store_forecast_failed",
                                     station_id=str(sid),
                                     error=str(exc),
                                 )
-                                errors.append(f"Store failed for {sid}: {exc}")
+                                _emit_forecast_freshness_record(
+                                    pipeline_health_store,
+                                    cycle_time_param=cycle_time,
+                                    resolved_cycle_time=resolved_cycle_time,
+                                    forecasts_stored=forecasts_stored,
+                                    checked_at=clock(),
+                                    force_critical=True,
+                                )
+                                fatal_group_store_failure = True
+                                raise
 
                         if result.new_state is not None:
                             try:
@@ -2577,6 +2685,16 @@ def run_forecast_cycle_flow(
                 except StoreError:
                     raise
                 except Exception as exc:
+                    # Fixer round (blocker, take 3): a fatal store_forecast
+                    # failure (ANY exception type, not just StoreError —
+                    # see `fatal_group_store_failure` above) has already
+                    # emitted its own forced-CRITICAL freshness record and
+                    # must still propagate out of the flow. Every OTHER
+                    # exception here (e.g. a model bug in
+                    # `run_group_forecast`, a config gap in one group) stays
+                    # isolated to this group: log, record, and move on.
+                    if fatal_group_store_failure:
+                        raise
                     log.warning(
                         "forecast_cycle.group_forecast_failed",
                         error=str(exc),
@@ -2622,6 +2740,14 @@ def run_forecast_cycle_flow(
             log.info("alerts.check_completed", duration_ms=alert_duration_ms)
 
         total_ms = round((time.perf_counter() - flow_t0) * 1000, 1)
+
+        _emit_forecast_freshness_record(
+            pipeline_health_store,
+            cycle_time_param=cycle_time,
+            resolved_cycle_time=resolved_cycle_time,
+            forecasts_stored=forecasts_stored,
+            checked_at=clock(),
+        )
 
         result = ForecastCycleResult(
             cycle_time=resolved_cycle_time,
