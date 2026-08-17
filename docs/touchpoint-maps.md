@@ -278,6 +278,45 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   `_fetch_obs_timestamps_task.submit` (the only concurrency in the flow)
 - drift guard: `_check_fallback_priority_drift`
 - health: `_forecast_cycle_health` → `ForecastCycleResult`
+- freshness heartbeat (Plan 116): `_emit_forecast_freshness_record` — writes
+  `PipelineCheckType.FORECAST_FRESHNESS` (CRITICAL when `forecasts_stored ==
+  0` at every return point, including the no-operational-stations and
+  hard-NWP-abort early returns; OK otherwise). A SEPARATE contract from
+  `ForecastCycleHealth` — never keys off `health`/`_forecast_cycle_health`.
+  Suppressed entirely (no record at all) when the flow's `cycle_time`
+  parameter is explicitly set (backfill/replay), since
+  `PipelineHealthStore.fetch_recent` orders by `checked_at` not
+  `cycle_time` and would otherwise let a backfill masquerade as "latest".
+  Probed by the watchdog's THIRD freshness block (see the **Infra / ops
+  deployment** map). Fixer round (take 3, blocker): the group
+  forecast-store loop's `store_forecast` call catches **any** `Exception`
+  (not just `StoreError` — `PgForecastStore` never translates SQLAlchemy
+  failures into `StoreError`, so a real `OperationalError`/`IntegrityError`
+  would otherwise fall through a `StoreError`-only branch into a
+  swallow-and-continue), emits this record (forced CRITICAL —
+  `force_critical=True`, since a mid-cycle crash is never "OK" merely
+  because an earlier forecast in the same cycle happened to store first)
+  using `forecasts_stored` as it stands at that moment, and then
+  RE-RAISES — a total (or partial, mid-cycle) forecast-store outage in a
+  group-only deployment gets BOTH the watchdog record AND the fatal
+  signal propagating out of the flow (`docs/conventions.md:256` — "log,
+  raise to caller"). The re-raised exception must also clear the
+  ENCLOSING per-group `try`/`except Exception` a few lines down (which
+  otherwise isolates non-`StoreError` failures, e.g. a model bug in
+  `run_group_forecast`, to a single group) — a local
+  `fatal_group_store_failure` flag, set immediately before the inner
+  `raise` and checked first in the outer handler, makes that one
+  exception propagate while every other group-processing exception stays
+  isolated. Unlike `_raise_store_error_if_connection_fatal`
+  (`services/run_group_forecast.py`, used for `artifact_fetch`/
+  `predict_batch`), this call site does NOT narrow to
+  connection-fatal-only: any `store_forecast` failure means that specific
+  forecast was NOT persisted, which is exactly the silent-failure mode
+  this feature exists to detect. A prior (take 2) version caught only
+  `StoreError`, and an earlier one still (take 1) used a broad
+  `except Exception` contain-and-continue for everything — both let
+  `forecasts_stored > 0` from an earlier success mask a later fatal
+  failure with a false OK record and a "successful" flow return.
 - snow-forecast wiring (Plan 145): `_compute_required_snow` (pre-Phase-A,
   per-station required future-snow variables from ACTIVE assignments' resolved
   models' `future_dynamic_features` ∩ `SNOW_CANONICAL_PARAMETERS`) →
@@ -333,10 +372,15 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - Store/state failure handling is **not uniform** — it differs by call
   (`store_forecast` vs `store_state`) and by path. STATION `store_forecast`
   degrades (appends to `errors`); STATION `store_state` logs only. GROUP
-  re-raises `StoreError` (direct, plus connection-fatal errors promoted via
-  `_raise_store_error_if_connection_fatal`), aborting the whole cycle; GROUP
-  `store_state` non-`StoreError`s log only. Do not assume one store call's
-  failure semantics match another's — diff the specific branch before changing it.
+  `store_forecast` re-raises on **any** exception (fixer round, take 3 —
+  see the freshness-heartbeat entry above), aborting the whole cycle;
+  GROUP `store_state` still re-raises `StoreError` only and logs
+  everything else (`_raise_store_error_if_connection_fatal` is a separate,
+  narrower promotion used only inside `run_group_forecast.py` for
+  `artifact_fetch`/`predict_batch` failures — it does not touch either
+  `store_forecast` or `store_state`). Do not assume one store call's
+  failure semantics match another's — diff the specific branch before
+  changing it.
   **State WRITE stays primary-only** (PRIMARY mode persists only the selected
   result's `new_state`; combination mode persists only `mid ==
   primary_model_id`'s) — Plan 148 fixed the READ side only; a non-primary
@@ -418,8 +462,9 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   selection
 - STATION vs GROUP status-filter regression (INACTIVE-assignment behavior on
   each path)
-- store-failure regression proving STATION degrades and GROUP `StoreError`
-  aborts (plus the NWP unavailable-vs-failed split)
+- store-failure regression proving STATION degrades and GROUP
+  `store_forecast` aborts on any exception (`StoreError` or a raw
+  SQLAlchemy failure alike) (plus the NWP unavailable-vs-failed split)
 - combination-mode test per reachable `ModelCombinationStrategy` branch
 - `_check_fallback_priority_drift` coverage when changing priority semantics
 - full Task Exit Gate for implementation PRs
@@ -569,7 +614,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - **Caddy edge**: `caddy` + `Caddyfile` — 80/443, `SAPPHIRE_DOMAIN`-gated TLS, CSP + security headers (no HSTS). The Prefect UI is **not** proxied (SSH-tunnel only); new public routes go here.
 - **Overlays**: `docker-compose.dev.yml`, `docker-compose.staging.yml`, `docker-compose.macmini.yml` — **not auto-merged**; the exact `-f` set is chosen per invocation.
 - **DB migrations**: `alembic/versions/` + `alembic.ini`, run as `alembic upgrade head` in the `init` service, as the DB OWNER role, before the role bootstrap and registration. `sapphire_api`/`sapphire_worker` have no DDL privilege — a migration run under a scoped role fails closed.
-- **Host startup (Mac mini)**: `scripts/launchd/*.plist` → `start-sapphire.sh` (the sole `docker compose … up -d` per reboot), `install-launchd.sh`, `bootstrap-mac-mini.sh`; the watchdog surface = `src/sapphire_flow/ops/watchdog.py` + `scripts/launchd/watchdog.sh` + operator-created host secrets `secrets/slack_webhook_url` and (Plan 163) `secrets/deadman_url` + a manually-installed `newsyslog` log-rotation conf. The `cicd.md` systemd unit is an **illustration, not shipped**. Plan 163 adds an off-box dead-man's-switch heartbeat (Healthchecks.io) posted after every tick that completes and persists — feature-off when `secrets/deadman_url` is absent (dev/CI) — and hardens all four outbound HTTP call sites (health probe, BAFU-detail probe, Slack POST, dead-man POST) against `httpx.InvalidURL`/`OSError`/`UnicodeError`, none of which `httpx.HTTPError` alone covers; the guarded boundary also covers owned-`httpx.Client` cleanup (`finally`-block `close()`), not just the request.
+- **Host startup (Mac mini)**: `scripts/launchd/*.plist` → `start-sapphire.sh` (the sole `docker compose … up -d` per reboot), `install-launchd.sh`, `bootstrap-mac-mini.sh`; the watchdog surface = `src/sapphire_flow/ops/watchdog.py` + `scripts/launchd/watchdog.sh` + operator-created host secrets `secrets/slack_webhook_url` and (Plan 163) `secrets/deadman_url` + a manually-installed `newsyslog` log-rotation conf. The `cicd.md` systemd unit is an **illustration, not shipped**. Plan 163 adds an off-box dead-man's-switch heartbeat (Healthchecks.io) posted after every tick that completes and persists — feature-off when `secrets/deadman_url` is absent (dev/CI) — and hardens all four outbound HTTP call sites (health probe, BAFU-detail probe, Slack POST, dead-man POST) against `httpx.InvalidURL`/`OSError`/`UnicodeError`, none of which `httpx.HTTPError` alone covers; the guarded boundary also covers owned-`httpx.Client` cleanup (`finally`-block `close()`), not just the request. **Plan 116** adds a THIRD freshness block (`forecast_freshness_probe`, `consecutive_forecast_freshness_failures` hysteresis counter) probing `PipelineCheckType.FORECAST_FRESHNESS` — the forecast cycle (`flows/run_forecast_cycle.py`) emits that record itself (CRITICAL when a run persists zero forecasts, OK otherwise; a run invoked with an explicit `cycle_time`, i.e. backfill/replay, emits none; a group-path `StoreError` — total or mid-cycle-partial — emits a forced-CRITICAL record using `forecasts_stored` as it stands at that moment and then RE-RAISES, so the watchdog gets the record AND the fatal signal still propagates instead of the flow returning a false "successful" result). Deliberately a SEPARATE contract from `ForecastCycleHealth` — a DEGRADED-but-forecasts-stored cycle must not trip this alarm. Fixer round: uses a DEDICATED probe/result (`probe_forecast_freshness`/`ForecastFreshnessResult`), not `probe_bafu_freshness`/`BafuFreshnessResult` — it ages by the record's `cycle_time` (forecast production time), not `checked_at` (write time), so a delayed/long-running cycle can't refresh the heartbeat with a stale cycle. The HTTP-to-alert boundary itself is locked end-to-end via the real `probe_forecast_freshness` fed a `MockTransport` critical payload into `run_once` — not only via the hand-built `_forecast_freshness_critical_probe` fake.
 
 **Downstream consumers to inspect when behavior changes:**
 

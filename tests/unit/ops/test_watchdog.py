@@ -19,13 +19,16 @@ from sapphire_flow.ops.watchdog import (
     BACKUP_STALE_THRESHOLD,
     BAFU_OBS_STALE_THRESHOLD,
     BAFU_STALE_THRESHOLD,
+    FORECAST_FRESHNESS_STALE_THRESHOLD,
     BafuFreshnessResult,
+    ForecastFreshnessResult,
     HealthProbeResult,
     WatchdogConfig,
     WatchdogState,
     default_slack_poster,
     newest_backup_mtime,
     probe_bafu_freshness,
+    probe_forecast_freshness,
     probe_health,
     read_probe_token,
     read_slack_webhook,
@@ -99,6 +102,44 @@ def _bafu_obs_not_found_probe(_url: str) -> BafuFreshnessResult:
 def _bafu_obs_degraded_probe(_url: str) -> BafuFreshnessResult:
     return BafuFreshnessResult(
         found=True, checked_at=_NOW, status="warning", error=None
+    )
+
+
+def _forecast_freshness_ok_probe(_url: str) -> ForecastFreshnessResult:
+    # Healthy heartbeat for the Plan 116 forecast-freshness check — used as
+    # the default `forecast_freshness_probe` fake for every pre-existing
+    # test in this file so the new additive check doesn't change their
+    # behaviour (exactly the role `_bafu_obs_ok_probe` plays for Plan 136).
+    # `cycle_time` (not `checked_at`) is what `run_once` ages by (fixer
+    # round, correctness requirement 2) — both are `_NOW` here since these
+    # fakes aren't testing the checked_at/cycle_time distinction itself (see
+    # `TestRunOnceForecastFreshness.test_stale_cycle_time_alerts_even_when_
+    # checked_at_is_fresh` for that).
+    return ForecastFreshnessResult(
+        found=True, checked_at=_NOW, cycle_time=_NOW, status="ok", error=None
+    )
+
+
+def _forecast_freshness_stale_probe(_url: str) -> ForecastFreshnessResult:
+    stale_time = _NOW - FORECAST_FRESHNESS_STALE_THRESHOLD - timedelta(hours=1)
+    return ForecastFreshnessResult(
+        found=True,
+        checked_at=stale_time,
+        cycle_time=stale_time,
+        status="ok",
+        error=None,
+    )
+
+
+def _forecast_freshness_not_found_probe(_url: str) -> ForecastFreshnessResult:
+    return ForecastFreshnessResult(
+        found=False, checked_at=None, cycle_time=None, status=None, error="404"
+    )
+
+
+def _forecast_freshness_critical_probe(_url: str) -> ForecastFreshnessResult:
+    return ForecastFreshnessResult(
+        found=True, checked_at=_NOW, cycle_time=_NOW, status="critical", error=None
     )
 
 
@@ -364,6 +405,7 @@ class TestRunOnceHappyPath:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 0
@@ -387,6 +429,7 @@ class TestRunOnceHealth:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 1
@@ -410,6 +453,7 @@ class TestRunOnceHealth:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 2
@@ -429,6 +473,7 @@ class TestRunOnceHealth:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 6
@@ -450,6 +495,7 @@ class TestRunOnceHealth:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 0
@@ -470,6 +516,7 @@ class TestRunOnceHealth:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert len(slack.calls) == 1
@@ -495,6 +542,7 @@ class TestRunOnceBackup:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert len(slack.calls) == 1
@@ -517,6 +565,7 @@ class TestRunOnceBackup:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert len(slack.calls) == 1
@@ -560,6 +609,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=slack1,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_backup_stale_failures == 1
         assert len(slack1.calls) == 1
@@ -574,6 +624,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=slack2,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_backup_stale_failures == 2
         assert slack2.calls == []
@@ -592,6 +643,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=slack3,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_backup_stale_failures == 0
         assert len(slack3.calls) == 1
@@ -609,6 +661,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=slack4,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_backup_stale_failures == 1
         assert len(slack4.calls) == 1
@@ -646,6 +699,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=_SlackRecorder(succeed=True),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         # A fresh dump lands (recovery) — the RECOVERY tick's delivery FAILS.
@@ -662,6 +716,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=failing_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert len(failing_slack.calls) == 1
         assert state.backup_notification_pending == "recovered"
@@ -677,6 +732,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=retry_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert len(retry_slack.calls) == 1
         assert "backup RECOVERED" in retry_slack.calls[0][1]
@@ -691,6 +747,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=quiet_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert quiet_slack.calls == []
 
@@ -717,6 +774,7 @@ class TestRunOnceBackupNotificationStateMachine:
                 slack_poster=slack,
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
+                forecast_freshness_probe=_forecast_freshness_ok_probe,
             )
             total_calls += len(slack.calls)
 
@@ -755,6 +813,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=failing_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert len(failing_slack.calls) == 1
         assert "backup STALE" in failing_slack.calls[0][1]
@@ -775,6 +834,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=retry_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert len(retry_slack.calls) == 1
         assert "backup RECOVERED" in retry_slack.calls[0][1]
@@ -790,6 +850,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=quiet_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert quiet_slack.calls == []
 
@@ -820,6 +881,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=_SlackRecorder(succeed=True),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         # A fresh dump lands (recovery) — delivery FAILS.
@@ -836,6 +898,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=failing_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.backup_notification_pending == "recovered"
 
@@ -850,6 +913,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=retry_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert len(retry_slack.calls) == 1
         assert "backup STALE" in retry_slack.calls[0][1]
@@ -871,6 +935,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.backup_notification_pending is None
 
@@ -915,6 +980,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=_SlackRecorder(succeed=True),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         # Tick 2: a fresh dump lands (recovery) — delivery FAILS.
@@ -931,6 +997,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=failing_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert len(failing_slack.calls) == 1
         assert state.backup_notification_pending == "recovered"
@@ -947,6 +1014,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=no_webhook_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert no_webhook_slack.calls == []
         assert state.backup_notification_pending == "recovered"
@@ -962,6 +1030,7 @@ class TestRunOnceBackupNotificationStateMachine:
             slack_poster=retry_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert len(retry_slack.calls) == 1
         assert "backup RECOVERED" in retry_slack.calls[0][1]
@@ -985,6 +1054,7 @@ class TestRunOnceSlackBehaviour:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 1
@@ -1004,6 +1074,7 @@ class TestRunOnceSlackBehaviour:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert len(slack.calls) == 1
@@ -1149,6 +1220,123 @@ class TestProbeBafuFreshness:
         assert seen_auth_headers == [None]
 
 
+# ---------- probe_forecast_freshness: dedicated Plan 116 probe ---------------
+# Fixer round: a SEPARATE probe/result from `probe_bafu_freshness` because
+# `run_once` must age forecast freshness by the record's `cycle_time`
+# (production time), not `checked_at` (write time) — see
+# `TestRunOnceForecastFreshness
+# .test_stale_cycle_time_alerts_even_when_checked_at_is_fresh`.
+
+
+class TestProbeForecastFreshness:
+    def test_probe_connection_error_returns_not_found(self) -> None:
+        # unused port on localhost — should error instantly, never raise
+        result = probe_forecast_freshness("http://127.0.0.1:1/api/v1/health/detail")
+        assert result.found is False
+        assert result.checked_at is None
+        assert result.cycle_time is None
+        assert result.error is not None
+
+    def test_derives_forecast_freshness_url_from_custom_health_url(self) -> None:
+        from sapphire_flow.ops.watchdog import _forecast_freshness_url_from_health
+
+        assert _forecast_freshness_url_from_health(
+            "http://custom:9000/api/v2/health"
+        ) == (
+            "http://custom:9000/api/v2/health/detail?check_type=forecast_freshness&limit=1"
+        )
+
+    def test_parses_cycle_time_distinct_from_checked_at(self) -> None:
+        """The core fixer-round contract: `cycle_time` is parsed from its
+        OWN JSON field, independent of `checked_at` — a record written
+        just now (`checked_at`) can still describe a long-past production
+        cycle (`cycle_time`)."""
+        import httpx
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "checked_at": "2026-07-13T09:00:00+00:00",
+                            "cycle_time": "2026-07-12T03:00:00+00:00",
+                            "status": "ok",
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        result = probe_forecast_freshness("http://x/health/detail", client=client)
+        assert result.found is True
+        assert result.checked_at == datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
+        assert result.cycle_time == datetime(2026, 7, 12, 3, 0, tzinfo=UTC)
+        # Fixer round (major 2): this test previously never asserted
+        # `status` at all, leaving the HTTP `status` field's parsing
+        # unlocked here.
+        assert result.status == "ok"
+
+    def test_naive_cycle_time_is_normalized_to_tz_aware(self) -> None:
+        # Same normalization requirement as `checked_at` — a naive
+        # `cycle_time` would raise TypeError in run_once's `now - cycle_time`
+        # comparison (outside this function's try/except).
+        import httpx
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [{"cycle_time": "2026-07-13T09:00:00", "status": "ok"}],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        result = probe_forecast_freshness("http://x/health/detail", client=client)
+        assert result.found is True
+        assert result.cycle_time is not None
+        assert result.cycle_time.tzinfo is not None
+
+    def test_missing_cycle_time_field_is_none_not_error(self) -> None:
+        import httpx
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {"checked_at": "2026-07-13T09:00:00+00:00", "status": "ok"}
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        result = probe_forecast_freshness("http://x/health/detail", client=client)
+        assert result.found is True
+        assert result.cycle_time is None
+
+    def test_sends_bearer_header_when_token_provided(self) -> None:
+        import httpx
+
+        seen_auth_headers: list[str | None] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen_auth_headers.append(req.headers.get("authorization"))
+            return httpx.Response(200, json={"items": [], "total": 0, "limit": 1})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        probe_forecast_freshness(
+            "http://x/health/detail", client=client, token="prefix.secret"
+        )
+        assert seen_auth_headers == ["Bearer prefix.secret"]
+
+
 # ---------- run_once: BAFU forecast collector freshness (Flow 4 hook) --------
 
 
@@ -1166,6 +1354,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_failures == 0
@@ -1196,6 +1385,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=_SlackRecorder(),
             bafu_probe=_spy,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert captured["url"] == (
             "http://custom:9000/api/v1/health/detail"
@@ -1215,6 +1405,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_failures == 1
@@ -1235,6 +1426,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_not_found_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_failures == 1
@@ -1256,6 +1448,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_degraded_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_failures == 1
@@ -1277,6 +1470,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=first_slack,
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_bafu_failures == 1
         assert len(first_slack.calls) == 1
@@ -1289,6 +1483,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=second_slack,
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_bafu_failures == 2
         assert second_slack.calls == []  # hysteresis: 2nd failure stays silent
@@ -1307,6 +1502,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_failures == 0
@@ -1331,6 +1527,7 @@ class TestRunOnceBafuFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 0
@@ -1355,6 +1552,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_obs_failures == 0
@@ -1384,6 +1582,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_spy,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert captured["url"] == (
             "http://custom:9000/api/v1/health/detail"
@@ -1403,6 +1602,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_obs_failures == 1
@@ -1423,6 +1623,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_not_found_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_obs_failures == 1
@@ -1444,6 +1645,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_degraded_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_obs_failures == 1
@@ -1465,6 +1667,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=first_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_bafu_obs_failures == 1
         assert len(first_slack.calls) == 1
@@ -1477,6 +1680,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=second_slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.consecutive_bafu_obs_failures == 2
         assert second_slack.calls == []  # hysteresis: 2nd failure stays silent
@@ -1495,6 +1699,7 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_bafu_obs_failures == 0
@@ -1520,12 +1725,400 @@ class TestRunOnceBafuObsFreshness:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         assert state.consecutive_health_failures == 0
         assert state.consecutive_bafu_failures == 0
         assert state.consecutive_bafu_obs_failures == 1
         assert len(slack.calls) == 1
+
+
+class TestRunOnceForecastFreshness:
+    """Plan 116: the forecast-production freshness watchdog block —
+    probes ``PipelineCheckType.FORECAST_FRESHNESS``
+    (`flows/run_forecast_cycle.py` emits it; a cycle that stores zero
+    forecasts is CRITICAL). This is the ACCEPTANCE test's second half:
+    the WATCHDOG must treat a CRITICAL/missing freshness record as
+    failed and alert, independent of the API health probe and the two
+    BAFU checks."""
+
+    def test_fresh_ok_heartbeat_no_alert(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 0
+        assert slack.calls == []
+
+    def test_overridden_health_url_retargets_forecast_freshness_probe(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        base = _config(tmp_path, backup_dir=backup_dir)
+        cfg = _replace(base, health_url="http://custom:9000/api/v1/health")
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        captured: dict[str, str] = {}
+
+        def _spy(url: str) -> ForecastFreshnessResult:
+            captured["url"] = url
+            return ForecastFreshnessResult(
+                found=True, checked_at=_NOW, cycle_time=_NOW, status="ok", error=None
+            )
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_spy,
+        )
+        assert captured["url"] == (
+            "http://custom:9000/api/v1/health/detail"
+            "?check_type=forecast_freshness&limit=1"
+        )
+
+    def test_stale_heartbeat_alerts(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_stale_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast production STALE" in msg
+
+    def test_stale_cycle_time_alerts_even_when_checked_at_is_fresh(
+        self, tmp_path: Path
+    ) -> None:
+        """Fixer round blocker fix (correctness requirement 2): freshness
+        must age by the record's `cycle_time` (the forecast PRODUCTION
+        time), not `checked_at` (the write time). A delayed or long-running
+        cycle can write its heartbeat "now" while the `cycle_time` it
+        describes is already stale — that must still alarm. Against the
+        buggy code (which compared `now - checked_at`), this record would
+        have read as fresh and stayed silent."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def _fresh_checked_at_stale_cycle_time(_url: str) -> ForecastFreshnessResult:
+            return ForecastFreshnessResult(
+                found=True,
+                checked_at=_NOW,  # written just now …
+                cycle_time=(
+                    _NOW - FORECAST_FRESHNESS_STALE_THRESHOLD - timedelta(hours=1)
+                ),  # … but describes a long-stale production cycle
+                status="ok",
+                error=None,
+            )
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_fresh_checked_at_stale_cycle_time,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast production STALE" in msg
+
+    def test_no_record_found_alerts(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_not_found_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast production STALE" in msg
+        assert "no heartbeat found" in msg
+
+    def test_critical_status_alerts(self, tmp_path: Path) -> None:
+        """The acceptance scenario's watchdog half: a cycle that stored
+        zero forecasts emits status="critical" (not merely stale) — the
+        watchdog must treat it as failed and alert, distinctly from the
+        stale/missing-heartbeat message."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_critical_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast cycle stored ZERO forecasts" in msg
+        assert "status: critical" in msg
+
+    def test_critical_status_via_real_probe_alerts(self, tmp_path: Path) -> None:
+        """Fixer round (major 2): the sibling test above (and the whole
+        acceptance scenario) exercised the critical-status alert path only
+        through a hand-built `_forecast_freshness_critical_probe` fake --
+        never through the REAL `probe_forecast_freshness`. A broken real
+        probe that discarded or hard-coded the HTTP status would have
+        passed every such test while production silently ignored CRITICAL
+        records. This drives the actual HTTP-to-alert boundary end to
+        end: a `MockTransport` response carrying `status: "critical"`
+        (with a FRESH `cycle_time`, isolating the critical-status path
+        from the staleness path) is parsed by the real probe and fed into
+        `run_once`."""
+        import httpx
+
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "checked_at": _NOW.isoformat(),
+                            "cycle_time": _NOW.isoformat(),
+                            "status": "critical",
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+
+        def real_probe(url: str) -> ForecastFreshnessResult:
+            return probe_forecast_freshness(url, client=client)
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=real_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast cycle stored ZERO forecasts" in msg
+        assert "status: critical" in msg
+
+    def test_critical_status_with_partial_write_alerts_accurately(
+        self, tmp_path: Path
+    ) -> None:
+        """Fixer round (minor): a forced-CRITICAL record from the
+        mid-cycle group-store-failure path (Plan 116 fixer round, major
+        1/blocker) carries `detail.forecasts_stored > 0` — some forecasts
+        DID store before the fatal failure. The alert must say so instead
+        of the factually wrong "stored ZERO forecasts", which this test
+        drives through the REAL `probe_forecast_freshness` end to end."""
+        import httpx
+
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "checked_at": _NOW.isoformat(),
+                            "cycle_time": _NOW.isoformat(),
+                            "status": "critical",
+                            "detail": {"forecasts_stored": 3},
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+
+        def real_probe(url: str) -> ForecastFreshnessResult:
+            return probe_forecast_freshness(url, client=client)
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=real_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "stored ZERO forecasts" not in msg
+        assert "stored 3 forecast(s) then failed" in msg
+        assert "status: critical" in msg
+
+    def test_dedup_alerts_once_then_silent(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        first_slack = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=first_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_critical_probe,
+        )
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(first_slack.calls) == 1
+
+        second_slack = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=second_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_critical_probe,
+        )
+        assert state.consecutive_forecast_freshness_failures == 2
+        assert second_slack.calls == []  # hysteresis: 2nd failure stays silent
+
+    def test_recovery_alert(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        WatchdogState(consecutive_forecast_freshness_failures=3).dump(cfg.state_path)
+        slack = _SlackRecorder()
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 0
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast production RECOVERED" in msg
+
+    def test_independent_of_health_backup_and_bafu_checks(self, tmp_path: Path) -> None:
+        # A forecast-freshness alert must fire even when health, backup, AND
+        # both BAFU checks are all healthy, and must not affect their dedup
+        # counters (purely additive).
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_critical_probe,
+        )
+
+        assert state.consecutive_health_failures == 0
+        assert state.consecutive_bafu_failures == 0
+        assert state.consecutive_bafu_obs_failures == 0
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+
+    def test_does_not_consult_forecast_cycle_health_field(self, tmp_path: Path) -> None:
+        """Requirement 1 (watchdog half): the probe result carries only
+        `status`/`checked_at` from the FORECAST_FRESHNESS record — there is
+        no `ForecastCycleHealth` field for the watchdog to consult even if
+        it wanted to. A DEGRADED-but-forecasts-stored cycle emits an OK
+        freshness record (see the flow-level test), which this probe
+        surfaces as `status="ok"` — same as any other healthy heartbeat."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def _degraded_cycle_but_ok_freshness(_url: str) -> ForecastFreshnessResult:
+            return ForecastFreshnessResult(
+                found=True, checked_at=_NOW, cycle_time=_NOW, status="ok", error=None
+            )
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_degraded_cycle_but_ok_freshness,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 0
+        assert slack.calls == []
 
 
 class TestWatchdogStateBackupNotificationBackwardCompat:
@@ -1606,6 +2199,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         backup_calls = [c for c in slack.calls if "backup" in c[1]]
@@ -1636,6 +2230,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             slack_poster=slack,
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
 
         backup_calls = [c for c in slack.calls if "backup" in c[1]]
@@ -1662,6 +2257,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
         )
         assert state.last_backup_alert_iso is None
 
@@ -2170,6 +2766,7 @@ class TestRunOnceDeadmanHeartbeat:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
             deadman_poster=deadman,
         )
 
@@ -2186,6 +2783,7 @@ class TestRunOnceDeadmanHeartbeat:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
             deadman_poster=deadman,
         )
 
@@ -2207,6 +2805,7 @@ class TestRunOnceDeadmanHeartbeat:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
             deadman_poster=deadman,
         )
 
@@ -2226,6 +2825,7 @@ class TestRunOnceDeadmanHeartbeat:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
             deadman_poster=_RaisingDeadmanPoster(),
         )
 
@@ -2246,6 +2846,7 @@ class TestRunOnceDeadmanHeartbeat:
                 slack_poster=_SlackRecorder(),
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
+                forecast_freshness_probe=_forecast_freshness_ok_probe,
                 deadman_poster=deadman,
             )
 
@@ -2286,6 +2887,7 @@ class TestRunOnceDeadmanHeartbeat:
             slack_poster=_SlackRecorder(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
             deadman_poster=_poster,
         )
 
@@ -2322,6 +2924,7 @@ class TestRunOnceDeadmanHeartbeat:
                 slack_poster=_SlackRecorder(),
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
+                forecast_freshness_probe=_forecast_freshness_ok_probe,
                 deadman_poster=deadman,
             )
 
@@ -2358,6 +2961,7 @@ class TestSlackExceptionDuringBackupTransition:
             slack_poster=_RaisingSlackPoster(),
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
             deadman_poster=deadman,
         )
 
@@ -2383,30 +2987,46 @@ def _check_bafu_observation_branch_state(state: WatchdogState) -> None:
     assert state.consecutive_bafu_obs_failures == 1
 
 
-class TestRaisingSlackPosterAcrossAllFourAlertBranches:
-    """Plan 163 fixer round (minor 3): `TestSlackExceptionDuringBackupTransition`
-    above locks the raising-poster scenario for exactly ONE of the four
-    Slack call sites (backup). A regression reintroducing a RAW
-    `slack_poster(...)` call — instead of the `_safe_slack_post(...)`
-    wrapper — in the health, BAFU-forecast or BAFU-observation branch would
-    pass every OTHER existing test, because none of them drives a raising
-    poster through those three branches. Parameterizes the identical
-    scenario across all four sites: each case's own hysteresis/pending
-    field must be correctly PERSISTED to disk, and exactly one dead-man
-    heartbeat must be attempted, even though the Slack poster explodes.
+def _check_forecast_freshness_branch_state(state: WatchdogState) -> None:
+    assert state.consecutive_forecast_freshness_failures == 1
+
+
+class TestRaisingSlackPosterAcrossAllFiveAlertBranches:
+    """Plan 163 fixer round (minor 3) + Plan 116 fixer round: locks the
+    raising-poster scenario for every one of the FIVE Slack call sites
+    (health, backup, BAFU-forecast, BAFU-observation, forecast-freshness).
+    A regression reintroducing a RAW `slack_poster(...)` call — instead of
+    the `_safe_slack_post(...)` wrapper — in any branch would pass every
+    OTHER existing test, because none of them drives a raising poster
+    through the other branches. `forecast_freshness_probe` was previously
+    hardwired to `_forecast_freshness_ok_probe` in every case here (Plan
+    116's own fixer round finding) — a raw poster call swapped into that
+    fifth branch would not have failed this suite. Parameterizes the
+    identical scenario across all five sites: each case's own
+    hysteresis/pending field must be correctly PERSISTED to disk, and
+    exactly one dead-man heartbeat must be attempted, even though the
+    Slack poster explodes.
 
     Each case is set up so ONLY its target branch's condition triggers an
-    alert (the other three checks report healthy/fresh), isolating which
+    alert (the other four checks report healthy/fresh), isolating which
     call site is actually exercised.
     """
 
     @pytest.mark.parametrize(
-        ("probe", "bafu_probe", "bafu_obs_probe", "backup_fresh", "check"),
+        (
+            "probe",
+            "bafu_probe",
+            "bafu_obs_probe",
+            "forecast_freshness_probe",
+            "backup_fresh",
+            "check",
+        ),
         [
             pytest.param(
                 _fail_probe,
                 _bafu_ok_probe,
                 _bafu_obs_ok_probe,
+                _forecast_freshness_ok_probe,
                 True,
                 _check_health_branch_state,
                 id="health",
@@ -2415,6 +3035,7 @@ class TestRaisingSlackPosterAcrossAllFourAlertBranches:
                 _ok_probe,
                 _bafu_ok_probe,
                 _bafu_obs_ok_probe,
+                _forecast_freshness_ok_probe,
                 False,
                 _check_backup_branch_state,
                 id="backup",
@@ -2423,6 +3044,7 @@ class TestRaisingSlackPosterAcrossAllFourAlertBranches:
                 _ok_probe,
                 _bafu_stale_probe,
                 _bafu_obs_ok_probe,
+                _forecast_freshness_ok_probe,
                 True,
                 _check_bafu_forecast_branch_state,
                 id="bafu_forecast",
@@ -2431,9 +3053,19 @@ class TestRaisingSlackPosterAcrossAllFourAlertBranches:
                 _ok_probe,
                 _bafu_ok_probe,
                 _bafu_obs_stale_probe,
+                _forecast_freshness_ok_probe,
                 True,
                 _check_bafu_observation_branch_state,
                 id="bafu_observation",
+            ),
+            pytest.param(
+                _ok_probe,
+                _bafu_ok_probe,
+                _bafu_obs_ok_probe,
+                _forecast_freshness_stale_probe,
+                True,
+                _check_forecast_freshness_branch_state,
+                id="forecast_freshness",
             ),
         ],
     )
@@ -2443,6 +3075,7 @@ class TestRaisingSlackPosterAcrossAllFourAlertBranches:
         probe: object,
         bafu_probe: object,
         bafu_obs_probe: object,
+        forecast_freshness_probe: object,
         backup_fresh: bool,
         check: object,
     ) -> None:
@@ -2466,6 +3099,7 @@ class TestRaisingSlackPosterAcrossAllFourAlertBranches:
             slack_poster=_RaisingSlackPoster(),
             bafu_probe=bafu_probe,  # type: ignore[arg-type]
             bafu_obs_probe=bafu_obs_probe,  # type: ignore[arg-type]
+            forecast_freshness_probe=forecast_freshness_probe,  # type: ignore[arg-type]
             deadman_poster=deadman,
         )
 

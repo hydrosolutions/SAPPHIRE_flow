@@ -274,8 +274,13 @@ Two agents, user-context (`gui/$(id -u)`):
   `uv run python -m sapphire_flow.ops.watchdog` every 300 s
   (`RunAtLoad = true`, so the first tick fires on launchd bootstrap
   rather than waiting a full interval). Probes `/api/v1/health`, checks
-  `pg_dumps/*.dump` mtimes against a 26 h threshold, posts Slack alerts
-  with hysteresis (1st failure, every 6th thereafter, and recovery).
+  `pg_dumps/*.dump` mtimes against a 26 h threshold, and probes three
+  independent `/api/v1/health/detail?check_type=...` freshness
+  heartbeats — the BAFU forecast collector, the BAFU LINDAS observation
+  collector, and (**Plan 116**) the forecast-production cycle itself
+  (`check_type=forecast_freshness`, stale after 18 h / CRITICAL when a
+  cycle stored zero forecasts) — posting Slack alerts with hysteresis
+  (1st failure, every 6th thereafter, and recovery) for each.
   Without `secrets/slack_webhook_url` the watchdog runs log-only.
   **Plan 163**: after every tick that completes and persists its state,
   the watchdog also POSTs an empty heartbeat to the dead-man's-switch URL

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-08-14
 plan: 162
 title: Robust database backup — complete, verified restorable, loud on failure, and safe to move off the machine
@@ -12,6 +12,10 @@ supersedes: []
 # Plan 162 — Robust database backup
 
 ## Status
+**PARTIAL — Phase A merged 2026-08-16 as PR #161 (`a9239b6a`). NOT yet deployed.**
+⛔ **Phase B is a hard gate before any customer release**: dumps still sit on the same device as the database,
+unencrypted (FileVault off), containing `access_tokens` and `tenant_id`.
+
 **READY** (2026-08-15) — **build scope is PHASE A only** (T1-T4 + the backup component; see "Phase A — BUILD
 NOW"). Phase B/C specs are retained below but explicitly **not** in this build.
 Reviewed three times: two full rounds on the whole plan plus a focused pass on the narrowed Phase A scope; the

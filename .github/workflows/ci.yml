@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Plan 159 follow-up. `uv.lock` carries a PRIVATE git dependency (aquacast, an
+# optional extra). `uv sync --frozen` honours the lock and never fetches it, but a
+# bare `uv run` re-resolves and DOES try to clone it — which fails with
+# "could not read Username" on any runner without an aquacast token. Setting
+# UV_FROZEN makes every uv invocation respect the lock, so CI needs no aquacast
+# credential unless it actually installs the extra.
+env:
+  UV_FROZEN: "1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -18,11 +27,19 @@ jobs:
       # recap-dg-client is a private repo (Plan 082 Task 2H) — every job that
       # runs `uv sync` clones it, so git needs authenticated HTTPS access.
       # Scoped via insteadOf to ONLY this repo URL.
-      - name: Configure git auth for the private recap-dg-client clone
+      - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+          # aquacast (Plan 159) is only reachable when the secret is set. Guarded so
+          # the rewrite is never written with an EMPTY token: an empty credential
+          # turns a would-be 404 into a confusing auth failure, and CI does not
+          # install the `aquacast` extra by default anyway.
+          if [ -n "${AQUACAST_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${AQUACAST_TOKEN}@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git"
+          fi
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: uv sync --frozen
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
@@ -64,11 +81,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libeccodes0 libexpat1 libgeos-c1v5
-      - name: Configure git auth for the private recap-dg-client clone
+      - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+          # aquacast (Plan 159) is only reachable when the secret is set. Guarded so
+          # the rewrite is never written with an EMPTY token: an empty credential
+          # turns a would-be 404 into a confusing auth failure, and CI does not
+          # install the `aquacast` extra by default anyway.
+          if [ -n "${AQUACAST_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${AQUACAST_TOKEN}@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git"
+          fi
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: uv sync --frozen
       - run: uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v
 
@@ -118,11 +143,19 @@ jobs:
       # both wheel-guard steps below clone it, so git needs authenticated
       # HTTPS access before either `uv sync` runs. Scoped via insteadOf to
       # ONLY this repo URL (never a blanket github.com credential rewrite).
-      - name: Configure git auth for the private recap-dg-client clone
+      - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+          # aquacast (Plan 159) is only reachable when the secret is set. Guarded so
+          # the rewrite is never written with an EMPTY token: an empty credential
+          # turns a would-be 404 into a confusing auth failure, and CI does not
+          # install the `aquacast` extra by default anyway.
+          if [ -n "${AQUACAST_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${AQUACAST_TOKEN}@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git"
+          fi
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: |
           set -euo pipefail
           # step 1 IS the guard — must keep --no-build and must precede step 2; step 2 has no --no-build and may build ONLY the excepted packages.
@@ -156,11 +189,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libeccodes0 libexpat1 libgeos-c1v5
-      - name: Configure git auth for the private recap-dg-client clone
+      - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+          # aquacast (Plan 159) is only reachable when the secret is set. Guarded so
+          # the rewrite is never written with an EMPTY token: an empty credential
+          # turns a would-be 404 into a confusing auth failure, and CI does not
+          # install the `aquacast` extra by default anyway.
+          if [ -n "${AQUACAST_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${AQUACAST_TOKEN}@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git"
+          fi
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: uv sync --frozen
       - run: uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"
         env:

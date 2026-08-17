@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-16
 plan: 163
 title: Dead-man's switch — so a dead watchdog stops looking like a healthy system
@@ -12,6 +12,9 @@ supersedes: []
 # Plan 163 — Dead-man's switch + HTTP hardening
 
 ## Status
+**COMPLETE — merged 2026-08-17 as PR #162 (`38319159`).** Built on current main rather than merged from the
+Plan 158 branch. **Not yet deployed to the mac-mini.**
+
 **READY** (2026-08-16) — D5 closed by the owner; independently reviewed (4 blockers + 8 majors folded, including
 a heartbeat contract that was wrong in the first draft). Operational reliability (category **A**). Responds to a **live, ongoing** incident.
 

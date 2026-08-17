@@ -16,6 +16,15 @@
 on:
   pull_request:
 
+# Plan 159 follow-up. `uv.lock` carries a PRIVATE git dependency (aquacast, an
+# optional extra). `uv sync --frozen` honours the lock and never fetches it, but a
+# bare `uv run` re-resolves and DOES try to clone it — which fails with
+# "could not read Username" on any runner without an aquacast token. Setting
+# UV_FROZEN makes every uv invocation respect the lock, so CI needs no aquacast
+# credential unless it actually installs the extra.
+env:
+  UV_FROZEN: "1"
+
 jobs:
   dependency-safety:
     runs-on: ubuntu-latest
@@ -30,11 +39,19 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
-      - name: Configure git auth for the private recap-dg-client clone
+      - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+          # aquacast (Plan 159) is only reachable when the secret is set. Guarded so
+          # the rewrite is never written with an EMPTY token: an empty credential
+          # turns a would-be 404 into a confusing auth failure, and CI does not
+          # install the `aquacast` extra by default anyway.
+          if [ -n "${AQUACAST_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${AQUACAST_TOKEN}@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git"
+          fi
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+          AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
       - run: uv sync --frozen
       # BLOCK fails this job with a §2 actionable message (postgis BLOCKs
       # point at Plan 118). REVIEW passes but writes an advisory notice to
