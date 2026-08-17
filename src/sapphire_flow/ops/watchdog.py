@@ -89,7 +89,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 import structlog
@@ -472,6 +472,12 @@ class ForecastFreshnessResult:
     cycle_time: datetime | None
     status: str | None
     error: str | None = None
+    # Fixer round (minor): parsed from `detail.forecasts_stored` so the
+    # CRITICAL alert can distinguish "stored zero forecasts" from a
+    # forced-CRITICAL partial-store failure (Plan 116 fixer round, major
+    # 1/blocker) where `forecasts_stored > 0`. None when the record has no
+    # `detail.forecasts_stored` (e.g. not present, or the wrong type).
+    forecasts_stored: int | None = None
 
 
 def probe_forecast_freshness(
@@ -524,12 +530,20 @@ def probe_forecast_freshness(
         checked_at = _parse_probe_timestamp(item.get("checked_at"))
         cycle_time = _parse_probe_timestamp(item.get("cycle_time"))
         status: str | None = item.get("status")
+        detail_raw = item.get("detail")
+        forecasts_stored: int | None = None
+        if isinstance(detail_raw, dict):
+            detail = cast("dict[str, object]", detail_raw)
+            raw_forecasts_stored = detail.get("forecasts_stored")
+            if isinstance(raw_forecasts_stored, int):
+                forecasts_stored = raw_forecasts_stored
         return ForecastFreshnessResult(
             found=True,
             checked_at=checked_at,
             cycle_time=cycle_time,
             status=status,
             error=None,
+            forecasts_stored=forecasts_stored,
         )
     except _HTTP_CALL_EXCEPTIONS as exc:
         return ForecastFreshnessResult(
@@ -858,8 +872,19 @@ def _format_forecast_freshness_stale_alert(
 def _format_forecast_freshness_critical_alert(
     *, hostname: str, now: datetime, result: ForecastFreshnessResult
 ) -> str:
+    # Fixer round (minor): a forced-CRITICAL record (Plan 116 fixer round,
+    # major 1/blocker — a mid-cycle fatal store failure AFTER some
+    # forecasts already stored) has `forecasts_stored > 0`, so the old
+    # unconditional "stored ZERO forecasts" wording was factually wrong
+    # for that case. `forecasts_stored is None` covers records where the
+    # detail wasn't parseable — keep the original zero wording rather
+    # than assert a specific (unknown) count.
+    if result.forecasts_stored is not None and result.forecasts_stored > 0:
+        outcome = f"stored {result.forecasts_stored} forecast(s) then failed"
+    else:
+        outcome = "stored ZERO forecasts"
     return (
-        f"[SAPPHIRE staging] forecast cycle stored ZERO forecasts — "
+        f"[SAPPHIRE staging] forecast cycle {outcome} — "
         f"host: {hostname}, time: {now.isoformat()}, status: {result.status}"
     )
 

@@ -1957,6 +1957,61 @@ class TestRunOnceForecastFreshness:
         assert "forecast cycle stored ZERO forecasts" in msg
         assert "status: critical" in msg
 
+    def test_critical_status_with_partial_write_alerts_accurately(
+        self, tmp_path: Path
+    ) -> None:
+        """Fixer round (minor): a forced-CRITICAL record from the
+        mid-cycle group-store-failure path (Plan 116 fixer round, major
+        1/blocker) carries `detail.forecasts_stored > 0` — some forecasts
+        DID store before the fatal failure. The alert must say so instead
+        of the factually wrong "stored ZERO forecasts", which this test
+        drives through the REAL `probe_forecast_freshness` end to end."""
+        import httpx
+
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "checked_at": _NOW.isoformat(),
+                            "cycle_time": _NOW.isoformat(),
+                            "status": "critical",
+                            "detail": {"forecasts_stored": 3},
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+
+        def real_probe(url: str) -> ForecastFreshnessResult:
+            return probe_forecast_freshness(url, client=client)
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=real_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "stored ZERO forecasts" not in msg
+        assert "stored 3 forecast(s) then failed" in msg
+        assert "status: critical" in msg
+
     def test_dedup_alerts_once_then_silent(self, tmp_path: Path) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
         cfg = _config(tmp_path, backup_dir=backup_dir)

@@ -12,6 +12,7 @@ import httpx
 import numpy as np
 import polars as pl
 import pytest
+import sqlalchemy.exc as sa_exc
 import xarray as xr
 
 from sapphire_flow.config.deployment import DeploymentConfig
@@ -1095,6 +1096,28 @@ class _FailAfterNForecastStore:
         self.calls += 1
         if self.calls > self._n:
             raise StoreError("simulated store_forecast failure after N successes")
+        return self._inner.store_forecast(forecast)
+
+
+class _FailAfterNForecastStoreWithDbError:
+    """Same shape as ``_FailAfterNForecastStore`` but the failure is a RAW
+    ``sqlalchemy.exc.OperationalError`` rather than ``StoreError`` — Plan
+    116 fixer round blocker: ``PgForecastStore.store_forecast`` never
+    translates SQLAlchemy failures into ``StoreError``, so a real database
+    outage (connection loss, deadlock, ...) reaches the flow as exactly
+    this kind of exception, not a ``StoreError``."""
+
+    def __init__(self, *, n: int) -> None:
+        self._inner = FakeForecastStore()
+        self._n = n
+        self.calls = 0
+
+    def store_forecast(self, forecast: OperationalForecast) -> object:
+        self.calls += 1
+        if self.calls > self._n:
+            raise sa_exc.OperationalError(
+                "INSERT INTO forecasts ...", {}, Exception("connection lost")
+            )
         return self._inner.store_forecast(forecast)
 
     def __getattr__(self, name: str) -> object:
@@ -3929,6 +3952,99 @@ enabled = false
         failing_store = _FailAfterNForecastStore(n=1)
 
         with pytest.raises(StoreError):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=failing_store,  # type: ignore[arg-type]
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                group_store=group_store,
+                forcing_store=forcing_store,
+                adapter=FakeWeatherForecastSource(result={}),
+                models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert failing_store.calls >= 2
+
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is not PipelineHealthStatus.OK
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["forecasts_stored"] == 1
+        assert records[0].subject == "forecast_cycle"
+
+    def test_group_db_error_mid_cycle_emits_critical_record_and_propagates(
+        self,
+    ) -> None:
+        """Fixer round (blocker): the take-2 fix caught `StoreError`
+        specifically, but `PgForecastStore.store_forecast` never
+        translates SQLAlchemy failures (OperationalError, IntegrityError,
+        ...) into `StoreError` — those propagate raw. A real database
+        outage mid-cycle therefore never entered the `except StoreError`
+        branch at all and fell straight through to the broad
+        `except Exception` swallow-and-continue branch below it,
+        reproducing the exact silent-failure bug this feature exists to
+        detect: one earlier successful store plus a later raw DB failure
+        still produced an OK freshness record and a successful flow
+        return. The correct fix treats ANY exception from `store_forecast`
+        in the group path as fatal: emit the freshness record forced
+        CRITICAL using the counter as it stands at that moment, then
+        RE-RAISE. Must be RED against a version that still splits
+        `except StoreError` (emit+raise) from a separate
+        `except Exception` (swallow+continue), which returns normally
+        with an OK record for this raw `OperationalError`."""
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (sid_a, sid_b):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                seed_model_assignment=False,
+                seed_artifact=False,
+            )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid_a, sid_b}),
+        )
+
+        # First store_forecast call succeeds (stores fine), the second (a
+        # later station's forecast within the same group cycle) raises a
+        # RAW sqlalchemy.exc.OperationalError, never a StoreError.
+        failing_store = _FailAfterNForecastStoreWithDbError(n=1)
+
+        with pytest.raises(sa_exc.OperationalError):
             run_forecast_cycle_flow(
                 station_store=station_store,
                 obs_store=obs_store,

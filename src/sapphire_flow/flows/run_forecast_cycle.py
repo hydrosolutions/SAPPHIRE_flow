@@ -2463,6 +2463,12 @@ def run_forecast_cycle_flow(
                     group_id=str(group.id),
                     model_id=str(model_id),
                 )
+                # Fixer round (blocker, take 3): must be bound before the
+                # `try` below can raise anything, so the `except Exception`
+                # handler at the bottom of this loop iteration can always
+                # read it safely — see the store_forecast loop further
+                # down, which is the only place that sets it True.
+                fatal_group_store_failure = False
                 try:
                     group_assignments = group_store.fetch_group_model_assignments(  # type: ignore[union-attr]
                         group.id
@@ -2607,20 +2613,34 @@ def run_forecast_cycle_flow(
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
-                            except StoreError:
-                                # Fixer round (major, take 2): a total
-                                # forecast_store outage must still get BOTH
-                                # properties, not a choice between them —
-                                # emit the freshness record using
-                                # `forecasts_stored` as it stands at this
-                                # moment (so the watchdog is never blind),
-                                # forced CRITICAL (a mid-cycle fatal crash is
-                                # never "OK" merely because an earlier group
-                                # forecast in the same cycle happened to
-                                # store first), then RE-RAISE so the fatal
-                                # storage signal still propagates (see the
-                                # group-store-error-mid-cycle acceptance
-                                # test).
+                            except Exception as exc:
+                                # Fixer round (blocker, take 3): the prior
+                                # round's `except StoreError` branch never
+                                # fired for a REAL database failure — the
+                                # Pg-backed forecast_store does not
+                                # translate SQLAlchemy exceptions
+                                # (OperationalError, IntegrityError, ...)
+                                # into StoreError, so those fell straight
+                                # through into a swallow-and-continue branch
+                                # here, reproducing the exact silent-failure
+                                # bug this feature exists to detect. The
+                                # try above contains ONLY the store call, so
+                                # there is no recoverable case to carve out:
+                                # ANY exception here means a group forecast
+                                # failed to persist mid-cycle. Emit the
+                                # freshness record using `forecasts_stored`
+                                # as it stands at this moment (so the
+                                # watchdog is never blind), forced CRITICAL
+                                # (a mid-cycle fatal crash is never "OK"
+                                # merely because an earlier group forecast
+                                # in the same cycle happened to store
+                                # first), then RE-RAISE so the fatal storage
+                                # signal still propagates.
+                                log.warning(
+                                    "forecast_cycle.group_store_forecast_failed",
+                                    station_id=str(sid),
+                                    error=str(exc),
+                                )
                                 _emit_forecast_freshness_record(
                                     pipeline_health_store,
                                     cycle_time_param=cycle_time,
@@ -2629,14 +2649,8 @@ def run_forecast_cycle_flow(
                                     checked_at=clock(),
                                     force_critical=True,
                                 )
+                                fatal_group_store_failure = True
                                 raise
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    station_id=str(sid),
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
 
                         if result.new_state is not None:
                             try:
@@ -2671,6 +2685,16 @@ def run_forecast_cycle_flow(
                 except StoreError:
                     raise
                 except Exception as exc:
+                    # Fixer round (blocker, take 3): a fatal store_forecast
+                    # failure (ANY exception type, not just StoreError —
+                    # see `fatal_group_store_failure` above) has already
+                    # emitted its own forced-CRITICAL freshness record and
+                    # must still propagate out of the flow. Every OTHER
+                    # exception here (e.g. a model bug in
+                    # `run_group_forecast`, a config gap in one group) stays
+                    # isolated to this group: log, record, and move on.
+                    if fatal_group_store_failure:
+                        raise
                     log.warning(
                         "forecast_cycle.group_forecast_failed",
                         error=str(exc),
