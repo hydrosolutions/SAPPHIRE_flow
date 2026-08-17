@@ -31,6 +31,10 @@ Exit codes:
     4  a D6/D7/D8/D9 transform post-condition failed
     5  storage/manifest write (or read) failed, including a missing or
        incomplete `--provenance` file
+    6  CDS refused the request as exceeding its per-request COST LIMIT (a
+       field-count ceiling). Distinct from 2: the credentials are fine.
+       Re-slice the window to monthly granularity (D4, corrected
+       2026-08-17).
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -74,6 +78,7 @@ from scripts.dhm_precip.era5_errors import (  # noqa: E402
     Era5AcquisitionError,
     Era5CredentialsError,
     Era5RequestFailedError,
+    Era5RequestTooLargeError,
     Era5StorageError,
     Era5TransformFailedError,
     NonExpressibleWindowError,
@@ -107,8 +112,15 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# SUBCLASSES BEFORE PARENTS — `_exit_code_for` returns the FIRST isinstance
+# match, so a subclass listed after its parent can never be reached (a prior
+# bug of exactly this shape had storage errors exiting 4 instead of 5).
+# `Era5RequestTooLargeError` subclasses `Era5RequestFailedError` (it is a
+# request rejection, and equally non-retryable) but carries its own exit
+# code, so it must precede it here.
 _EXIT_BY_ERROR: tuple[tuple[type[Era5AcquisitionError], int], ...] = (
     (Era5CredentialsError, 2),
+    (Era5RequestTooLargeError, 6),
     (Era5RequestFailedError, 3),
     (Era5TransformFailedError, 4),
     (Era5StorageError, 5),

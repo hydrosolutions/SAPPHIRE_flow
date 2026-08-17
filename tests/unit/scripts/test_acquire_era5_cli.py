@@ -34,7 +34,11 @@ import structlog.testing
 import xarray as xr
 
 from scripts.dhm_precip.acquire_era5 import _exit_code_for, build_parser, main, run
-from scripts.dhm_precip.era5_acquire import RealCdsClient, redact_secrets
+from scripts.dhm_precip.era5_acquire import (
+    RealCdsClient,
+    classify_cds_exception,
+    redact_secrets,
+)
 from scripts.dhm_precip.era5_errors import (
     Era5AcquisitionError,
     Era5CredentialsError,
@@ -59,6 +63,15 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _HOUR = np.timedelta64(1, "h")
+
+# The VERBATIM body observed on the first real task-4b attempt (2026-08-17).
+_OBSERVED_COST_LIMIT_BODY = (
+    "403 Client Error: Forbidden for url: "
+    "https://cds.climate.copernicus.eu/api/retrieve/v1/processes/"
+    "reanalysis-era5-land/execution\n"
+    "cost limits exceeded\n"
+    "Your request is too large, please reduce your selection."
+)
 
 _VALID_PROVENANCE = {
     "cds_portal_url": "https://cds.climate.copernicus.eu",
@@ -314,6 +327,36 @@ class TestExitCodeContract:
         )
         code = _invoke(args)
         assert code == 4
+
+    def test_cost_limit_rejection_is_exit_6_not_2(self, tmp_path: Path) -> None:
+        """Plan 171, corrected 2026-08-17. The real 4b failure exited 2
+        ("inputs absent") on valid credentials. It gets its own code, and
+        the dispatch table must reach it despite `Era5RequestTooLargeError`
+        being a SUBCLASS of `Era5RequestFailedError` (exit 3)."""
+        provenance = _write_provenance(tmp_path)
+        window = AcquisitionWindow(year=2021)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "acquire",
+                "--window",
+                "2021",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        client = _ScriptedClient(
+            window=window,
+            raise_sequence=[
+                classify_cds_exception(RuntimeError(_OBSERVED_COST_LIMIT_BODY))
+            ],
+        )
+        code = _invoke(args, client=client, sleep=lambda _s: None)
+        assert code == 6
+        # Deterministic rejection: one attempt, no retry storm.
+        assert client.call_count == 1
 
     def test_missing_provenance_file_is_exit_5(self, tmp_path: Path) -> None:
         args = build_parser().parse_args(
