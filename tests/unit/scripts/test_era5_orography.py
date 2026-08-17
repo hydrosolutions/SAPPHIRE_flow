@@ -416,6 +416,11 @@ class TestFetchOrographySource:
 # --- 1b: end-to-end materialise (happy path reopens + revalidates) ---
 
 
+# The route every `_materialise` below is performed under — verification
+# recomputes the route identity from THIS spec (D7, 2026-08-17), so it is
+# named once rather than re-spelt at each call site.
+_MATERIALISED_SPEC = _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0)
+
 _TARGET_LAT = np.array([26.0, 26.1, 26.2])
 _TARGET_LON = np.array([85.0, 85.1, 85.2])
 _SPACING = 0.1
@@ -447,7 +452,7 @@ def _materialise(
         return phi, src_lat, src_lon
 
     return materialise_orography(
-        _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0),
+        _MATERIALISED_SPEC,
         downloader=_FakeDownloader(payloads={"raw.nc": payload}),
         raw_reader=raw_reader,
         data_root=tmp_path,
@@ -463,7 +468,7 @@ class TestMaterialiseOrography:
         record = _materialise(tmp_path)
         assert record.raster_sha256
         assert record.orography_route_identity == orography_route_identity(
-            _spec(conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0)
+            _MATERIALISED_SPEC
         )
         assert record.orography_identity != record.orography_route_identity
 
@@ -503,7 +508,9 @@ class TestVerifyOrographyMaterialisation:
 
     def test_untouched_materialisation_verifies(self, tmp_path: Path) -> None:
         record = _materialise(tmp_path)
-        verify_orography_materialisation(record, data_root=tmp_path)
+        verify_orography_materialisation(
+            record, data_root=tmp_path, spec=_MATERIALISED_SPEC
+        )
 
     def test_tampered_raster_raises(self, tmp_path: Path) -> None:
         record = _materialise(tmp_path)
@@ -512,14 +519,18 @@ class TestVerifyOrographyMaterialisation:
         )
         raster.write_bytes(raster.read_bytes() + b"tamper")
         with pytest.raises(Era5OrographyError, match="raster"):
-            verify_orography_materialisation(record, data_root=tmp_path)
+            verify_orography_materialisation(
+                record, data_root=tmp_path, spec=_MATERIALISED_SPEC
+            )
 
     def test_tampered_source_file_raises(self, tmp_path: Path) -> None:
         record = _materialise(tmp_path)
         raw = tmp_path / record.downloaded_files[0].path
         raw.write_bytes(b"tampered source bytes")
         with pytest.raises(Era5OrographyError, match="source file"):
-            verify_orography_materialisation(record, data_root=tmp_path)
+            verify_orography_materialisation(
+                record, data_root=tmp_path, spec=_MATERIALISED_SPEC
+            )
 
     def test_record_whose_identity_does_not_recompute_raises(
         self, tmp_path: Path
@@ -527,7 +538,24 @@ class TestVerifyOrographyMaterialisation:
         record = _materialise(tmp_path)
         forged = replace(record, orography_identity="0" * 64)
         with pytest.raises(Era5OrographyError, match="identity"):
-            verify_orography_materialisation(forged, data_root=tmp_path)
+            verify_orography_materialisation(
+                forged, data_root=tmp_path, spec=_MATERIALISED_SPEC
+            )
+
+    def test_a_record_from_another_route_cannot_verify(self, tmp_path: Path) -> None:
+        """D7 (BLOCKER, 2026-08-17) — verification recomputes the route
+        identity from the CURRENT spec, never from the identity stored in the
+        record (which would only re-confirm the stale value). Every byte here
+        is intact; only the ROUTE has moved on."""
+        record = _materialise(tmp_path)
+        changed_route = _spec(
+            conversion_rule=OrographyConversionRule.GEOPOTENTIAL_G0,
+            product_version="v2",
+        )
+        with pytest.raises(Era5OrographyError, match="route"):
+            verify_orography_materialisation(
+                record, data_root=tmp_path, spec=changed_route
+            )
 
 
 class TestPlanSelfRecord:

@@ -108,6 +108,7 @@ from scripts.dhm_precip.era5_orography import (  # noqa: E402
     OrographyDownloader,
     materialise_orography,
     orography_raster_path,
+    orography_route_identity,
     orography_source_record_path,
     read_orography_source_record,
     verify_orography_materialisation,
@@ -329,10 +330,33 @@ def run(
     expected_lat = np.round(np.linspace(south, north, lat_count), 10)
     expected_lon = np.round(np.linspace(west, east, lon_count), 10)
 
+    # D7 (BLOCKER, 2026-08-17) — reuse is gated on the ROUTE, not on a file
+    # existing. Reusing any record that merely had a `raster_path` meant a
+    # changed frozen spec (new URL, product version, vertical reference,
+    # conversion rule) silently reused the raster built from the OLD route
+    # while the manifest serialised the NEW spec — provenance the artefact
+    # does not have. A changed spec is a legitimate, expected event, so the
+    # response is re-materialisation, never a raise.
+    current_route_identity = orography_route_identity(OBSERVED_OROGRAPHY_SPEC)
     existing_record = read_orography_source_record(
         orography_source_record_path(data_root)
     )
-    if existing_record is None or existing_record.raster_path is None:
+    if (
+        existing_record is not None
+        and existing_record.raster_path is not None
+        and existing_record.orography_route_identity == current_route_identity
+    ):
+        source_record = existing_record
+    else:
+        if (
+            existing_record is not None
+            and existing_record.orography_route_identity != current_route_identity
+        ):
+            log.info(
+                "era5_extract.cli.orography_route_changed",
+                recorded_route_identity=existing_record.orography_route_identity,
+                current_route_identity=current_route_identity,
+            )
         source_record = materialise_orography(
             OBSERVED_OROGRAPHY_SPEC,
             downloader=downloader,
@@ -343,11 +367,12 @@ def run(
             target_spacing_deg=GRID_SPACING_DEG,
             clock=resolved_clock,
         )
-    else:
-        source_record = existing_record
     # D7 — "a materialised raster is never trusted because a file of the
-    # right name exists": re-verify on EVERY run, freshly derived or adopted.
-    oro_identity = verify_orography_materialisation(source_record, data_root=data_root)
+    # right name exists": re-verify on EVERY run, freshly derived or reused,
+    # and against the CURRENT spec rather than the record's own claim.
+    oro_identity = verify_orography_materialisation(
+        source_record, data_root=data_root, spec=OBSERVED_OROGRAPHY_SPEC
+    )
     log.info("era5_extract.cli.orography_ready", orography_identity=oro_identity)
 
     if args.stage == "orography":

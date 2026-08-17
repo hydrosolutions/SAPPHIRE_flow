@@ -543,3 +543,71 @@ class TestPublishBundle:
                 orography_raw_reader=_fake_raw_reader,
                 request_area=_AREA,
             )
+
+
+class TestOrographyRouteChangeForcesRematerialisation:
+    """D7 (BLOCKER, 2026-08-17) — the reuse guard checked the wrong thing.
+    The CLI reused ANY `OrographySourceRecord` that merely had a
+    `raster_path` set, never comparing its `orography_route_identity` to the
+    CURRENT frozen spec. A changed spec (new URL, product version, vertical
+    reference, conversion rule) therefore reused the raster built from the
+    OLD route while the extraction manifest serialised the NEW one — the
+    artefact stating provenance it does not have, which is the defect class
+    the identity split existed to remove.
+
+    A changed spec is a legitimate, expected event, so the required response
+    is RE-MATERIALISATION, not a raised error.
+    """
+
+    def test_changed_spec_rematerialises_and_the_manifest_matches_the_new_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+        from dataclasses import replace as dataclass_replace
+
+        from scripts.dhm_precip.era5_orography import (
+            orography_raster_path,
+            orography_route_identity,
+            orography_source_record_path,
+            read_orography_source_record,
+        )
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+
+        data_root = _build_data_root(tmp_path)
+        assert _run_all(data_root) == 0
+        route_a = orography_route_identity(OBSERVED_OROGRAPHY_SPEC)
+        record_a = read_orography_source_record(orography_source_record_path(data_root))
+        assert record_a is not None
+        assert record_a.orography_route_identity == route_a
+
+        # The frozen spec is re-probed: same bytes at a new product version.
+        spec_b = dataclass_replace(
+            OBSERVED_OROGRAPHY_SPEC, product_version="re-probed 2026-08-17"
+        )
+        route_b = orography_route_identity(spec_b)
+        assert route_b != route_a
+        monkeypatch.setattr(extract_era5, "OBSERVED_OROGRAPHY_SPEC", spec_b)
+
+        assert _run_all(data_root) == 0
+
+        record_b = read_orography_source_record(orography_source_record_path(data_root))
+        assert record_b is not None
+        assert record_b.orography_route_identity == route_b, (
+            "the record still names the OLD route — the raster was reused "
+            "across a spec change"
+        )
+        assert orography_raster_path(data_root, route_identity=route_b).exists()
+
+        current = current_pointer_path(data_root).read_text().strip()
+        manifest = json.loads(
+            (points_root(data_root) / current / "extraction_manifest.json").read_text()
+        )
+        assert manifest["orography_spec"]["product_version"] == spec_b.product_version
+        assert (
+            manifest["orography_source_record"]["orography_route_identity"] == route_b
+        ), "the manifest serialises the NEW spec beside the OLD route identity"
+        assert manifest["orography_source_record"]["raster_path"] == str(
+            orography_raster_path(data_root, route_identity=route_b).relative_to(
+                data_root
+            )
+        )

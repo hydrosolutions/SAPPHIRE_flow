@@ -630,7 +630,7 @@ def materialise_orography(
 
 
 def verify_orography_materialisation(
-    record: OrographySourceRecord, *, data_root: Path
+    record: OrographySourceRecord, *, data_root: Path, spec: OrographySpec
 ) -> str:
     """D7 (CORRECTED 2026-08-16, blocker B2) — "a materialised raster is
     never trusted because a file of the right name exists". On EVERY run,
@@ -638,7 +638,25 @@ def verify_orography_materialisation(
     own sha256 against the record, and that the composite identity
     recomputes from those bytes. Any mismatch is a typed failure, never a
     silent reuse. Returns the VERIFIED composite `orography_identity`, so a
-    caller cannot reach it without having verified it."""
+    caller cannot reach it without having verified it.
+
+    D7 (BLOCKER, 2026-08-17) — the route identity is recomputed from the
+    CURRENT frozen `spec`, never read back from the record: recomputing from
+    the stored value only re-confirms a stale one. A record materialised
+    under a different route cannot be verified here; the caller must
+    re-materialise (a changed spec is a legitimate event, so the CLI treats
+    it as one — but reaching this function with a stale record is a bug, and
+    is typed as such)."""
+    current_route_identity = orography_route_identity(spec)
+    if record.orography_route_identity != current_route_identity:
+        raise Era5OrographyError(
+            f"OrographySourceRecord was materialised under route "
+            f"{record.orography_route_identity}, but the CURRENT frozen "
+            f"OrographySpec resolves to {current_route_identity} — the route "
+            "changed, so the recorded raster does not carry the provenance "
+            "the spec now states; re-materialise (D7)"
+        )
+
     if (
         record.orography_identity is None
         or record.raster_path is None
@@ -681,7 +699,9 @@ def verify_orography_materialisation(
         )
 
     recomputed = orography_identity(
-        route_identity=record.orography_route_identity,
+        # From the CURRENT spec (equal to the record's, asserted above) —
+        # never from the identity stored in the record.
+        route_identity=current_route_identity,
         source_file_sha256s=[f.sha256 for f in record.downloaded_files],
         raster_sha256=raster_sha256,
     )
