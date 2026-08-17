@@ -27,7 +27,6 @@ from scripts.dhm_precip.era5_extract_manifest import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
 _BASE_KWARGS: dict[str, object] = {
@@ -161,12 +160,14 @@ def _staged_bundle(data_root: Path, *, identity: str, marker: str = "x") -> Path
 
 
 def _publish(staged: Path, data_root: Path, identity: str) -> Path:
-    return publish_bundle(
-        staged,
-        data_root=data_root,
-        identity=identity,
-        expected_station_count=len(_STATIONS),
-        clock_now=_CLOCK_NOW,
+    return publish_bundle(staged, data_root=data_root, identity=identity)
+
+
+def _marker_of(directory: Path) -> str:
+    import polars as pl
+
+    return (
+        pl.read_csv(directory / "station_grid_elevation.csv")["marker"].unique().item()
     )
 
 
@@ -185,32 +186,6 @@ class TestPublishBundleMechanics:
         assert current_pointer_path(tmp_path).read_text().strip() == "abc123"
         assert published_dir(tmp_path, identity="abc123").exists()
 
-    def test_republish_of_a_reconciling_identity_adopts_it(
-        self, tmp_path: Path
-    ) -> None:
-        _publish(_staged_bundle(tmp_path, identity="same-id"), tmp_path, "same-id")
-        _publish(_staged_bundle(tmp_path, identity="same-id"), tmp_path, "same-id")
-        assert _orphans(tmp_path) == []
-
-    def test_republish_of_a_non_reconciling_identity_quarantines_it(
-        self, tmp_path: Path
-    ) -> None:
-        _publish(_staged_bundle(tmp_path, identity="same-id"), tmp_path, "same-id")
-        # Corrupt the published payload so its manifest no longer reconciles.
-        (
-            published_dir(tmp_path, identity="same-id") / "station_grid_elevation.csv"
-        ).write_text("corrupted")
-
-        _publish(
-            _staged_bundle(tmp_path, identity="same-id", marker="fresh"),
-            tmp_path,
-            "same-id",
-        )
-        assert _orphans(tmp_path)
-        # The freshly-published one reconciles again.
-        republished = published_dir(tmp_path, identity="same-id")
-        assert "fresh" in (republished / "station_grid_elevation.csv").read_text()
-
     def test_manifest_never_hashes_itself_or_the_pointer(self, tmp_path: Path) -> None:
         staged = _staged_bundle(tmp_path, identity="abc123")
         manifest = read_extraction_manifest(staged / "extraction_manifest.json")
@@ -219,129 +194,78 @@ class TestPublishBundleMechanics:
         assert "CURRENT" not in manifest.payload_sha256s
 
 
-class TestAdoptionIsTheHardBranch:
-    """D7.3 (CORRECTED 2026-08-16, blocker) — "reconciles" was never defined,
-    and the loose reading DESTROYS the good bundle: reconcile iterated only
-    whatever `payload_sha256s` the existing manifest happened to list, so an
-    EMPTY map reconciled vacuously and the adopt path then deleted the
-    freshly generated, complete staging directory in favour of the
-    incomplete published one.
-
-    Adoption is the dangerous branch, so it must be the hard-to-satisfy one.
-    Every case below must QUARANTINE the published directory and publish the
-    fresh bundle instead — and in every one of them the surviving bundle
-    must be the fresh one, proven by its payload marker.
+class TestPublicationIsAlwaysTheFreshBundle:
+    """D7.3 (owner decision 2026-08-17) — **the adopt-existing-bundle path is
+    CUT**. There is no reconcile function, no adopt branch and no conditional
+    discard of staging: a run always publishes the bundle it just generated
+    and validated, and an existing `<identity>/` is quarantined
+    unconditionally. Three review rounds each found a blocker inside that one
+    branch (vacuous empty-payload reconcile; a validator too weak to bite);
+    deleting the branch removes the defect class instead of moving it.
     """
 
-    def _publish_then_damage(
-        self, tmp_path: Path, damage: Callable[[Path], None]
-    ) -> Path:
+    def test_an_intact_published_bundle_is_quarantined_anyway(
+        self, tmp_path: Path
+    ) -> None:
+        """The exact case adoption existed for — the published bundle is
+        complete, its hashes match and it passes the D9 validator. It is
+        quarantined regardless, and the FRESH bundle is what `CURRENT`
+        names."""
         _publish(
             _staged_bundle(tmp_path, identity="same-id", marker="stale"),
             tmp_path,
             "same-id",
         )
-        damage(published_dir(tmp_path, identity="same-id"))
-        _publish(
+        final_dir = _publish(
             _staged_bundle(tmp_path, identity="same-id", marker="fresh"),
             tmp_path,
             "same-id",
         )
-        return published_dir(tmp_path, identity="same-id")
-
-    def _assert_fresh_survived(self, final_dir: Path, data_root: Path) -> None:
-        assert _orphans(data_root), "the damaged published bundle was ADOPTED"
+        assert _orphans(tmp_path) == ["same-id.orphan-0"]
         assert "fresh" in (final_dir / "station_grid_elevation.csv").read_text()
+        assert current_pointer_path(tmp_path).read_text().strip() == "same-id"
 
-    def test_empty_payload_map_does_not_reconcile(self, tmp_path: Path) -> None:
-        def damage(directory: Path) -> None:
-            _write_manifest(directory, identity="same-id", payload_sha256s={})
-
-        self._assert_fresh_survived(
-            self._publish_then_damage(tmp_path, damage), tmp_path
-        )
-
-    def test_manifest_identity_must_equal_the_directory_name(
+    def test_quarantined_bundles_accumulate_and_are_never_deleted(
         self, tmp_path: Path
     ) -> None:
-        def damage(directory: Path) -> None:
-            _write_manifest(
-                directory,
-                identity="some-other-identity",
-                payload_sha256s=_payload_sha256s(directory),
+        """`.orphan-<n>` takes the first free n, and a quarantined bundle is
+        left on disk untouched — a bundle is never destroyed, and the
+        accumulating orphans are the visible signal the silent adopt path
+        hid."""
+        for marker in ("first", "second", "third"):
+            _publish(
+                _staged_bundle(tmp_path, identity="same-id", marker=marker),
+                tmp_path,
+                "same-id",
             )
 
-        self._assert_fresh_survived(
-            self._publish_then_damage(tmp_path, damage), tmp_path
+        assert sorted(_orphans(tmp_path)) == [
+            "same-id.orphan-0",
+            "same-id.orphan-1",
+        ]
+        assert _marker_of(published_dir(tmp_path, identity="same-id.orphan-0")) == (
+            "first"
         )
-
-    def test_a_missing_payload_key_does_not_reconcile(self, tmp_path: Path) -> None:
-        def damage(directory: Path) -> None:
-            partial = _payload_sha256s(directory)
-            partial.pop("operator_sensitivity.csv")
-            _write_manifest(directory, identity="same-id", payload_sha256s=partial)
-
-        self._assert_fresh_survived(
-            self._publish_then_damage(tmp_path, damage), tmp_path
+        assert _marker_of(published_dir(tmp_path, identity="same-id.orphan-1")) == (
+            "second"
         )
+        assert _marker_of(published_dir(tmp_path, identity="same-id")) == "third"
 
-    def test_an_extra_payload_key_does_not_reconcile(self, tmp_path: Path) -> None:
-        def damage(directory: Path) -> None:
-            extra = _payload_sha256s(directory)
-            (directory / "stray.csv").write_text("a\n1\n")
-            extra["stray.csv"] = checksum_file(directory / "stray.csv")
-            _write_manifest(directory, identity="same-id", payload_sha256s=extra)
-
-        self._assert_fresh_survived(
-            self._publish_then_damage(tmp_path, damage), tmp_path
-        )
-
-    def test_a_bundle_failing_the_d9_validator_does_not_reconcile(
+    def test_the_published_directory_is_exactly_the_staged_one(
         self, tmp_path: Path
     ) -> None:
-        """Hashes all match, keys all present — but the series carries the
-        wrong station count. A published bundle is held to the identical
-        standard as a fresh one (D7.3 clause 4)."""
-
-        def damage(directory: Path) -> None:
-            import numpy as np
-            import xarray as xr
-
-            valid_time = np.array(["2021-01-01T00"], dtype="datetime64[ns]")
-            xr.Dataset(
-                {
-                    "precipitation_mm_per_h": (
-                        ["station", "valid_time"],
-                        np.zeros((1, 1), dtype=np.float32),
-                    )
-                },
-                coords={"station": ["alpha"], "valid_time": valid_time},
-            ).to_netcdf(directory / "series_nearest.nc", engine="h5netcdf")
-            _write_manifest(
-                directory,
-                identity="same-id",
-                payload_sha256s=_payload_sha256s(directory),
-            )
-
-        self._assert_fresh_survived(
-            self._publish_then_damage(tmp_path, damage), tmp_path
-        )
-
-    def test_staging_is_never_discarded_before_adoption_succeeds(
-        self, tmp_path: Path
-    ) -> None:
-        """The ordering rule: validate-then-discard, not discard-then-adopt.
-        If the published bundle is unusable, the fresh one must still be
-        there to publish."""
+        """Nothing of the prior directory survives into the published one —
+        no stray file is inherited, and an incomplete prior bundle can never
+        be published in place of the fresh one."""
         _publish(
             _staged_bundle(tmp_path, identity="same-id", marker="stale"),
             tmp_path,
             "same-id",
         )
         published = published_dir(tmp_path, identity="same-id")
+        (published / "stray.csv").write_text("a\n1\n")
         for name in D9_PAYLOAD_FILES:
             (published / name).unlink()
-        _write_manifest(published, identity="same-id", payload_sha256s={})
 
         final_dir = _publish(
             _staged_bundle(tmp_path, identity="same-id", marker="fresh"),
@@ -351,3 +275,4 @@ class TestAdoptionIsTheHardBranch:
         assert sorted(p.name for p in final_dir.iterdir()) == sorted(
             [*D9_PAYLOAD_FILES, "extraction_manifest.json"]
         )
+        assert _marker_of(final_dir) == "fresh"

@@ -251,23 +251,31 @@ class TestPublishBundle:
         elevation = pl.read_csv(published / "station_grid_elevation.csv")
         assert elevation.height == 2
 
-    def test_rerun_with_unchanged_inputs_adopts_the_same_identity(
+    def test_rerun_with_unchanged_inputs_republishes_and_quarantines_the_prior(
         self, tmp_path: Path
     ) -> None:
+        """D7.3 (owner decision 2026-08-17) — adoption is CUT. The re-run
+        computes the same identity, quarantines the bundle already published
+        under it and publishes its own; `CURRENT` still names that identity,
+        and the quarantined one is left on disk."""
         data_root = _build_data_root(tmp_path)
         assert _run_all(data_root) == 0
         first_identity = current_pointer_path(data_root).read_text().strip()
         assert _run_all(data_root) == 0
         second_identity = current_pointer_path(data_root).read_text().strip()
         assert first_identity == second_identity
-        # Exactly one identity directory (the re-run adopted it, it did not
-        # quarantine a good bundle as an orphan).
-        identity_dirs = [
+
+        identity_dirs = sorted(
             p.name
             for p in points_root(data_root).iterdir()
             if p.is_dir() and p.name != ".staging"
-        ]
-        assert identity_dirs == [first_identity]
+        )
+        assert identity_dirs == sorted([first_identity, f"{first_identity}.orphan-0"])
+        # The quarantined bundle is intact — quarantine never deletes.
+        orphan = points_root(data_root) / f"{first_identity}.orphan-0"
+        assert (orphan / "extraction_manifest.json").exists()
+        # No staging directory is left behind by the publish.
+        assert not (points_root(data_root) / ".staging" / first_identity).exists()
 
     def test_changed_input_yields_a_new_identity_and_the_old_one_survives(
         self, tmp_path: Path

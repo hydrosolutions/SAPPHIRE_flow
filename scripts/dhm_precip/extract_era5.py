@@ -88,6 +88,7 @@ from scripts.dhm_precip.era5_extract import (  # noqa: E402
     station_accounting_entry,
 )
 from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
+    D9_PAYLOAD_FILES,
     ExtractionManifest,
     checksum_file,
     extraction_identity,
@@ -471,15 +472,7 @@ def run(
     _write_elevation_csv(staging / "station_grid_elevation.csv", elevation_rows)
     sensitivity.write_csv(staging / "operator_sensitivity.csv")
 
-    payload_sha256s = {
-        name: checksum_file(staging / name)
-        for name in (
-            "series_nearest.nc",
-            "series_bilinear.nc",
-            "station_grid_elevation.csv",
-            "operator_sensitivity.csv",
-        )
-    }
+    payload_sha256s = {name: checksum_file(staging / name) for name in D9_PAYLOAD_FILES}
     manifest = ExtractionManifest(
         orography_identity=oro_identity,
         extraction_identity=identity,
@@ -524,13 +517,9 @@ def run(
     reopen_and_validate_bundle(
         staging, expected_station_count=resolved_params.expected_station_count
     )
-    final_dir = publish_bundle(
-        staging,
-        data_root=data_root,
-        identity=identity,
-        expected_station_count=resolved_params.expected_station_count,
-        clock_now=resolved_clock(),
-    )
+    # D7.3 — no adoption: an existing `<identity>/` is quarantined and THIS
+    # bundle, already reopen-and-validated above, is the published one.
+    final_dir = publish_bundle(staging, data_root=data_root, identity=identity)
 
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

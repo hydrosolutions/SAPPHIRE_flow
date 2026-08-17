@@ -44,9 +44,8 @@ log = structlog.get_logger(__name__)
 DELTA_STATISTICS: tuple[str, ...] = ("absolute", "ratio", "sign_agreement")
 EXTRACTION_CODE_VERSION = "1"
 
-# D9's payload set, EXACTLY — D7.3 requires a published manifest's
-# `payload_sha256s` key set to equal this, no missing entries and no extras,
-# before that directory may be adopted.
+# D9's payload set, EXACTLY — the artefacts the extraction manifest hashes
+# beside itself (D7.1: never its own hash, never the pointer's).
 D9_PAYLOAD_FILES: tuple[str, ...] = (
     "series_nearest.nc",
     "series_bilinear.nc",
@@ -247,73 +246,6 @@ def checksum_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _manifest_reconciles(
-    directory: Path, *, identity: str, expected_station_count: int
-) -> bool:
-    """D7.3 (CORRECTED 2026-08-16) — adoption is the DANGEROUS branch, so it
-    is the hard-to-satisfy one. The previous reading iterated only whatever
-    `payload_sha256s` the manifest happened to list, so an EMPTY map
-    reconciled vacuously and the adopt path then discarded a freshly
-    generated, complete staging directory in favour of an incomplete
-    published one.
-
-    Reconcile now means ALL of:
-      1. the manifest parses, and its recorded identity EQUALS the directory
-         name;
-      2. `payload_sha256s` is non-empty and its key set equals EXACTLY the
-         D9 payload set — no missing entries, no extras;
-      3. every listed file exists and its sha256 matches;
-      4. the D9 reopen-and-validate bundle validator passes on the directory
-         — a published bundle is held to the identical standard as a fresh
-         one.
-    Any failure returns False, i.e. quarantine and publish fresh.
-    """
-    manifest = read_extraction_manifest(directory / manifest_filename())
-    if manifest is None:
-        return False
-
-    if manifest.extraction_identity != identity:
-        log.warning(
-            "era5_extract.publish.identity_mismatch",
-            directory=str(directory),
-            recorded=manifest.extraction_identity,
-            expected=identity,
-        )
-        return False
-
-    if set(manifest.payload_sha256s) != set(D9_PAYLOAD_FILES):
-        log.warning(
-            "era5_extract.publish.payload_set_mismatch",
-            directory=str(directory),
-            recorded=sorted(manifest.payload_sha256s),
-            expected=sorted(D9_PAYLOAD_FILES),
-        )
-        return False
-
-    for relative_name, expected_sha256 in manifest.payload_sha256s.items():
-        candidate = directory / relative_name
-        if not candidate.exists() or checksum_file(candidate) != expected_sha256:
-            log.warning(
-                "era5_extract.publish.payload_sha256_mismatch",
-                directory=str(directory),
-                file=relative_name,
-            )
-            return False
-
-    try:
-        reopen_and_validate_bundle(
-            directory, expected_station_count=expected_station_count
-        )
-    except (ExtractionPostConditionError, OSError, ValueError) as exc:
-        log.warning(
-            "era5_extract.publish.bundle_validation_failed",
-            directory=str(directory),
-            error=str(exc),
-        )
-        return False
-    return True
-
-
 def prepare_staging_dir(data_root: Path, *, identity: str) -> Path:
     """A staging directory left by a crashed prior run is unreferenced
     garbage — delete it, never resume/publish it."""
@@ -339,28 +271,39 @@ def publish_bundle(
     *,
     data_root: Path,
     identity: str,
-    expected_station_count: int,
-    clock_now: datetime,
 ) -> Path:
     """D7 — publish the completed staging directory as a unit, then switch
-    the `CURRENT` pointer last. If `<identity>/` already exists: adopt it if
-    its manifest reconciles (idempotent re-run), otherwise quarantine it and
-    publish fresh (D7.3 — `os.replace` cannot swap a non-empty directory for
-    another non-empty one)."""
+    the `CURRENT` pointer last.
+
+    **There is no adoption** (D7.3, owner decision 2026-08-17). A run always
+    publishes the bundle it just generated and validated: if `<identity>/`
+    already exists it is quarantined UNCONDITIONALLY as
+    `<identity>.orphan-<n>` and the fresh bundle takes its place (`os.replace`
+    cannot swap a non-empty directory for another non-empty one, so the
+    rename is what makes room).
+
+    Adoption began as "adopt if the manifest reconciles" and three review
+    rounds each found a blocker inside that one branch — a vacuously
+    reconciling empty payload map that then *deleted the fresh complete
+    bundle*, then a fourth reconcile clause whose validator was too weak to
+    bite. It was only ever an optimisation (~15 s to regenerate), never a
+    correctness requirement, so the branch is deleted rather than patched
+    again. Quarantined directories are never removed: a bundle is never
+    destroyed, and accumulating orphans are a visible re-run signal.
+
+    Unchanged: the caller must have passed `reopen_and_validate_bundle` on
+    the staging directory BEFORE this call, and `CURRENT` is still switched
+    last, adjacent-temp + `os.replace`.
+    """
     final_dir = published_dir(data_root, identity=identity)
     if final_dir.exists():
-        if _manifest_reconciles(
-            final_dir, identity=identity, expected_station_count=expected_station_count
-        ):
-            # D7.3 ordering: validate-then-discard. The staging directory is
-            # only removed once the published one has passed EVERY reconcile
-            # clause, never before.
-            shutil.rmtree(staged_dir)
-        else:
-            _quarantine(final_dir)
-            os.replace(staged_dir, final_dir)
-    else:
-        os.replace(staged_dir, final_dir)
+        quarantined = _quarantine(final_dir)
+        log.info(
+            "era5_extract.publish.quarantined_prior_bundle",
+            identity=identity,
+            quarantined_as=quarantined.name,
+        )
+    os.replace(staged_dir, final_dir)
 
     pointer_path = current_pointer_path(data_root)
     tmp_pointer = pointer_path.with_name(pointer_path.name + ".tmp")
