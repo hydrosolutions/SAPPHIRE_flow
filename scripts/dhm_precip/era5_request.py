@@ -19,9 +19,12 @@ import calendar
 import re
 from dataclasses import dataclass
 from datetime import date
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from scripts.dhm_precip.era5_errors import NonExpressibleWindowError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 DATASET_ID = "reanalysis-era5-land"
 DEFAULT_VARIABLE = "total_precipitation"
@@ -46,7 +49,8 @@ def expected_grid_shape(area: tuple[float, float, float, float]) -> tuple[int, i
     return lat_count, lon_count
 
 
-# D4: the six product years plus the two edge-context windows.
+# D4: the six PRODUCT years. The ACQUISITION unit is one calendar month
+# (corrected 2026-08-17) — see `ALL_ACQUISITION_WINDOWS` below.
 STUDY_YEARS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024, 2025)
 
 _HOURS_PER_DAY = 24
@@ -286,8 +290,37 @@ def parse_window_arg(text: str) -> AcquisitionWindow:
         ) from exc
 
 
+def monthly_windows_for_year(year: int) -> tuple[AcquisitionWindow, ...]:
+    """D4 (corrected 2026-08-17) — the twelve monthly ACQUISITION windows a
+    product year is assembled from. The transform stays year-granular; only
+    what it reads changes."""
+    return tuple(AcquisitionWindow(year=year, month=month) for month in range(1, 13))
+
+
+def expand_for_acquisition(
+    windows: Iterable[AcquisitionWindow],
+) -> tuple[AcquisitionWindow, ...]:
+    """D4 (corrected 2026-08-17) — the acquisition stage never issues a
+    year-granular payload: 8,760 hourly fields exceeds the CDS per-request
+    cost limit and is refused outright (observed on the first real 4b
+    attempt), while one month is 744 fields and succeeds (proven by 2b). A
+    year-granular window named on the command line is therefore expanded
+    into its twelve monthly windows rather than sent as one doomed request;
+    every smaller granularity passes through unchanged."""
+    return tuple(
+        expanded
+        for window in windows
+        for expanded in (
+            monthly_windows_for_year(window.year) if window.month is None else (window,)
+        )
+    )
+
+
+# D4 (corrected 2026-08-17): 72 MONTHLY windows over the six study years,
+# plus the two edge-context windows D6 needs. The edges were already
+# month-or-smaller and are unaffected by the re-slicing.
 ALL_ACQUISITION_WINDOWS: tuple[AcquisitionWindow, ...] = (
-    *(AcquisitionWindow(year=year) for year in STUDY_YEARS),
+    *(window for year in STUDY_YEARS for window in monthly_windows_for_year(year)),
     AcquisitionWindow(year=STUDY_YEARS[0] - 1, month=12, day=31),
     AcquisitionWindow(year=STUDY_YEARS[-1] + 1, month=1, day=1, hour=0),
 )

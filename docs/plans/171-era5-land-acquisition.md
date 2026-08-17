@@ -581,7 +581,13 @@ emit through `structlog` — `docs/standards/logging.md:166` bans `print()` with
 `:75` requires CLI configuration; the shipped precedent is
 `src/sapphire_flow/cli/access_tokens.py:237`. **No `# ruff: noqa: T201` suppression.**
 Exit codes: `0` success · `2` credentials absent/invalid · `3` request rejected by CDS or transient
-failure after retries · `4` transformation post-condition failed · `5` storage/manifest write failed.
+failure after retries · `4` transformation post-condition failed · `5` storage/manifest write failed ·
+**`6` CDS refused the request as exceeding its per-request COST LIMIT** (corrected 2026-08-17 — a
+field-count ceiling; distinct from `2` because the credentials are valid, and the fix is to reduce the
+window granularity). `Era5RequestTooLargeError` subclasses `Era5RequestFailedError` (same non-retryable
+disposition), so it must precede its parent in the exit-code dispatch table.
+A year-granular `--window` is **expanded into its twelve monthly windows** for `--stage acquire`, so no
+code path can issue the whole-year payload CDS refuses.
 *Verification:* `uv run pytest tests/unit/scripts/test_acquire_era5_cli.py` — **typed fake failures**
 injected at the seam produce each of exit codes 0/2/3/4/5; and a **credential-redaction test** that
 sets a sentinel secret in a temporary environment/`.cdsapirc` and asserts the sentinel appears in
@@ -597,12 +603,15 @@ contract).
 a human runs `--stage all` for 2020–2025 and reports the results. Verification is deliberately
 **product-internal**: no gauge data is loaded, and no station-level comparison is performed.
 *Verification:*
-  - **eight raw artifacts** (six years plus the two edge-context windows, D4) and **six final
-    files**; all checksums matching the manifest; manifest complete, including licence provenance,
-    every request payload and client version;
+  - **74 raw artifacts** (72 monthly windows over the six study years plus the two edge-context
+    windows — D4 as corrected 2026-08-17; it was eight yearly-plus-edges before CDS refused a
+    year) and **six final files**; all checksums matching the manifest; manifest complete, including
+    licence provenance, every request payload and client version;
   - the response schema observed matches what 1a froze;
-  - **boundary semantics on real data:** the `23 → 00 → 01` seam and each year boundary reproduce the
-    D6 rule; the conservation post-condition holds for every complete accumulation day in all six
+  - **boundary semantics on real data:** the `23 → 00 → 01` seam reproduces the D6 rule at every
+    **month** boundary as well as each year boundary (D4 corrected — the seam now falls 12x as often,
+    and the closing `00 UTC` stamp of a month's last accumulation day lives in the *next* month's
+    artifact); the conservation post-condition holds for every complete accumulation day in all six
     years;
   - **packing accounting reported:** corrected-cell counts, max correction and mass adjustment per
     year — used to confirm or revise D7's default tolerance;

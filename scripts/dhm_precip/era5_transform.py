@@ -13,6 +13,7 @@ CDS (D3): fully re-runnable against local raw files.
 from __future__ import annotations
 
 import os
+from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -149,19 +150,34 @@ def validate_output_encoding(ds: xr.Dataset) -> None:
 
 
 def _prev_context_window_id(year: int) -> str:
-    """D4 — the edge window (2019-12-31) for 2020; otherwise the whole
-    previous year's own window id."""
+    """D4 (corrected 2026-08-17) — the edge window (2019-12-31) for 2020;
+    otherwise DECEMBER of the previous year. Acquisition is monthly now, so
+    the neighbour on disk is a month, not a year; the driver still reads
+    only its final stamp (23 UTC, 31 Dec)."""
     if year == STUDY_YEARS[0]:
         return f"{year - 1:04d}-12-31"
-    return f"{year - 1:04d}"
+    return f"{year - 1:04d}-12"
 
 
 def _next_context_window_id(year: int) -> str:
-    """D4 — the edge window (2026-01-01T00) for 2025; otherwise the whole
-    next year's own window id."""
+    """D4 (corrected 2026-08-17) — the edge window (2026-01-01T00) for 2025;
+    otherwise JANUARY of the next year, of which only the first stamp
+    (00 UTC, 1 Jan — the closing stamp of 31 December's accumulation day) is
+    read."""
     if year == STUDY_YEARS[-1]:
         return f"{year + 1:04d}-01-01T00"
-    return f"{year + 1:04d}"
+    return f"{year + 1:04d}-01"
+
+
+def _product_year_window_ids(year: int) -> tuple[str, ...]:
+    """D4 (corrected 2026-08-17) — the TWELVE monthly raw artifacts a
+    product year is assembled from. The transform stays year-granular; only
+    what it reads changes. Chronological order matters: the concatenated
+    series must be contiguous and strictly hourly, which is what makes every
+    MONTH seam (`23 -> 00 -> 01`, closing at 00 UTC in the following
+    month's file) fall under the same conservation post-condition as the two
+    year edges."""
+    return tuple(f"{year:04d}-{month:02d}" for month in range(1, 13))
 
 
 def transform_year(
@@ -178,21 +194,28 @@ def transform_year(
     if year not in STUDY_YEARS:
         raise Era5StorageError(f"year {year} outside study range {STUDY_YEARS}")
 
-    year_window_id = f"{year:04d}"
+    month_window_ids = _product_year_window_ids(year)
     prev_window_id = _prev_context_window_id(year)
     next_window_id = _next_context_window_id(year)
 
-    year_path = raw_artifact_path(year_window_id, data_root)
-    prev_path = raw_artifact_path(prev_window_id, data_root)
-    next_path = raw_artifact_path(next_window_id, data_root)
-    for path, label in (
-        (year_path, "product year"),
-        (prev_path, "previous-year boundary context"),
-        (next_path, "next-year boundary context"),
-    ):
+    # Chronological, and the ONLY place the consumed set is enumerated —
+    # existence, manifest reconciliation, identity and the concat below all
+    # walk this same ordered list, so a month can never be checked but not
+    # read (or read but not checked).
+    consumed: tuple[tuple[str, str], ...] = (
+        (prev_window_id, "previous-month boundary context"),
+        *((window_id, "product month") for window_id in month_window_ids),
+        (next_window_id, "next-month boundary context"),
+    )
+    consumed_paths = {
+        window_id: raw_artifact_path(window_id, data_root) for window_id, _ in consumed
+    }
+    for window_id, label in consumed:
+        path = consumed_paths[window_id]
         if not path.exists():
             raise Era5MissingBoundaryContextError(
-                f"required raw artifact for {label} window is missing: {path}"
+                f"required raw artifact for {label} window {window_id!r} is "
+                f"missing: {path}"
             )
 
     manifest_path = manifest_path_for(data_root)
@@ -213,11 +236,8 @@ def transform_year(
     raw_sha256s: list[str] = []
     request_family: dict[str, object] | None = None
     request_family_label = ""
-    for window_id, path, label in (
-        (prev_window_id, prev_path, "previous-year boundary context"),
-        (year_window_id, year_path, "product year"),
-        (next_window_id, next_path, "next-year boundary context"),
-    ):
+    for window_id, label in consumed:
+        path = consumed_paths[window_id]
         record = manifest.raw_windows.get(window_id)
         if record is None or checksum_file(path) != record.sha256:
             raise Era5StorageError(
@@ -285,13 +305,29 @@ def transform_year(
     required_start = np.datetime64(f"{year:04d}-01-01T00:00:00")
     required_end = np.datetime64(f"{year:04d}-12-31T23:00:00")
 
-    with (
-        xr.open_dataset(prev_path) as prev_ds,
-        xr.open_dataset(year_path) as year_ds,
-        xr.open_dataset(next_path) as next_ds,
-    ):
+    # D4 (corrected 2026-08-17): fourteen files, not three — one leading
+    # context stamp, the year's twelve monthly artifacts, one trailing
+    # context stamp. They are concatenated into ONE continuous hourly series
+    # BEFORE deaccumulation, which is what makes every month seam behave
+    # exactly like the year edges did: `deaccumulate_precipitation` sees a
+    # contiguous axis (`_require_hourly_grid` enforces it) and its
+    # conservation post-condition therefore covers the last accumulation day
+    # of every month, whose closing 00 UTC stamp came from the next month's
+    # file. Deaccumulating month-by-month would leave each month's final
+    # accumulation day unclosed.
+    with ExitStack() as stack:
+        prev_ds = stack.enter_context(xr.open_dataset(consumed_paths[prev_window_id]))
+        month_datasets = [
+            stack.enter_context(xr.open_dataset(consumed_paths[window_id]))
+            for window_id in month_window_ids
+        ]
+        next_ds = stack.enter_context(xr.open_dataset(consumed_paths[next_window_id]))
         combined = xr.concat(
-            [prev_ds.isel(valid_time=[-1]), year_ds, next_ds.isel(valid_time=[0])],
+            [
+                prev_ds.isel(valid_time=[-1]),
+                *month_datasets,
+                next_ds.isel(valid_time=[0]),
+            ],
             dim="valid_time",
         ).load()
 
