@@ -488,6 +488,20 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     - **A materialised raster is never trusted because a file of the right name exists.** On every
       run, re-verify the source hashes against the record and the raster's own sha256 against the
       manifest; a mismatch is a typed failure, not a silent reuse.
+
+    - **⛔ BLOCKER, 2026-08-17 — the reuse guard checked the wrong thing, so B2 came back one level
+      up.** The fix above made the *identity* cover the materialised bytes, but the code that decides
+      whether to materialise at all (`extract_era5.py:331`) reuses **any** record that merely has a
+      `raster_path` set, without ever comparing its `orography_route_identity` to the current
+      `OBSERVED_OROGRAPHY_SPEC`. So changing the frozen spec — a new URL, product version, vertical
+      reference or conversion rule — silently reuses the raster built from the OLD route, while the
+      extraction manifest serialises the NEW spec. **The artefact then states provenance it does not
+      have**, which is the same defect class the identity split was introduced to remove.
+      ⇒ **Before any reuse, recompute `orography_route_identity(OBSERVED_OROGRAPHY_SPEC)` and require
+      it to equal the record's.** A mismatch means the route changed: re-materialise (do not raise —
+      a changed spec is a legitimate, expected event; a stale raster is not). Verification must
+      recompute from the **current** spec, never from the identity stored in the record, or it just
+      re-confirms the stale value.
   - `extraction_identity` = sha256(canonical-JSON of **every value-affecting input**):
     operator id · station-coordinate-table sha256 · the **list of source product sha256s consumed**
     (validated against the acquisition manifest before use, never trusted from the filename) ·
@@ -514,30 +528,38 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
      directories.** The previous revision placed it inside `<extraction_identity>/`, where it can
      only ever name its own parent and therefore selects nothing. It is written adjacent-temp +
      `os.replace` (a file, so genuinely atomic).
-  3. **`os.replace` cannot replace a non-empty directory with another non-empty directory.** So the
-     "regenerate an existing identity" path is not a replace at all. If `<extraction_identity>/`
-     already exists: **validate and adopt it** if it reconciles, otherwise **quarantine it**
-     (rename to `<extraction_identity>.orphan-<n>/`) and publish fresh. A staging directory with no
-     pointer is unreferenced garbage the next run deletes; a published directory with no matching
-     manifest entry is **re-validated, never assumed good** (Plan 171 D11's rule).
+  3. **`os.replace` cannot replace a non-empty directory with another non-empty directory**, so the
+     "regenerate an existing identity" path is not a replace.
 
-     **⛔ CORRECTED 2026-08-16 — "reconciles" was never defined, and the loose reading DESTROYS the
-     good bundle.** As implemented, reconcile iterates only whatever `payload_sha256s` the existing
-     manifest happens to list — so **an empty payload map reconciles vacuously** — and the adopt path
-     then *deletes the freshly generated, complete staging directory* in favour of the incomplete
-     published one. Adoption is the dangerous branch, not the safe one, so it must be the
-     hard-to-satisfy one. **Reconcile means ALL of:**
-     1. the manifest parses, and its recorded identity **equals the directory name**;
-     2. `payload_sha256s` is **non-empty** and its key set **equals exactly** the D9 payload set
-        (`series_nearest.nc`, `series_bilinear.nc`, `station_grid_elevation.csv`,
-        `operator_sensitivity.csv`) — no missing entries, no extras;
-     3. every listed file exists and its sha256 matches;
-     4. the **D9 reopen-and-validate bundle validator passes** on the directory — the same validator
-        the staging path must pass before publication. A published bundle is held to the identical
-        standard as a fresh one.
+     ## ⛔ THE ADOPT-EXISTING-BUNDLE PATH IS CUT — owner decision 2026-08-17
 
-     **Any failure ⇒ quarantine and publish fresh. Never delete staging before adoption has fully
-     succeeded** — the ordering must be validate-then-discard, not discard-then-adopt.
+     **There is no adoption. A run always publishes what it just generated and validated.** If
+     `<extraction_identity>/` already exists it is **unconditionally quarantined** (renamed to
+     `<extraction_identity>.orphan-<n>/`) and the fresh bundle is published in its place. No
+     reconcile function, no adopt branch, no conditional discard of staging.
+
+     **Why — three review rounds all found blockers in this one branch.** It began as "adopt if its
+     manifest reconciles", which was undefined and let an **empty payload map reconcile vacuously**
+     while *deleting the freshly generated complete bundle*. The fix defined reconcile as four
+     clauses, the fourth being "the D9 bundle validator passes" — and the next round found that
+     **clause 4 does not bite**, because the validator checks only variable presence, row counts and
+     CSV readability, not station encoding, UTC metadata, the time axis or required columns. So a
+     schema-invalid bundle could still be adopted. Each fix moved the defect rather than removing it.
+
+     **What the cut buys.** Adoption existed only to make a re-run cheap. It was never a correctness
+     requirement — this is an offline research pipeline whose whole run takes ~15 s on 26 stations,
+     so regenerating is cheaper than the machinery that avoided it. Deleting the branch removes, in
+     one move: the reconcile function, all four clauses, the validator-strength question that
+     clause 4 depended on, and the ordering hazard between discarding staging and adopting.
+
+     **What this does NOT relax.** The staging bundle must still pass reopen-and-validate *before*
+     publication — the fresh path's guarantees are unchanged. Quarantined directories are left on
+     disk, never deleted, so a bundle is never destroyed; and `CURRENT` is still switched last.
+
+     **Cost, stated:** a re-run with an unchanged identity does redundant work and leaves an
+     `.orphan-<n>` directory behind. Accepted deliberately — disk is cheap, and an operator seeing
+     accumulating orphans is a *visible* signal that something is re-running, which the silent adopt
+     path hid.
 
 - **D8 — Station identity is the coordinate table's `station` column,** the same key the gauge side
   uses (`scripts/dhm_precip/loader.py:251` loads and validates it; `:306` already asserts the
@@ -687,7 +709,7 @@ for the synthetic D9 fixture it validates against)*
 *In scope:* fetch per the frozen `OrographySpec`; **write the `OrographySourceRecord`** (observed
 sha256s, sizes, injected-clock fetch time), and on a re-run verify observed hashes against the
 existing record; apply the conversion rule (`Φ/g0` with `g0 = 9.80665`, or identity) with the
-magnitude sanity check of D3a; reproject if needed; area-weighted-mean aggregate to the ERA5-Land
+magnitude sanity check of D3a; reproject if needed; mean-of-contained-cells aggregate (NOT area-weighted — see D3a) to the ERA5-Land
 0.1° grid; apply the no-data policy; assert coordinate-vector equality **against the synthetic
 D9-schema fixture from 2a**; write
 `data/dhm_precip/era5_land/orography/<orography_identity>.nc` + its record.
@@ -967,7 +989,7 @@ Probed live against the public CDS dataset pages and ECMWF's parameter database 
 - Because `geopotential` is an invariant field of the SAME `reanalysis-era5-land` dataset, it is
   delivered on the identical 0.1° ERA5-Land grid already used for `total_precipitation`
   (`scripts/dhm_precip/era5_request.py:37`) — the aggregation rule therefore degenerates to the
-  identity case of the one general area-weighted-mean aggregator 1b implements (a single source cell,
+  identity case of the one general mean-of-contained-cells aggregator 1b implements (a single source cell,
   weight 1, per target cell). 1b's exact-grid-vector check (D3a) is the real proof of this, run once
   the raster is actually materialised.
 
