@@ -760,17 +760,140 @@ class TestOperatorSensitivityEnvelope:
         assert median_across.height == 1
         assert median_across["sign_agreement_fraction"][0] == pytest.approx(0.5)
 
-    def test_sign_agreement_is_populated_for_every_across_station_row(self) -> None:
+    def test_sign_agreement_is_null_when_every_station_delta_ties(self) -> None:
+        """MINOR (2026-08-17 review) — an EXACT tie (nearest == bilinear,
+        delta == 0.0) used to be counted as a POSITIVE sign, so an
+        all-tied population reported `sign_agreement_fraction=1.0`,
+        misleadingly implying systematic ordering where there is none.
+        Both stations tie exactly here; the correct report is `None` (no
+        direction), never a spurious 1.0."""
+        valid_time = np.array([np.datetime64("2021-06-01T00:00")])  # JJAS
+        from scripts.dhm_precip.era5_extract import ExtractedSeries
+
+        nearest = {
+            Station("A"): ExtractedSeries(
+                station=Station("A"),
+                operator=ExtractionOperator.NEAREST,
+                valid_time=valid_time,
+                values=np.array([5.0]),
+                grid_lat=0.0,
+                grid_lon=0.0,
+                grid_i=0,
+                grid_j=0,
+                n_finite=1,
+                n_nan=0,
+            ),
+            Station("B"): ExtractedSeries(
+                station=Station("B"),
+                operator=ExtractionOperator.NEAREST,
+                valid_time=valid_time,
+                values=np.array([5.0]),
+                grid_lat=0.0,
+                grid_lon=0.0,
+                grid_i=1,
+                grid_j=1,
+                n_finite=1,
+                n_nan=0,
+            ),
+        }
+        # bilinear == nearest for BOTH stations: every delta is EXACTLY 0.
+        bilinear = {
+            Station("A"): replace(
+                nearest[Station("A")], operator=ExtractionOperator.BILINEAR
+            ),
+            Station("B"): replace(
+                nearest[Station("B")], operator=ExtractionOperator.BILINEAR
+            ),
+        }
+        table = build_operator_sensitivity_table(
+            nearest, bilinear, params=DEFAULT_PARAMS
+        )
+        median_across = table.filter(
+            (pl.col("scope") == "ACROSS_STATION")
+            & (pl.col("season") == "JJAS")
+            & (pl.col("statistic") == "QUANTILE")
+            & (pl.col("quantile") == 0.5)
+        )
+        assert median_across.height == 1
+        assert median_across["sign_agreement_fraction"][0] is None
+
+    def test_sign_agreement_excludes_a_tie_from_the_majority_vote(self) -> None:
+        """A tie must not be silently counted toward EITHER sign: with one
+        station strictly positive and one exactly tied, the majority sign
+        (positive, the only non-tied vote) is what one non-tied vote out of
+        two total stations means — 0.5, not 1.0 (which the OLD "tie counts
+        as positive" bug would have reported, since both the tie and the
+        genuine positive would have counted as +1)."""
+        valid_time = np.array([np.datetime64("2021-06-01T00:00")])  # JJAS
+        from scripts.dhm_precip.era5_extract import ExtractedSeries
+
+        nearest = {
+            Station("A"): ExtractedSeries(
+                station=Station("A"),
+                operator=ExtractionOperator.NEAREST,
+                valid_time=valid_time,
+                values=np.array([5.0]),
+                grid_lat=0.0,
+                grid_lon=0.0,
+                grid_i=0,
+                grid_j=0,
+                n_finite=1,
+                n_nan=0,
+            ),
+            Station("B"): ExtractedSeries(
+                station=Station("B"),
+                operator=ExtractionOperator.NEAREST,
+                valid_time=valid_time,
+                values=np.array([5.0]),
+                grid_lat=0.0,
+                grid_lon=0.0,
+                grid_i=1,
+                grid_j=1,
+                n_finite=1,
+                n_nan=0,
+            ),
+        }
+        bilinear = {
+            # A: nearest(5.0) > bilinear(3.0) -> strictly positive delta.
+            Station("A"): replace(
+                nearest[Station("A")],
+                operator=ExtractionOperator.BILINEAR,
+                values=np.array([3.0]),
+            ),
+            # B: nearest(5.0) == bilinear(5.0) -> an EXACT tie.
+            Station("B"): replace(
+                nearest[Station("B")], operator=ExtractionOperator.BILINEAR
+            ),
+        }
+        table = build_operator_sensitivity_table(
+            nearest, bilinear, params=DEFAULT_PARAMS
+        )
+        median_across = table.filter(
+            (pl.col("scope") == "ACROSS_STATION")
+            & (pl.col("season") == "JJAS")
+            & (pl.col("statistic") == "QUANTILE")
+            & (pl.col("quantile") == 0.5)
+        )
+        assert median_across.height == 1
+        assert median_across["sign_agreement_fraction"][0] == pytest.approx(0.5)
+
+    def test_sign_agreement_is_populated_for_every_across_station_quantile_row(
+        self,
+    ) -> None:
         """D1a (CORRECTED 2026-08-16) — sign agreement was produced only at a
-        hard-coded q=0.5, leaving it null for the other seven quantiles AND
-        for both wet-hour statistics. The one column that reveals whether an
-        ordering is systematic was absent everywhere it matters: D1's
-        bilinear-damps-the-tail question lives at q0.99/q0.999, not the
-        median."""
+        hard-coded q=0.5, leaving it null for the other seven quantiles. The
+        one column that reveals whether an ordering is systematic was
+        absent everywhere it matters: D1's bilinear-damps-the-tail question
+        lives at q0.99/q0.999, not the median. Restricted to QUANTILE rows
+        here — `_two_station_table`'s WET_FREQUENCY is a genuine, correctly
+        reported EXACT TIE (both operators show 100% wet hours for both
+        stations, MINOR 2026-08-17 review), covered separately below."""
         table = _two_station_table()
-        across = table.filter(pl.col("scope") == "ACROSS_STATION")
-        assert across.height > 0
-        assert across["sign_agreement_fraction"].null_count() == 0
+        across_quantiles = table.filter(
+            (pl.col("scope") == "ACROSS_STATION") & (pl.col("statistic") == "QUANTILE")
+        )
+        assert across_quantiles.height > 0
+        assert across_quantiles["sign_agreement_fraction"].null_count() == 0
         # ... and only there (D9: populated only on ACROSS_STATION rows).
         per_station = table.filter(pl.col("scope") == "STATION")
         assert per_station["sign_agreement_fraction"].null_count() == per_station.height
@@ -795,15 +918,29 @@ class TestOperatorSensitivityEnvelope:
         assert _agreement(0.99) == pytest.approx(1.0)
 
     def test_wet_hour_statistics_also_carry_sign_agreement(self) -> None:
+        """WET_MEAN_INTENSITY differs by station (a real signal) and must
+        report a non-null fraction. WET_FREQUENCY is a genuine EXACT TIE in
+        this fixture (every value at every station, both operators, is
+        above the 0.2 mm/h wet threshold, so both operators report 100% wet
+        frequency for both stations) — MINOR (2026-08-17 review): a tie
+        correctly reports `None` (no direction), not the OLD buggy `1.0`
+        ("ties count as positive")."""
         table = _two_station_table()
-        for statistic in ("WET_MEAN_INTENSITY", "WET_FREQUENCY"):
-            row = table.filter(
-                (pl.col("scope") == "ACROSS_STATION")
-                & (pl.col("season") == "JJAS")
-                & (pl.col("statistic") == statistic)
-            )
-            assert row.height == 1, statistic
-            assert row["sign_agreement_fraction"][0] is not None, statistic
+        wet_mean_row = table.filter(
+            (pl.col("scope") == "ACROSS_STATION")
+            & (pl.col("season") == "JJAS")
+            & (pl.col("statistic") == "WET_MEAN_INTENSITY")
+        )
+        assert wet_mean_row.height == 1
+        assert wet_mean_row["sign_agreement_fraction"][0] is not None
+
+        wet_freq_row = table.filter(
+            (pl.col("scope") == "ACROSS_STATION")
+            & (pl.col("season") == "JJAS")
+            & (pl.col("statistic") == "WET_FREQUENCY")
+        )
+        assert wet_freq_row.height == 1
+        assert wet_freq_row["sign_agreement_fraction"][0] is None
 
     def test_excluded_hour_count_is_at_each_rows_own_grain(self) -> None:
         """D1a (CORRECTED 2026-08-16) — a single global excluded-hour count

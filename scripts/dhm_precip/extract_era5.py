@@ -66,6 +66,7 @@ from scripts.dhm_precip.domain_types import (  # noqa: E402
     Station,
     VerticalDatum,
 )
+from scripts.dhm_precip.era5_acquire import redact_secrets  # noqa: E402
 from scripts.dhm_precip.era5_deaccumulate import (  # noqa: E402
     DAY_START_HOUR,
     OUTPUT_SCHEMA_VERSION,
@@ -95,7 +96,6 @@ from scripts.dhm_precip.era5_extract import (  # noqa: E402
 from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
     D9_PAYLOAD_FILES,
     POINTS_OUTPUT_ENCODING_SPEC,
-    POINTS_SEMANTIC_TIMEZONE,
     POINTS_TIME_UNITS,
     ExtractionIdentityInputs,
     ExtractionManifest,
@@ -130,6 +130,7 @@ from scripts.dhm_precip.era5_request import (  # noqa: E402
     GRID_SPACING_DEG,
     STUDY_YEARS,
     expected_grid_shape,
+    expected_total_hours,
 )
 from scripts.dhm_precip.loader import (  # noqa: E402
     PRODUCTION_SOURCE_SHA256,
@@ -195,7 +196,15 @@ def build_parser() -> argparse.ArgumentParser:
 # encoding" actually is. Re-exported here under their historical names so
 # existing callers (including `extract_era5.POINTS_OUTPUT_ENCODING_SPEC` in
 # tests) keep working unchanged.
-_SEMANTIC_TIMEZONE = POINTS_SEMANTIC_TIMEZONE
+#
+# MAJOR (2026-08-17 review, P7) — a `_SEMANTIC_TIMEZONE` module constant
+# used to duplicate `POINTS_OUTPUT_ENCODING_SPEC["valid_time"][
+# "semantic_timezone_attr"]` instead of reading it: both happened to start
+# equal, but the WRITER (`_write_series_netcdf`) consumed the separate
+# constant, so changing the spec's hashed field alone changed
+# `extraction_identity` without changing a single on-disk byte — false
+# provenance by construction (P7). The writer below now reads the spec
+# entry directly; no local alias survives to drift from it.
 _POINTS_TIME_UNITS = POINTS_TIME_UNITS
 _xarray_encoding = points_xarray_encoding
 
@@ -216,19 +225,40 @@ def _default_expected_stations() -> frozenset[Station]:
 
 
 # D7 P7a (grill-me 2026-08-17) — the CDS request `RealOrographyDownloader`
-# actually issues. `OrographySpec.product_id`/`download_url` are the
-# MACHINE-VERIFIED half of the spec (asserted below, before any request);
-# everything else on the spec (`product_version`, `licence_*`,
-# `vertical_reference`, `source_crs`) is OPERATOR-ATTESTED — recorded from
-# the 1a probe, labelled as such in the manifest (`_orography_spec_payload`),
-# never asserted, because nothing in the CDS request lets this downloader
-# check them.
+# actually issues. `OrographySpec.product_id` is the MACHINE-VERIFIED half
+# of the spec (asserted below, before any request); everything else on the
+# spec (`product_version`, `download_url`, `licence_*`, `vertical_reference`,
+# `source_crs`) is OPERATOR-ATTESTED — recorded from the 1a probe, labelled
+# as such in the manifest (`_orography_spec_payload`), never asserted,
+# because nothing in the CDS request lets this downloader check them.
 _REQUEST_DATASET = "reanalysis-era5-land"
 _REQUEST_VARIABLE = "geopotential"
 _REQUEST_PRODUCT_ID = f"{_REQUEST_DATASET}:{_REQUEST_VARIABLE}"
-_REQUEST_DOWNLOAD_URL = (
-    "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=download"
-)
+
+
+def _build_geopotential_request(
+    area: tuple[float, float, float, float],
+) -> dict[str, object]:
+    """D7 P7a (BLOCKER, slim review, 2026-08-17 fixer round 3) — the ACTUAL
+    payload `RealOrographyDownloader.download()` passes to
+    `cdsapi.Client().retrieve()`. Pulled into its own function so a locking
+    test can capture what the REAL call issues (via a patched `cdsapi.
+    Client`) and assert against it directly — the previous
+    `_REQUEST_DOWNLOAD_URL` constant compared `spec.download_url` against a
+    SECOND hardcoded module literal that `retrieve()` never reads at all
+    (`retrieve()` takes only a dataset name and this payload; no URL is
+    ever consumed), so a mutated `download_url` test locked a tautology —
+    two comparands this module itself wrote, neither touching `cdsapi`."""
+    return {
+        "variable": [_REQUEST_VARIABLE],
+        "year": [f"{STUDY_YEARS[0]:04d}"],
+        "month": ["01"],
+        "day": ["01"],
+        "time": ["00:00"],
+        "data_format": "netcdf",
+        "download_format": "unarchived",
+        "area": list(area),
+    }
 
 
 def _assert_spec_matches_request(spec: OrographySpec) -> None:
@@ -247,27 +277,30 @@ def _assert_spec_matches_request(spec: OrographySpec) -> None:
     typed error otherwise — a changed spec then fails loudly instead of
     recording provenance nothing verified.
 
-    `area` is not asserted as a separate field here: this downloader always
-    requests `DEFAULT_REQUEST_SPEC.area` (module-level, never derived from
-    an argument to this call), so there is no divergent value it could pick
-    up at this layer — the possibility is removed, not checked (P1's own
-    pattern). The resulting raster's actual grid is machine-verified
-    downstream, once materialised, by `assert_grid_matches` against the
-    CLI's resolved area. `conversion_rule` is machine-verified in
-    `era5_orography.convert_field`, against the OBSERVED field magnitude —
-    not here, since nothing has been fetched yet."""
+    `download_url` is DELIBERATELY not asserted here (BLOCKER, slim review,
+    2026-08-17 fixer round 3) — a browser landing-page URL is not a field
+    of the machine request `cdsapi.Client().retrieve()` actually issues
+    (dataset name + this payload dict; no URL), so there is nothing to
+    verify it against. It is OPERATOR-ATTESTED below, and the request this
+    downloader actually builds (dataset/variable/area) is what gets
+    recorded and can be captured by a test instead
+    (`_build_geopotential_request`, `_orography_spec_payload`'s
+    `effective_cds_request`).
+
+    `area` is not asserted as a separate spec field here: this downloader
+    always requests `DEFAULT_REQUEST_SPEC.area` (module-level, never
+    derived from an argument to this call), so there is no divergent value
+    it could pick up at this layer — the possibility is removed, not
+    checked (P1's own pattern). The resulting raster's actual grid is
+    machine-verified downstream, once materialised, by `assert_grid_matches`
+    against the CLI's resolved area. `conversion_rule` is machine-verified
+    in `era5_orography.convert_field`, against the OBSERVED field
+    magnitude — not here, since nothing has been fetched yet."""
     if spec.product_id != _REQUEST_PRODUCT_ID:
         raise Era5OrographyError(
             f"OrographySpec.product_id={spec.product_id!r} does not match "
             f"what RealOrographyDownloader actually requests "
             f"({_REQUEST_PRODUCT_ID!r}) — refusing to re-fetch the OLD "
-            "route under a NEW spec's provenance (D7 P7a)"
-        )
-    if spec.download_url != _REQUEST_DOWNLOAD_URL:
-        raise Era5OrographyError(
-            f"OrographySpec.download_url={spec.download_url!r} does not "
-            "match what RealOrographyDownloader actually requests "
-            f"({_REQUEST_DOWNLOAD_URL!r}) — refusing to re-fetch the OLD "
             "route under a NEW spec's provenance (D7 P7a)"
         )
 
@@ -283,22 +316,33 @@ class RealOrographyDownloader:
         _assert_spec_matches_request(spec)
         import cdsapi  # dev-only (D13); imported lazily so this module loads
 
-        client = cdsapi.Client(retry_max=1)
+        # MAJOR (2026-08-17 review) — client construction and `.retrieve()`
+        # were UNGUARDED: missing credentials, a CDS rejection or a
+        # transport error escaped as an arbitrary exception (exit 1, never
+        # D9's exit code 3) with an un-redacted message, unlike the
+        # established acquisition client (`era5_acquire.RealCdsClient`).
+        # Both are now wrapped into the typed `Era5OrographyError`
+        # hierarchy, with `redact_secrets` applied, mirroring that
+        # precedent's construction/request split.
+        try:
+            client = cdsapi.Client(retry_max=1)
+        except Exception as exc:  # noqa: BLE001 - construction only fails on missing/invalid config
+            raise Era5OrographyError(
+                "CDS client configuration failed while fetching orography: "
+                f"{redact_secrets(str(exc))}"
+            ) from exc
         target = dest_dir / "era5_land_geopotential.nc"
-        client.retrieve(
-            _REQUEST_DATASET,
-            {
-                "variable": [_REQUEST_VARIABLE],
-                "year": [f"{STUDY_YEARS[0]:04d}"],
-                "month": ["01"],
-                "day": ["01"],
-                "time": ["00:00"],
-                "data_format": "netcdf",
-                "download_format": "unarchived",
-                "area": list(DEFAULT_REQUEST_SPEC.area),
-            },
-            str(target),
-        )
+        try:
+            client.retrieve(
+                _REQUEST_DATASET,
+                _build_geopotential_request(DEFAULT_REQUEST_SPEC.area),
+                str(target),
+            )
+        except Exception as exc:  # noqa: BLE001 - reclassified into our typed hierarchy
+            raise Era5OrographyError(
+                "CDS request failed while fetching orography: "
+                f"{redact_secrets(str(exc))}"
+            ) from exc
         return (target,)
 
 
@@ -627,6 +671,7 @@ def run(
         data_root=data_root,
         identity=identity,
         expected_station_count=resolved_params.expected_station_count,
+        expected_hour_count=expected_total_hours(STUDY_YEARS),
     )
 
     if args.out is not None:
@@ -650,18 +695,35 @@ def run(
 # against. Splitting the spec's fields by who can vouch for them makes the
 # residue visible in the manifest instead of silently claiming "verified"
 # about a field nothing verified.
+#
+# BLOCKER (2026-08-17 fixer round 3) — `download_url` was previously listed
+# here as "machine-verified", but the assertion backing that claim compared
+# `spec.download_url` against a SECOND hardcoded module constant that
+# `cdsapi.Client().retrieve()` never reads (`retrieve()` takes a dataset
+# name and a payload dict; no URL). Neither comparand ever touched the real
+# request, so the "verification" was a tautology between two literals this
+# module itself wrote. `download_url` is a browser landing page — there is
+# nothing in the actual CDS call to verify it against — so it moves to
+# `OPERATOR_ATTESTED_SPEC_FIELDS`, where P7a's own rule already puts fields
+# nothing in the pipeline can check.
 MACHINE_VERIFIED_SPEC_FIELDS: frozenset[str] = frozenset(
-    {"product_id", "download_url", "conversion_rule"}
+    {"product_id", "conversion_rule"}
 )
 """Asserted against the actual request/observation before use: `product_id`
-and `download_url` in `_assert_spec_matches_request` (before any CDS
-request); `conversion_rule` in `era5_orography.convert_field` (against the
-observed field magnitude). `area` is not a spec field at all (see
-`_assert_spec_matches_request`'s docstring)."""
+in `_assert_spec_matches_request` (before any CDS request — this downloader
+IS the source of truth for the dataset+variable actually requested);
+`conversion_rule` in `era5_orography.convert_field` (against the observed
+field magnitude). `area` is not a spec field at all (see
+`_assert_spec_matches_request`'s docstring); the actual request this
+downloader issues (dataset/variable/area) is recorded separately, as
+`effective_cds_request` below — captured and locked by a test against the
+REAL `RealOrographyDownloader.download()` call path, not compared against a
+second hardcoded constant."""
 
 OPERATOR_ATTESTED_SPEC_FIELDS: frozenset[str] = frozenset(
     {
         "product_version",
+        "download_url",
         "licence_name",
         "licence_version",
         "licence_url",
@@ -671,7 +733,8 @@ OPERATOR_ATTESTED_SPEC_FIELDS: frozenset[str] = frozenset(
 )
 """Recorded verbatim from the 1a probe. Nothing in the pipeline can verify
 these against the live service — CDS offers no way to select or confirm a
-product version, for instance — so they are labelled `attested`, never
+product version, for instance, and `download_url` is a human-facing landing
+page no API call ever consumes — so they are labelled `attested`, never
 `verified`, in the manifest."""
 
 
@@ -683,7 +746,10 @@ def _orography_spec_payload(spec: OrographySpec) -> dict[str, object]:
 
     P7a — the payload also carries which fields are machine-verified versus
     operator-attested, so a reader cannot mistake the latter for the
-    former."""
+    former, PLUS the `effective_cds_request` this downloader actually
+    issues (dataset/variable/area) — the real machine-verified resource,
+    recorded explicitly rather than left implicit in `download_url`'s
+    now-corrected attested label (BLOCKER, 2026-08-17 fixer round 3)."""
     payload = asdict(spec)
     payload["source"] = str(spec.source)
     payload["vertical_reference"] = str(spec.vertical_reference)
@@ -695,6 +761,11 @@ def _orography_spec_payload(spec: OrographySpec) -> dict[str, object]:
     payload["provenance"] = {
         "machine_verified_fields": sorted(MACHINE_VERIFIED_SPEC_FIELDS),
         "operator_attested_fields": sorted(OPERATOR_ATTESTED_SPEC_FIELDS),
+        "effective_cds_request": {
+            "dataset": _REQUEST_DATASET,
+            "variable": [_REQUEST_VARIABLE],
+            "area": list(DEFAULT_REQUEST_SPEC.area),
+        },
     }
     return payload
 
@@ -748,7 +819,9 @@ def _write_series_netcdf(
         {"precipitation_mm_per_h": (["station", "valid_time"], values)},
         coords={"station": [str(s) for s in stations], "valid_time": valid_time},
     )
-    ds["valid_time"].attrs["timezone"] = _SEMANTIC_TIMEZONE
+    ds["valid_time"].attrs["timezone"] = str(
+        POINTS_OUTPUT_ENCODING_SPEC["valid_time"]["semantic_timezone_attr"]
+    )
     ds["precipitation_mm_per_h"].attrs["units"] = "mm h-1"
     ds.to_netcdf(path, engine="h5netcdf", encoding=_xarray_encoding(values.shape))
 

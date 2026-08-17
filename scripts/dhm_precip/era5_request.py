@@ -52,6 +52,17 @@ STUDY_YEARS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024, 2025)
 _HOURS_PER_DAY = 24
 
 
+def expected_total_hours(years: tuple[int, ...]) -> int:
+    """MAJOR (2026-08-17 review, P4) — the exact hourly stamp count a
+    concatenated multi-year series must carry: 8784 for a leap year, 8760
+    otherwise, summed over `years`. `extract_era5.py` passes this (computed
+    from `STUDY_YEARS`) into publication so a truncated bundle — the
+    3-timestamp unit-test fixture proved one publishes today — is refused."""
+    return sum(
+        (366 if calendar.isleap(year) else 365) * _HOURS_PER_DAY for year in years
+    )
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AcquisitionWindow:
     """D2 — one window, one CDS payload, one raw artifact.

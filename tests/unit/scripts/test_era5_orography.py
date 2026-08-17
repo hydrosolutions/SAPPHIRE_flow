@@ -760,6 +760,69 @@ class TestOrographyRasterSchemaEnforcement:
         ) as reopened:
             assert_orography_raster_schema(reopened.load())
 
+    def test_wrong_elevation_units_on_reopen_is_refused(self, tmp_path: Path) -> None:
+        """P7 (MAJOR, 2026-08-17 review) — `OROGRAPHY_RASTER_SCHEMA[
+        'elevation_units']` is hashed into `orography_identity` via
+        `raster_schema`, but the writer used to hard-code `"m"` as a
+        SEPARATE literal instead of reading the schema, and nothing on
+        reopen ever checked the attribute — so a rehashed raster written
+        under the wrong unit still passed."""
+        from scripts.dhm_precip.era5_orography import (
+            assert_orography_raster_schema,
+            write_orography_raster,
+        )
+
+        ds = xr.Dataset(
+            {
+                "orography_elev_m": (
+                    ["latitude", "longitude"],
+                    np.array([[1500.0]], dtype=np.float32),
+                ),
+                "no_data_fraction": (
+                    ["latitude", "longitude"],
+                    np.array([[0.0]], dtype=np.float32),
+                ),
+                "no_data_flag": (["latitude", "longitude"], np.array([[False]])),
+            },
+            coords={"latitude": [26.0], "longitude": [85.0]},
+        )
+        ds["orography_elev_m"].attrs["units"] = "ft"  # frozen schema says "m"
+        ds.attrs.update(
+            {
+                "orography_source": "MODEL_OROGRAPHY",
+                "orography_product_id": "p",
+                "orography_product_version": "1",
+                "orography_vertical_reference": "LOCAL_MSL",
+                "orography_aggregation_rule": AGGREGATION_RULE_ID,
+                "orography_schema_version": "1",
+            }
+        )
+        with pytest.raises(Era5OrographyError, match="units"):
+            write_orography_raster(ds, data_root=tmp_path, route_identity="x")
+        # And directly on an already-materialised (correctly-written) raster
+        # reopened with a tampered units attr — proving the check also runs
+        # on REUSE, not merely at write time.
+        result = aggregate_to_grid(
+            np.array([[1500.0]]),
+            source_lat=np.array([26.0]),
+            source_lon=np.array([85.0]),
+            target_lat=np.array([26.0]),
+            target_lon=np.array([85.0]),
+            target_spacing_deg=0.1,
+        )
+        from scripts.dhm_precip.era5_orography import build_orography_dataset
+
+        good_ds = build_orography_dataset(
+            result,
+            target_lat=np.array([26.0]),
+            target_lon=np.array([85.0]),
+            spec=_spec(),
+        )
+        assert good_ds["orography_elev_m"].attrs["units"] == "m"
+        good_ds["orography_elev_m"].attrs["units"] = "ft"
+        with pytest.raises(Era5OrographyError, match="units"):
+            assert_orography_raster_schema(good_ds)
+
     def test_reuse_rejects_a_record_whose_raster_schema_version_disagrees(
         self, tmp_path: Path
     ) -> None:

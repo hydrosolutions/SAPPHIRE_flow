@@ -655,17 +655,26 @@ class TestRealOrographyDownloaderAssertsAgreement:
     against the pre-fix code (buggy code proceeds straight past the missing
     assertion into `cdsapi.Client(retry_max=1)`) can never make a live
     network call under a real `~/.cdsapirc`, only ever hit the (patched)
-    marker."""
+    marker.
+
+    MAJOR (2026-08-17 review) — client CONSTRUCTION is now itself wrapped
+    into `Era5OrographyError` (mirroring `era5_acquire.RealCdsClient`'s own
+    precedent, `TestRealClientRedactsExceptions`), so the marker exception
+    below surfaces WRAPPED, not raw — tests that need to prove "we reached
+    real client construction" now match on the WRAPPED message instead of
+    the marker's own type, exactly as the acquisition-side precedent does."""
 
     class _NeverReachedError(Exception):
         pass
 
+    _MARKER_TEXT = (
+        "cdsapi.Client must never be constructed once the spec "
+        "assertion should have raised first"
+    )
+
     def _block_real_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_args: object, **_kwargs: object) -> None:
-            raise self._NeverReachedError(
-                "cdsapi.Client must never be constructed once the spec "
-                "assertion should have raised first"
-            )
+            raise self._NeverReachedError(self._MARKER_TEXT)
 
         monkeypatch.setattr("cdsapi.Client", _boom)
 
@@ -687,22 +696,29 @@ class TestRealOrographyDownloaderAssertsAgreement:
                 spec=bad_spec, dest_dir=tmp_path
             )
 
-    def test_mismatched_download_url_raises_before_touching_cdsapi(
+    def test_mismatched_download_url_does_not_raise_it_is_operator_attested(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """BLOCKER (2026-08-17 fixer round 3) — `download_url` is a browser
+        landing page `cdsapi.Client().retrieve()` never consumes; there is
+        nothing in the real request to verify it against. A mutated
+        `download_url` must therefore reach the real client (it is
+        OPERATOR-ATTESTED, not asserted), proving this is no longer the
+        tautological check that used to compare it against a second
+        hardcoded module constant."""
         from dataclasses import replace as dataclass_replace
 
         from scripts.dhm_precip.era5_errors import Era5OrographyError
         from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
 
         self._block_real_client(monkeypatch)
-        bad_spec = dataclass_replace(
+        changed_spec = dataclass_replace(
             OBSERVED_OROGRAPHY_SPEC,
             download_url="https://cds.climate.copernicus.eu/datasets/some-other-dataset",
         )
-        with pytest.raises(Era5OrographyError, match="download_url"):
+        with pytest.raises(Era5OrographyError, match=self._MARKER_TEXT):
             extract_era5.RealOrographyDownloader().download(
-                spec=bad_spec, dest_dir=tmp_path
+                spec=changed_spec, dest_dir=tmp_path
             )
 
     def test_matching_spec_passes_the_assertion_and_reaches_the_real_client(
@@ -711,13 +727,138 @@ class TestRealOrographyDownloaderAssertsAgreement:
         """A spec that DOES match must not raise at the assertion — it must
         get exactly as far as constructing `cdsapi.Client`, proving the
         assertion does not also block a legitimate, unchanged spec."""
+        from scripts.dhm_precip.era5_errors import Era5OrographyError
         from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
 
         self._block_real_client(monkeypatch)
-        with pytest.raises(self._NeverReachedError):
+        with pytest.raises(Era5OrographyError, match=self._MARKER_TEXT):
             extract_era5.RealOrographyDownloader().download(
                 spec=OBSERVED_OROGRAPHY_SPEC, dest_dir=tmp_path
             )
+
+
+class TestRealOrographyDownloaderIssuesTheDeclaredRequest:
+    """BLOCKER (2026-08-17 fixer round 3) — the OLD `download_url`
+    "verification" compared `spec.download_url` against a second hardcoded
+    module constant that `cdsapi.Client().retrieve()` never reads at all,
+    so it could never catch a downloader that actually issued the wrong
+    request. These tests instead CAPTURE the real
+    `dataset`/`payload`/`target` arguments `RealOrographyDownloader.
+    download()` passes to `cdsapi.Client().retrieve()` — via a fake
+    `cdsapi.Client` substituted for the real one — and assert against them
+    directly: a genuine test of the implementation's actual behaviour, not
+    of two same-module literals matching each other."""
+
+    class _CapturingClient:
+        captured: list[tuple[str, dict[str, object], str]] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def retrieve(
+            self, dataset: str, payload: dict[str, object], target: str
+        ) -> None:
+            type(self).captured.append((dataset, payload, target))
+
+    def test_the_captured_request_matches_the_declared_dataset_variable_and_area(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+        from scripts.dhm_precip.era5_request import DEFAULT_REQUEST_SPEC
+
+        self._CapturingClient.captured = []
+        monkeypatch.setattr("cdsapi.Client", self._CapturingClient)
+
+        result = extract_era5.RealOrographyDownloader().download(
+            spec=OBSERVED_OROGRAPHY_SPEC, dest_dir=tmp_path
+        )
+
+        assert len(self._CapturingClient.captured) == 1
+        dataset, payload, target = self._CapturingClient.captured[0]
+        assert dataset == "reanalysis-era5-land"
+        assert payload["variable"] == ["geopotential"]
+        assert payload["area"] == list(DEFAULT_REQUEST_SPEC.area)
+        assert target == str(tmp_path / "era5_land_geopotential.nc")
+        assert result == (tmp_path / "era5_land_geopotential.nc",)
+
+    def test_the_captured_request_matches_the_manifests_effective_cds_request(
+        self, tmp_path: Path
+    ) -> None:
+        """The manifest's `effective_cds_request` (P7a's real
+        machine-verified provenance) must describe the SAME request this
+        downloader actually issues, not merely a plausible-looking one.
+        `RealOrographyDownloader` always requests `DEFAULT_REQUEST_SPEC.
+        area` (module-level, never the injected `request_area` — see
+        `_assert_spec_matches_request`'s docstring), which is why this is
+        checked against `DEFAULT_REQUEST_SPEC.area`, not the test's own
+        `_AREA` override."""
+        import json
+
+        from scripts.dhm_precip.era5_request import DEFAULT_REQUEST_SPEC
+
+        data_root = _build_data_root(tmp_path)
+        assert _run_all(data_root) == 0
+        published = _latest_published_dir(data_root)
+        manifest = json.loads((published / "extraction_manifest.json").read_text())
+        effective = manifest["orography_spec"]["provenance"]["effective_cds_request"]
+        assert effective["dataset"] == "reanalysis-era5-land"
+        assert effective["variable"] == ["geopotential"]
+        assert effective["area"] == list(DEFAULT_REQUEST_SPEC.area)
+
+
+class TestRealOrographyDownloaderWrapsClientFailures:
+    """MAJOR (2026-08-17 review) — client construction and `.retrieve()`
+    were unguarded: any exception (missing credentials, a CDS rejection, a
+    transport error) escaped as an arbitrary exception (exit 1) with an
+    UN-REDACTED message, unlike the established acquisition client
+    (`era5_acquire.RealCdsClient`). Both must now be reclassified into
+    `Era5OrographyError` (D9 exit code 3) with the message redacted."""
+
+    def test_client_construction_failure_is_reclassified_and_redacted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from scripts.dhm_precip.era5_errors import Era5OrographyError
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+
+        secret = "sk-super-secret-token"
+        monkeypatch.setenv("CDSAPI_KEY", secret)
+
+        def _boom(**_kwargs: object) -> None:
+            raise RuntimeError(f"missing ~/.cdsapirc, key={secret}")
+
+        monkeypatch.setattr("cdsapi.Client", _boom)
+        with pytest.raises(Era5OrographyError) as excinfo:
+            extract_era5.RealOrographyDownloader().download(
+                spec=OBSERVED_OROGRAPHY_SPEC, dest_dir=tmp_path
+            )
+        assert secret not in str(excinfo.value)
+        assert "REDACTED" in str(excinfo.value)
+
+    def test_retrieve_failure_is_reclassified_and_redacted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from scripts.dhm_precip.era5_errors import Era5OrographyError
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+
+        secret = "sk-super-secret-token"
+        monkeypatch.setenv("CDSAPI_KEY", secret)
+
+        class _RaisingClient:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            def retrieve(
+                self, _dataset: str, _payload: dict[str, object], _target: str
+            ) -> None:
+                raise RuntimeError(f"CDS rejected the request, key={secret}")
+
+        monkeypatch.setattr("cdsapi.Client", _RaisingClient)
+        with pytest.raises(Era5OrographyError) as excinfo:
+            extract_era5.RealOrographyDownloader().download(
+                spec=OBSERVED_OROGRAPHY_SPEC, dest_dir=tmp_path
+            )
+        assert secret not in str(excinfo.value)
+        assert "REDACTED" in str(excinfo.value)
 
 
 class TestOrographySpecProvenanceLabelling:
@@ -732,15 +873,18 @@ class TestOrographySpecProvenanceLabelling:
         )
 
     def test_machine_verified_fields_are_the_ones_p7a_names(self) -> None:
+        """BLOCKER (2026-08-17 fixer round 3) — `download_url` moved OUT of
+        this set: `cdsapi.Client().retrieve()` never consumes it, so it can
+        never be machine-verified against the actual request."""
         assert {
             "product_id",
-            "download_url",
             "conversion_rule",
         } == extract_era5.MACHINE_VERIFIED_SPEC_FIELDS
 
     def test_attested_fields_are_the_ones_p7a_names(self) -> None:
         assert {
             "product_version",
+            "download_url",
             "licence_name",
             "licence_version",
             "licence_url",
@@ -760,11 +904,11 @@ class TestOrographySpecProvenanceLabelling:
         provenance = manifest["orography_spec"]["provenance"]
         assert set(provenance["machine_verified_fields"]) == {
             "product_id",
-            "download_url",
             "conversion_rule",
         }
         assert set(provenance["operator_attested_fields"]) == {
             "product_version",
+            "download_url",
             "licence_name",
             "licence_version",
             "licence_url",

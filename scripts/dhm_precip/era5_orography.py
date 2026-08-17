@@ -225,6 +225,18 @@ def assert_orography_raster_schema(
 
     elevation_var = OROGRAPHY_RASTER_SCHEMA["elevation_variable"]
     mask_var = OROGRAPHY_RASTER_SCHEMA["mask_variable"]
+    # P7 (MAJOR, 2026-08-17 review) — `elevation_units` is hashed into
+    # `orography_identity` (`raster_schema`) but was never checked on
+    # reopen: a rehashed raster written under a different declared unit
+    # still passed both write-time and reuse validation.
+    actual_units = ds[elevation_var].attrs.get("units")
+    expected_units = OROGRAPHY_RASTER_SCHEMA["elevation_units"]
+    if actual_units != expected_units:
+        raise Era5OrographyError(
+            f"orography raster variable {elevation_var!r} has units "
+            f"{actual_units!r} on reopen, expected {expected_units!r} (M-8's "
+            "frozen raster schema)"
+        )
     elev = np.asarray(ds[elevation_var].values)
     flag = np.asarray(ds[mask_var].values).astype(bool)
     nan_but_unflagged = np.isnan(elev) & ~flag
@@ -705,7 +717,16 @@ def build_orography_dataset(
         },
         coords={"latitude": target_lat, "longitude": target_lon},
     )
-    ds["orography_elev_m"].attrs["units"] = "m"
+    # P7 (MAJOR, 2026-08-17 review) — `elevation_units` is hashed whole
+    # (`OROGRAPHY_RASTER_SCHEMA`, via `orography_identity`'s `raster_schema`
+    # field) but used to be a SEPARATE hardcoded `"m"` literal here,
+    # independent of the schema's own `elevation_units` entry: a schema
+    # change would move the identity without moving a single on-disk byte.
+    # Reading it FROM the schema makes the hashed value the one the writer
+    # actually uses.
+    ds["orography_elev_m"].attrs["units"] = str(
+        OROGRAPHY_RASTER_SCHEMA["elevation_units"]
+    )
     ds.attrs.update(
         {
             "orography_source": str(spec.source),

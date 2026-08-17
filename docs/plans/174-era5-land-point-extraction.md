@@ -106,6 +106,63 @@ tests (test-soundness proven fail-against-buggy for every correctness fix, sever
   an added, removed or renamed file was silently accepted. Fixed: the complete `{path: (sha256, size)}`
   mapping is compared for equality.
 
+**Third post-implementation fixer round (2026-08-17), against commit `5ab9c6c`.** An independent Codex
+pass over the committed diff found 2 more blockers and 5 more majors (plus 1 minor and a version/tag
+housekeeping finding), all now fixed with locking tests (test-soundness proven fail-against-buggy for
+every correctness fix):
+
+- **`download_url` was falsely labelled MACHINE-VERIFIED** — the assertion compared
+  `spec.download_url` against a SECOND hardcoded module constant that `cdsapi.Client().retrieve()`
+  never reads at all (`retrieve()` takes only a dataset name and a payload dict; no URL is ever
+  consumed), so the "verification" was a tautology between two literals this module itself wrote — a
+  mutated `download_url` test could never have caught a downloader issuing the wrong real request.
+  Fixed: `download_url` moves to `OPERATOR_ATTESTED_SPEC_FIELDS`; the ACTUAL request
+  (`_build_geopotential_request`, capturing dataset/variable/area) is what gets recorded, in a new
+  `effective_cds_request` provenance field, and a new test captures the REAL `cdsapi.Client().retrieve()`
+  call arguments (via a patched fake client) and asserts against them directly — the request, not two
+  matching constants.
+- **P4's publication predicate accepted truncated and semantically invalid series** —
+  `_assert_series_schema` checked only that adjacent `valid_time` stamps were hourly, never the axis's
+  actual LENGTH, never that the two series (nearest/bilinear) shared one axis, never that the PRIMARY
+  series was non-finite-free on reopen (D11.2 was checked only in memory, before writing), and never the
+  pinned `valid_time` units/dtype or the fixed-length `station` encoding. The suite's own
+  `_write_payload_files` fixture (3 hours) proved the gap: a severely truncated bundle published as
+  "valid". Fixed: `_assert_series_schema` now takes `expected_hour_count` (computed by the CLI from
+  `STUDY_YEARS` via the new `era5_request.expected_total_hours`) and `require_finite` (True for nearest
+  only), and checks coverage, cross-series axis equality, primary finiteness, `valid_time`
+  units/dtype, and `station` fixed-length encoding — six new locking tests, one per gap.
+- **The sensitivity "complete matrix" validator checked only equal ROW COUNTS** — one arbitrary q0.5
+  row per station plus one summary row passed; two stations reporting entirely DIFFERENT quantiles
+  (equal counts, different content) passed undetected, and nothing validated ACROSS_STATION coverage at
+  all. Fixed: the validator now derives the exact `(season, statistic, quantile)` composite-key SET per
+  station (also catching within-station duplicate keys), requires every station's key set to be
+  IDENTICAL, and requires the ACROSS_STATION key set to equal it exactly.
+- **Manifest provenance/accounting validation remained presence-only** — it did not require the P7a
+  `provenance` labels or `rejected_candidates`, permitted an empty or malformed `downloaded_files` list,
+  never checked the accumulation diagnostic's VALUES (a recorded FAILING diagnostic still published),
+  and accepted an arbitrary `station_accounting` operator/station map with counts that did not reconcile
+  to `n_hours`. Fixed: `_assert_required_sections_present` now checks all of the above, cross-referencing
+  the series' own station set.
+- **Live orography acquisition failures could escape the typed CLI contract** — `cdsapi.Client()`
+  construction and `.retrieve()` were unguarded, unlike the established acquisition client
+  (`era5_acquire.RealCdsClient`): missing credentials or a transport error could surface as an arbitrary
+  exception (exit 1) with an un-redacted message. Fixed: both are wrapped into `Era5OrographyError` (exit
+  3) with `redact_secrets` applied.
+- **P7 still hashed value inputs the writers/computation did not read**: `semantic_timezone_attr` was
+  hashed but the writer read a separately duplicated module constant; `output_format` was hashed while
+  the writer always hard-codes `h5netcdf` (no second format is implemented to branch on);
+  `DELTA_STATISTICS` affects only the identity, never what gets computed; orography `elevation_units`
+  was hashed while the writer hard-coded `"m"` and validation never checked the written attribute. Fixed:
+  the writer now reads `semantic_timezone_attr`/`elevation_units` from the SAME frozen spec dicts that
+  are hashed (removing the duplicated constants); `output_format`/`delta_statistics` — genuinely
+  unread by any branch — move to `invalidation_inputs` (P7a's own escape hatch, mirroring
+  `output_schema_version`); the orography validator now checks `elevation_units` on every reopen.
+- **Minor**: exact ties (`delta == 0.0`) were counted as a POSITIVE sign in `sign_agreement_fraction`,
+  so an all-tied population reported `1.0`, misleadingly implying systematic ordering. Fixed: ties are
+  excluded from the majority-sign vote; an all-tied population reports `None` (no direction).
+- **Version/tag housekeeping**: this fixer round folds its own patch bump and tag into the commit
+  sequence per CLAUDE.md's mandatory version-bump workflow.
+
 ### Residual review findings — KNOWN, accepted into implementation
 
 Not folded above. The owner set READY with these open; they are recorded so the implementer meets

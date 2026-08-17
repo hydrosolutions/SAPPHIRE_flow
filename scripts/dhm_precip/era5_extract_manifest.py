@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime  # noqa: TC003 - pydantic must resolve this at runtime
@@ -43,6 +44,7 @@ from pydantic import BaseModel
 
 from scripts.dhm_precip.domain_types import (
     DatumReconciliationStatus,
+    ExtractionOperator,
     OrographySource,
     SensitivityDeltaUnit,
     SensitivityScope,
@@ -57,6 +59,8 @@ from scripts.dhm_precip.era5_errors import (
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
+
+    import numpy as np
 
 log = structlog.get_logger(__name__)
 
@@ -283,16 +287,32 @@ _EXPECTED_VALUE_INPUT_KEYS: frozenset[str] = frozenset(
         "zero_policy",
         "quantile_definition",
         "quantile_grid",
-        "delta_statistics",
         "station_elevation_datum",
         "orography_elevation_datum",
-        "output_format",
         "output_dtype",
         "output_encoding",
     }
 )
+# P7 (MAJOR, 2026-08-17 review) — `output_format` and `delta_statistics`
+# moved OUT of `_EXPECTED_VALUE_INPUT_KEYS`. Neither is actually READ by any
+# writer or computation: `output_format` is a descriptive label (the writer
+# always calls `ds.to_netcdf(..., engine="h5netcdf", ...)` regardless of its
+# value — there is no second implemented format to branch on), and
+# `delta_statistics` is `era5_extract.build_operator_sensitivity_table`'s
+# own fixed, hardcoded output shape, never read back from anywhere to
+# decide what gets computed. P7's standing obligation ("a test must change
+# the input AND change an output, or the field does not belong in the
+# identity") cannot be satisfied for either — exactly P7a's own escape
+# hatch: they force regeneration on a declared-but-code-level change
+# (mirroring `output_schema_version`/`extraction_code_version`), which is a
+# legitimate reason to hash them, just not as VALUE inputs.
 _EXPECTED_INVALIDATION_INPUT_KEYS: frozenset[str] = frozenset(
-    {"output_schema_version", "extraction_code_version"}
+    {
+        "output_schema_version",
+        "extraction_code_version",
+        "output_format",
+        "delta_statistics",
+    }
 )
 
 
@@ -340,11 +360,16 @@ class ExtractionIdentityInputs:
         are inputs the computation actually reads (P7's standing
         obligation: a test must change the input AND change an output);
         `invalidation_inputs` (`output_schema_version`/
-        `extraction_code_version`) exist ONLY to force regeneration on a
-        behaviour-neutral bump, so "changing this input must change an
-        output" is unsatisfiable for them by design — labelling them makes
-        that exemption visible instead of silently smuggling a
-        value-determining field past P7's rule."""
+        `extraction_code_version`/`output_format`/`delta_statistics`) exist
+        ONLY to force regeneration on a behaviour-neutral bump, so "changing
+        this input must change an output" is unsatisfiable for them by
+        design — labelling them makes that exemption visible instead of
+        silently smuggling a value-determining field past P7's rule.
+        `output_format` and `delta_statistics` moved here (MAJOR,
+        2026-08-17 review): neither is read by any writer or computation
+        (the writer always emits `h5netcdf`; the sensitivity table always
+        computes exactly `DELTA_STATISTICS`'s fixed set), so keeping them
+        under `value_inputs` asserted a dependency the code does not have."""
         value_inputs: dict[str, object] = {
             "operator_id": self.operator_id,
             "coordinate_table_sha256": self.coordinate_table_sha256,
@@ -361,16 +386,16 @@ class ExtractionIdentityInputs:
             "zero_policy": self.zero_policy,
             "quantile_definition": self.quantile_definition,
             "quantile_grid": list(self.quantile_grid),
-            "delta_statistics": list(DELTA_STATISTICS),
             "station_elevation_datum": self.station_elevation_datum,
             "orography_elevation_datum": self.orography_elevation_datum,
-            "output_format": self.output_format,
             "output_dtype": self.output_dtype,
             "output_encoding": dict(self.output_encoding),
         }
         invalidation_inputs: dict[str, object] = {
             "output_schema_version": self.output_schema_version,
             "extraction_code_version": self.extraction_code_version,
+            "output_format": self.output_format,
+            "delta_statistics": list(DELTA_STATISTICS),
         }
         return {
             "value_inputs": value_inputs,
@@ -636,6 +661,7 @@ def publish_bundle(
     data_root: Path,
     identity: str,
     expected_station_count: int,
+    expected_hour_count: int,
 ) -> Path:
     """P1/P4 — validate the staged bundle FIRST, refusing to publish on
     failure (P4/P4a: this call applies EXACTLY the predicate discovery
@@ -655,7 +681,10 @@ def publish_bundle(
     Every previous bundle is left untouched.
     """
     reopen_and_validate_bundle(
-        staged_dir, expected_station_count=expected_station_count, identity=identity
+        staged_dir,
+        expected_station_count=expected_station_count,
+        expected_hour_count=expected_hour_count,
+        identity=identity,
     )
     final_dir = allocate_published_dir(data_root, identity=identity)
     try:
@@ -784,13 +813,68 @@ _REQUIRED_STATION_ACCOUNTING_ENTRY_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _assert_required_sections_present(manifest: ExtractionManifest) -> None:
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _assert_valid_sha256(value: object, *, label: str) -> None:
+    if not isinstance(value, str) or not _SHA256_HEX_RE.match(value):
+        raise ExtractionPostConditionError(
+            f"{label} is not a valid 64-character hex sha256: {value!r} (D9)"
+        )
+
+
+def _assert_required_sections_present(
+    manifest: ExtractionManifest, *, expected_stations: set[str]
+) -> None:
+    """MAJOR (2026-08-17 review) — this used to check KEY PRESENCE only:
+    an `orography_spec` that omitted P7a's `provenance` labels or
+    `rejected_candidates`, a `downloaded_files` list that was empty or held
+    malformed entries, an `accumulation_diagnostic` recording a FAILING
+    result, or a `station_accounting` with an arbitrary operator/station map
+    or counts that did not reconcile to `n_hours` — all still published
+    with the OLD, presence-only check. A matching `payload_sha256s` hash
+    proves the bytes were not tampered AFTER the manifest was written; it
+    proves nothing about whether the manifest's own claims were true in the
+    first place."""
     missing_spec = _REQUIRED_OROGRAPHY_SPEC_KEYS - set(manifest.orography_spec)
     if missing_spec:
         raise ExtractionPostConditionError(
             f"extraction manifest's orography_spec is missing key(s) "
             f"{sorted(missing_spec)} (D9)"
         )
+    # D7 P7a — the machine-verified/operator-attested provenance split must
+    # actually be published, not merely computable by the writer.
+    provenance = manifest.orography_spec.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ExtractionPostConditionError(
+            "extraction manifest's orography_spec is missing the P7a "
+            "'provenance' object (machine_verified_fields/"
+            "operator_attested_fields) (D9/P7a)"
+        )
+    machine_verified = provenance.get("machine_verified_fields")
+    operator_attested = provenance.get("operator_attested_fields")
+    if not isinstance(machine_verified, list) or not machine_verified:
+        raise ExtractionPostConditionError(
+            "extraction manifest's orography_spec.provenance."
+            "machine_verified_fields must be a non-empty list (D9/P7a)"
+        )
+    if not isinstance(operator_attested, list) or not operator_attested:
+        raise ExtractionPostConditionError(
+            "extraction manifest's orography_spec.provenance."
+            "operator_attested_fields must be a non-empty list (D9/P7a)"
+        )
+    if set(machine_verified) & set(operator_attested):
+        raise ExtractionPostConditionError(
+            "extraction manifest's orography_spec.provenance fields are not "
+            "disjoint between machine_verified_fields and "
+            "operator_attested_fields (D9/P7a)"
+        )
+    if "rejected_candidates" not in manifest.orography_spec:
+        raise ExtractionPostConditionError(
+            "extraction manifest's orography_spec is missing "
+            "'rejected_candidates' (D3a)"
+        )
+
     missing_record = _REQUIRED_OROGRAPHY_SOURCE_RECORD_KEYS - set(
         manifest.orography_source_record
     )
@@ -799,6 +883,40 @@ def _assert_required_sections_present(manifest: ExtractionManifest) -> None:
             "extraction manifest's orography_source_record is missing "
             f"key(s) {sorted(missing_record)} (D9)"
         )
+    # D7/D3a — the derived raster must trace to at least one VALIDATED
+    # downloaded source file, not an empty or malformed list.
+    downloaded_files = manifest.orography_source_record.get("downloaded_files")
+    if not isinstance(downloaded_files, list) or not downloaded_files:
+        raise ExtractionPostConditionError(
+            "extraction manifest's orography_source_record.downloaded_files "
+            "must be a non-empty list — the raster must trace to at least "
+            "one downloaded source file (D3a/D7)"
+        )
+    for entry in downloaded_files:
+        if not isinstance(entry, dict) or not entry.get("path"):
+            raise ExtractionPostConditionError(
+                "extraction manifest's orography_source_record."
+                f"downloaded_files has a malformed entry: {entry!r} (D7)"
+            )
+        _assert_valid_sha256(
+            entry.get("sha256"),
+            label=(
+                "extraction manifest's orography_source_record."
+                f"downloaded_files[{entry.get('path')!r}].sha256"
+            ),
+        )
+        size_bytes = entry.get("size_bytes")
+        if not isinstance(size_bytes, int) or size_bytes <= 0:
+            raise ExtractionPostConditionError(
+                "extraction manifest's orography_source_record."
+                f"downloaded_files[{entry.get('path')!r}].size_bytes must "
+                f"be a positive integer, got {size_bytes!r} (D7)"
+            )
+    _assert_valid_sha256(
+        manifest.orography_source_record.get("raster_sha256"),
+        label="extraction manifest's orography_source_record.raster_sha256",
+    )
+
     missing_diag = _REQUIRED_ACCUMULATION_DIAGNOSTIC_KEYS - set(
         manifest.accumulation_diagnostic
     )
@@ -807,17 +925,59 @@ def _assert_required_sections_present(manifest: ExtractionManifest) -> None:
             "extraction manifest's accumulation_diagnostic is missing "
             f"key(s) {sorted(missing_diag)} (D9)"
         )
+    # D5.2 — publication requires a PASSING diagnostic; the OLD check only
+    # required the KEYS to be present, so a recorded FAILING diagnostic
+    # (monotone_within_day=False, or an implausible sample size/hour) still
+    # published.
+    diagnostic = manifest.accumulation_diagnostic
+    if diagnostic.get("monotone_within_day") is not True:
+        raise ExtractionPostConditionError(
+            "extraction manifest's accumulation_diagnostic."
+            "monotone_within_day must be True — publication requires a "
+            "PASSING diagnostic (D5.2)"
+        )
+    sample_size_days = diagnostic.get("sample_size_days")
+    if not isinstance(sample_size_days, int) or sample_size_days < 1:
+        raise ExtractionPostConditionError(
+            "extraction manifest's accumulation_diagnostic.sample_size_days "
+            f"must be a positive integer, got {sample_size_days!r} (D5.2)"
+        )
+    for hour_field in ("reset_hour", "terminal_hour"):
+        hour_value = diagnostic.get(hour_field)
+        if not isinstance(hour_value, int) or not (0 <= hour_value <= 23):
+            raise ExtractionPostConditionError(
+                f"extraction manifest's accumulation_diagnostic.{hour_field} "
+                f"must be an hour-of-day (0-23), got {hour_value!r} (D5.2)"
+            )
+    _assert_valid_sha256(
+        diagnostic.get("source_sha256"),
+        label="extraction manifest's accumulation_diagnostic.source_sha256",
+    )
+
     if not manifest.station_accounting:
         raise ExtractionPostConditionError(
             "extraction manifest's station_accounting is empty — D11 "
             "requires per-operator, per-station accounting for BOTH "
             "operators"
         )
+    # D11 — the OLD check accepted ANY non-empty operator/station map. The
+    # operator keys must be EXACTLY the two D1/D1a operators, and each
+    # operator's station set must equal the series' OWN station set exactly
+    # (an accounting entry for a station that was never extracted, or a
+    # missing entry for one that was, must be refused).
+    expected_operator_ids = {str(op) for op in ExtractionOperator}
+    if set(manifest.station_accounting) != expected_operator_ids:
+        raise ExtractionPostConditionError(
+            "extraction manifest's station_accounting operator keys "
+            f"{sorted(manifest.station_accounting)} do not equal exactly "
+            f"{sorted(expected_operator_ids)} (D11)"
+        )
     for operator_id, by_station in manifest.station_accounting.items():
-        if not by_station:
+        if set(by_station) != expected_stations:
             raise ExtractionPostConditionError(
                 f"extraction manifest's station_accounting[{operator_id!r}] "
-                "is empty (D11)"
+                f"station set {sorted(by_station)} does not equal the "
+                f"series' station set {sorted(expected_stations)} (D11)"
             )
         for station, entry in by_station.items():
             missing_entry = _REQUIRED_STATION_ACCOUNTING_ENTRY_KEYS - set(entry)
@@ -826,6 +986,29 @@ def _assert_required_sections_present(manifest: ExtractionManifest) -> None:
                     "extraction manifest's station_accounting"
                     f"[{operator_id!r}][{station!r}] is missing key(s) "
                     f"{sorted(missing_entry)} (D11)"
+                )
+            # D11 — the counted fields must actually reconcile to
+            # `n_hours`; an accounting entry that merely carried the
+            # required KEYS with inconsistent values previously published
+            # undetected. `n_inf` defaults to 0 for a manifest written
+            # before it existed (P4a: additive, never a required key here).
+            n_hours = entry.get("n_hours")
+            n_finite = entry.get("n_finite")
+            n_nan = entry.get("n_nan")
+            n_inf = entry.get("n_inf", 0)
+            if not all(isinstance(v, int) for v in (n_hours, n_finite, n_nan, n_inf)):
+                raise ExtractionPostConditionError(
+                    "extraction manifest's station_accounting"
+                    f"[{operator_id!r}][{station!r}] has non-integer "
+                    f"count(s): n_hours={n_hours!r}, n_finite={n_finite!r}, "
+                    f"n_nan={n_nan!r}, n_inf={n_inf!r} (D11)"
+                )
+            if n_finite + n_nan + n_inf != n_hours:  # type: ignore[operator]
+                raise ExtractionPostConditionError(
+                    "extraction manifest's station_accounting"
+                    f"[{operator_id!r}][{station!r}] counts do not "
+                    f"reconcile: n_finite({n_finite}) + n_nan({n_nan}) + "
+                    f"n_inf({n_inf}) != n_hours({n_hours}) (D11)"
                 )
 
 
@@ -861,10 +1044,30 @@ def _assert_enum_column(
         )
 
 
-def _assert_series_schema(path: Path, *, expected_station_count: int) -> set[str]:
+def _assert_series_schema(
+    path: Path,
+    *,
+    expected_station_count: int,
+    expected_hour_count: int,
+    require_finite: bool,
+) -> tuple[set[str], np.ndarray]:
     """Reopen a D9 series file and validate its dims/dtype/time-axis/
-    encoding/attributes; returns the declared station set for the
-    cross-file station-equality check in `reopen_and_validate_bundle`."""
+    encoding/attributes; returns the declared station set and `valid_time`
+    array for the cross-file checks in `reopen_and_validate_bundle`
+    (station-set equality, valid_time-axis equality, and — for the PRIMARY
+    nearest series only, via `require_finite` — D11.2 completeness).
+
+    BLOCKER (2026-08-17 review, P4) — this used to check only that adjacent
+    stamps were exactly hourly; it never checked the axis actually spans the
+    declared coverage (`expected_hour_count`), never compared the two
+    series' axes for equality, never re-verified the PRIMARY series carries
+    no non-finite value on reopen (D11.2 was only ever checked in memory,
+    before writing), and never checked the pinned `valid_time`
+    units/dtype or the fixed-length `station` encoding on reopen — so a
+    severely truncated, mismatched-axis, non-finite-primary or
+    variable-length-station bundle still published. The suite's own
+    `_write_payload_files` fixture (3 hours) proved the truncation gap: it
+    published as a 'valid' bundle under the OLD validator."""
     import numpy as np
     import xarray as xr
 
@@ -911,10 +1114,19 @@ def _assert_series_schema(path: Path, *, expected_station_count: int) -> set[str
                     f"{path.name} 'valid_time' is not exactly hourly with "
                     "no gaps (D9/D5.0)"
                 )
-        if loaded["valid_time"].attrs.get("timezone") != "UTC":
+        # P7 (MAJOR, 2026-08-17 review) — read the expected value from the
+        # SAME frozen spec `output_encoding` hashes, rather than a
+        # hardcoded "UTC" literal: `semantic_timezone_attr` is a real
+        # identity input now that the writer also reads it (extract_era5.py
+        # `_write_series_netcdf`), so the validator must check against it
+        # too, not a duplicated constant that could drift from the spec.
+        expected_timezone_attr = POINTS_OUTPUT_ENCODING_SPEC["valid_time"][
+            "semantic_timezone_attr"
+        ]
+        if loaded["valid_time"].attrs.get("timezone") != expected_timezone_attr:
             raise ExtractionPostConditionError(
-                f"{path.name} 'valid_time' is missing the semantic UTC "
-                "attribute (D9/D5.0)"
+                f"{path.name} 'valid_time' is missing the semantic "
+                f"{expected_timezone_attr!r} attribute (D9/D5.0)"
             )
         # BLOCKER (2026-08-17 review) — the frozen `POINTS_OUTPUT_ENCODING_
         # SPEC` is hashed whole into `extraction_identity`, but only `zlib`
@@ -949,34 +1161,113 @@ def _assert_series_schema(path: Path, *, expected_station_count: int) -> set[str
                 f"{actual_chunks!r} on reopen, expected {expected_chunks!r} "
                 "(D9's frozen encoding spec)"
             )
-    return set(stations)
+        # BLOCKER (2026-08-17 review, P4) — coverage: the axis being
+        # hourly-with-no-gaps says nothing about its LENGTH. A 3-stamp
+        # series is exactly hourly and still a severely truncated bundle.
+        if int(valid_time.size) != expected_hour_count:
+            raise ExtractionPostConditionError(
+                f"{path.name} has {int(valid_time.size)} 'valid_time' "
+                f"stamp(s) on reopen, expected exactly {expected_hour_count} "
+                "(D9 coverage)"
+            )
+        # BLOCKER (2026-08-17 review, P4) — the pinned `valid_time` on-disk
+        # encoding (units/dtype) is hashed whole into `extraction_identity`
+        # via `output_encoding`, but was never checked on reopen.
+        time_spec = POINTS_OUTPUT_ENCODING_SPEC["valid_time"]
+        time_units = str(loaded["valid_time"].encoding.get("units", ""))
+        expected_time_units = str(time_spec["units"])
+        if not expected_time_units.startswith(time_units) or not time_units:
+            raise ExtractionPostConditionError(
+                f"{path.name} 'valid_time' has on-disk units {time_units!r}, "
+                f"expected a UTC-epoch prefix of {expected_time_units!r} "
+                "(D9's frozen encoding spec)"
+            )
+        if str(loaded["valid_time"].encoding.get("dtype")) != str(time_spec["dtype"]):
+            raise ExtractionPostConditionError(
+                f"{path.name} 'valid_time' has on-disk dtype "
+                f"{loaded['valid_time'].encoding.get('dtype')!r} on reopen, "
+                f"expected {time_spec['dtype']!r} (D9's frozen encoding spec)"
+            )
+        # BLOCKER (2026-08-17 review, P4) — the fixed-length `station`
+        # encoding (`dtype="S1"`) is likewise hashed but was never checked:
+        # a writer emitting xarray's variable-length default still
+        # published, silently violating D9's fixed-length contract.
+        station_spec = POINTS_OUTPUT_ENCODING_SPEC["station"]
+        actual_station_dtype = loaded["station"].encoding.get("dtype")
+        expected_station_dtype = np.dtype(station_spec["dtype"])  # type: ignore[arg-type]
+        if actual_station_dtype is None or (
+            np.dtype(actual_station_dtype) != expected_station_dtype
+        ):
+            raise ExtractionPostConditionError(
+                f"{path.name} 'station' has on-disk encoding dtype "
+                f"{actual_station_dtype!r} on reopen, expected fixed-length "
+                f"{station_spec['dtype']!r} (D9's frozen encoding spec)"
+            )
+        # BLOCKER (2026-08-17 review, P4) — D11.2 requires the PRIMARY
+        # (nearest) series to carry NO non-finite value; this was only ever
+        # checked in memory before writing (`assert_no_missing_primary`),
+        # never re-verified on the REOPENED bundle P4a is supposed to trust
+        # instead of the writer's own word.
+        if require_finite:
+            values = np.asarray(var.values)
+            n_non_finite = int((~np.isfinite(values)).sum())
+            if n_non_finite > 0:
+                raise ExtractionPostConditionError(
+                    f"{path.name} 'precipitation_mm_per_h' has "
+                    f"{n_non_finite} non-finite value(s) on reopen — the "
+                    "PRIMARY series must be complete (D11.2)"
+                )
+    return set(stations), np.asarray(valid_time)
 
 
 def reopen_and_validate_bundle(
-    directory: Path, *, expected_station_count: int, identity: str
+    directory: Path,
+    *,
+    expected_station_count: int,
+    expected_hour_count: int,
+    identity: str,
 ) -> None:
     """4a/P4a — reopen-and-validate every staged file before it is trusted
     (mirrors M-A4's own reopen-after-write discipline): station
     uniqueness/equality across both series and the elevation table, every
     D9-required CSV column and enum value, each series' dims/dtype/
-    time-axis/encoding/attributes, the sensitivity schema, the manifest's
-    own `extraction_identity` matching the identity this bundle is being
-    published under, and (P4a) a full `payload_sha256s` reconciliation — a
-    payload modified after its hash was computed must fail HERE, not
-    silently pass publication and only fail a later discovery read."""
+    time-axis/encoding/attributes/COVERAGE, the two series' valid_time axes
+    being IDENTICAL, the PRIMARY (nearest) series carrying no non-finite
+    value, the sensitivity schema, the manifest's own `extraction_identity`
+    matching the identity this bundle is being published under, and (P4a) a
+    full `payload_sha256s` reconciliation — a payload modified after its
+    hash was computed must fail HERE, not silently pass publication and only
+    fail a later discovery read."""
+    import numpy as np
     import polars as pl
 
-    nearest_stations = _assert_series_schema(
-        directory / "series_nearest.nc", expected_station_count=expected_station_count
+    nearest_stations, nearest_valid_time = _assert_series_schema(
+        directory / "series_nearest.nc",
+        expected_station_count=expected_station_count,
+        expected_hour_count=expected_hour_count,
+        require_finite=True,
     )
-    bilinear_stations = _assert_series_schema(
-        directory / "series_bilinear.nc", expected_station_count=expected_station_count
+    bilinear_stations, bilinear_valid_time = _assert_series_schema(
+        directory / "series_bilinear.nc",
+        expected_station_count=expected_station_count,
+        expected_hour_count=expected_hour_count,
+        require_finite=False,
     )
     if nearest_stations != bilinear_stations:
         raise ExtractionPostConditionError(
             "series_nearest.nc and series_bilinear.nc declare different "
             f"station sets: {sorted(nearest_stations)} vs "
             f"{sorted(bilinear_stations)} (D8/D9)"
+        )
+    # BLOCKER (2026-08-17 review, P4) — the two series must share ONE
+    # valid_time axis; nothing previously compared them, so a bilinear file
+    # written against a shifted or reordered axis still published.
+    if nearest_valid_time.shape != bilinear_valid_time.shape or not np.array_equal(
+        nearest_valid_time, bilinear_valid_time
+    ):
+        raise ExtractionPostConditionError(
+            "series_nearest.nc and series_bilinear.nc declare different "
+            "'valid_time' axes (D9)"
         )
 
     elevation_path = directory / "station_grid_elevation.csv"
@@ -1074,24 +1365,70 @@ def reopen_and_validate_bundle(
             f"equal the series' station set: {sorted(sensitivity_stations)} "
             f"vs {sorted(nearest_stations)} (D8/D9)"
         )
-    # BLOCKER (2026-08-17 review) — "the complete station/season/statistic/
-    # quantile matrix": every station must carry the SAME number of
-    # STATION-scope rows (the same season/statistic/quantile combination
-    # set) — a partial writer that silently dropped rows for one station
-    # only used to publish undetected.
-    station_row_counts = station_rows.group_by("station").agg(pl.len().alias("n"))
-    counts_by_station = dict(
-        zip(
-            station_row_counts["station"].to_list(),
-            station_row_counts["n"].to_list(),
-            strict=True,
+    # MAJOR (2026-08-17 review) — "the complete station/season/statistic/
+    # quantile matrix": the previous check compared only ROW COUNTS per
+    # station, which one arbitrary q0.5 row plus one summary row satisfies
+    # trivially, and proves nothing about which (season, statistic,
+    # quantile) combinations each station actually carries — two stations
+    # with EQUAL counts can cover entirely DIFFERENT tail quantiles,
+    # seasons, or statistics. Derive the exact composite-key SET per
+    # station (also catching within-station DUPLICATE keys, which equal
+    # counts cannot distinguish from a genuinely complete matrix either),
+    # and require every station's key set to be IDENTICAL — not merely
+    # equally sized.
+    keys_by_station: dict[str, set[tuple[str, str, float | None]]] = {}
+    for row in station_rows.iter_rows(named=True):
+        key: tuple[str, str, float | None] = (
+            row["season"],
+            row["statistic"],
+            row["quantile"],
         )
-    )
-    if len(set(counts_by_station.values())) > 1:
+        keys = keys_by_station.setdefault(row["station"], set())
+        if key in keys:
+            raise ExtractionPostConditionError(
+                "operator_sensitivity.csv has a duplicate STATION-scope row "
+                f"for station {row['station']!r} at (season, statistic, "
+                f"quantile)={key} (D9)"
+            )
+        keys.add(key)
+
+    reference_station = min(keys_by_station)
+    reference_keys = keys_by_station[reference_station]
+    mismatched_stations = {
+        station: keys
+        for station, keys in keys_by_station.items()
+        if keys != reference_keys
+    }
+    if mismatched_stations:
         raise ExtractionPostConditionError(
             "operator_sensitivity.csv's STATION-scope rows are not "
-            "complete for every station — row counts per station differ: "
-            f"{counts_by_station} (D9)"
+            "complete for every station — the exact (season, statistic, "
+            f"quantile) key set differs by station (reference station "
+            f"{reference_station!r} has {len(reference_keys)} keys): "
+            f"{sorted(mismatched_stations)} diverge (D9)"
+        )
+
+    # MAJOR (2026-08-17 review) — publication used to validate NOTHING about
+    # ACROSS_STATION rows beyond enum values: an empty or partial
+    # ACROSS_STATION block (missing seasons, statistics or quantiles the
+    # STATION-scope rows do carry) still published.
+    across_rows = sensitivity.filter(pl.col("scope") == "ACROSS_STATION")
+    across_keys: set[tuple[str, str, float | None]] = set()
+    for row in across_rows.iter_rows(named=True):
+        key = (row["season"], row["statistic"], row["quantile"])
+        if key in across_keys:
+            raise ExtractionPostConditionError(
+                "operator_sensitivity.csv has a duplicate ACROSS_STATION "
+                f"row at (season, statistic, quantile)={key} (D9)"
+            )
+        across_keys.add(key)
+    if across_keys != reference_keys:
+        missing = sorted(reference_keys - across_keys, key=str)
+        extra = sorted(across_keys - reference_keys, key=str)
+        raise ExtractionPostConditionError(
+            "operator_sensitivity.csv's ACROSS_STATION rows do not cover "
+            "the same (season, statistic, quantile) key set as the "
+            f"STATION-scope rows — missing={missing}, extra={extra} (D9)"
         )
 
     manifest_path = directory / manifest_filename()
@@ -1110,7 +1447,7 @@ def reopen_and_validate_bundle(
     # BLOCKER (2026-08-17 review) — publication used to validate only the
     # identity STRING, never that the provenance/accounting sections the
     # manifest is supposed to carry were actually populated.
-    _assert_required_sections_present(manifest)
+    _assert_required_sections_present(manifest, expected_stations=nearest_stations)
     assert_identity_inputs_complete(manifest.identity_inputs)
 
     # P4a — the same predicate discovery would apply: every D9 payload

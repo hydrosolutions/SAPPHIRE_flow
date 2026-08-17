@@ -203,6 +203,19 @@ _MANIFEST_OROGRAPHY_SPEC: dict[str, object] = {
     "aggregation_rule_id": "era5_land_orography_mean_of_contained_cells_v1",
     "conversion_rule": "geopotential_g0",
     "probe_date": "2026-08-16",
+    "rejected_candidates": [],
+    "provenance": {
+        "machine_verified_fields": ["conversion_rule", "product_id"],
+        "operator_attested_fields": [
+            "download_url",
+            "licence_name",
+            "licence_url",
+            "licence_version",
+            "product_version",
+            "source_crs",
+            "vertical_reference",
+        ],
+    },
 }
 _MANIFEST_OROGRAPHY_SOURCE_RECORD: dict[str, object] = {
     "orography_route_identity": "r" * 64,
@@ -277,9 +290,15 @@ def _staged_bundle(data_root: Path, *, identity: str, marker: str = "x") -> Path
     return staging
 
 
-def _publish(staged: Path, data_root: Path, identity: str) -> Path:
+def _publish(
+    staged: Path, data_root: Path, identity: str, *, expected_hour_count: int = 3
+) -> Path:
     return publish_bundle(
-        staged, data_root=data_root, identity=identity, expected_station_count=2
+        staged,
+        data_root=data_root,
+        identity=identity,
+        expected_station_count=2,
+        expected_hour_count=expected_hour_count,
     )
 
 
@@ -720,6 +739,164 @@ class TestPublishEnforcesRemainingD9Invariants:
             _publish(staging, tmp_path, identity)
         assert _published_dirs(tmp_path) == []
 
+    def test_a_truncated_series_shorter_than_the_declared_coverage_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review, P4) — `_write_payload_files` writes
+        exactly 3 hours; the OLD validator checked only that those 3 hours
+        were exactly hourly, which a severely truncated (e.g. 6-YEAR-short)
+        bundle would still satisfy. Declaring the true expected coverage
+        (4, here) must refuse a 3-hour bundle."""
+        identity = "truncated-coverage"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        with pytest.raises(ExtractionPostConditionError, match="coverage"):
+            _publish(staging, tmp_path, identity, expected_hour_count=4)
+        assert _published_dirs(tmp_path) == []
+
+    def test_mismatched_valid_time_axes_between_operators_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review, P4) — nothing previously compared the
+        two series' `valid_time` axes; a bilinear file written against a
+        SHIFTED (but still exactly-hourly, still same-length) axis still
+        published, silently pairing mismatched hours."""
+        identity = "shifted-bilinear-axis"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        self._series_with(
+            staging,
+            name="series_bilinear.nc",
+            valid_time_stamps=(
+                "2021-01-01T01",
+                "2021-01-01T02",
+                "2021-01-01T03",
+            ),
+        )
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="valid_time"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_a_non_finite_value_in_the_primary_series_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review, P4) — D11.2 ("no non-finite value in
+        the PRIMARY series") used to be checked only in memory, before
+        writing; nothing re-verified it on the REOPENED bundle P4a is
+        supposed to trust instead of the writer's own word. Bilinear is
+        NOT required to be finite (D11.3), so only the nearest file is
+        tampered here."""
+        import numpy as np
+        import xarray as xr
+
+        from scripts.dhm_precip.era5_extract_manifest import points_xarray_encoding
+
+        identity = "non-finite-primary"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        valid_time = np.array(
+            ["2021-01-01T00", "2021-01-01T01", "2021-01-01T02"],
+            dtype="datetime64[ns]",
+        )
+        values = np.zeros((len(_STATIONS), valid_time.size), dtype=np.float32)
+        values[0, 1] = np.nan
+        ds = xr.Dataset(
+            {"precipitation_mm_per_h": (["station", "valid_time"], values)},
+            coords={"station": list(_STATIONS), "valid_time": valid_time},
+        )
+        ds["valid_time"].attrs["timezone"] = "UTC"
+        ds.to_netcdf(
+            staging / "series_nearest.nc",
+            engine="h5netcdf",
+            encoding=points_xarray_encoding(values.shape),
+        )
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="non-finite"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_wrong_valid_time_encoding_dtype_on_reopen_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """BLOCKER (2026-08-17 review, P4) — the pinned `valid_time`
+        units/dtype is hashed whole (`output_encoding`) into
+        `extraction_identity` but was never checked on reopen."""
+        import numpy as np
+        import xarray as xr
+
+        from scripts.dhm_precip.era5_extract_manifest import points_xarray_encoding
+
+        identity = "wrong-time-dtype"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        valid_time = np.array(
+            ["2021-01-01T00", "2021-01-01T01", "2021-01-01T02"],
+            dtype="datetime64[ns]",
+        )
+        values = np.zeros((len(_STATIONS), valid_time.size), dtype=np.float32)
+        encoding = points_xarray_encoding(values.shape)
+        encoding["valid_time"]["dtype"] = "int32"  # frozen spec says int64
+        ds = xr.Dataset(
+            {"precipitation_mm_per_h": (["station", "valid_time"], values)},
+            coords={"station": list(_STATIONS), "valid_time": valid_time},
+        )
+        ds["valid_time"].attrs["timezone"] = "UTC"
+        ds.to_netcdf(
+            staging / "series_nearest.nc", engine="h5netcdf", encoding=encoding
+        )
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="dtype"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_variable_length_station_encoding_is_refused(self, tmp_path: Path) -> None:
+        """BLOCKER (2026-08-17 review, P4) — D9's fixed-length `station`
+        encoding (`dtype="S1"`) is hashed but was never checked on reopen;
+        xarray/h5netcdf's variable-length default still published."""
+        import numpy as np
+        import xarray as xr
+
+        identity = "variable-length-station"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        valid_time = np.array(
+            ["2021-01-01T00", "2021-01-01T01", "2021-01-01T02"],
+            dtype="datetime64[ns]",
+        )
+        values = np.zeros((len(_STATIONS), valid_time.size), dtype=np.float32)
+        ds = xr.Dataset(
+            {"precipitation_mm_per_h": (["station", "valid_time"], values)},
+            coords={"station": list(_STATIONS), "valid_time": valid_time},
+        )
+        ds["valid_time"].attrs["timezone"] = "UTC"
+        # No 'station' encoding entry at all — xarray/h5netcdf's
+        # variable-length string default, not the frozen fixed-length S1.
+        ds.to_netcdf(
+            staging / "series_nearest.nc",
+            engine="h5netcdf",
+            encoding={
+                "precipitation_mm_per_h": {
+                    "dtype": "float32",
+                    "zlib": True,
+                    "complevel": 4,
+                    "chunksizes": (1, valid_time.size),
+                    "_FillValue": float("nan"),
+                },
+                "valid_time": {
+                    "units": "hours since 1970-01-01 00:00:00",
+                    "dtype": "int64",
+                },
+            },
+        )
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="station"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
     def test_null_orography_source_in_the_elevation_csv_is_refused(
         self, tmp_path: Path
     ) -> None:
@@ -775,10 +952,10 @@ class TestPublishEnforcesRemainingD9Invariants:
     def test_sensitivity_uneven_row_counts_per_station_is_refused(
         self, tmp_path: Path
     ) -> None:
-        """Every station present, but 'alpha' carries an EXTRA row 'beta'
-        lacks — the complete station/season/statistic/quantile matrix
-        self-consistency check must catch this even though the station SET
-        is equal."""
+        """Every station present, but 'alpha' carries an EXTRA (duplicate)
+        row 'beta' lacks — the complete station/season/statistic/quantile
+        matrix self-consistency check must catch this even though the
+        station SET is equal."""
         import polars as pl
 
         identity = "sensitivity-uneven"
@@ -792,7 +969,56 @@ class TestPublishEnforcesRemainingD9Invariants:
         _write_manifest(
             staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
         )
-        with pytest.raises(ExtractionPostConditionError, match="row counts"):
+        with pytest.raises(ExtractionPostConditionError, match="duplicate"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_sensitivity_equal_row_counts_but_different_keys_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """MAJOR (2026-08-17 review) — the OLD 'complete matrix' check
+        compared only ROW COUNTS per station: 'alpha' reporting q0.5 and
+        'beta' reporting q0.99 are BOTH one row each, so equal counts alone
+        blessed two stations covering entirely DIFFERENT quantiles. The
+        exact composite-key-set check must catch this even though the
+        counts agree."""
+        import polars as pl
+
+        identity = "sensitivity-different-keys"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        frame = pl.read_csv(staging / "operator_sensitivity.csv")
+        frame = frame.with_columns(
+            pl.when((pl.col("scope") == "STATION") & (pl.col("station") == "beta"))
+            .then(pl.lit(0.99))
+            .otherwise(pl.col("quantile"))
+            .alias("quantile")
+        )
+        frame.write_csv(staging / "operator_sensitivity.csv")
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="key set"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_sensitivity_across_station_missing_a_station_scope_key_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """MAJOR (2026-08-17 review) — publication previously validated
+        NOTHING about ACROSS_STATION coverage: dropping it entirely, or
+        leaving it out of step with the STATION-scope key set, still
+        published."""
+        import polars as pl
+
+        identity = "sensitivity-across-station-missing"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        frame = pl.read_csv(staging / "operator_sensitivity.csv")
+        frame = frame.filter(pl.col("scope") != "ACROSS_STATION")
+        frame.write_csv(staging / "operator_sensitivity.csv")
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="ACROSS_STATION"):
             _publish(staging, tmp_path, identity)
         assert _published_dirs(tmp_path) == []
 
@@ -871,6 +1097,172 @@ class TestPublishEnforcesRemainingD9Invariants:
             staging / "extraction_manifest.json",
         )
         with pytest.raises(ExtractionPostConditionError, match="identity_inputs"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+
+class TestPublishEnforcesProvenanceAndAccountingValues:
+    """MAJOR (2026-08-17 review) — `_assert_required_sections_present` used
+    to check KEY PRESENCE only: an `orography_spec` missing P7a's
+    `provenance` labels, an empty `downloaded_files` list, a FAILING
+    accumulation diagnostic, an arbitrary `station_accounting` operator/
+    station map, or counts that did not reconcile to `n_hours` — all
+    previously published cleanly once the payload hashes matched. A
+    matching hash proves the bytes were not tampered AFTER the manifest was
+    written; it proves nothing about whether the manifest's claims were
+    true to begin with."""
+
+    def _manifest_with(
+        self,
+        staging: Path,
+        *,
+        identity: str,
+        orography_spec: dict[str, object] | None = None,
+        orography_source_record: dict[str, object] | None = None,
+        accumulation_diagnostic: dict[str, object] | None = None,
+        station_accounting: dict[str, dict[str, dict[str, object]]] | None = None,
+    ) -> None:
+        write_extraction_manifest(
+            ExtractionManifest(
+                orography_identity="o",
+                extraction_identity=identity,
+                operator_id="NEAREST",
+                coordinate_table_sha256="a" * 64,
+                source_sha256s=("b" * 64,),
+                payload_sha256s=_payload_sha256s(staging),
+                orography_spec=orography_spec
+                if orography_spec is not None
+                else _MANIFEST_OROGRAPHY_SPEC,
+                orography_source_record=orography_source_record
+                if orography_source_record is not None
+                else _MANIFEST_OROGRAPHY_SOURCE_RECORD,
+                accumulation_diagnostic=accumulation_diagnostic
+                if accumulation_diagnostic is not None
+                else _MANIFEST_ACCUMULATION_DIAGNOSTIC,
+                station_accounting=station_accounting
+                if station_accounting is not None
+                else _MANIFEST_STATION_ACCOUNTING,
+                identity_inputs=_MANIFEST_IDENTITY_INPUTS,
+                generated_at=_CLOCK_NOW,
+            ),
+            staging / "extraction_manifest.json",
+        )
+
+    def test_orography_spec_missing_provenance_labels_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "missing-provenance"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        spec = {k: v for k, v in _MANIFEST_OROGRAPHY_SPEC.items() if k != "provenance"}
+        self._manifest_with(staging, identity=identity, orography_spec=spec)
+        with pytest.raises(ExtractionPostConditionError, match="provenance"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_orography_spec_with_overlapping_provenance_labels_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """A field claimed BOTH machine-verified AND operator-attested is
+        exactly the false-provenance-by-construction defect P7a exists to
+        rule out."""
+        identity = "overlapping-provenance"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        spec = dict(_MANIFEST_OROGRAPHY_SPEC)
+        spec["provenance"] = {
+            "machine_verified_fields": ["product_id", "download_url"],
+            "operator_attested_fields": ["download_url", "product_version"],
+        }
+        self._manifest_with(staging, identity=identity, orography_spec=spec)
+        with pytest.raises(ExtractionPostConditionError, match="disjoint"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_orography_source_record_with_no_downloaded_files_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "no-downloaded-files"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        record = dict(_MANIFEST_OROGRAPHY_SOURCE_RECORD)
+        record["downloaded_files"] = []
+        self._manifest_with(staging, identity=identity, orography_source_record=record)
+        with pytest.raises(ExtractionPostConditionError, match="downloaded_files"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_orography_source_record_with_a_bad_sha256_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "bad-sha256"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        record = dict(_MANIFEST_OROGRAPHY_SOURCE_RECORD)
+        record["downloaded_files"] = [
+            {"path": "raw.nc", "sha256": "not-a-sha256", "size_bytes": 1}
+        ]
+        self._manifest_with(staging, identity=identity, orography_source_record=record)
+        with pytest.raises(ExtractionPostConditionError, match="sha256"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_a_failing_accumulation_diagnostic_is_refused(self, tmp_path: Path) -> None:
+        """D5.2 — publication requires a PASSING diagnostic; a recorded
+        FAILING one (monotone_within_day=False) must never publish, even
+        though every required KEY is present."""
+        identity = "failing-diagnostic"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        diagnostic = dict(_MANIFEST_ACCUMULATION_DIAGNOSTIC)
+        diagnostic["monotone_within_day"] = False
+        self._manifest_with(
+            staging, identity=identity, accumulation_diagnostic=diagnostic
+        )
+        with pytest.raises(ExtractionPostConditionError, match="monotone_within_day"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_station_accounting_with_a_third_operator_key_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "extra-operator"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        accounting = dict(_MANIFEST_STATION_ACCOUNTING)
+        accounting["CUBIC_SPLINE"] = accounting["NEAREST"]
+        self._manifest_with(staging, identity=identity, station_accounting=accounting)
+        with pytest.raises(ExtractionPostConditionError, match="operator keys"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_station_accounting_missing_a_station_the_series_carries_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        identity = "accounting-missing-station"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        accounting = {
+            op: {s: v for s, v in by_station.items() if s != "beta"}
+            for op, by_station in _MANIFEST_STATION_ACCOUNTING.items()
+        }
+        self._manifest_with(staging, identity=identity, station_accounting=accounting)
+        with pytest.raises(ExtractionPostConditionError, match="station set"):
+            _publish(staging, tmp_path, identity)
+        assert _published_dirs(tmp_path) == []
+
+    def test_station_accounting_counts_that_do_not_reconcile_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """D11 — `n_finite + n_nan + n_inf` must equal `n_hours`; a manifest
+        that carries every REQUIRED key but inconsistent VALUES (e.g. a
+        copy-paste error) must be refused, not merely a missing key."""
+        identity = "inconsistent-counts"
+        staging = _staged_bundle(tmp_path, identity=identity)
+        accounting = {
+            op: dict(by_station)
+            for op, by_station in _MANIFEST_STATION_ACCOUNTING.items()
+        }
+        accounting["NEAREST"] = dict(accounting["NEAREST"])
+        accounting["NEAREST"]["alpha"] = {
+            **accounting["NEAREST"]["alpha"],
+            "n_hours": 5,  # frozen fixture's n_finite/n_nan sum to 3, not 5
+        }
+        self._manifest_with(staging, identity=identity, station_accounting=accounting)
+        with pytest.raises(ExtractionPostConditionError, match="do not reconcile"):
             _publish(staging, tmp_path, identity)
         assert _published_dirs(tmp_path) == []
 

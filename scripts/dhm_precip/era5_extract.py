@@ -797,8 +797,15 @@ def build_operator_sensitivity_table(
     # q0.999), and absent entirely for wet mean intensity and wet frequency.
     #
     # It is derived from the per-station rows already computed above, so the
-    # summary can never disagree with the detail it summarises. A tie
-    # (delta == 0) counts as a positive sign, as before.
+    # summary can never disagree with the detail it summarises.
+    #
+    # MINOR (2026-08-17 review) — an EXACT TIE (delta == 0.0) used to be
+    # counted as a POSITIVE sign, so an all-tied population (every operator
+    # delta exactly zero) reported `sign_agreement_fraction=1.0`,
+    # misleadingly implying systematic ordering where there was none. Ties
+    # are now excluded from the majority-sign vote; a population with NO
+    # directional evidence at all (every delta a tie) reports `None`
+    # (no direction), never a spurious 1.0.
     deltas_by_key: dict[tuple[str, object, object], list[float]] = {}
     for row in rows:
         if row["scope"] != SensitivityScope.STATION:
@@ -817,10 +824,14 @@ def build_operator_sensitivity_table(
         )
         if not deltas:
             continue
-        signs = [1 if d >= 0.0 else -1 for d in deltas]
-        majority = 1 if sum(1 for sign in signs if sign > 0) >= len(signs) / 2 else -1
-        row["sign_agreement_fraction"] = sum(
-            1 for sign in signs if sign == majority
-        ) / len(signs)
+        n_positive = sum(1 for d in deltas if d > 0.0)
+        n_negative = sum(1 for d in deltas if d < 0.0)
+        if n_positive == 0 and n_negative == 0:
+            # Every station tied exactly — no directional evidence to agree
+            # ON, so there is no sign to report agreement with.
+            row["sign_agreement_fraction"] = None
+        else:
+            majority_count = max(n_positive, n_negative)
+            row["sign_agreement_fraction"] = majority_count / len(deltas)
 
     return pl.DataFrame(rows, infer_schema_length=None)
