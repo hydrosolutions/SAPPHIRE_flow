@@ -3,12 +3,72 @@ status: DRAFT
 created: 2026-07-14
 plan: 116
 title: Silent-success detection — flows must assert they did work
-scope: Green flows that do nothing. Re-scoped 2026-07-14 after its original host-reliability premise was falsified.
+scope: Green flows that do nothing. Re-scoped 2026-07-14 after its original host-reliability premise was falsified; RE-SCOPED AGAIN 2026-08-17 to a single buildable slice — the forecast cycle must report unhealthy when it stores no forecasts — with the general audit demoted to a follow-on. The Plan 158 branch's T1b is the salvageable implementation.
 depends_on: []
 blocks: []
 ---
 
 # Plan 116 — Silent-success detection
+
+## ⚠️ Re-scoped 2026-08-17 — read this before the July text below
+
+**This plan sat DRAFT for a month while the exact failures it predicted happened twice.** It is now cut down to
+**one buildable slice**, because the general "audit every deployment" framing is why it never got built.
+
+**BUILD SCOPE: the forecast cycle must report unhealthy when it produced nothing.** Everything else in this
+document — the full deployment audit, Flow 6 (owned by 115b), the watchdog items — is **follow-on**, retained
+below as the reasoning.
+
+**§4 is now FALSIFIED and DELEGATED.** It reads: *"the watchdog cannot watch itself … a **theoretical** flaw,
+not an evidenced one: the host has 22 days of uptime and has never actually failed. **Priority: low.**"* Since
+then the host failed on **29 July** (14 days undetected) and the watchdog itself died again on **16 August**. It
+is now evidenced, and already answered: **Plan 163** (dead-man's switch, merged) and **Plan 164** (LaunchDaemon,
+READY). Nothing about the watchdog remains in scope here.
+
+**§5 is still true and still five minutes' work** — the mini's randomized Private Wi-Fi Address means its DHCP
+address drifts. Unrelated to this slice; just do it.
+
+**Its closing warning stands and is now doubly earned:** *"Do not over-correct into infrastructure we have no
+evidence of needing."* That is exactly why this re-scope removes rather than adds.
+
+## The slice — forecast production freshness
+
+**The gap, verified on `main` 2026-08-17:** the watchdog checks API health, backup staleness and the two **BAFU
+collector** freshness checks. **Nothing checks our own forecast cycle.** If `run_forecast_cycle` stopped
+producing forecasts, the API would stay healthy, BAFU collectors would keep running, backups would succeed, the
+dead-man would keep pinging — and the product would be silently dead. `grep forecast_freshness src/` on main
+returns **nothing**.
+
+**Salvage, do not rewrite.** The implementation exists on the `docs/plan-158-session-independence` branch (T1b),
+built and reviewed, but stranded 72 commits behind: `PipelineCheckType.FORECAST_FRESHNESS` (`types/enums.py:154`),
+the emitter in `flows/run_forecast_cycle.py`, and the watchdog probe (39 references in `ops/watchdog.py`). Port
+it onto current `main` the way Plan 163 ported the dead-man ping.
+
+**⛔ Port the SMALL version. The 158 branch's coverage ledger is NOT in scope.** Its
+`(station, model, parameter)` identity tracking drew **five blockers across two reviews** and is the single
+biggest source of complexity in that branch. The minimal contract is:
+
+> A cycle that persisted **zero** forecasts must **not** report healthy.
+
+That closes the observed failure — three days of green while the feed was dark — without the identity ledger.
+Per-product completeness is a **separate, later decision**, and if it is ever taken it should get a
+remove-mandate review *first*, not after three rounds of additions.
+
+**Two things from the 158 work that must come along**, because they were review findings, not decoration:
+- **`FORECAST_FRESHNESS` is a SEPARATE contract from `ForecastCycleHealth`.** Existing tests deliberately lock
+  `DEGRADED` for snow loss, partial NWP and fallback drift *even when forecasts were stored*; mapping those onto
+  a freshness alarm would turn every degraded-but-working cycle into a page.
+- **Freshness must be judged on the cycle's own time, not wall-clock arrival** — a late or backfilled historical
+  cycle must not reset freshness.
+
+**Acceptance (from this plan's own §Verification, which is better than anything I would have written):** drop the
+`-nwp` overlay and **the forecast cycle must go red.** That tests the monitoring, not the pipeline.
+
+## Follow-ons (explicitly out of the build slice)
+
+The general per-deployment audit (§3), `ingest-observations` poll-starvation, the BAFU collector and NWP prune
+checks. Worth doing; not worth blocking this slice on.
+
 
 > ## ⚠️ This plan was originally "Staging host reliability". That premise was FALSE and is withdrawn.
 >
