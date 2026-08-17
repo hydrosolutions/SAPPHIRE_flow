@@ -218,6 +218,14 @@ jobs:
   # The e2e job gates on this job succeeding (see `needs:` below).
   build-image-and-scan:
     runs-on: ubuntu-latest
+    # security-events: write is required by github/codeql-action/upload-sarif
+    # (T2, Plan 180). contents: read is the checkout minimum. Declared
+    # explicitly rather than relying on the repo's ambient
+    # default-workflow-permissions setting, which is a per-repo config that
+    # can change independently of this file.
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -236,33 +244,94 @@ jobs:
           # (Dockerfile), never baked into an image layer.
           secrets: |
             recap_dg_client_token=${{ secrets.RECAP_DG_CLIENT_TOKEN }}
-      # B3 — Trivy image scan. Covers OS-level layers the fs scan (A2) does
-      # not see. Fails CI on HIGH/CRITICAL unfixed CVEs; SARIF is uploaded
-      # as a workflow artifact for audit.
-      # Equivalent CLI: trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed sapphire-flow:ci-${{ github.sha }}
-      # `limit-severities-for-sarif: true` is required on trivy-action >= v0.36.0:
-      # without it the action unsets TRIVY_SEVERITY when writing SARIF (so the SARIF
-      # captures all severities for audit), which means `exit-code: 1` fires on any
-      # severity instead of just HIGH/CRITICAL. With this flag the SARIF — and the
-      # exit-code gate — both honor the configured severity filter.
-      - name: Trivy image scan
+      # B3 — Trivy image scan, restructured (Plan 180) into scan-once/derive-many so a
+      # failure explains itself instead of printing a bare `exit code 1` (the
+      # 2026-08-17 incident: `format: sarif` + file `output:` prints nothing to the log):
+      #
+      #   scan (JSON, non-gating) -> convert --format table (the gate, printed to the log)
+      #                           -> convert --format sarif (code-scanning upload, T2)
+      #
+      # Deriving both outputs from the SAME trivy-image.json means the printed table and
+      # the SARIF are provably the same data as what failed the gate — re-scanning on the
+      # failure path instead could disagree with the run that actually gated (a different
+      # advisory-DB state).
+      #
+      # Step 1 — scan to JSON. exit-code is explicitly "0": this step is non-gating for
+      # *findings* (the convert step below is the gate) but still fails closed on a real
+      # operational error (DB fetch, render, setup failure), per trivy-action's normal
+      # exit-code semantics — GitHub's implicit success() then correctly skips every step
+      # after it, including the gate. ignore-unfixed stays true and lives HERE: `trivy
+      # convert` has no --ignore-unfixed flag, so it can only be applied at scan time —
+      # verified empirically (Plan 180 T1), not assumed. Covers OS-level layers the fs
+      # scan (A2) does not see.
+      - name: Trivy image scan (report)
+        id: trivy-scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: sapphire-flow:ci-${{ github.sha }}
-          format: sarif
-          output: trivy-image.sarif
-          exit-code: "1"
-          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-image.json
+          exit-code: "0"
           ignore-unfixed: true
-          limit-severities-for-sarif: true
           cache: "true"
-      - name: Upload Trivy SARIF
+      # Step 2 — the gate. Renders the human-readable table straight to the job log (no
+      # `--output`, unlike the old sarif-to-file step this replaces) AND fails the job via
+      # --exit-code, from the SAME trivy-image.json Step 1 wrote. This is what makes
+      # `trivy convert` — not the scan step — the gate (Plan 180 D1): it is the only
+      # arrangement where the failing check and the printed table are the same data by
+      # construction. `--severity` is applied here, not on the scan step, so the JSON
+      # report keeps every severity for audit while each derived output filters
+      # independently; this was verified empirically against a real HIGH finding
+      # (CVE-2026-53615, the incident CVE) before shipping, not just read off
+      # trivy-action's doc comment. `limit-severities-for-sarif` (used by the old gate)
+      # does not apply on this path: its own comment scopes it to trivy-action's
+      # SARIF-writing invocation, and this step writes `table`.
+      - name: Render vulnerability table (gate)
+        id: trivy-gate-table
+        if: ${{ !cancelled() && steps.trivy-scan.outcome == 'success' }}
+        run: |
+          trivy convert \
+            --format table \
+            --scanners vuln,secret \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            trivy-image.json
+      # Step 3 — derive the SARIF from the same report. Deliberately has NO exit-code and
+      # runs even when Step 2 failed the gate (`!cancelled()`, not the implicit
+      # `success()`) — the SARIF must still reach code scanning on the failure path, since
+      # that is the run that matters (T2 acceptance). It only requires that Step 1's
+      # report exists.
+      - name: Convert report to SARIF
+        id: trivy-sarif
+        if: ${{ !cancelled() && steps.trivy-scan.outcome == 'success' }}
+        run: |
+          trivy convert \
+            --format sarif \
+            --scanners vuln,secret \
+            --severity HIGH,CRITICAL \
+            --output trivy-image.sarif \
+            trivy-image.json
+      - name: Upload Trivy SARIF artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: trivy-image-sarif
           path: trivy-image.sarif
           if-no-files-found: warn
+      # T2 — publish to the GitHub Security tab, the SARIF's only real consumer
+      # (upload-artifact above just archives a zip nothing reads — that was the
+      # incident's second root cause). NOT wrapped in a blanket continue-on-error: a
+      # broken upload (bad token, malformed SARIF, path typo, licensing lapse) must fail
+      # the job loudly — the same silent-failure class this plan exists to close, moved
+      # one level down (Plan 180 traps). Runs whenever Step 3 produced a SARIF,
+      # independent of whether Step 2's gate failed — the failure-path run is the one that
+      # matters.
+      - name: Upload Trivy SARIF to code scanning
+        if: ${{ !cancelled() && steps.trivy-sarif.outcome == 'success' }}
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
       # B4 — SBOM generation. anchore/sbom-action wraps syft; emits
       # CycloneDX JSON for the built image. Uploaded as an artifact on every
       # run so a future CVE landing has a recoverable "which image contains

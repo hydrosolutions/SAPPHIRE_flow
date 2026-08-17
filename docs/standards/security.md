@@ -590,6 +590,28 @@ Two Trivy scans run in CI. Both fail the build on `HIGH,CRITICAL` with `--ignore
 
 Known-accepted CVEs live in `.trivyignore`. Every entry must carry a dated comment explaining why it is ignored and when to re-review — no undated entries.
 
+The image scan (Plan 180) runs as scan-once/derive-many: `trivy image` writes one JSON
+report (`ignore-unfixed: true`, all severities, non-gating); `trivy convert` then derives
+the printed table (the gate — `--exit-code 1 --severity HIGH,CRITICAL`), the SARIF, and
+uploads the SARIF to the GitHub Security tab via `github/codeql-action/upload-sarif`, on
+both the pass and the fail path. Deriving every output from the same report is what makes
+the printed table and the uploaded SARIF provably the same data as what failed the gate.
+`upload-sarif` requires `security-events: write` on the job's `GITHUB_TOKEN`; the
+`build-image-and-scan` job declares `permissions: {contents: read, security-events:
+write}` explicitly rather than relying on the repository's ambient
+default-workflow-permissions setting.
+
+**Policy for a CVE with a fix we cannot adopt (Plan 180 D2/D3).** `ignore-unfixed: true`
+already drops every CVE with no published fix before either scan can even report it, so
+`.trivyignore` is never the right place for a "not fixed yet" case — that describes a
+finding Trivy structurally cannot produce here. `.trivyignore` exists for the opposite
+situation: a fix **is** published, but we cannot take it (the fix lives in a package
+suite we do not track, or in a Python dependency we cannot move yet). Add a dated entry
+with a re-review date. That re-review date is a dated **comment**, not an enforced
+check — nothing currently re-checks it automatically or fails CI when it passes; a
+comment does not expire by itself. Building an enforcement mechanism for it is a
+deliberate scope decision to defer, not an oversight.
+
 ### Dependency-bump safety gate (Plan 119)
 
 Green CI is not a merge criterion for dependency bumps that change stateful
