@@ -52,7 +52,7 @@ from scripts.dhm_precip.fixtures import (
     build_era5_land_product_fixture,
     write_era5_land_product_fixture,
 )
-from scripts.dhm_precip.params import DEFAULT_PARAMS
+from scripts.dhm_precip.params import DEFAULT_PARAMS, DhmPrecipParams
 
 _AREA = (26.2, 85.0, 26.0, 85.2)  # small 3x3 sub-box (fixtures.py default)
 _YEAR = 2021
@@ -238,6 +238,38 @@ class TestOperators:
         assert nearest.grid_i == 0 and nearest.grid_j == 0
         assert nearest.n_nan == 0
 
+    @pytest.mark.parametrize("value", [np.inf, -np.inf])
+    def test_infinite_value_at_a_station_is_gated_as_non_finite(
+        self, value: float
+    ) -> None:
+        """MAJOR (2026-08-17) — gating used to check only `np.isnan`, so an
+        isolated `+inf`/`-inf` (not `np.isnan`) silently passed D11.2's
+        primary non-finite gate. `np.isnan(np.inf)` is `False`, confirmed
+        empirically."""
+        ds = _clean_ds()
+        ds["precipitation"].values[:, 1, 1] = value
+        result = extract_nearest_series(ds, _station(26.1, 85.1))  # node (1,1)
+        assert result.n_nan == 0
+        assert result.n_inf == result.values.size
+        with pytest.raises(NonFiniteExtractionError):
+            assert_no_missing_primary(result)
+
+    @pytest.mark.parametrize("value", [np.inf, -np.inf])
+    def test_infinite_neighbour_is_counted_not_silently_finite_for_bilinear(
+        self, value: float
+    ) -> None:
+        """MAJOR (2026-08-17) — linear interpolation of an infinite
+        contributing neighbour propagates +-inf, not NaN (confirmed
+        empirically), so counting only `np.isnan` under-counted D11.3's
+        missing-neighbour accounting."""
+        ds = _clean_ds()
+        ds["precipitation"].values[:, 1, 1] = value
+        coord = _station(26.03, 85.03)  # bilinear cell includes node (1,1)
+        result = extract_bilinear_series(ds, coord)
+        assert result.n_nan == 0
+        assert result.n_inf == result.values.size
+        assert bool(np.all(~np.isfinite(result.values)))
+
 
 class TestStationSet:
     """D8 — thin-wrapper coverage only (M-13): the loader already proves
@@ -379,8 +411,7 @@ class TestStationGridElevationTable:
         )
         rows = build_station_grid_elevation_table(
             table,
-            precip_lat=ds["latitude"].values,
-            precip_lon=ds["longitude"].values,
+            nearest_by_station=_nearest_by_station(ds, table),
             orography_ds=oro_ds,
             orography_source=OrographySource.MODEL_OROGRAPHY,
             orography_product_id="p",
@@ -413,8 +444,7 @@ class TestStationGridElevationTable:
         )
         rows = build_station_grid_elevation_table(
             table,
-            precip_lat=ds["latitude"].values,
-            precip_lon=ds["longitude"].values,
+            nearest_by_station=_nearest_by_station(ds, table),
             orography_ds=oro_ds,
             orography_source=OrographySource.DEM_PROXY,
             orography_product_id="p",
@@ -439,8 +469,7 @@ class TestStationGridElevationTable:
         with pytest.raises(Era5OrographyError):
             build_station_grid_elevation_table(
                 table,
-                precip_lat=ds["latitude"].values,
-                precip_lon=ds["longitude"].values,
+                nearest_by_station=_nearest_by_station(ds, table),
                 orography_ds=oro_ds,
                 orography_source=OrographySource.MODEL_OROGRAPHY,
                 orography_product_id="p",
@@ -451,6 +480,55 @@ class TestStationGridElevationTable:
 
 def _replace_station(coord: StationCoordinate, name: str) -> StationCoordinate:
     return replace(coord, station=Station(name))
+
+
+def _nearest_by_station(
+    ds: xr.Dataset, table: StationCoordinateTable
+) -> dict[Station, ExtractedSeries]:
+    return {
+        station: extract_nearest_series(ds, coord)
+        for station, coord in table.by_station.items()
+    }
+
+
+class TestElevationTableAgreesWithTheSeriesOnAnExactMidpoint:
+    """MAJOR (2026-08-17) — `build_station_grid_elevation_table` used to
+    recompute the nearest grid cell independently via
+    `np.argmin(np.abs(precip_lat - coord.lat))`, a SEPARATE tie-break rule
+    from the one `extract_nearest_series` uses (xarray's own
+    `.sel(method="nearest")`). On an exact midpoint the two disagree: on the
+    fixture's [26.0, 26.1] axis, 26.05 is equidistant from both nodes —
+    `np.argmin` picks the LOWER index (26.0), xarray's nearest picks the
+    UPPER one (26.1) — confirmed empirically before writing this test. The
+    elevation row could then reference a different cell than the station's
+    own extracted series."""
+
+    def test_series_and_elevation_row_reference_the_same_node(self) -> None:
+        ds = _clean_ds()
+        oro_ds = _orography_ds(ds)
+        # An exact midpoint on the lat axis [26.0, 26.1, 26.2]; the lon
+        # coordinate 85.0 lines up exactly with a node, so only the lat
+        # tie-break is exercised.
+        coord = _station(26.05, 85.0)
+        table = StationCoordinateTable(
+            by_station={Station("A"): _replace_station(coord, "A")}
+        )
+        nearest = _nearest_by_station(ds, table)
+        rows = build_station_grid_elevation_table(
+            table,
+            nearest_by_station=nearest,
+            orography_ds=oro_ds,
+            orography_source=OrographySource.MODEL_OROGRAPHY,
+            orography_product_id="p",
+            orography_product_version="1",
+            orography_vertical_reference=VerticalDatum.LOCAL_MSL,
+        )
+        row = rows[0]
+        series = nearest[Station("A")]
+        assert (row.grid_i, row.grid_j) == (series.grid_i, series.grid_j)
+        assert row.grid_lat == pytest.approx(series.grid_lat)
+        assert row.grid_lon == pytest.approx(series.grid_lon)
+        assert row.shared_cell_id == f"{series.grid_i}_{series.grid_j}"
 
 
 # --- 3b: operator-sensitivity envelope (D1a) ---
@@ -571,6 +649,61 @@ class TestOperatorSensitivityEnvelope:
         # And the wet-hour counts on the row say which population it was.
         assert median["n_wet_nearest"][0] == 5
         assert median["n_hours_common_finite"][0] == n
+
+    def test_zero_policy_actually_changes_the_computed_quantile(self) -> None:
+        """BLOCKER/P7 (2026-08-17) — `zero_policy` was pinned, hashed into
+        `extraction_identity`, and NEVER READ: the wet-hour filter ran
+        unconditionally, so `zero_policy="include_zero"` produced
+        byte-identical output to `"exclude_zero"` — false provenance, per
+        P7's own rule that an identity may hash only inputs that are
+        actually read.
+
+        P7's standing obligation: a test must change the INPUT and change
+        an OUTPUT, not merely change the identity (`test_extract_era5_cli.py`
+        already proves the identity changes; this proves the identity
+        change reflects a REAL computation difference). Same fixture as the
+        wet-hour-population test above: `exclude_zero` must reproduce that
+        test's wet-hour median (3.0); `include_zero` must instead reproduce
+        the all-hours median (0.5) — the two must differ."""
+        n = 10
+        valid_time = np.array(
+            [
+                np.datetime64("2021-06-01T00:00") + np.timedelta64(h, "h")
+                for h in range(n)
+            ]
+        )
+        values = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+        nearest = {
+            Station("A"): _series(
+                Station("A"), ExtractionOperator.NEAREST, valid_time, values
+            )
+        }
+        bilinear = {
+            Station("A"): _series(
+                Station("A"), ExtractionOperator.BILINEAR, valid_time, values
+            )
+        }
+
+        def _median(params: DhmPrecipParams) -> float:
+            table = build_operator_sensitivity_table(nearest, bilinear, params=params)
+            row = table.filter(
+                (pl.col("scope") == "STATION")
+                & (pl.col("season") == "JJAS")
+                & (pl.col("statistic") == "QUANTILE")
+                & (pl.col("quantile") == 0.5)
+            )
+            assert row.height == 1
+            return float(row["nearest_value"][0])
+
+        exclude_zero_median = _median(DEFAULT_PARAMS)
+        include_zero_params = replace(DEFAULT_PARAMS, zero_policy="include_zero")
+        include_zero_median = _median(include_zero_params)
+
+        all_hours_median = float(np.quantile(values, 0.5))
+        wet_hours_median = float(np.quantile(values[values >= 0.2], 0.5))
+        assert exclude_zero_median == pytest.approx(wet_hours_median)
+        assert include_zero_median == pytest.approx(all_hours_median)
+        assert exclude_zero_median != include_zero_median
 
     def test_sign_agreement_fraction_is_half_on_a_constructed_split(self) -> None:
         # Two stations, one hour: nearest > bilinear at A, nearest < bilinear at B.

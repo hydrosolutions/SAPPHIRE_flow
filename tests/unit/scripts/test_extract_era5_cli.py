@@ -246,6 +246,18 @@ class TestExitCodeDispatch:
         )
         assert code == 5
 
+    def test_missing_annual_product_exits_2_not_5(self, tmp_path: Path) -> None:
+        """MINOR (2026-08-17) — a missing annual product used to reach
+        `checksum_file`, which wraps `FileNotFoundError` as
+        `Era5StorageError` (exit 5). D9 assigns a missing product to exit
+        code 2 (inputs absent), not a storage failure."""
+        from scripts.dhm_precip.era5_manifest import product_artifact_path
+        from scripts.dhm_precip.era5_request import STUDY_YEARS
+
+        data_root = _build_data_root(tmp_path)
+        product_artifact_path(STUDY_YEARS[0], data_root).unlink()
+        assert _run_all(data_root) == 2
+
 
 class TestCliHelp:
     def test_help_exits_zero(self) -> None:
@@ -629,3 +641,202 @@ class TestOrographyRouteChangeForcesRematerialisation:
                 data_root
             )
         )
+
+
+class TestRealOrographyDownloaderAssertsAgreement:
+    """D7 (BLOCKER, round 4 + P7a, grill-me 2026-08-17) —
+    `RealOrographyDownloader.download()` used to take `spec` and ignore it
+    entirely (`# noqa: ARG002` suppressing the exact lint finding that named
+    this), hard-coding the CDS request. A changed spec must now raise
+    BEFORE any request is issued.
+
+    Every test here monkeypatches `cdsapi.Client` to raise immediately,
+    REGARDLESS of whether the fix under test is present — so running this
+    against the pre-fix code (buggy code proceeds straight past the missing
+    assertion into `cdsapi.Client(retry_max=1)`) can never make a live
+    network call under a real `~/.cdsapirc`, only ever hit the (patched)
+    marker."""
+
+    class _NeverReachedError(Exception):
+        pass
+
+    def _block_real_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise self._NeverReachedError(
+                "cdsapi.Client must never be constructed once the spec "
+                "assertion should have raised first"
+            )
+
+        monkeypatch.setattr("cdsapi.Client", _boom)
+
+    def test_mismatched_product_id_raises_before_touching_cdsapi(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace as dataclass_replace
+
+        from scripts.dhm_precip.era5_errors import Era5OrographyError
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+
+        self._block_real_client(monkeypatch)
+        bad_spec = dataclass_replace(
+            OBSERVED_OROGRAPHY_SPEC,
+            product_id="reanalysis-era5-land:2m_temperature",
+        )
+        with pytest.raises(Era5OrographyError, match="product_id"):
+            extract_era5.RealOrographyDownloader().download(
+                spec=bad_spec, dest_dir=tmp_path
+            )
+
+    def test_mismatched_download_url_raises_before_touching_cdsapi(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dataclasses import replace as dataclass_replace
+
+        from scripts.dhm_precip.era5_errors import Era5OrographyError
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+
+        self._block_real_client(monkeypatch)
+        bad_spec = dataclass_replace(
+            OBSERVED_OROGRAPHY_SPEC,
+            download_url="https://cds.climate.copernicus.eu/datasets/some-other-dataset",
+        )
+        with pytest.raises(Era5OrographyError, match="download_url"):
+            extract_era5.RealOrographyDownloader().download(
+                spec=bad_spec, dest_dir=tmp_path
+            )
+
+    def test_matching_spec_passes_the_assertion_and_reaches_the_real_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A spec that DOES match must not raise at the assertion — it must
+        get exactly as far as constructing `cdsapi.Client`, proving the
+        assertion does not also block a legitimate, unchanged spec."""
+        from scripts.dhm_precip.era5_orography_spec import OBSERVED_OROGRAPHY_SPEC
+
+        self._block_real_client(monkeypatch)
+        with pytest.raises(self._NeverReachedError):
+            extract_era5.RealOrographyDownloader().download(
+                spec=OBSERVED_OROGRAPHY_SPEC, dest_dir=tmp_path
+            )
+
+
+class TestOrographySpecProvenanceLabelling:
+    """D7 P7a (slim review, grill-me 2026-08-17) — the manifest must label
+    which `OrographySpec` fields are machine-verified versus
+    operator-attested, so a reader cannot mistake the latter for the
+    former."""
+
+    def test_machine_verified_and_attested_field_sets_are_disjoint(self) -> None:
+        assert extract_era5.MACHINE_VERIFIED_SPEC_FIELDS.isdisjoint(
+            extract_era5.OPERATOR_ATTESTED_SPEC_FIELDS
+        )
+
+    def test_machine_verified_fields_are_the_ones_p7a_names(self) -> None:
+        assert {
+            "product_id",
+            "download_url",
+            "conversion_rule",
+        } == extract_era5.MACHINE_VERIFIED_SPEC_FIELDS
+
+    def test_attested_fields_are_the_ones_p7a_names(self) -> None:
+        assert {
+            "product_version",
+            "licence_name",
+            "licence_version",
+            "licence_url",
+            "vertical_reference",
+            "source_crs",
+        } == extract_era5.OPERATOR_ATTESTED_SPEC_FIELDS
+
+    def test_published_manifest_carries_the_provenance_labels(
+        self, tmp_path: Path
+    ) -> None:
+        import json
+
+        data_root = _build_data_root(tmp_path)
+        assert _run_all(data_root) == 0
+        published = _latest_published_dir(data_root)
+        manifest = json.loads((published / "extraction_manifest.json").read_text())
+        provenance = manifest["orography_spec"]["provenance"]
+        assert set(provenance["machine_verified_fields"]) == {
+            "product_id",
+            "download_url",
+            "conversion_rule",
+        }
+        assert set(provenance["operator_attested_fields"]) == {
+            "product_version",
+            "licence_name",
+            "licence_version",
+            "licence_url",
+            "vertical_reference",
+            "source_crs",
+        }
+
+
+class TestRealOrographyRawReaderHandlesServiceShapedResponses:
+    """BLOCKER (2026-08-17) — the reader used to strip a dimension only if
+    it was literally named `time`; the real ERA5-Land raw contract
+    (`era5_acquire.py:319`) uses `valid_time`. A one-timestamp
+    `z(valid_time, latitude, longitude)` response stayed 3-D and was handed
+    unchanged to the 2-D aggregator. Every synthetic test reader (including
+    `_fake_raw_reader` above) returns an already-2-D array, so nothing
+    previously exercised this path."""
+
+    def _write_service_shaped(
+        self, path: Path, *, temporal_dim: str, n_stamps: int = 1
+    ) -> None:
+        lat = np.round(np.linspace(_AREA[2], _AREA[0], _LAT_COUNT), 10)
+        lon = np.round(np.linspace(_AREA[1], _AREA[3], _LON_COUNT), 10)
+        phi = (
+            1500.0
+            + 10.0 * np.arange(_LAT_COUNT)[:, None]
+            + 1.0 * np.arange(_LON_COUNT)[None, :]
+        ) * 9.80665
+        stacked = np.broadcast_to(phi, (n_stamps, _LAT_COUNT, _LON_COUNT))
+        stamps = np.array(["2026-01-01T00:00:00"], dtype="datetime64[ns]") + np.arange(
+            n_stamps
+        ) * np.timedelta64(1, "h")
+        ds = xr.Dataset(
+            {"z": ([temporal_dim, "latitude", "longitude"], stacked.copy())},
+            coords={temporal_dim: stamps, "latitude": lat, "longitude": lon},
+        )
+        ds.to_netcdf(path)
+
+    def test_a_service_shaped_valid_time_response_reduces_to_2d(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "geopotential.nc"
+        self._write_service_shaped(path, temporal_dim="valid_time")
+        values, lat, lon = extract_era5._real_orography_raw_reader(path)
+        assert values.shape == (_LAT_COUNT, _LON_COUNT)
+        assert lat.shape == (_LAT_COUNT,)
+        assert lon.shape == (_LON_COUNT,)
+
+    def test_a_service_shaped_time_response_still_reduces_to_2d(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "geopotential.nc"
+        self._write_service_shaped(path, temporal_dim="time")
+        values, lat, lon = extract_era5._real_orography_raw_reader(path)
+        assert values.shape == (_LAT_COUNT, _LON_COUNT)
+
+    def test_more_than_one_valid_time_stamp_raises(self, tmp_path: Path) -> None:
+        from scripts.dhm_precip.era5_errors import Era5OrographyError
+
+        path = tmp_path / "geopotential.nc"
+        self._write_service_shaped(path, temporal_dim="valid_time", n_stamps=2)
+        with pytest.raises(Era5OrographyError, match="valid_time"):
+            extract_era5._real_orography_raw_reader(path)
+
+    def test_already_2d_response_still_works(self, tmp_path: Path) -> None:
+        path = tmp_path / "geopotential.nc"
+        lat = np.round(np.linspace(_AREA[2], _AREA[0], _LAT_COUNT), 10)
+        lon = np.round(np.linspace(_AREA[1], _AREA[3], _LON_COUNT), 10)
+        phi = np.ones((_LAT_COUNT, _LON_COUNT)) * 9.80665 * 1500.0
+        ds = xr.Dataset(
+            {"z": (["latitude", "longitude"], phi)},
+            coords={"latitude": lat, "longitude": lon},
+        )
+        ds.to_netcdf(path)
+        values, lat_out, lon_out = extract_era5._real_orography_raw_reader(path)
+        assert values.shape == (_LAT_COUNT, _LON_COUNT)

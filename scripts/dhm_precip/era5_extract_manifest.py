@@ -41,6 +41,14 @@ from typing import TYPE_CHECKING
 import structlog
 from pydantic import BaseModel
 
+from scripts.dhm_precip.domain_types import (
+    DatumReconciliationStatus,
+    OrographySource,
+    SensitivityDeltaUnit,
+    SensitivityScope,
+    SensitivityStatistic,
+    VerticalDatum,
+)
 from scripts.dhm_precip.era5_errors import (
     Era5StorageError,
     ExtractionPostConditionError,
@@ -163,33 +171,46 @@ def extraction_identity(
 ) -> str:
     """D7 — sha256(canonical-JSON of every VALUE-AFFECTING input). A version
     bump alone (`extraction_code_version`) forces regeneration, mirroring
-    `era5_manifest.transform_identity`."""
+    `era5_manifest.transform_identity`.
+
+    P7a (major, slim review 2026-08-17) — the payload is split into two
+    explicitly labelled halves. `value_inputs` are inputs the computation
+    actually reads (P7's standing obligation: a test must change the input
+    AND change an output); `invalidation_inputs`
+    (`output_schema_version`/`extraction_code_version`) exist ONLY to force
+    regeneration on a behaviour-neutral bump, so "changing this input must
+    change an output" is unsatisfiable for them by design — labelling them
+    makes that exemption visible instead of silently smuggling a
+    value-determining field past P7's rule."""
+    value_inputs: dict[str, object] = {
+        "operator_id": operator_id,
+        "coordinate_table_sha256": coordinate_table_sha256,
+        "source_sha256s": sorted(source_sha256s),
+        "orography_identity": orography_identity,
+        "seasons": {
+            "jjas_months": list(jjas_months),
+            "djf_months": list(djf_months),
+            "mam_months": list(mam_months),
+            "on_months": list(on_months),
+        },
+        "wet_threshold_mm_per_h": wet_threshold_mm_per_h,
+        "wet_threshold_side": wet_threshold_side,
+        "zero_policy": zero_policy,
+        "quantile_definition": quantile_definition,
+        "quantile_grid": list(quantile_grid),
+        "delta_statistics": list(DELTA_STATISTICS),
+        "station_elevation_datum": station_elevation_datum,
+        "orography_elevation_datum": orography_elevation_datum,
+        "output_format": output_format,
+        "output_dtype": output_dtype,
+        "output_encoding": dict(output_encoding),
+    }
+    invalidation_inputs: dict[str, object] = {
+        "output_schema_version": output_schema_version,
+        "extraction_code_version": extraction_code_version,
+    }
     canonical = _canonical_json(
-        {
-            "operator_id": operator_id,
-            "coordinate_table_sha256": coordinate_table_sha256,
-            "source_sha256s": sorted(source_sha256s),
-            "orography_identity": orography_identity,
-            "seasons": {
-                "jjas_months": list(jjas_months),
-                "djf_months": list(djf_months),
-                "mam_months": list(mam_months),
-                "on_months": list(on_months),
-            },
-            "wet_threshold_mm_per_h": wet_threshold_mm_per_h,
-            "wet_threshold_side": wet_threshold_side,
-            "zero_policy": zero_policy,
-            "quantile_definition": quantile_definition,
-            "quantile_grid": list(quantile_grid),
-            "delta_statistics": list(DELTA_STATISTICS),
-            "station_elevation_datum": station_elevation_datum,
-            "orography_elevation_datum": orography_elevation_datum,
-            "output_schema_version": output_schema_version,
-            "output_format": output_format,
-            "output_dtype": output_dtype,
-            "output_encoding": dict(output_encoding),
-            "extraction_code_version": extraction_code_version,
-        }
+        {"value_inputs": value_inputs, "invalidation_inputs": invalidation_inputs}
     )
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -341,7 +362,7 @@ def publish_bundle(
     Every previous bundle is left untouched.
     """
     reopen_and_validate_bundle(
-        staged_dir, expected_station_count=expected_station_count
+        staged_dir, expected_station_count=expected_station_count, identity=identity
     )
     final_dir = allocate_published_dir(data_root, identity=identity)
     try:
@@ -358,32 +379,173 @@ def publish_bundle(
     return final_dir
 
 
-def reopen_and_validate_bundle(directory: Path, *, expected_station_count: int) -> None:
-    """4a/P4a — reopen-and-validate every staged file before it is trusted
-    (mirrors M-A4's own reopen-after-write discipline), INCLUDING a full
-    `payload_sha256s` reconciliation against the manifest: a payload
-    modified after its hash was computed must fail HERE, not silently pass
-    publication and only fail a later discovery read (P4a)."""
-    import polars as pl
+# --- D9 payload schema — required columns and legal enum values, shared by
+# publication (P4a) and any future discovery reader (P6), so the two can
+# never apply a different predicate to the same bundle. ---
+#
+# BLOCKER (2026-08-17) — the previous validator checked only variable
+# presence, station COUNTS and CSV readability: it never checked station
+# uniqueness/equality across the two series and the elevation table, the
+# elevation/sensitivity CSVs' required columns or enum values, the series'
+# dims/dtype/time-axis/encoding/attributes, or that the manifest's own
+# `extraction_identity` matches the identity it is being published under. A
+# writer that emitted only `{station, marker}` columns still published
+# successfully, hashing a malformed payload rather than refusing it.
+
+ELEVATION_REQUIRED_COLUMNS: tuple[str, ...] = (
+    "station",
+    "lat",
+    "lon",
+    "grid_lat",
+    "grid_lon",
+    "grid_i",
+    "grid_j",
+    "offset_km",
+    "station_elev_m",
+    "station_elevation_datum",
+    "orography_elev_m",
+    "orography_elevation_datum",
+    "orography_source",
+    "orography_product_id",
+    "orography_product_version",
+    "elev_mismatch_m",
+    "datum_reconciled",
+    "shared_cell_id",
+    "stations_in_cell",
+)
+
+SENSITIVITY_REQUIRED_COLUMNS: tuple[str, ...] = (
+    "scope",
+    "station",
+    "season",
+    "statistic",
+    "quantile",
+    "nearest_value",
+    "bilinear_value",
+    "delta_absolute",
+    "delta_unit",
+    "ratio",
+    "n_hours_common_finite",
+    "n_hours_excluded",
+    "n_wet_nearest",
+    "n_wet_bilinear",
+    "sign_agreement_fraction",
+)
+
+_VALID_OROGRAPHY_SOURCES = {m.value for m in OrographySource}
+_VALID_VERTICAL_DATA = {m.value for m in VerticalDatum}
+_VALID_DATUM_RECONCILED = {m.value for m in DatumReconciliationStatus}
+_VALID_SENSITIVITY_SCOPES = {m.value for m in SensitivityScope}
+_VALID_SENSITIVITY_STATISTICS = {m.value for m in SensitivityStatistic}
+_VALID_SENSITIVITY_DELTA_UNITS = {m.value for m in SensitivityDeltaUnit}
+
+
+def _assert_columns_present(
+    frame: object, *, required: tuple[str, ...], label: str
+) -> None:
+    missing = [c for c in required if c not in frame.columns]  # type: ignore[attr-defined]
+    if missing:
+        raise ExtractionPostConditionError(
+            f"{label} is missing required column(s) {missing} (D9)"
+        )
+
+
+def _assert_enum_column(
+    frame: object, *, column: str, valid: set[str], label: str
+) -> None:
+    observed = {v for v in frame[column].drop_nulls().to_list() if v is not None}  # type: ignore[index]
+    bad = observed - valid
+    if bad:
+        raise ExtractionPostConditionError(
+            f"{label}.{column} has value(s) {sorted(bad)} outside the "
+            f"declared enum {sorted(valid)} (D9)"
+        )
+
+
+def _assert_series_schema(path: Path, *, expected_station_count: int) -> set[str]:
+    """Reopen a D9 series file and validate its dims/dtype/time-axis/
+    encoding/attributes; returns the declared station set for the
+    cross-file station-equality check in `reopen_and_validate_bundle`."""
+    import numpy as np
     import xarray as xr
 
-    for name in ("series_nearest.nc", "series_bilinear.nc"):
-        path = directory / name
-        if not path.exists():
+    if not path.exists():
+        raise ExtractionPostConditionError(
+            f"staged bundle missing {path.name} at {path}"
+        )
+    with xr.open_dataset(path, engine="h5netcdf") as reopened:
+        loaded = reopened.load()
+        if "precipitation_mm_per_h" not in loaded:
             raise ExtractionPostConditionError(
-                f"staged bundle missing {name} at {path}"
+                f"{path.name} missing 'precipitation_mm_per_h' on reopen"
             )
-        with xr.open_dataset(path, engine="h5netcdf") as reopened:
-            loaded = reopened.load()
-            if "precipitation_mm_per_h" not in loaded:
+        var = loaded["precipitation_mm_per_h"]
+        if tuple(var.dims) != ("station", "valid_time"):
+            raise ExtractionPostConditionError(
+                f"{path.name} 'precipitation_mm_per_h' has dims {tuple(var.dims)}, "
+                "expected ('station', 'valid_time') (D9)"
+            )
+        if str(var.dtype) != "float32":
+            raise ExtractionPostConditionError(
+                f"{path.name} 'precipitation_mm_per_h' has dtype {var.dtype}, "
+                "expected float32 (D9)"
+            )
+        stations = [str(s) for s in loaded["station"].values]
+        if len(stations) != expected_station_count:
+            raise ExtractionPostConditionError(
+                f"{path.name} has {len(stations)} stations on reopen, "
+                f"expected {expected_station_count}"
+            )
+        if len(set(stations)) != len(stations):
+            raise ExtractionPostConditionError(
+                f"{path.name} has duplicate station entries: {stations} (D8/D9)"
+            )
+        valid_time = loaded["valid_time"].values
+        if valid_time.size > 1:
+            diffs = np.diff(valid_time.astype("datetime64[s]"))
+            if not bool(np.all(diffs > np.timedelta64(0, "s"))):
                 raise ExtractionPostConditionError(
-                    f"{name} missing 'precipitation_mm_per_h' on reopen"
+                    f"{path.name} 'valid_time' is not strictly increasing (D9)"
                 )
-            if loaded.sizes.get("station") != expected_station_count:
-                raise ExtractionPostConditionError(
-                    f"{name} has {loaded.sizes.get('station')} stations on reopen, "
-                    f"expected {expected_station_count}"
-                )
+        if loaded["valid_time"].attrs.get("timezone") != "UTC":
+            raise ExtractionPostConditionError(
+                f"{path.name} 'valid_time' is missing the semantic UTC "
+                "attribute (D9/D5.0)"
+            )
+        if not var.encoding.get("zlib"):
+            raise ExtractionPostConditionError(
+                f"{path.name} 'precipitation_mm_per_h' is not zlib-compressed "
+                "on reopen (D9's frozen encoding spec)"
+            )
+    return set(stations)
+
+
+def reopen_and_validate_bundle(
+    directory: Path, *, expected_station_count: int, identity: str
+) -> None:
+    """4a/P4a — reopen-and-validate every staged file before it is trusted
+    (mirrors M-A4's own reopen-after-write discipline): station
+    uniqueness/equality across both series and the elevation table, every
+    D9-required CSV column and enum value, each series' dims/dtype/
+    time-axis/encoding/attributes, the sensitivity schema, the manifest's
+    own `extraction_identity` matching the identity this bundle is being
+    published under, and (P4a) a full `payload_sha256s` reconciliation — a
+    payload modified after its hash was computed must fail HERE, not
+    silently pass publication and only fail a later discovery read."""
+    import polars as pl
+
+    nearest_stations = _assert_series_schema(
+        directory / "series_nearest.nc", expected_station_count=expected_station_count
+    )
+    bilinear_stations = _assert_series_schema(
+        directory / "series_bilinear.nc", expected_station_count=expected_station_count
+    )
+    if nearest_stations != bilinear_stations:
+        raise ExtractionPostConditionError(
+            "series_nearest.nc and series_bilinear.nc declare different "
+            f"station sets: {sorted(nearest_stations)} vs "
+            f"{sorted(bilinear_stations)} (D8/D9)"
+        )
 
     elevation_path = directory / "station_grid_elevation.csv"
     if not elevation_path.exists():
@@ -391,24 +553,107 @@ def reopen_and_validate_bundle(directory: Path, *, expected_station_count: int) 
             "staged bundle missing station_grid_elevation.csv"
         )
     elevation = pl.read_csv(elevation_path)
+    _assert_columns_present(
+        elevation,
+        required=ELEVATION_REQUIRED_COLUMNS,
+        label="station_grid_elevation.csv",
+    )
     if elevation.height != expected_station_count:
         raise ExtractionPostConditionError(
             f"station_grid_elevation.csv has {elevation.height} rows on reopen, "
             f"expected {expected_station_count}"
         )
+    elevation_stations = elevation["station"].to_list()
+    if len(set(elevation_stations)) != len(elevation_stations):
+        raise ExtractionPostConditionError(
+            "station_grid_elevation.csv has duplicate station rows: "
+            f"{elevation_stations} (D8/D9)"
+        )
+    if set(elevation_stations) != nearest_stations:
+        raise ExtractionPostConditionError(
+            "station_grid_elevation.csv's station set does not equal the "
+            f"series' station set: {sorted(set(elevation_stations))} vs "
+            f"{sorted(nearest_stations)} (D8/D9)"
+        )
+    _assert_enum_column(
+        elevation,
+        column="orography_source",
+        valid=_VALID_OROGRAPHY_SOURCES,
+        label="station_grid_elevation.csv",
+    )
+    _assert_enum_column(
+        elevation,
+        column="station_elevation_datum",
+        valid=_VALID_VERTICAL_DATA,
+        label="station_grid_elevation.csv",
+    )
+    _assert_enum_column(
+        elevation,
+        column="orography_elevation_datum",
+        valid=_VALID_VERTICAL_DATA,
+        label="station_grid_elevation.csv",
+    )
+    _assert_enum_column(
+        elevation,
+        column="datum_reconciled",
+        valid=_VALID_DATUM_RECONCILED,
+        label="station_grid_elevation.csv",
+    )
 
     sensitivity_path = directory / "operator_sensitivity.csv"
     if not sensitivity_path.exists():
         raise ExtractionPostConditionError(
             "staged bundle missing operator_sensitivity.csv"
         )
-    pl.read_csv(sensitivity_path)  # readable at all is the post-condition here
+    sensitivity = pl.read_csv(sensitivity_path)
+    _assert_columns_present(
+        sensitivity,
+        required=SENSITIVITY_REQUIRED_COLUMNS,
+        label="operator_sensitivity.csv",
+    )
+    _assert_enum_column(
+        sensitivity,
+        column="scope",
+        valid=_VALID_SENSITIVITY_SCOPES,
+        label="operator_sensitivity.csv",
+    )
+    _assert_enum_column(
+        sensitivity,
+        column="statistic",
+        valid=_VALID_SENSITIVITY_STATISTICS,
+        label="operator_sensitivity.csv",
+    )
+    _assert_enum_column(
+        sensitivity,
+        column="delta_unit",
+        valid=_VALID_SENSITIVITY_DELTA_UNITS,
+        label="operator_sensitivity.csv",
+    )
+    sensitivity_stations = {
+        v
+        for v in sensitivity.filter(pl.col("scope") == "STATION")["station"]
+        .drop_nulls()
+        .to_list()
+    }
+    if not sensitivity_stations <= nearest_stations:
+        raise ExtractionPostConditionError(
+            "operator_sensitivity.csv references station(s) outside the "
+            f"series' station set: "
+            f"{sorted(sensitivity_stations - nearest_stations)} (D8/D9)"
+        )
 
     manifest_path = directory / manifest_filename()
     manifest = read_extraction_manifest(manifest_path)
     if manifest is None:
         raise ExtractionPostConditionError(
             f"staged bundle missing {manifest_filename()}"
+        )
+    if manifest.extraction_identity != identity:
+        raise ExtractionPostConditionError(
+            "extraction_manifest.json's extraction_identity "
+            f"{manifest.extraction_identity!r} does not match the identity "
+            f"this bundle is being published under {identity!r} (manifest "
+            "identity consistency)"
         )
 
     # P4a — the same predicate discovery would apply: every D9 payload

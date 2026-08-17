@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+import xarray as xr
 
 from scripts.dhm_precip.domain_types import OrographySource, VerticalDatum
 from scripts.dhm_precip.era5_errors import Era5OrographyError
@@ -573,6 +574,144 @@ class TestVerifyOrographyMaterialisation:
         with pytest.raises(Era5OrographyError, match="route"):
             verify_orography_materialisation(
                 record, data_root=tmp_path, spec=changed_route
+            )
+
+
+class TestOrographyRasterSchemaEnforcement:
+    """MAJOR (2026-08-17) — the 'frozen' raster schema was incomplete (no
+    encoding/compression/fill policy, no required-attrs list) and, worse,
+    was never actually ENFORCED: write-time validation only checked that
+    `orography_elev_m` existed, and reuse
+    (`verify_orography_materialisation`) never reopened the raster at all —
+    it only compared hashes, so a record claiming the WRONG
+    `raster_schema_version`, or a consistently rehashed malformed raster,
+    was silently trusted. `assert_orography_raster_schema` is now the ONE
+    validator run both after write and on every reuse."""
+
+    def test_write_rejects_a_dataset_missing_the_mask_variable(
+        self, tmp_path: Path
+    ) -> None:
+        from scripts.dhm_precip.era5_orography import write_orography_raster
+
+        ds = xr.Dataset(
+            {
+                "orography_elev_m": (
+                    ["latitude", "longitude"],
+                    np.array([[1500.0]], dtype=np.float32),
+                ),
+                "no_data_fraction": (
+                    ["latitude", "longitude"],
+                    np.array([[0.0]], dtype=np.float32),
+                ),
+                # 'no_data_flag' deliberately omitted.
+            },
+            coords={"latitude": [26.0], "longitude": [85.0]},
+        )
+        ds.attrs.update(
+            {
+                "orography_source": "MODEL_OROGRAPHY",
+                "orography_product_id": "p",
+                "orography_product_version": "1",
+                "orography_vertical_reference": "LOCAL_MSL",
+                "orography_aggregation_rule": AGGREGATION_RULE_ID,
+                "orography_schema_version": "1",
+            }
+        )
+        with pytest.raises(Era5OrographyError, match="no_data_flag"):
+            write_orography_raster(ds, data_root=tmp_path, route_identity="x")
+
+    def test_write_rejects_a_dataset_missing_a_required_attr(
+        self, tmp_path: Path
+    ) -> None:
+        from scripts.dhm_precip.era5_orography import (
+            aggregate_to_grid,
+            build_orography_dataset,
+            write_orography_raster,
+        )
+
+        result = aggregate_to_grid(
+            np.array([[1500.0]]),
+            source_lat=np.array([26.0]),
+            source_lon=np.array([85.0]),
+            target_lat=np.array([26.0]),
+            target_lon=np.array([85.0]),
+            target_spacing_deg=0.1,
+        )
+        ds = build_orography_dataset(
+            result,
+            target_lat=np.array([26.0]),
+            target_lon=np.array([85.0]),
+            spec=_spec(),
+        )
+        del ds.attrs["orography_aggregation_rule"]
+        with pytest.raises(Era5OrographyError, match="required attrs"):
+            write_orography_raster(ds, data_root=tmp_path, route_identity="x")
+
+    def test_write_produces_a_raster_that_passes_the_shared_validator(
+        self, tmp_path: Path
+    ) -> None:
+        from scripts.dhm_precip.era5_orography import (
+            aggregate_to_grid,
+            assert_orography_raster_schema,
+            build_orography_dataset,
+            orography_raster_path,
+            write_orography_raster,
+        )
+
+        result = aggregate_to_grid(
+            np.array([[1500.0]]),
+            source_lat=np.array([26.0]),
+            source_lon=np.array([85.0]),
+            target_lat=np.array([26.0]),
+            target_lon=np.array([85.0]),
+            target_spacing_deg=0.1,
+        )
+        ds = build_orography_dataset(
+            result,
+            target_lat=np.array([26.0]),
+            target_lon=np.array([85.0]),
+            spec=_spec(),
+        )
+        write_orography_raster(ds, data_root=tmp_path, route_identity="x")
+        with xr.open_dataset(
+            orography_raster_path(tmp_path, route_identity="x"), engine="h5netcdf"
+        ) as reopened:
+            assert_orography_raster_schema(reopened.load())
+
+    def test_reuse_rejects_a_record_whose_raster_schema_version_disagrees(
+        self, tmp_path: Path
+    ) -> None:
+        """The record's claimed `raster_schema_version` used to be recorded
+        but never CHECKED on reuse — a forged/stale claim was silently
+        trusted even though the actual bytes on disk are untouched."""
+        record = _materialise(tmp_path)
+        forged = replace(record, raster_schema_version="999")
+        with pytest.raises(Era5OrographyError, match="raster_schema_version"):
+            verify_orography_materialisation(
+                forged, data_root=tmp_path, spec=_MATERIALISED_SPEC
+            )
+
+    def test_reuse_reopens_and_rejects_a_raster_with_a_broken_schema(
+        self, tmp_path: Path
+    ) -> None:
+        """Even with every hash intact, a raster that no longer satisfies
+        the frozen schema (here: the mask variable deleted and the file
+        rewritten so its sha256 changes WITH it, then the record updated to
+        match — simulating "a consistently rehashed malformed raster") must
+        be rejected on reuse, not silently trusted because the bytes are
+        internally self-consistent."""
+        from scripts.dhm_precip.era5_manifest import checksum_file
+
+        record = _materialise(tmp_path)
+        raster_path = tmp_path / record.raster_path  # type: ignore[operator]
+        with xr.open_dataset(raster_path, engine="h5netcdf") as reopened:
+            broken = reopened.load().drop_vars("no_data_flag")
+        raster_path.unlink()
+        broken.to_netcdf(raster_path, engine="h5netcdf")
+        forged = replace(record, raster_sha256=checksum_file(raster_path))
+        with pytest.raises(Era5OrographyError, match="no_data_flag"):
+            verify_orography_materialisation(
+                forged, data_root=tmp_path, spec=_MATERIALISED_SPEC
             )
 
 

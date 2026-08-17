@@ -202,22 +202,36 @@ class ExtractedSeries:
     grid_j: int
     n_finite: int
     n_nan: int
+    n_inf: int = 0
+    """MAJOR (2026-08-17) — a separate infinity count. Gating and accounting
+    that checked only `np.isnan` let an isolated `+inf`/`-inf` value pass
+    both the D11.2 primary non-finite gate and the manifest's accounting
+    silently: interpolation of an infinite neighbour propagates `inf`, not
+    `nan` (`extract_bilinear_series`), and a raw `inf` in the source field
+    is likewise not a NaN. `n_finite` is always `size - n_nan - n_inf`."""
 
 
 def station_accounting_entry(series: ExtractedSeries) -> dict[str, object]:
     """D11.2/D11.3 — the per-station finite accounting the manifest must
     carry "either way", including the first and last NaN stamp so a hole is
-    locatable rather than merely counted."""
-    nan_positions = np.flatnonzero(~np.isfinite(series.values))
+    locatable rather than merely counted. `n_inf` (MAJOR, 2026-08-17) is
+    reported separately from `n_nan` so the manifest's counts stay truthful
+    about which kind of non-finite value was observed."""
+    non_finite_positions = np.flatnonzero(~np.isfinite(series.values))
     return {
         "n_hours": int(series.values.size),
         "n_finite": int(series.n_finite),
         "n_nan": int(series.n_nan),
+        "n_inf": int(series.n_inf),
         "first_nan_valid_time": (
-            str(series.valid_time[nan_positions[0]]) if nan_positions.size else None
+            str(series.valid_time[non_finite_positions[0]])
+            if non_finite_positions.size
+            else None
         ),
         "last_nan_valid_time": (
-            str(series.valid_time[nan_positions[-1]]) if nan_positions.size else None
+            str(series.valid_time[non_finite_positions[-1]])
+            if non_finite_positions.size
+            else None
         ),
     }
 
@@ -250,7 +264,12 @@ def extract_nearest_series(ds: xr.Dataset, coord: StationCoordinate) -> Extracte
         latitude=coord.lat, longitude=coord.lon, method="nearest"
     )
     values = np.asarray(picked.values, dtype=np.float64)
+    # MAJOR (2026-08-17) — gate/count on non-finite, not merely NaN: an
+    # isolated +inf/-inf value is not `np.isnan`, so a NaN-only count would
+    # silently miss it (D11.2 requires ANY non-finite value to be a typed
+    # failure for the primary series).
     n_nan = int(np.isnan(values).sum())
+    n_inf = int(np.isinf(values).sum())
     grid_lat = float(picked["latitude"].values)
     grid_lon = float(picked["longitude"].values)
     return ExtractedSeries(
@@ -262,8 +281,9 @@ def extract_nearest_series(ds: xr.Dataset, coord: StationCoordinate) -> Extracte
         grid_lon=grid_lon,
         grid_i=int(np.argmin(np.abs(lat - grid_lat))),
         grid_j=int(np.argmin(np.abs(lon - grid_lon))),
-        n_finite=values.size - n_nan,
+        n_finite=values.size - n_nan - n_inf,
         n_nan=n_nan,
+        n_inf=n_inf,
     )
 
 
@@ -284,7 +304,11 @@ def extract_bilinear_series(
         kwargs={"fill_value": np.nan, "bounds_error": False},
     )
     values = np.asarray(interpolated.values, dtype=np.float64)
+    # MAJOR (2026-08-17) — an infinite CONTRIBUTING neighbour propagates
+    # through linear interpolation as +-inf, not NaN, so counting only
+    # `np.isnan` silently under-counts D11.3's "missing neighbour" policy.
     n_nan = int(np.isnan(values).sum())
+    n_inf = int(np.isinf(values).sum())
     nearest_i = int(np.argmin(np.abs(lat - coord.lat)))
     nearest_j = int(np.argmin(np.abs(lon - coord.lon)))
     return ExtractedSeries(
@@ -296,19 +320,25 @@ def extract_bilinear_series(
         grid_lon=coord.lon,
         grid_i=nearest_i,
         grid_j=nearest_j,
-        n_finite=values.size - n_nan,
+        n_finite=values.size - n_nan - n_inf,
         n_nan=n_nan,
+        n_inf=n_inf,
     )
 
 
 def assert_no_missing_primary(result: ExtractedSeries) -> None:
-    """D11.2 — any NaN at any station is a typed failure for the PRIMARY
-    (nearest) series. Never applied to bilinear (D11.3's own, different,
-    counted-not-fatal policy)."""
-    if result.n_nan > 0:
+    """D11.2 — any NON-FINITE value at any station is a typed failure for
+    the PRIMARY (nearest) series. Never applied to bilinear (D11.3's own,
+    different, counted-not-fatal policy).
+
+    MAJOR (2026-08-17) — this used to gate on `n_nan` alone, so an isolated
+    `+inf`/`-inf` (not `np.isnan`) silently passed. Non-finite is
+    `n_nan + n_inf`."""
+    non_finite = result.n_nan + result.n_inf
+    if non_finite > 0:
         raise NonFiniteExtractionError(
-            f"station {result.station!r} nearest series has {result.n_nan} "
-            f"non-finite hour(s) out of {result.n_finite + result.n_nan} — "
+            f"station {result.station!r} nearest series has {non_finite} "
+            f"non-finite hour(s) out of {result.n_finite + non_finite} — "
             "ERA5-Land over this box should be complete (D11.2)"
         )
 
@@ -394,8 +424,7 @@ class StationGridElevationRow:
 def build_station_grid_elevation_table(
     stations: StationCoordinateTable,
     *,
-    precip_lat: np.ndarray,
-    precip_lon: np.ndarray,
+    nearest_by_station: dict[Station, ExtractedSeries],
     orography_ds: xr.Dataset,
     orography_source: OrographySource,
     orography_product_id: str,
@@ -405,17 +434,28 @@ def build_station_grid_elevation_table(
     """3a — every column D9 specifies for `station_grid_elevation.csv`. No
     gauge value; no interpretation of the mismatch (that is M-A6's job).
     Per-station orography FINITENESS is checked HERE (D3a: moved out of 1b,
-    which validates only the aggregated grid)."""
+    which validates only the aggregated grid).
+
+    MAJOR (2026-08-17) — the nearest grid cell is taken from the ALREADY
+    COMPUTED primary `ExtractedSeries` (`extract_nearest_series`, which
+    resolves it via xarray's own `.sel(method="nearest")`), never
+    recomputed independently. This used to re-derive `grid_i`/`grid_j` via
+    a separate `np.argmin(np.abs(precip_lat - coord.lat))` lookup, which can
+    disagree with xarray's own tie-break on an EXACT midpoint (e.g. a 2-node
+    axis [26.0, 26.1] at 26.05: `np.argmin` picks 26.0, xarray's nearest
+    picks 26.1) — the elevation row could then reference a different cell
+    than the station's own extracted series. Centralising the lookup in one
+    place (the PRIMARY series) removes the possibility of the two
+    disagreeing, rather than trying to keep two independent tie-break rules
+    in sync."""
     orography_lat = orography_ds["latitude"].values
     orography_lon = orography_ds["longitude"].values
     nearest_index: dict[Station, tuple[int, int]] = {}
     rows: list[StationGridElevationRow] = []
     for station, coord in stations.by_station.items():
-        assert_station_within_grid(coord, lat=precip_lat, lon=precip_lon)
-        grid_i = int(np.argmin(np.abs(precip_lat - coord.lat)))
-        grid_j = int(np.argmin(np.abs(precip_lon - coord.lon)))
-        grid_lat = float(precip_lat[grid_i])
-        grid_lon = float(precip_lon[grid_j])
+        series = nearest_by_station[station]
+        grid_i, grid_j = series.grid_i, series.grid_j
+        grid_lat, grid_lon = series.grid_lat, series.grid_lon
         nearest_index[station] = (grid_i, grid_j)
 
         oro_i = int(np.argmin(np.abs(orography_lat - grid_lat)))
@@ -533,28 +573,42 @@ def build_operator_sensitivity_table(
         n_excluded: int,
     ) -> None:
         # D1a (CORRECTED 2026-08-16) — quantiles are computed on the
-        # WET-HOUR population, PER OPERATOR, never on all finite hours.
-        # `zero_policy = "exclude_zero"` is pinned on the frozen parameter
-        # object AND hashed into `extraction_identity`; computing over all
-        # hours while the manifest recorded that policy was false
-        # provenance, and it made these numbers incomparable with every
-        # other quantile in this track (M-A1's intensity expectations are
-        # all stated over wet-hour >= 0.2 mm/h observations). The wet set
-        # differs by operator, which is why `n_wet_nearest` and
-        # `n_wet_bilinear` are both reported.
-        nearest_pop = frame.filter(_wet("nearest_mm_h"))
-        bilinear_pop = frame.filter(_wet("bilinear_mm_h"))
+        # WET-HOUR population, PER OPERATOR, never on all finite hours,
+        # WHEN `zero_policy == "exclude_zero"`.
+        # `n_wet_nearest`/`n_wet_bilinear` always report the literal
+        # wet-hour counts regardless of policy — only the POPULATION the
+        # quantile is computed over is conditional.
+        #
+        # P7 (BLOCKER, 2026-08-17) — `zero_policy` used to be pinned on the
+        # frozen parameter object AND hashed into `extraction_identity` but
+        # NEVER READ here: the wet-hour filter below was unconditional, so
+        # `zero_policy="include_zero"` produced byte-identical output to
+        # `"exclude_zero"` — false provenance by construction (P7's own
+        # rule: an identity may hash only inputs that are actually read).
+        # The filter is now genuinely conditional: `"exclude_zero"` keeps
+        # today's pinned behaviour; `"include_zero"` computes the quantile
+        # over every common-finite hour instead of only the wet subset.
+        nearest_wet = frame.filter(_wet("nearest_mm_h"))
+        bilinear_wet = frame.filter(_wet("bilinear_mm_h"))
+        if params.zero_policy == "include_zero":
+            nearest_pop, bilinear_pop = frame, frame
+        else:
+            nearest_pop, bilinear_pop = nearest_wet, bilinear_wet
         for q in params.quantile_grid:
             nearest_q = (
                 nearest_pop.select(
-                    pl.col("nearest_mm_h").quantile(q, interpolation="linear")
+                    pl.col("nearest_mm_h").quantile(
+                        q, interpolation=params.quantile_definition
+                    )
                 ).item()
                 if nearest_pop.height
                 else None
             )
             bilinear_q = (
                 bilinear_pop.select(
-                    pl.col("bilinear_mm_h").quantile(q, interpolation="linear")
+                    pl.col("bilinear_mm_h").quantile(
+                        q, interpolation=params.quantile_definition
+                    )
                 ).item()
                 if bilinear_pop.height
                 else None
@@ -581,8 +635,8 @@ def build_operator_sensitivity_table(
                     "ratio": ratio,
                     "n_hours_common_finite": frame.height,
                     "n_hours_excluded": n_excluded,
-                    "n_wet_nearest": nearest_pop.height,
-                    "n_wet_bilinear": bilinear_pop.height,
+                    "n_wet_nearest": nearest_wet.height,
+                    "n_wet_bilinear": bilinear_wet.height,
                     "sign_agreement_fraction": None,
                 }
             )

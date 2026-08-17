@@ -68,6 +68,15 @@ _OROGRAPHY_CODE_VERSION = "1"
 # M-8 / D7 — the FROZEN orography raster schema, hashed into
 # `orography_identity` so a silent change of variable name, dims, dtype or
 # mask variable forces regeneration instead of being adopted invisibly.
+#
+# MAJOR (2026-08-17) — this schema was incomplete (no encoding/compression/
+# fill policy, no required-attrs list) and, worse, was never actually
+# ENFORCED: write-time validation only checked that `orography_elev_m`
+# existed, and reuse (`verify_orography_materialisation`) never reopened the
+# raster at all — it only compared hashes, so a record claiming the wrong
+# `raster_schema_version`, or a consistently rehashed malformed raster, was
+# silently trusted. `assert_orography_raster_schema` below is now the ONE
+# validator run both after write and on every reuse.
 OROGRAPHY_RASTER_SCHEMA: dict[str, object] = {
     "elevation_variable": "orography_elev_m",
     "elevation_dtype": "float32",
@@ -78,7 +87,74 @@ OROGRAPHY_RASTER_SCHEMA: dict[str, object] = {
     "mask_dtype": "bool",
     "dims": ["latitude", "longitude"],
     "schema_version": OROGRAPHY_SCHEMA_VERSION,
+    "encoding": {
+        "orography_elev_m": {"zlib": True, "complevel": 4, "_FillValue": "NaN"},
+        "no_data_fraction": {"zlib": True, "complevel": 4, "_FillValue": "NaN"},
+        "no_data_flag": {"zlib": True, "complevel": 4},
+    },
+    "required_attrs": [
+        "orography_source",
+        "orography_product_id",
+        "orography_product_version",
+        "orography_vertical_reference",
+        "orography_aggregation_rule",
+        "orography_schema_version",
+    ],
 }
+
+
+def assert_orography_raster_schema(ds: xr.Dataset) -> None:
+    """M-8/D7 — the ONE frozen-schema validator, run both after write
+    (`write_orography_raster`) and on every reuse
+    (`verify_orography_materialisation`): required variables, exact
+    dims/order, dtypes, the mask/no-data invariant (a NaN elevation cell
+    must be flagged), and the required provenance attrs. A schema
+    divergence here is exactly the drift `orography_identity` claims to
+    cover but that nothing previously checked on reopen."""
+    variable_checks = (
+        (OROGRAPHY_RASTER_SCHEMA["elevation_variable"], "elevation_dtype"),
+        (
+            OROGRAPHY_RASTER_SCHEMA["no_data_fraction_variable"],
+            "no_data_fraction_dtype",
+        ),
+        (OROGRAPHY_RASTER_SCHEMA["mask_variable"], "mask_dtype"),
+    )
+    expected_dims = tuple(OROGRAPHY_RASTER_SCHEMA["dims"])  # type: ignore[arg-type]
+    for var_name, dtype_key in variable_checks:
+        if var_name not in ds:
+            raise Era5OrographyError(
+                f"orography raster missing required variable {var_name!r} (M-8)"
+            )
+        var = ds[var_name]
+        if tuple(var.dims) != expected_dims:
+            raise Era5OrographyError(
+                f"orography raster variable {var_name!r} has dims "
+                f"{tuple(var.dims)}, expected {expected_dims} (M-8)"
+            )
+        expected_dtype = OROGRAPHY_RASTER_SCHEMA[dtype_key]
+        if str(var.dtype) != expected_dtype:
+            raise Era5OrographyError(
+                f"orography raster variable {var_name!r} has dtype "
+                f"{var.dtype}, expected {expected_dtype} (M-8)"
+            )
+
+    required_attrs: list[str] = OROGRAPHY_RASTER_SCHEMA["required_attrs"]  # type: ignore[assignment]
+    missing_attrs = [a for a in required_attrs if a not in ds.attrs]
+    if missing_attrs:
+        raise Era5OrographyError(
+            f"orography raster is missing required attrs {missing_attrs} (M-8)"
+        )
+
+    elevation_var = OROGRAPHY_RASTER_SCHEMA["elevation_variable"]
+    mask_var = OROGRAPHY_RASTER_SCHEMA["mask_variable"]
+    elev = np.asarray(ds[elevation_var].values)
+    flag = np.asarray(ds[mask_var].values).astype(bool)
+    nan_but_unflagged = np.isnan(elev) & ~flag
+    if bool(nan_but_unflagged.any()):
+        raise Era5OrographyError(
+            "orography raster has NaN elevation cell(s) not marked in "
+            "'no_data_flag' — the mask/no-data invariant is violated (M-8)"
+        )
 
 
 def orography_route_identity(spec: OrographySpec) -> str:
@@ -540,23 +616,49 @@ def build_orography_dataset(
     return ds
 
 
+def _orography_write_encoding() -> dict[str, dict[str, object]]:
+    """M-8 — the on-disk encoding, derived from the ONE frozen
+    `OROGRAPHY_RASTER_SCHEMA` rather than duplicated as separate literals at
+    the write call site."""
+    schema_encoding: dict[str, dict[str, object]] = OROGRAPHY_RASTER_SCHEMA[  # type: ignore[assignment]
+        "encoding"
+    ]
+    encoding: dict[str, dict[str, object]] = {}
+    for var_name, spec in schema_encoding.items():
+        entry = dict(spec)
+        if entry.get("_FillValue") == "NaN":
+            entry["_FillValue"] = float("nan")
+        encoding[var_name] = entry
+    return encoding
+
+
 def write_orography_raster(
     ds: xr.Dataset, *, data_root: Path, route_identity: str
 ) -> str:
     """Atomic tmp -> reopen-and-validate -> `os.replace`; returns the sha256
-    of the published file."""
+    of the published file.
+
+    MAJOR (2026-08-17) — this used to write with NO explicit encoding at
+    all (no compression, no declared fill value) and validate only that
+    `orography_elev_m` was present on reopen. It now writes from the single
+    frozen `OROGRAPHY_RASTER_SCHEMA` encoding and runs the SAME full-schema
+    validator (`assert_orography_raster_schema`) that reuse now also
+    runs — one validator, never two that can drift."""
     final_path = orography_raster_path(data_root, route_identity=route_identity)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_path_for(final_path)
     tmp_path.unlink(missing_ok=True)
-    ds.to_netcdf(tmp_path, engine="h5netcdf")
+    # Only encode variables actually present: an encoding entry for a
+    # variable the dataset lacks makes `to_netcdf` raise a raw `KeyError`
+    # before the reopen-and-validate step below ever runs, and a missing
+    # variable is exactly the kind of schema violation
+    # `assert_orography_raster_schema` exists to report as a typed error.
+    encoding = {k: v for k, v in _orography_write_encoding().items() if k in ds}
+    ds.to_netcdf(tmp_path, engine="h5netcdf", encoding=encoding)
     try:
         with xr.open_dataset(tmp_path, engine="h5netcdf") as reopened:
-            reopened.load()
-            if "orography_elev_m" not in reopened:
-                raise Era5OrographyError(
-                    "reopened orography raster missing 'orography_elev_m'"
-                )
+            loaded = reopened.load()
+            assert_orography_raster_schema(loaded)
         sha256 = checksum_file(tmp_path)
         publish_atomic(tmp_path, final_path)
     finally:
@@ -646,7 +748,15 @@ def verify_orography_materialisation(
     under a different route cannot be verified here; the caller must
     re-materialise (a changed spec is a legitimate event, so the CLI treats
     it as one — but reaching this function with a stale record is a bug, and
-    is typed as such)."""
+    is typed as such).
+
+    MAJOR (2026-08-17) — reuse used to trust `raster_schema_version` and
+    the raster's byte-for-byte SHAPE without ever reopening it: a record
+    claiming the wrong schema version, or a consistently rehashed but
+    schema-broken raster, was silently trusted. Every reuse now (a) checks
+    the record's claimed `raster_schema_version` against the CURRENT frozen
+    schema, and (b) reopens the raster and runs the SAME
+    `assert_orography_raster_schema` validator write-time uses."""
     current_route_identity = orography_route_identity(spec)
     if record.orography_route_identity != current_route_identity:
         raise Era5OrographyError(
@@ -697,6 +807,17 @@ def verify_orography_materialisation(
             f"{raster_sha256}, but the OrographySourceRecord says "
             f"{record.raster_sha256} — refusing to reuse a stale raster (D7)"
         )
+
+    if record.raster_schema_version != OROGRAPHY_SCHEMA_VERSION:
+        raise Era5OrographyError(
+            f"derived orography raster {record.raster_path!r} was recorded "
+            f"under raster_schema_version={record.raster_schema_version!r}, "
+            f"but the CURRENT frozen schema is "
+            f"{OROGRAPHY_SCHEMA_VERSION!r} — refusing to reuse a raster "
+            "written to a stale schema (M-8)"
+        )
+    with xr.open_dataset(raster_path, engine="h5netcdf") as reopened:
+        assert_orography_raster_schema(reopened.load())
 
     recomputed = orography_identity(
         # From the CURRENT spec (equal to the record's, asserted above) —

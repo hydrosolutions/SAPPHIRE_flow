@@ -74,6 +74,7 @@ from scripts.dhm_precip.era5_errors import (  # noqa: E402
     Era5AcquisitionError,
     Era5OrographyError,
     Era5StorageError,
+    ExtractionInputAbsentError,
     ExtractionPostConditionError,
 )
 from scripts.dhm_precip.era5_extract import (  # noqa: E402
@@ -150,6 +151,7 @@ log = structlog.get_logger(__name__)
 # (locked by a test).
 _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (DhmPrecipLoaderError, 2),
+    (ExtractionInputAbsentError, 2),
     (Era5OrographyError, 3),
     (ExtractionPostConditionError, 4),
     (Era5StorageError, 5),
@@ -218,21 +220,31 @@ POINTS_OUTPUT_ENCODING_SPEC: dict[str, dict[str, object]] = {
 
 def _xarray_encoding(shape: tuple[int, ...]) -> dict[str, dict[str, object]]:
     """Translate the frozen spec into the encoding dict the pinned encoder
-    takes, clamping the declared chunk policy to the array being written."""
+    takes, clamping the declared chunk policy to the array being written.
+
+    MAJOR (2026-08-17) — this used to duplicate the literal encoding values
+    (dtype/zlib/complevel/units/etc.) instead of READING
+    `POINTS_OUTPUT_ENCODING_SPEC` — the very spec `extraction_identity`
+    hashes. A change to one and not the other would silently write an
+    on-disk encoding the identity does not actually describe. Deriving from
+    the single spec here removes that possibility."""
     n_stations, n_hours = shape
+    precip_spec = POINTS_OUTPUT_ENCODING_SPEC["precipitation_mm_per_h"]
+    time_spec = POINTS_OUTPUT_ENCODING_SPEC["valid_time"]
+    station_spec = POINTS_OUTPUT_ENCODING_SPEC["station"]
     return {
         "precipitation_mm_per_h": {
-            "dtype": "float32",
-            "zlib": True,
-            "complevel": 4,
+            "dtype": precip_spec["dtype"],
+            "zlib": precip_spec["zlib"],
+            "complevel": precip_spec["complevel"],
             "chunksizes": (
-                min(_POINTS_CHUNK_STATIONS, n_stations),
-                min(_POINTS_CHUNK_HOURS, n_hours),
+                min(precip_spec["chunk_stations"], n_stations),  # type: ignore[arg-type]
+                min(precip_spec["chunk_hours"], n_hours),  # type: ignore[arg-type]
             ),
             "_FillValue": float("nan"),
         },
-        "valid_time": {"units": _POINTS_TIME_UNITS, "dtype": "int64"},
-        "station": {"dtype": "S1"},
+        "valid_time": {"units": time_spec["units"], "dtype": time_spec["dtype"]},
+        "station": {"dtype": station_spec["dtype"]},
     }
 
 
@@ -251,6 +263,63 @@ def _default_expected_stations() -> frozenset[Station]:
     )
 
 
+# D7 P7a (grill-me 2026-08-17) — the CDS request `RealOrographyDownloader`
+# actually issues. `OrographySpec.product_id`/`download_url` are the
+# MACHINE-VERIFIED half of the spec (asserted below, before any request);
+# everything else on the spec (`product_version`, `licence_*`,
+# `vertical_reference`, `source_crs`) is OPERATOR-ATTESTED — recorded from
+# the 1a probe, labelled as such in the manifest (`_orography_spec_payload`),
+# never asserted, because nothing in the CDS request lets this downloader
+# check them.
+_REQUEST_DATASET = "reanalysis-era5-land"
+_REQUEST_VARIABLE = "geopotential"
+_REQUEST_PRODUCT_ID = f"{_REQUEST_DATASET}:{_REQUEST_VARIABLE}"
+_REQUEST_DOWNLOAD_URL = (
+    "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=download"
+)
+
+
+def _assert_spec_matches_request(spec: OrographySpec) -> None:
+    """D7 (BLOCKER, round 4, grill-me 2026-08-17) — "ASSERT AGREEMENT; do
+    not build a request-builder." `RealOrographyDownloader.download()` used
+    to take `spec` and ignore it entirely (`# noqa: ARG002` suppressing the
+    exact lint finding that named this), hard-coding the CDS request — so a
+    changed spec (new product id, new URL) silently re-fetched the OLD
+    route while the manifest recorded the NEW spec: false provenance, the
+    same defect class four consecutive review rounds kept finding one layer
+    lower (identity clause -> reuse guard -> downloader).
+
+    This downloader IS the source of truth for the request; the spec only
+    LABELS it. Before ever requesting, assert the spec's machine-verifiable
+    fields agree with what this downloader is about to ask for, and raise a
+    typed error otherwise — a changed spec then fails loudly instead of
+    recording provenance nothing verified.
+
+    `area` is not asserted as a separate field here: this downloader always
+    requests `DEFAULT_REQUEST_SPEC.area` (module-level, never derived from
+    an argument to this call), so there is no divergent value it could pick
+    up at this layer — the possibility is removed, not checked (P1's own
+    pattern). The resulting raster's actual grid is machine-verified
+    downstream, once materialised, by `assert_grid_matches` against the
+    CLI's resolved area. `conversion_rule` is machine-verified in
+    `era5_orography.convert_field`, against the OBSERVED field magnitude —
+    not here, since nothing has been fetched yet."""
+    if spec.product_id != _REQUEST_PRODUCT_ID:
+        raise Era5OrographyError(
+            f"OrographySpec.product_id={spec.product_id!r} does not match "
+            f"what RealOrographyDownloader actually requests "
+            f"({_REQUEST_PRODUCT_ID!r}) — refusing to re-fetch the OLD "
+            "route under a NEW spec's provenance (D7 P7a)"
+        )
+    if spec.download_url != _REQUEST_DOWNLOAD_URL:
+        raise Era5OrographyError(
+            f"OrographySpec.download_url={spec.download_url!r} does not "
+            "match what RealOrographyDownloader actually requests "
+            f"({_REQUEST_DOWNLOAD_URL!r}) — refusing to re-fetch the OLD "
+            "route under a NEW spec's provenance (D7 P7a)"
+        )
+
+
 class RealOrographyDownloader:
     """Branch A (D3a): the CDS `geopotential` invariant field of the same
     `reanalysis-era5-land` dataset Plan 171 already acquires under. Untested
@@ -258,15 +327,16 @@ class RealOrographyDownloader:
     `era5_acquire.RealCdsClient` is untested for the same reason) — no
     credentials are available to this implementer (1a's own note)."""
 
-    def download(self, *, spec: object, dest_dir: Path) -> tuple[Path, ...]:  # noqa: ARG002
+    def download(self, *, spec: OrographySpec, dest_dir: Path) -> tuple[Path, ...]:
+        _assert_spec_matches_request(spec)
         import cdsapi  # dev-only (D13); imported lazily so this module loads
 
         client = cdsapi.Client(retry_max=1)
         target = dest_dir / "era5_land_geopotential.nc"
         client.retrieve(
-            "reanalysis-era5-land",
+            _REQUEST_DATASET,
             {
-                "variable": ["geopotential"],
+                "variable": [_REQUEST_VARIABLE],
                 "year": [f"{STUDY_YEARS[0]:04d}"],
                 "month": ["01"],
                 "day": ["01"],
@@ -280,6 +350,17 @@ class RealOrographyDownloader:
         return (target,)
 
 
+# BLOCKER (2026-08-17) — the CDS geopotential response is service-shaped
+# `z(valid_time, latitude, longitude)`, not `z(time, latitude, longitude)`;
+# the ERA5-Land raw contract elsewhere in this package uses `valid_time`
+# (`era5_acquire.py:319`). The old check only stripped a dimension literally
+# named `time`, so a real one-timestamp `valid_time` response stayed 3-D and
+# was handed unchanged to the 2-D aggregator, which cannot broadcast to it.
+# Every synthetic test reader returned an already-2-D array, so nothing
+# exercised this path.
+_TEMPORAL_DIM_NAMES = ("valid_time", "time")
+
+
 def _real_orography_raw_reader(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     with xr.open_dataset(path) as ds:
         for candidate in ("z", "geopotential"):
@@ -291,9 +372,30 @@ def _real_orography_raw_reader(path: Path) -> tuple[np.ndarray, np.ndarray, np.n
                 f"downloaded orography raster at {path} has neither 'z' nor "
                 "'geopotential' — cannot locate the geopotential variable"
             )
-        values = np.asarray(
-            var.isel(time=0).values if "time" in var.dims else var.values
-        )
+        temporal_dims = [d for d in var.dims if d in _TEMPORAL_DIM_NAMES]
+        if len(temporal_dims) > 1:
+            raise Era5OrographyError(
+                f"downloaded orography raster at {path} has more than one "
+                f"temporal dimension {temporal_dims} on the geopotential "
+                "variable — an invariant field must carry at most one"
+            )
+        if temporal_dims:
+            (temporal_dim,) = temporal_dims
+            n_stamps = var.sizes[temporal_dim]
+            if n_stamps != 1:
+                raise Era5OrographyError(
+                    f"downloaded orography raster at {path} has {n_stamps} "
+                    f"'{temporal_dim}' stamp(s) — an invariant field must "
+                    "carry exactly one"
+                )
+            var = var.isel({temporal_dim: 0}, drop=True)
+        if set(var.dims) != {"latitude", "longitude"}:
+            raise Era5OrographyError(
+                f"downloaded orography raster at {path} has dims "
+                f"{tuple(var.dims)} after dropping the temporal axis — "
+                "expected exactly ('latitude', 'longitude')"
+            )
+        values = np.asarray(var.transpose("latitude", "longitude").values)
         lat = np.asarray(ds["latitude"].values)
         lon = np.asarray(ds["longitude"].values)
     return values, lat, lon
@@ -426,8 +528,6 @@ def run(
     nearest_parts: dict[Station, list[ExtractedSeries]] = {}
     bilinear_parts: dict[Station, list[ExtractedSeries]] = {}
     source_sha256s: list[str] = []
-    precip_lat: np.ndarray | None = None
-    precip_lon: np.ndarray | None = None
 
     for year in STUDY_YEARS:
         product_path = product_artifact_path(year, data_root)
@@ -436,14 +536,23 @@ def run(
             raise Era5StorageError(
                 f"no transformed-year record for {year} in the acquisition manifest"
             )
+        # MINOR (2026-08-17) — a missing annual product used to reach
+        # `checksum_file`, which wraps the resulting `FileNotFoundError` as
+        # `Era5StorageError` (exit 5). D9 assigns a missing product to exit
+        # code 2 ("inputs absent"), not a storage failure: nothing was
+        # written and nothing failed to write, the input simply is not
+        # there yet (Plan 171 Task 4b has not run).
+        if not product_path.exists():
+            raise ExtractionInputAbsentError(
+                f"acquired ERA5-Land product for {year} is missing at "
+                f"{product_path} (D9 exit code 2: inputs absent)"
+            )
         assert_source_checksum(product_path, expected_sha256=record.sha256)
         source_sha256s.append(record.sha256)
         with xr.open_dataset(product_path, engine="h5netcdf") as reopened:
             ds = reopened.load()
         assert_extraction_source_valid(ds, expected_year=year, expected_area=area)
         assert_utc_epoch_encoding(ds)
-        precip_lat = ds["latitude"].values
-        precip_lon = ds["longitude"].values
         for station, coord in stations.by_station.items():
             nearest = extract_nearest_series(ds, coord)
             assert_no_missing_primary(nearest)
@@ -451,17 +560,17 @@ def run(
             nearest_parts.setdefault(station, []).append(nearest)
             bilinear_parts.setdefault(station, []).append(bilinear)
 
-    assert (
-        precip_lat is not None and precip_lon is not None
-    )  # STUDY_YEARS is never empty
-
     merged_nearest = {s: _concat_series(v) for s, v in nearest_parts.items()}
     merged_bilinear = {s: _concat_series(v) for s, v in bilinear_parts.items()}
 
+    # MAJOR (2026-08-17) — the nearest grid cell for each station is read
+    # off the already-computed PRIMARY series (`merged_nearest`), never
+    # recomputed independently from raw lat/lon arrays; see
+    # `build_station_grid_elevation_table`'s docstring for why the two used
+    # to be able to disagree.
     elevation_rows = build_station_grid_elevation_table(
         stations,
-        precip_lat=precip_lat,
-        precip_lon=precip_lon,
+        nearest_by_station=merged_nearest,
         orography_ds=orography_ds,
         orography_source=OBSERVED_OROGRAPHY_SPEC.source,
         orography_product_id=OBSERVED_OROGRAPHY_SPEC.product_id,
@@ -566,11 +675,48 @@ def run(
     return 0
 
 
+# D7 P7a (slim review, grill-me 2026-08-17) — the assertion in
+# `_assert_spec_matches_request` NARROWS the false-provenance gap; it does
+# not remove it. `product_version` (and the other fields below) cannot be
+# checked against anything the CDS request itself exposes — a longer
+# assertion list cannot fix that, because there is nothing to compare
+# against. Splitting the spec's fields by who can vouch for them makes the
+# residue visible in the manifest instead of silently claiming "verified"
+# about a field nothing verified.
+MACHINE_VERIFIED_SPEC_FIELDS: frozenset[str] = frozenset(
+    {"product_id", "download_url", "conversion_rule"}
+)
+"""Asserted against the actual request/observation before use: `product_id`
+and `download_url` in `_assert_spec_matches_request` (before any CDS
+request); `conversion_rule` in `era5_orography.convert_field` (against the
+observed field magnitude). `area` is not a spec field at all (see
+`_assert_spec_matches_request`'s docstring)."""
+
+OPERATOR_ATTESTED_SPEC_FIELDS: frozenset[str] = frozenset(
+    {
+        "product_version",
+        "licence_name",
+        "licence_version",
+        "licence_url",
+        "vertical_reference",
+        "source_crs",
+    }
+)
+"""Recorded verbatim from the 1a probe. Nothing in the pipeline can verify
+these against the live service — CDS offers no way to select or confirm a
+product version, for instance — so they are labelled `attested`, never
+`verified`, in the manifest."""
+
+
 def _orography_spec_payload(spec: OrographySpec) -> dict[str, object]:
     """D9 — EVERY `OrographySpec` field, JSON-safe. Serialising only four of
     them (product id/version, source, vertical reference) dropped the
     licence, the URL, the CRS, the units, the no-data sentinel and both
-    frozen rules — i.e. most of what makes the route reproducible."""
+    frozen rules — i.e. most of what makes the route reproducible.
+
+    P7a — the payload also carries which fields are machine-verified versus
+    operator-attested, so a reader cannot mistake the latter for the
+    former."""
     payload = asdict(spec)
     payload["source"] = str(spec.source)
     payload["vertical_reference"] = str(spec.vertical_reference)
@@ -579,6 +725,10 @@ def _orography_spec_payload(spec: OrographySpec) -> dict[str, object]:
     payload["rejected_candidates"] = [
         asdict(candidate) for candidate in spec.rejected_candidates
     ]
+    payload["provenance"] = {
+        "machine_verified_fields": sorted(MACHINE_VERIFIED_SPEC_FIELDS),
+        "operator_attested_fields": sorted(OPERATOR_ATTESTED_SPEC_FIELDS),
+    }
     return payload
 
 
@@ -587,12 +737,14 @@ def _concat_series(parts: list[ExtractedSeries]) -> ExtractedSeries:
     valid_time = np.concatenate([p.valid_time for p in parts])
     values = np.concatenate([p.values for p in parts])
     n_nan = int(np.isnan(values).sum())
+    n_inf = int(np.isinf(values).sum())
     return replace(
         first,
         valid_time=valid_time,
         values=values,
-        n_finite=values.size - n_nan,
+        n_finite=values.size - n_nan - n_inf,
         n_nan=n_nan,
+        n_inf=n_inf,
     )
 
 

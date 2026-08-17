@@ -77,6 +77,15 @@ class Era5ExtractionError(Era5AcquisitionError):
     """Base for every M-A5 point-extraction error."""
 
 
+class ExtractionInputAbsentError(Era5ExtractionError):
+    """D9 — a required extraction input is absent from disk, checked BEFORE
+    any read is attempted: the acquired per-year product file is missing
+    (Plan 171 Task 4b has not produced it), the coordinate table is missing,
+    or the orography spec/route is unavailable. CLI exit code 2 — distinct
+    from a storage WRITE failure (exit 5, `Era5StorageError`) and from a
+    post-condition failure on data that does exist (exit 4)."""
+
+
 class Era5OrographyError(Era5ExtractionError):
     """D3a/D3b — orography acquisition, conversion or aggregation failed
     (a magnitude-check failure, a hash mismatch against an existing

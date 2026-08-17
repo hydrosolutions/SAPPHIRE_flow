@@ -102,9 +102,12 @@ _CLOCK_NOW = datetime(2026, 8, 16, tzinfo=UTC)
 
 
 def _write_payload_files(directory: Path, *, marker: str = "x") -> None:
-    """A REAL D9 payload set — the D7.3 reconcile check runs the same
-    reopen-and-validate bundle validator the staging path must pass, so a
-    stub text file is no longer sufficient."""
+    """A REAL D9 payload set — the P4a reconcile check AND the full D9
+    schema validator (station uniqueness/equality, required columns/enum
+    values, series dims/dtype/time-axis/encoding/attributes) both run the
+    same reopen-and-validate bundle validator the staging path must pass,
+    so a two-column stub is no longer sufficient (that stub is exactly what
+    `TestPublishEnforcesFullD9Schema` below proves used to publish)."""
     import numpy as np
     import polars as pl
     import xarray as xr
@@ -113,17 +116,65 @@ def _write_payload_files(directory: Path, *, marker: str = "x") -> None:
         ["2021-01-01T00", "2021-01-01T01", "2021-01-01T02"], dtype="datetime64[ns]"
     )
     values = np.zeros((len(_STATIONS), valid_time.size), dtype=np.float32)
+    encoding = {
+        "precipitation_mm_per_h": {
+            "dtype": "float32",
+            "zlib": True,
+            "complevel": 4,
+            "_FillValue": float("nan"),
+        },
+        "valid_time": {"units": "hours since 1970-01-01 00:00:00", "dtype": "int64"},
+    }
     for name in ("series_nearest.nc", "series_bilinear.nc"):
-        xr.Dataset(
+        ds = xr.Dataset(
             {"precipitation_mm_per_h": (["station", "valid_time"], values)},
             coords={"station": list(_STATIONS), "valid_time": valid_time},
-        ).to_netcdf(directory / name, engine="h5netcdf")
+        )
+        ds["valid_time"].attrs["timezone"] = "UTC"
+        ds.to_netcdf(directory / name, engine="h5netcdf", encoding=encoding)
     pl.DataFrame(
-        {"station": list(_STATIONS), "marker": [marker] * len(_STATIONS)}
+        {
+            "station": list(_STATIONS),
+            "lat": [26.0, 26.1],
+            "lon": [85.0, 85.1],
+            "grid_lat": [26.0, 26.1],
+            "grid_lon": [85.0, 85.1],
+            "grid_i": [0, 1],
+            "grid_j": [0, 1],
+            "offset_km": [0.0, 0.0],
+            "station_elev_m": [1500.0, 1900.0],
+            "station_elevation_datum": ["UNKNOWN", "UNKNOWN"],
+            "orography_elev_m": [1490.0, 1880.0],
+            "orography_elevation_datum": ["LOCAL_MSL", "LOCAL_MSL"],
+            "orography_source": ["MODEL_OROGRAPHY", "MODEL_OROGRAPHY"],
+            "orography_product_id": ["p", "p"],
+            "orography_product_version": ["1", "1"],
+            "elev_mismatch_m": [10.0, 20.0],
+            "datum_reconciled": ["UNRECONCILED", "UNRECONCILED"],
+            "shared_cell_id": ["0_0", "1_1"],
+            "stations_in_cell": [1, 1],
+            "marker": [marker, marker],
+        }
     ).write_csv(directory / "station_grid_elevation.csv")
-    pl.DataFrame({"scope": ["ACROSS_STATION"], "marker": [marker]}).write_csv(
-        directory / "operator_sensitivity.csv"
-    )
+    pl.DataFrame(
+        {
+            "scope": ["ACROSS_STATION"],
+            "station": [None],
+            "season": ["ALL"],
+            "statistic": ["QUANTILE"],
+            "quantile": [0.5],
+            "nearest_value": [1.0],
+            "bilinear_value": [1.0],
+            "delta_absolute": [0.0],
+            "delta_unit": ["MM_PER_H"],
+            "ratio": [1.0],
+            "n_hours_common_finite": [3],
+            "n_hours_excluded": [0],
+            "n_wet_nearest": [1],
+            "n_wet_bilinear": [1],
+            "sign_agreement_fraction": [1.0],
+        }
+    ).write_csv(directory / "operator_sensitivity.csv")
 
 
 def _payload_sha256s(directory: Path) -> dict[str, str]:
@@ -291,16 +342,99 @@ class TestPublishRefusesAnInvalidBundle:
     ) -> None:
         """P4a — the manifest's `payload_sha256s` must reconcile against the
         actual file bytes. A payload edited after `write_extraction_manifest`
-        ran must fail publication, not merely a later discovery read."""
+        ran must fail publication, not merely a later discovery read.
+
+        The tampering here preserves every D9-required column/value (only
+        the extra, non-required `marker` column changes) so this exercises
+        the P4a sha256 reconciliation specifically, not the schema checks
+        covered separately by `TestPublishEnforcesFullD9Schema`."""
+        import polars as pl
+
         staged = _staged_bundle(tmp_path, identity="tampered")
-        # Same row count (2 stations, so the reopen shape check still
-        # passes) but different CONTENT than what the manifest's sha256 was
-        # computed over — this must be caught by the P4a reconciliation.
-        (staged / "station_grid_elevation.csv").write_text(
-            "station,marker\nalpha,tampered\nbeta,tampered\n"
-        )
+        frame = pl.read_csv(staged / "station_grid_elevation.csv")
+        frame = frame.with_columns(pl.lit("tampered").alias("marker"))
+        frame.write_csv(staged / "station_grid_elevation.csv")
         with pytest.raises(
             ExtractionPostConditionError, match="station_grid_elevation.csv"
         ):
             _publish(staged, tmp_path, "tampered")
+        assert _published_dirs(tmp_path) == []
+
+
+class TestPublishEnforcesFullD9Schema:
+    """BLOCKER (2026-08-17 review) — the D9 validator used to check only
+    variable presence, station COUNTS and CSV readability, so a subtly
+    broken writer could hash a malformed payload and publish successfully.
+    Each case below passed the OLD validator (proven by stashing this fix
+    and re-running); each must now be refused.
+
+    Every tampered file is rewritten AFTER the manifest so the manifest's
+    `payload_sha256s` reconcile against the tampered bytes — isolating the
+    SCHEMA check under test from the separate P4a sha256-reconciliation
+    check above.
+    """
+
+    def _restaged(
+        self, tmp_path: Path, *, identity: str, elevation_csv_text: str
+    ) -> Path:
+        staging = _staged_bundle(tmp_path, identity=identity)
+        (staging / "station_grid_elevation.csv").write_text(elevation_csv_text)
+        _write_manifest(
+            staging, identity=identity, payload_sha256s=_payload_sha256s(staging)
+        )
+        return staging
+
+    def test_duplicate_station_rows_in_the_elevation_csv_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        header = (
+            "station,lat,lon,grid_lat,grid_lon,grid_i,grid_j,offset_km,"
+            "station_elev_m,station_elevation_datum,orography_elev_m,"
+            "orography_elevation_datum,orography_source,orography_product_id,"
+            "orography_product_version,elev_mismatch_m,datum_reconciled,"
+            "shared_cell_id,stations_in_cell\n"
+        )
+        row = (
+            "alpha,26.0,85.0,26.0,85.0,0,0,0.0,1500.0,UNKNOWN,1490.0,"
+            "LOCAL_MSL,MODEL_OROGRAPHY,p,1,10.0,UNRECONCILED,0_0,1\n"
+        )
+        staging = self._restaged(
+            tmp_path, identity="dup-station", elevation_csv_text=header + row + row
+        )
+        with pytest.raises(ExtractionPostConditionError, match="duplicate"):
+            _publish(staging, tmp_path, "dup-station")
+        assert _published_dirs(tmp_path) == []
+
+    def test_elevation_stations_disagreeing_with_the_series_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        import polars as pl
+
+        staging = _staged_bundle(tmp_path, identity="mismatched-station")
+        frame = pl.read_csv(staging / "station_grid_elevation.csv")
+        frame = frame.with_columns(pl.Series("station", ["alpha", "gamma"]))
+        frame.write_csv(staging / "station_grid_elevation.csv")
+        _write_manifest(
+            staging,
+            identity="mismatched-station",
+            payload_sha256s=_payload_sha256s(staging),
+        )
+        with pytest.raises(ExtractionPostConditionError, match="station set"):
+            _publish(staging, tmp_path, "mismatched-station")
+        assert _published_dirs(tmp_path) == []
+
+    def test_elevation_csv_missing_required_d9_columns_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The exact shape the OLD `_write_payload_files` fixture used
+        (`station, marker` only, two of the eighteen required D9 columns) —
+        proof that a subtly broken writer emitting almost none of the
+        required columns used to publish successfully."""
+        staging = self._restaged(
+            tmp_path,
+            identity="missing-columns",
+            elevation_csv_text="station,marker\nalpha,x\nbeta,x\n",
+        )
+        with pytest.raises(ExtractionPostConditionError, match="required column"):
+            _publish(staging, tmp_path, "missing-columns")
         assert _published_dirs(tmp_path) == []

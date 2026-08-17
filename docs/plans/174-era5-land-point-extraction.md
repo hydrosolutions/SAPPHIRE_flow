@@ -20,6 +20,40 @@ was sound and is kept; **all four blockers were defects in machinery the loop it
 each is resolved above by removing structure rather than adding more (D5.0, the `OrographySpec` /
 `OrographySourceRecord` split, 1b's narrowed scope, D7's three publication corrections).
 
+**Post-implementation fixer round (2026-08-17), against commit `63d88a7`.** An independent Codex pass
+over the committed diff found 3 blockers, 4 majors and 1 minor, all now fixed in code with locking
+tests (test-soundness proven fail-against-buggy for every correctness fix):
+
+- **D7 P7a's "ASSERT AGREEMENT" decision was documented but not implemented** —
+  `RealOrographyDownloader.download()` still took `spec: object` and ignored it (`# noqa: ARG002`,
+  the exact defect the grill-me decision above was written to remove). Fixed:
+  `_assert_spec_matches_request` (`extract_era5.py`) asserts `product_id`/`download_url` before any
+  CDS request, and the manifest's `orography_spec.provenance` now labels
+  `MACHINE_VERIFIED_SPEC_FIELDS` vs `OPERATOR_ATTESTED_SPEC_FIELDS` per P7a.
+- **P7's own live instance — `zero_policy` — was still hashed-but-unread.** Fixed: the quantile
+  population in `_add_quantile_rows` now branches on `params.zero_policy`
+  (`era5_extract.build_operator_sensitivity_table`); `n_wet_nearest`/`n_wet_bilinear` still report the
+  literal wet-hour counts regardless of policy. `quantile_definition` and `_xarray_encoding` now read
+  the frozen parameter/spec objects instead of duplicating literals, and `extraction_identity`'s
+  payload is split into labelled `value_inputs`/`invalidation_inputs` (P7a).
+- **`reopen_and_validate_bundle` (P4a) validated far less than D9 declares** — no station
+  uniqueness/equality across the series and elevation table, no required-column/enum checks, no
+  series dims/dtype/time-axis/encoding/attrs checks, no manifest-identity-consistency check. Fixed:
+  one shared D9 validator in `era5_extract_manifest.py` now covers all of it; a malformed bundle that
+  previously published cleanly (the `{station, marker}`-only shape the old test fixture used) is now
+  refused.
+- **M-8's raster schema was pinned but never enforced on reuse** — `verify_orography_materialisation`
+  never reopened the raster or checked `raster_schema_version`. Fixed: `assert_orography_raster_schema`
+  (`era5_orography.py`) is now the one validator run both after write and on every reuse; the schema
+  itself grew an encoding/compression policy and a required-attrs list.
+- Three further majors: `build_station_grid_elevation_table` now reads its nearest-cell indices off the
+  already-computed primary `ExtractedSeries` instead of an independent `np.argmin` lookup (the two
+  could disagree on an exact grid-midpoint tie-break); non-finite gating/accounting now uses
+  `np.isfinite` (an isolated `+inf`/`-inf` previously passed the D11.2 gate silently, tracked via a new
+  `ExtractedSeries.n_inf` field); the real orography raw reader now handles a service-shaped
+  `z(valid_time, latitude, longitude)` response instead of only ever stripping a literal `time` dim.
+- Minor: a missing annual product now exits 2 (`ExtractionInputAbsentError`), not 5.
+
 ### Residual review findings — KNOWN, accepted into implementation
 
 Not folded above. The owner set READY with these open; they are recorded so the implementer meets
