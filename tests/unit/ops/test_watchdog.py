@@ -1274,6 +1274,10 @@ class TestProbeForecastFreshness:
         assert result.found is True
         assert result.checked_at == datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
         assert result.cycle_time == datetime(2026, 7, 12, 3, 0, tzinfo=UTC)
+        # Fixer round (major 2): this test previously never asserted
+        # `status` at all, leaving the HTTP `status` field's parsing
+        # unlocked here.
+        assert result.status == "ok"
 
     def test_naive_cycle_time_is_normalized_to_tz_aware(self) -> None:
         # Same normalization requirement as `checked_at` — a naive
@@ -1889,6 +1893,62 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast cycle stored ZERO forecasts" in msg
+        assert "status: critical" in msg
+
+    def test_critical_status_via_real_probe_alerts(self, tmp_path: Path) -> None:
+        """Fixer round (major 2): the sibling test above (and the whole
+        acceptance scenario) exercised the critical-status alert path only
+        through a hand-built `_forecast_freshness_critical_probe` fake --
+        never through the REAL `probe_forecast_freshness`. A broken real
+        probe that discarded or hard-coded the HTTP status would have
+        passed every such test while production silently ignored CRITICAL
+        records. This drives the actual HTTP-to-alert boundary end to
+        end: a `MockTransport` response carrying `status: "critical"`
+        (with a FRESH `cycle_time`, isolating the critical-status path
+        from the staleness path) is parsed by the real probe and fed into
+        `run_once`."""
+        import httpx
+
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "checked_at": _NOW.isoformat(),
+                            "cycle_time": _NOW.isoformat(),
+                            "status": "critical",
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+
+        def real_probe(url: str) -> ForecastFreshnessResult:
+            return probe_forecast_freshness(url, client=client)
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=real_probe,
         )
 
         assert state.consecutive_forecast_freshness_failures == 1

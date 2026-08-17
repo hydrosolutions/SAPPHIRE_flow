@@ -602,6 +602,7 @@ def _emit_forecast_freshness_record(
     resolved_cycle_time: UtcDatetime,
     forecasts_stored: int,
     checked_at: UtcDatetime,
+    force_critical: bool = False,
 ) -> None:
     """Plan 116: FORECAST_FRESHNESS heartbeat — a SEPARATE contract from
     ``ForecastCycleHealth`` above. ``health`` encodes operational
@@ -616,6 +617,16 @@ def _emit_forecast_freshness_record(
     partial-coverage state is tracked here (that is the explicitly
     out-of-scope per-product coverage ledger).
 
+    ``force_critical`` covers a THIRD case beyond the plain forecasts_stored
+    count: a mid-cycle fatal ``StoreError`` (Plan 116 fixer round, major 1).
+    A cycle that crashes out on a store outage never reaches a normal
+    end-of-cycle accounting, so the ordinary "any success so far is OK"
+    heuristic below does not apply — some earlier forecast(s) may well have
+    stored fine before the fatal one, but the cycle itself did not complete
+    normally and must not read as healthy. The caller emits this from the
+    ``except StoreError`` handler, with ``forecasts_stored`` still recorded
+    in ``detail`` for diagnostics, immediately before re-raising.
+
     Runs invoked with an explicit ``cycle_time`` (backfill/replay) do NOT
     emit this record at all: ``PipelineHealthStore.fetch_recent`` orders
     by ``checked_at``, not ``cycle_time``, and the watchdog probe asks for
@@ -629,7 +640,7 @@ def _emit_forecast_freshness_record(
         return
     status = (
         PipelineHealthStatus.CRITICAL
-        if forecasts_stored == 0
+        if force_critical or forecasts_stored == 0
         else PipelineHealthStatus.OK
     )
     _append_pipeline_health_record(
@@ -2596,16 +2607,30 @@ def run_forecast_cycle_flow(
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
+                            except StoreError:
+                                # Fixer round (major, take 2): a total
+                                # forecast_store outage must still get BOTH
+                                # properties, not a choice between them —
+                                # emit the freshness record using
+                                # `forecasts_stored` as it stands at this
+                                # moment (so the watchdog is never blind),
+                                # forced CRITICAL (a mid-cycle fatal crash is
+                                # never "OK" merely because an earlier group
+                                # forecast in the same cycle happened to
+                                # store first), then RE-RAISE so the fatal
+                                # storage signal still propagates (see the
+                                # group-store-error-mid-cycle acceptance
+                                # test).
+                                _emit_forecast_freshness_record(
+                                    pipeline_health_store,
+                                    cycle_time_param=cycle_time,
+                                    resolved_cycle_time=resolved_cycle_time,
+                                    forecasts_stored=forecasts_stored,
+                                    checked_at=clock(),
+                                    force_critical=True,
+                                )
+                                raise
                             except Exception as exc:
-                                # Fixer round (major): a StoreError here must
-                                # NOT propagate — a total forecast_store
-                                # outage in a group-only deployment would
-                                # otherwise crash the whole flow before it
-                                # ever reaches `_emit_forecast_freshness_record`
-                                # at the bottom, leaving the watchdog blind
-                                # (see the group-only acceptance test). This
-                                # now matches the station path above, which
-                                # has never special-cased StoreError here.
                                 log.warning(
                                     "forecast_cycle.store_forecast_failed",
                                     station_id=str(sid),

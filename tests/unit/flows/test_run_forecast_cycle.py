@@ -1079,6 +1079,28 @@ class _AlwaysRaisingForecastStore:
         return getattr(self._inner, name)
 
 
+class _FailAfterNForecastStore:
+    """Wraps a ``FakeForecastStore``; the first ``n`` calls to
+    ``store_forecast`` succeed and delegate to the inner fake, every call
+    after that raises ``StoreError`` — Plan 116 fixer round major 1's
+    acceptance scenario: a group cycle where an EARLIER forecast stores
+    fine and a LATER one hits a fatal store outage mid-cycle."""
+
+    def __init__(self, *, n: int) -> None:
+        self._inner = FakeForecastStore()
+        self._n = n
+        self.calls = 0
+
+    def store_forecast(self, forecast: OperationalForecast) -> object:
+        self.calls += 1
+        if self.calls > self._n:
+            raise StoreError("simulated store_forecast failure after N successes")
+        return self._inner.store_forecast(forecast)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
 def _only_nwp_delivery_record(
     health_store: FakePipelineHealthStore,
 ) -> PipelineHealthRecord:
@@ -3655,6 +3677,67 @@ enabled = false
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.CRITICAL
 
+    def test_no_active_assignment_emits_critical_freshness_record(self) -> None:
+        """Requirement 3, a DIFFERENT variant from the no-operational-
+        stations case above (fixer round, minor): an operational cycle
+        where every station IS operational and has a valid weather-source
+        binding, but every one legitimately has NO active model
+        assignment (`forecast_cycle.no_assignments` — every station is
+        skipped, not failed). Zero forecasts stored either way — the
+        freshness heartbeat must still be CRITICAL, not skipped just
+        because this is a `continue`, not an error, path."""
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 0
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["forecasts_stored"] == 0
+
     def test_nwp_fetch_failed_abort_emits_critical_freshness_record(self) -> None:
         """The Plan 100 blackout shape: NWP fetch fails hard and the cycle
         aborts before Phase B. Zero forecasts stored — must still be
@@ -3714,16 +3797,15 @@ enabled = false
     def test_group_only_total_store_forecast_failure_emits_critical_freshness_record(
         self,
     ) -> None:
-        """Fixer round (major): a group-only deployment (no station-level
-        model assignments — every station is served exclusively through
-        `discover_group_runs`) must ALSO reach the freshness emitter on a
-        total `store_forecast` failure. Before the fix, the group
-        forecast-store loop special-cased `StoreError` with a bare
-        `raise`, which propagated all the way out of the flow (there is no
-        function-level `except` around the flow body, only a `finally`)
-        and skipped `_emit_forecast_freshness_record` entirely — the
-        watchdog would then see only the previous heartbeat, not this
-        cycle's total failure."""
+        """Fixer round (major, take 2): a group-only deployment (no
+        station-level model assignments — every station is served
+        exclusively through `discover_group_runs`) must ALSO reach the
+        freshness emitter on a total `store_forecast` failure — AND the
+        fatal `StoreError` must still propagate out of the flow (a total
+        store outage is not something the flow can silently absorb;
+        `docs/conventions.md:256` — "log, raise to caller"). The group
+        forecast-store loop now catches `StoreError` specifically, emits
+        the freshness record (forced CRITICAL), and re-raises."""
         sid_a = StationId(uuid4())
         sid_b = StationId(uuid4())
         group_model_id = ModelId("fake_group_model")
@@ -3759,29 +3841,27 @@ enabled = false
             frozenset({sid_a, sid_b}),
         )
 
-        result = run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=_AlwaysRaisingForecastStore(),  # type: ignore[arg-type]
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=alert_store,
-            pipeline_health_store=pipeline_health_store,
-            baseline_store=baseline_store,
-            basin_store=basin_store,
-            group_store=group_store,
-            forcing_store=forcing_store,
-            adapter=FakeWeatherForecastSource(result={}),
-            models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
-            config=_make_config(),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-        )
-
-        assert result.forecasts_stored == 0
-        assert any("Store failed" in err for err in result.errors)
+        with pytest.raises(StoreError):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=_AlwaysRaisingForecastStore(),  # type: ignore[arg-type]
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                group_store=group_store,
+                forcing_store=forcing_store,
+                adapter=FakeWeatherForecastSource(result={}),
+                models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
 
         records = pipeline_health_store.fetch_recent(
             PipelineCheckType.FORECAST_FRESHNESS
@@ -3789,6 +3869,96 @@ enabled = false
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.CRITICAL
         assert records[0].detail["forecasts_stored"] == 0
+        assert records[0].subject == "forecast_cycle"
+
+    def test_group_store_error_mid_cycle_emits_critical_record_and_propagates(
+        self,
+    ) -> None:
+        """Fixer round (major 1): the PREVIOUS fixer round's fix introduced
+        the very defect this feature exists to detect. It replaced
+        `except StoreError: raise` with a broad `except Exception` that
+        swallowed the error — so if one group forecast stores
+        successfully and a LATER one raises `StoreError`,
+        `forecasts_stored > 0` produced an OK freshness record and the
+        flow completed SUCCESSFULLY, losing the fatal storage signal
+        entirely. The correct fix gets BOTH properties: emit the
+        freshness record using the counter as it stands at that moment
+        (forced CRITICAL — a mid-cycle crash is never "OK" just because
+        an earlier forecast happened to store first), then RE-RAISE so
+        the fatal signal still propagates. Must be RED against the
+        broad-`except Exception` version, which returns normally with an
+        OK record."""
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (sid_a, sid_b):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                seed_model_assignment=False,
+                seed_artifact=False,
+            )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid_a, sid_b}),
+        )
+
+        # First store_forecast call succeeds (stores fine), the second
+        # (a later station's forecast within the same group cycle) raises
+        # StoreError — the mid-cycle partial-success scenario.
+        failing_store = _FailAfterNForecastStore(n=1)
+
+        with pytest.raises(StoreError):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=failing_store,  # type: ignore[arg-type]
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                group_store=group_store,
+                forcing_store=forcing_store,
+                adapter=FakeWeatherForecastSource(result={}),
+                models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert failing_store.calls >= 2
+
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is not PipelineHealthStatus.OK
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["forecasts_stored"] == 1
         assert records[0].subject == "forecast_cycle"
 
     def test_climatology_floor_writes_forecast_when_nwp_off_and_skill_fails(
@@ -4618,6 +4788,11 @@ enabled = false
         forecast_store = FakeForecastStore()
         state_store = FakeModelStateStore()
         alert_store = FakeAlertStore()
+        # Fixer round (minor): a pipeline_health_store is now wired through
+        # this group-only success scenario so the FORECAST_FRESHNESS
+        # heartbeat itself is locked here too (Requirement 3), not just the
+        # forecasts-stored bookkeeping.
+        pipeline_health_store = FakePipelineHealthStore()
         baseline_store = FakeClimBaselineStore()
         basin_store = FakeBasinStore()
         group_store = FakeStationGroupStore()
@@ -4650,6 +4825,7 @@ enabled = false
             model_state_store=state_store,
             artifact_store=artifact_store,
             alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
             baseline_store=baseline_store,
             basin_store=basin_store,
             group_store=group_store,
@@ -4672,6 +4848,13 @@ enabled = false
             (sid_a, group_model_id),
             (sid_b, group_model_id),
         }
+
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.OK
+        assert records[0].detail["forecasts_stored"] == 2
 
     def test_group_path_drops_non_operational_members(self) -> None:
         operational_sid = StationId(uuid4())
