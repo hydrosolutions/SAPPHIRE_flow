@@ -858,6 +858,135 @@ class TestPrecedence:
         )
 
 
+class TestDuplicateCodeAndKindCollision:
+    """Fixer round (post-186 review) — D4's closing guarantee is 'exactly
+    one outcome per eligible config, always'. Two eligible `StationConfig`s
+    that share one `(code, station_kind)` key (e.g. the same physical BAFU
+    gauge onboarded under two tenant rows) used to collapse onto one index
+    entry, silently dropping one config's outcome. These lock BOTH the
+    success path and the whole-batch-failure path against that regression."""
+
+    def test_success_duplicate_code_and_kind_each_get_their_own_outcome(self) -> None:
+        station_a = make_station_config(
+            code="2044", network="bafu", rng=random.Random(41)
+        )
+        station_b = make_station_config(
+            code="2044", network="other-tenant", rng=random.Random(42)
+        )
+        assert station_a.id != station_b.id
+        bindings = _river_triples("2044", discharge="42.0")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {station_a.id: _SINCE, station_b.id: _SINCE}
+
+        result = adapter.fetch_observations_batch([station_a, station_b], since)
+
+        outcome_station_ids = {o.station_id for o in result.outcomes}
+        assert len(result.outcomes) == 2
+        assert outcome_station_ids == {station_a.id, station_b.id}
+        assert all(o.failure_cause is None for o in result.outcomes)
+        assert all(len(o.observations) == 1 for o in result.outcomes)
+
+    def test_whole_batch_failure_duplicate_code_and_kind_each_get_their_own_outcome(
+        self,
+    ) -> None:
+        station_a = make_station_config(
+            code="2044", network="bafu", rng=random.Random(43)
+        )
+        station_b = make_station_config(
+            code="2044", network="other-tenant", rng=random.Random(44)
+        )
+        assert station_a.id != station_b.id
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429)
+
+        adapter = _batch_adapter(httpx.MockTransport(handler), max_retries=1)
+        since = {station_a.id: _SINCE, station_b.id: _SINCE}
+
+        result = adapter.fetch_observations_batch([station_a, station_b], since)
+
+        outcome_station_ids = {o.station_id for o in result.outcomes}
+        assert len(result.outcomes) == 2
+        assert outcome_station_ids == {station_a.id, station_b.id}
+        assert all(
+            o.failure_cause is FetchOutcomeCause.RATE_LIMITED for o in result.outcomes
+        )
+
+
+class TestLakeStationKindFiltering:
+    """Fixer round (post-186 review) — the whole-graph query and its
+    grouping stage discriminate subjects purely by URI segment, carrying no
+    per-predicate station-kind filter. A LAKE station's matched subject must
+    still never emit `discharge`/`water_temperature` (RIVER-only
+    dimensions), matching the non-goal of not changing what gets stored."""
+
+    def test_lake_subject_with_river_only_params_emits_only_water_level(self) -> None:
+        subject = f"{_LAKE_BASE}/2208"
+        bindings = [
+            _triple(subject, f"{_DIM}/measurementTime", "2026-04-17T00:00:00Z"),
+            _triple(subject, f"{_DIM}/waterLevel", "394.2"),
+            _triple(subject, f"{_DIM}/discharge", "99.0"),
+            _triple(subject, f"{_DIM}/waterTemperature", "12.5"),
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        lake_station = make_station_config(
+            code="2208", station_kind=StationKind.LAKE, rng=random.Random(45)
+        )
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        result = adapter.fetch_observations_batch(
+            [lake_station], {lake_station.id: _SINCE}
+        )
+
+        assert len(result.outcomes) == 1
+        outcome = result.outcomes[0]
+        assert outcome.failure_cause is None
+        parameters = {o.parameter for o in outcome.observations}
+        assert parameters == {"water_level"}
+
+
+class TestOperationalQueryLimitGuard:
+    """Fixer round (post-186 review) — the collector path
+    (`bafu_observation.py`) already treats a cap-sized whole-graph response
+    as a coverage failure; the operational path did not, so a truncated
+    response would silently degrade into ordinary per-subject NO_DATA
+    instead of a visible batch failure."""
+
+    def test_exactly_at_limit_is_a_whole_batch_coverage_failure(self) -> None:
+        from sapphire_flow.adapters.lindas_hydro_query import QUERY_LIMIT
+
+        bindings = [
+            _triple(
+                f"{_RIVER_BASE}/{9000 + i}",
+                f"{_DIM}/measurementTime",
+                "2026-04-17T00:00:00Z",
+            )
+            for i in range(QUERY_LIMIT)
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        stations = _river_stations(3, prefix="9")
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {s.id: _SINCE for s in stations}
+
+        result = adapter.fetch_observations_batch(stations, since)
+
+        assert len(result.outcomes) == len(stations)
+        assert all(
+            o.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+            for o in result.outcomes
+        )
+        assert all(o.observations == () for o in result.outcomes)
+
+
 class TestVerifyGaugeGuardSurvivesQ2:
     """Q2: deleting the per-station INGEST path must not weaken the
     onboarding-time injection guard, which lives on in `_build_sparql_query`

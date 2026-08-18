@@ -9,6 +9,7 @@ import httpx
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from sapphire_flow.adapters.lindas_hydro_query import QUERY_LIMIT as _QUERY_LIMIT
 from sapphire_flow.adapters.lindas_hydro_query import (
     build_whole_graph_query,
     parse_subject_key,
@@ -103,14 +104,21 @@ class HydroScraperAdapter:
         since: dict[StationId, UtcDatetime],
     ) -> HydroScraperBatchResult:
         """Plan 186 D1/D4 — one whole-graph SPARQL request per call, then a
-        local filter to the passed `station_configs` (indexed by `(code,
+        local filter to the passed `station_configs` (grouped by `(code,
         station_kind)`), replacing the former one-request-per-station loop.
         `since` stays accepted-but-unread (D3 — LINDAS serves current values
         only; no per-station time-window semantics exist to preserve).
 
         Per-station typed outcomes (observations + failure cause) so the
         ingest flow can report a truthful `stations_failed`. Not part of the
-        `StationDataSource` Protocol."""
+        `StationDataSource` Protocol.
+
+        Outcome generation always iterates `eligible` directly (never the
+        grouping index's `.values()`/`.items()`) so that two eligible
+        configs sharing one `(code, station_kind)` key — e.g. the same
+        physical gauge onboarded under two `StationConfig` rows — each still
+        get their own outcome instead of one silently shadowing the other
+        (D4's "exactly one outcome per eligible config, always")."""
         del since
         eligible: list[StationConfig] = []
         for station_config in station_configs:
@@ -130,10 +138,13 @@ class HydroScraperAdapter:
         # D4 steps 2/3: every remaining valid config is eligible for the
         # whole-response fetch, regardless of whether its code will
         # ultimately match a subject in the response (a miss becomes
-        # NO_DATA at extraction time, not a pre-request rejection).
-        index: dict[tuple[str, str], StationConfig] = {
-            (sc.code, sc.station_kind.value): sc for sc in eligible
-        }
+        # NO_DATA at extraction time, not a pre-request rejection). A LIST
+        # per key (not a single `StationConfig`) so a `(code, station_kind)`
+        # collision groups configs for lookup without dropping either one —
+        # the outcome loop below iterates `eligible`, not this index.
+        index: dict[tuple[str, str], list[StationConfig]] = {}
+        for sc in eligible:
+            index.setdefault((sc.code, sc.station_kind.value), []).append(sc)
 
         log.debug("observation.whole_graph_fetch_started", station_count=len(eligible))
         t0 = time.perf_counter()
@@ -168,7 +179,7 @@ class HydroScraperAdapter:
                     else FetchOutcomeCause.TRANSPORT_ERROR
                 )
             )
-            return self._whole_batch_failure(index, cause, str(exc))
+            return self._whole_batch_failure(eligible, cause, str(exc))
 
         log.debug(
             "observation.whole_graph_http_response",
@@ -180,7 +191,7 @@ class HydroScraperAdapter:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             return self._whole_batch_failure(
-                index, FetchOutcomeCause.HTTP_STATUS_ERROR, str(exc)
+                eligible, FetchOutcomeCause.HTTP_STATUS_ERROR, str(exc)
             )
 
         try:
@@ -190,20 +201,39 @@ class HydroScraperAdapter:
             # subjects exist yet at this point, so this is necessarily a
             # whole-batch fault.
             return self._whole_batch_failure(
-                index, FetchOutcomeCause.MALFORMED_RESPONSE, str(exc)
+                eligible, FetchOutcomeCause.MALFORMED_RESPONSE, str(exc)
             )
         if not isinstance(bindings, list):
             return self._whole_batch_failure(
-                index,
+                eligible,
                 FetchOutcomeCause.MALFORMED_RESPONSE,
                 f"bindings must be a list, got {type(bindings).__name__}",
             )
         bindings = cast("list[Any]", bindings)
 
+        if len(bindings) >= _QUERY_LIMIT:
+            # Mirrors the collector's coverage guard (adapters/
+            # bafu_observation.py): a cap-sized response means the graph is
+            # likely truncated this cycle, so every eligible config gets a
+            # whole-batch failure instead of quietly falling through to
+            # per-subject NO_DATA (which would hide a coverage regression
+            # behind ordinary "nothing new published" noise).
+            return self._whole_batch_failure(
+                eligible,
+                FetchOutcomeCause.MALFORMED_RESPONSE,
+                f"whole-graph fetch hit the safety LIMIT ({_QUERY_LIMIT}) — "
+                "response is likely truncated (coverage failure)",
+            )
+
         grouped = self._group_by_requested_subject(bindings, index)
         outcomes = tuple(
-            self._extract_one(station_config, grouped.get(key, []))
-            for key, station_config in index.items()
+            self._extract_one(
+                station_config,
+                grouped.get(
+                    (station_config.code, station_config.station_kind.value), []
+                ),
+            )
+            for station_config in eligible
         )
         duration_ms = round((time.perf_counter() - t0) * 1000, 1)
         log.info(
@@ -215,12 +245,12 @@ class HydroScraperAdapter:
 
     @staticmethod
     def _whole_batch_failure(
-        index: dict[tuple[str, str], StationConfig],
+        eligible: list[StationConfig],
         cause: FetchOutcomeCause,
         detail: str,
     ) -> HydroScraperBatchResult:
         outcomes: list[StationFetchOutcome] = []
-        for station_config in index.values():
+        for station_config in eligible:
             log.warning(
                 "observation.fetch_failed",
                 station_id=str(station_config.id),
@@ -240,7 +270,7 @@ class HydroScraperAdapter:
     @staticmethod
     def _group_by_requested_subject(
         bindings: list[Any],
-        index: dict[tuple[str, str], StationConfig],
+        index: dict[tuple[str, str], list[StationConfig]],
     ) -> dict[tuple[str, str], list[dict[str, Any]]]:
         """D2 — groups by *usable subject only*, using the shared
         non-raising key helper: a raw binding whose subject is missing,
@@ -266,6 +296,47 @@ class HydroScraperAdapter:
             grouped.setdefault(key, []).append(raw)
         return grouped
 
+    @classmethod
+    def _filter_bindings_for_kind(
+        cls, raw_group: list[dict[str, Any]], station_kind: StationKind
+    ) -> list[dict[str, Any]]:
+        """Fixer round (post-186 review) — grouping by subject URI alone
+        does not stop a matched subject's bindings from carrying a
+        cross-kind-only dimension predicate (`discharge`/`waterTemperature`
+        are RIVER-only; a LAKE station must never emit them, even under
+        schema drift). Malformed bindings (no parseable predicate name)
+        pass through UNFILTERED so `_parse_bindings_typed` still reports
+        them as MALFORMED_RESPONSE — this only drops well-formed bindings
+        whose predicate belongs exclusively to the OTHER kind."""
+        allowed = frozenset(
+            cls._RIVER_PARAMS if station_kind == StationKind.RIVER else cls._LAKE_PARAMS
+        )
+        cross_kind_only = frozenset(cls._RIVER_PARAMS) - allowed
+        if not cross_kind_only:
+            return raw_group
+        return [
+            raw
+            for raw in raw_group
+            if cls._predicate_local_name(raw) not in cross_kind_only
+        ]
+
+    @staticmethod
+    def _predicate_local_name(raw: dict[str, Any]) -> str | None:
+        # `raw` is aspirationally `dict[str, Any]` but really `Any` at
+        # runtime (an element of `raw_group`, itself sourced from
+        # `response.json()`) — same non-redundant-in-practice isinstance
+        # pattern as `_parse_bindings_typed` above.
+        if not isinstance(raw, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
+            return None
+        predicate_field = raw.get("predicate")
+        if not isinstance(predicate_field, dict):
+            return None
+        predicate_field = cast("dict[str, Any]", predicate_field)
+        value = predicate_field.get("value")
+        if not isinstance(value, str):
+            return None
+        return value.removeprefix(f"{_DIMENSION_URL}/")
+
     def _extract_one(
         self,
         station_config: StationConfig,
@@ -275,9 +346,12 @@ class HydroScraperAdapter:
         is already scoped to this one station's bindings (or empty, for a
         subject absent from the response / an unmatched code, D4 step 2)."""
         station_id = station_config.id
+        filtered_group = self._filter_bindings_for_kind(
+            raw_group, station_config.station_kind
+        )
         try:
             observations, cause, detail = self._parse_bindings_typed(
-                raw_group, station_id
+                filtered_group, station_id
             )
         except (KeyError, TypeError, ValueError) as exc:
             # Last-resort backstop — an unanticipated shape must become a

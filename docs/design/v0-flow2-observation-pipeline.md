@@ -109,9 +109,12 @@ with CAMELS-CH daily data.
 | 2.5–2.7 | Rating curve + Stage 2 QC | **Skipped** — BAFU provides discharge directly |
 | 2.8–2.10 | Threshold checks + alerts | **Optional**, disabled by default (`enable_observation_alerts`) |
 
-**Operational polling**: Flow 2 runs on a configurable schedule (default: every 10 minutes) for all LINDAS-available
-gauges. This accumulates sub-daily (10-min) observation data that will be used for testing
-sub-daily forecasts in later phases, even though v0a models operate at daily resolution.
+**Operational polling**: Flow 2 runs on a configurable schedule (default: every 5 minutes,
+`SCHEDULE_INGEST_OBSERVATIONS`) for all LINDAS-available gauges — this is the polling
+cadence, distinct from LINDAS's own ~10-minute source resolution (how often BAFU
+actually publishes a new reading upstream). This accumulates sub-daily (~10-min) observation
+data that will be used for testing sub-daily forecasts in later phases, even though v0a
+models operate at daily resolution.
 
 **Station selection**: v0 onboards only CAMELS-CH stations that are also available through
 the LINDAS SPARQL interface (~170 automated BAFU stations have real-time telemetry).
@@ -341,12 +344,19 @@ FILTER(?measurementTime >= "2025-03-01T00:00:00Z"^^xsd:dateTime
     && ?measurementTime <= "2025-03-16T23:59:59Z"^^xsd:dateTime)
 ```
 
-**Strategy (current)**: Poll every ~10 minutes; each poll issues one
-whole-graph fetch regardless of how many stations are onboarded.
+**Strategy (current)**: Poll every **5 minutes by default** (configurable via
+`SCHEDULE_INGEST_OBSERVATIONS`, see `docker-compose.yml`); each poll issues one
+whole-graph fetch regardless of how many stations are onboarded. This is the
+*polling cadence* — distinct from LINDAS's own ~10-minute source resolution
+(how often BAFU actually publishes a new reading upstream), which the
+adapter has no control over and does not attempt to track.
 
-**Critical limitation**: LINDAS retains only **40 days** of historical data. No backfill
-beyond this window is possible via SPARQL. For historical data, CAMELS-CH (or direct
-BAFU data service requests) must be used.
+**Critical limitation**: LINDAS serves **current values only** — the
+`FILTER` clause above, if used, filters the current snapshot, not an
+operational history; there is no time-range query that returns real
+historical data via SPARQL, so no backfill is possible this way. For
+historical data, CAMELS-CH (or direct BAFU data service requests) must be
+used.
 
 **Station availability**: ~170 automated BAFU stations have real-time LINDAS telemetry
 (out of ~230 total BAFU gauging stations). All use the same 4-digit codes as CAMELS-CH.
