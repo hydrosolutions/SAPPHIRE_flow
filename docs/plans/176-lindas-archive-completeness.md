@@ -172,10 +172,10 @@ Capturing 6× the data with gzip costs **~4× less disk than today's hourly plai
 The archive contains **every 10-minute slot LINDAS publishes**, proven by the archive's own contents
 rather than by run states — and without a 6× disk bill.
 
-Stated precisely, because the difference matters: this plan delivers **best-effort prevention plus
-reliable detection**, not an absolute guarantee. Prevention is over-polling (D1) on an uncontended
+Stated precisely, because the difference matters: this plan delivers **best-effort prevention plus an
+on-demand completeness audit**, not an absolute guarantee and not automatic gap alerting. Prevention is over-polling (D1) on an uncontended
 worker (§ Execution isolation). Detection is a **gap audit over the archive** — a first-class
-deliverable (**T8**), not a nice-to-have, because Plan 098's residual mechanism (b) means no schedule or
+deliverable (**T8**) — an *on-demand* audit, not automatic alerting — because Plan 098's residual mechanism (b) means no schedule or
 worker topology can *guarantee* pickup. A missed slot must be **known**, not silent. That is the same
 failure that hid the original incident: the collector alerted on the current run and never on gaps.
 
@@ -269,13 +269,29 @@ moot rather than answering it from thin evidence. Load: one request per run, ~20
 **D2 — `cycle_at` is derived from the DATA, not the clock.** *(Its failure mode was OBSERVED live on
 2026-08-18 — see § Evidence. This is not a theoretical concern.)* Once poll rate is decoupled from the grid, a
 clock-derived key is actively wrong: polls at `12:22` and `12:24` both bucket to `12:20`, so the second
-dedup-skips even if it carried a genuinely new slot. **Locked: `cycle_at` = the response's newest
-`measurement_time`, truncated to the 10-minute grid.** The archive is keyed by *what the data is*, not
+dedup-skips even if it carried a genuinely new slot. **Locked: `cycle_at` = the response's MODAL
+`measurement_time` across distinct `(gauge_code, lindas_kind)` identities, truncated to the 10-minute
+grid.** (`max()` was the first locked form — see the robustness note below for why it changed.) The archive is keyed by *what the data is*, not
 *when we asked*. Each slot is archived exactly once, at first sighting, at whatever lag — fully
 jitter-immune, which is what makes D1's over-polling sufficient rather than merely likely. Redundant
 polls resolve to an existing path and write nothing, so ~6 snapshots/hour are written regardless of poll
 rate. Still **path-existence dedup, no content hash** — Plan 136's principle is preserved; only the input
 to the path changes. `_cycle_stem` already renders minutes, so the layout is unchanged.
+
+**Why modal and not `max()` — a robustness fix, NOT an observed failure.** A reviewer argued that a
+minority gauge advancing ahead of the bulk would make `max()` claim the next slot's path early; the
+later bulk response would then dedup-skip and **most of the network's observations for that slot would
+be lost, silently**. Checked before accepting: **7 samples across a slot transition (08:30 → 08:40)
+showed `max == modal` every time, with zero gauges ever ahead of the bulk.** The network advances
+atomically, and the heterogeneity that does exist is all *lagging* (the dead gauges, one stale since
+2025-05). So the scenario is **not demonstrated**.
+
+Adopted anyway, because it is free and strictly more robust: a mode cannot be dragged by one outlier,
+the failure it guards against would be silent and permanent, and — the argument that actually decides
+it — **this plan's own evidence established the 10-minute grid using the modal timestamp** (§ Evidence).
+Keying on `max()` while reasoning from the mode was an internal inconsistency regardless of how BAFU
+behaves. `max()` remains correct for the **freshness** gate (D4), which asks "is any part of the network
+fresh?" — a different question from "which slot is this snapshot".
 
 **Consequence: the flow must FETCH BEFORE it can dedup**, deliberately reversing Plan 136's pre-fetch
 short-circuit. Cheap at ~0.1 s / 234 KB per request. The old short-circuit must be **removed**, not left
@@ -294,11 +310,17 @@ data-derived — conflating the two is how the freshness gate would start lying.
 
 **D4 — re-derive both staleness thresholds, and fix the formatter.** `_STALE_MEASUREMENT_THRESHOLD`
 (`collect_bafu_observations.py:66-73`) and `BAFU_OBS_STALE_THRESHOLD` (`ops/watchdog.py:129`) are both
-3 h "≈ three missed hourly cycles". **Locked: derive each independently from the 10-minute grid and the
-measured ~14–15 min normal lag** — they are different quantities and should stop being coincidentally
-equal. The measurement-age gate must tolerate normal lag plus margin so a healthy feed never trips it;
-the heartbeat gate should tolerate a small number of missed *polls*. Concrete values are set in T4 and
-recorded here before READY. **`_format_bafu_obs_stale_alert` (`ops/watchdog.py:649-659`) renders
+3 h "≈ three missed hourly cycles". They are different quantities and should stop being coincidentally
+equal — the measurement-age gate must tolerate normal lag plus margin so a healthy feed never trips it,
+while the heartbeat gate should tolerate a small number of missed *polls*.
+
+**Locked values** (derived, not guessed — an earlier draft deferred these to T4, which would have left a
+core behaviour undecided at READY):
+- **`_STALE_MEASUREMENT_THRESHOLD = 30 min`.** Worst-case *healthy* age is ~15 min publish lag plus one
+  ~10–11 min publish interval ≈ 26 min. 30 min clears a healthy feed without hiding a frozen one.
+- **`BAFU_OBS_STALE_THRESHOLD = 15 min`.** Roughly three missed polls at D1's ≤4 min ceiling.
+
+Lock exact boundary tests either side of both, and assert the alert renders **`threshold: 15m`**. **`_format_bafu_obs_stale_alert` (`ops/watchdog.py:649-659`) renders
 `hours = int(threshold // 3600)`**, so any sub-hour threshold prints **"threshold: 0h"** — the formatter
 and its tests move to minutes-aware rendering. *This means Plan 175's "no watchdog edits" non-goal does
 not apply to this plan; the watchdog is in scope here.*
@@ -365,7 +387,19 @@ writes; **heartbeat on every successful fetch including a skip** (D3). Rewrite t
 - D3: a later same-slot **fresh** poll writes no files but refreshes the heartbeat; a later same-slot
   **frozen** poll writes no files and emits `stale_measurement_time`.
 - Existing tests to reconcile deliberately: `tests/unit/flows/test_collect_bafu_observations.py:113`
-  (encodes the clock-based dedup contract) and `:208` (reads the raw companion as plain text).
+  (encodes the clock-based dedup contract), `:208` (reads the raw companion as plain text), and
+  **`:188 TestRestatement`** — `test_later_hour_restatement_preserves_both_snapshots` feeds the *same*
+  `measurement_time` twice at different clock hours and asserts **two** snapshots. Under D2 that is one
+  slot, so it archives **once**: the test necessarily fails, and it fails for a real semantic reason,
+  not a mechanical one.
+
+  **The semantic change, stated rather than buried** (this is a genuine narrowing of a Plan 136
+  guarantee): under clock keying, *any* re-fetch in a later hour preserved a correction. Under data
+  keying, a correction is preserved only if the **network slot advances** — which, at a 10-minute grid
+  polled every ≤4 min, it essentially always will before a correction lands. A correction arriving with
+  **no** slot advance at all is deduped and lost. Rewrite the test around the realistic whole-graph case
+  (a corrected gauge retains its timestamp while the modal network slot advances; assert both snapshots
+  hold the correction) and document the no-advance case as a known, accepted narrowing.
 
 ### T4 — staleness thresholds and the alert formatter (D4)
 
@@ -395,10 +429,21 @@ grid or lag instead of us assuming it stable.
 
 ### T8 — the completeness audit (D7)
 
-A script/CLI that walks the archive for a window and reports present vs missing 10-minute slots from the
-archived `cycle_at` values. Run it before and after this plan lands: the "before" number quantifies what
-the hourly cadence has already cost, the "after" number is the acceptance evidence. Keep it cheap enough
-to run regularly — a silent hole is the failure mode this plan exists to end.
+An **on-demand** script/CLI that walks the archive for a window and reports present vs missing
+10-minute slots. Run it before and after this plan lands: the "before" number quantifies what the
+hourly cadence has already cost, the "after" number is the acceptance evidence.
+
+**Legacy snapshots must not be read through the new key.** Pre-change files are named from a
+**clock-hour** `cycle_at`, not a data slot, so deriving "which slots exist" from the filename would
+report nonsense for everything written before D2. For legacy files, derive the observed slot from the
+**parquet's own `measurement_time` values** using the same modal-slot rule; only post-change files can
+be trusted to be named by their slot. Test this explicitly against a clock-keyed legacy file — the
+archive currently holds 307 of them.
+
+**Scope note (deliberate):** this is on-demand auditability, not automatic detection. The Goal calls it
+"reliable detection", which overstates a manually-invoked CLI. Wiring it to a schedule or an alert would
+be new monitoring infrastructure, and is **explicitly out of scope** — the honest claim is that a gap
+becomes *discoverable on request* rather than invisible, which is the actual change from today.
 
 ```json
 {
