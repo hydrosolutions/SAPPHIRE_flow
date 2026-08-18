@@ -43,7 +43,21 @@ class Verdict(StrEnum):
     INDETERMINATE = "INDETERMINATE"
 
 
+class EvidenceFailure(StrEnum):
+    """A window whose evidence could not be computed at all — a DATA state,
+    never a bug. The caller (`coloc_adjudication`) maps the typed
+    conditions raised by `stats_coloc`/`coloc_bootstrap` (an all-zero
+    ladder rung, an empty paired population, nothing to resample) onto
+    these, so gate 0 can return INDETERMINATE instead of the pipeline
+    crashing partway through an adjudication."""
+
+    INSUFFICIENT_SIGNAL = "insufficient_signal"
+    INSUFFICIENT_COMMON_DATA = "insufficient_common_data"
+
+
 class IndeterminateReason(StrEnum):
+    ADEQUACY_INSUFFICIENT_SIGNAL = "adequacy_insufficient_signal"
+    ADEQUACY_INSUFFICIENT_COMMON_DATA = "adequacy_insufficient_common_data"
     ADEQUACY_SMALL_SAMPLE = "adequacy_small_sample"
     ADEQUACY_INSUFFICIENT_DISJOINT_DATA = "adequacy_insufficient_disjoint_data"
     ADEQUACY_NONSTATIONARY = "adequacy_nonstationary"
@@ -54,41 +68,71 @@ class IndeterminateReason(StrEnum):
     STATION_DISAGREEMENT = "station_disagreement"
 
 
+class MissingPeakEvidenceError(ValueError):
+    """A `StationVerdictInputs` declared no evidence failure but did not
+    carry all three peak hours. Every peak is required to reach gates 1-2,
+    so a `None` peak without a declared failure is a caller bug, not a data
+    state — surfaced at construction rather than as an obscure `None`
+    comparison inside the gate sequence."""
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class StationVerdictInputs:
     """One station's pre-computed evidence, ready for the gate sequence.
-    Computing `dhm_peak_all_hour` / `dhm_peak_matched_resolution_hour` /
-    `pyramid_peak_hour` (`stats_coloc.peak_hour`) and
-    `disjoint_period_peak_diff_hours` (pre-2020 vs 2020+ circular peak
-    difference on the full record) is the CALLER's job — this type is the
-    seam between that evidence-gathering and the pure decision rule below."""
+
+    **D11 — this is the FULL-RECORD window's evidence.** The overlap window
+    is corroboration and never reaches this type. Computing the peaks
+    (`stats_coloc.peak_hour`) and the D12 Pyramid disjoint-period difference
+    is the CALLER's job — this type is the seam between that
+    evidence-gathering and the pure decision rule below."""
 
     station: Station
+    evidence_failure: EvidenceFailure | None = None
+    """Set when the adjudicated window's evidence could not be computed at
+    all; gate 0 maps it straight to INDETERMINATE. When set, the peak
+    fields below are legitimately `None`."""
     season_year_count: int
-    """D5 — the overlap window's season-year count feeding the adequacy
-    gate. Not the bootstrap `n_season_years` for a DIFFERENT window; the
-    caller supplies whichever window it is evaluating."""
-    disjoint_period_data_sufficient: bool
-    """D5 — whether BOTH sides of `params.coloc_dhm_stationarity_split_year`
-    had at least one retained profile row for this station. The real DHM
-    source record only spans 2020-2025 in its entirety, so a station whose
-    own history doesn't straddle the split (or a synthetic/partial input)
-    can legitimately fail this — the caller must set it `False` rather than
-    let peak-hour extraction raise, and gate 0 maps `False` straight to
-    INDETERMINATE, never a crash and never a silently-skipped stationarity
-    check."""
-    disjoint_period_peak_diff_hours: float
-    """Only meaningful when `disjoint_period_data_sufficient` is `True` —
-    ignored otherwise (that gate fires first)."""
+    """D5/D11 — the ADJUDICATED (full-record) window's season-year count,
+    the smaller of the two networks'. D11: 'Both sides clear the 5-season
+    threshold comfortably, so a decisive verdict is reachable.'"""
+    pyramid_disjoint_period_data_sufficient: bool
+    """D12 — whether BOTH sides of
+    `params.coloc_pyramid_stationarity_split_year` had a usable PYRAMID
+    peak. The split is Pyramid's, never DHM's: DHM has no pre-2020 data at
+    all, so a DHM split makes the check vacuous and would license a
+    non-contemporaneous comparison across an unexamined phase shift."""
+    pyramid_disjoint_period_peak_diff_hours: float
+    """D12 — only meaningful when
+    `pyramid_disjoint_period_data_sufficient` is `True` (that gate fires
+    first otherwise)."""
     bootstrap_spread_hours: float
     """D5 — the circular bootstrap spread of the peak hour across monsoon
-    season-years, on the SAME window `season_year_count` describes. 'If the
-    circular bootstrap spread on the peak hour exceeds ±2h, the overlap
-    window cannot support a phase verdict' — gated below, before the
-    matched-resolution comparison ever runs."""
-    dhm_peak_all_hour: float
-    dhm_peak_matched_resolution_hour: float
-    pyramid_peak_hour: float
+    season-years, computed on the SAME population the peaks below come
+    from."""
+    dhm_peak_all_hour: float | None = None
+    dhm_peak_matched_resolution_hour: float | None = None
+    pyramid_peak_hour: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_failure is None and (
+            self.dhm_peak_all_hour is None
+            or self.dhm_peak_matched_resolution_hour is None
+            or self.pyramid_peak_hour is None
+        ):
+            raise MissingPeakEvidenceError(
+                f"{self.station!r}: all three peak hours are required unless "
+                "an evidence_failure is declared"
+            )
+
+
+_EVIDENCE_FAILURE_REASONS: dict[EvidenceFailure, IndeterminateReason] = {
+    EvidenceFailure.INSUFFICIENT_SIGNAL: (
+        IndeterminateReason.ADEQUACY_INSUFFICIENT_SIGNAL
+    ),
+    EvidenceFailure.INSUFFICIENT_COMMON_DATA: (
+        IndeterminateReason.ADEQUACY_INSUFFICIENT_COMMON_DATA
+    ),
+}
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -111,7 +155,17 @@ class StationVerdict:
 def evaluate_station_verdict(
     inputs: StationVerdictInputs, params: DhmPrecipParams
 ) -> StationVerdict:
-    # --- Gate 0: adequacy (D5) ---
+    # --- Gate 0: adequacy (D5/D11/D12), on the ADJUDICATED window ---
+    if inputs.evidence_failure is not None:
+        return StationVerdict(
+            station=inputs.station,
+            verdict=Verdict.INDETERMINATE,
+            reason=_EVIDENCE_FAILURE_REASONS[inputs.evidence_failure],
+            gate_stopped_at="adequacy",
+            matched_resolution_diff_hours=None,
+            ablation_movement_hours=None,
+            moved_toward_pyramid=False,
+        )
     if inputs.season_year_count < params.coloc_min_season_years_for_adequacy:
         return StationVerdict(
             station=inputs.station,
@@ -122,7 +176,7 @@ def evaluate_station_verdict(
             ablation_movement_hours=None,
             moved_toward_pyramid=False,
         )
-    if not inputs.disjoint_period_data_sufficient:
+    if not inputs.pyramid_disjoint_period_data_sufficient:
         return StationVerdict(
             station=inputs.station,
             verdict=Verdict.INDETERMINATE,
@@ -133,7 +187,7 @@ def evaluate_station_verdict(
             moved_toward_pyramid=False,
         )
     if (
-        inputs.disjoint_period_peak_diff_hours
+        inputs.pyramid_disjoint_period_peak_diff_hours
         > params.coloc_stationarity_max_circular_diff_hours
     ):
         return StationVerdict(
@@ -154,6 +208,19 @@ def evaluate_station_verdict(
             matched_resolution_diff_hours=None,
             ablation_movement_hours=None,
             moved_toward_pyramid=False,
+        )
+
+    # Past gate 0 without an evidence failure, `__post_init__` already
+    # guarantees all three peaks are present; re-stated here so the gates
+    # below are type-safe without relying on `assert` (stripped under -O).
+    if (
+        inputs.dhm_peak_all_hour is None
+        or inputs.dhm_peak_matched_resolution_hour is None
+        or inputs.pyramid_peak_hour is None
+    ):
+        raise MissingPeakEvidenceError(
+            f"{inputs.station!r}: reached the matched-resolution gate with a "
+            "missing peak hour and no declared evidence failure"
         )
 
     # --- Gate 1: matched-resolution agreement (D7.1) ---

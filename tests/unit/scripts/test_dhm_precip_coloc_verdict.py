@@ -44,8 +44,8 @@ def _inputs(
     *,
     station: Station = _STATION,
     season_year_count: int = 6,
-    disjoint_period_data_sufficient: bool = True,
-    disjoint_period_peak_diff_hours: float = 1.0,
+    pyramid_disjoint_period_data_sufficient: bool = True,
+    pyramid_disjoint_period_peak_diff_hours: float = 1.0,
     bootstrap_spread_hours: float = 1.0,
     dhm_peak_all_hour: float = 2.0,
     dhm_peak_matched_resolution_hour: float = 2.0,
@@ -55,8 +55,8 @@ def _inputs(
     return StationVerdictInputs(
         station=station,
         season_year_count=season_year_count,
-        disjoint_period_data_sufficient=disjoint_period_data_sufficient,
-        disjoint_period_peak_diff_hours=disjoint_period_peak_diff_hours,
+        pyramid_disjoint_period_data_sufficient=pyramid_disjoint_period_data_sufficient,
+        pyramid_disjoint_period_peak_diff_hours=pyramid_disjoint_period_peak_diff_hours,
         bootstrap_spread_hours=bootstrap_spread_hours,
         dhm_peak_all_hour=dhm_peak_all_hour,
         dhm_peak_matched_resolution_hour=dhm_peak_matched_resolution_hour,
@@ -89,7 +89,9 @@ class TestAdequacyGateStopsFirst:
         assert evaluate_station_verdict is not None, (
             "evaluate_station_verdict not implemented yet"
         )
-        inputs = _inputs(season_year_count=6, disjoint_period_peak_diff_hours=6.0)
+        inputs = _inputs(
+            season_year_count=6, pyramid_disjoint_period_peak_diff_hours=6.0
+        )
         result = evaluate_station_verdict(inputs, DEFAULT_PARAMS)
         assert result.verdict == Verdict.INDETERMINATE
         assert result.reason == IndeterminateReason.ADEQUACY_NONSTATIONARY
@@ -102,15 +104,15 @@ class TestAdequacyGateStopsFirst:
         (`docs/design/dhm-precipitation-vision.md:20`), so a station's own
         full record can legitimately fail to straddle
         `coloc_dhm_stationarity_split_year` — the caller sets
-        `disjoint_period_data_sufficient=False` rather than crash, and this
+        `pyramid_disjoint_period_data_sufficient=False` rather than crash, and this
         gate must fire BEFORE the (meaningless) diff value is even
         consulted, exactly like the small-sample gate above."""
         assert evaluate_station_verdict is not None, (
             "evaluate_station_verdict not implemented yet"
         )
         inputs = _inputs(
-            disjoint_period_data_sufficient=False,
-            disjoint_period_peak_diff_hours=0.0,  # would otherwise pass fine
+            pyramid_disjoint_period_data_sufficient=False,
+            pyramid_disjoint_period_peak_diff_hours=0.0,  # would otherwise pass fine
             dhm_peak_all_hour=2.0,
             dhm_peak_matched_resolution_hour=12.0,  # 10h movement
         )
@@ -159,7 +161,7 @@ class TestMatchedResolutionGate:
         )
         inputs = _inputs(
             season_year_count=6,
-            disjoint_period_peak_diff_hours=1.0,
+            pyramid_disjoint_period_peak_diff_hours=1.0,
             dhm_peak_all_hour=2.0,
             dhm_peak_matched_resolution_hour=12.0,  # 10h ablation movement
             pyramid_peak_hour=18.0,  # |12 - 18| = 6h > 4h gate

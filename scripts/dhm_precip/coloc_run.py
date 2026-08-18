@@ -62,6 +62,8 @@ from sapphire_flow.types.datetime import ensure_utc  # noqa: E402
 from scripts.dhm_precip import normalise, observations, qc_mask  # noqa: E402
 from scripts.dhm_precip.coloc_adjudication import (  # noqa: E402
     StationAdjudication,
+    WindowResult,
+    WindowUnavailable,
     adjudicate_station,
 )
 from scripts.dhm_precip.coloc_pairs import COLOCATED_PAIRS  # noqa: E402
@@ -111,6 +113,10 @@ class DhmRetainedProvider(Protocol):
     def __call__(self, station: Station) -> DhmRetainedWindows: ...
 
 
+def _year_window(frame: pl.DataFrame, start_year: int, end_year: int) -> pl.DataFrame:
+    return frame.filter(pl.col("timestamp").dt.year().is_between(start_year, end_year))
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ColocAdjudicationReport:
     pair_adjudications: dict[Station, StationAdjudication]
@@ -137,11 +143,26 @@ def run_coloc_adjudication(
             station=pair.pyramid_station,
             params=params,
         )
+        # The Pyramid file spans the whole record at every month; the
+        # windows must be constructed HERE, before pairing, or the
+        # retention reported per window is the whole file's count rather
+        # than the retained JJAS hours of that window.
+        pyramid_jjas = pyramid_result.retained.filter(
+            pl.col("timestamp").dt.month().is_in(params.jjas_months)
+        )
+        pyramid_full_record = _year_window(
+            pyramid_jjas, pair.pyramid_start_year, pair.pyramid_end_year
+        )
+        pyramid_overlap = _year_window(
+            pyramid_jjas, pair.overlap_start_year, pair.overlap_end_year
+        )
         adjudications[pair.dhm_station] = adjudicate_station(
             dhm_station=pair.dhm_station,
+            pyramid_station=pair.pyramid_station,
             dhm_overlap_retained=windows.overlap,
             dhm_full_record_retained=windows.full_record,
-            pyramid_retained=pyramid_result.retained,
+            pyramid_full_record_retained=pyramid_full_record,
+            pyramid_overlap_retained=pyramid_overlap,
             rng=rng,
             params=params,
         )
@@ -154,12 +175,52 @@ def run_coloc_adjudication(
     )
 
 
+def _window_lines(label: str, window: WindowResult) -> list[str]:
+    if isinstance(window, WindowUnavailable):
+        return [
+            f"#### {label} — UNAVAILABLE (`{window.failure.value}`)",
+            "",
+            f"- {window.detail}",
+            f"- n DHM retained: {window.n_dhm_retained}",
+            f"- n Pyramid retained: {window.n_pyramid_retained}",
+            "",
+        ]
+    lines = [
+        f"#### {label}",
+        "",
+        f"- n DHM retained (this window): {window.n_dhm_retained}",
+        f"- n Pyramid retained (this window): {window.n_pyramid_retained}",
+        f"- n common-retained: {window.n_common_retained}",
+        f"- season-years (both sides): {window.season_year_count}",
+        "",
+        "D7 threshold ladder (peak hour, NPT):",
+        "",
+    ]
+    lines += [
+        f"- {threshold} mm: hour {peak}"
+        for threshold, peak in sorted(window.threshold_ladder_peaks.items())
+    ]
+    lines += [
+        f"- Pyramid peak hour: {window.pyramid_peak_hour}",
+        "",
+        "D5 bootstrap peak-hour spread:",
+        f"- season-years: {window.bootstrap.n_season_years}",
+        f"- spread (h): {window.bootstrap.spread_hours:.2f}",
+        f"- adequate sample: {window.bootstrap.adequate_sample}",
+        "",
+    ]
+    if window.wet_hour_fraction is not None:
+        lines += [
+            "D3 paired wet-hour fraction (common-retained population only):",
+            f"- DHM: {window.wet_hour_fraction.dhm_wet_fraction:.3f}",
+            f"- Pyramid: {window.wet_hour_fraction.pyramid_wet_fraction:.3f}",
+            "",
+        ]
+    return lines
+
+
 def _write_report(path: Path, report: ColocAdjudicationReport) -> None:
-    """The Exit deliverable as Markdown: the D7 threshold ladder per
-    station (with `n` beside every hour), the paired wet-hour fraction,
-    the D5 bootstrap spread and adequacy, per-station verdicts, the
-    synthesis, and — if H1 is supported — the correction outcome filed
-    for M-A7 (this plan does not itself rewrite the vision, D9 Exit)."""
+    """The Exit deliverable as Markdown."""
     lines = [
         "# DHM precipitation — M-A10 co-located gauge-vs-gauge adjudication",
         "",
@@ -170,30 +231,22 @@ def _write_report(path: Path, report: ColocAdjudicationReport) -> None:
     ]
     for pair in COLOCATED_PAIRS:
         adj = report.pair_adjudications[pair.dhm_station]
+        lines += [f"### {pair.dhm_station} vs {pair.pyramid_station}", ""]
+        lines += _window_lines("Full record (ADJUDICATED, D11)", adj.full_record)
+        lines += _window_lines("Overlap (corroboration only, D11)", adj.overlap)
         lines += [
-            f"### {pair.dhm_station} vs {pair.pyramid_station}",
+            "D12 stationarity:",
+            f"- Pyramid (gates the verdict), split "
+            f"{adj.pyramid_stationarity.split_year}: "
+            f"{adj.pyramid_stationarity.peak_diff_hours:.1f} h "
+            f"(sufficient: {adj.pyramid_stationarity.data_sufficient})",
+            f"- DHM (additional evidence only), split "
+            f"{adj.dhm_stationarity.split_year}: "
+            f"{adj.dhm_stationarity.peak_diff_hours:.1f} h "
+            f"(sufficient: {adj.dhm_stationarity.data_sufficient})",
             "",
-            "D7 threshold ladder (peak hour, NPT, paired common-retained population):",
-            "",
-        ]
-        lines += [
-            f"- {threshold} mm: hour {peak}"
-            for threshold, peak in sorted(adj.threshold_ladder_peaks.items())
-        ]
-        lines += [
-            f"- Pyramid peak hour: {adj.pyramid_peak_hour}",
-            f"- DHM full-record (climatological) peak hour: "
-            f"{adj.dhm_full_record_peak_hour}",
-            "",
-            "D3 paired wet-hour fraction (common-retained population only):",
-            f"- n common-retained: {adj.wet_hour_fraction.n_common_retained}",
-            f"- DHM: {adj.wet_hour_fraction.dhm_wet_fraction:.3f}",
-            f"- Pyramid: {adj.wet_hour_fraction.pyramid_wet_fraction:.3f}",
-            "",
-            "D5 bootstrap peak-hour spread:",
-            f"- season-years: {adj.bootstrap.n_season_years}",
-            f"- spread (h): {adj.bootstrap.spread_hours:.2f}",
-            f"- adequate sample: {adj.bootstrap.adequate_sample}",
+            f"- overlap vs full-record peak difference: "
+            f"{adj.overlap_vs_full_record_peak_diff_hours}",
             "",
             f"**Verdict: {adj.station_verdict.verdict.value}** "
             f"(gate stopped at `{adj.station_verdict.gate_stopped_at}`"
@@ -221,9 +274,9 @@ def _write_report(path: Path, report: ColocAdjudicationReport) -> None:
             "## Correction filed for M-A7",
             "",
             "H1 is supported: the Group A high-altitude diurnal signal is "
-            "consistent with noise-floor contamination at this station pair. "
-            "This finding is filed as a correction for M-A7 to apply — this "
-            "runner does not itself rewrite the vision (D9 Exit).",
+            "consistent with noise-floor contamination. This finding is filed "
+            "as a correction for M-A7 to apply — this runner does not itself "
+            "rewrite the vision (D9 Exit).",
             "",
         ]
     path.write_text("\n".join(lines) + "\n")
@@ -271,12 +324,14 @@ def _production_dhm_retained_provider(params: DhmPrecipParams) -> DhmRetainedPro
     def provider(station: Station) -> DhmRetainedWindows:
         pair = next(p for p in COLOCATED_PAIRS if p.dhm_station == station)
         station_rows = retained_all.filter(pl.col("station") == str(station))
-        overlap = station_rows.filter(
-            pl.col("timestamp")
-            .dt.year()
-            .is_between(pair.overlap_start_year, pair.overlap_end_year)
+        return DhmRetainedWindows(
+            overlap=_year_window(
+                station_rows, pair.overlap_start_year, pair.overlap_end_year
+            ),
+            full_record=_year_window(
+                station_rows, pair.dhm_start_year, pair.dhm_end_year
+            ),
         )
-        return DhmRetainedWindows(overlap=overlap, full_record=station_rows)
 
     return provider
 
