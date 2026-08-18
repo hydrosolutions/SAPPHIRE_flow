@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.763"
+version = "0.1.764"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -78,6 +78,7 @@ dev = [
     "pytest-asyncio",
     "pytest-cov>=7.0.0",
     "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.5",
     "testcontainers[postgres]",
     "xlsxwriter>=3.2.9",
@@ -133,7 +134,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.763"
+current_version = "0.1.764"
 commit = false
 tag = false
 allow_dirty = true
