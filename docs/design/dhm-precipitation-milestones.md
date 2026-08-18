@@ -97,6 +97,13 @@ of a chain.
 cannot run without it — but the owner has confirmed delivery, so this is sequencing, not risk.
 
 ### M-D3 · Processing provenance
+
+**✅ SUM vs MEAN RESOLVED 2026-08-18 — DHM hourly values are SUMS.** Reported by the students who
+supplied the data. **Provenance is second-hand — a student relay, not a DHM statement — and must be
+recorded that way.** This was the last open item blocking M-A6's MAGNITUDE estimands: a
+mean-of-sub-hourly-samples would have made every magnitude wrong by a constant factor, while
+leaving normalised shape (diurnal profile, wet/dry timing) untouched. **Magnitudes are unblocked.**
+
 **Depends: —** Blocks M-A2. **PARTIALLY ANSWERED 2026-08-13** — DHM (Sunny Maharjan, Senior
 Meteorologist), relayed by the student team.
 
