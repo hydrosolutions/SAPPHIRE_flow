@@ -13,20 +13,33 @@ slot transitions — turning a single-sample assumption into a repeated
 measurement, and giving an early signal if BAFU ever changes the grid or its
 publish lag.
 
-Deliberately reports rather than hard-fails on the gap value: per the plan,
-a publish gap under ~8 min is a prompt for a human to TIGHTEN D1's bound,
-not a CI failure — this test's job is to make the number visible (see the
-`bafu_lindas_lag.summary` log line). It only asserts a sanity floor (a
+**The probe-start artifact, and why the first observed slot is a BASELINE,
+never a measurement.** The plan's own evidence explicitly retracts a false
+21.6 min lag / 2.5 min gap reading: the probe started mid-slot, so the slot
+already visible at the first poll was NOT first-sighted then — its true
+publish moment predates the probe entirely, and treating that poll's
+timestamp as its "first sighting" recreates exactly the retracted artifact.
+This test therefore discards its own first observed slot as a baseline and
+only records TRANSITIONS seen after it — slots whose absence (then presence)
+this test actually watched happen. Both the per-slot publish LAG
+(`first_seen - slot`) and the gaps between consecutive clean transitions are
+computed only from those.
+
+Deliberately reports rather than hard-fails on the gap/lag values: per the
+plan, a publish gap under ~8 min is a prompt for a human to TIGHTEN D1's
+bound, not a CI failure — this test's job is to make the numbers visible
+(see the `bafu_lindas_lag.summary` log line, and the `-s` flag below so it
+prints on success, not only on failure). It only asserts a sanity floor (a
 transition gap under a minute would mean the poll cadence itself, not BAFU,
 produced the reading) and that the window was long enough to observe at
-least one real transition.
+least two clean transitions after the baseline.
 
 Excluded from BOTH the default gate (`live`) and the live-lindas WEEKLY
 workflow's 10-minute timeout budget — this carries its OWN `live_lindas_lag`
 marker, not `live_lindas`, and this test's own default duration (45 min)
 exceeds that job's budget. Run manually::
 
-    LINDAS_LAG_DURATION_S=2700 uv run pytest -m live_lindas_lag -v
+    LINDAS_LAG_DURATION_S=2700 uv run pytest -m live_lindas_lag -v -s
 
 or wire to a dedicated longer-running schedule.
 """
@@ -89,7 +102,13 @@ class TestLiveLindasPublishLag:
             endpoint=_ENDPOINT, http_client=client, limiter=limiter
         )
 
+        # `baseline_slot` is the slot already visible at the FIRST poll — its
+        # true first-sighting predates this test and is unobservable (the
+        # probe-start artifact the plan explicitly retracts; see module
+        # docstring). It is recorded only to detect the *next* transition
+        # and is never treated as a measured sighting.
         first_sightings: dict[UtcDatetime, UtcDatetime] = {}
+        baseline_slot: UtcDatetime | None = None
         started = time.monotonic()
         last_slot: UtcDatetime | None = None
 
@@ -98,15 +117,29 @@ class TestLiveLindasPublishLag:
             rows = adapter.fetch_all_observations()
             slot = _modal_measurement_time(rows)
             if slot is not None and slot != last_slot:
-                first_sightings.setdefault(slot, polled_at)
+                if baseline_slot is None:
+                    baseline_slot = slot
+                else:
+                    first_sightings.setdefault(slot, polled_at)
                 last_slot = slot
             time.sleep(_POLL_INTERVAL_S)
 
         sightings = sorted(first_sightings.items())
         assert len(sightings) >= 2, (
-            f"observed only {len(sightings)} distinct network slot(s) over "
+            f"observed only {len(sightings)} clean slot transition(s) (after "
+            "discarding the probe-start baseline) over "
             f"{_DURATION_S / 60:.0f} min — window too short to measure a "
             "gap; widen LINDAS_LAG_DURATION_S"
+        )
+
+        # Publish lag per clean transition: how long after the slot's own
+        # timestamp did we first see it published. NOT computed for the
+        # baseline slot — its true publish moment is unknown.
+        lags_s = [(seen - slot).total_seconds() for slot, seen in sightings]
+        assert all(lag >= 0 for lag in lags_s), (
+            f"a negative first_seen - slot lag ({lags_s}) means the sighting "
+            "clock and the slot timestamps disagree — investigate before "
+            "trusting the gap numbers below"
         )
 
         gaps_s = [
@@ -114,14 +147,21 @@ class TestLiveLindasPublishLag:
             for (_, a_seen), (_, b_seen) in zip(sightings, sightings[1:], strict=True)
         ]
         min_gap_s = min(gaps_s)
+        min_lag_s = min(lags_s)
 
-        log.info(
-            "bafu_lindas_lag.summary",
-            transitions_observed=len(sightings),
-            duration_minutes=round(_DURATION_S / 60, 1),
-            min_gap_minutes=round(min_gap_s / 60, 1),
-            gaps_minutes=[round(g / 60, 1) for g in gaps_s],
-        )
+        summary = {
+            "transitions_observed": len(sightings),
+            "duration_minutes": round(_DURATION_S / 60, 1),
+            "min_gap_minutes": round(min_gap_s / 60, 1),
+            "gaps_minutes": [round(g / 60, 1) for g in gaps_s],
+            "min_lag_minutes": round(min_lag_s / 60, 1),
+            "lags_minutes": [round(lag / 60, 1) for lag in lags_s],
+        }
+        # `-s` (see module docstring) so this prints even when every assert
+        # below passes — the whole point of this test is the number, not a
+        # pass/fail bit.
+        print(f"bafu_lindas_lag.summary {summary}")  # noqa: T201
+        log.info("bafu_lindas_lag.summary", **summary)
         if min_gap_s < 8 * 60:
             log.warning(
                 "bafu_lindas_lag.gap_under_margin",

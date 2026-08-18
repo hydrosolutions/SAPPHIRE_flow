@@ -1666,18 +1666,27 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            hostname="test-host",
         )
 
         assert state.consecutive_bafu_obs_failures == 1
         assert len(slack.calls) == 1
         _, msg = slack.calls[0]
-        assert "BAFU observation collector STALE" in msg
         # Plan 176 D4: BAFU_OBS_STALE_THRESHOLD is sub-hour (15m) — the OLD
         # `hours = int(threshold // 3600)` formatter renders any sub-hour
         # threshold as "threshold: 0h", silently lying about the alert's
-        # own trigger condition. The formatter must be minutes-aware.
-        assert "threshold: 15m" in msg
-        assert "threshold: 0h" not in msg
+        # own trigger condition. The formatter must be minutes-aware. Locked
+        # to the COMPLETE alert string (hostname pinned via `hostname=` so
+        # the expected literal is fully deterministic) — a substring check
+        # alone would miss a regression elsewhere in the same message.
+        expected_last_heartbeat = (
+            _NOW - BAFU_OBS_STALE_THRESHOLD - timedelta(hours=1)
+        ).isoformat()
+        assert msg == (
+            "[SAPPHIRE staging] BAFU observation collector STALE — "
+            "host: test-host, time: 2026-04-22T12:00:00+00:00, "
+            f"last_heartbeat: {expected_last_heartbeat}, threshold: 15m"
+        )
 
     def test_no_record_found_alerts(self, tmp_path: Path) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)

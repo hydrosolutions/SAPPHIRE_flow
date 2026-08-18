@@ -11,7 +11,6 @@ Requires the `docker` CLI; skips (does not fail) if it is unavailable.
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import shutil
@@ -48,11 +47,6 @@ def _rendered_compose(*filenames: str) -> dict[str, object]:
     return payload
 
 
-@functools.cache
-def _base_compose() -> dict[str, object]:
-    return _rendered_compose("docker-compose.yml")
-
-
 def _service(compose: dict[str, object], name: str) -> dict[str, object]:
     services = compose["services"]
     assert isinstance(services, dict)
@@ -61,20 +55,41 @@ def _service(compose: dict[str, object], name: str) -> dict[str, object]:
     return svc
 
 
-def _volume_targets(svc: dict[str, object]) -> list[str]:
+def _archive_mount(svc: dict[str, object]) -> dict[str, object]:
     volumes = svc.get("volumes") or []
-    return [v["target"] for v in volumes if isinstance(v, dict) and "target" in v]
+    matches = [
+        v
+        for v in volumes
+        if isinstance(v, dict) and v.get("target") == "/data/bafu_observations"
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one /data/bafu_observations mount, found {matches}"
+    )
+    return matches[0]
 
 
 class TestIngestWorkerMountsTheBafuObservationArchive:
-    def test_prefect_worker_ingest_mounts_the_archive_volume_rw(self) -> None:
-        svc = _service(_base_compose(), "prefect-worker-ingest")
-        assert "/data/bafu_observations" in _volume_targets(svc)
-        volumes = svc.get("volumes") or []
-        matches = [
-            v
-            for v in volumes
-            if isinstance(v, dict) and v.get("target") == "/data/bafu_observations"
-        ]
-        assert len(matches) == 1
-        assert matches[0].get("read_only") is not True
+    """Not just "some volume lands on this target" — the SOURCE must be the
+    named `bafu_observation_archive` volume (not e.g. a bind mount or a
+    different named volume that happens to render at the same target), and
+    this must hold on the ACTUAL deployed topology: base compose alone is
+    never what runs on the mini — `docker-compose.macmini.yml` always layers
+    on top (see `docs/standards/cicd.md`)."""
+
+    @pytest.mark.parametrize(
+        "compose_files",
+        [
+            ("docker-compose.yml",),
+            ("docker-compose.yml", "docker-compose.macmini.yml"),
+        ],
+        ids=["base", "macmini-overlay"],
+    )
+    def test_prefect_worker_ingest_mounts_the_archive_volume_rw(
+        self, compose_files: tuple[str, ...]
+    ) -> None:
+        compose = _rendered_compose(*compose_files)
+        svc = _service(compose, "prefect-worker-ingest")
+        mount = _archive_mount(svc)
+        assert mount.get("type") == "volume"
+        assert mount.get("source") == "bafu_observation_archive"
+        assert mount.get("read_only") is not True

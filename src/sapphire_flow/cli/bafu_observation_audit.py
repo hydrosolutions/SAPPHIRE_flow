@@ -112,6 +112,12 @@ def audit_completeness(
 ) -> CompletenessReport:
     """Walk every parsed parquet snapshot under ``base_path`` and report
     which grid slots in ``[start, end)`` are present vs missing."""
+    if end <= start:
+        raise ValueError(
+            f"audit window end ({end.isoformat()}) must be after start "
+            f"({start.isoformat()}) — a zero-width or reversed range has no "
+            "expected slots and would report a false-success (0 missing)"
+        )
     expected = _expected_slots(start, end)
     observed: set[UtcDatetime] = set()
     for parquet_path in sorted((base_path / "parsed").glob("**/*.parquet")):
@@ -167,7 +173,12 @@ def main(argv: list[str] | None = None) -> int:
     start = ensure_utc(datetime.fromisoformat(args.start.replace("Z", "+00:00")))
     end = ensure_utc(datetime.fromisoformat(args.end.replace("Z", "+00:00")))
 
-    report = audit_completeness(args.base_path, start=start, end=end)
+    try:
+        report = audit_completeness(args.base_path, start=start, end=end)
+    except ValueError as exc:
+        # A swapped/equal --start/--end is a CLI usage error, not a
+        # completeness result — must not fall through to `0 missing` == exit 0.
+        raise SystemExit(f"bafu_observation_audit: {exc}") from exc
 
     log.info(
         "bafu_observation_audit.complete",

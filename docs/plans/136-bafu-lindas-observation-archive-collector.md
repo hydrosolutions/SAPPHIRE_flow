@@ -89,9 +89,11 @@ correction, with its measurement, belongs to **Plan 176** (which depends on Plan
    under the (now-falsified) hourly assumption; at the true 10-minute cadence, plain JSON would cost
    12.87 GB/yr on a host that has already hit 94% disk. SPARQL JSON compresses 41.8×, so Plan 176 D6
    writes the raw companion as `.json.gz` (gzip stream closed before the atomic rename). Existing plain
-   `.json` snapshots are left unmigrated on disk; readers (including Plan 176's completeness audit, T8)
-   tolerate both extensions. Still no retention knob — compression removes the need. The parsed parquet
-   is unaffected (still plain, still the dedup completion marker).
+   `.json` snapshots are left unmigrated on disk; readers that walk `raw/` must tolerate both extensions.
+   Plan 176's completeness audit (T8) is not one of them — it walks only `parsed/**/*.parquet` and never
+   opens the `raw/` directory at all, so it is simply unaffected by the raw companion's extension, not an
+   extension-tolerant reader of it. Still no retention knob — compression removes the need. The parsed
+   parquet is unaffected (still plain, still the dedup completion marker).
 
 ## Context — collect now, because LINDAS has no history
 

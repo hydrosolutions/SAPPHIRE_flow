@@ -203,6 +203,39 @@ class TestCycleAtIsDataDerived:
         expected = ensure_utc(bulk_ts)
         assert f"obs-{expected:%Y%m%dT%H%M%SZ}" == Path(parquet_files[0]).stem
 
+    def test_modal_is_identity_weighted_not_row_weighted(self, tmp_path: Path) -> None:
+        """D2's mode is over DISTINCT (gauge_code, lindas_kind) identities,
+        not raw rows: every fixture above gives each identity exactly one
+        row, so a subtly wrong row-weighted mode (counting every row's
+        measurement_time, not one entry per identity) would still pass by
+        coincidence. Here the AHEAD identity carries THREE parameter rows
+        (discharge/water_level/water_temperature, all at its own slot)
+        while TWO SEPARATE bulk identities each carry only ONE row on the
+        earlier slot — row-weighted counting would wrongly pick the ahead
+        identity's slot (3 rows > 2 rows); identity-weighted counting
+        correctly picks the bulk slot (2 identities > 1 identity)."""
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        bulk_ts = datetime(2026, 7, 21, 12, 10, tzinfo=UTC)
+        ahead_ts = datetime(2026, 7, 21, 12, 20, tzinfo=UTC)  # one slot AHEAD
+        rows = [
+            _row("2135", parameter="discharge", measurement_time=bulk_ts),
+            _row("2200", parameter="discharge", measurement_time=bulk_ts),
+            _row("9999", parameter="discharge", measurement_time=ahead_ts),
+            _row("9999", parameter="water_level", measurement_time=ahead_ts),
+            _row("9999", parameter="water_temperature", measurement_time=ahead_ts),
+        ]
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(datetime(2026, 7, 21, 12, 25, tzinfo=UTC)),
+        )
+        parquet_files = list(tmp_path.rglob("*.parquet"))
+        assert len(parquet_files) == 1
+        expected = ensure_utc(bulk_ts)
+        assert f"obs-{expected:%Y%m%dT%H%M%SZ}" == Path(parquet_files[0]).stem
+
 
 class TestClockDerivedKeyIsDead:
     """Pinned-clock proof that the key is data-derived, not clock-derived
@@ -526,7 +559,10 @@ class TestRawArchival:
 
         with gzip.open(raw_files[0], "rb") as gz:
             decompressed = gz.read()
-        assert json.loads(decompressed) == raw_payload  # byte-for-byte fidelity
+        # Byte-for-byte, not parse-and-compare: a `json.loads` round-trip
+        # would hide a formatting regression (indent, key order, separators)
+        # that changes the bytes without changing the parsed value.
+        assert decompressed == json.dumps(raw_payload).encode("utf-8")
 
 
 class TestHeartbeat:

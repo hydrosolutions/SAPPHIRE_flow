@@ -527,8 +527,11 @@ expected_interval_hours = 0.17        # BAFU: every 10 min
 
 # Plan 136 BAFU LINDAS observation archive collector (`collect-bafu-observations`,
 # quarantined, evaluation-only, keyed on gauge_code + lindas_kind — NOT an
-# onboarded station). Setting archive_base_path ENABLES the hourly collector
-# flow (unset = no-op, never falls back to an operational path). Maps to
+# onboarded station). Setting archive_base_path ENABLES the collector flow
+# (unset = no-op, never falls back to an operational path). Plan 176 D1:
+# polls ~18-20x/hour against a measured 10-minute LINDAS publish grid — NOT
+# hourly (the hourly-at-:37 cadence this collector originally shipped with
+# lost most of the grid's slots to dedup; see docs/plans/176). Maps to
 # DeploymentConfig.bafu_observation_archive_path (config/deployment.py).
 [adapters.bafu_observation]
 # archive_base_path = "/data/bafu_observations"

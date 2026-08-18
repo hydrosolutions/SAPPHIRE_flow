@@ -10,11 +10,13 @@ from sapphire_flow.types.bafu_observation import BafuObservationRow
 from sapphire_flow.types.datetime import ensure_utc
 
 
-def _row(gauge_code: str, measurement_time: datetime) -> BafuObservationRow:
+def _row(
+    gauge_code: str, measurement_time: datetime, *, parameter: str = "discharge"
+) -> BafuObservationRow:
     return BafuObservationRow(
         gauge_code=gauge_code,
         lindas_kind="river",
-        parameter="discharge",
+        parameter=parameter,  # type: ignore[arg-type]
         value=1.0,
         measurement_time=ensure_utc(measurement_time),
     )
@@ -95,6 +97,72 @@ class TestAuditReportsPresentAndMissingSlots:
         )
 
 
+class TestInvalidWindowIsRejected:
+    """A swapped/equal CLI range must not silently pass as a complete
+    window: `_expected_slots` on an empty-or-reversed range returns zero
+    slots, so `missing_count == 0` and `main()` would otherwise exit 0 —
+    a false-success completeness audit."""
+
+    def test_reversed_range_raises_value_error(self, tmp_path: Path) -> None:
+        module = _import_audit_module()
+        with pytest.raises(ValueError, match="must be after start"):
+            module.audit_completeness(  # type: ignore[attr-defined]
+                tmp_path,
+                start=ensure_utc(datetime(2026, 7, 21, 10, 0, tzinfo=UTC)),
+                end=ensure_utc(datetime(2026, 7, 21, 9, 0, tzinfo=UTC)),
+            )
+
+    def test_equal_start_and_end_raises_value_error(self, tmp_path: Path) -> None:
+        module = _import_audit_module()
+        same = ensure_utc(datetime(2026, 7, 21, 9, 0, tzinfo=UTC))
+        with pytest.raises(ValueError, match="must be after start"):
+            module.audit_completeness(tmp_path, start=same, end=same)  # type: ignore[attr-defined]
+
+    def test_main_exits_nonzero_for_reversed_cli_range(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = _import_audit_module()
+        # Stub `configure_cli_logging` — `main()` calls it, and reconfiguring
+        # the process-global structlog/logging setup here would break later
+        # log-assertion tests in the full suite (test pollution; mirrors the
+        # same stub in tests/unit/cli/test_access_tokens.py).
+        monkeypatch.setattr(
+            "sapphire_flow.logging.configure_cli_logging", lambda *a, **k: None
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            module.main(  # type: ignore[attr-defined]
+                [
+                    "--base-path",
+                    str(tmp_path),
+                    "--start",
+                    "2026-07-21T10:00:00Z",
+                    "--end",
+                    "2026-07-21T09:00:00Z",
+                ]
+            )
+        assert exc_info.value.code not in (0, None)
+
+    def test_main_exits_nonzero_for_equal_cli_range(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = _import_audit_module()
+        monkeypatch.setattr(
+            "sapphire_flow.logging.configure_cli_logging", lambda *a, **k: None
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            module.main(  # type: ignore[attr-defined]
+                [
+                    "--base-path",
+                    str(tmp_path),
+                    "--start",
+                    "2026-07-21T09:00:00Z",
+                    "--end",
+                    "2026-07-21T09:00:00Z",
+                ]
+            )
+        assert exc_info.value.code not in (0, None)
+
+
 class TestAuditReDerivesLegacySlotsFromContent:
     """Plan 176 T8: a pre-D2 snapshot's filename (and stored `cycle_at`
     column) is CLOCK-derived, not data-derived — trusting either would
@@ -150,3 +218,40 @@ class TestAuditReDerivesLegacySlotsFromContent:
         assert report.missing_slots == (
             ensure_utc(datetime(2026, 7, 21, 10, 0, tzinfo=UTC)),
         )
+
+
+class TestObservedSlotIsIdentityWeightedNotRowWeighted:
+    """`_observed_slot` mirrors the collector flow's `_modal_cycle_at`: the
+    mode is over DISTINCT (gauge_code, lindas_kind) identities, not raw
+    rows. Every other fixture in this file gives each identity exactly one
+    row, so a subtly wrong row-weighted mode would still pass them by
+    coincidence. Here the AHEAD identity carries THREE parameter rows (all
+    at its own slot) while TWO SEPARATE bulk identities each carry only ONE
+    row on the earlier slot — row-weighted counting would wrongly pick the
+    ahead identity's slot (3 rows > 2 rows); identity-weighted counting
+    correctly picks the bulk slot (2 identities > 1 identity)."""
+
+    def test_ahead_identity_with_several_rows_does_not_outvote_the_bulk(
+        self, tmp_path: Path
+    ) -> None:
+        module = _import_audit_module()
+        bulk_ts = datetime(2026, 7, 21, 12, 10, tzinfo=UTC)
+        ahead_ts = datetime(2026, 7, 21, 12, 20, tzinfo=UTC)  # one slot AHEAD
+        rows = [
+            _row("2135", bulk_ts, parameter="discharge"),
+            _row("2200", bulk_ts, parameter="discharge"),
+            _row("9999", ahead_ts, parameter="discharge"),
+            _row("9999", ahead_ts, parameter="water_level"),
+            _row("9999", ahead_ts, parameter="water_temperature"),
+        ]
+        flow_module._write_rows_parquet(  # noqa: SLF001
+            tmp_path, ensure_utc(bulk_ts), rows
+        )
+
+        report = module.audit_completeness(  # type: ignore[attr-defined]
+            tmp_path,
+            start=ensure_utc(datetime(2026, 7, 21, 12, 0, tzinfo=UTC)),
+            end=ensure_utc(datetime(2026, 7, 21, 12, 30, tzinfo=UTC)),
+        )
+        assert report.present_slots == (ensure_utc(bulk_ts),)
+        assert ensure_utc(ahead_ts) not in report.present_slots
