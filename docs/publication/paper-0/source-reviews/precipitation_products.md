@@ -337,6 +337,44 @@ validation.
 
 ---
 
+## 5b. In-situ Reference Networks (added 2026-08-18)
+
+This survey previously covered **only gridded products** — satellite, reanalysis and NWP. That is a
+gap: no gridded product can adjudicate whether a *gauge* is wrong, because every one of them is either
+model output or a satellite retrieval, and several are calibrated against gauges themselves.
+
+### Pyramid Meteorological Network (Salerno et al. 2025, ESSD 17, 4293)
+
+| | |
+|---|---|
+| **Type** | In-situ AWS, point observations — **not gridded** |
+| **Location** | Khumbu / Dudh Koshi, Sagarmatha NP, Nepal |
+| **Stations** | 7 AWS, 2,660–7,986 m; **precipitation (`RR`) at 5 of them** |
+| **Temporal** | **Hourly**, 1994–2023, timestamps in **NPT (UTC+5:45)** |
+| **Access** | Zenodo `10.5281/zenodo.15211352`, **CC BY 4.0, no login** |
+| **Provenance** | **Pure in-situ. No satellite, no reanalysis, no DHM input** — "ERA5" appears nowhere in the paper. Level-1 files are raw and ungapfilled |
+
+**Why it is uniquely valuable here:** it is **independent of both ERA5-Land and DHM**, and two stations
+are effectively co-located with DHM gauges — **AWS3 Lukla ≈1.4 km from Lukla Airport**, **AWS5 Namche
+≈1.9 km from Syangboche Airport**. That supports a **gauge-vs-gauge** comparison, which nothing else in
+this survey can offer.
+
+**⛔ Not a magnitude reference.** The gauges are **unheated** — the paper calls this its main weakness —
+so they undercatch snow in the same direction as DHM's. Use for **shape and timing** (normalised
+diurnal profiles, wet-hour fraction, seasonality), where undercatch largely cancels; **never to correct
+magnitudes**, which would swap one undercatching gauge for another and, applied to model forcing, inject
+a dry bias into a flood-forecasting system.
+
+**Caveats:** no instrument make/model, orifice height or wind exposure in either paper or README; the
+"≤20 % snow underestimate" is inherited from Salerno et al. (2015), not re-measured; and station
+longitudes for South Col and Changri Nup appear transposed between the paper's table and the README
+(neither carries precipitation).
+
+**Note on the geoportal.** `geoportal.mountaingenius.org` requires registration to download. It is not
+needed — Zenodo serves the same Level-1 data openly.
+
+---
+
 ## 6. Challenges Specific to Nepal
 
 ### 6.1 Orographic Effects

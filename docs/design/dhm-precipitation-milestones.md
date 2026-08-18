@@ -400,6 +400,45 @@ between stations — **reported by elevation band as well as per station**. *Mar
 inform but do not suffice to design a disaggregator — that needs temporal dependence structure, which
 is a Phase-2 question.*
 
+### ⭐ M-A9 · Co-located gauge-vs-gauge adjudication (Pyramid network) — NEW 2026-08-18
+**Depends: M-A3.** *(Needs the QC mask; does NOT need ERA5-Land, so it can run in parallel with M-A5/M-A6.)*
+
+**The first genuine gauge-vs-gauge comparison this track has ever had.** The Pyramid Meteorological
+Network (Salerno et al. 2025, ESSD 17, 4293; Zenodo `10.5281/zenodo.15211352`, CC BY 4.0, no login)
+publishes **hourly in-situ AWS** precipitation in the Khumbu, **independent of both ERA5-Land and DHM**,
+with two stations effectively co-located with two of our four problem high-altitude stations:
+**AWS3 Lukla ≈1.4 km from DHM Lukla Airport**, **AWS5 Namche ≈1.9 km from Syangboche Airport**.
+
+**Why it earns its own milestone rather than folding into M-A6/M-A7:** M-A6 compares a gauge against a
+*model field* and M-A7 characterises *our* timing — neither can answer "is our gauge wrong?", because
+no satellite or reanalysis product can adjudicate a gauge. This can.
+
+**Scope:** JJAS 2020–2023 (the overlap window), the two co-located pairs, **DHM vs Pyramid vs
+ERA5-Land**, reporting the **normalised diurnal profile** and **wet-hour fraction** on hours retained by
+the M-A3 mask, with the retained-hour count carried alongside every statistic (Rule 1).
+
+**The hypothesis it exists to settle:** our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT**, which sits inside
+Pyramid Lukla's diurnal **minimum** (normalised 0.29/0.28 at 07–08, peaks at 22–00 NPT) — near
+anti-phase from 1.4 km away. Combined with Group A's 0.01 mm resolution and sub-0.1 mm noise floor, the
+hypothesis is that **the Group A high-altitude diurnal signal is noise-floor contamination, not
+physics.** Confirming it would retire a finding the vision has carried as UNRESOLVED since 2026-08-13.
+
+**⛔ NOT a correction source, and this is binding.** Pyramid's gauges are **explicitly unheated** — the
+paper names that as its main weakness — so they undercatch snow in the same direction as DHM's.
+Correcting toward them would substitute one undercatching gauge for another *while appearing
+authoritative*; and fitting model forcing downward toward either gauge network injects a **dry bias into
+a flood-forecasting system**. **Referee on SHAPE and TIMING only, where undercatch largely cancels;
+never on magnitude.** The paper's "≤20 % snow underestimate" is inherited from Salerno et al. (2015),
+not re-measured — it is not a transfer function. Vision D6/D9 stand, reinforced.
+
+**Exit:** the two co-located pairs' normalised diurnal profiles and wet-hour fractions, mask-consistent
+and retained-count-carrying; an explicit verdict on the noise-floor hypothesis; and — if confirmed — the
+consequent correction to the vision's Group A diurnal claims. **No magnitude comparison is reported.**
+
+**Data handling:** CC BY 4.0 permits redistribution *with attribution*, but **M-D1's bar on third-party
+data in this public repo stands regardless** — the files live in `data/` alongside the DHM workbook,
+never committed. Attribution is required on any published result.
+
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**
 
