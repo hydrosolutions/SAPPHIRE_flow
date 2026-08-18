@@ -97,6 +97,18 @@ include them in the task context packet.
   whole registry); a past-only second branch stays constructible (Plan 151's
   shape). `supported_time_steps` is projected from the future-forced
   branch(es) only, never a past-only one
+- Plan 151 T2 (D4, `adapters/forecast_interface.py::_assert_single_future_known_product`,
+  called from `_project_requirements` per branch): a SEPARATE, per-branch
+  construction-time guard — exactly ONE non-empty `future_known` product per
+  branch, and exactly ONE `ensemble_mode` across that product's variables —
+  same `UnsupportedModelRequirementError` / registry-skip treatment as the
+  Plan 156 guard above. `past_known` products are NOT counted. Two new public
+  per-time-step accessors on `ForecastInterfaceAdapter`,
+  `future_feature_horizons(time_step)` / `future_feature_modes(time_step)`,
+  expose the SELECTED branch's per-feature future horizons/modes without the
+  `_project_requirements` max-collapse — consumed by
+  `services/track_projection.py` (Plan 151 T3), with no other caller yet
+  (T8 wires the per-track path in a later run)
 - Plan 156 (follow-up): the accepted one-future-forced-plus-past-only shape is
   only constructible, not deliverable — `_station_inputs_from_frames`
   (predict/train time) raises `UnsupportedModelRequirementError` via

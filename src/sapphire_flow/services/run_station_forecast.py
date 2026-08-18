@@ -84,6 +84,10 @@ class AssignmentFailureCause(Enum):
     QC_FAILED = auto()
     # --- added by the loop-level backstop (D3) only ---
     UNEXPECTED_EXCEPTION = auto()  # never returned by _run_single_model itself
+    # --- Plan 151 T1 (D1, D3-mapping): additive, the runner consumption
+    # seam (T7). Both are assignment-local and advance the fallback chain. ---
+    MISSING_CONTEXT = auto()  # the track never resolved -> model NOT called
+    TRACK_UNAVAILABLE = auto()  # the track resolved, this station unavailable
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

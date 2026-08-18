@@ -114,6 +114,169 @@ class TestLoadRecapGatewayConfig:
         assert config.max_cycle_age_hours == 18.0
 
 
+class TestCycleCadenceHours:
+    """Plan 151 T4 (D24-cadence-source): CONFIG parsing + validation ONLY —
+    threading the value into a resolver is T5/T8's job, not T4's."""
+
+    def test_defaults_when_absent(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+        )
+        config = load_recap_gateway_config(config_path)
+        assert config.cycle_cadence_hours == 6.0
+
+    def test_explicit_value_round_trips(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+            "cycle_cadence_hours = 3.0\n"
+        )
+        config = load_recap_gateway_config(config_path)
+        assert config.cycle_cadence_hours == 3.0
+
+    def test_non_positive_value_rejected(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+            "cycle_cadence_hours = 0\n"
+        )
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            load_recap_gateway_config(config_path)
+
+    def test_malformed_value_rejected(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+            'cycle_cadence_hours = "not-a-number"\n'
+        )
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            load_recap_gateway_config(config_path)
+
+    def test_direct_construction_rejects_non_positive(self) -> None:
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            RecapGatewayConfig(
+                base_url="https://recap.example.org",
+                timeout_s=300,
+                verify_tls=True,
+                staleness_threshold_hours=6.0,
+                hru_metadata_source="manual_gpkg_upload",
+                max_retries=3,
+                cycle_cadence_hours=-1.0,
+            )
+
+    # --- Review fold-in (major): a bare `<= 0` check accepts `nan` (`nan <=
+    # 0` is False) and `inf` (`inf <= 0` is False) alike, and `bool` is an
+    # `int`/`float` subclass in Python so `float(True) == 1.0` passes too.
+    # `inf` would silently collapse a bounded walk-back to the nominal
+    # candidate only; `nan` would fail later instead of at this boundary.
+
+    def test_direct_construction_rejects_nan(self) -> None:
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            RecapGatewayConfig(
+                base_url="https://recap.example.org",
+                timeout_s=300,
+                verify_tls=True,
+                staleness_threshold_hours=6.0,
+                hru_metadata_source="manual_gpkg_upload",
+                max_retries=3,
+                cycle_cadence_hours=float("nan"),
+            )
+
+    def test_direct_construction_rejects_inf(self) -> None:
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            RecapGatewayConfig(
+                base_url="https://recap.example.org",
+                timeout_s=300,
+                verify_tls=True,
+                staleness_threshold_hours=6.0,
+                hru_metadata_source="manual_gpkg_upload",
+                max_retries=3,
+                cycle_cadence_hours=float("inf"),
+            )
+
+    def test_direct_construction_rejects_bool_true(self) -> None:
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            RecapGatewayConfig(
+                base_url="https://recap.example.org",
+                timeout_s=300,
+                verify_tls=True,
+                staleness_threshold_hours=6.0,
+                hru_metadata_source="manual_gpkg_upload",
+                max_retries=3,
+                cycle_cadence_hours=True,  # type: ignore[arg-type]
+            )
+
+    def test_loader_rejects_nan(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+            "cycle_cadence_hours = nan\n"
+        )
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            load_recap_gateway_config(config_path)
+
+    def test_loader_rejects_inf(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+            "cycle_cadence_hours = inf\n"
+        )
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            load_recap_gateway_config(config_path)
+
+    def test_loader_rejects_boolean_true(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+            "cycle_cadence_hours = true\n"
+        )
+        with pytest.raises(ConfigurationError, match="cycle_cadence_hours"):
+            load_recap_gateway_config(config_path)
+
+
 class TestLoadRecapGatewayConfigOverlay:
     """Codex review Finding 4 (major): a Nepal deployment supplies
     `type = "recap_gateway"` + `[adapters.recap_gateway]` from an OVERLAY
