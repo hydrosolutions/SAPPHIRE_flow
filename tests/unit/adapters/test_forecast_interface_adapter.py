@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+import polars as pl
 import pytest
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
@@ -794,3 +795,61 @@ def test_multi_spatial_guard_still_raises_unsupported_requirement_type() -> None
         match="multi-spatial input not supported in v1",
     ):
         fi_boundary.ForecastInterfaceAdapter(FakeFIForecastModel(requirement))
+
+
+def test_nan_tolerance_scoped_to_selected_branch_not_flattened() -> None:
+    """Plan 151 T6 (D9): the past/future NaN-tolerance maps are derived from
+    ONE selected `DynamicInputSpec`, not flattened across every declared
+    branch. `_multi_product_requirement()`'s 24h branch is past-only and
+    declares `soil_moisture` (max_nan=4); the 1h (future-forced, SELECTED)
+    branch does not declare it at all.
+
+    D32 option (b) (construct-only, ratified 2026-08-18) means a 2-branch
+    model can never reach `predict()` (`_assert_single_deliverable_dynamic_branch`
+    rejects it outright), so the scoping behaviour is asserted directly on
+    the private `_variables_over_nan_tolerance` seam — the only route left
+    to exercise it, and the same seam `predict()` itself calls internally
+    with `time_step=inputs.time_step` (forecast_interface.py:894-899).
+
+    Fails today (pre-T6): with no `time_step` parameter at all, the gate
+    always flattens across every branch, so `soil_moisture` is checked (and
+    flagged) regardless of which branch is "selected".
+    """
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(_multi_product_requirement())
+    )
+    # 6 nulls > the 24h branch's declared max_nan=4 for soil_moisture. The
+    # 1h branch's own past_known columns (precip/temp/snow_depth) are fully
+    # populated so `_frame_with_column` does not raise looking for THEM.
+    past_dynamic = pl.DataFrame(
+        {
+            "precip": [1.0] * 10,
+            "temp": [1.0] * 10,
+            "snow_depth": [1.0] * 10,
+            "soil_moisture": [None] * 6 + [1.0] * 4,
+        }
+    )
+
+    # Scoped to the 1h (future-forced, SELECTED) branch: soil_moisture is not
+    # declared there at all, so it must NOT be flagged even though the frame
+    # violates the 24h branch's own tolerance for that name.
+    future_dynamic = pl.DataFrame({"precip_forecast": [1.0] * 10, "wind": [1.0] * 10})
+
+    scoped = adapter._variables_over_nan_tolerance(
+        past_targets=pl.DataFrame(),
+        past_dynamic=past_dynamic,
+        future_dynamic=future_dynamic,
+        time_step=timedelta(hours=1),
+    )
+    assert "past_known.soil_moisture" not in scoped
+
+    # Sanity check the fixture is meaningful: the OLD flattened form (no
+    # time_step, still exercised by predict_batch's GROUP call site,
+    # D8-group) DOES flag it — proving this is a real scoping difference,
+    # not a vacuous assertion.
+    flattened = adapter._variables_over_nan_tolerance(
+        past_targets=pl.DataFrame(),
+        past_dynamic=past_dynamic,
+        future_dynamic=future_dynamic,
+    )
+    assert flattened["past_known.soil_moisture"] == 6

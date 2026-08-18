@@ -1,0 +1,305 @@
+"""Plan 151 T6: per-assignment operational-input assembly (D9).
+
+Unlike the legacy ``assemble_station_operational_inputs`` (one shared frame
+per station, superset requirements, one ``cycle_time``), this module
+assembles ONE frame per assignment: past_targets/past_dynamic/static come
+from THIS assignment's own ``model.data_requirements`` (never a
+station-wide superset), and ``future_dynamic`` comes from THIS assignment's
+forcing track's own resolved records, sliced to the assignment's own
+per-feature horizons (<= the track's fetch_horizons, D5/D8/D26).
+
+Also defines the runner-boundary discriminated union (D10): ``ReadyContext``
+(T6-built) plus ``MissingTrackContext`` / ``UnavailableTrackContext``
+(T7-constructed) narrow to ``AssignmentRunInput``. These stay service-local
+— not part of the locked spec — mirroring ``ModelRunContext``'s own
+service-local precedent (Plan 148 D1, D1-types-location).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+import polars as pl
+import structlog
+
+from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
+from sapphire_flow.services.operational_inputs import (
+    ModelRunContext,
+    build_future_dynamic_frame,
+    load_warm_up_state,
+    observations_to_wide_dataframe,
+    raw_forcing_to_dataframe,
+)
+from sapphire_flow.services.training_data import resample_to_time_step
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import EnsembleMode, NwpCycleSource, QcStatus
+from sapphire_flow.types.forcing_track import (
+    AssignmentKey,
+    ForcingRequired,
+    NoForcingRequired,
+    StationTrackAvailable,
+    StationTrackUnavailable,
+    StationUnavailableReason,
+)
+from sapphire_flow.types.forecast import ForecastProvenance
+from sapphire_flow.types.model import StationInputData, StationModelInputs
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from datetime import timedelta
+
+    from sapphire_flow.protocols.adapters import WeatherReanalysisSource
+    from sapphire_flow.protocols.forecast_model import StationForecastModel
+    from sapphire_flow.protocols.stores import (
+        BasinStore,
+        ModelStateStore,
+        ObservationStore,
+        StationStore,
+    )
+    from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.forcing_track import (
+        FeatureFetchHorizons,
+        StationTrackOutcome,
+        TrackProjection,
+    )
+    from sapphire_flow.types.ids import ModelId, StationId
+    from sapphire_flow.types.model import ModelDataRequirements
+    from sapphire_flow.types.observation import Observation
+
+log = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForcingContract:
+    """Per-assignment per-feature forcing contract (D10a) — what the runner
+    reads coverage/dispatch/fan-out from on the per-track ``ReadyContext``
+    route, REPLACING ``model.data_requirements``' forcing reads on that
+    route only."""
+
+    feature_horizons: FeatureFetchHorizons
+    ensemble_mode: EnsembleMode
+    future_dynamic_features: frozenset[str]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ReadyContext:
+    """The per-track route's runner input for ONE assignment (D10): T6's
+    assembled per-assignment ``ModelRunContext`` + its own provenance + the
+    per-feature forcing contract (``None`` for a ``NoForcingRequired``
+    assignment — no future forcing at all)."""
+
+    run_context: ModelRunContext
+    provenance: ForecastProvenance
+    contract: ForcingContract | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MissingTrackContext:
+    """The track never resolved within the walk-back bound (D3-mapping) —
+    the model is NOT called for this assignment."""
+
+    assignment: AssignmentKey
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class UnavailableTrackContext:
+    """The track resolved, but THIS station is unavailable at the accepted
+    cycle (D3-mapping)."""
+
+    assignment: AssignmentKey
+    reason: StationUnavailableReason
+
+
+AssignmentRunInput = ReadyContext | MissingTrackContext | UnavailableTrackContext
+
+
+def _single_time_step(reqs: ModelDataRequirements) -> timedelta:
+    """The model's own supported time_step — Phase 3's per-track assignments
+    are single-resolution (D1/D2); ``supported_time_steps`` carries exactly
+    one entry for any model that reaches this route."""
+    if len(reqs.supported_time_steps) != 1:
+        raise ValueError(
+            "per-track assembly requires exactly one supported_time_steps "
+            f"entry, got {reqs.supported_time_steps!r}"
+        )
+    return next(iter(reqs.supported_time_steps))
+
+
+def assemble_assignment_inputs(
+    *,
+    station_id: StationId,
+    model_id: ModelId,
+    model: StationForecastModel,
+    projection: TrackProjection,
+    track_outcome: StationTrackOutcome | None,
+    issue_time: UtcDatetime,
+    obs_store: ObservationStore,
+    station_store: StationStore,
+    basin_store: BasinStore,
+    model_state_store: ModelStateStore,
+    forcing_source: WeatherReanalysisSource,
+    clock: Callable[[], UtcDatetime],
+    static_naming_models: list[object] | None = None,
+) -> ReadyContext | MissingTrackContext | UnavailableTrackContext:
+    """Assemble ONE assignment's own frame (D9).
+
+    ``track_outcome`` is ``None`` iff ``projection`` is ``NoForcingRequired``
+    (a fallback/skill model with no future forcing — its context is
+    assembled independently of track resolution, D2). For a
+    ``ForcingRequired`` projection, ``track_outcome`` must be the resolved
+    track's OWN per-station outcome — ``StationTrackAvailable`` yields a
+    ``ReadyContext``; ``StationTrackUnavailable`` yields an
+    ``UnavailableTrackContext`` (the model is never called, D10). The caller
+    is responsible for ``MissingTrackContext`` (the track never resolved at
+    all — T6 has nothing to assemble from in that case).
+    """
+    assignment_key = AssignmentKey((station_id, model_id))
+    now = clock()
+    reqs = model.data_requirements
+    time_step = _single_time_step(reqs)
+
+    resolved_cycle: UtcDatetime | None = None
+    nwp_age_hours: float | None = None
+    contract: ForcingContract | None = None
+    future_dynamic = pl.DataFrame()
+    forecast_horizon_steps = reqs.forecast_horizon_steps
+    cycle_source = NwpCycleSource.RUNOFF_ONLY
+
+    match projection, track_outcome:
+        case NoForcingRequired(), None:
+            pass
+        case ForcingRequired(), StationTrackUnavailable(reason=reason):
+            return UnavailableTrackContext(assignment=assignment_key, reason=reason)
+        case (
+            ForcingRequired(assignment_horizons=horizons),
+            StationTrackAvailable(
+                cycle=cycle, records=records, provenance=cycle_source
+            ),
+        ):
+            resolved_cycle = cycle
+            forecast_horizon_steps = max(h.value for h in horizons.values())
+            station_records = [r for r in records if r.station_id == station_id]
+            future_dynamic = build_future_dynamic_frame(
+                station_records,
+                time_step=time_step,
+                issue_time=issue_time,
+                forecast_horizon_steps=forecast_horizon_steps,
+                future_dynamic_features=frozenset(horizons),
+                ensemble_mode=reqs.ensemble_mode,
+            )
+            nwp_age_hours = (now - cycle).total_seconds() / 3600.0
+            if nwp_age_hours < 0:
+                log.warning(
+                    "track_assembly.nwp_cycle_in_future", nwp_age_hours=nwp_age_hours
+                )
+                nwp_age_hours = 0.0
+            contract = ForcingContract(
+                feature_horizons=horizons,
+                ensemble_mode=reqs.ensemble_mode,
+                future_dynamic_features=frozenset(horizons),
+            )
+        case _:
+            raise ValueError(
+                f"inconsistent projection/track_outcome pair: {projection!r}, "
+                f"{track_outcome!r}"
+            )
+
+    lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
+
+    target_parameters = list(reqs.target_parameters)
+    all_observations: list[Observation] = []
+    for parameter in target_parameters:
+        all_observations.extend(
+            obs_store.fetch_observations(
+                station_id=station_id,
+                parameter=parameter,
+                start=lookback_start,
+                end=issue_time,
+                qc_status=QcStatus.QC_PASSED,
+            )
+        )
+    past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
+    past_targets = resample_to_time_step(
+        past_targets, time_step, aggregation_methods=None
+    )
+
+    latest_obs_ts = max((o.timestamp for o in all_observations), default=None)
+    observation_staleness_hours: float | None = None
+    if latest_obs_ts is not None:
+        observation_staleness_hours = (now - latest_obs_ts).total_seconds() / 3600.0
+    else:
+        log.warning(
+            "track_assembly.no_observations",
+            station_id=str(station_id),
+            issue_time=str(issue_time),
+        )
+
+    past_dynamic_features = list(reqs.past_dynamic_features)
+    if past_dynamic_features:
+        reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
+        raw_forcing = forcing_source.fetch_reanalysis(
+            station_configs=reanalysis_bindings,
+            start=lookback_start,
+            end=issue_time,
+            parameters=past_dynamic_features,
+        )
+        past_dynamic = raw_forcing_to_dataframe(
+            raw_forcing, station_id, past_dynamic_features
+        )
+        if past_dynamic is None:
+            log.warning(
+                "track_assembly.no_past_dynamic",
+                station_id=str(station_id),
+                issue_time=str(issue_time),
+            )
+            past_dynamic = pl.DataFrame()
+    else:
+        past_dynamic = pl.DataFrame()
+
+    static_df: pl.DataFrame | None = None
+    station_config = station_store.fetch_station(station_id)
+    if station_config is not None and station_config.basin_id is not None:
+        basin = basin_store.fetch_basin(station_config.basin_id)
+        if basin is not None and basin.attributes:
+            static_df = pl.DataFrame(
+                [
+                    resolve_shared_static_frame(
+                        basin.attributes,
+                        [model, *(static_naming_models or ())],
+                        station_code=station_config.code,
+                    )
+                ]
+            )
+
+    warm_up = load_warm_up_state(model_state_store, station_id, model_id, lambda: now)
+
+    inputs = StationModelInputs(
+        station_id=station_id,
+        data=StationInputData(
+            past_targets=past_targets,
+            past_dynamic=past_dynamic,
+            future_dynamic=future_dynamic,
+            static=static_df,
+        ),
+        issue_time=issue_time,
+        forecast_horizon_steps=forecast_horizon_steps,
+        time_step=time_step,
+    )
+    run_context = ModelRunContext(
+        station_id=station_id,
+        model_id=model_id,
+        inputs=inputs,
+        observation_staleness_hours=observation_staleness_hours,
+        nwp_age_hours=nwp_age_hours,
+        prior_state=warm_up.prior_state,
+        warm_up_source=warm_up.warm_up_source,
+        warm_up_state_age_hours=warm_up.warm_up_state_age_hours,
+    )
+    provenance = ForecastProvenance(
+        nwp_cycle_source=cycle_source,
+        nwp_cycle_reference_time=resolved_cycle,
+    )
+    return ReadyContext(
+        run_context=run_context, provenance=provenance, contract=contract
+    )

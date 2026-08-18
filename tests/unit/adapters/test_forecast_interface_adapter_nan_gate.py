@@ -525,3 +525,111 @@ class TestNanGateIsTemporalityAwareAcrossCollidingNames:
 
         assert set(ensembles) == {"discharge"}
         assert model.predict_inputs is not None
+
+
+def _two_horizon_requirement() -> fi_boundary.InputRequirement:
+    """Plan 151 T6 (D9): one future_known PRODUCT with two variables at
+    DIFFERENT `future_steps` — the flagship "precip 2 steps + temp 10 steps"
+    shape. Single branch, single product — legal under D4 (which restricts
+    PRODUCT/mode count per branch, never per-variable horizon divergence
+    within one product) — so this reaches `predict()` directly, no
+    construct-only caveat needed.
+    """
+    return fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            _STEP: fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: (
+                        fi_boundary.DynamicInputSpec(
+                            past_known={
+                                "obs": {
+                                    "discharge": _past(
+                                        fi_boundary.Unit.M3_PER_S, max_nan=2
+                                    ),
+                                }
+                            },
+                            future_known={
+                                "nwp": {
+                                    "precip": fi_boundary.FutureKnownVariable(
+                                        future_steps=2,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.MM,
+                                    ),
+                                    "temp": fi_boundary.FutureKnownVariable(
+                                        future_steps=10,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.DEG_C,
+                                    ),
+                                }
+                            },
+                        )
+                    )
+                }
+            )
+        },
+    )
+
+
+def _two_horizon_station_input_data() -> StationInputData:
+    # 10 future hourly buckets, fully populated (no nulls) for BOTH
+    # features -- the raw track fetch reaches temp's 10-step need, so precip
+    # (which only declares 2) genuinely has 10 REAL values available too.
+    # Without the per-variable slice, precip would receive all 10 -- more
+    # than it ever declared, not fewer, so this is NOT a NaN-tolerance
+    # failure; it is an over-delivery the model never asked for.
+    timestamps = _timestamps(*range(3, 13))
+    return StationInputData(
+        past_targets=_time_frame(
+            {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+        ),
+        past_dynamic=_time_frame({"timestamp": _timestamps(0, 1, 2)}),
+        future_dynamic=_time_frame(
+            {
+                "timestamp": timestamps,
+                "precip": [float(i) for i in range(10)],
+                "temp": [float(i) for i in range(10)],
+            }
+        ),
+        static=None,
+    )
+
+
+def _future_known_series(
+    model_inputs: fi_boundary.ModelInputs, name: str
+) -> pl.DataFrame:
+    station = model_inputs.stations[fi_boundary._STATION_SCOPE_KEY]
+    dynamic = station.dynamic[_STEP].data[fi_boundary.FISpatialRepresentation.POINT]
+    return dynamic.future_known["nwp"][name].data
+
+
+def test_predict_slices_each_future_known_variable_to_its_own_horizon() -> None:
+    """Fails today: `_future_known_inputs` hands every future_known variable
+    the WHOLE `future_dynamic` frame regardless of its own declared
+    `future_steps` — precip (future_steps=2) would receive all 10 rows
+    instead of the earliest 2, silently over-delivering data the model never
+    declared (Plan 151 D9)."""
+    data = _two_horizon_station_input_data()
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_two_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=10,
+        time_step=_STEP,
+    )
+
+    adapter.predict(object(), inputs, random.Random(123))
+
+    assert model.predict_inputs is not None
+    precip = _future_known_series(model.predict_inputs, "precip")
+    temp = _future_known_series(model.predict_inputs, "temp")
+    assert precip.height == 2
+    assert precip["precip"].to_list() == [0.0, 1.0]
+    assert temp.height == 10

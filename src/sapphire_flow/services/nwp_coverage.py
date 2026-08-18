@@ -50,7 +50,7 @@ def col_matches_feature(col: str, feature: str) -> bool:
     return False
 
 
-def _member_indices(columns: list[str], feature: str) -> frozenset[int]:
+def member_indices(columns: list[str], feature: str) -> frozenset[int]:
     """The set of member indices ``k`` present as ``{feature}_{k}`` columns."""
     pattern = re.compile(rf"^{re.escape(feature)}_(\d+)$")
     return frozenset(
@@ -102,7 +102,7 @@ def assess_future_coverage(
     if is_ensemble:
         member_sets: dict[str, frozenset[int]] = {}
         for feature in sorted(required_features):
-            members = _member_indices(columns, feature)
+            members = member_indices(columns, feature)
             if not members:
                 return CoverageResult(
                     adequate=False,

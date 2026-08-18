@@ -35,7 +35,9 @@ if TYPE_CHECKING:
         WeatherForecastStore,
     )
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import ModelId, StationId
+    from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.weather import WeatherForecastRecord
 
 log = structlog.get_logger(__name__)
@@ -235,6 +237,61 @@ def _filter_and_cap_daily_records(
     return [r for r in records if r.valid_time in kept_times]
 
 
+def build_future_dynamic_frame(
+    records: list[WeatherForecastRecord],
+    *,
+    time_step: timedelta,
+    issue_time: UtcDatetime,
+    forecast_horizon_steps: int,
+    future_dynamic_features: frozenset[str],
+    ensemble_mode: EnsembleMode,
+) -> pl.DataFrame:
+    """Public: the shared hourly-to-model-time_step reduction (aggregate,
+    broadcast deterministic features across members, drop backdated buckets,
+    cap to the horizon, pivot to a wide frame). Extracted so Plan 151 T6's
+    per-assignment assembler can build a ``future_dynamic`` frame from a
+    forcing track's OWN records with byte-identical behaviour to the legacy
+    superset assembler below, which now calls this too (pure refactor, no
+    behaviour change).
+    """
+    daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
+    daily_nwp_records = _broadcast_deterministic_features_to_members(daily_nwp_records)
+    kept_daily_records = _filter_and_cap_daily_records(
+        daily_nwp_records,
+        issue_time=issue_time,
+        forecast_horizon_steps=forecast_horizon_steps,
+    )
+    return _pivot_nwp_records(
+        kept_daily_records, future_dynamic_features, ensemble_mode
+    )
+
+
+def reduced_daily_step_counts(
+    records: list[WeatherForecastRecord],
+    *,
+    time_step: timedelta,
+    issue_time: UtcDatetime,
+) -> dict[tuple[str, int | None], int]:
+    """Public: count clean daily buckets per ``(parameter, member_id)`` AFTER
+    the same aggregation + backdated-bucket drop that :func:`build_future_dynamic_frame`
+    (and legacy assembly) apply — Plan 151 T5's completeness gate (D8) counts
+    "steps" in these units, not raw hourly rows, so it agrees with assembly
+    around a non-midnight issue cycle. Deliberately does NOT apply the
+    horizon CAP (`_filter_and_cap_daily_records`'s ``forecast_horizon_steps``
+    truncation) — a completeness check needs the true available count, not
+    one already truncated to some other consumer's horizon.
+    """
+    daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
+    kept_times = frozenset(
+        r.valid_time for r in daily_nwp_records if r.valid_time >= issue_time
+    )
+    counts: dict[tuple[str, int | None], int] = defaultdict(int)
+    for r in daily_nwp_records:
+        if r.valid_time in kept_times:
+            counts[(r.parameter, r.member_id)] += 1
+    return dict(counts)
+
+
 def _pivot_nwp_records(
     records: list[_AggregatedNwpPoint],
     future_dynamic_features: frozenset[str],
@@ -287,8 +344,8 @@ def _pivot_nwp_records(
         return pl.DataFrame(list(pivot2.values()))
 
 
-def _observations_to_wide_dataframe(
-    observations: list, parameters: list[str]
+def observations_to_wide_dataframe(
+    observations: list[Observation], parameters: list[str]
 ) -> pl.DataFrame:
     if not observations:
         return pl.DataFrame()
@@ -300,8 +357,8 @@ def _observations_to_wide_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
-def _raw_forcing_to_dataframe(
-    raw_records: list,
+def raw_forcing_to_dataframe(
+    raw_records: list[RawHistoricalForcing],
     station_id: StationId,
     parameters: list[str],
 ) -> pl.DataFrame | None:
@@ -426,7 +483,7 @@ def assemble_station_operational_inputs(
         )
         all_observations.extend(obs)
 
-    past_targets = _observations_to_wide_dataframe(all_observations, target_parameters)
+    past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
         past_targets, time_step, aggregation_methods=None
     )
@@ -447,7 +504,7 @@ def assemble_station_operational_inputs(
     # Skips the wholly-absent-obs case (owned by no_observations above) and
     # early-exits for zero-target models (avoids min() of an empty sequence).
     # Column-presence guard: a declared target with zero obs has no column in
-    # the resampled frame (_observations_to_wide_dataframe only builds a column
+    # the resampled frame (observations_to_wide_dataframe only builds a column
     # when at least one obs exists); indexing an absent column raises
     # ColumnNotFoundError, so count it as 0 instead.
     if latest_obs_ts is not None and reqs.target_parameters:
@@ -477,7 +534,7 @@ def assemble_station_operational_inputs(
             end=issue_time,
             parameters=past_dynamic_features,
         )
-        past_dynamic = _raw_forcing_to_dataframe(
+        past_dynamic = raw_forcing_to_dataframe(
             raw_forcing, station_id, past_dynamic_features
         )
         if past_dynamic is None:
@@ -520,27 +577,18 @@ def assemble_station_operational_inputs(
             cycle_time=str(cycle_time),
         )
 
-    # Aggregate hourly per-member NWP to the model's time_step (daily) on the
-    # BARE parameter name (precip SUM, temp MEAN) BEFORE pivoting to member-
-    # suffixed columns, so the aggregation methods resolve correctly.
-    daily_nwp_records = _aggregate_nwp_records_to_time_step(nwp_records, time_step)
-    # Plan 082 Task 2H-snow: broadcast deterministic (member_id=None) daily
-    # points (recap Gateway snow) across every real ensemble member (IFS)
-    # present in the same batch. A no-op when no real member is present.
-    daily_nwp_records = _broadcast_deterministic_features_to_members(daily_nwp_records)
-    # Daily UTC-calendar-day bucketing of a non-midnight cycle backdates the
-    # issue-day bucket to UTC midnight (< issue_time) and can add a partial
-    # end-day bucket. Drop backdated buckets (keep valid_time > issue_time) and
-    # cap to the model's forecast_horizon_steps (earliest N future buckets),
-    # applied to the SAME bucket set across all members, so a daily model with
-    # max_nan=0 receives exactly <= N clean future steps.
-    kept_daily_records = _filter_and_cap_daily_records(
-        daily_nwp_records,
+    # Aggregate hourly per-member NWP to the model's time_step (daily), drop
+    # backdated buckets, cap to the horizon, and pivot to a wide frame — see
+    # `build_future_dynamic_frame` for the full rationale (Plan 151 T6
+    # extraction; behaviour unchanged, now shared with the per-track
+    # assembler).
+    future_dynamic = build_future_dynamic_frame(
+        nwp_records,
+        time_step=time_step,
         issue_time=issue_time,
         forecast_horizon_steps=forecast_horizon_steps,
-    )
-    future_dynamic = _pivot_nwp_records(
-        kept_daily_records, reqs.future_dynamic_features, reqs.ensemble_mode
+        future_dynamic_features=reqs.future_dynamic_features,
+        ensemble_mode=reqs.ensemble_mode,
     )
     nwp_age_hours = (now - cycle_time).total_seconds() / 3600.0
     if nwp_age_hours < 0:
