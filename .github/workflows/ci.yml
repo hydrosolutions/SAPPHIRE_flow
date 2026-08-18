@@ -94,7 +94,13 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-      - run: uv sync --frozen
+      # `--extra aquacast` ONLY here (owner, 2026-08-18). Without it the shim's
+      # tests skip via importorskip and the aquacast boundary is exercised on
+      # nobody's machine but the author's — a weak position for code that will
+      # feed operational forecasts. It costs a torch download on this one job;
+      # every other job stays on the plain sync. Needs AQUACAST_TOKEN, which the
+      # auth step above configures.
+      - run: uv sync --frozen --extra aquacast
       - run: uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v
 
   # A4 — Wheel-only guard for dependency-update installs.
