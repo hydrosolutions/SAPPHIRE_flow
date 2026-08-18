@@ -344,40 +344,34 @@ bound to the artifact digest, T5 restore-rehearsal-as-real-recovery-path (roles/
 T6 mount validation (evaluated **before** freshness), full retention/age/byte policy, and migrating the existing
 plaintext dumps. **Phase C:** off-box replication (D4) and RPO/PITR (D6).
 
-### T5 — rehearse the restore (Repo + Host) — *the task that makes it a backup*
+### T5 — rehearse the restore — ✅ NEXT BUILDABLE SLICE (scoped 2026-08-18)
 
-*In:* new `scripts/restore-rehearsal.sh`; runbook coverage in T7.
+**This is the last untested assumption in the chain.** Phase A proved backups are *complete* (the TOC carries
+`TABLE DATA public access_tokens`) and *loud* (a failure can no longer clear its own alarm). **Nothing has ever
+proved one can be restored.**
 
-`pg_restore --list` proves only that the archive TOC is readable. This rehearsal restores a real artifact and
-compares real evidence.
+**Relationship to Plan 048** (a DRAFT stub that already specifies *"dump → fresh postgres container → load →
+assert row counts + spot-check forecasts → destroy"*): **048 keeps restic, encrypted snapshot chains, 7/4/12
+retention and the AUTOMATED MONTHLY cadence.** This slice takes only the **one-shot, on-demand rehearsal**, which
+needs none of that — we have working `pg_dump` artifacts now, and swapping the backup tool is a separate,
+larger decision. Do not pull restic in.
 
-- **In a disposable instance, never the live cluster.** A throwaway container on a **temporary volume** using the
-  pinned image from `docker-compose.yml:19` (`postgis/postgis:16-3.4@sha256:44126d…`). The earlier draft said
-  "scratch database", which reads as *another database in the running cluster* — that would consume production
-  `pgdata` (`docker-compose.yml:25`) and compete with the live service for I/O. This also matches
-  `docs/architecture-context.md` § Restore rehearsal ("start a temporary PostgreSQL instance from the dump").
-- **Preflight:** disk-headroom check (free space ≥ ~3× artifact size) before anything starts; abort with a clear
-  message otherwise.
-- **Steps:** decrypt with the operator-supplied age identity (`age --decrypt --identity <path>`) into a `0600`
-  temp → `createdb --template=template0` in the throwaway instance → `pg_restore --single-transaction
-  --exit-on-error --no-owner --no-acl` → **check the exit status** (`pg_restore` continues past SQL errors by
-  default; neither flag is implied).
-  - **Role/ACL handling — deliberate, with the trade-off named.** `--no-owner --no-acl` is chosen *for the
-    rehearsal* because the throwaway instance has none of the cluster roles, and `docker/bootstrap-roles.sql`
-    cannot create a usable grant set on an empty schema — it is written to run **after** `alembic upgrade head`
-    (`bootstrap-roles.sql:3-6`) and its per-table matrix (`:132-176`) fails against a schemaless database.
-    Consequence, stated: the rehearsal proves **schema + data** restorability, **not** ACL restorability.
-  - **Real recovery ordering** is the other path, documented and walked through once in T7: create roles/owner →
-    restore **with** owners and ACLs into an empty database → re-run the role bootstrap to converge grants. Do
-    **not** migrate the target first unless collisions are explicitly handled.
-- **Evidence compared** (not "it exited 0"): row count and a representative row from **`access_tokens`** (the
-  table that was failing) and `access_token_stations`; object counts by class from the catalog (tables, views,
-  sequences, indexes, constraints); `last_value` for both sequences; and `alembic_version` matching the source.
-- **Cleanup under `trap`/`finally`**, unconditionally including on failure: remove the container, the temporary
-  volume, and the decrypted plaintext.
-- **Cadence: operator-run** — on demand, and after any change to the backup path. Automating it monthly stays
-  with Plan 048 (see follow-ons), because an unattended rehearsal would require the age identity to live on the
-  mini and would undo D5.
+**Build: `scripts/restore-rehearsal.sh <dump-path>`**
+1. Start a **disposable** postgres container (same major version as production — 16), on a throwaway volume.
+2. `pg_restore` the artifact into an empty database, `--single-transaction --exit-on-error` so a partial restore
+   fails loudly rather than leaving a half-database that reads as success.
+3. **Assert content, not exit status:** row counts for representative tables **including `access_tokens`** (the
+   table whose absence caused this whole thread — a restore that silently lacks it must fail), `alembic_version`
+   matching the source, and sequence state.
+4. **Destroy the container and volume unconditionally**, including on failure.
+5. Exit non-zero with a specific message on any assertion failure.
+
+**Explicitly NOT in this slice:** restic, encryption, key custody, the monthly schedule, off-box copies, and the
+12-step DR document. Each is real; none is needed to answer *"can we restore?"*.
+
+**Acceptance — run it for real:** execute against the live artifact on the mac-mini
+(`sapphire_20260818_081448_40ee7bc2.dump`, 1.1 GB, the first good backup since 13 August) and require it to
+**pass on content**. A rehearsal that has never been run against a real dump proves nothing.
 
 ### T6 — the local backup path must be the device it claims to be (Host + Repo)
 
