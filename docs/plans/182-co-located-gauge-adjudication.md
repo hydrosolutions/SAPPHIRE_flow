@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-18
 revised: 2026-08-18
 plan: 182
@@ -13,7 +13,12 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 182 — M-A10 co-located gauge-vs-gauge adjudication
 
 ## Status
-**DRAFT.** Not for implementation until the owner confirms.
+**READY — owner-confirmed 2026-08-18.** Gated by **three slim Codex rounds**: round 1 found the test
+could not identify its own hypothesis (blocker); round 2, asked *what round 1 missed*, found the
+ablation was not specific to sensor noise (blocker) and the verdict rule could not resolve partial or
+discordant outcomes; round 3, a **verification pass** asking whether the fixes were correct, found the
+negative control was **vacuous** — confirmed empirically: 0.00 % of Pyramid values fall below 0.2 mm.
+Each round's findings are folded in place above.
 
 ## Why this is worth doing before M-A7
 
