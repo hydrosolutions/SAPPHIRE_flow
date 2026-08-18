@@ -240,6 +240,11 @@ class TokenBucketLindasLimiter:
         self._deadline_runner = deadline_runner or _run_with_deadline
         self._tokens: float = float(self._config.capacity)
         self._last_refill: UtcDatetime = self._clock()
+        # Major fix: guards the refill/reservation/drain critical section so
+        # concurrent callers cannot each observe the same empty bucket,
+        # sleep in parallel, and all proceed as though each had reserved a
+        # distinct refilled token — see `TestConcurrentAcquisition`.
+        self._lock = threading.Lock()
 
     def _remaining_or_raise(
         self,
@@ -361,8 +366,14 @@ class TokenBucketLindasLimiter:
                     bound="deadline",
                 )
 
+            # Minor fix: `lindas.throttled` is reserved for a 429 — the
+            # signal an operator reads as "rate limited, self-resolving".
+            # A 5xx or transport failure is a distinct condition ("endpoint
+            # broken", per the module's own docstring) and gets its own
+            # event so the two are not conflated in the mini's logs.
+            event = "lindas.throttled" if last_status == 429 else "lindas.retrying"
             log.warning(
-                "lindas.throttled",
+                event,
                 attempt=attempt,
                 status=last_status,
                 delay_s=delay,
@@ -384,29 +395,44 @@ class TokenBucketLindasLimiter:
         )
 
     def _acquire_token(self, *, deadline_remaining_s: float) -> None:
-        self._refill(self._clock())
-        if self._tokens >= 1.0:
-            self._tokens -= 1.0
-            return
-        wait = (1.0 - self._tokens) * self._config.refill_period_s
-        # Blocker fix (round 2): never sleep past the call's remaining
-        # wall-clock budget — an empty bucket's wait must count against the
-        # 120 s deadline like everything else, not silently exceed it via one
-        # unbounded sleep. The subsequent `_remaining_or_raise` check catches
-        # a capped wait that still wasn't enough.
-        wait = min(wait, max(deadline_remaining_s, 0.0))
-        self._sleeper(wait)
-        self._refill(self._clock())
-        self._tokens = max(0.0, self._tokens - 1.0)
+        # Major fix: the entire refill-check-consume-or-wait decision runs
+        # under `self._lock` as one atomic critical section. Without it, two
+        # threads could both see `self._tokens < 1.0`, both compute a wait
+        # and sleep CONCURRENTLY (not serialized), and both then force-
+        # consume once they wake — dispensing two tokens for one refilled
+        # slot and breaking the "process-local offered load is bounded"
+        # guarantee. Holding the lock across the sleep serializes exactly
+        # the sequence the single-threaded algorithm below already assumes:
+        # only one thread at a time may observe a given bucket state, wait
+        # out its own deficit, and consume.
+        with self._lock:
+            self._refill(self._clock())
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            wait = (1.0 - self._tokens) * self._config.refill_period_s
+            # Blocker fix (round 2): never sleep past the call's remaining
+            # wall-clock budget — an empty bucket's wait must count against
+            # the 120 s deadline like everything else, not silently exceed it
+            # via one unbounded sleep. The subsequent `_remaining_or_raise`
+            # check catches a capped wait that still wasn't enough.
+            wait = min(wait, max(deadline_remaining_s, 0.0))
+            self._sleeper(wait)
+            self._refill(self._clock())
+            self._tokens = max(0.0, self._tokens - 1.0)
 
     def _drain(self, now: UtcDatetime) -> None:
         """Zero the local bucket at ``now`` — used when a 429 proves the
         upstream bucket is actually empty. Refills forward from this point,
         so the next independent ``call()`` only gets credit for elapsed time
-        genuinely observed after the drain."""
-        self._refill(now)
-        self._tokens = 0.0
-        self._last_refill = now
+        genuinely observed after the drain. Lock-guarded (major fix) for the
+        same reason as `_acquire_token`: this mutates the same shared
+        `_tokens`/`_last_refill` state a concurrent caller may be mid-refill
+        on."""
+        with self._lock:
+            self._refill(now)
+            self._tokens = 0.0
+            self._last_refill = now
 
     def _refill(self, now: UtcDatetime) -> None:
         elapsed_s = (now - self._last_refill).total_seconds()

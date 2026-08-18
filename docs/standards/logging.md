@@ -322,13 +322,15 @@ Deliberate divergence from `ingest_weather_history` (which classifies `no_horizo
 
 ### LINDAS rate-limit events (Plan 175, `adapters/lindas_rate_limiter.py`)
 
-The shared limiter every LINDAS caller routes through emits two distinguishable
-events so the mini's logs separate "endpoint busy" (self-resolving) from
-"endpoint broken" (needs attention):
+The shared limiter every LINDAS caller routes through emits distinguishable
+events so the mini's logs separate "endpoint busy" (self-resolving — a 429)
+from "endpoint broken" (needs attention — a 5xx or transport failure) from
+"giving up" (exhaustion):
 
 | Event | Level | Notes |
 |---|---|---|
-| `lindas.throttled` | WARNING | One retryable failure (429, 5xx, or a transport error) is about to be retried. Kwargs: `attempt`, `status` (`None` for a transport failure), `delay_s` (the computed backoff, already clamped per D7). Expected to appear routinely near the LINDAS-caller cron boundaries — this alone is NOT an incident. |
+| `lindas.throttled` | WARNING | A 429 specifically is about to be retried — "endpoint busy", matching the plan's own definition ("429 seen, retrying"). Kwargs: `attempt`, `status` (always `429`), `delay_s` (the computed backoff, already clamped per D7). Expected to appear routinely near the LINDAS-caller cron boundaries — this alone is NOT an incident. |
+| `lindas.retrying` | WARNING | A 5xx or a transport failure (not a 429) is about to be retried — "endpoint/network trouble", deliberately distinct from `lindas.throttled` so an operator can tell rate limiting apart from an actual endpoint fault. Kwargs: `attempt`, `status` (`None` for a transport failure), `delay_s`. |
 | `lindas.exhausted` | WARNING | The call gave up: either the attempt cap or the wall-clock deadline was hit first (see `bound` kwarg: `"attempts"` or `"deadline"`). Kwargs: `attempts`, `last_status`, `bound`, and (deadline bound only) `elapsed_s`. This is what a caller (`BafuObservationAdapter`, `HydroScraperAdapter`) turns into its own error/outcome shape — see `observation.fetch_failed` below and `bafu_observation`'s `AdapterError`. |
 
 `HydroScraperAdapter._fetch_one` reuses the pre-existing `observation.fetch_failed`

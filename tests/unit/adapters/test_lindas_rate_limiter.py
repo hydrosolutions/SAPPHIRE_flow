@@ -6,10 +6,13 @@ network (CLAUDE.md testability: no bare ``time.sleep`` in tests either).
 
 from __future__ import annotations
 
+import threading
+import time as real_time
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+import structlog.testing
 
 from sapphire_flow.exceptions import LindasRateLimitExhaustedError
 from sapphire_flow.types.datetime import ensure_utc
@@ -593,3 +596,132 @@ class TestRetryAfterOverflowGuard:
         limiter.call(send)
 
         assert spy.calls == [module.LINDAS_MAX_DELAY_S]
+
+
+class TestConcurrentAcquisition:
+    """Major fix: `_acquire_token` must serialize concurrent callers so no
+    two threads can observe the same empty bucket, sleep in parallel, and
+    both proceed as though each had reserved a distinct refilled token.
+
+    Real threads + real `time.sleep`/`datetime.now` (a small refill period
+    to stay fast) — this is deliberately NOT the fake-clock/fake-sleeper
+    style used everywhere else in this file, because a fake clock is not
+    itself thread-safe and would not exercise the actual race the lock
+    closes (see also `TestDeadlineRunnerPrimitive`, which makes the same
+    real-threads exception for the same reason)."""
+
+    def test_concurrent_callers_stay_paced_at_the_refill_period(self) -> None:
+        module = _import_module()
+        capacity = 2
+        refill_period_s = 0.15
+        config = module.LindasLimiterConfig(
+            capacity=capacity,
+            refill_period_s=refill_period_s,
+            max_attempts=5,
+            total_deadline_s=10.0,
+        )
+        limiter = module.TokenBucketLindasLimiter(config=config)
+
+        n_threads = 6
+        finish_times: list[float] = []
+        finish_lock = threading.Lock()
+        started_at = real_time.perf_counter()
+
+        def worker() -> None:
+            def send(remaining_s: float) -> httpx.Response:
+                del remaining_s
+                return httpx.Response(200)
+
+            response = limiter.call(send)
+            assert response.status_code == 200
+            with finish_lock:
+                finish_times.append(real_time.perf_counter() - started_at)
+
+        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        assert not any(t.is_alive() for t in threads), "a worker thread hung"
+        assert len(finish_times) == n_threads
+
+        # Under the pre-fix race, every caller beyond `capacity` observes the
+        # SAME empty bucket concurrently, sleeps ~one refill period IN
+        # PARALLEL, and all wake and force-consume together — so the last of
+        # the 6 calls finishes around one refill period after start
+        # regardless of how many callers overflowed capacity. A correctly
+        # locked bucket instead serializes the `n_threads - capacity`
+        # overflow callers one after another, so the LAST call cannot finish
+        # before roughly `(n_threads - capacity) * refill_period_s`. Assert
+        # a threshold comfortably above the buggy (~1 period) case and
+        # comfortably below the correctly-serialized (~4 periods) case.
+        last_finish = max(finish_times)
+        overflow = n_threads - capacity
+        assert last_finish >= (overflow - 1) * refill_period_s, (
+            f"last of {n_threads} calls (capacity={capacity}) finished after "
+            f"only {last_finish:.3f}s — concurrent callers were not "
+            "serialized against each other, so more than the bucket's "
+            "capacity worth of load escaped unpaced"
+        )
+
+
+class TestThrottledVsRetryingEvents:
+    """Minor fix: `lindas.throttled` is reserved for a 429 (the plan's own
+    definition: '429 seen, retrying'); a 5xx or transport failure emits the
+    distinct `lindas.retrying` event instead, so operators can tell rate
+    limiting apart from an endpoint/network fault."""
+
+    def test_429_emits_lindas_throttled(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        with structlog.testing.capture_logs() as captured:
+            limiter.call(_responses(429, 200))
+
+        events = [e["event"] for e in captured]
+        assert "lindas.throttled" in events
+        assert "lindas.retrying" not in events
+        (throttled,) = [e for e in captured if e["event"] == "lindas.throttled"]
+        assert throttled["status"] == 429
+
+    def test_5xx_emits_lindas_retrying_not_throttled(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        with structlog.testing.capture_logs() as captured:
+            limiter.call(_responses(503, 200))
+
+        events = [e["event"] for e in captured]
+        assert "lindas.retrying" in events
+        assert "lindas.throttled" not in events
+        (retrying,) = [e for e in captured if e["event"] == "lindas.retrying"]
+        assert retrying["status"] == 503
+
+    def test_transport_error_emits_lindas_retrying_not_throttled(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
+
+        calls = {"n": 0}
+
+        def send(remaining_s: float) -> httpx.Response:
+            del remaining_s
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.ConnectError("no route to host")
+            return httpx.Response(200)
+
+        with structlog.testing.capture_logs() as captured:
+            limiter.call(send)
+
+        events = [e["event"] for e in captured]
+        assert "lindas.retrying" in events
+        assert "lindas.throttled" not in events
+        (retrying,) = [e for e in captured if e["event"] == "lindas.retrying"]
+        assert retrying["status"] is None

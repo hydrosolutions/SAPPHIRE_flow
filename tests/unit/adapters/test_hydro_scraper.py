@@ -6,6 +6,7 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
+import structlog.testing
 
 from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
 from sapphire_flow.exceptions import AdapterError
@@ -331,6 +332,118 @@ class TestBatchFailureCauseMapping:
         outcome = _fetch_one_outcome(adapter)
 
         assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+
+class TestTypedFailuresLogAsFetchFailedNotCompleted:
+    """Minor fix: a NO_DATA or MALFORMED_RESPONSE outcome from
+    `_parse_bindings_typed` used to still log `observation.fetch_completed`
+    unconditionally — telling an operator (and the list-façade callers, e.g.
+    `record_fixtures.py`, that only ever see `[]`) that the fetch succeeded
+    while the typed outcome, `HydroScraperBatchResult.failed`, and
+    `ingest_observations_flow`'s `stations_fetch_failed` count all
+    simultaneously treat it as a failure. `_fetch_one` must emit
+    `observation.fetch_failed` (carrying `failure_cause`) for BOTH typed
+    failure causes and never `fetch_completed` for either."""
+
+    def test_no_data_logs_fetch_failed_not_fetch_completed(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": []}})
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        with structlog.testing.capture_logs() as captured:
+            outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.NO_DATA
+        events = [e["event"] for e in captured]
+        assert "observation.fetch_failed" in events
+        assert "observation.fetch_completed" not in events
+        (failed,) = [e for e in captured if e["event"] == "observation.fetch_failed"]
+        assert failed["log_level"] == "warning"
+        assert failed["failure_cause"] == FetchOutcomeCause.NO_DATA.value
+
+    def test_malformed_response_logs_fetch_failed_not_fetch_completed(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": {
+                        "bindings": [
+                            {
+                                "predicate": {
+                                    "value": (
+                                        "https://environment.ld.admin.ch/foen/hydro"
+                                        "/dimension/measurementTime"
+                                    )
+                                },
+                                "object": {"value": "not-a-timestamp"},
+                            },
+                            {
+                                "predicate": {
+                                    "value": (
+                                        "https://environment.ld.admin.ch/foen/hydro"
+                                        "/dimension/discharge"
+                                    )
+                                },
+                                "object": {"value": "42.0"},
+                            },
+                        ]
+                    }
+                },
+            )
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        with structlog.testing.capture_logs() as captured:
+            outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+        events = [e["event"] for e in captured]
+        assert "observation.fetch_failed" in events
+        assert "observation.fetch_completed" not in events
+        (failed,) = [e for e in captured if e["event"] == "observation.fetch_failed"]
+        assert failed["log_level"] == "warning"
+        assert failed["failure_cause"] == FetchOutcomeCause.MALFORMED_RESPONSE.value
+
+    def test_clean_fetch_still_logs_fetch_completed_not_fetch_failed(self) -> None:
+        # Guards the other direction: the fix must not turn a genuinely
+        # successful fetch into a `fetch_failed` too.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": {
+                        "bindings": [
+                            {
+                                "predicate": {
+                                    "value": (
+                                        "https://environment.ld.admin.ch/foen/hydro"
+                                        "/dimension/measurementTime"
+                                    )
+                                },
+                                "object": {"value": "2026-04-17T00:00:00Z"},
+                            },
+                            {
+                                "predicate": {
+                                    "value": (
+                                        "https://environment.ld.admin.ch/foen/hydro"
+                                        "/dimension/discharge"
+                                    )
+                                },
+                                "object": {"value": "42.0"},
+                            },
+                        ]
+                    }
+                },
+            )
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        with structlog.testing.capture_logs() as captured:
+            outcome = _fetch_one_outcome(adapter)
+
+        assert outcome.failure_cause is None
+        assert len(outcome.observations) == 1
+        events = [e["event"] for e in captured]
+        assert "observation.fetch_completed" in events
+        assert "observation.fetch_failed" not in events
 
 
 class TestMalformedBindingsSurviveAsTypedFailures:

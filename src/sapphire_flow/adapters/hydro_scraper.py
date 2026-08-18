@@ -257,6 +257,28 @@ class HydroScraperAdapter:
                 failure_detail=f"unparseable bindings: {exc}",
             )
         duration_ms = round((time.perf_counter() - t0) * 1000, 1)
+        if cause is not None:
+            # Major fix: `_parse_bindings_typed` returning NO_DATA or
+            # MALFORMED_RESPONSE is still a per-station failure — the batch's
+            # own `.failed` property (and `ingest_observations_flow`'s
+            # `stations_fetch_failed` count) already treat any non-None
+            # `failure_cause` as failed. Logging `fetch_completed` here would
+            # tell an operator this station succeeded while the typed outcome
+            # simultaneously says it did not, and a list-façade caller (e.g.
+            # `record_fixtures.py`, which only sees `[]`) would get zero
+            # WARNING signal at all for a malformed/empty response.
+            log.warning(
+                "observation.fetch_failed",
+                station_id=str(station_id),
+                error=detail,
+                failure_cause=cause.value,
+            )
+            return StationFetchOutcome(
+                station_id=station_id,
+                observations=tuple(observations),
+                failure_cause=cause,
+                failure_detail=detail,
+            )
         log.info(
             "observation.fetch_completed",
             station_id=str(station_id),
