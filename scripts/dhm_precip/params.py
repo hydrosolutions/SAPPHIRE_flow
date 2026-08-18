@@ -205,9 +205,17 @@ class DhmPrecipParams:
     coloc_bootstrap_adequate_max_spread_hours: float = 2.0
     """D5 — if the circular bootstrap spread on the peak hour exceeds this
     on the overlap window, only the full record may support a verdict."""
-    coloc_full_record_split_year: int = 2023
-    """D5 — the disjoint-period stationarity check splits the full record
-    at this calendar year. **Corrected from the plan's original 2020**
+    coloc_pyramid_stationarity_split_year: int = 2020
+    """D12 — 'Stationarity is checked on PYRAMID, not DHM.' The disjoint-period
+    (pre-2020 vs 2020+) split belongs to the Pyramid record (Lukla 2005-2023,
+    Namche 2002-2023), which is the ONLY side that straddles 2020. This is the
+    check that licenses D11's non-contemporaneous full-record comparison: a
+    Pyramid phase shift across the split would invalidate it. DHM has no
+    pre-2020 data at all, so applying the split to DHM made the check vacuous."""
+    coloc_dhm_stationarity_split_year: int = 2023
+    """D12 — the DHM-side disjoint-period split, reported as ADDITIONAL
+    evidence only, NEVER as a substitute for the Pyramid check above.
+    **Corrected from the plan's original 2020**
     (`docs/design/dhm-precipitation-vision.md:20`: the authoritative DHM
     source workbook spans 2020-01-01 -> 2025-12-31 in its entirety — there
     is no pre-2020 DHM data to split against, so a 2020 cutoff made `pre`

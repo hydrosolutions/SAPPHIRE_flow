@@ -101,7 +101,7 @@ class TestAdequacyGateStopsFirst:
         """The real DHM source record spans only 2020-2025 in its entirety
         (`docs/design/dhm-precipitation-vision.md:20`), so a station's own
         full record can legitimately fail to straddle
-        `coloc_full_record_split_year` — the caller sets
+        `coloc_dhm_stationarity_split_year` — the caller sets
         `disjoint_period_data_sufficient=False` rather than crash, and this
         gate must fire BEFORE the (meaningless) diff value is even
         consulted, exactly like the small-sample gate above."""

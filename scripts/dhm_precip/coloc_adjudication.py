@@ -83,7 +83,7 @@ class StationAdjudication:
     bootstrap: BootstrapPeakSpread
     disjoint_period_data_sufficient: bool
     """D5 — whether the full record actually straddles
-    `params.coloc_full_record_split_year` for this station (see
+    `params.coloc_dhm_stationarity_split_year` for this station (see
     `StationVerdictInputs.disjoint_period_data_sufficient`)."""
     disjoint_period_peak_diff_hours: float
     """D5 — the full-record pre/post-split stationarity check feeding the
@@ -170,7 +170,7 @@ def adjudicate_station(
     # DHM source record spans only 2020-2025 in its entirety, so either
     # side of the split can legitimately be empty — never let `peak_hour`
     # raise uncaught; map insufficiency to gate 0 instead. ---
-    split = params.coloc_full_record_split_year
+    split = params.coloc_dhm_stationarity_split_year
     pre = dhm_full_record_npt.filter(pl.col("timestamp").dt.year() < split)
     post = dhm_full_record_npt.filter(pl.col("timestamp").dt.year() >= split)
     pre_peak = _peak_hour_or_none(pre, station=dhm_station)

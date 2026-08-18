@@ -58,7 +58,7 @@ class TestAdjudicateStationRefutesWhenBothInstrumentsAgree:
         Pyramid (already NPT) peaks at hour 14 too — SAME true peak at
         every threshold, on the SAME (paired) population — and 5
         season-years are provided (adequacy passes), straddling the params'
-        `coloc_full_record_split_year` (2020-2022 vs 2023-2024) so the
+        `coloc_dhm_stationarity_split_year` (2020-2022 vs 2023-2024) so the
         stationarity gate is exercised rather than skipped. The whole
         pipeline should refute H1 without any gate raising."""
         years = [2020, 2021, 2022, 2023, 2024]
@@ -224,7 +224,7 @@ class TestAdjudicateStationPairsBeforeComputingMatchedResolutionPeaks:
 class TestAdjudicateStationHandlesInsufficientDisjointData:
     """Locks the D5 blocker: the DHM source record's real span (2020-2025)
     means a station's own full record can legitimately fail to straddle
-    `coloc_full_record_split_year` — this must map to INDETERMINATE, never
+    `coloc_dhm_stationarity_split_year` — this must map to INDETERMINATE, never
     raise `NoProfileRowsError` uncaught."""
 
     def test_full_record_entirely_after_the_split_year_is_indeterminate_not_a_crash(

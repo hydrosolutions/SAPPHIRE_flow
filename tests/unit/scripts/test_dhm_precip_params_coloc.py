@@ -71,11 +71,18 @@ class TestThresholdLadderValidation:
             )
 
 
-class TestFullRecordSplitYearMatchesTheRealSourceRecord:
-    def test_default_split_year_is_within_the_real_dhm_record_span(self) -> None:
+class TestStationaritySplitYearsMatchTheirRealRecords:
+    def test_dhm_split_year_is_within_the_real_dhm_record_span(self) -> None:
         """The real DHM source workbook spans 2020-01-01 -> 2025-12-31 in
         its entirety (`docs/design/dhm-precipitation-vision.md:20`) — the
-        split year must land strictly inside that span, or the
+        DHM-side split year must land strictly inside that span, or the
         disjoint-period check can never see data on one side by
-        construction (the bug the original `2020` default had)."""
-        assert 2020 < DEFAULT_PARAMS.coloc_full_record_split_year < 2025
+        construction (the bug the original `2020` default had). D12: this
+        split is ADDITIONAL evidence only."""
+        assert 2020 < DEFAULT_PARAMS.coloc_dhm_stationarity_split_year < 2025
+
+    def test_pyramid_split_year_is_the_d12_pre_2020_boundary(self) -> None:
+        """D12 — the pre-2020 vs 2020+ split that actually gates the
+        verdict belongs to PYRAMID (2002/2005-2023), the only side with
+        data on both sides of 2020."""
+        assert DEFAULT_PARAMS.coloc_pyramid_stationarity_split_year == 2020

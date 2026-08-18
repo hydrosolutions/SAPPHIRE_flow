@@ -69,7 +69,7 @@ class StationVerdictInputs:
     gate. Not the bootstrap `n_season_years` for a DIFFERENT window; the
     caller supplies whichever window it is evaluating."""
     disjoint_period_data_sufficient: bool
-    """D5 — whether BOTH sides of `params.coloc_full_record_split_year`
+    """D5 — whether BOTH sides of `params.coloc_dhm_stationarity_split_year`
     had at least one retained profile row for this station. The real DHM
     source record only spans 2020-2025 in its entirety, so a station whose
     own history doesn't straddle the split (or a synthetic/partial input)
