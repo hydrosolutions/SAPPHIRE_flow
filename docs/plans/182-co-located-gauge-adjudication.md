@@ -56,24 +56,46 @@ statistic used **≥0.2 mm**, which *excludes those values entirely*, and the un
 **Nothing in the plan isolated the suspected contaminant**, so both H1 and H0 could produce the observed
 anti-phase and the analysis would have declared H1 anyway — then modified M-A7 on that basis.
 
-- **D7 — THE ABLATION IS THE IDENTIFYING TEST, and it is the primary result. REVISED after round 2,
-  which showed the first version was NOT specific to sensor noise.**
-  Recompute the normalised diurnal profile at a ladder of thresholds — **all values**, **≥0.1 mm**,
-  **≥0.2 mm** — and report the phase at each. **Three constraints make it interpretable; without them
-  it is not:**
-  1. **Zero the sub-threshold values; NEVER drop the row.** The timestamp population must be
-     **identical at every rung**. Deleting rows changes which hours are non-empty and reshapes the
-     normalisation denominator **mechanically**, moving the peak for reasons having nothing to do with
-     H1.
-  2. **Run the SAME ladder on PYRAMID as a negative control.** Pyramid's resolution differs, so if its
-     peak also migrates under thresholding, **the ablation moves peaks by itself** and any DHM movement
-     is uninterpretable. The control is what licenses the inference.
-  3. **State the residual confound rather than hiding it.** Thresholding removes **genuine light
-     precipitation** as well as resolution-level counts. If physical morning drizzle is systematically
-     lighter than nocturnal storms, the DHM peak shifts toward Pyramid's **even when every count is
-     real** — falsely supporting H1. ⇒ **A DHM-only shift is SUGGESTIVE, never conclusive**, unless it
-     can be distinguished from intensity-dependent physical rainfall. **The plan does not currently
-     have a way to make that distinction, and must say so in its verdict.**
+- **D7 — REDESIGNED after the round-3 verification pass, which showed the negative control was
+  VACUOUS. Verified empirically 2026-08-18 against the files on disk:**
+
+  | | Pyramid Lukla | Pyramid Namche |
+  |---|---|---|
+  | positive JJAS values | 7,133 | 9,280 |
+  | **below 0.2 mm** | **0 (0.00 %)** | **0 (0.00 %)** |
+  | smallest value | **exactly 0.2000** | **exactly 0.2000** |
+  | commonest values | 0.2, 0.4, 0.6, 0.8, 1.0 | 0.2, 0.4, 0.6, 0.8, 1.0 |
+
+  **Every Pyramid value is a multiple of 0.2 mm** (LSI-Lastem tipping buckets, 0.2 mm resolution). So a
+  threshold ladder is a **no-op on Pyramid by construction**: all rungs identical, control movement
+  necessarily 0 h, and D9's "control moved < 2 h" clause **satisfied automatically**. The control
+  licensed everything and could never have detected anything. **Removed.**
+
+  **⇒ The resolution gap IS the design, not an obstacle.** DHM Group A reports **0.01 mm** increments;
+  Pyramid **cannot represent anything below 0.2 mm at all**. That asymmetry gives a cleaner test than
+  the ablation control ever did:
+
+  1. **PRIMARY — matched-resolution comparison.** Compare **DHM thresholded at ≥0.2 mm** against
+     **Pyramid at its native resolution** (which is already ≥0.2 mm). Both instruments can now
+     represent the same events, so this is the only apples-to-apples phase comparison available.
+  2. **The ablation, on DHM only** — profile at *all values* vs at *≥0.2 mm*, zeroing not dropping
+     (round 2; verified sound: the daily mean changes but as a common scalar cannot move the peak).
+  3. **Read the two together:**
+     - DHM's peak moves under ablation **and** DHM@≥0.2 then agrees with Pyramid ⇒ **H1 supported** —
+       the sub-0.2 mm counts carried the signal.
+     - DHM's peak moves **but** DHM@≥0.2 still disagrees ⇒ sub-threshold values matter but do **not**
+       explain the discrepancy ⇒ **INDETERMINATE**, and D8's alternatives lead.
+     - DHM's peak does **not** move ⇒ **H1 refuted**; the signal is in rain both instruments can see.
+
+  **⚠️ This also invalidates a comparison made earlier in this track.** The wet-hour fractions I
+  contrasted (DHM 54–55 % vs Pyramid 33 %) are **not comparable**: Pyramid's is structurally lower
+  because it *cannot record* anything below 0.2 mm. **Wet-hour fraction must be computed at a matched
+  ≥0.2 mm threshold on both sides**, or it measures instrument resolution rather than weather.
+
+  **Residual confound, unchanged (round 2):** thresholding also removes genuine light rain, so if
+  physical morning drizzle is systematically lighter than nocturnal storms the DHM peak shifts even
+  when every count is real. **A DHM-only shift remains suggestive, not conclusive**, and step 3's
+  agreement test is what raises it above suggestion.
 
 - **D8 (NEW) — Co-location is NOT identical exposure, and normalisation does NOT cancel a
   diurnally-varying catch bias.** 1.4–1.9 km and 130–200 m in steep terrain can carry genuine
@@ -147,22 +169,40 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   Group A signal survives — which strengthens M-A7 rather than weakening it. **The plan must not be
   written so that only "artefact" counts as success.**
 
-- **D9 (NEW, round 2) — THE VERDICT RULE MUST BE QUANTITATIVE, CIRCULAR, AND ABLE TO SAY
-  "INDETERMINATE".** "Moves toward" and "survives" had no boundary, no uncertainty test, and no rule
-  for the two pairs disagreeing — a rule that cannot return *inconclusive* will always return whatever
-  the analyst expected.
-  - **Phase distance is CIRCULAR.** Hour-of-day wraps: 23 and 00 are **1 h apart, not 23**. Every
-    peak-hour comparison, spread and interval uses circular statistics. Pyramid's peak sits at 22–00,
-    so this bites immediately and ordinary arithmetic would produce nonsense.
-  - **Pre-declared thresholds** (fixed before the numbers are seen): H1 **supported** if the DHM peak
-    moves ≥4 h circularly toward Pyramid's across the ladder *and* the Pyramid control moves <2 h;
-    H1 **refuted** if the DHM peak moves <2 h; **INDETERMINATE otherwise** — including whenever the
-    control moves ≥2 h.
-  - **Per-station verdicts first, then synthesis.** Lukla and Syangboche are reported **separately**.
-    If they disagree, the outcome is **INDETERMINATE for Group A as a whole**, and the disagreement is
-    itself the finding — it is not averaged away.
-  - **INDETERMINATE is a permitted, publishable outcome** and blocks the M-A7 correction rather than
-    licensing it.
+- **D9 — THE VERDICT RULE. Rewritten in round 3: the round-2 version was CONTRADICTORY and left
+  "toward" undefined.**
+
+  **The contradiction:** DHM moves 1 h while the control moves 2.5 h satisfied *both* "refuted (< 2 h)"
+  and "INDETERMINATE (control ≥ 2 h)". **The undefined term:** with DHM at 08:00 and Pyramid at 20:00 —
+  antipodal — "moves 4 h *toward*" has no unique direction on a circle.
+
+  ⇒ **Evaluated as an ORDERED sequence of gates. The first gate that fires decides; no later gate can
+  overturn it.** This ordering is what removes the overlap.
+
+  0. **Adequacy gate (D5).** If the window fails the small-sample rule (< 5 season-years) **or**
+     stationarity fails (disjoint-period peaks differ by > 4 h circularly) ⇒ **INDETERMINATE**, stop.
+     *Round-3 finding: this gate did not previously exist, so a failed-adequacy Lukla could still reach
+     a "supported" verdict on a pooled ladder.*
+  1. **Matched-resolution gate (D7.1).** If DHM@≥0.2 and Pyramid disagree by > 4 h circularly *after*
+     ablation ⇒ **INDETERMINATE** — sub-threshold counts are not the explanation.
+  2. **Ablation gate (D7.2).** Circular movement of the DHM peak between *all values* and *≥0.2 mm*:
+     **≥ 4 h ⇒ H1 supported** (given gates 0–1 passed); **< 2 h ⇒ H1 refuted**; **2–4 h ⇒
+     INDETERMINATE**.
+
+  **"Toward" is defined as a REDUCTION IN CIRCULAR DISTANCE** to the Pyramid peak — never as a signed
+  direction, which is undefined for antipodal peaks. Movement is `|circ_dist(all, ≥0.2)|`; the
+  *toward* test is `circ_dist(DHM@≥0.2, Pyr) < circ_dist(DHM@all, Pyr)`.
+
+  **Per-station first, then synthesis.** Lukla and Syangboche get independent verdicts. **Disagreement
+  ⇒ INDETERMINATE for Group A**, and the disagreement is itself reported as the finding, never averaged.
+
+  **Threshold coherence** (checked, round 3): D2's ±1.75 h alignment uncertainty and D5's ±2 h bootstrap
+  rule are both **strictly below** the 4 h decision boundary, and the 2 h refute-boundary sits at or
+  above both. No decision turns on a difference smaller than the measurement uncertainty.
+
+  **INDETERMINATE is a permitted, publishable outcome. It BLOCKS the M-A7 correction rather than
+  licensing it** — the asymmetry is deliberate: an unproven artefact must not silently reshape
+  operational timing.
 
 ## Exit
 
