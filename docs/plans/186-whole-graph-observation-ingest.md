@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-18
 plan: 186
 title: Whole-graph observation ingest — one request for the network, not one per station
@@ -13,7 +13,7 @@ supersedes: []
 
 ## Status
 
-**DRAFT** (2026-08-18). Resolves **Plan 175 D5**, deferred there by owner decision and documented in
+**READY** (owner flip 2026-08-18). Resolves **Plan 175 D5**, deferred there by owner decision and documented in
 `docs/decisions/bafu-lindas-rate-limit.md` rather than fixed.
 
 **`/plan` ESCALATED (stalled, 3 rounds, 3 blockers + 3 majors residual); this is the reconstruction.**
