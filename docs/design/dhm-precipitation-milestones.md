@@ -400,7 +400,7 @@ between stations — **reported by elevation band as well as per station**. *Mar
 inform but do not suffice to design a disaggregator — that needs temporal dependence structure, which
 is a Phase-2 question.*
 
-### ⭐ M-A9 · Co-located gauge-vs-gauge adjudication (Pyramid network) — NEW 2026-08-18
+### ⭐ M-A10 · Co-located gauge-vs-gauge adjudication (Pyramid network) — NEW 2026-08-18
 **Depends: M-A3.** *(Needs the QC mask; does NOT need ERA5-Land, so it can run in parallel with M-A5/M-A6.)*
 
 **The first genuine gauge-vs-gauge comparison this track has ever had.** The Pyramid Meteorological
@@ -634,7 +634,9 @@ proving the intended binding rather than treating "unused" as an invariant.
     {"id": "M-A6",  "depends_on": ["M-A3", "M-A5"]},
     {"id": "M-A7",  "depends_on": ["M-A2", "M-A3"]},
     {"id": "M-A8",  "depends_on": ["M-D2", "M-A6", "M-A7"]},
-    {"id": "M-A9",  "depends_on": ["M-A6", "M-A7", "M-A8"]},
+    {"id": "M-A10", "depends_on": ["M-A3"],
+     "note": "Co-located Pyramid adjudication. Needs only the QC mask — runs in PARALLEL with M-A5/M-A6."},
+    {"id": "M-A9",  "depends_on": ["M-A6", "M-A7", "M-A8", "M-A10"]},
     {"id": "M-DEC", "depends_on": ["M-A9"], "kind": "decision",
      "note": "Owner Phase-2 GO / NO-GO. M-A9 exits with a RECOMMENDATION; only this node authorises Track G."},
     {"id": "M-G1",  "depends_on": ["M-DEC"]},
@@ -847,7 +849,7 @@ even at daily resolution. At 3-hourly it is direct.
 - **The lightning ask (OD-8) is now urgent rather than a cheap option.** It is the one timing source
   that is independent of precipitation retrieval, so it can validate phase where gauges are sparse and
   satellites struggle over terrain.
-- **M-A9's co-located adjudication becomes load-bearing**, not merely interesting: if our Group A
+- **M-A10's co-located adjudication becomes load-bearing**, not merely interesting: if our Group A
   high-altitude diurnal signal is noise-floor contamination, a 3-hourly product built on it would
   encode an artefact into operational timing.
 - **OD-10's forcing seam matters more, not less.** If DHM's parallel downscaling projects deliver a
