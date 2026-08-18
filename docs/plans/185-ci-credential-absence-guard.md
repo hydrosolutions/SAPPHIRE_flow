@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-18
 revised: 2026-08-18
 plan: 185
@@ -12,7 +12,10 @@ blocks: []
 # Plan 185 — CI credential-absence guard
 
 ## Status
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner confirmed 2026-08-18, after two independent Codex rounds
+(round 1: NEEDS_CHANGES on proportionality, 496 → 161 lines; round 2: NEEDS_CHANGES on
+five specifics, including a push-event guard the rewrite had dropped). No open blockers;
+OD-3 (fork PRs cannot change `uv.lock`) is an accepted consequence, not a fork.
 
 ## ⚖️ Proportionality — read before proposing any addition
 
