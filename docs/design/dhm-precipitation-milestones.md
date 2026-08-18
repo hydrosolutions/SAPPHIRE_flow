@@ -742,6 +742,38 @@ Phase 1 commits to no correction design.
   forced through the Gateway; this track reads CDS. Parity between the two is a real question, parked
   as M-G5 (OD-2b).
 
+## Decisions register — forcing strategy for operational P (added 2026-08-18)
+
+| # | Question | Decision |
+|---|---|---|
+| **OD-7** | How do we get long hourly gauge series? | **From project partners — do NOT scrape the public DHM rainfall portal.** The portal is real-time only; starting collection now yields **a couple of months before delivery**, and every use we have (diurnal climatology, seasonality) needs **long** series. A few months of self-collected data is not worth the ingest machinery it would require. **Ask partners for the archive instead** |
+| **OD-8** | Lightning data | **Pursue, via partners.** Hourly, real-time, global, and **independent of precipitation retrieval** — it indicates *when* convection occurs without undercatch or orographic-retrieval error, which is exactly the disputed quantity. Best value-per-effort of the timing sources. It gives **no amounts**, which is fine: amounts are not the problem |
+| **OD-9** | Weather radar | **Not available** (owner, 2026-08-18). Nepal has one C-band dual-pol radar at **Surkhet (2019, western)**, with Palpa and Udaipur planned; Surkhet's ~200 km range does not usefully cover our central/eastern basins. **Not on the critical path. Do not design around it** |
+| **OD-10** | Do we build convection-permitting downscaling ourselves? | **NO.** DHM has **several parallel projects improving their own weather forecasts**, and may couple their downscaled NWP to this system in future. Duplicating that is wasted effort in someone else's lane. ⇒ **What we owe instead is a forcing interface that can accept an externally produced downscaled product later** — the investment goes into the *seam*, not into the model |
+| **OD-11** | How much P work is warranted at all? | **Only what is necessary to get P right for operational runoff forecasting** (owner, 2026-08-18). See the scope test below — this is a real constraint, not a platitude, and it currently excludes most diurnal work from the delivery path |
+
+### ⚠️ The scope test: diurnal phase is only on the critical path if the delivered models are SUB-DAILY
+
+**v0a models are 5-step DAILY** (`docs/v0-scope.md`); sub-daily is **v0b R&D**, v0c validation.
+**A diurnal phase error integrates out of a daily total.** If Nepal v1 delivers daily runoff forecasts,
+then *when within the day* the rain fell does not reach the model — only the daily total and its
+spatial distribution do. In that case the whole diurnal question (M-A7, the lightning ask, the
+elevation-banded profile) is **characterisation for v0b, not a delivery blocker**, and "getting P right"
+means getting **daily totals** right.
+
+⇒ **The decision that gates this is the operational timestep for Nepal v1, and it is not ours to
+assume.** Until it is fixed:
+- **Diurnal work stays characterisation** — valuable, not urgent, not on the v1 critical path.
+- **M-A6's daily-total comparison IS the critical-path item**, because it is what a daily model
+  actually consumes.
+- The lightning ask proceeds anyway: it costs an **email to a partner**, not a build, and its value
+  rises sharply the moment a sub-daily model is chosen. Cheap option, asymmetric payoff.
+
+**What this does NOT change:** vision **D6/D9** stand. No numeric undercatch correction, at any
+timestep — and the flood-safety asymmetry (correcting model forcing *down* toward undercatching gauges
+injects a **dry bias into a flood-forecasting system**) is independent of daily-vs-sub-daily.
+
+
 ## Decisions register — all resolved 2026-08-12
 
 | # | Decision | Outcome |
