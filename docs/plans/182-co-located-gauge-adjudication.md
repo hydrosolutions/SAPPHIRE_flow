@@ -71,8 +71,17 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   | smallest value | **exactly 0.2000** | **exactly 0.2000** |
   | commonest values | 0.2, 0.4, 0.6, 0.8, 1.0 | 0.2, 0.4, 0.6, 0.8, 1.0 |
 
-  **Every Pyramid value is a multiple of 0.2 mm** (LSI-Lastem tipping buckets, 0.2 mm resolution). So a
-  threshold ladder is a **no-op on Pyramid by construction**: all rungs identical, control movement
+  **No Pyramid value falls below 0.2 mm** (LSI-Lastem tipping buckets). So a
+  ⚠️ **CORRECTED 2026-08-18 — an earlier revision said "every Pyramid value is a MULTIPLE of 0.2 mm".
+  That is false and was never needed.** Measured on the real files: **4.2 % of positive JJAS values are
+  not multiples of 0.2** (301/7,133 AWS3; 386/9,280 AWS5), forming a clean **0.24-family** (0.24, 0.48,
+  0.72, 0.96) plus outliers — almost certainly a different bucket size or logger era, so Pyramid's
+  effective resolution is **not uniform across the record**.
+  **D7's argument is unaffected**, because it rests only on the **FLOOR**: the smallest positive JJAS
+  value is exactly 0.2 and nothing is below it, so every ladder rung is identical on Pyramid regardless
+  of what the values are multiples of. *(The floor is a JJAS fact — AWS5 has a 0.15 mm positive reading
+  outside JJAS. This analysis is JJAS-only.)*
+    threshold ladder is a **no-op on Pyramid by construction**: all rungs identical, control movement
   necessarily 0 h, and D9's "control moved < 2 h" clause **satisfied automatically**. The control
   licensed everything and could never have detected anything. **Removed.**
 
