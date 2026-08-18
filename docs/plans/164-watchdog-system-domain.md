@@ -81,16 +81,31 @@ Already true and also load-bearing: `/Library/LaunchDaemons` with `root:wheel` `
 **Rollback (one sequence):** disable/bootout the system label, move its plist aside, enable/bootstrap the
 retained GUI plist.
 
-## T2 — fresh-host-only installer guard (Repo; small)
+## T2 — refuse cross-domain MIGRATION, not re-install (Repo; small)
 
-The installer keeps doing fresh-host provisioning and **refuses everything else**: if the label already exists in
-either domain, or a destination plist is present, it must **fail loudly rather than migrate**. Validate
-prerequisites — secrets, directories, resolved account via `id` (not a generic `dscl` subsystem) — **before** any
-`launchctl` mutation.
+**⚠️ Corrected 2026-08-18, before build.** The earlier wording — *"refuse if the label already exists in either
+domain, or a destination plist is present"* — is **too broad and would break the pending deploy.** The
+installer's documented contract is idempotent re-install (`install-launchd.sh:2-4`: *"Safe to re-run … bootout +
+bootstrap to apply any plist changes"*), and the runbook's own "force a reload" procedure is bootout followed by
+re-running it (`docs/deployment/mac-mini-staging.md:487-490`). **Plan 163 changed the watchdog plist** (14
+insertions: `--deadman-url-path`, `RunAtLoad`), so re-running this installer is precisely how that change reaches
+the mini. A refuse-if-exists guard would make deploying the dead-man switch impossible by the documented path.
 
-**Test:** a fresh install succeeds; an install against an existing or conflicting registration **refuses and
-mutates nothing** — which requires preflighting **all** conflict checks *before* the first change, not aborting
-partway through.
+**What we actually want to prevent is a silent CROSS-DOMAIN migration** — the GUI↔system move, which belongs to
+the T1 console runbook where a human watches it. Same-domain re-install stays supported and unchanged.
+
+**The guard:**
+- **Refuse** when the label is registered in the **other** domain, or when a plist for it exists in the other
+  domain's directory — i.e. a GUI-domain install while `/Library/LaunchDaemons/<label>.plist` exists or
+  `system/<label>` is loaded, and vice versa. Message must name the conflict and point at the T1 runbook.
+- **Allow** same-domain re-install exactly as today (bootout + bootstrap to pick up plist edits).
+- **Preflight every conflict check BEFORE the first mutation** — no copying, no `launchctl`, no `mkdir` until all
+  checks pass. "Refuses and mutates nothing" must hold literally, not by aborting partway.
+- Resolve the account with `id`, not a generic `dscl` subsystem.
+
+**Test:** (a) fresh install succeeds; (b) same-domain re-install succeeds and applies an edited plist;
+(c) a GUI install with the label loaded in `system` **refuses and mutates nothing** — assert no file was copied
+and no `launchctl` subcommand ran; (d) the reverse direction likewise.
 
 ## Acceptance
 
