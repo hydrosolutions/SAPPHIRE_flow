@@ -115,8 +115,8 @@ stay queryable and comparable.
 
 **Scale: use the existing chunked backfill, not a direct extractor call.**
 `ExactExtractGridExtractor.extract()` accumulates every row for every `valid_time` in memory before
-returning, and is used today only for a single NWP cycle or a 60-day rolling window — never a 40-year
-span. `services/reanalysis_backfill.py` (Plan 115b2) exists precisely for this: work units of
+returning, and is used today only for a single NWP cycle, a 60-day rolling window, or the existing
+backfill's **annual** chunks (`reanalysis_backfill.py:302`) — never a 40-year span in one call. `services/reanalysis_backfill.py` (Plan 115b2) exists precisely for this: work units of
 `(product, year, station-batch)`, each chunk persisted before the next so the full series is never
 held in memory, with gap-detection for idempotent resume. Follow that pattern — roughly
 40 yr × 296 basins × 2 params ≈ **8.6 M rows** is not a one-shot call.
@@ -130,8 +130,18 @@ standalone land-mask coverage check T2 owns. Decide which; do not assume the cou
 
 ### T3 — validate against Caravan's published indices
 Even reading the same store, **our catchment-averaging is still ours** — cell weighting, boundary
-handling and the polygon itself all differ from Caravan's. So the check still matters, though it is
-now a check on averaging rather than on acquisition.
+handling and the polygon itself all differ from Caravan's.
+
+**But be honest about what a mismatch would prove: T3 is an END-TO-END PARITY check, not an
+averaging-specific one.** Caravan's indices derive from *Caravan's own* ERA5-Land archive; the
+statics parquet is a Caravan passthrough (Plan 155). **Nothing establishes that Caravan's archive and
+`sloth-dynamic` are the same bytes** — Plan 117 explicitly left archive identity open. So a
+disagreement could be our averaging *or* a store difference, and T3 alone cannot separate them.
+
+That does not weaken the gate: a **match** is strong evidence the whole chain reproduces the training
+lineage, which is what we actually need. It means a **mismatch** starts an investigation rather than
+pointing at a culprit — budget for that, and do not write the acceptance as though a failure localises
+to our code.
 
 The statics parquet carries Caravan's climate indices, computed from Caravan's own ERA5-Land, for
 **296 Swiss basins**: `p_mean` (mean 4.61 mm/day), `frac_snow` (0.248), `high_prec_freq` (0.033),
