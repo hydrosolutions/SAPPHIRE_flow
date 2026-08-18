@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-18
 plan: 181
 title: aquacast shim — proxy the FI surface and translate the name/unit boundary
@@ -10,6 +10,13 @@ supersedes: []
 ---
 
 # Plan 181 — aquacast shim: proxy the FI surface, translate the boundary
+
+**READY** (owner, 2026-08-18). D1–D3 settled. Verified by a lean Codex pass that returned three
+corrections, all folded — most importantly that the shim is registered UNWRAPPED, so T1 is the
+precondition for the model having `data_requirements` at all.
+
+**Keep it small.** Sibling plans in this track were inflated to 583 lines by invented scope; the
+non-goals are exclusions by decision, not oversight.
 
 ## ⚠️ Scope note: this is bigger than "declaration rewriting"
 
