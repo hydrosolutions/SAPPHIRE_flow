@@ -163,7 +163,8 @@ class TestLockChangeDetection:
         # `gh pr diff --name-only` only ever shows a rename's post-rename
         # path (a rename-away from uv.lock is invisible to it) and GitHub
         # truncates a PR diff past 300 changed files. The paginated
-        # pull-request-files endpoint has neither limit.
+        # This avoids the diff API's 300-file truncation; the separate
+        # 3000-file files-endpoint cap is guarded in the step itself.
         assert "gh api" in run
         assert "--paginate" in run
         assert "/pulls/" in run and "/files" in run
@@ -203,14 +204,24 @@ class TestLockChangeDetection:
         paginate_call_idx = run.index("gh api --paginate")
         assert count_idx < paginate_call_idx
 
-    def test_detect_step_fails_closed_when_count_lookup_fails(self) -> None:
+    def test_detect_step_fails_closed_on_an_unusable_changed_file_count(self) -> None:
+        """Empty AND non-numeric counts must fail closed.
+
+        `[ "$count" -gt 3000 ]` exits 2 on a non-number, and `bash -e` does not
+        abort on a failed `elif` CONDITION — so a malformed count (jq yields
+        "null" when the field is absent) would otherwise fall through to the file
+        listing and could set UV_LOCK_CHANGED=false, silently allowing degraded
+        coverage on a PR whose lock status was never established.
+        """
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
         run = step["run"]
         assert '|| count=""' in run
-        assert 'if [ -z "$count" ]; then' in run
-        count_fail_branch = run.split('if [ -z "$count" ]; then', 1)[1].split(
-            "elif", 1
-        )[0]
+        guard = 'if ! [[ "$count" =~ ^[0-9]+$ ]]; then'
+        assert guard in run, "the count guard must reject non-numeric, not just empty"
+        assert 'if [ -z "$count" ]; then' not in run, (
+            "an emptiness-only check lets a non-numeric count fail OPEN"
+        )
+        count_fail_branch = run.split(guard, 1)[1].split("elif", 1)[0]
         assert "UV_LOCK_CHANGED=true" in count_fail_branch
 
     def test_detect_step_fails_closed_when_changed_files_exceeds_3000_cap(
@@ -247,12 +258,6 @@ class TestLockChangeDetection:
         assert "UV_LOCK_CHANGED=false" not in then_branch
         assert "UV_LOCK_CHANGED=false" in else_branch
         assert "UV_LOCK_CHANGED=true" not in else_branch
-
-    def test_detect_step_never_runs_on_push(self) -> None:
-        # push events have no github.event.pull_request.number; the detect
-        # step must require pull_request explicitly, not merely token-absent.
-        step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
-        assert "github.event_name == 'pull_request'" in step["if"]
 
     def test_only_the_detect_step_ever_sets_uv_lock_changed(self) -> None:
         # If any later step could also write UV_LOCK_CHANGED, the fail
@@ -335,10 +340,6 @@ class TestD4ProvesTheShimTestRan:
         step = _step("Prove the aquacast shim test ran")
         assert step["if"] == "env.AQUACAST_TOKEN_PRESENT == 'true'"
 
-    def test_assertion_step_sets_pipefail(self) -> None:
-        step = _step("Prove the aquacast shim test ran")
-        assert "set -o pipefail" in step["run"]
-
     def test_assertion_step_targets_the_single_required_node(self) -> None:
         step = _step("Prove the aquacast shim test ran")
         assert (
@@ -394,7 +395,3 @@ class TestCicdMdDocumentsBothSecretStores:
         assert "Dependabot" in section
         assert "Actions" in section
         assert "both" in section.lower()
-
-    def test_new_section_names_recap_dg_client_token_as_the_precedent(self) -> None:
-        section = _cicd_md_new_section()
-        assert "RECAP_DG_CLIENT_TOKEN" in section

@@ -491,8 +491,12 @@ The `unit` job's `--extra aquacast` install (`ci.yml:103` at introduction, Plan 
 guards against this: when `AQUACAST_TOKEN` is unreachable on a run `github.actor`
 attributes to Dependabot, and that run's PR does not touch `uv.lock`, it degrades to a
 plain `uv sync --frozen` with a visible `::warning::` naming the lost
-`tests/unit/models/test_aquacast_shim.py` coverage. Every other case — the secret
-missing outright, a PR (Dependabot-authored or not) that changes `uv.lock`, or a
+`tests/unit/models/test_aquacast_shim.py` coverage. An absent token on a
+non-Dependabot-triggered run, or any no-token PR that changes `uv.lock`, still fails.
+**A missing Dependabot-store copy is indistinguishable from structural withholding**, so
+it takes the degraded path when `uv.lock` is unchanged — the guard cannot tell them
+apart, and this is the accepted limit of the mechanism. Every failing case — a PR
+(Dependabot-authored or not) that changes `uv.lock`, or a
 Dependabot-opened PR that a maintainer has since pushed a further commit to (that
 push's run carries the maintainer as `github.actor`, not Dependabot) — still fails,
 naming `AQUACAST_TOKEN` and the store it belongs in. See the `unit` job rows in the

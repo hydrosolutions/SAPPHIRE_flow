@@ -77,6 +77,10 @@ worse, not better — hence D4.
      `AQUACAST_TOKEN` and the store it belongs in.
   Case 3 covers both "somebody deleted the secret" and "this PR changes `uv.lock`",
   which is where the extra's resolution is most likely to break (per OD-2 below).
+  **Accepted limit:** a deleted *Dependabot-store* copy is indistinguishable from
+  structural withholding, so on a Dependabot run with `uv.lock` unchanged it degrades
+  (case 2) rather than failing. Distinguishing them would need a reachability check,
+  which is out of scope — presence is not validity.
 - **D2 — presence is read from a job-level env value, not a detect step.** Secrets are
   permitted in a job-level `env:` block, and a step-level `if:` can read the `env`
   context; only `if:` itself cannot reference `secrets.*` directly. So:
