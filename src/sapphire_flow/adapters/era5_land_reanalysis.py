@@ -428,7 +428,8 @@ class Era5LandReanalysisAdapter:
         operationally persisted, see ``fetch_reanalysis``/D2.
 
         **R2-2 fix:** when ``bbox`` is given, the DataArray is ALSO spatially
-        subset (``_spatial_subset``, + a one-grid-step margin) before
+        subset (``_spatial_subset``, + a ``_BBOX_MARGIN_GRID_STEPS``-cell margin)
+        before
         anything materialises — ``fetch_reanalysis`` passes the fleet's own
         bounding box. Without this, the store's full global 1801x3600 grid
         was read for every chunk of the backfill regardless of how few

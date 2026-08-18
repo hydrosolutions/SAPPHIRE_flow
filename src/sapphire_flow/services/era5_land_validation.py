@@ -120,7 +120,11 @@ def frac_snow(
     across every year in ``dates``), take each month's MEAN precipitation and
     MEAN temperature, classify a month as snow when its mean temperature is
     below 0 degC, and divide the summed mean precipitation of snow months by
-    the summed mean precipitation of all twelve months. A day is never
+    the summed mean precipitation of every month PRESENT in ``dates`` (a
+    calendar month absent from the series is omitted from both sums rather
+    than counted as zero — over a full multi-year window all twelve are
+    present, but a short or seasonal series must not be silently diluted).
+    A day is never
     classified on its own — a handful of sub-zero days inside an otherwise
     mild month do not count as snow unless that month's own climatological
     mean drops below zero."""
