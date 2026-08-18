@@ -348,34 +348,50 @@ bound to the artifact digest, T5 restore-rehearsal-as-real-recovery-path (roles/
 T6 mount validation (evaluated **before** freshness), full retention/age/byte policy, and migrating the existing
 plaintext dumps. **Phase C:** off-box replication (D4) and RPO/PITR (D6).
 
-### T5 — rehearse the restore — ✅ NEXT BUILDABLE SLICE (scoped 2026-08-18)
+### T5 — rehearse the restore — ⚠️ RE-SCOPED SMALL 2026-08-18 (first build was 504 lines and unsafe)
 
-**This is the last untested assumption in the chain.** Phase A proved backups are *complete* (the TOC carries
-`TABLE DATA public access_tokens`) and *loud* (a failure can no longer clear its own alarm). **Nothing has ever
-proved one can be restored.**
+**The first attempt produced 504 script + 989 test lines and stalled on 2 blockers.** Both came from machinery
+this task does not need, and **my own spec caused them** by asking for a "disposable container **on a throwaway
+volume**":
 
-**Relationship to Plan 048** (a DRAFT stub that already specifies *"dump → fresh postgres container → load →
-assert row counts + spot-check forecasts → destroy"*): **048 keeps restic, encrypted snapshot chains, 7/4/12
-retention and the AUTOMATED MONTHLY cadence.** This slice takes only the **one-shot, on-demand rehearsal**, which
-needs none of that — we have working `pg_dump` artifacts now, and swapping the backup tool is a separate,
-larger decision. Do not pull restic in.
+- a **named volume** is silently reused by `docker volume create` if it already exists, and ownership was only
+  validated at teardown — so a mistaken argument could have started Postgres **against a real volume**, on the
+  machine holding our only good backups;
+- the same volume produced the teardown/interrupt race and most of the majors.
 
-**Build: `scripts/restore-rehearsal.sh <dump-path>`**
-1. Start a **disposable** postgres container (same major version as production — 16), on a throwaway volume.
-2. `pg_restore` the artifact into an empty database, `--single-transaction --exit-on-error` so a partial restore
-   fails loudly rather than leaving a half-database that reads as success.
-3. **Assert content, not exit status:** row counts for representative tables **including `access_tokens`** (the
-   table whose absence caused this whole thread — a restore that silently lacks it must fail), `alembic_version`
-   matching the source, and sequence state.
-4. **Destroy the container and volume unconditionally**, including on failure.
-5. Exit non-zero with a specific message on any assertion failure.
+**Rebuild without a named volume at all.** That deletes both blockers by construction rather than guarding
+against them.
 
-**Explicitly NOT in this slice:** restic, encryption, key custody, the monthly schedule, off-box copies, and the
-12-step DR document. Each is real; none is needed to answer *"can we restore?"*.
+**Target: well under 150 lines.**
 
-**Acceptance — run it for real:** execute against the live artifact on the mac-mini
-(`sapphire_20260818_081448_40ee7bc2.dump`, 1.1 GB, the first good backup since 13 August) and require it to
-**pass on content**. A rehearsal that has never been run against a real dump proves nothing.
+**`scripts/restore-rehearsal.sh <dump-path>`**
+1. `docker run -d` a Postgres **pinned by `tag@sha256` digest** (repo policy, `docs/standards/security.md:554`),
+   **no named volume** — ephemeral container filesystem only — and **`--network none` is not required** because
+   nothing needs to reach it: every command runs *inside* the container via `docker exec`.
+2. **Wait for the FINAL server, not the temporary one.** Postgres's official entrypoint starts a temp server,
+   runs init scripts, stops it, then starts the real one — so `pg_isready` alone can return true against a
+   server that is about to disappear mid-restore. Wait for the initialisation-complete marker **and** require a
+   successful SQL query.
+3. `docker cp` **only the selected dump file** into the container (never bind-mount its directory).
+4. `pg_restore --single-transaction --exit-on-error` into an empty database.
+5. **Assert on CONTENT:** row counts for representative tables **including `access_tokens`** (a restore silently
+   lacking it MUST fail), `alembic_version` present and non-empty, and for sequences read **both `last_value`
+   and `is_called`** — `last_value == MAX(id)` with `is_called = false` passes a naive check but the next
+   `nextval()` collides.
+6. `docker rm -f` in a **trap**, and mark the container as "may exist" **before** the `docker run` returns, so a
+   signal arriving between creation and the flag assignment cannot skip cleanup.
+7. Exit non-zero naming **which** assertion failed. Print the final `PASS` **only after** teardown succeeds, so
+   an operator can never see `PASS` and a cleanup failure together.
+
+**CUT from the first build — do not reintroduce:** named volumes and their ownership labels, network isolation
+plumbing, and the **source-database comparison** (`SOURCE_PG*`). That last one is not merely extra: it is
+**unusable in the real topology** — the restore container cannot reach production Postgres, which is
+backend-only — and semantically wrong for a historical dump, since it compares against a live source that has
+moved on. Assert plausibility plus `alembic_version` instead.
+
+**Acceptance — run it for real:** against the live artifact on the mac-mini
+(`sapphire_20260818_081448_40ee7bc2.dump`, 1.1 GB, the first good backup since 13 August). **Do not run the
+504-line version there** — its volume handling is exactly the hazard described above.
 
 ### T6 — the local backup path must be the device it claims to be (Host + Repo)
 
