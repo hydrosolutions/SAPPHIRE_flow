@@ -2,15 +2,22 @@
 # ruff: noqa: T201
 """Plan 182 (M-A10) runner — composes the DHM ingest+QC-mask pipeline (Plan
 170/173) and the Pyramid loader into the full co-located gauge-vs-gauge
-adjudication: BOTH pairs (Lukla, Syangboche), BOTH windows (overlap +
-climatological full record), the D9 per-station verdicts, the EXACT
-two-station synthesis, and a report.
+adjudication: BOTH pairs (Lukla, Syangboche), BOTH windows — the
+climatological FULL RECORD, which D11 adjudicates, and the overlap, which
+corroborates — the D9 per-station verdicts, the EXACT two-station synthesis,
+and a report carrying every Exit deliverable.
+
+The Pyramid windows are built HERE, before pairing (`_year_window` over the
+registry's per-station spans), so each window's reported retention is that
+window's retained JJAS hours rather than the whole file's.
 
 `run_coloc_adjudication()` is the tested, loader-agnostic core (CLAUDE.md
 dependency injection: a `DhmRetainedProvider` is passed in, never a bare
 call to the real pipeline inside business logic) — exercised end-to-end
 against synthetic fixtures in `tests/unit/scripts/test_dhm_precip_coloc_run.py`
-with no real files required. `main()` wires the REAL production DHM
+with no real files required — and every one of those tests drives the REAL
+`COLOCATED_PAIRS` bounds (D11), never a synthetic window that bypasses them.
+`main()` wires the REAL production DHM
 ingest+mask pipeline (`loader`, `views`, `normalise`, `observations`,
 `qc_mask` — the exact call sequence `pipeline.py`/`run.py` already use and
 have real test coverage for) and the real `pyramid_loader`.

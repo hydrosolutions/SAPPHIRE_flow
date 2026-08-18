@@ -332,3 +332,43 @@ RED against the pre-fix commit via `git stash`, then restored):
   instead of silently dividing by zero (`stats_coloc.normalised_diurnal_profile`); the threshold ladder
   validation now rejects duplicate rungs and requires the first rung to be exactly `0.0`
   (`params.py`).
+
+## Fixer round 2 — 2026-08-18 — the deliverable was UNREACHABLE (3 blockers + 4 majors)
+
+A second post-commit diff review found that the implementation could not produce a verdict at all
+against real data. All resolved in place; the plan's D11/D12 above were written for this round and are
+what the code now implements.
+
+- **BLOCKER — the deliverable was unreachable.** Gate 0's <5-season rule was evaluated on the OVERLAP
+  window (Lukla 3 seasons, Syangboche 4), so both stations always returned INDETERMINATE. Fixed per
+  **D11**: `coloc_adjudication.adjudicate_station` now computes a `WindowEvidence` per window and
+  adjudicates the **FULL RECORD** (unpaired, climatological); the **overlap is corroboration** (D3-paired,
+  the only window with a wet-hour fraction) and never gates. Their matched-resolution peak difference is
+  reported, not treated as an error. `coloc_pairs.ColocatedPair` gained the real full-record bounds
+  (`dhm_start_year`/`dhm_end_year` = 2020-2025; `pyramid_start_year`/`pyramid_end_year` = Lukla
+  2005-2023, Namche 2002-2023) and validates that the overlap lies inside their common span.
+- **BLOCKER — stationarity was checked on the wrong network.** Fixed per **D12**: the gating split is
+  `coloc_pyramid_stationarity_split_year = 2020` on the PYRAMID record; `coloc_full_record_split_year`
+  was renamed `coloc_dhm_stationarity_split_year` and demoted to additional evidence.
+- **BLOCKER — the runner could not produce the Exit deliverables.** `_write_report` now writes the full
+  normalised-profile tables for both networks in both windows (hourly `n`, no mm magnitudes per D1),
+  per-window retention for each side, D2's ±1.75h alignment uncertainty and the ±2h precision limit,
+  D8's micro-climate/wind alternative, D7.3's drizzle confound, Pyramid's CC BY 4.0 attribution, and the
+  affected-claims list filed for M-A7 when H1 is supported. Locked by an artefact-level test that reads
+  the written Markdown.
+- **MAJOR — `moved_toward_pyramid` was computed then ignored.** With all-values peak = Pyramid peak = 2
+  and matched peak = 6, a 4h movement AWAY fired H1_SUPPORTED. Gate 2 now requires D9's toward-condition
+  (a reduction in circular distance); a large non-toward movement is INDETERMINATE
+  (`ABLATION_MOVED_AWAY`).
+- **MAJOR — the bootstrap resampled an unpaired population.** It now resamples exactly the population
+  each window's peaks were computed from.
+- **MAJOR — insufficient-signal states crashed.** An all-zero rung, an empty population or an unpairable
+  window is now a typed `WindowUnavailable`, mapped by gate 0 to `ADEQUACY_INSUFFICIENT_SIGNAL` /
+  `ADEQUACY_INSUFFICIENT_COMMON_DATA`.
+- **MAJOR — Pyramid retention was not window-scoped.** The runner builds explicit Pyramid JJAS windows
+  before pairing, so each window reports its own retained-hour count.
+
+**Tests replaced, with justification:** every decisive-verdict test in
+`test_dhm_precip_coloc_run.py` and `test_dhm_precip_coloc_adjudication.py` fed a synthetic 2020-2024
+frame for BOTH windows, bypassing `COLOCATED_PAIRS` — D11's "the test that would have caught this".
+They are rewritten to drive the REAL registry bounds and to assert a decisive verdict is reachable.

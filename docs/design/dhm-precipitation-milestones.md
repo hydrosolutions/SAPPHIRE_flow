@@ -505,6 +505,26 @@ masking manufacture a phase difference — now paired first; (5) `synthesize_ver
 duplicated or unregistered station; (6) the Pyramid loader had no physical-range boundary. See that
 plan doc's fixer-round changelog for the full list including minors.
 
+**Second fixer round, 2026-08-18 — the deliverable was UNREACHABLE (3 blockers + 4 majors).** A
+diff-review pass found that gate 0's <5-season adequacy rule was evaluated on the OVERLAP window, whose
+real registry bounds are 3 (Lukla) and 4 (Syangboche) season-years — so against real data **both
+stations could only ever return INDETERMINATE**, and every decisive-verdict test had hidden it by
+feeding a synthetic 2020-2024 window that bypassed `COLOCATED_PAIRS` entirely. Resolved by the plan's
+**D11**: the **FULL RECORD is the adjudicated comparison** (DHM 2020-2025 x Pyramid 2005/2002-2023, both
+clearing the 5-season floor) and the **overlap is corroboration** that never gates; and by **D12**: the
+disjoint-period stationarity split is **PYRAMID's** (pre-2020 vs 2020+), since DHM has no pre-2020 data
+and the DHM-side split was therefore vacuous — it is still computed, but reported as additional evidence
+only. Also fixed: `moved_toward_pyramid` was computed then ignored (a 4h ablation movement AWAY from
+Pyramid could fire H1_SUPPORTED); the bootstrap resampled an unpaired population while the peak came
+from the paired one; all-zero/empty populations raised out of the middle of an adjudication instead of
+becoming INDETERMINATE (`ADEQUACY_INSUFFICIENT_SIGNAL` / `ADEQUACY_INSUFFICIENT_COMMON_DATA`); Pyramid
+retention was the whole file's count rather than the window's; and `_write_report` emitted only peak
+scalars — it now writes the full profile tables for both networks in both windows (hourly `n`, no
+magnitudes), per-window retention, D2's ±1.75h uncertainty, D8's micro-climate/wind alternative, D7.3's
+drizzle confound, the CC BY 4.0 attribution and the affected-claims list when H1 is supported. Every
+runner test now drives the pipeline through the **real registry bounds** and asserts a decisive verdict
+is REACHABLE.
+
 **Residual risk, still unresolved:** `data/dhm_precip/pyramid/` is gitignored and the real Zenodo files
 were not present in any workspace this plan has been implemented or fixed in, so
 `pyramid_loader.py`'s column-name assumptions (`TIMESTAMP`, `RR`) remain undocumented-but-typed guesses,
