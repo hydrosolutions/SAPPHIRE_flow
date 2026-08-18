@@ -190,3 +190,73 @@ smaller failure surface.
   (lat/lon slicing conventions), `store.py` (cache layout). **Private; read as specification.**
 - `hydrosolutions/static-attrs-nepal` — the DHM deployment appliance; same lineage, different packaging.
 - Plan 152 § four substitutions — this closes "NWP ≠ ERA5-Land".
+
+---
+
+## Fixer-round input — findings from the independent review (2026-08-18)
+
+The `/implement` run produced commit `6d669dd` on `feat/plan-183-era5-land-forcing`, then **escalated at
+round 0 without ever running the review loop**: its verify agent returned a `PENDING` placeholder rather
+than waiting out the ~11-minute suite. The escalation was a **false negative about the verifier, not the
+implementation** — re-run independently in the worktree, every gate is green: `4218 passed, 15 skipped,
+11 deselected` (660 s), `ruff check`/`format --check` clean, pyright ratchet `432 <= 432`.
+
+An independent Codex pass over the committed diff was then run by hand. Findings below are the ones
+**confirmed by reading the cited code**, not the raw reviewer output. Fix these; do not re-litigate them.
+
+### B1 — the validator silently narrows its own scope
+`services/era5_land_validation.py:190-250`. `validate_era5_land_against_caravan` compares whatever days
+happen to intersect: no minimum coverage over the 1981-2020 window, and a station missing a basin,
+attributes, or either parameter is dropped by a bare `continue`. `_caravan_reference` (`:183-189`) and
+`compare_climate_indices` (`:157-181`) likewise skip indices absent from either side. So a fleet where
+most basins were skipped, or a basin compared on two days and one index, returns an **all-green** result
+indistinguishable from a real 40-year, four-index parity pass.
+
+This is the one thing T3 exists to be trusted about. Require an explicit coverage floor over the window
+and return the skips **as data** (station, reason) alongside the agreements, plus the day count actually
+compared, so a caller cannot mistake a narrow pass for a broad one. Related, already a rule on this
+track: *a validator does not re-derive the computation* — nor may it quietly shrink its own sample.
+
+### M2 — `_assert_land_coverage` is a no-op exactly where it is needed
+`adapters/era5_land_reanalysis.py:209-227`. Coverage is measured with `shapely.contains_xy` over cell
+**centres**; when a basin contains none, `total == 0` and the basin is skipped. At ERA5-Land's 0.1°
+(~11 km) that is the ordinary small-Swiss-catchment case, so the guard switches itself off for the
+basins most at risk.
+
+The comment justifying that skip is also wrong: it claims "the extractor itself raises `ExtractionError`
+for this case". `ExactExtractGridExtractor` runs `exact_extract(..., ops=["mean"])`
+(`preprocessing/exact_extract_grid_extractor.py:121-134`), which is coverage-weighted over **intersecting**
+cells — a sub-cell basin gets a value with no centre inside — and it only reports out-of-extent when
+**all** values are NaN (`:139-145`). Measure coverage over intersecting cells, and correct the comment.
+
+### M3 — the mesh is rebuilt globally, per basin, per chunk
+Same function: a 1801x3600 global mesh and a full point-in-polygon per basin, repeated per year, per
+station batch and per parameter by `services/era5_land_backfill.py:224-246`. Over the stated 40-year
+fleet that is on the order of 10^11 predicates before extraction begins. The land/ocean mask is
+time-invariant and the basin is tiny relative to the globe: subset to the basin bounding box, and
+compute the mask once per grid rather than once per chunk.
+
+### M4 — no operator entrypoint, so `era5_land` reads an empty store
+`services/era5_land_backfill.py:184` has no caller. `adapters/hybrid_reanalysis_factories.py:105-115`
+only selects a *reader*, so enabling the mode on a fresh deployment silently yields nothing. The
+precedent is direct and small: `scripts/backfill_meteoswiss_history.py:194` drives `run_backfill` for
+MeteoSwiss. Mirror it — a script, not a flow.
+
+### Minors
+- `tests/unit/adapters/test_reanalysis_selection.py:40-48` asserts on the private `_source` of a reader
+  backed by an empty fake, so a selector that returns zero temperature rows still passes. Add a
+  writer -> store -> selected-reader round-trip: that is the headline silent failure this plan exists to
+  close, and nothing currently guards it end to end.
+- `tests/unit/services/test_era5_land_backfill.py:207-273` never re-runs after the interrupted chunk, so
+  it does not actually demonstrate resume.
+- Radiation transforms (`adapters/era5_land_reanalysis.py:127-136`) are implemented although D2 defers
+  radiation. They are unreachable — the operational whitelist at `:143-147` excludes them — so leave them
+  as documentation of the mapping rather than churning the diff; just do not extend them.
+
+### Out of scope for this fixer round
+Running T3 against real S3/Caravan data (no credentials in the build environment; owner action after the
+backfill populates). Modifying the shared `ExactExtractGridExtractor`. The forcing-canonicalisation seam.
+
+### Plan-number collision — owner decision, not the implementer's
+`docs/plans/183-forcing-canonicalisation-seam.md` (committed `edb4a43`, same day) also claims 183. Two
+plans, one number. Renumbering is the owner's call; flagged here so it is not silently inherited.
