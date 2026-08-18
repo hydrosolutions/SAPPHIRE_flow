@@ -556,26 +556,34 @@ Every externally-pulled image is pinned by **manifest-list digest** (not per-pla
 - `Dockerfile` (builder + runtime stages): `python:3.11.12-slim@sha256:...` and `ghcr.io/astral-sh/uv:0.11.7@sha256:...`
 - `docker-compose.yml`: `postgis/postgis:16-3.4@sha256:...`, `prefecthq/prefect:3-python3.11@sha256:...`, `caddy:2.9@sha256:...`
 - `.github/workflows/ci.yml` integration-job `services.image`: `postgis/postgis:16-3.4@sha256:...` (must match the compose postgis digest to avoid silent integration/prod drift)
-- `scripts/restore-rehearsal.sh` (`RESTORE_IMAGE`, Plan 162 T5): `imresamu/postgis:16-3.4@sha256:...` — deliberately **not** the same vendor as the bullet above (see caveat).
+- `scripts/restore-rehearsal.sh` (`RESTORE_IMAGE`, Plan 162 T5): `postgis/postgis:16-3.4@sha256:44126d872...` — same pin, same vendor as the bullet above (see caveat + owner decision below).
 
-⚠️ **Caveat found 2026-08-18 (Plan 162 T5 restore-path fix), not yet reconciled with the compose pin above:**
+⚠️ **Caveat found 2026-08-18 (Plan 162 T5 restore-path fix):**
 `docker buildx imagetools inspect` on the `postgis/postgis:16-3.4@sha256:44126d872...` digest pinned in
-`docker-compose.yml` / `ci.yml` shows a **single-platform `linux/amd64` manifest, not a manifest list** — and
-Docker Hub confirms `postgis/postgis` has never published an arm64 image for **any** `16-3.4*` tag. So "the same
-pin works for both amd64 CI and arm64 Mac mini" does **not** hold for that pin today; the mac-mini's production
-Postgres container has been running that image under emulation. `restore-rehearsal.sh` was re-pinned to
-`imresamu/postgis:16-3.4@sha256:6da75969...` instead — verified (`imagetools inspect`) to be a genuine
-`linux/amd64` + `linux/arm64` manifest list, published by the same maintainer who publishes the official
-`postgis/postgis` images. Reconciling the `docker-compose.yml` / `ci.yml` pin (same vendor swap, or an accepted
-emulation trade-off) is **out of scope for T5** — the rehearsal script and the running database container are
-different decisions with different blast radii — and is left as a follow-up.
+`docker-compose.yml` / `ci.yml` (and, since, `restore-rehearsal.sh`) shows a **single-platform `linux/amd64`
+manifest, not a manifest list** — and Docker Hub confirms `postgis/postgis` has never published an arm64 image
+for **any** `16-3.4*` tag. So "the same pin works for both amd64 CI and arm64 Mac mini" does **not** hold for
+that pin today; the mac-mini's production Postgres container runs it under emulation.
 
-Because that vendor swap moves the container off the already-vetted `postgis/postgis` trust boundary while it
-holds a fully-restored, decrypted dump (including `access_tokens` — token hashes, tenant_id, scopes across every
-tenant), `restore-rehearsal.sh` runs the container with **`docker run --network none`**. Nothing needs
-container-initiated network access — every interaction is `docker exec` / `docker cp` from the host — so this
-closes the exfiltration path regardless of how much the third-party image is trusted, independent of the digest
-pin above.
+**Owner decision (2026-08-18, same day, superseding an intermediate round of this fix):** an earlier round of
+`restore-rehearsal.sh` re-pinned to `imresamu/postgis:16-3.4@sha256:6da75969...` instead — verified
+(`imagetools inspect`) to be a genuine `linux/amd64` + `linux/arm64` manifest list, published by the same
+maintainer who publishes the official `postgis/postgis` images. The owner reverted that: **keep the
+already-vetted, compose-pinned vendor and accept the emulation** rather than move this container onto a second,
+less-audited vendor namespace. Rationale: emulation costs speed only, not correctness; the two real deployment
+targets (DHM, AWS) are x86 where `postgis/postgis` runs native, so this is a staging-only (arm64 mac-mini) cost;
+and this container's whole job is to hold a fully-restored production dump, including every tenant's
+access-token hashes, which is exactly the kind of container where introducing an additional, independently-less-
+audited vendor is not worth it just to buy native arm64 on the mini. `restore-rehearsal.sh` keeps the
+`RESTORE_IMAGE` override so anyone who wants a native-arm64 image locally can still opt in. Reconciling the
+`docker-compose.yml` / `ci.yml` pin itself (same emulation trade-off, already accepted in production) is out of
+scope here — that pin was never changed by T5.
+
+Because this container holds a fully-restored, decrypted dump (including `access_tokens` — token hashes,
+tenant_id, scopes across every tenant), `restore-rehearsal.sh` runs it with **`docker run --network none`**
+regardless of which image pin is in effect. Nothing needs container-initiated network access — every
+interaction is `docker exec` / `docker cp` from the host — so this closes the exfiltration path as
+belt-and-braces alongside the already-vetted image pin, independent of the digest pin above.
 
 The locally-built `sapphire-flow:${VERSION}` image used by the `worker`, `api`, and `init` services is **not** digest-pinned — it is built in this repo, not pulled.
 

@@ -15,17 +15,21 @@ if [[ ! -f "${DUMP_PATH}" ]]; then
 fi
 
 DOCKER="${DOCKER_CMD:-docker}"
-# NOT the docker-compose.yml pin. That digest
-# (postgis/postgis:16-3.4@sha256:44126d872...) is linux/amd64 ONLY — verified
-# via `docker buildx imagetools inspect`: postgis/postgis has never published
-# an arm64 build for ANY 16-3.4 tag, so every rehearsal run on the arm64
-# mac-mini silently fell back to emulation. imresamu/postgis publishes the
-# same PostGIS 3.4 / PostgreSQL 16 build (maintained by the same engineer
-# who publishes the official postgis/postgis images) as a genuine manifest
-# list with both linux/amd64 and linux/arm64 — confirmed with
-# `docker buildx imagetools inspect imresamu/postgis:16-3.4@sha256:...`.
-# Still digest-pinned per repo policy (docs/standards/security.md:554).
-IMAGE="${RESTORE_IMAGE:-imresamu/postgis:16-3.4@sha256:6da75969915039b7356058b4310d43fde88c275ada982c2dfee29da68445ff4d}"
+# Same pin as docker-compose.yml/ci.yml — the owner's decision (2026-08-18,
+# Plan 162 T5 restore-path fix, item 1), NOT the vendor swap an earlier round
+# of this fix made. That round moved this to `imresamu/postgis` because
+# `postgis/postgis:16-3.4` is linux/amd64 ONLY (verified via `docker buildx
+# imagetools inspect`: postgis/postgis has never published an arm64 build for
+# ANY 16-3.4 tag), so every rehearsal run on the arm64 mac-mini fell back to
+# emulation. The owner chose to keep the already-vetted, compose-pinned
+# vendor and accept that emulation instead: it costs speed only, DHM/AWS are
+# x86 where this image is native, and this container's whole job is to hold
+# a fully-restored production dump — every tenant's access-token hashes
+# included — so a second, less-audited vendor namespace is not worth it just
+# to buy native arm64 here. `RESTORE_IMAGE` still overrides for anyone who
+# wants a native-arm64 image locally. Still digest-pinned per repo policy
+# (docs/standards/security.md:554).
+IMAGE="${RESTORE_IMAGE:-postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5}"
 CONTAINER="${RESTORE_CONTAINER_NAME:-sapphire-restore-rehearsal-$$}"
 # Never the image's default 'postgres' database: the PostGIS image
 # pre-initialises tiger/tiger_data/topology there, so a restore into it dies
@@ -66,15 +70,14 @@ psql_exec() {
         -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
-# --- launch: ephemeral container, no named volume, no network. The image
-# was re-pinned (see docs/standards/security.md "Image pinning" caveat) to a
-# third-party vendor not independently audited beyond confirming a genuine
-# multi-arch manifest — and this container's whole job is to hold a
-# fully-restored, decrypted dump, including access_tokens (token hashes,
-# tenant_id, scopes) across every tenant. --network none closes any
-# container-initiated exfiltration path regardless of image trust: nothing
-# needs it, since every interaction below is `docker exec`/`docker cp` from
-# the host. -------------------------------------------------------------
+# --- launch: ephemeral container, no named volume, no network. This
+# container's whole job is to hold a fully-restored, decrypted dump,
+# including access_tokens (token hashes, tenant_id, scopes) across every
+# tenant. --network none closes any container-initiated exfiltration path
+# regardless of how much the image is trusted — belt-and-braces alongside the
+# already-vetted `postgis/postgis` pin above, not a substitute for it: nothing
+# needs container-initiated network access, since every interaction below is
+# `docker exec`/`docker cp` from the host. ---------------------------------
 MAY_EXIST=1
 "${DOCKER}" run -d --network none --name "${CONTAINER}" \
     -e POSTGRES_PASSWORD=rehearsal \

@@ -74,7 +74,8 @@ def _write_fake_docker(
     script = textwrap.dedent(
         f"""\
         #!/bin/bash
-        printf '%s\\n' "$*" >> "{args_log}"
+        printf '%q ' "$@" >> "{args_log}"
+        printf '\\n' >> "{args_log}"
         case "$1" in
           run)
             echo "fake-container-id"
@@ -147,12 +148,16 @@ def _write_fake_docker(
 
 
 def _exec_calls(args_log: Path, substring: str) -> list[str]:
+    """Raw (still %q-escaped) `exec ...` lines whose UNESCAPED content
+    contains `substring`. The log lines are shell-escaped (`printf '%q '`),
+    so e.g. `count(*)` is logged as `count\\(\\*\\)` — matching must happen
+    after `shlex.split` restores the literal argv, not on the raw text."""
     if not args_log.exists():
         return []
     return [
         line
         for line in args_log.read_text().splitlines()
-        if line.startswith("exec ") and substring in line
+        if line.startswith("exec ") and substring in " ".join(shlex.split(line))
     ]
 
 
@@ -171,11 +176,10 @@ def _first_index(args_log: Path, substring: str) -> int:
 
 
 def _run_call_argv(args_log: Path) -> list[str]:
-    """The `docker run ...` invocation, argv-parsed. `$*`-logging joins the
-    fake docker's positional params on plain spaces, so this is only
-    reliable for flag/value tokens (none of which contain spaces here) —
-    not for reconstructing anything that was originally a quoted, spaced
-    argument."""
+    """The `docker run ...` invocation, argv-parsed. The fake docker logs
+    each positional param shell-escaped (`printf '%q ' "$@"`), so
+    `shlex.split` on the logged line recovers the exact original argv —
+    including any token that contained spaces or shell metacharacters."""
     for line in _all_lines(args_log):
         if line.startswith("run "):
             return shlex.split(line)
@@ -184,9 +188,8 @@ def _run_call_argv(args_log: Path) -> list[str]:
 
 def _last_exec_argv(args_log: Path, substring: str) -> list[str]:
     """argv (drops leading `exec <container>`) of the last exec call whose
-    raw logged line contains `substring`. See `_run_call_argv` for the
-    space-joining caveat — irrelevant for the space-free flag tokens
-    (-d, --no-owner, ...) this helper is used to inspect."""
+    raw logged line contains `substring`. See `_run_call_argv` for why
+    `shlex.split` on the %q-escaped logged line recovers exact tokens."""
     calls = _exec_calls(args_log, substring)
     assert calls, f"no exec call found matching {substring!r}"
     tokens = shlex.split(calls[-1])
@@ -448,7 +451,9 @@ class TestCreatedbStderrSurfaced:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         args_log = tmp_path / "docker-args.log"
-        distinctive_error = 'createdb: error: database creation failed: ERROR:  disk full'
+        distinctive_error = (
+            "createdb: error: database creation failed: ERROR:  disk full"
+        )
         fake = _write_fake_docker(
             bin_dir,
             args_log,

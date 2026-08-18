@@ -76,13 +76,21 @@ runs under emulation on arm64).
 
 **Fix implemented (2026-08-18), branch `fix/plan-162-t5-restore-path`, committed locally, not yet
 merged/deployed — NOT yet re-run against the real mac-mini artifact; that live run is the acceptance bar for
-this fix.** `createdb`s a fresh database and restores into it with `--no-owner --no-acl`; `pg_restore`'s stderr
-is now captured and surfaced in the `FAIL:` message (previously discarded via `>/dev/null 2>&1`); the image pin
-moved to `imresamu/postgis:16-3.4@sha256:6da75969...`, confirmed via `docker buildx imagetools inspect` to be a
-genuine multi-arch manifest list (linux/amd64 + linux/arm64) — unlike the `docker-compose.yml`
-`postgis/postgis:16-3.4` pin, which `imagetools inspect` shows is single-platform amd64 for every `16-3.4*` tag
-that vendor has ever published (no arm64 build exists there to pin instead). Three new locking tests added to
-`tests/unit/ops/test_restore_rehearsal.py`, proven red against the merged script and green against the fix.
+this fix.** `createdb`s a fresh database and restores into it with `--no-owner --no-acl`; `pg_restore`'s and
+`createdb`'s stderr are now captured and surfaced in the `FAIL:` message (previously discarded via
+`>/dev/null 2>&1`); the container is launched with `--network none` (holds a fully-restored dump, including
+`access_tokens` across every tenant — nothing needs container-initiated network access). An intermediate round
+re-pinned the image to `imresamu/postgis:16-3.4@sha256:6da75969...`, a genuine multi-arch manifest
+(linux/amd64 + linux/arm64), because the `docker-compose.yml`/`ci.yml` `postgis/postgis:16-3.4` pin is
+single-platform amd64 for every `16-3.4*` tag that vendor has ever published — the mac-mini runs it under
+emulation. **The owner reverted that swap**: the image pin is back to the same `postgis/postgis:16-3.4@sha256:
+44126d872...` digest as compose/CI, accepting the emulation cost rather than adding a second, less-audited
+vendor namespace for a container that holds every tenant's access-token hashes (`RESTORE_IMAGE` still overrides
+for anyone who wants native arm64 locally). See `docs/standards/security.md` "Image pinning" for the full
+rationale. Locking tests in `tests/unit/ops/test_restore_rehearsal.py` cover fresh-database targeting (name
+equality across `createdb`/`pg_restore`/content queries, not just "some createdb happened"), exact
+`--no-owner`/`--no-acl` argv tokens, stderr surfacing for both `createdb` and `pg_restore`, and `--network none`
+— proven red against the buggy/absent behaviour and green against the fix.
 
 ## Status
 
