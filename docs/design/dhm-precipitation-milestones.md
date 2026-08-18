@@ -417,15 +417,45 @@ with two stations effectively co-located with two of our four problem high-altit
 *model field* and M-A7 characterises *our* timing — neither can answer "is our gauge wrong?", because
 no satellite or reanalysis product can adjudicate a gauge. This can.
 
-**Scope:** JJAS 2020–2023 (the overlap window), the two co-located pairs, **DHM vs Pyramid vs
-ERA5-Land**, reporting the **normalised diurnal profile** and **wet-hour fraction** on hours retained by
-the M-A3 mask, with the retained-hour count carried alongside every statistic (Rule 1).
+**Scope — REVISED by Plan 182 (three slim Codex review rounds, 2026-08-18): gauge-vs-gauge only, NOT a
+three-way comparison.** ERA5-Land dropped out of this milestone's scope entirely (it belongs to M-A6);
+the two co-located pairs, **DHM vs Pyramid only**, over **two windows reported separately** — the JJAS
+overlap (2020–2023; Lukla's is only 2021–2023) and each station's full JJAS record (the climatological
+comparison, primary — the overlap is too thin, 3 season-years at Lukla, to stand alone; see the D5
+adequacy gate below). Both profiles reported **in NPT** (Pyramid's own timebase), with the DHM-side
+UTC→NPT conversion and the Pyramid README's unstated period convention together declared as an
+**alignment uncertainty of ±1.75h** — no phase claim is made finer than that.
 
-**The hypothesis it exists to settle:** our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT**, which sits inside
-Pyramid Lukla's diurnal **minimum** (normalised 0.29/0.28 at 07–08, peaks at 22–00 NPT) — near
-anti-phase from 1.4 km away. Combined with Group A's 0.01 mm resolution and sub-0.1 mm noise floor, the
-hypothesis is that **the Group A high-altitude diurnal signal is noise-floor contamination, not
-physics.** Confirming it would retire a finding the vision has carried as UNRESOLVED since 2026-08-13.
+**The hypothesis it exists to settle** *(and its OUTCOME — see the first-run record at the end of this
+milestone)*: our DHM Lukla appeared to peak at **02 UTC ≡ 07:45 NPT**, inside Pyramid Lukla's diurnal
+**minimum** (normalised 0.29/0.28 at 07–08, peaks at 22–00 NPT) — near anti-phase from 1.4 km away.
+Combined with Group A's 0.01 mm resolution and sub-0.1 mm noise floor, the hypothesis (**H1**) was that
+**the Group A high-altitude diurnal signal is noise-floor contamination, not physics** (**H0**).
+
+**OUTCOME 2026-08-18: the premise itself was false.** The 02 UTC figure was a sentinel artefact of
+normalising unmasked data; masked, Lukla peaks 21 NPT and AGREES with Pyramid. H1 is not supported —
+the peak is immovable across the ablation ladder — and the finding the vision carried as UNRESOLVED
+since 2026-08-13 is retired for Lukla, though it stands at Olangchunggola for a different reason.
+
+**⚠️ The test as first written could not identify H1 — corrected before implementation (Plan 182).** A
+negative control (a threshold ladder applied to Pyramid) was found to be **vacuous**: every positive
+Pyramid JJAS value is an exact multiple of 0.2 mm (LSI-Lastem tipping-bucket resolution), so a threshold
+ladder is a structural no-op on Pyramid and could never have detected anything — removed. In its place:
+**(1)** a **matched-resolution comparison**, DHM thresholded at ≥0.2 mm against Pyramid at its native
+resolution (the only apples-to-apples phase comparison available, since Pyramid cannot represent
+anything finer); **(2)** a **DHM-only threshold-ladder ablation** (all values / ≥0.1 mm / ≥0.2 mm,
+**zeroing, never dropping**, so a common scalar shift can never move the peak on its own — only a
+genuinely hour-concentrated contribution can); **(3)** the two read together under **D9's ordered
+verdict gates** (adequacy → matched-resolution agreement → ablation movement), evaluated **per station,
+then synthesised** — disagreement between Lukla and Syangboche is **INDETERMINATE for the group,
+reported as the finding, never averaged**. INDETERMINATE is a permitted, publishable outcome that
+**blocks** the M-A7 correction rather than licensing it.
+
+**Wet-hour fraction is reported ONLY on the common-retained-timestamp population** (D3): masking one
+side only (M-A3 on DHM, a physical range check on Pyramid) preferentially removes DRY hours and
+manufactures exactly the kind of gap this milestone exists to detect, so the two series are paired
+hour-by-hour and compared over their intersection, with each side's own retention reported separately
+so the pairing loss stays visible.
 
 **⛔ NOT a correction source, and this is binding.** Pyramid's gauges are **explicitly unheated** — the
 paper names that as its main weakness — so they undercatch snow in the same direction as DHM's.
@@ -433,15 +463,134 @@ Correcting toward them would substitute one undercatching gauge for another *whi
 authoritative*; and fitting model forcing downward toward either gauge network injects a **dry bias into
 a flood-forecasting system**. **Referee on SHAPE and TIMING only, where undercatch largely cancels;
 never on magnitude.** The paper's "≤20 % snow underestimate" is inherited from Salerno et al. (2015),
-not re-measured — it is not a transfer function. Vision D6/D9 stand, reinforced.
+not re-measured — it is not a transfer function. Vision D6/D9 stand, reinforced. **A genuine
+micro-climatic or wind-driven catch-efficiency difference between the two networks remains a live
+alternative this test cannot exclude** (normalisation cancels only hour-independent undercatch, and
+mountain wind is strongly diurnal) — the verdict is adjudicated against H1 AND this alternative, never
+against H0 alone.
 
-**Exit:** the two co-located pairs' normalised diurnal profiles and wet-hour fractions, mask-consistent
-and retained-count-carrying; an explicit verdict on the noise-floor hypothesis; and — if confirmed — the
-consequent correction to the vision's Group A diurnal claims. **No magnitude comparison is reported.**
+**Exit:** the D7 threshold ladder (the primary result) with the peak hour at each rung; normalised JJAS
+diurnal profiles for both pairs, both windows, `n` beside each; the paired wet-hour fraction; a circular
+bootstrap spread on the peak hour by monsoon season (D5, with a small-sample rule — fewer than 5
+season-years cannot on its own establish adequacy, however narrow the spread); per-station verdicts and
+a synthesis under D9's pre-declared circular thresholds; a stated verdict on H1 phrased no finer than
+±2h; and, if H1 is supported, an explicit list of affected vision/M-A1 claims filed as a correction for
+M-A7 to apply. **No magnitude comparison anywhere in the output.**
 
 **Data handling:** CC BY 4.0 permits redistribution *with attribution*, but **M-D1's bar on third-party
 data in this public repo stands regardless** — the files live in `data/` alongside the DHM workbook,
 never committed. Attribution is required on any published result.
+
+**Library + runner CODE COMPLETE 2026-08-18, hardened 2026-08-18 (Plan 182 fixer round — a Codex
+diff-review pass found 4 blockers + 5 majors in the first cut, all resolved in place):** the analysis
+library — `scripts/dhm_precip/circular.py` (circular hour arithmetic, including D9's "toward" as a
+circular-distance reduction, never a signed direction), `scripts/dhm_precip/coloc_verdict.py` (the D9
+ordered-gate verdict rule — now including D5's bootstrap-spread and insufficient-disjoint-data gates —
+per-station + synthesis over EXACTLY the two registered stations), `scripts/dhm_precip/stats_coloc.py`
+(D7.2 zeroing ablation, normalised profile, D3 common-retained-timestamp pairing, paired wet-hour
+fraction, and the D2 UTC->NPT reconciliation — `dhm_utc_to_npt`, applied to every DHM frame before
+anything else touches it), `scripts/dhm_precip/coloc_bootstrap.py` (D5 circular bootstrap +
+small-sample adequacy rule), `scripts/dhm_precip/coloc_pairs.py` (the two-pair registry, now also
+carrying each pair's own D5a overlap-year range) and `scripts/dhm_precip/pyramid_loader.py` (Lvl1 CSV
+loader with the D4 physical-range boundary: finite, in-range, duplicate-timestamp and timestamp-dtype
+validation), composed by `scripts/dhm_precip/coloc_adjudication.py` (pairs FIRST, then computes the
+matched-resolution ladder/Pyramid peak from the SAME paired population — never independently) and
+`scripts/dhm_precip/coloc_run.py` (the runner: both pairs, both windows, full profile tables, the exact
+two-station synthesis, and a Markdown report writer).
+
+**What the fixer round corrected** (`docs/plans/182-co-located-gauge-adjudication.md` review, 4
+blockers + 5 majors): (1) the declared UTC->NPT offset was dead configuration — DHM (UTC) and Pyramid
+(NPT) hours were compared raw; (2) the D5 disjoint-period stationarity split at year 2020 was
+structurally broken (the real DHM source record only starts 2020-01-01 — `pre` was always empty and
+`peak_hour` raised) — the default split moved to 2023 and insufficient-disjoint-data now maps to
+INDETERMINATE rather than crashing; (3) the D5 bootstrap peak-hour spread was computed but never gated
+on; (4) D9's phase peaks were computed independently per side before D3 pairing, letting hour-dependent
+masking manufacture a phase difference — now paired first; (5) `synthesize_verdict` accepted a
+duplicated or unregistered station; (6) the Pyramid loader had no physical-range boundary. See that
+plan doc's fixer-round changelog for the full list including minors.
+
+**Second fixer round, 2026-08-18 — the deliverable was UNREACHABLE (3 blockers + 4 majors).** A
+diff-review pass found that gate 0's <5-season adequacy rule was evaluated on the OVERLAP window, whose
+real registry bounds are 3 (Lukla) and 4 (Syangboche) season-years — so against real data **both
+stations could only ever return INDETERMINATE**, and every decisive-verdict test had hidden it by
+feeding a synthetic 2020-2024 window that bypassed `COLOCATED_PAIRS` entirely. Resolved by the plan's
+**D11**: the **FULL RECORD is the adjudicated comparison** (DHM 2020-2025 x Pyramid 2005/2002-2023, both
+clearing the 5-season floor) and the **overlap is corroboration** that never gates; and by **D12**: the
+disjoint-period stationarity split is **PYRAMID's** (pre-2020 vs 2020+), since DHM has no pre-2020 data
+and the DHM-side split was therefore vacuous — it is still computed, but reported as additional evidence
+only. Also fixed: `moved_toward_pyramid` was computed then ignored (a 4h ablation movement AWAY from
+Pyramid could fire H1_SUPPORTED); the bootstrap resampled an unpaired population while the peak came
+from the paired one; all-zero/empty populations raised out of the middle of an adjudication instead of
+becoming INDETERMINATE (`ADEQUACY_INSUFFICIENT_SIGNAL` / `ADEQUACY_INSUFFICIENT_COMMON_DATA`); Pyramid
+retention was the whole file's count rather than the window's; and `_write_report` emitted only peak
+scalars — it now writes the full profile tables for both networks in both windows (hourly `n`, no
+magnitudes), per-window retention, D2's ±1.75h uncertainty, D8's micro-climate/wind alternative, D7.3's
+drizzle confound, the CC BY 4.0 attribution and the affected-claims list when H1 is supported. Every
+runner test now drives the pipeline through the **real registry bounds** and asserts a decisive verdict
+is REACHABLE.
+
+**Pyramid schema — RESOLVED 2026-08-18.** `pyramid_loader.py`'s format assumptions were wrong on every
+count except `RR`: the real Zenodo Lvl1 files are **semicolon**-delimited with **CR-only** line endings
+and carry **no `TIMESTAMP` column** (header `year;month;day;hour;AT;RR;AP;RH;WS;WD`, an empty field for
+each missing reading). The loader now reads that format and is covered by real-file tests gated on
+`DHM_PRECIP_PYRAMID_DIR`, which lock the measured JJAS populations (AWS3 Lukla 21,567 retained / 7,133
+positive; AWS5 Namche 33,180 / 9,280) and the 0.2 mm smallest positive reading D7's matched-resolution
+design rests on. (Caveat measured at the same time: 0.2 mm is the floor and dominant quantum, but ~4% of
+positive JJAS hours are quantised at 0.24 mm — a different bucket/logger era — so positives are NOT all
+multiples of 0.2.)
+
+**✅ FIRST REAL RUN 2026-08-18 — the wiring executed end-to-end and the milestone has its verdict.**
+`coloc_run.py`'s `main()` ran against the real DHM workbook and the real Pyramid Lvl1 files (both pairs,
+both windows); the report is written to `data/dhm_precip/coloc_ma10/coloc_adjudication.md` (untracked,
+per M-D1). This closes the previously tracked residual risk that the production wiring — `loader`,
+`views`, `normalise`, `observations`, `qc_mask`, `pyramid_loader` — had never been executed against real
+data. Two dtype defects surfaced only at that seam and were fixed: the mask frame's timestamp was
+hard-coded to `datetime[μs]` while the pinned workbook yields `datetime[ms]` (the anti-join raised
+`SchemaError` and the report was never written), and `stats_coloc.py` needed the same reconciliation for
+Pyramid's `read_csv`-derived timestamps. Both had been invisible to the synthetic-fixture tests.
+
+**Synthesis: INDETERMINATE.** Both pairs stop at D9's FIRST gate — D5 adequacy
+(`adequacy_bootstrap_spread_too_wide`): 13.00 h circular spread at Lukla, 3.00 h at Syangboche, against
+the pre-declared 2.0 h threshold. The gate is not overridden here.
+
+| pair | DHM ladder 0.0 / 0.1 / 0.2 mm (NPT) | Pyramid peak | D5 spread |
+|---|---|---|---|
+| DHM Lukla vs AWS3 Lukla | 22 / 22 / 22 | 23 | 13.00 h |
+| Syangboche vs AWS5 Namche | 1 / 1 / 23 | 23 | 3.00 h |
+
+**H1 is NOT supported by the evidence, though the verdict is formally INDETERMINATE.** The peak is
+nocturnal at EVERY ablation rung — it does not move when the noise floor is stripped, which is the
+signature H1 predicted — and at both pairs it lands within 0–2 h of an independent instrument 1.4 /
+1.9 km away. Syangboche's profile is unambiguous (normalised 2.20 / 2.14 / 2.21 at 23–01, trough 0.17 at
+hour 11). What stops the gate is **inter-annual variability, not a contradiction**: Lukla's five season
+peaks are 23, 10, 22, 17, 21 NPT — three nocturnal, two dissenting (2022, 2024) — and 13.00 h is simply
+the arc spanning all five; its central 90 % arc is 6.0 h, modal hour 21. Syangboche's five are 22, 21,
+00, 00, 22, a 3 h arc, all nocturnal.
+
+**⭐ The Lukla 02 UTC anomaly is RESOLVED — a QC artefact, not physics and not the noise floor.** It is
+**6 sentinel values of −9999999** at 02 UTC (5) and 03 UTC (1) in JJAS, combined with normalising an
+UNMASKED profile: those sentinels drive the grand mean to **−2,499,750 mm**, so the normalisation FLIPS
+SIGN and the most-contaminated hour reports as the largest positive "peak" (+20 normalised at 02 UTC)
+while real rain at 16 UTC (+472 mm) reports as −0.00. Under the M-A3 mask Lukla peaks at **16 UTC ≡
+21 NPT**. The anomaly was an artefact of computing a normalised profile on unmasked data — precisely
+what M-A3's mask exists to prevent, and a demonstration of its value.
+
+**Olangchunggola's 03 UTC peak is NOT explained by this and REMAINS OPEN.** It carries **zero** JJAS
+sentinels (Lukla is the only station in the workbook that does), and its peak is immovable across the
+ablation ladder (03 UTC ≡ 08 NPT at all of 0.0 / 0.1 / 0.2 mm) — neither a sentinel artefact nor
+noise-floor contamination. It has no co-located Pyramid station, so M-A10 cannot adjudicate it.
+
+**✅ RESOLVED — the D5 threshold was re-examined post-run and deliberately LEFT ALONE.** The 2.0 h bar
+looked miscalibrated for a 5-season record (it is the only thing standing between Syangboche and a
+decisive verdict), but it turns out to be **derived, not chosen**: `params.py`'s D9 coherence validator
+enforces `ablation_refuted_max >= bootstrap_adequate_max`, so the bootstrap bar is capped by the 2 h
+refute boundary — itself pinned above D2's 1.75 h alignment floor and below the 4 h support boundary.
+Both 3 h and 4 h are rejected by the validator, and the invariant is correct (a movement cannot be
+"small enough to refute H1" if peak-hour uncertainty exceeds the movement threshold). **The binding
+limitation is the DHM record length**: the bootstrap resamples DHM season-years and DHM has exactly 5
+complete JJAS seasons, so Lukla cannot clear any coherent bar until that record lengthens. The one real
+lever is pinning down Pyramid's unstated period convention (D2's ±1 h component) — a question for the
+Pyramid authors, not a parameter change. See Plan 182 D9 for the full record of what was rejected.
 
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**
@@ -728,10 +877,14 @@ Phase 1 commits to no correction design.
 
 ## Known weaknesses carried forward
 
-- **The high-altitude diurnal signal is unresolved.** Above ~2,500 m our Group A stations match
-  neither the literature (Norris: unimodal, ~1500 LT above 3 km) nor our own hill band —
-  Olangchunggola peaks 03 UTC, Lukla 02 UTC. Both are the most noise-contaminated stations in the
-  sample (54–55 % wet-hour fractions). This is the band that matters most for Dudh Koshi.
+- **The high-altitude diurnal signal is unresolved AT OLANGCHUNGGOLA ONLY** *(narrowed by M-A10,
+  2026-08-18)*. Above ~2,500 m our Group A stations matched neither the literature (Norris: unimodal,
+  ~1500 LT above 3 km) nor our own hill band. **Lukla is now resolved** — its 02 UTC peak was 6
+  sentinel values of −9999999 normalised over unmasked data; masked it peaks 21 NPT, agreeing with
+  co-located Pyramid AWS3. **Olangchunggola's 03 UTC ≡ 08 NPT peak stands**: zero sentinels, and
+  immovable across the 0.0/0.1/0.2 mm ablation ladder, so it is neither an artefact nor the noise
+  floor. It has no co-located reference gauge, so M-A10 cannot adjudicate it. This is the band that
+  matters most for Dudh Koshi.
 - **Duplication of the students' QC and characterisation is DELIBERATE, not a cost to minimise**
   (owner 2026-08-12). Two independent passes over the same file are expected to teach each side
   something; findings flow both ways during the work, not only at M-A9. Where our fit-for-purpose
@@ -818,12 +971,74 @@ documentation three times and been wrong every time — the ERA5-Land accumulati
 payload shape, and the CDS cost limit. The plan gets written **after** we see the real format, exactly
 as Plan 171's own constraint 3 requires.
 
+#### ✅ NASA ISS-LIS RETRIEVED 2026-08-18 — partner-independent, and it settles what lightning can do here
+
+**WWLLN is not available to us** (owner, 2026-08-18), so the partner ask is not the only route after all.
+**NASA ISS-LIS V3** (`isslis_v3_fin`, Earthdata login, free) was fetched directly by stream-and-subset:
+per-orbit granules downloaded, flashes inside **26–31 N / 80–89 E** kept, granule deleted (~17 GB passed
+through, ~49 KB retained). **JJAS 2020–2023, 5,786 granules processed, 4,214 flashes**, in
+`data/dhm_precip/lightning/iss_lis_flashes_nepal_box.parquet` (untracked, per M-D1). One granule was lost
+to a failed download.
+
+**⚠️ 4,214 flashes is NOT a large sample — the effective n is 352.** This correction is the most
+important thing on this page about lightning, because the raw count invites exactly the wrong reading.
+**Flashes inside one storm overpass are one observation of the diurnal cycle, not one hundred.**
+Clustering by a 10-minute time gap gives **352 overpass clusters** — the real sampling unit. The top 10
+clusters alone are **22.3 %** of all flashes; the median cluster is **5** flashes. That is **~14.7
+overpasses per hour-of-day bin**, so Poisson 1σ is **±26 %**, not the ±7.5 % a naive 4,214/24 implies.
+
+**What the data therefore CANNOT do: pin a peak hour.** Overpass-weighted, hours 16 (24 overpasses),
+19 (23), and 0/15/20 (20 each) are statistically indistinguishable. A raw flash-weighted profile peaks
+at 16 NPT and a view-normalised one at 04 NPT — the disagreement is noise, not signal, and neither
+number should be quoted.
+
+**What it CAN do: establish the regime shape**, which survives the noise because it is a broad
+nine-hour pattern rather than a single bin (overpass-weighted, normalised to the 24-hour mean):
+
+| NPT hours | normalised | reading |
+|---|---|---|
+| 12–20 | all ≥ 1.09, max 1.64 (h16) and 1.57 (h19) | **afternoon–evening convective maximum** |
+| 05–11 | all ≤ 0.89, floor 0.34 (h05), 0.41 (h06) | **morning minimum** |
+| 00–04 | 1.36, 1.16, 0.68, 1.09, 1.30 | secondary nocturnal bump |
+
+That is a textbook convective cycle and it is consistent with the literature for the low/mid elevations
+that dominate the box.
+
+**Cross-link to M-A10, hedged.** The lightning maximum (16–19 NPT) is several hours EARLIER than the
+high-altitude gauge peak M-A10 established at Lukla and Syangboche (21–23 NPT). Were the nocturnal gauge
+signal an instrument artefact, it should not care about elevation; instead the convective proxy and the
+high-altitude gauges differ in the direction the literature predicts for an elevation-dependent phase
+shift. **Corroborating, not decisive** — the box spans plains, foothills and high Himalaya together, so
+the comparison cannot be attributed cleanly to elevation.
+
+**Scope CONFIRMED, not merely assumed: foothill/box-wide validation only, no elevation stratification.**
+14.7 overpasses per bin cannot be split across elevation bands — it is marginal even unsplit. Lightning
+also proxies CONVECTIVE precipitation, while high-altitude Himalayan precipitation is substantially
+snow, so the high-altitude timing question stays with M-A10's co-located gauge pair.
+
+**Caveat on the sampling check.** ISS precesses, so hour-of-day view time is not uniform a priori. The
+proxy used was the hour distribution of all 5,786 processed granules (208–268 per hour, max/min 1.29),
+which detected no strong non-uniformity — but granule START times smear across a ~90 min orbit, so this
+is weak evidence of uniformity, not a demonstration of it. A proper treatment needs the per-second view
+time from the granules' `lightning_one_second` group, which the stream-and-subset run did NOT retain.
+**Do not upgrade the shape result to a quantitative diurnal climatology without that.**
+
+**⚠️ Reproducibility gap:** the fetch and analysis scripts currently live only in the session scratchpad
+(a copy of the fetcher sits beside the data at `data/dhm_precip/lightning/fetch_iss_lis_foothill.py`,
+untracked). Nothing in the repo reproduces the numbers above. Promoting the fetcher and the
+overpass-clustering analysis into `scripts/dhm_precip/` is an open follow-on, deliberately not done
+inside the M-A10 branch.
+
+**The partner ask is NOT retired by this.** ISS-LIS gives 352 overpasses over four monsoons; a
+ground-based network (WWLLN/GLD360/ENTLN) gives continuous coverage and would raise the effective sample
+by orders of magnitude, which is what an elevation-stratified diurnal result would need.
+
 ## Decisions register — forcing strategy for operational P (added 2026-08-18)
 
 | # | Question | Decision |
 |---|---|---|
 | **OD-7** | How do we get long hourly gauge series? | **From project partners — do NOT scrape the public DHM rainfall portal.** The portal is real-time only; starting collection now yields **a couple of months before delivery**, and every use we have (diurnal climatology, seasonality) needs **long** series. A few months of self-collected data is not worth the ingest machinery it would require. **Ask partners for the archive instead** |
-| **OD-8** | Lightning data | **Pursue, via partners.** Hourly, real-time, global, and **independent of precipitation retrieval** — it indicates *when* convection occurs without undercatch or orographic-retrieval error, which is exactly the disputed quantity. Best value-per-effort of the timing sources. It gives **no amounts**, which is fine: amounts are not the problem |
+| **OD-8** | Lightning data | **Pursue, via partners.** Hourly, real-time, global, and **independent of precipitation retrieval** — it indicates *when* convection occurs without undercatch or orographic-retrieval error, which is exactly the disputed quantity. Best value-per-effort of the timing sources. It gives **no amounts**, which is fine: amounts are not the problem. **UPDATED 2026-08-18 — partly self-served: WWLLN is unavailable to us, so NASA ISS-LIS V3 was retrieved directly (Earthdata, free). It establishes the convective REGIME SHAPE (afternoon-evening max, morning min) but its effective sample is **352 overpasses**, not the 4,214 flashes the raw count suggests, so it cannot pin a peak hour and cannot be stratified by elevation. The partner ask therefore STANDS. See M-D4** |
 | **OD-9** | Weather radar | **Not available** (owner, 2026-08-18). Nepal has one C-band dual-pol radar at **Surkhet (2019, western)**, with Palpa and Udaipur planned; Surkhet's ~200 km range does not usefully cover our central/eastern basins. **Not on the critical path. Do not design around it** |
 | **OD-10** 📌 **TODO** | Do we build convection-permitting downscaling ourselves? | **NO.** DHM has **several parallel projects improving their own weather forecasts**, and may couple their downscaled NWP to this system in future. Duplicating that is wasted effort in someone else's lane. ⇒ **What we owe instead is a forcing interface that can accept an externally produced downscaled product later** — the investment goes into the *seam*, not into the model |
 | **OD-11** | How much P work is warranted at all? | **Only what is necessary to get P right for operational runoff forecasting** (owner, 2026-08-18). See the scope test below — this is a real constraint, not a platitude, and it currently excludes most diurnal work from the delivery path |

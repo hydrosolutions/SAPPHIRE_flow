@@ -22,6 +22,8 @@ import polars as pl
 import pytest
 
 from scripts.dhm_precip import stats_defects
+from scripts.dhm_precip.coloc_pairs import COLOCATED_PAIRS
+from scripts.dhm_precip.coloc_run import main as coloc_main
 from scripts.dhm_precip.evaluate import (
     DeclaredTableMismatchError,
     ExpectationCoverageError,
@@ -321,3 +323,48 @@ class TestQcMaskAgainstTheRealWorkbook:
         exclusion_list = pl.read_parquet(out / "tables" / "qc_exclusion_list.parquet")
 
         assert exclusion_list.height == 0
+
+
+def _write_synthetic_pyramid_csv(path, *, years, npt_peak_hour: int = 14) -> None:
+    """A minimal file in the REAL Lvl1 shape (semicolon-delimited, CR-only
+    line endings, `year;month;day;hour;AT;RR;AP;RH;WS;WD`, NPT wall-clock).
+    The real Zenodo CSVs are gitignored and absent, but the DHM side of this
+    runner — the side that was broken — is the REAL workbook."""
+    lines = ["year;month;day;hour;AT;RR;AP;RH;WS;WD"]
+    lines += [
+        f"{year};7;{day};{hour};;{5.0 if hour == npt_peak_hour else 0.0};;;;"
+        for year in years
+        for day in range(1, 7)
+        for hour in range(24)
+    ]
+    path.write_bytes(("\r".join(lines) + "\r\n").encode("utf-8"))
+
+
+class TestColocRunnerReachesItsReportAgainstTheRealWorkbook:
+    """Plan 182 (M-A10) — every unit test of the runner injects a
+    `DhmRetainedProvider` and therefore never touches
+    `_production_dhm_retained_provider`, where the runner-built QC-mask
+    frame meets the workbook-loaded ON_GRID frame. A dtype pinned there
+    (the workbook's timestamps are `Datetime('ms')`, not `us`) makes that
+    anti-join raise `SchemaError`, so `main()` could not write its report
+    against real data while the whole suite stayed green. This drives
+    `main()` end-to-end on the real workbook."""
+
+    def test_main_writes_the_report_from_the_real_workbook(self, tmp_path) -> None:
+        for pair in COLOCATED_PAIRS:
+            _write_synthetic_pyramid_csv(
+                tmp_path / pair.pyramid_csv_filename,
+                years=range(pair.pyramid_start_year, pair.pyramid_end_year + 1),
+            )
+
+        exit_code = coloc_main(
+            ["--out", str(tmp_path / "m_a10_out"), "--pyramid-dir", str(tmp_path)]
+        )
+
+        assert exit_code == 0
+        report = tmp_path / "m_a10_out" / "coloc_adjudication.md"
+        assert report.exists()
+        text = report.read_text()
+        for pair in COLOCATED_PAIRS:
+            assert f"### {pair.dhm_station} vs {pair.pyramid_station}" in text
+        assert "n DHM retained (this window)" in text
