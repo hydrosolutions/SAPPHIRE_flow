@@ -6,6 +6,7 @@ import pytest
 
 from sapphire_flow.cli.register_deployments import (
     BACKUP_POOL,
+    INGEST_POOL,
     WORK_POOL,
     DeploymentSpec,
     _build_specs,
@@ -15,9 +16,10 @@ from sapphire_flow.cli.register_deployments import (
 
 
 def _cron_minute_set(cron: str | None) -> set[int]:
-    """Minimal 5-field cron minute-field parser — only the two forms this
-    repo's schedules actually use: a literal minute (``37``) or a step
-    (``*/5``). Not a general cron parser."""
+    """Minimal 5-field cron minute-field parser — only the forms this repo's
+    schedules actually use: a literal minute (``37``), a step (``*/5``), or a
+    comma-separated list of literals (Plan 176 D1, e.g.
+    ``1,4,7,11,...``). Not a general cron parser."""
     assert cron is not None
     minute_field = cron.split()[0]
     if minute_field == "*":
@@ -25,7 +27,7 @@ def _cron_minute_set(cron: str | None) -> set[int]:
     if minute_field.startswith("*/"):
         step = int(minute_field[2:])
         return set(range(0, 60, step))
-    return {int(minute_field)}
+    return {int(m) for m in minute_field.split(",")}
 
 
 DEPLOYMENT_NAMES = {
@@ -95,7 +97,11 @@ class TestBuildSpecs:
 
         assert by_name["ingest-observations"].work_pool_name == "ingest"
         for name, spec in by_name.items():
-            if name in ("ingest-observations", "backup-database"):
+            if name in (
+                "ingest-observations",
+                "backup-database",
+                "collect-bafu-observations",
+            ):
                 continue
             assert spec.work_pool_name == "default"
             assert spec.work_pool_name == WORK_POOL
@@ -155,15 +161,15 @@ class TestBuildSpecs:
         by_name = {s.deployment_name: s for s in _build_specs()}
         assert by_name["collect-bafu-forecasts"].cron == "*/30 * * * *"
 
-    def test_bafu_observation_collector_hourly_at_37_and_serialized(self) -> None:
-        """Plan 175 D4/T4: moved off `:05` — that minute collides with
-        every `*/5` ingest-observations tick against LINDAS's measured
-        3-request burst ceiling. `:37` is clear of every `*/5` boundary."""
+    def test_bafu_observation_collector_serialized_and_on_ingest_pool(self) -> None:
+        """Plan 176 D5/T1: routed onto the `ingest` pool (nearly-idle,
+        dedicated event loop) rather than the shared `default` pool, so a
+        CPU-pegging forecast-cycle run cannot starve the collector's poll
+        loop the way Plan 098 measured on `default`."""
         by_name = {s.deployment_name: s for s in _build_specs()}
         bafu_obs = by_name["collect-bafu-observations"]
-        assert bafu_obs.cron == "37 * * * *"
         assert bafu_obs.concurrency_limit == 1  # never overlap runs
-        assert bafu_obs.work_pool_name == WORK_POOL  # default pool, not ingest
+        assert bafu_obs.work_pool_name == INGEST_POOL  # Plan 176 D5, not default
 
     def test_bafu_observation_cron_env_override(
         self, monkeypatch: pytest.MonkeyPatch
@@ -187,6 +193,45 @@ class TestBuildSpecs:
         assert all(m % 5 != 0 for m in bafu_obs_minutes)
         assert bafu_obs_minutes.isdisjoint(ingest_minutes)
         assert bafu_obs_minutes.isdisjoint(bafu_forecast_minutes)
+
+
+def _cyclic_gaps(minutes: set[int]) -> list[int]:
+    """Consecutive gaps between sorted minutes, INCLUDING the wrap from the
+    largest minute back to the smallest across the `:59 -> :01` hour
+    boundary — a plain `diff` would miss exactly that wrap gap."""
+    ordered = sorted(minutes)
+    # strict=False (deliberate, not the default omission): a single-minute
+    # cron has an empty `ordered[1:]` — zip must degrade to [] there, not
+    # raise, so the wrap-only gap below still produces a clean (large)
+    # assertion failure rather than a crash.
+    gaps = [b - a for a, b in zip(ordered, ordered[1:], strict=False)]
+    gaps.append((ordered[0] + 60) - ordered[-1])
+    return gaps
+
+
+class TestBafuObservationCadenceProperties:
+    """Plan 176 D1 — the schedule is locked as PROPERTIES, not a literal
+    cron string: max cyclic gap <=4 min (a ~2.7x margin on the only clean
+    10.8 min publish gap observed), min gap >=3 min (so a clustered list
+    cannot interact badly with Plan 175's 120s total retry deadline), and
+    every minute non-divisible by 5 (never shares a minute with
+    ingest-observations' `*/5` tick)."""
+
+    def test_max_cyclic_gap_is_at_most_four_minutes(self) -> None:
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        minutes = _cron_minute_set(by_name["collect-bafu-observations"].cron)
+        assert max(_cyclic_gaps(minutes)) <= 4
+
+    def test_min_gap_is_at_least_three_minutes(self) -> None:
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        minutes = _cron_minute_set(by_name["collect-bafu-observations"].cron)
+        assert min(_cyclic_gaps(minutes)) >= 3
+
+    def test_every_scheduled_minute_is_non_divisible_by_five(self) -> None:
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        minutes = _cron_minute_set(by_name["collect-bafu-observations"].cron)
+        assert all(m % 5 != 0 for m in minutes)
+        assert len(minutes) >= 15  # roughly 2.5x the grid's 6/hour
 
     def test_ingest_weather_history_daily_deployment(self) -> None:
         """Plan-071 rolling-ingest flow is registered as a daily deployment."""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003
@@ -139,8 +140,138 @@ class TestQuarantineGate:
         assert result == module._EMPTY_RESULT  # type: ignore[attr-defined]
 
 
-class TestDedup:
-    def test_same_hour_retry_writes_zero_new_files(self, tmp_path: Path) -> None:
+class TestCycleAtIsDataDerived:
+    """Plan 176 D2: `cycle_at` is the response's MODAL `measurement_time`
+    across distinct (gauge_code, lindas_kind) identities, truncated to the
+    10-minute grid — never the clock. `run_at` is deliberately placed in a
+    DIFFERENT clock hour/minute bucket than the data in every case below, so
+    a clock-derived (or 5-minute-truncated) implementation cannot coincide
+    with the expected answer by accident."""
+
+    @pytest.mark.parametrize(
+        ("data_minute", "expected_slot_minute"),
+        [(0, 0), (7, 0), (9, 0), (10, 10), (17, 10), (59, 50)],
+    )
+    def test_exact_cycle_at_and_filename_from_modal_measurement_time(
+        self, tmp_path: Path, data_minute: int, expected_slot_minute: int
+    ) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        ts = datetime(2026, 7, 21, 12, data_minute, tzinfo=UTC)
+        run_at = datetime(2026, 7, 21, 13, 45, tzinfo=UTC)  # different hour AND minute
+        rows = [_row("2135", measurement_time=ts), _row("2200", measurement_time=ts)]
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(run_at),
+        )
+        parquet_files = list(tmp_path.rglob("*.parquet"))
+        assert len(parquet_files) == 1
+        expected_cycle_at = ensure_utc(
+            datetime(2026, 7, 21, 12, expected_slot_minute, tzinfo=UTC)
+        )
+        assert f"obs-{expected_cycle_at:%Y%m%dT%H%M%SZ}" == Path(parquet_files[0]).stem
+        df = pl.read_parquet(parquet_files[0])
+        assert df["cycle_at"].to_list()[0] == expected_cycle_at
+
+    def test_minority_gauge_ahead_of_bulk_keys_to_the_bulks_slot(
+        self, tmp_path: Path
+    ) -> None:
+        """D2's robustness fix (modal, not `max()`): proven RED against a
+        `max()` mutant, which would key to the outlier's slot and make the
+        real bulk response dedup-skip — losing most of the network's
+        observations for that slot, silently."""
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        bulk_ts = datetime(2026, 7, 21, 12, 10, tzinfo=UTC)
+        outlier_ts = datetime(2026, 7, 21, 12, 20, tzinfo=UTC)  # one slot AHEAD
+        rows = [
+            _row("2135", measurement_time=bulk_ts),
+            _row("2200", measurement_time=bulk_ts),
+            _row("2300", measurement_time=bulk_ts),
+            _row("9999", measurement_time=outlier_ts),
+        ]
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(datetime(2026, 7, 21, 12, 25, tzinfo=UTC)),
+        )
+        parquet_files = list(tmp_path.rglob("*.parquet"))
+        assert len(parquet_files) == 1
+        expected = ensure_utc(bulk_ts)
+        assert f"obs-{expected:%Y%m%dT%H%M%SZ}" == Path(parquet_files[0]).stem
+
+
+class TestClockDerivedKeyIsDead:
+    """Pinned-clock proof that the key is data-derived, not clock-derived
+    (Plan 176 D2/T3). Neither test can pass against a clock-based
+    `cycle_at` — "different clock times" alone is not a sufficient kill
+    because both could still fall inside the same hour."""
+
+    def test_identical_run_at_different_data_slots_writes_two_archives(
+        self, tmp_path: Path
+    ) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        run_at = datetime(2026, 7, 21, 12, 45, tzinfo=UTC)  # SAME clock both runs
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(
+                [
+                    _row(
+                        "2135",
+                        measurement_time=datetime(2026, 7, 21, 12, 7, tzinfo=UTC),
+                    )
+                ]
+            ),
+            clock=_ClockSpy(run_at),
+        )
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(
+                [
+                    _row(
+                        "2135",
+                        measurement_time=datetime(2026, 7, 21, 12, 17, tzinfo=UTC),
+                    )
+                ]
+            ),
+            clock=_ClockSpy(run_at),
+        )
+        assert len(list(tmp_path.rglob("*.parquet"))) == 2
+
+    def test_different_clock_hours_same_data_slot_dedups_to_one_archive(
+        self, tmp_path: Path
+    ) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        ts = datetime(2026, 7, 21, 12, 7, tzinfo=UTC)  # SAME data both runs
+
+        first_adapter = _FakeAdapter([_row("2135", measurement_time=ts)])
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=first_adapter,
+            clock=_ClockSpy(datetime(2026, 7, 21, 12, 9, tzinfo=UTC)),
+        )
+        second_adapter = _FakeAdapter([_row("2135", measurement_time=ts)])
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=second_adapter,
+            clock=_ClockSpy(datetime(2026, 7, 21, 13, 3, tzinfo=UTC)),  # DIFFERENT HOUR
+        )
+        assert len(list(tmp_path.rglob("*.parquet"))) == 1
+        # D2/D3: dedup happens AFTER the fetch — a data-derived key cannot be
+        # known without fetching first.
+        assert second_adapter.calls == 1
+
+
+class TestFetchBeforeDedup:
+    def test_same_slot_retry_fetches_but_writes_zero_new_files(
+        self, tmp_path: Path
+    ) -> None:
         module = _import_flow_module()
         config = _make_config(bafu_observation_archive_path=tmp_path)
         rows = [_row("2135"), _row("3001", lindas_kind="lake", parameter="water_level")]
@@ -148,66 +279,202 @@ class TestDedup:
         first = module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
             config=config,
             adapter=_FakeAdapter(rows),
-            clock=_ClockSpy(datetime(2026, 7, 21, 10, 5, 3, tzinfo=UTC)),
+            clock=_ClockSpy(datetime(2026, 7, 21, 15, 1, tzinfo=UTC)),
         )
         parquet_files_after_first = list(tmp_path.rglob("*.parquet"))
         assert len(parquet_files_after_first) == 1
         assert first.row_count == 2
 
-        # Retry within the SAME hour, different minute/second — must resolve to
-        # the same cycle_at and skip (production-default path, not a re-injected
-        # literal — the two clock values differ).
+        # A poll a few minutes later sees the SAME data (no slot advance
+        # yet) — must still fetch (D2/D3: the key cannot be known without
+        # fetching) and must dedup-skip the WRITE.
         second_adapter = _FakeAdapter(rows)
         second = module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
             config=config,
             adapter=second_adapter,
-            clock=_ClockSpy(datetime(2026, 7, 21, 10, 7, 41, tzinfo=UTC)),
+            clock=_ClockSpy(datetime(2026, 7, 21, 15, 4, tzinfo=UTC)),
         )
         assert list(tmp_path.rglob("*.parquet")) == parquet_files_after_first
-        assert second_adapter.calls == 0  # dedup short-circuits before any fetch
-        assert second.row_count == 0
+        assert second_adapter.calls == 1  # fetched — dedup is post-fetch now
+        assert second.row_count == 0  # nothing NEW archived this run
+        assert second.dedup_skipped is True
 
-    def test_next_hour_writes_a_new_snapshot(self, tmp_path: Path) -> None:
+    def test_slot_advance_writes_a_new_snapshot(self, tmp_path: Path) -> None:
         module = _import_flow_module()
         config = _make_config(bafu_observation_archive_path=tmp_path)
-        rows = [_row("2135")]
 
         module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
             config=config,
-            adapter=_FakeAdapter(rows),
-            clock=_ClockSpy(datetime(2026, 7, 21, 10, 5, tzinfo=UTC)),
+            adapter=_FakeAdapter(
+                [
+                    _row(
+                        "2135",
+                        measurement_time=datetime(2026, 7, 21, 10, 0, tzinfo=UTC),
+                    )
+                ]
+            ),
+            clock=_ClockSpy(datetime(2026, 7, 21, 10, 1, tzinfo=UTC)),
         )
         module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
             config=config,
-            adapter=_FakeAdapter(rows),
-            clock=_ClockSpy(datetime(2026, 7, 21, 11, 5, tzinfo=UTC)),
+            adapter=_FakeAdapter(
+                [
+                    _row(
+                        "2135",
+                        measurement_time=datetime(2026, 7, 21, 10, 10, tzinfo=UTC),
+                    )
+                ]
+            ),
+            clock=_ClockSpy(datetime(2026, 7, 21, 10, 11, tzinfo=UTC)),
         )
         assert len(list(tmp_path.rglob("*.parquet"))) == 2
 
 
-class TestRestatement:
-    def test_later_hour_restatement_preserves_both_snapshots(
+class TestHeartbeatOnDedupSkip:
+    """Plan 176 D3 — the trap inside D2: a dedup skip must still compute
+    freshness and append a heartbeat using `run_at`, or the freshness gate
+    becomes unreachable after the first archived copy of a frozen slot."""
+
+    def test_later_same_slot_fresh_poll_refreshes_heartbeat_without_writing(
         self, tmp_path: Path
     ) -> None:
         module = _import_flow_module()
         config = _make_config(bafu_observation_archive_path=tmp_path)
-        ts = datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
+        health_store = FakePipelineHealthStore()
+        ts = datetime(2026, 7, 21, 12, 7, tzinfo=UTC)
+        rows = [_row("2135", measurement_time=ts)]
 
         module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
             config=config,
-            adapter=_FakeAdapter([_row("2135", value=100.0, measurement_time=ts)]),
-            clock=_ClockSpy(datetime(2026, 7, 21, 10, 5, tzinfo=UTC)),
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(datetime(2026, 7, 21, 12, 9, tzinfo=UTC)),
+            pipeline_health_store=health_store,
         )
+        parquet_before = list(tmp_path.rglob("*.parquet"))
+        assert len(parquet_before) == 1
+
+        second_run_at = datetime(2026, 7, 21, 12, 13, tzinfo=UTC)
+        result = module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(second_run_at),
+            pipeline_health_store=health_store,
+        )
+        assert result.dedup_skipped is True
+        assert list(tmp_path.rglob("*.parquet")) == parquet_before  # no new files
+
+        check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
+        records = health_store.fetch_recent(check_type)
+        assert len(records) == 2  # one per run, including the skip
+        latest = records[-1]
+        assert latest.status is PipelineHealthStatus.OK
+        assert latest.checked_at == ensure_utc(second_run_at)
+        assert latest.detail["row_count"] == 1
+
+    def test_later_same_slot_frozen_poll_emits_stale_without_writing(
+        self, tmp_path: Path
+    ) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+        ts = datetime(2026, 7, 21, 12, 7, tzinfo=UTC)
+        rows = [_row("2135", measurement_time=ts)]
+
         module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
             config=config,
-            adapter=_FakeAdapter([_row("2135", value=101.0, measurement_time=ts)]),
-            clock=_ClockSpy(datetime(2026, 7, 21, 11, 5, tzinfo=UTC)),
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(datetime(2026, 7, 21, 12, 9, tzinfo=UTC)),
+            pipeline_health_store=health_store,
+        )
+        parquet_before = list(tmp_path.rglob("*.parquet"))
+
+        # Poll well past the module's own staleness threshold — the network
+        # is frozen at the same slot (no advance), so this run STILL
+        # dedup-skips the write while the heartbeat must go CRITICAL.
+        stale_threshold: timedelta = module._STALE_MEASUREMENT_THRESHOLD  # type: ignore[attr-defined]
+        frozen_run_at = ensure_utc(ts + stale_threshold + timedelta(minutes=5))
+        result = module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(frozen_run_at),
+            pipeline_health_store=health_store,
+        )
+        assert result.dedup_skipped is True
+        assert list(tmp_path.rglob("*.parquet")) == parquet_before  # no new files
+
+        check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
+        records = health_store.fetch_recent(check_type)
+        latest = records[-1]
+        assert latest.status is PipelineHealthStatus.CRITICAL
+        assert latest.detail["error_type"] == "stale_measurement_time"
+        assert latest.checked_at == frozen_run_at
+
+
+class TestRestatement:
+    """Plan 176 D2 narrows Plan 136's restatement guarantee: a correction is
+    preserved only if the NETWORK SLOT advances between the two fetches —
+    which, at a ≤4 min poll ceiling against a 10-minute grid, it essentially
+    always will before a correction lands. This test locks the realistic
+    whole-graph case: the corrected gauge keeps its own timestamp while the
+    MODAL network slot advances (the other gauges tick forward), so the
+    slot-level key still changes and both snapshots survive. The no-advance
+    case (a correction landing with literally zero network advance) is a
+    known, accepted narrowing — not covered here."""
+
+    def test_correction_survives_when_the_modal_network_slot_advances(
+        self, tmp_path: Path
+    ) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        corrected_ts = datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(
+                [
+                    _row("2135", value=100.0, measurement_time=corrected_ts),
+                    _row(
+                        "2200", measurement_time=datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
+                    ),
+                    _row(
+                        "2300", measurement_time=datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
+                    ),
+                ]
+            ),
+            clock=_ClockSpy(datetime(2026, 7, 21, 9, 1, tzinfo=UTC)),
+        )
+        # A later poll: gauge 2135 restates its 09:00 value (timestamp
+        # UNCHANGED — a genuine correction, not a new observation), but the
+        # rest of the network (2200, 2300 — the majority/bulk) has moved on
+        # to 09:10 — so the MODAL slot advances and this snapshot gets its
+        # own path.
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(
+                [
+                    _row("2135", value=101.0, measurement_time=corrected_ts),
+                    _row(
+                        "2200",
+                        measurement_time=datetime(2026, 7, 21, 9, 10, tzinfo=UTC),
+                    ),
+                    _row(
+                        "2300",
+                        measurement_time=datetime(2026, 7, 21, 9, 10, tzinfo=UTC),
+                    ),
+                ]
+            ),
+            clock=_ClockSpy(datetime(2026, 7, 21, 9, 11, tzinfo=UTC)),
         )
 
         parquet_files = sorted(tmp_path.rglob("*.parquet"))
         assert len(parquet_files) == 2
-        values = sorted(pl.read_parquet(f)["value"].to_list()[0] for f in parquet_files)
-        assert values == [100.0, 101.0]  # both survive — no drop, no overwrite
+        corrected_values = sorted(
+            pl.read_parquet(f)
+            .filter(pl.col("gauge_code") == "2135")["value"]
+            .to_list()[0]
+            for f in parquet_files
+        )
+        assert corrected_values == [100.0, 101.0]  # both survive
 
 
 class TestMultiGaugeArchive:
@@ -235,7 +502,13 @@ class TestMultiGaugeArchive:
 
 
 class TestRawArchival:
-    def test_raw_json_companion_is_plain_and_readable(self, tmp_path: Path) -> None:
+    def test_raw_companion_is_gzipped_and_round_trips_byte_for_byte(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 176 D6: the raw JSON companion is written `.json.gz`
+        (reversing Plan 136's "plain .json, no gzip") — SPARQL JSON
+        compresses ~42x, and at the new cadence plain JSON would cost
+        ~12.87 GB/yr on a host that has already hit 94% disk."""
         module = _import_flow_module()
         config = _make_config(bafu_observation_archive_path=tmp_path)
         raw_payload = {"results": {"bindings": [{"fake": "payload"}]}}
@@ -245,9 +518,15 @@ class TestRawArchival:
             adapter=_FakeAdapter([_row("2135")], raw_payload=raw_payload),
             clock=_ClockSpy(datetime(2026, 7, 21, 10, 5, tzinfo=UTC)),
         )
-        raw_files = list(tmp_path.rglob("*.json"))
+        raw_files = list(tmp_path.rglob("*.json.gz"))
         assert len(raw_files) == 1
-        assert json.loads(raw_files[0].read_text()) == raw_payload
+        assert raw_files[0].name.endswith(".json.gz")
+        # No plain, uncompressed .json companion anywhere in the archive.
+        assert list(tmp_path.rglob("*.json")) == []
+
+        with gzip.open(raw_files[0], "rb") as gz:
+            decompressed = gz.read()
+        assert json.loads(decompressed) == raw_payload  # byte-for-byte fidelity
 
 
 class TestHeartbeat:
@@ -598,3 +877,54 @@ class TestHeartbeat:
             pipeline_health_store=_RaisingHealthStore(),
         )
         assert result.row_count == 1
+
+
+class TestStaleMeasurementThresholdBoundary:
+    """Plan 176 D4: `_STALE_MEASUREMENT_THRESHOLD` is re-derived for the
+    10-minute grid — worst-case HEALTHY age is ~15 min publish lag plus one
+    ~10-11 min publish interval (~26 min), so 30 min must clear a healthy
+    feed without hiding a frozen one. Boundary tested on both sides of the
+    module's OWN constant (not a hardcoded duplicate), so the boundary
+    tests below track whatever value D4 locks; this one locks the value
+    itself."""
+
+    def test_threshold_is_thirty_minutes(self) -> None:
+        module = _import_flow_module()
+        assert timedelta(minutes=30) == module._STALE_MEASUREMENT_THRESHOLD  # type: ignore[attr-defined]
+
+    def test_age_exactly_at_threshold_is_not_stale(self, tmp_path: Path) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+        threshold: timedelta = module._STALE_MEASUREMENT_THRESHOLD  # type: ignore[attr-defined]
+        ts = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
+        run_at = ensure_utc(ts + threshold)  # age == threshold, NOT > threshold
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter([_row("2135", measurement_time=ts)]),
+            clock=_ClockSpy(run_at),
+            pipeline_health_store=health_store,
+        )
+        check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
+        records = health_store.fetch_recent(check_type)
+        assert records[-1].status is PipelineHealthStatus.OK
+
+    def test_age_one_second_past_threshold_is_stale(self, tmp_path: Path) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+        threshold: timedelta = module._STALE_MEASUREMENT_THRESHOLD  # type: ignore[attr-defined]
+        ts = datetime(2026, 7, 21, 12, 0, tzinfo=UTC)
+        run_at = ensure_utc(ts + threshold + timedelta(seconds=1))
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter([_row("2135", measurement_time=ts)]),
+            clock=_ClockSpy(run_at),
+            pipeline_health_store=health_store,
+        )
+        check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
+        records = health_store.fetch_recent(check_type)
+        assert records[-1].status is PipelineHealthStatus.CRITICAL
+        assert records[-1].detail["error_type"] == "stale_measurement_time"

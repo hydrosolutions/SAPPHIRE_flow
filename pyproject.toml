@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.754"
+version = "0.1.755"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -125,6 +125,7 @@ markers = [
     "deployment_destructive: destructive compose tests; excluded by default",
     "live: tests that hit external APIs and are excluded from default CI (run nightly)",
     "live_lindas: calls live LINDAS endpoint; excluded by default, run by weekly workflow",
+    "live_lindas_lag: extended LINDAS publish-lag measurement (Plan 176 T7); excluded by default AND by the live_lindas weekly workflow's 10-min timeout — run manually/on a dedicated longer schedule",
     "live_stac: calls live MeteoSwiss STAC endpoint; excluded by default, run manually or on a schedule",
     "live_recap: calls live recap Data Gateway; excluded by default (needs RECAP_API_KEY)",
     "slow: long-running tests excluded from default CI integration job (runs nightly)",

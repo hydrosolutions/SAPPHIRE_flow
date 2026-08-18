@@ -1538,6 +1538,69 @@ class TestRunOnceBafuFreshness:
 # ---------- run_once: BAFU observation-collector freshness (Plan 136, additive) --
 
 
+class TestBafuObsStaleThresholdValueAndBoundary:
+    """Plan 176 D4: BAFU_OBS_STALE_THRESHOLD (the HEARTBEAT gate — ~3 missed
+    polls at D1's <=4 min ceiling) is re-derived from the 10-minute grid and
+    is no longer coincidentally equal to the flow-side measurement-age
+    threshold (30 min)."""
+
+    def test_threshold_is_fifteen_minutes(self) -> None:
+        assert timedelta(minutes=15) == BAFU_OBS_STALE_THRESHOLD
+
+    def test_age_exactly_at_threshold_is_not_stale(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def _probe(_url: str) -> BafuFreshnessResult:
+            return BafuFreshnessResult(
+                found=True,
+                checked_at=_NOW - BAFU_OBS_STALE_THRESHOLD,
+                status="ok",
+                error=None,
+            )
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+        )
+        assert state.consecutive_bafu_obs_failures == 0
+        assert slack.calls == []
+
+    def test_age_one_second_past_threshold_is_stale(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def _probe(_url: str) -> BafuFreshnessResult:
+            return BafuFreshnessResult(
+                found=True,
+                checked_at=_NOW - BAFU_OBS_STALE_THRESHOLD - timedelta(seconds=1),
+                status="ok",
+                error=None,
+            )
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+        )
+        assert state.consecutive_bafu_obs_failures == 1
+        assert len(slack.calls) == 1
+        assert "BAFU observation collector STALE" in slack.calls[0][1]
+
+
 class TestRunOnceBafuObsFreshness:
     def test_fresh_ok_heartbeat_no_alert(self, tmp_path: Path) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
@@ -1609,6 +1672,12 @@ class TestRunOnceBafuObsFreshness:
         assert len(slack.calls) == 1
         _, msg = slack.calls[0]
         assert "BAFU observation collector STALE" in msg
+        # Plan 176 D4: BAFU_OBS_STALE_THRESHOLD is sub-hour (15m) — the OLD
+        # `hours = int(threshold // 3600)` formatter renders any sub-hour
+        # threshold as "threshold: 0h", silently lying about the alert's
+        # own trigger condition. The formatter must be minutes-aware.
+        assert "threshold: 15m" in msg
+        assert "threshold: 0h" not in msg
 
     def test_no_record_found_alerts(self, tmp_path: Path) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)

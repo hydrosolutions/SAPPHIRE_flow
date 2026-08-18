@@ -69,6 +69,30 @@ This plan's `cadence = hourly` finding (§"Live LINDAS probe evidence") is **als
 actually publishes on a 10-minute grid, so an hourly poll was discarding ~83% of observations. That
 correction, with its measurement, belongs to **Plan 176** (which depends on Plan 175), not here.
 
+**Two corrections from Plan 176 (2026-08-18), landed, stated as corrections:**
+
+1. **§"Live LINDAS probe evidence"'s `cadence = hourly` finding is falsified.** Four whole-graph
+   snapshots 6 min apart showed the network's modal `measurement_time` advancing exactly 10 minutes per
+   slot — an hourly grid would have held it at `:00` all hour. The single probe this plan's finding rests
+   on caught the bulk sitting on `:00`, which is true only for the ~15 minutes after each hour lands; it
+   was a sampling artifact, not the real cadence. Plan 176 D1 replaced the `:37`-hourly schedule with a
+   ≤4-min-cyclic-gap over-poll (`cli/register_deployments.py`, `docker-compose.yml`,
+   `config/overlays/mac-mini.toml`, all updated) and D2 replaced this plan's clock-derived `cycle_at`
+   (§T3 above) with a data-derived one (the response's modal `measurement_time`, truncated to the
+   10-minute grid) — the clock key cannot survive a poll rate decoupled from the grid; its failure mode
+   was observed live during Plan 175's own deployment (see `docs/plans/176-lindas-archive-completeness.md`
+   § Evidence). **This is a genuine narrowing of this plan's restatement guarantee**: under the old
+   clock key, any re-fetch in a later hour preserved a correction; under the data key, a correction is
+   preserved only if the network's modal slot has advanced between the two fetches — which, at Plan 176's
+   over-poll rate against the 10-minute grid, it essentially always will before a correction lands.
+2. **§T4's "no gzip, no retention knob" is reversed for the raw JSON companion.** Decided at 2.15 GB/yr
+   under the (now-falsified) hourly assumption; at the true 10-minute cadence, plain JSON would cost
+   12.87 GB/yr on a host that has already hit 94% disk. SPARQL JSON compresses 41.8×, so Plan 176 D6
+   writes the raw companion as `.json.gz` (gzip stream closed before the atomic rename). Existing plain
+   `.json` snapshots are left unmigrated on disk; readers (including Plan 176's completeness audit, T8)
+   tolerate both extensions. Still no retention knob — compression removes the need. The parsed parquet
+   is unaffected (still plain, still the dedup completion marker).
+
 ## Context — collect now, because LINDAS has no history
 
 LINDAS (`lindas.admin.ch/foen/hydro`) serves BAFU river-gauge **observations** in **real time only** —

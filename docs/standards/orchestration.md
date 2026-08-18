@@ -57,7 +57,7 @@ contract this rule protects (burst 3, ~1 slot refill per 3–4 s, no
 `cli/register_deployments.py` reads `os.environ.get("SCHEDULE_...", "<default>")`
 — a Python-level fallback used only when nothing sets the environment
 variable. But `docker-compose.yml`'s `init` service ALWAYS sets it (e.g.
-`SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-37 * * * *}`),
+`SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-<default>}`),
 so on the mini the compose file's own `:-<default>` fallback is the value
 that actually reaches `register_deployments.py` — the Python default is only
 exercised by a non-compose invocation (e.g. a bare `python -m
@@ -66,6 +66,45 @@ change to the Python default, without the matching `docker-compose.yml`
 edit, is a deployment no-op** — `tests/unit/test_compose_schedule_default.py`
 locks both LINDAS-relevant schedules (`SCHEDULE_INGEST_OBSERVATIONS`,
 `SCHEDULE_COLLECT_BAFU_OBSERVATIONS`) against exactly this trap.
+
+*(The literal `collect-bafu-observations` cron value above was `37 * * * *`
+under Plan 175; Plan 176 D1 replaced it with a denser over-poll schedule —
+see below. The trap this section documents is unchanged; only the example
+value moved.)*
+
+### A cron INTERVAL is not a poll-INTERVAL guarantee on a shared pool (Plan 176 D5/T0)
+
+A `CronSchedule` controls when a run is *scheduled*; it says nothing about
+when that run actually *starts executing*. On a work pool shared with
+CPU-pegging or long-running flows, a worker's poll loop can be starved long
+enough that a scheduled run sits queued well past its nominal tick — Plan
+098 measured **25–60 min** of pickup lateness on the `default` pool during
+forecast-cycle windows, which is why `ingest-observations` was moved to a
+dedicated `ingest` pool in the first place. **Two distinct mechanisms can
+cause this** (Plan 098's own analysis, reused by Plan 176 T0):
+
+- **(a) worker-side poll-cycle starvation** — the `ProcessWorker` poll loop
+  is a single async event loop; if it is busy *managing* a CPU-pegging
+  subprocess, it skips its own poll ticks. A dedicated worker (its own event
+  loop) resolves this outright.
+- **(b) server-side dequeue latency** — a global Prefect-server-side
+  slowdown. A dedicated *pool* helps only incidentally; it does **not** help
+  if the slowness is a server-wide throttle, not a worker-side one.
+
+**Consequence for anything relying on a cadence, not just a schedule
+string**: a flow whose CORRECTNESS depends on not missing a poll window
+(Plan 176's LINDAS archive collector, over-polling a 10-minute publish grid
+that serves no history) cannot rely on the cron string alone — pickup
+latency must be *measured*, not assumed, and re-measured whenever the load
+profile on a shared pool changes materially (Plan 176 T0 measured ≤3 s
+pickup latency on `default` in 2026-08-18's control-only-cycle regime, a
+result explicitly recorded as a **dated measurement, not a settled
+property** — a return to heavier NWP-bearing cycles could plausibly bring
+mechanism (a) back). Where a flow cannot tolerate that uncertainty, prefer
+a dedicated pool (cheap insurance) AND build a content-derived completeness
+check that can detect a miss after the fact — a schedule can promise intent,
+never delivery. See `docs/plans/176-lindas-archive-completeness.md` § T0
+measurement and § T8 (the completeness audit) for the worked example.
 
 ## Task granularity
 
