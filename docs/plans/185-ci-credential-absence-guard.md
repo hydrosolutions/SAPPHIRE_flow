@@ -1,9 +1,10 @@
 ---
 status: DRAFT
 created: 2026-08-18
+revised: 2026-08-18
 plan: 185
 title: CI credential-absence guard — a withheld secret must degrade loudly, not fail red
-scope: Make the `unit` job's private-extra install tolerate a STRUCTURALLY absent credential (Dependabot runs, fork PRs) with a loud, visible loss-of-coverage warning, while still failing hard when the credential is absent on a run that should have had it. Explicitly NOT adding fork-PR support, NOT changing the aquacast pin, NOT the wheel migration (080).
+scope: Guard the `unit` job's private-extra install so a STRUCTURALLY absent credential (Dependabot, fork PR) degrades with a visible warning, while an absent credential on a run that should have had it — or on a PR that changes `uv.lock` — still fails. Two tasks: one `ci.yml` change, one paragraph in `docs/standards/cicd.md`. Explicitly NOT fork-PR support, NOT other secrets, NOT any new file.
 depends_on: []
 blocks: []
 ---
@@ -13,139 +14,148 @@ blocks: []
 ## Status
 **DRAFT.** Not for implementation until the owner confirms.
 
-## Why this exists
+## ⚖️ Proportionality — read before proposing any addition
 
-On 2026-08-18, PR #174 merged at 09:57 and made the `unit` job install a private
-extra: `uv sync --frozen --extra aquacast` (`ci.yml`). Within ~10 minutes all four
-open Dependabot PRs went red. The failure reads as a dependency error —
-`fatal: could not read Username for 'https://github.com'` — but the cause is that
-**GitHub structurally withholds Actions secrets from Dependabot-triggered runs**;
-they see only the Dependabot secret store (`Secret source: Dependabot` in the job log).
-
-The immediate outage is fixed: `AQUACAST_TOKEN` was mirrored into the Dependabot
-store (11:34), matching `RECAP_DG_CLIENT_TOKEN`, which was mirrored in July for the
-same reason. **This plan is about durability, not that outage.** The same shape
-recurs for fork PRs, for a rotated-and-not-yet-mirrored token, and for any future
-private dependency — and each time it presents as a broken build rather than as a
-missing credential.
-
-## ⚖️ Proportionality — read before proposing any addition (owner, 2026-08-18)
-
-**This is a ~3-file change**: one step in `ci.yml`, one assertion, one paragraph in
+**This is a ~2-file change**: one step in `ci.yml`, one paragraph in
 `docs/standards/cicd.md`. It is a guard around an install command, not a subsystem.
 
-Reviewers: **ask what to REMOVE before asking what to add.** Plan 164 reached 16
-requirements before a proportionality pass cut it to 109 lines — do not repeat that
-here. An addition earns its place only by naming the concrete failure it prevents; a
-failure that has never occurred and has no mechanism to occur is not one.
+**Ask what to REMOVE before asking what to add.** An addition earns its place only by
+naming the concrete failure it prevents. Explicitly **not** wanted: abstraction over CI
+config, a credential framework, retry/backoff, matrix expansion, any new file under
+`tools/` or `tests/`, or extending the guard to secrets other than `AQUACAST_TOKEN`.
 
-Explicitly **not** wanted: an abstraction layer over CI config, a general
-credential-management framework, retry/backoff logic, matrix expansion, a new script
-under `tools/`, or extending the guard to secrets other than `AQUACAST_TOKEN` (D5).
-If the guard cannot be expressed as a readable shell conditional in the workflow, the
-design is wrong — say so rather than building scaffolding around it.
+> **This budget has already failed once.** A `/plan` loop grew this doc 151 → 496 lines
+> and stalled, having proposed *a Python re-implementation of GitHub Actions expression
+> semantics* to test a two-branch conditional. An independent Codex pass returned
+> NEEDS_CHANGES on proportionality grounds and its delete-list is what this rewrite
+> applies. If a reviewer's suggestion is larger than the conditional it guards, it is
+> wrong by construction.
 
-## The design fork this must resolve
+## Why this exists
 
-The naive fix — skip the extra whenever the token is missing — **re-opens the exact
-hole #174 closed**. The shim's tests are guarded by `importorskip`, so without the
-extra they skip silently and the aquacast boundary is "exercised on nobody's machine
-but the author's" (#174's own rationale). A guard that trades a red build for silent
-zero coverage is a worse position, not a better one.
+On 2026-08-18 the `unit` job began installing a private extra —
+`uv sync --frozen --extra aquacast` (`ci.yml:103`). Within ~10 minutes all four open
+Dependabot PRs went red. The failure reads as a dependency error
+(`fatal: could not read Username for 'https://github.com'`) but the cause is that
+**GitHub structurally withholds Actions secrets from Dependabot-triggered runs**; they
+see only the Dependabot secret store.
+
+The outage is fixed — `AQUACAST_TOKEN` was mirrored into the Dependabot store, matching
+`RECAP_DG_CLIENT_TOKEN`. **This plan is about durability**: the same shape recurs for
+fork PRs, for a rotated-and-not-yet-mirrored token, and for the next private dependency
+— and each time it presents as a broken build rather than a missing credential.
+
+**The trap in the obvious fix:** simply skipping the extra when the token is missing
+re-opens the hole the extra was added to close. The shim's tests sit behind a
+module-level `pytest.importorskip("aquacast")` (`tests/unit/models/test_aquacast_shim.py:28`),
+so without the extra they skip into silence. Trading a red build for zero coverage is
+worse, not better — hence D4.
 
 ## Decisions
 
-- **D1 — Four-way behaviour, not two** (extended by the OD-2 ruling below).
-  1. Credential present → today's behaviour, unchanged: install the extra.
-  2. Absent + the PR **touches `uv.lock`** → **fail**, with a message saying a lock
-     change cannot be validated without the extra and naming the secret + store to fix
-     it. A lock change is exactly where the extra's resolution breaks (this is how the
-     `rich>=15` / prefect conflict surfaced), so skipping there would validate nothing.
-  3. Absent + no lock change + a run GitHub *cannot* give secrets to (Dependabot,
-     fork PR) → **install without the extra, emit a `::warning::` naming the lost
-     coverage**.
-  4. Absent + no lock change + a run that *should* have had the secret → **fail**,
-     naming the secret and its store, not a git auth error.
-  Rationale: "GitHub withheld it", "somebody deleted the secret", and "this change is
-  the one that most needs the check" are three different faults and must not share an
-  outcome.
-- **D2 — Detection mechanism must be pinned at implementation.** Candidates:
-  `github.actor == 'dependabot[bot]'`, `github.event.pull_request.user.login`, and
-  `github.event.pull_request.head.repo.fork`. Pick one per condition and state why;
-  do not infer "credential-less" from the empty secret itself, which would make every
-  cause look structural.
-- **D3 — Coverage loss must be visible in the checks UI, not only in a log line.**
-  A warning nobody reads is the failure mode this whole plan exists to prevent
-  (cf. the 0-byte backups that cleared their own alarm for four nights).
-- **D4 — The positive case needs an assertion.** When the extra IS installed, the run
-  must prove the shim tests actually executed rather than skipped — otherwise the
-  guard silently degrades into permanent no-coverage and nothing notices. Mechanism to
-  pin: a non-zero collected-count check on the aquacast tests, or `-p no:randomly`
-  plus an explicit `--strict-markers`-style gate. This is the load-bearing task.
-- **D6 — "Touches `uv.lock`" must be detected deliberately; the naive form does not
-  work.** Every `actions/checkout` in `ci.yml` runs at the **default depth of 1**
-  (`ci.yml:22,74,137,188,236` — none sets `fetch-depth`), so `git diff
-  origin/main...HEAD` has no base commit to diff against and will not detect anything.
-  Three candidates, pin one at implementation: (a) `fetch-depth: 0` on the `unit` job —
-  simplest, costs a full-history fetch on every run; (b) fetch just the base ref
-  (`git fetch --depth=1 origin $GITHUB_BASE_REF`) then diff — cheaper, more moving
-  parts; (c) `gh pr view --json files` via the job's `GITHUB_TOKEN` — no git surgery,
-  but adds an API dependency and returns nothing on `push`. **Recommended default:
-  (b).** Whichever is chosen, define the `push`-to-`main` case explicitly: main has the
-  secret, so it always installs the extra and never consults the lock test.
-- **D5 — Scope is `AQUACAST_TOKEN` only.** `RECAP_DG_CLIENT_TOKEN` gates a
-  *non-optional* dependency: without it no job can sync at all, so there is nothing to
-  degrade to. Fork-PR support for it is a separate decision (§Non-goals).
+- **D1 — three outcomes.**
+  1. **Token present** → install the extra (today's behaviour, unchanged).
+  2. **Token absent, Dependabot PR, `uv.lock` NOT touched** → plain
+     `uv sync --frozen`, plus a `::warning::` naming the lost coverage.
+  3. **Token absent, anything else** → **fail**, with a message naming
+     `AQUACAST_TOKEN` and the store it belongs in.
+  Case 3 covers both "somebody deleted the secret" and "this PR changes `uv.lock`",
+  which is where the extra's resolution is most likely to break (per OD-2 below).
+- **D2 — presence is read from a job-level env value, not a detect step.** Secrets are
+  permitted in a job-level `env:` block, and a step-level `if:` can read the `env`
+  context; only `if:` itself cannot reference `secrets.*` directly. So:
+  ```yaml
+  unit:
+    env:
+      AQUACAST_TOKEN_PRESENT: ${{ secrets.AQUACAST_TOKEN != '' }}
+  ```
+  and each branch is `if: env.AQUACAST_TOKEN_PRESENT == 'true'`. The token itself stays
+  confined to the existing auth step (`ci.yml:96`). This removes an entire class of
+  bug — an earlier draft's detect step read `$AQUACAST_TOKEN` with no `env:` binding of
+  its own, which would have classified **every** run as credential-absent.
+- **D3 — degraded coverage emits `::warning::`** so it is visible in the checks UI, not
+  only in a log line.
+- **D4 — the installed case must PROVE the shim tests ran.** Run the one node that
+  genuinely requires the package and assert on pytest's own summary:
+  ```bash
+  set -o pipefail
+  uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q --color=no | tee "$RUNNER_TEMP/aquacast-shim.txt"
+  grep -Fq '1 passed' "$RUNNER_TEMP/aquacast-shim.txt"
+  ```
+  **Exit status alone is not sufficient** — verified locally: without the extra that
+  node reports `no tests collected` and exits non-zero-but-not-failed, and a skip never
+  prints `1 passed`. Because exactly one node is requested, no other test can satisfy
+  it. No JUnit parser, no new test file.
+- **D5 — scope is `AQUACAST_TOKEN` only.** `RECAP_DG_CLIENT_TOKEN` gates a
+  *non-optional* dependency: without it no job syncs at all, so there is nothing to
+  degrade to. Fork-PR support is a non-goal.
+- **D6 — a `uv.lock` change is detected exactly, not by proxy.**
+  ```bash
+  gh pr diff "${{ github.event.pull_request.number }}" --name-only
+  ```
+  matched on an exact `uv.lock` line. **Capture the command's success before testing
+  its output**, so an API failure fails closed rather than reading as "no lock change".
+  Two implementation checks: the step needs `GH_TOKEN`, and the `unit` job declares no
+  `permissions:` block today (only `build-image-and-scan` does, `ci.yml:232`) — confirm
+  the default token can read PRs, or add `pull-requests: read`.
+  *Rejected:* a Dependabot **branch-name prefix** proxy — it misclassifies `uv`-group
+  PRs that do not touch the lock. *Rejected:* `fetch-depth: 0` — correct but
+  disproportionate; every checkout is depth-1 today (`ci.yml:74`).
 
 ## Tasks
 
-- **T1** — Replace the bare `uv sync --frozen --extra aquacast` step with the D1
-  four-way guard, including the D6 lock-change test; message text names the secret, the
-  store, and what coverage is lost (or why the run refuses to proceed without it).
-- **T2** — Add the D4 positive assertion so an installed extra provably runs the shim
-  tests.
-- **T3** — Document the Dependabot-secret mirroring requirement in
-  `docs/standards/cicd.md` next to the existing private-clone notes, so the next
-  private dependency does not rediscover this by outage.
+- **T1 — the guard** (`.github/workflows/ci.yml`). Job-level `AQUACAST_TOKEN_PRESENT`
+  (D2), the D6 lock test, the three D1 branches, the D4 assertion on the installed
+  path. Also correct the now-stale comment at `ci.yml:97`, which describes the install
+  as unconditional.
+- **T2 — the runbook paragraph** (`docs/standards/cicd.md`). State that a private
+  dependency's token must be mirrored into **both** the Actions and Dependabot secret
+  stores, and what the guard does when it is not. One paragraph, beside the existing
+  private-clone notes.
+
+```json
+{"phases": [{"id": "T1", "tasks": ["T1"], "parallel": false},
+            {"id": "T2", "tasks": ["T2"], "parallel": false, "depends_on": ["T1"]}]}
+```
 
 ## Exit
 
-1. A Dependabot PR that does **not** touch `uv.lock` is **green**, with a visible
-   warning that aquacast coverage was skipped.
-1b. A PR that **does** touch `uv.lock` runs the extra. With the secret reachable it
-   passes; with the secret unreachable it fails with the D1-case-2 message rather than
-   skipping. (Today this passes for Dependabot because `AQUACAST_TOKEN` was mirrored
-   into the Dependabot secret store on 2026-08-18; the test must not silently depend on
-   that remaining true.)
-2. A normal PR still installs the extra and **provably runs** the shim tests (T2
-   assertion fails if they skip).
-3. With the secret removed on a normal PR, the job fails with the named message —
-   not with `could not read Username`.
-4. `docs/standards/cicd.md` states the mirroring requirement.
+Four observable outcomes:
+
+1. A Dependabot PR that does not touch `uv.lock` is **green**, with a visible warning
+   that aquacast coverage was skipped.
+2. A PR that touches `uv.lock` without a reachable token **fails** with the D1-case-3
+   message — not a git auth error, and not a silent skip.
+3. A credentialed run **proves** the shim test passed (D4), and fails if it skipped.
+4. `docs/standards/cicd.md` states the both-stores requirement.
 
 ## Non-goals
 
-- Fork-PR CI support in general (`RECAP_DG_CLIENT_TOKEN` makes it a larger question).
-- Changing the aquacast git pin, the `rich` override, or the extra's contents.
-- Migrating aquacast/FI to a private index (Plan 080).
-- Any change to `lint`, `integration`, `wheel-only-guard`, or the image scan.
+Fork-PR CI support. Other secrets (D5). Changing the aquacast pin, the `rich`
+override, or the extra's contents. Migrating to a private index (Plan 080). Any change
+to `lint`, `integration`, `wheel-only-guard`, or the image scan. Reconciling
+`tools/gate_parity_check.py` — it is advisory, not wired into CI, and already reports
+13 pre-existing drift rows; making it green is not this plan's job.
 
 ## Open items
 
-- **OD-1** — Should the T1 warning also post as a PR comment, or is a check-run
-  annotation sufficient? Annotation preferred (no comment spam on every Dependabot PR);
-  owner to confirm.
-- ~~**OD-2**~~ — **RESOLVED (owner, 2026-08-18): PRs that touch `uv.lock` must run the
-  aquacast install.** Folded into D1 case 2 and exit gate 1b. Marked **"for now"** by
-  the owner — this is a reversible policy, not a principle. Two things would justify
-  revisiting it: (i) the aquacast extra pulls **torch**, so requiring it makes every
-  weekly `uv`-group Dependabot PR pay the heaviest install in CI; (ii) it depends on
-  `AQUACAST_TOKEN` remaining reachable from bot-authored branches — if that ever becomes
-  unacceptable, the requirement becomes unsatisfiable rather than merely expensive.
-  Record the revisit rather than re-deriving it.
-- **OD-3** — A **fork** PR that touches `uv.lock` is structurally unsatisfiable: forks
-  never receive the secret, so D1 case 2 makes it a hard fail. That is arguably correct
-  (you cannot validate a lock change without the private dependency, so do not pretend
-  you did) but it means fork contributions could not change dependencies at all.
-  Acceptable while there are no external contributors — confirm that assumption holds
-  before this is treated as settled.
+- ~~**OD-1**~~ — RESOLVED: a `::warning::` annotation, not a PR comment (D3).
+- ~~**OD-2**~~ — RESOLVED (owner, 2026-08-18): **PRs that touch `uv.lock` must run the
+  extra**, folded into D1 case 3. Marked **"for now"** — reversible. Two things would
+  justify revisiting: the extra pulls **torch**, so every weekly `uv`-group Dependabot
+  PR pays the heaviest install in CI; and it assumes the token stays reachable from
+  bot-authored branches.
+- **OD-3** — a **fork** PR touching `uv.lock` is structurally unsatisfiable: forks never
+  receive the secret, so D1 case 3 makes it a hard fail. Defensible — you cannot
+  validate a lock change without the private dependency — but it means fork
+  contributions could not change dependencies. Acceptable while there are no external
+  contributors; confirm before treating as settled.
+
+## Review provenance
+
+Owner grill-me (OD-2) → `/plan` loop (3 rounds, **escalated/stalled**, grew the doc to
+496 lines) → independent Codex pass (NEEDS_CHANGES on proportionality; supplied the D2
+job-level-env simplification, the D4 `1 passed` check, and the D6 exact-diff mechanism)
+→ this rewrite. The Codex pass also found two **pre-existing repo** faults unrelated to
+this plan: a broken `bump-my-version` config (fixed, `d01a809`) and the advisory
+gate-parity drift (out of scope, above).
