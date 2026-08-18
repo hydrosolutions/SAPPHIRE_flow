@@ -1,6 +1,7 @@
 ---
 status: COMPLETE
 created: 2026-08-16
+completed: 2026-08-18
 plan: 163
 title: Dead-man's switch — so a dead watchdog stops looking like a healthy system
 scope: Add an off-box dead-man's-switch ping to the watchdog, and harden every outbound HTTP call so a malformed URL cannot kill the tick. Extracted onto current main rather than merged from the Plan 158 branch, because Phase A of Plan 162 rewrote `watchdog.py` and the 158 branch predates it by 22 commits. Deliberately EXCLUDES the 158 branch's forecast-freshness check (its emitter is not on main, so it would alert forever) and the free-disk check (self-contained but not urgent). The system-domain conversion that stops the watchdog dying with the login session stays in Plan 158.

@@ -300,7 +300,7 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (76 entries).
+See [archive/](archive/) for completed and archived plans (88 entries).
 
 ## Superseded / stranded branches (recorded 2026-08-17)
 

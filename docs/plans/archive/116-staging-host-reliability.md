@@ -1,6 +1,7 @@
 ---
 status: COMPLETE
 created: 2026-07-14
+completed: 2026-08-18
 plan: 116
 title: Silent-success detection — flows must assert they did work
 scope: Green flows that do nothing. Re-scoped 2026-07-14 after its original host-reliability premise was falsified; RE-SCOPED AGAIN 2026-08-17 to a single buildable slice — the forecast cycle must report unhealthy when it stores no forecasts — with the general audit demoted to a follow-on. The Plan 158 branch's T1b is the salvageable implementation.

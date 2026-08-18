@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DEPRIORITISED
 created: 2026-08-17
 plan: 164
 title: Run the watchdog as a LaunchDaemon so it stops dying with the login session
@@ -10,6 +10,23 @@ supersedes: []
 ---
 
 # Plan 164 — Watchdog as a LaunchDaemon
+
+## ⬇️ DEPRIORITISED 2026-08-18 — the premise was falsified on the host
+
+**The watchdog never died.** Diagnosed at the machine on 2026-08-18: uptime **3 d 20 h** (boot 08-14 14:05, the
+macOS 26.6.1 update), agent **loaded**, log **current**. It ran continuously straight through the incident.
+
+**The real cause of the 03:54 silence was the 0-byte backup masking**, now fixed and deployed (Plan 162 Phase A
+atomic publication + the monitor's size predicate): the nightly backup failed, wrote an empty `.dump`, and that
+fresh-looking artifact cleared its own staleness alarm — for **four consecutive nights** (15th–18th).
+
+This plan's own caveat called it: *"If auto-login completed and the agent still died, the cause is something
+else and this plan is not the fix for that specific incident."* That is exactly what happened.
+
+**Still worth doing eventually** — a monitor that depends on a GUI session is the wrong shape, and 29 July was
+real. But it now hardens against a failure mode that has not recurred, needs **console** access (TCC prompts +
+a real logout test), and is the only remaining item that could leave the host worse than it started.
+**T2 (the installer migration guard) is separate and still worth finishing** — see its escalated findings.
 
 ## Status
 **READY** (2026-08-17). Operational reliability (category **A**). Four review rounds: two adversarial, one

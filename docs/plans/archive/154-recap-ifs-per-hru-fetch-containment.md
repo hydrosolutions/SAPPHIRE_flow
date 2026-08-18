@@ -1,6 +1,7 @@
 ---
 status: COMPLETE
 created: 2026-08-11
+completed: 2026-08-18
 plan: 154
 title: Recap IFS fetch containment — one station's missing data must not degrade the whole cycle
 scope: Contain RecapDataUnavailableError inside RecapGatewayForecastAdapter.fetch_forecasts so a data gap affecting one HRU no longer discards every other station's already-accumulated rows and no longer escalates a station-scoped gap into the flow's cycle-wide runoff-only degradation. Containment and commit are both per HRU (the Gateway call unit): an HRU is committed only with its complete variable set, and station-level partiality within an HRU is unrepresentable at this boundary (one call per HRU/variable; every polygon column required). Per-HRU divergence is an ANOMALY (owner-confirmed): healthy HRUs are still served, and the fault is raised as a CRITICAL pipeline_health record naming the affected stations, with DEGRADED cycle health, per the logging standard. Preserves today's behaviour when no HRU commits. No adapter return-type change, no Protocol change. The single-HRU cycle probe is retained unchanged (publication is global, so one HRU is representative); requirement-driven probe/fetch variable selection is a named follow-on.
