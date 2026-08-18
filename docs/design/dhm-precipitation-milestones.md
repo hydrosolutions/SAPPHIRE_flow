@@ -752,27 +752,55 @@ Phase 1 commits to no correction design.
 | **OD-10** | Do we build convection-permitting downscaling ourselves? | **NO.** DHM has **several parallel projects improving their own weather forecasts**, and may couple their downscaled NWP to this system in future. Duplicating that is wasted effort in someone else's lane. ⇒ **What we owe instead is a forcing interface that can accept an externally produced downscaled product later** — the investment goes into the *seam*, not into the model |
 | **OD-11** | How much P work is warranted at all? | **Only what is necessary to get P right for operational runoff forecasting** (owner, 2026-08-18). See the scope test below — this is a real constraint, not a platitude, and it currently excludes most diurnal work from the delivery path |
 
-### ⚠️ The scope test: diurnal phase is only on the critical path if the delivered models are SUB-DAILY
+### ✅ RESOLVED 2026-08-18 — v1 IS SUB-DAILY (3-hourly), so DIURNAL PHASE IS ON THE CRITICAL PATH
 
-**v0a models are 5-step DAILY** (`docs/v0-scope.md`); sub-daily is **v0b R&D**, v0c validation.
-**A diurnal phase error integrates out of a daily total.** If Nepal v1 delivers daily runoff forecasts,
-then *when within the day* the rain fell does not reach the model — only the daily total and its
-spatial distribution do. In that case the whole diurnal question (M-A7, the lightning ask, the
-elevation-banded profile) is **characterisation for v0b, not a delivery blocker**, and "getting P right"
-means getting **daily totals** right.
+**Owner, 2026-08-18: Nepal v1 produces a forecast every 3 hours.** The gating question below is
+answered, and the answer puts the diurnal work **on the delivery path, not in characterisation**.
 
-⇒ **The decision that gates this is the operational timestep for Nepal v1, and it is not ours to
-assume.** Until it is fixed:
-- **Diurnal work stays characterisation** — valuable, not urgent, not on the v1 critical path.
-- **M-A6's daily-total comparison IS the critical-path item**, because it is what a daily model
-  actually consumes.
-- The lightning ask proceeds anyway: it costs an **email to a partner**, not a build, and its value
-  rises sharply the moment a sub-daily model is chosen. Cheap option, asymmetric payoff.
+**A ~12 h phase error is FOUR TIMESTEPS of displacement at 3-hourly resolution.** ERA5's Himalayan
+foothill peak is off by up to ~12 h, and the failure is structural — parametrised convection cannot
+produce the nocturnal peak, and ERA5 and IMDAA fail *identically* despite different models and data
+(Norris et al. 2017; Hunt et al. 2022). At 3 h that error is not a refinement; it puts the rain in the
+wrong part of the day.
 
-**What this does NOT change:** vision **D6/D9** stand. No numeric undercatch correction, at any
-timestep — and the flood-safety asymmetry (correcting model forcing *down* toward undercatching gauges
-injects a **dry bias into a flood-forecasting system**) is independent of daily-vs-sub-daily.
+⚠️ **Correction to an earlier framing in this file (written 2026-08-18, before the timestep was
+fixed): "a diurnal phase error integrates out of a daily total" was TOO CLEAN.** A 12 h shift does not
+merely redistribute rain *within* a day — it displaces rain **across day boundaries**, moving a monsoon
+burst from day *D* to *D+1*. It averages out over a long climatology; it does **not** average out for
+the individual days a flood system exists to get right. The error was therefore never fully harmless
+even at daily resolution. At 3-hourly it is direct.
 
+⇒ **Consequences, binding:**
+- **M-A7 (temporal characterisation) moves onto the critical path.** The elevation-banded, observation-
+  derived diurnal profile is no longer optional context — it is the only defensible sub-daily timing
+  source we have, because no available model of this class gets the phase right.
+- **The lightning ask (OD-8) is now urgent rather than a cheap option.** It is the one timing source
+  that is independent of precipitation retrieval, so it can validate phase where gauges are sparse and
+  satellites struggle over terrain.
+- **M-A9's co-located adjudication becomes load-bearing**, not merely interesting: if our Group A
+  high-altitude diurnal signal is noise-floor contamination, a 3-hourly product built on it would
+  encode an artefact into operational timing.
+- **OD-10's forcing seam matters more, not less.** If DHM's parallel downscaling projects deliver a
+  convection-permitting product, that is the *physical* fix for phase; our interface must be able to
+  take it without redesign.
+
+**Owner clarification, same day: v1 delivers BOTH a daily AND a 3-hourly product.** So the earlier
+open question — cycle cadence vs output resolution — is closed in the direction that sets the
+requirement at its **strongest**:
+
+| Product | What a phase error does | What it requires |
+|---|---|---|
+| **3-hourly** | ~12 h ⇒ **four timesteps** of displacement — rain in the wrong part of the day | the full **intra-day profile** |
+| **daily** | displaces rain **across the day boundary** — a burst lands on *D+1* instead of *D* | correct **day-attribution** |
+
+**One fix serves both, and that is the useful part:** getting the intra-day phase right *necessarily*
+fixes day-attribution, because day-boundary displacement is just the phase error crossing midnight.
+There is no trade-off between the two products and no reason to build two corrections — **the 3-hourly
+requirement dominates, and the daily product inherits the benefit for free.**
+
+**Unchanged by any of this:** vision **D6/D9** stand. No numeric undercatch correction at any timestep;
+the flood-safety asymmetry — correcting forcing *down* toward undercatching gauges injects a **dry bias
+into a flood-forecasting system** — is independent of resolution.
 
 ## Decisions register — all resolved 2026-08-12
 
