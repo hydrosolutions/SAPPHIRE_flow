@@ -14,11 +14,24 @@ Required cases (docs/plans/162-robust-database-backup.md T5):
       naming that table.
   (d) teardown happens when an assertion fails mid-way.
   (e) a sequence with last_value == MAX(id) and is_called = false FAILS.
+
+Locked 2026-08-18 against the four real-artifact restore failures found by
+running #180's merged script against a live mac-mini dump (see the plan's
+"VERIFIED RESTORE PROCEDURE" section):
+  (f) the restore targets a FRESH database via `createdb`, never the image's
+      pre-populated default `postgres` (PostGIS pre-initialises `tiger` there
+      -> `ERROR: schema "tiger" already exists`).
+  (g) the pg_restore invocation carries `--no-owner --no-acl` (pg_dump does
+      not back up cluster roles, so a fresh cluster otherwise dies on
+      `ERROR: role "sapphire" does not exist`).
+  (h) when pg_restore fails, its STDERR TEXT (not just a generic message)
+      appears in the script's own failure output.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import textwrap
 from pathlib import Path
@@ -33,6 +46,7 @@ def _write_fake_docker(
     args_log: Path,
     *,
     pg_restore_exit: int = 0,
+    pg_restore_stderr: str = "",
     access_tokens_count: str = "3",
     access_tokens_max_id: str = "5",
     seq_last_value: str = "5",
@@ -41,6 +55,7 @@ def _write_fake_docker(
     """A stateful fake `docker` that recognises the exact subcommands
     restore-rehearsal.sh issues and answers each on its merits, logging
     every invocation (one line per call) so teardown can be asserted on."""
+    quoted_pg_restore_stderr = shlex.quote(pg_restore_stderr)
     script = textwrap.dedent(
         f"""\
         #!/bin/bash
@@ -65,7 +80,13 @@ def _write_fake_docker(
               *pg_isready*)
                 exit 0
                 ;;
+              *createdb*)
+                exit 0
+                ;;
               *pg_restore*)
+                if [[ -n {quoted_pg_restore_stderr} ]]; then
+                  echo {quoted_pg_restore_stderr} >&2
+                fi
                 exit {pg_restore_exit}
                 ;;
               *"SELECT 1"*)
@@ -105,6 +126,16 @@ def _write_fake_docker(
     fake.write_text(script)
     fake.chmod(0o755)
     return fake
+
+
+def _exec_calls(args_log: Path, substring: str) -> list[str]:
+    if not args_log.exists():
+        return []
+    return [
+        line
+        for line in args_log.read_text().splitlines()
+        if line.startswith("exec ") and substring in line
+    ]
 
 
 def _run_script(
@@ -240,6 +271,81 @@ class TestSequenceCollisionRisk:
         result = _run_script(tmp_path, fake, _dump_file(tmp_path))
 
         assert result.returncode == 0, result.stderr
+
+
+class TestRestoresIntoFreshDatabase:
+    def test_restore_targets_a_fresh_database_not_postgres(
+        self, tmp_path: Path
+    ) -> None:
+        """FIX 1: the PostGIS image pre-initialises tiger/tiger_data/topology
+        in its default `postgres` database, so a restore into it dies on
+        `ERROR: schema "tiger" already exists` against a real dump. The
+        script must `createdb` a fresh database and restore into THAT, never
+        `-d postgres`."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+        assert _exec_calls(args_log, "createdb"), (
+            "createdb was never invoked — restore did not create a fresh database"
+        )
+        pg_restore_calls = _exec_calls(args_log, "pg_restore")
+        assert pg_restore_calls, "pg_restore was never invoked"
+        assert " -d postgres " not in f" {pg_restore_calls[-1]} ", (
+            "pg_restore targeted the image's pre-populated default "
+            f"'postgres' database instead of a fresh one: {pg_restore_calls[-1]}"
+        )
+
+
+class TestPgRestoreNoOwnerNoAcl:
+    def test_pg_restore_argv_includes_no_owner_and_no_acl(self, tmp_path: Path) -> None:
+        """FIX 2: pg_dump does not back up cluster roles, but the dump is
+        full of OWNER TO / ACL statements referencing them. Without
+        --no-owner --no-acl a fresh cluster dies on
+        `ERROR: role "sapphire" does not exist`."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+        pg_restore_calls = _exec_calls(args_log, "pg_restore")
+        assert pg_restore_calls, "pg_restore was never invoked"
+        pg_restore_argv = pg_restore_calls[-1]
+        assert "--no-owner" in pg_restore_argv, pg_restore_argv
+        assert "--no-acl" in pg_restore_argv, pg_restore_argv
+
+
+class TestPgRestoreStderrSurfaced:
+    def test_pg_restore_stderr_text_appears_in_script_output(
+        self, tmp_path: Path
+    ) -> None:
+        """FIX 3: the merged script discards pg_restore's stderr
+        (`>/dev/null 2>&1`), so the operator only ever sees the generic
+        "FAIL: pg_restore failed" — the actual diagnostic (e.g. which schema
+        already exists, which role is missing) is invisible. It must be
+        captured and included in the script's own failure output."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        distinctive_error = (
+            'pg_restore: error: could not execute query: ERROR:  schema "tiger" '
+            "already exists"
+        )
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pg_restore_exit=1,
+            pg_restore_stderr=distinctive_error,
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert distinctive_error in result.stderr, result.stderr
 
 
 class TestMissingDump:

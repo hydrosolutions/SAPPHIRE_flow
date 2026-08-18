@@ -556,6 +556,19 @@ Every externally-pulled image is pinned by **manifest-list digest** (not per-pla
 - `Dockerfile` (builder + runtime stages): `python:3.11.12-slim@sha256:...` and `ghcr.io/astral-sh/uv:0.11.7@sha256:...`
 - `docker-compose.yml`: `postgis/postgis:16-3.4@sha256:...`, `prefecthq/prefect:3-python3.11@sha256:...`, `caddy:2.9@sha256:...`
 - `.github/workflows/ci.yml` integration-job `services.image`: `postgis/postgis:16-3.4@sha256:...` (must match the compose postgis digest to avoid silent integration/prod drift)
+- `scripts/restore-rehearsal.sh` (`RESTORE_IMAGE`, Plan 162 T5): `imresamu/postgis:16-3.4@sha256:...` — deliberately **not** the same vendor as the bullet above (see caveat).
+
+⚠️ **Caveat found 2026-08-18 (Plan 162 T5 restore-path fix), not yet reconciled with the compose pin above:**
+`docker buildx imagetools inspect` on the `postgis/postgis:16-3.4@sha256:44126d872...` digest pinned in
+`docker-compose.yml` / `ci.yml` shows a **single-platform `linux/amd64` manifest, not a manifest list** — and
+Docker Hub confirms `postgis/postgis` has never published an arm64 image for **any** `16-3.4*` tag. So "the same
+pin works for both amd64 CI and arm64 Mac mini" does **not** hold for that pin today; the mac-mini's production
+Postgres container has been running that image under emulation. `restore-rehearsal.sh` was re-pinned to
+`imresamu/postgis:16-3.4@sha256:6da75969...` instead — verified (`imagetools inspect`) to be a genuine
+`linux/amd64` + `linux/arm64` manifest list, published by the same maintainer who publishes the official
+`postgis/postgis` images. Reconciling the `docker-compose.yml` / `ci.yml` pin (same vendor swap, or an accepted
+emulation trade-off) is **out of scope for T5** — the rehearsal script and the running database container are
+different decisions with different blast radii — and is left as a follow-up.
 
 The locally-built `sapphire-flow:${VERSION}` image used by the `worker`, `api`, and `init` services is **not** digest-pinned — it is built in this repo, not pulled.
 

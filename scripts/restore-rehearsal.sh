@@ -15,11 +15,22 @@ if [[ ! -f "${DUMP_PATH}" ]]; then
 fi
 
 DOCKER="${DOCKER_CMD:-docker}"
-# Same manifest-list digest already pinned in docker-compose.yml (repo
-# policy: docs/standards/security.md:554) — reused rather than minting a
-# second pin for the same image family.
-IMAGE="${RESTORE_IMAGE:-postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5}"
+# NOT the docker-compose.yml pin. That digest
+# (postgis/postgis:16-3.4@sha256:44126d872...) is linux/amd64 ONLY — verified
+# via `docker buildx imagetools inspect`: postgis/postgis has never published
+# an arm64 build for ANY 16-3.4 tag, so every rehearsal run on the arm64
+# mac-mini silently fell back to emulation. imresamu/postgis publishes the
+# same PostGIS 3.4 / PostgreSQL 16 build (maintained by the same engineer
+# who publishes the official postgis/postgis images) as a genuine manifest
+# list with both linux/amd64 and linux/arm64 — confirmed with
+# `docker buildx imagetools inspect imresamu/postgis:16-3.4@sha256:...`.
+# Still digest-pinned per repo policy (docs/standards/security.md:554).
+IMAGE="${RESTORE_IMAGE:-imresamu/postgis:16-3.4@sha256:6da75969915039b7356058b4310d43fde88c275ada982c2dfee29da68445ff4d}"
 CONTAINER="${RESTORE_CONTAINER_NAME:-sapphire-restore-rehearsal-$$}"
+# Never the image's default 'postgres' database: the PostGIS image
+# pre-initialises tiger/tiger_data/topology there, so a restore into it dies
+# on `ERROR: schema "tiger" already exists`. Always createdb a fresh one.
+DB_NAME="${RESTORE_DB_NAME:-rehearsal}"
 WAIT_ATTEMPTS="${RESTORE_WAIT_ATTEMPTS:-60}"
 WAIT_INTERVAL="${RESTORE_WAIT_INTERVAL:-1}"
 
@@ -49,7 +60,10 @@ fail() {
 }
 
 psql_exec() {
-    "${DOCKER}" exec "${CONTAINER}" psql -U postgres -v ON_ERROR_STOP=1 -tAc "$1"
+    # $2, if given, is the target database; defaults to postgres (used only
+    # by the readiness probe below, before DB_NAME exists).
+    "${DOCKER}" exec "${CONTAINER}" psql -U postgres -d "${2:-postgres}" \
+        -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
 # --- launch: ephemeral container, no named volume. -------------------------
@@ -76,27 +90,40 @@ done
 "${DOCKER}" cp "${DUMP_PATH}" "${CONTAINER}:/tmp/restore.dump" >/dev/null 2>&1 \
     || fail "docker cp failed"
 
-# --- restore into the (empty) default 'postgres' database. -----------------
-"${DOCKER}" exec "${CONTAINER}" pg_restore --single-transaction --exit-on-error \
-    -U postgres -d postgres /tmp/restore.dump >/dev/null 2>&1 || fail "pg_restore failed"
+# --- createdb: a FRESH database, never the image's pre-populated default. --
+"${DOCKER}" exec "${CONTAINER}" createdb -U postgres "${DB_NAME}" >/dev/null 2>&1 \
+    || fail "createdb '${DB_NAME}' failed"
+
+# --- restore into that fresh database. --no-owner --no-acl because pg_dump
+# does NOT back up cluster roles, but the dump is full of OWNER TO / ACL
+# statements referencing them — without these flags a fresh cluster dies on
+# `ERROR: role "sapphire" does not exist`. Roles are recreated afterwards by
+# bootstrap-roles.sh, not by this rehearsal. -------------------------------
+pg_restore_err="$("${DOCKER}" exec "${CONTAINER}" pg_restore --single-transaction \
+    --exit-on-error --no-owner --no-acl -U postgres -d "${DB_NAME}" \
+    /tmp/restore.dump 2>&1 1>/dev/null)"
+pg_restore_status=$?
+if [[ "${pg_restore_status}" -ne 0 ]]; then
+    fail "pg_restore failed (exit ${pg_restore_status}): $(printf '%s' "${pg_restore_err}" | head -n 20)"
+fi
 
 # --- content assertions: pg_restore exit 0 alone proves nothing. -----------
 CHECKS_DONE="access_tokens row count, alembic_version, access_tokens_id_seq"
 
-count="$(psql_exec "SELECT count(*) FROM access_tokens")" \
+count="$(psql_exec "SELECT count(*) FROM access_tokens" "${DB_NAME}")" \
     || fail "access_tokens query failed (table missing from restore?)"
 [[ "${count}" =~ ^[0-9]+$ ]] || fail "access_tokens row count unreadable: '${count}'"
 [[ "${count}" -gt 0 ]] || fail "access_tokens has zero rows after restore"
 
-version="$(psql_exec "SELECT version_num FROM alembic_version")" \
+version="$(psql_exec "SELECT version_num FROM alembic_version" "${DB_NAME}")" \
     || fail "alembic_version query failed"
 [[ -n "${version}" ]] || fail "alembic_version is empty"
 
-seq="$(psql_exec "SELECT last_value || '|' || is_called FROM access_tokens_id_seq")" \
+seq="$(psql_exec "SELECT last_value || '|' || is_called FROM access_tokens_id_seq" "${DB_NAME}")" \
     || fail "access_tokens_id_seq query failed"
 last_value="${seq%%|*}"
 is_called="${seq##*|}"
-max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM access_tokens")" \
+max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM access_tokens" "${DB_NAME}")" \
     || fail "access_tokens max(id) query failed"
 if [[ "${is_called}" == "f" && "${last_value}" == "${max_id}" ]]; then
     fail "access_tokens_id_seq: last_value == MAX(id) with is_called=false — next nextval() collides with an existing row"

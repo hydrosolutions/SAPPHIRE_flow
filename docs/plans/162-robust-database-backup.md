@@ -74,6 +74,16 @@ new hardware, both failures would have hit with no documented answer — the dum
 Fix required: `createdb` + the two flags + surface stderr + a multi-arch digest (the current pin is amd64 and
 runs under emulation on arm64).
 
+**Fix implemented (2026-08-18), branch `fix/plan-162-t5-restore-path`, committed locally, not yet
+merged/deployed — NOT yet re-run against the real mac-mini artifact; that live run is the acceptance bar for
+this fix.** `createdb`s a fresh database and restores into it with `--no-owner --no-acl`; `pg_restore`'s stderr
+is now captured and surfaced in the `FAIL:` message (previously discarded via `>/dev/null 2>&1`); the image pin
+moved to `imresamu/postgis:16-3.4@sha256:6da75969...`, confirmed via `docker buildx imagetools inspect` to be a
+genuine multi-arch manifest list (linux/amd64 + linux/arm64) — unlike the `docker-compose.yml`
+`postgis/postgis:16-3.4` pin, which `imagetools inspect` shows is single-platform amd64 for every `16-3.4*` tag
+that vendor has ever published (no arm64 build exists there to pin instead). Three new locking tests added to
+`tests/unit/ops/test_restore_rehearsal.py`, proven red against the merged script and green against the fix.
+
 ## Status
 
 > **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status
