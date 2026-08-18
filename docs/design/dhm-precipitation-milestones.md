@@ -971,12 +971,74 @@ documentation three times and been wrong every time — the ERA5-Land accumulati
 payload shape, and the CDS cost limit. The plan gets written **after** we see the real format, exactly
 as Plan 171's own constraint 3 requires.
 
+#### ✅ NASA ISS-LIS RETRIEVED 2026-08-18 — partner-independent, and it settles what lightning can do here
+
+**WWLLN is not available to us** (owner, 2026-08-18), so the partner ask is not the only route after all.
+**NASA ISS-LIS V3** (`isslis_v3_fin`, Earthdata login, free) was fetched directly by stream-and-subset:
+per-orbit granules downloaded, flashes inside **26–31 N / 80–89 E** kept, granule deleted (~17 GB passed
+through, ~49 KB retained). **JJAS 2020–2023, 5,786 granules processed, 4,214 flashes**, in
+`data/dhm_precip/lightning/iss_lis_flashes_nepal_box.parquet` (untracked, per M-D1). One granule was lost
+to a failed download.
+
+**⚠️ 4,214 flashes is NOT a large sample — the effective n is 352.** This correction is the most
+important thing on this page about lightning, because the raw count invites exactly the wrong reading.
+**Flashes inside one storm overpass are one observation of the diurnal cycle, not one hundred.**
+Clustering by a 10-minute time gap gives **352 overpass clusters** — the real sampling unit. The top 10
+clusters alone are **22.3 %** of all flashes; the median cluster is **5** flashes. That is **~14.7
+overpasses per hour-of-day bin**, so Poisson 1σ is **±26 %**, not the ±7.5 % a naive 4,214/24 implies.
+
+**What the data therefore CANNOT do: pin a peak hour.** Overpass-weighted, hours 16 (24 overpasses),
+19 (23), and 0/15/20 (20 each) are statistically indistinguishable. A raw flash-weighted profile peaks
+at 16 NPT and a view-normalised one at 04 NPT — the disagreement is noise, not signal, and neither
+number should be quoted.
+
+**What it CAN do: establish the regime shape**, which survives the noise because it is a broad
+nine-hour pattern rather than a single bin (overpass-weighted, normalised to the 24-hour mean):
+
+| NPT hours | normalised | reading |
+|---|---|---|
+| 12–20 | all ≥ 1.09, max 1.64 (h16) and 1.57 (h19) | **afternoon–evening convective maximum** |
+| 05–11 | all ≤ 0.89, floor 0.34 (h05), 0.41 (h06) | **morning minimum** |
+| 00–04 | 1.36, 1.16, 0.68, 1.09, 1.30 | secondary nocturnal bump |
+
+That is a textbook convective cycle and it is consistent with the literature for the low/mid elevations
+that dominate the box.
+
+**Cross-link to M-A10, hedged.** The lightning maximum (16–19 NPT) is several hours EARLIER than the
+high-altitude gauge peak M-A10 established at Lukla and Syangboche (21–23 NPT). Were the nocturnal gauge
+signal an instrument artefact, it should not care about elevation; instead the convective proxy and the
+high-altitude gauges differ in the direction the literature predicts for an elevation-dependent phase
+shift. **Corroborating, not decisive** — the box spans plains, foothills and high Himalaya together, so
+the comparison cannot be attributed cleanly to elevation.
+
+**Scope CONFIRMED, not merely assumed: foothill/box-wide validation only, no elevation stratification.**
+14.7 overpasses per bin cannot be split across elevation bands — it is marginal even unsplit. Lightning
+also proxies CONVECTIVE precipitation, while high-altitude Himalayan precipitation is substantially
+snow, so the high-altitude timing question stays with M-A10's co-located gauge pair.
+
+**Caveat on the sampling check.** ISS precesses, so hour-of-day view time is not uniform a priori. The
+proxy used was the hour distribution of all 5,786 processed granules (208–268 per hour, max/min 1.29),
+which detected no strong non-uniformity — but granule START times smear across a ~90 min orbit, so this
+is weak evidence of uniformity, not a demonstration of it. A proper treatment needs the per-second view
+time from the granules' `lightning_one_second` group, which the stream-and-subset run did NOT retain.
+**Do not upgrade the shape result to a quantitative diurnal climatology without that.**
+
+**⚠️ Reproducibility gap:** the fetch and analysis scripts currently live only in the session scratchpad
+(a copy of the fetcher sits beside the data at `data/dhm_precip/lightning/fetch_iss_lis_foothill.py`,
+untracked). Nothing in the repo reproduces the numbers above. Promoting the fetcher and the
+overpass-clustering analysis into `scripts/dhm_precip/` is an open follow-on, deliberately not done
+inside the M-A10 branch.
+
+**The partner ask is NOT retired by this.** ISS-LIS gives 352 overpasses over four monsoons; a
+ground-based network (WWLLN/GLD360/ENTLN) gives continuous coverage and would raise the effective sample
+by orders of magnitude, which is what an elevation-stratified diurnal result would need.
+
 ## Decisions register — forcing strategy for operational P (added 2026-08-18)
 
 | # | Question | Decision |
 |---|---|---|
 | **OD-7** | How do we get long hourly gauge series? | **From project partners — do NOT scrape the public DHM rainfall portal.** The portal is real-time only; starting collection now yields **a couple of months before delivery**, and every use we have (diurnal climatology, seasonality) needs **long** series. A few months of self-collected data is not worth the ingest machinery it would require. **Ask partners for the archive instead** |
-| **OD-8** | Lightning data | **Pursue, via partners.** Hourly, real-time, global, and **independent of precipitation retrieval** — it indicates *when* convection occurs without undercatch or orographic-retrieval error, which is exactly the disputed quantity. Best value-per-effort of the timing sources. It gives **no amounts**, which is fine: amounts are not the problem |
+| **OD-8** | Lightning data | **Pursue, via partners.** Hourly, real-time, global, and **independent of precipitation retrieval** — it indicates *when* convection occurs without undercatch or orographic-retrieval error, which is exactly the disputed quantity. Best value-per-effort of the timing sources. It gives **no amounts**, which is fine: amounts are not the problem. **UPDATED 2026-08-18 — partly self-served: WWLLN is unavailable to us, so NASA ISS-LIS V3 was retrieved directly (Earthdata, free). It establishes the convective REGIME SHAPE (afternoon-evening max, morning min) but its effective sample is **352 overpasses**, not the 4,214 flashes the raw count suggests, so it cannot pin a peak hour and cannot be stratified by elevation. The partner ask therefore STANDS. See M-D4** |
 | **OD-9** | Weather radar | **Not available** (owner, 2026-08-18). Nepal has one C-band dual-pol radar at **Surkhet (2019, western)**, with Palpa and Udaipur planned; Surkhet's ~200 km range does not usefully cover our central/eastern basins. **Not on the critical path. Do not design around it** |
 | **OD-10** 📌 **TODO** | Do we build convection-permitting downscaling ourselves? | **NO.** DHM has **several parallel projects improving their own weather forecasts**, and may couple their downscaled NWP to this system in future. Duplicating that is wasted effort in someone else's lane. ⇒ **What we owe instead is a forcing interface that can accept an externally produced downscaled product later** — the investment goes into the *seam*, not into the model |
 | **OD-11** | How much P work is warranted at all? | **Only what is necessary to get P right for operational runoff forecasting** (owner, 2026-08-18). See the scope test below — this is a real constraint, not a platitude, and it currently excludes most diurnal work from the delivery path |
