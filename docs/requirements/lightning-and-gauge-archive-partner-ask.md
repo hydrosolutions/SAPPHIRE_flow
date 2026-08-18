@@ -7,44 +7,47 @@ Two separate asks. They will probably go to **different partners**, so they can 
 
 ---
 
-## Ask 1 — Lightning (stroke-level)
+## Ask 1 — Lightning: ⚠️ NO LONGER A PARTNER ASK. Use NASA ISS-LIS.
 
-> **What we need**
-> Stroke-level lightning detections for **2020–2025**, over **26–31 °N, 80–89 °E**.
->
-> Per stroke: **UTC timestamp, latitude, longitude, detection network.**
-> Peak current and stroke/flash classification are welcome but **not** required.
->
-> Any **one** of **WWLLN**, **GLD360** or **ENTLN** is enough — we do not need all three.
+**Superseded 2026-08-18. WWLLN is not available to us; there is no budget for GLD360/ENTLN.**
+**Neither matters — NASA's data is free with an Earthdata login the owner already holds.**
 
-### ⚠️ SAY THIS EXPLICITLY — it is a RESEARCH ARCHIVE request, not an operational feed
+### Primary: ISS-LIS (Lightning Imaging Sensor on the ISS)
 
-**We do not need lightning operationally, and there is no budget for a paid operational product.**
-Lightning is used **once**, to characterise diurnal timing by elevation band (M-A7). What ships into
-the operational system is the **derived climatological profile** — not a live lightning feed. The
-system will never call a lightning API in production.
+| | |
+|---|---|
+| Period | **2017-03-01 → 2023-11-16** (V3 reprocessed, whole mission) |
+| Coverage | **±55° latitude** — Nepal (26–31 °N) comfortably inside |
+| Overlap with our window | **2020–2023** |
+| Accuracy | ~3 km location, <2 ms timing |
+| Detection | **TOTAL lightning (IC + CG), optical, from above** — does not miss intracloud the way CG-only ground networks do |
+| Access | **Free**, NASA Earthdata / GHRC DAAC, HDF-4 + netCDF-4 |
 
-**Why this matters for the ask:** research/academic licences and operational licences are priced and
-permitted very differently. If the request is not explicit, a partner may quote an **operational**
-licence, and we would wrongly conclude the data is unaffordable when a research archive would have been
-free or nearly so. **State up front: historical archive, research use, no redistribution, no operational
-dependency.**
+**Secondary, free, ready-made: the LIS/OTD gridded climatologies.** From TRMM-LIS + OTD, these include a
+published **diurnal** climatology product. It predates our window, but **a diurnal cycle is a stable
+climatological feature** (the same argument that lets Pyramid's 1994–2023 record inform our 2020–2025
+one), so it is a legitimate cross-check on any profile we derive.
 
-**If a partner can only offer an operational/real-time feed, that is the wrong product for us** — decline
-politely rather than negotiating price.
+### ⚠️ The binding limitation — sampling, not access
 
-**Which partner.** **WWLLN** is a research consortium and is usually free to academic members — the
-likeliest yes, so ask there first. **GLD360** (Vaisala) and **ENTLN** are commercial: what matters is
-whether a partner already **holds a licence**, not the price.
+**ISS-LIS SAMPLES; it does not MONITOR.** In low Earth orbit it views a given point only during
+overpasses of ~90 seconds. The ISS orbit **precesses**, which is exactly what makes it usable for a
+*diurnal* climatology — it eventually samples all local times — but there is **no continuous time
+series at a point**.
 
-**Why, if they ask.** Not for rainfall amounts — for **timing**. Lightning is the only convective-timing
-indicator that is **independent of precipitation retrieval**, so it carries neither gauge undercatch nor
-the orographic-retrieval error that degrades satellite products over the Himalaya. Timing is precisely
-the disputed quantity: ERA5-class models put the Himalayan foothill precipitation peak up to **~12 h**
-wrong, and Nepal v1 ships a **3-hourly** product, so a 12 h error is **four timesteps** of displacement.
+⇒ **The question that decides whether this works: are there enough overpasses over 26–31 N / 80–89 E in
+JJAS to populate 24 hour-bins per elevation band?** Checkable immediately on download, and it should be
+the **first** thing checked — before any analysis is built on it. If bins are too sparse, fall back to
+the LIS/OTD gridded diurnal climatology, which trades currency for sample size.
 
-**Why the box matters.** 26–31 N / 80–89 E is deliberately the **same box as our ERA5-Land acquisition**,
-so the data drops straight into the existing elevation banding with no reprojection.
+**No geostationary alternative covers Nepal well:** GOES-GLM is Americas-only; MTG-LI sits at 0° so
+Nepal is at its extreme limb; FY-4 LMI (~105 °E) would see Nepal but is not openly accessible.
+
+### What this changes
+
+**M-D4 stops being blocked on a partner.** It becomes a small acquisition we can run ourselves — same
+shape as M-A4/ERA5-Land. **Do not draft an acquisition plan until the data is in hand**; this track has
+specified against documentation three times and been wrong every time.
 
 ---
 
