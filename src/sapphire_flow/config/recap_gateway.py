@@ -10,6 +10,7 @@ file, falling back to the ``RECAP_API_KEY`` env var for local dev only.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -69,9 +70,22 @@ class RecapGatewayConfig:
     cycle_cadence_hours: float = DEFAULT_CYCLE_CADENCE_HOURS
 
     def __post_init__(self) -> None:
-        if self.cycle_cadence_hours <= 0:
+        # Review fold-in (major): `bool` is a subclass of `int`/`float` in
+        # Python, so `cycle_cadence_hours <= 0` alone silently accepts
+        # `True` (== 1.0) as a valid cadence -- reject it explicitly BEFORE
+        # the numeric check. `nan`/`inf` both pass a bare `<= 0` comparison
+        # too (`nan <= 0` is False, `inf <= 0` is False) -- `inf` would
+        # silently collapse a bounded walk-back to the nominal candidate
+        # only, and `nan` would fail later instead of at this boundary.
+        if isinstance(self.cycle_cadence_hours, bool):
             raise ConfigurationError(
-                f"cycle_cadence_hours must be > 0, got {self.cycle_cadence_hours}"
+                "cycle_cadence_hours must be a float, not a bool "
+                f"({self.cycle_cadence_hours!r})"
+            )
+        if not math.isfinite(self.cycle_cadence_hours) or self.cycle_cadence_hours <= 0:
+            raise ConfigurationError(
+                "cycle_cadence_hours must be a finite number > 0, got "
+                f"{self.cycle_cadence_hours!r}"
             )
 
 
@@ -164,6 +178,15 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig:
         section.get("max_cycle_age_hours", DEFAULT_MAX_CYCLE_AGE_HOURS),
     )
     raw_cadence = section.get("cycle_cadence_hours", DEFAULT_CYCLE_CADENCE_HOURS)
+    # Review fold-in (major): TOML `true`/`false` decode to Python `bool`,
+    # and `float(True) == 1.0` succeeds silently -- reject BEFORE the
+    # numeric conversion so a boolean cadence is caught here rather than
+    # smuggled through as a plausible-looking `1.0`.
+    if isinstance(raw_cadence, bool):
+        raise ConfigurationError(
+            "[adapters.recap_gateway] cycle_cadence_hours must be numeric, "
+            f"not a boolean, got {raw_cadence!r}"
+        )
     try:
         cycle_cadence_hours = float(cast("str | float", raw_cadence))
     except (TypeError, ValueError) as exc:

@@ -21,7 +21,9 @@ from sapphire_flow.adapters.recap_gateway import (
     RecapDataUnavailableError,
     RecapGatewayForecastAdapter,
     RecapGatewayReanalysisAdapter,
+    RecapPayloadIntegrityError,
     RecapSnowUnavailableError,
+    RecapTransientError,
     SnowApiLike,
     _iter_long_rows,
     _map_recap_error,
@@ -39,6 +41,7 @@ from sapphire_flow.types.enums import (
     WeatherSourceRole,
     WeatherSourceStatus,
 )
+from sapphire_flow.types.forcing_track import RawFetchStatus
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationWeatherSource
 from sapphire_flow.types.weather import BasinAverageForecast, SnowReanalysisFetchResult
@@ -1092,14 +1095,19 @@ class TestErrorMapping:
         mapped = _map_recap_error(
             _FakeClientError("bad", code="some_other", field="variable")
         )
-        assert isinstance(mapped, AdapterError)
+        # Exact type, not just the shared AdapterError superclass (review
+        # fold-in, major): a transport/unstructured failure must map to the
+        # RETRYABLE RecapTransientError, distinct BY TYPE from the
+        # candidate-fatal RecapPayloadIntegrityError the malformed
+        # partial-control guard raises.
+        assert type(mapped) is RecapTransientError
         assert not isinstance(
             mapped, RecapDataUnavailableError | RecapConfigurationError
         )
 
     def test_plain_exception_is_retriable(self) -> None:
         mapped = _map_recap_error(_FakeClientError("network down"))
-        assert isinstance(mapped, AdapterError)
+        assert type(mapped) is RecapTransientError
         assert not isinstance(
             mapped, RecapDataUnavailableError | RecapConfigurationError
         )
@@ -1116,10 +1124,10 @@ class TestErrorMapping:
 
     def test_status_500_does_not_map_to_auth_error(self) -> None:
         # Negative control: a non-auth status code must not be swept into
-        # RecapAuthError — it stays the generic (retriable) AdapterError.
+        # RecapAuthError — it stays the generic (retriable) RecapTransientError.
         mapped = _map_recap_error(_FakeClientError("server error", status_code=500))
         assert not isinstance(mapped, RecapAuthError)
-        assert isinstance(mapped, AdapterError)
+        assert type(mapped) is RecapTransientError
 
     def test_config_error_code_takes_priority_over_status_code(self) -> None:
         # A structured validation error with BOTH a code and a 401 status
@@ -1934,7 +1942,12 @@ class _MultiHruEcmwf:
     ``empty_control_variables`` names individual ``(hru_code, ifs variable)``
     FC calls whose response is well-formed but carries zero rows -- while
     every OTHER variable for that same HRU stays populated, exercising the
-    mixed empty/populated-variable case (Plan 154 review fold-in, major)."""
+    mixed empty/populated-variable case (Plan 154 review fold-in, major).
+    ``missing_column_variables`` names individual ``(hru_code, ifs variable)``
+    FC calls whose response OMITS EVERY expected polygon column entirely (a
+    corrupt/incomplete payload, distinct from a well-formed-but-empty one) --
+    Plan 151 review fold-in, major: this must classify as
+    MISSING_POLYGON_COLUMN, never the malformed partial-control guard."""
 
     def __init__(
         self,
@@ -1943,6 +1956,7 @@ class _MultiHruEcmwf:
         fail_control: frozenset[tuple[str, str]] = frozenset(),
         empty_hrus: frozenset[str] = frozenset(),
         empty_control_variables: frozenset[tuple[str, str]] = frozenset(),
+        missing_column_variables: frozenset[tuple[str, str]] = frozenset(),
         source_run_by_hru: dict[str, object] | None = None,
     ) -> None:
         self.calls: list[dict[str, object]] = []
@@ -1950,6 +1964,7 @@ class _MultiHruEcmwf:
         self._fail_control = fail_control
         self._empty_hrus = empty_hrus
         self._empty_control_variables = empty_control_variables
+        self._missing_column_variables = missing_column_variables
         self._source_run_by_hru = source_run_by_hru or {}
 
     def ifs_forecast(self, **kwargs: object) -> object:
@@ -1972,6 +1987,20 @@ class _MultiHruEcmwf:
             in self._empty_control_variables
         ):
             return _empty_wide_df(polygons)
+        if (hru, variable) in self._missing_column_variables:
+            # No polygon column at all (not even a well-formed-empty one) --
+            # applies to BOTH fc and pf calls (a Gateway response missing an
+            # HRU's polygon column is missing it consistently, not just for
+            # the control member) -- _wide_df(polygons=[], ...) yields a
+            # frame with the time index and provenance columns but ZERO
+            # polygon columns.
+            return _wide_df(
+                [],
+                value=1.0,
+                with_provenance=True,
+                source="ifs",
+                source_run=self._source_run_by_hru.get(hru, _SOURCE_RUN),
+            )
         return _wide_df(
             polygons,
             value=1.0,
@@ -2589,6 +2618,62 @@ class TestFetchRequirementHruContainment:
         assert outcome.status is RawFetchStatus.FETCHED
 
 
+class TestFetchRequirementAbsentAtCycle:
+    """D7: `fetch_requirement`'s walk-back-eligible-absence contract is
+    INVERTED from the legacy `fetch_forecasts` path -- both the total-loss
+    (every in-scope HRU raised) and the well-formed-empty (every response
+    was well-formed but carried zero rows) cases must be RETURNED as
+    ``RawFetchOutcome(status=ABSENT_AT_CYCLE, ...)``, never raised, so
+    T5's walk-back can advance to the next candidate cycle. `absent_detail`
+    distinguishes the two: populated (carrying the chained Gateway
+    diagnostic) for total loss, `None` for well-formed-empty (review
+    fold-in, major -- mirrors the legacy-path pair
+    `test_total_loss_reraise_preserves_original_diagnostic` /
+    `test_well_formed_empty_is_not_a_failure`, but pins the INVERTED
+    return-not-raise contract on the new method)."""
+
+    def test_total_loss_returns_absent_at_cycle_with_detail(self) -> None:
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp"), ("hru_b", "tp")}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        outcome = adapter.fetch_requirement(
+            _track(),
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert outcome.status is RawFetchStatus.ABSENT_AT_CYCLE
+        assert outcome.stations == {}
+        assert outcome.absent_detail is not None
+        assert "tp unavailable in hru_" in outcome.absent_detail
+
+    def test_well_formed_empty_returns_absent_at_cycle_with_no_detail(self) -> None:
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            empty_hrus=frozenset({"hru_a", "hru_b"}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        outcome = adapter.fetch_requirement(
+            _track(),
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert outcome.status is RawFetchStatus.ABSENT_AT_CYCLE
+        assert outcome.stations == {}
+        assert outcome.absent_detail is None
+
+
 class TestFetchRequirementMissingPolygonColumn:
     def test_missing_polygon_column_is_per_station_not_batch_wide(self) -> None:
         # Today (fetch_forecasts) this raises batch-wide. fetch_requirement
@@ -2610,6 +2695,38 @@ class TestFetchRequirementMissingPolygonColumn:
 
         assert set(outcome.stations.keys()) == {_SID_A}
         assert outcome.missing_polygon_column == frozenset({_SID_B})
+
+    def test_missing_polygon_column_warning_logs_polygon_names_too(self) -> None:
+        # D27 (review fold-in, minor): the former fail-loud diagnostic named
+        # BOTH the station id and the polygon name (`_iter_long_rows`'s
+        # `ids`/`polys` pair). The `recap.missing_polygon_column` warning
+        # must preserve both, not just `station_ids`.
+        ecmwf = _ForecastEcmwf(_wide_df([_POLY_A], value=1.0))
+        resolver = _MapResolver(
+            {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_B)}
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        with structlog.testing.capture_logs() as captured:
+            adapter.fetch_requirement(
+                _track(ensemble_mode=fi_ensemble_mode_single()),
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+        events = [
+            e for e in captured if e.get("event") == "recap.missing_polygon_column"
+        ]
+        assert len(events) == 1
+        assert events[0]["station_ids"] == [str(_SID_B)]
+        assert events[0]["polygon_names"] == [_POLY_B]
 
 
 class TestFetchRequirementDuplicatePolygon:
@@ -2650,7 +2767,78 @@ class TestFetchRequirementMalformedPartialControl:
         )
         adapter = _forecast_adapter(ecmwf, resolver)
 
-        with pytest.raises(AdapterError, match="partial-variable forcing"):
+        with pytest.raises(
+            RecapPayloadIntegrityError, match="partial-variable forcing"
+        ):
+            adapter.fetch_requirement(
+                _track(features=frozenset({"precipitation", "temperature"})),
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+
+class TestFetchRequirementMissingColumnNotMalformed:
+    def test_all_columns_missing_for_one_variable_is_not_malformed(self) -> None:
+        # Review fold-in (major): hru_acc is non-empty (precipitation has
+        # rows for both stations) while temperature's response omits EVERY
+        # expected polygon column entirely. Before the fix this hit the
+        # malformed partial-control guard (AdapterError) instead of the
+        # explicit per-station MISSING_POLYGON_COLUMN unavailability (D27) --
+        # unlike `test_missing_polygon_column_is_per_station_not_batch_wide`
+        # above, which only ever exercises ONE variable and so cannot
+        # distinguish "well-formed empty" from "columns entirely missing".
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A, _POLY_B]},
+            missing_column_variables=frozenset({(_HRU, "2t")}),
+        )
+        resolver = _MapResolver(
+            {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_B, hru=_HRU)}
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        outcome = adapter.fetch_requirement(
+            _track(features=frozenset({"precipitation", "temperature"})),
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        # Neither station can be shipped (each is missing `temperature`
+        # entirely), so the outcome is the explicit missing-polygon-column
+        # unavailability -- never a raised AdapterError/RecapPayloadIntegrityError.
+        assert outcome.status is RawFetchStatus.ABSENT_AT_CYCLE
+        assert outcome.missing_polygon_column == frozenset({_SID_A, _SID_B})
+
+    def test_partial_missing_column_alongside_a_genuinely_empty_variable_still_raises(
+        self,
+    ) -> None:
+        # Negative control: a variable that HAS its polygon columns present
+        # but returns zero rows (the real Plan 154 D2 defect) must still
+        # raise, even in the presence of an unrelated missing-column
+        # variable in the SAME HRU -- the fix must not blanket-suppress the
+        # guard.
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A, _POLY_B]},
+            missing_column_variables=frozenset({(_HRU, "2t")}),
+            empty_control_variables=frozenset({(_HRU, "tp")}),
+        )
+        resolver = _MapResolver(
+            {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_B, hru=_HRU)}
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        with pytest.raises(
+            RecapPayloadIntegrityError, match="partial-variable forcing"
+        ):
             adapter.fetch_requirement(
                 _track(features=frozenset({"precipitation", "temperature"})),
                 [

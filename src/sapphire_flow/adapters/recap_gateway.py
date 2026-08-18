@@ -271,6 +271,34 @@ class RecapConfigurationError(AdapterError):
         self.supported_values = supported_values
 
 
+class RecapTransientError(AdapterError):
+    """A retryable transport/server failure (Plan 151 T4/T5 review fold-in).
+
+    ``_map_recap_error``'s fallback branch for an error that matches none of
+    the structured discriminators (no ``source_data_missing`` code, no
+    ``supported_values``/``hru_code`` field, no 401/403 status) -- an
+    ordinary network failure or an unstructured 5xx. Distinguishing this
+    TYPE from ``RecapPayloadIntegrityError`` (below) is what lets T5's
+    walk-back tell "retry the next candidate cycle" apart from "this
+    candidate's payload is corrupt, do not retry it" without parsing
+    exception message text.
+    """
+
+
+class RecapPayloadIntegrityError(AdapterError):
+    """A well-formed-but-corrupt Gateway payload -- candidate-FATAL, never
+    retryable (Plan 151 T4/T5 review fold-in).
+
+    Raised only by ``fetch_requirement``'s partial-control guard (Plan 154
+    D2): one requested variable returned control rows in an HRU while
+    another, in the SAME HRU/cycle, came back well-formed but with zero rows
+    for polygon columns that DO exist in the response. That is a payload
+    defect, not a transport failure -- retrying the same cycle would return
+    the same broken payload, so this must propagate UNCONTAINED rather than
+    being treated as a walk-back-eligible absence.
+    """
+
+
 class RecapAuthError(AdapterError):
     """Gateway rejected the request as unauthorized/forbidden (Plan 082 Task 2G).
 
@@ -372,7 +400,7 @@ def _map_recap_error(exc: BaseException) -> AdapterError:
         )
     if status_code in (401, 403):
         return RecapAuthError(str(exc), status_code=status_code)
-    return AdapterError(str(exc))
+    return RecapTransientError(str(exc))
 
 
 _IFS_CADENCE_HOURS = 6.0
@@ -1036,12 +1064,20 @@ class RecapGatewayForecastAdapter:
         predicate.
 
         A malformed partial-control payload (Plan 154's control-coverage
-        guard) is candidate-FATAL and propagates UNCONTAINED, exactly as
-        `fetch_forecasts`. A duplicate-polygon misconfiguration
-        (`_group_by_hru`) raises `RecapConfigurationError` with ZERO Gateway
-        calls, before this method's own containment logic runs. A missing
-        polygon column becomes an EXPLICIT per-station unavailability (D27)
-        instead of the batch-wide raise `fetch_forecasts` performs.
+        guard) is candidate-FATAL and propagates UNCONTAINED as
+        `RecapPayloadIntegrityError` -- distinct from the retryable
+        `RecapTransientError` a plain transport/5xx failure maps to, so a
+        services-side caller can tell "retry the next walk-back candidate"
+        apart from "this candidate's payload is corrupt" by TYPE, never by
+        parsing the message (review fold-in, major). A variable whose
+        response is missing EVERY expected polygon column for an HRU is
+        EXCLUDED from this guard (review fold-in, major) -- that is the
+        MISSING_POLYGON_COLUMN case below, not a malformed payload. A
+        duplicate-polygon misconfiguration (`_group_by_hru`) raises
+        `RecapConfigurationError` with ZERO Gateway calls, before this
+        method's own containment logic runs. A missing polygon column
+        becomes an EXPLICIT per-station unavailability (D27) instead of the
+        batch-wide raise `fetch_forecasts` performs.
         """
         in_scope = _prefilter(
             stations, nwp_source=self.NWP_SOURCE, role=WeatherSourceRole.FORECAST
@@ -1067,7 +1103,15 @@ class RecapGatewayForecastAdapter:
             hru_acc: dict[StationId, list[dict[str, object]]] = {}
             discarded_variable: str | None = None
             control_coverage: dict[str, bool] = {}
+            # D27 vs Plan 154 D2 (review fold-in, major): a variable whose FC
+            # response is missing EVERY expected polygon column for this HRU
+            # is a MISSING_POLYGON_COLUMN case, never the partial-control
+            # integrity guard below -- only a variable that returned rows for
+            # the columns it DOES have, yet zero rows overall, is the
+            # well-formed-EMPTY defect D2 targets.
+            control_all_missing: dict[str, bool] = {}
             hru_missing_polygon: set[StationId] = set()
+            hru_missing_polygon_names: set[str] = set()
             try:
                 for variable in variables:
                     ifs_name = variable.ifs_name
@@ -1089,8 +1133,14 @@ class RecapGatewayForecastAdapter:
                         raise_on_missing=False,
                     )
                     hru_missing_polygon.update(ref.station_id for ref in missing)
+                    hru_missing_polygon_names.update(
+                        str(ref.polygon_name) for ref in missing
+                    )
                     rows_after = sum(len(rows) for rows in hru_acc.values())
                     control_coverage[variable.canonical] = rows_after > rows_before
+                    control_all_missing[variable.canonical] = len(missing) == len(
+                        refs_by_polygon
+                    )
 
                     if track.ensemble_mode is EnsembleMode.ENSEMBLE:
                         for member in range(_PF_MEMBER_MIN, _PF_MEMBER_MAX + 1):
@@ -1111,6 +1161,9 @@ class RecapGatewayForecastAdapter:
                                 hru_missing_polygon.update(
                                     ref.station_id for ref in missing
                                 )
+                                hru_missing_polygon_names.update(
+                                    str(ref.polygon_name) for ref in missing
+                                )
                             except RecapDataUnavailableError:
                                 log.warning(
                                     "recap.pf_unavailable_control_only",
@@ -1121,13 +1174,17 @@ class RecapGatewayForecastAdapter:
                                 break
 
                 covered = {v for v, has_rows in control_coverage.items() if has_rows}
-                if hru_acc and len(covered) < len(control_coverage):
-                    empty = sorted(set(control_coverage) - covered)
-                    raise AdapterError(
+                uncovered = set(control_coverage) - covered
+                malformed = {
+                    v for v in uncovered if not control_all_missing.get(v, False)
+                }
+                if hru_acc and malformed:
+                    raise RecapPayloadIntegrityError(
                         f"Recap Gateway HRU {hru_name} returned control rows for "
                         f"{sorted(covered)} but a well-formed EMPTY response for "
-                        f"{empty} in the same cycle {nominal_cycle.isoformat()} "
-                        "-- partial-variable forcing is never shipped (Plan 154 D2)"
+                        f"{sorted(malformed)} in the same cycle "
+                        f"{nominal_cycle.isoformat()} -- partial-variable forcing is "
+                        "never shipped (Plan 154 D2)"
                     )
             except RecapDataUnavailableError as exc:
                 hru_discarded = True
@@ -1146,6 +1203,7 @@ class RecapGatewayForecastAdapter:
                     "recap.missing_polygon_column",
                     hru_name=hru_name,
                     station_ids=sorted(str(sid) for sid in hru_missing_polygon),
+                    polygon_names=sorted(hru_missing_polygon_names),
                 )
             missing_polygon_column.update(hru_missing_polygon)
             for station_id, rows in hru_acc.items():

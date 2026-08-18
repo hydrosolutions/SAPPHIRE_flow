@@ -32,7 +32,11 @@ if TYPE_CHECKING:
         NwpCycleSource,
         SpatialRepresentation,
     )
-    from sapphire_flow.types.weather import WeatherForecastRecord, WeatherForecastResult
+    from sapphire_flow.types.weather import (
+        GriddedForecast,
+        WeatherForecastRecord,
+        WeatherForecastResult,
+    )
 
 FeatureName = NewType("FeatureName", str)
 
@@ -166,7 +170,7 @@ class CandidateFetchResult:
 
     status: CandidateFetchStatus
     cycle: UtcDatetime
-    raw: object  # GriddedForecast | dict[StationId, WeatherForecastResult] | None
+    raw: GriddedForecast | dict[StationId, WeatherForecastResult] | None
 
 
 class RawFetchStatus(Enum):

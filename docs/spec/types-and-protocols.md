@@ -3307,8 +3307,10 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > #
 > # Completeness gate keys off ResolvedTrackRequest.fetch_horizons (the MAX): the RAW
 > # candidate is accepted iff, for every f in key.features, the series reaches
-> # fetch_horizons[f] AND (ENSEMBLE) carries member_ids == {0..50} at that horizon —
-> # so "5-day + 10-day dedup onto one 10-day track" is completeness-checked at 10-day.
+> # fetch_horizons[f] AND (ENSEMBLE) carries member_ids == source.expected_member_ids(key)
+> # at that horizon (source-derived, NEVER a literal {0..50} — see
+> # expected_member_ids above) — so "5-day + 10-day dedup onto one 10-day track" is
+> # completeness-checked at 10-day.
 > # Per-assignment assembly then slices each assignment's own (≤ max) horizons out of
 > # the fetched-at-max frame.
 > #
