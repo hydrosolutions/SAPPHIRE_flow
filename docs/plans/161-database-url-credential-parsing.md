@@ -11,6 +11,35 @@ supersedes: []
 
 # Plan 161 — DATABASE_URL credential handling
 
+## 🔄 Staleness review 2026-08-18 — T2's scope has SHRUNK; the hazards have not
+
+Re-checked against `main` after Plan 162 Phase A landed and deployed.
+
+**DONE, remove from T2's scope — Plan 162 Phase A already did it.** D2's `(c)` half (discrete `PG*` vars for
+the backup path) is **shipped**: `flows/backup.py` reads `SAPPHIRE_BACKUP_PGHOST/PGPORT/PGUSER/PGDATABASE` plus
+the password file and passes `PGHOST`/`PGPASSWORD` to the child. **`_to_libpq_url` is gone** and the backup path
+parses no URL at all. The original incident — a `/` in the worker password — is therefore **structurally
+impossible for backups now**, and verified in production on 2026-08-18.
+
+**STILL LIVE, unchanged — this is what T2 is now for.** Both producer sites still splice a raw password into a
+URL:
+- **Site A** — `docker/entrypoint.sh:22` (`DATABASE_URL`) and `:27` (`PREFECT_API_DATABASE_CONNECTION_URL`),
+  still the `sed` replacement.
+- **Site B** — `docker-compose.yml:54`, `prefect-server`'s inline `$$(cat /run/secrets/db_password)`.
+
+All three hazards remain for the **16 files** that still consume `DATABASE_URL`: URL ambiguity (`/ @ # ?`),
+**sed-replacement injection** (`&`, `\`, `|` — a rotation containing `&` still breaks every container at once),
+and silent **`%HH`** decoding.
+
+**No new splice sites were introduced.** `bootstrap-roles.sh` passes the new backup password via psql `-v`
+(`:39`), not through a URL. Its `OWNER_LIBPQ_URL` (`:36`) only strips the driver scheme — but it derives from
+`DATABASE_URL`, so it **inherits** Site A's hazard rather than adding one.
+
+**Net effect on T2:** smaller and lower-urgency than when written — the component that actually broke is now
+out of the hazard class by construction — but **not obsolete**. The remaining work is Site A + Site B built with
+`URL.create()` in Python instead of `sed`, plus the round-trip guard. The standing warning is unchanged:
+**do not hand-set a DB password until this lands.**
+
 ## Status
 **PARTIAL — T1 merged 2026-08-16 as PR #152 (`7fdee00`) and DEPLOYED (mini 0.1.721).** T2
 (construct-don't-splice at both producer sites) and T3 (alert hysteresis, absorbed by Plan 162) remain OPEN.
