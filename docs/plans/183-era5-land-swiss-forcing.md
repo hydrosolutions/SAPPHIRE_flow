@@ -11,6 +11,25 @@ supersedes: []
 
 # Plan 183 — ERA5-Land forcing from the sloth-dynamic store
 
+## ⚠️ Note to reviewers: proportionality
+
+**This is a contained ingestion plan — four tasks, mostly assembly.** Sibling plans in this track
+were inflated to 400-583 lines across successive review rounds by *invented* scope, and each round
+had to be discarded. Please do not repeat that.
+
+**Out of scope by DECISION, not oversight** — proposing these is a finding against the reviewer
+unless tied to a concrete failure this plan would cause:
+
+- taking `aquaire` as a runtime dependency (decided against, with reasons, above);
+- catchment delineation (we already have basin polygons);
+- sub-daily ingestion (D3 defers it deliberately);
+- retraining, CDS acquisition, or replacing MeteoSwiss as v0 operational forcing;
+- any enforcement mechanism around the D1 tolerance beyond recording the distribution.
+
+**What review IS wanted for:** whether the mapping transcribed from `aquaire` is faithful, whether
+the three documented traps are correctly guarded, whether the T3 validation can actually distinguish
+an averaging error from a store difference, and whether anything asserted here is false.
+
 ## What changed, and why this is now small
 
 An earlier draft scoped this as *build our own CDS acquisition*, reusing Plan 171's Nepal
@@ -104,7 +123,7 @@ without touching call sites — the injectability `v0-scope.md` §I2 already req
 
 | # | Question | Recommendation |
 |---|---|---|
-| **D1** | Agreement tolerance for T3? | Set before running. A scientific judgement about tolerable forcing drift — owner/modeller, not engineering. |
+| **D1** | Agreement tolerance for T3? | **RESOLVED (owner, 2026-08-18): 5 %, relative, per basin.** Deliberately tight — the point is to detect an averaging discrepancy, and a loose bound would pass a systematically biased extraction. **The owner expects this number may be revised**, so record the observed distribution (not just pass/fail) when T3 runs, or a later revision has nothing to reason about. |
 | **D2** | Two forcings or four? | **Ingest all four.** The store has them, the sub-daily artifact may need them, and re-running the extraction later costs more than storing two extra columns now. |
 | **D3** | Daily store only, or sub-daily too? | Daily first. `aquaire` has a separate `sources/subdaily.py`; treat sub-daily as a follow-on once the daily path is validated. |
 
