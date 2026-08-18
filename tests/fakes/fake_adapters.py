@@ -11,7 +11,11 @@ from sapphire_flow.types.enums import NotificationChannel  # noqa: TC001
 from sapphire_flow.types.forecast import ForeignForecast  # noqa: TC001
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing  # noqa: TC001
 from sapphire_flow.types.ids import StationId  # noqa: TC001
-from sapphire_flow.types.observation import RawObservation  # noqa: TC001
+from sapphire_flow.types.observation import (  # noqa: TC001
+    HydroScraperBatchResult,
+    RawObservation,
+    StationFetchOutcome,
+)
 from sapphire_flow.types.pipeline import FlowRunStatus  # noqa: TC001
 from sapphire_flow.types.station import (  # noqa: TC001
     StationConfig,
@@ -105,6 +109,28 @@ class FakeStationDataSource:
         since: dict[StationId, UtcDatetime],
     ) -> list[RawObservation]:
         return self._observations
+
+    def fetch_observations_batch(
+        self,
+        station_configs: list[StationConfig],
+        since: dict[StationId, UtcDatetime],
+    ) -> HydroScraperBatchResult:
+        # Plan 175 T3: every outcome is a clean success — this fake never
+        # simulates a fetch failure. Filters `self._observations` by
+        # station_id so the flattened total stays identical to the
+        # pre-Plan-175 `fetch_observations` façade.
+        outcomes = tuple(
+            StationFetchOutcome(
+                station_id=sc.id,
+                observations=tuple(
+                    o for o in self._observations if o.station_id == sc.id
+                ),
+                failure_cause=None,
+                failure_detail=None,
+            )
+            for sc in station_configs
+        )
+        return HydroScraperBatchResult(outcomes=outcomes)
 
 
 class FakeForeignForecastSource:

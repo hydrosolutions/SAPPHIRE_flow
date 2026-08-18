@@ -236,20 +236,32 @@ value: str | None = None
 
 ### Version Bumping (mandatory)
 
-**Every commit MUST include a patch version bump.** No exceptions.
+**Every CODE commit MUST include a patch version bump.** The one exception:
+plan-doc-only commits made directly to `main` do **not** bump — the version
+tracks code releases. Code changes always go through a PR (hold-at-PR) and
+always bump.
 
-Before committing, follow this exact sequence:
+Before committing code, follow this exact sequence:
 
 1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/sapphire_flow/__init__.py`
 2. Stage version files alongside code changes
 3. Commit with a conventional commit message
-4. `git tag v$(uv run bump-my-version show current_version)` — tag the commit
+4. **Do NOT tag on a feature branch** — tagging happens once, on `main`, after the PR merges (see below).
 
 **Rules:**
 - **Patch bumps**: Automatic with every commit. Codex MUST do this.
 - **Minor/major bumps**: Only when the user explicitly requests. Use `uv run bump-my-version bump minor` or `major`.
 - **Never let bump-my-version create its own commit** — config has `commit = false`. Fold version changes into the real commit.
-- **Always tag** after every commit.
+- **Tag on `main` after merge — NEVER on a feature branch.** *(Changed
+  2026-08-13, synced here 2026-08-17 — Plan 175 T7; see `CLAUDE.md` §
+  Version Bumping for the full collision history this rule fixes.)*
+  Patch versions are a **global sequence**, but every worktree shares one
+  `.git` and therefore one tag namespace, while each branch's
+  `bump-my-version` computes the next patch from its **own**
+  `pyproject.toml` — which cannot see what other branches have already
+  tagged. The version bump still happens in the commit (so every diff
+  carries its version); only `git tag` moves to post-merge on `main`, where
+  the sequence is authoritative.
 
 ---
 

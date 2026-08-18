@@ -32,6 +32,41 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 
 All cron schedules are deployment-configurable — set as `CronSchedule` parameters in each deployment definition, not hardcoded. **→ DECISION (plan 013)**: At ~1000 stations on the `default` work pool (v0), staggering forecast cycles and backup flows is a recommended operational practice to reduce contention. Operators should offset cron schedules to avoid simultaneous heavy flows (e.g., stagger `run_forecast_cycle_flow` and `train_models_flow` by at least 10 minutes). **Plan 098 note**: staggering is no longer the mechanism that protects the `*/5` observation ingest — obs ingest now runs on the dedicated `ingest` pool (`prefect-worker-ingest`), isolated from the heavy `default`-pool flows. Staggering is retained as general contention guidance for the remaining `default`-pool flows. See cicd.md § Prefect work pool separation for pool-level concurrency limits and container resource bounds.
 
+### LINDAS-caller schedule separation (Plan 175 D4/D6)
+
+**Different work pools do NOT serialise contention against the same external
+endpoint.** `ingest-observations` (`ingest` pool) and `collect-bafu-observations`
+(`default` pool) both call `lindas.admin.ch`; a per-flow `concurrency_limit`
+only bounds concurrent runs of *that* deployment, never two different
+deployments hitting the same upstream host at the same wall-clock minute.
+Two separate worker processes on two separate pools start their runs
+independently — LINDAS sees both as unrelated clients regardless of pool
+topology. The mechanism that actually removed the two flows' hourly collision
+was moving `collect-bafu-observations` off `5 * * * *` (which the ingest
+flow's `*/5 * * * *` also hits every hour) onto `37 * * * *` — a schedule
+fact, not a work-pool fact.
+
+**Rule for any future LINDAS-calling schedule**: the cron minute must not be
+divisible by 5 (`ingest-observations`'s tick) and must not collide with
+`collect-bafu-forecasts`'s `0 * * * *`. See
+`docs/decisions/bafu-lindas-rate-limit.md` for the measured rate-limit
+contract this rule protects (burst 3, ~1 slot refill per 3–4 s, no
+`Retry-After`).
+
+**A cron default lives in TWO places, and only one of them deploys.**
+`cli/register_deployments.py` reads `os.environ.get("SCHEDULE_...", "<default>")`
+— a Python-level fallback used only when nothing sets the environment
+variable. But `docker-compose.yml`'s `init` service ALWAYS sets it (e.g.
+`SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-37 * * * *}`),
+so on the mini the compose file's own `:-<default>` fallback is the value
+that actually reaches `register_deployments.py` — the Python default is only
+exercised by a non-compose invocation (e.g. a bare `python -m
+sapphire_flow.cli.register_deployments` outside Docker). **A code-only
+change to the Python default, without the matching `docker-compose.yml`
+edit, is a deployment no-op** — `tests/unit/test_compose_schedule_default.py`
+locks both LINDAS-relevant schedules (`SCHEDULE_INGEST_OBSERVATIONS`,
+`SCHEDULE_COLLECT_BAFU_OBSERVATIONS`) against exactly this trap.
+
 ## Task granularity
 
 Use `@task` when:

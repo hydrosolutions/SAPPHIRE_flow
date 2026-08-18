@@ -335,6 +335,86 @@ matters most for Dudh Koshi runoff.
 - Norris, J., et al. (2017) and Barros, A. P., et al. (2000) — as cited within Hunt et al. (2022);
   not read in full.
 
+### ⭐ CO-LOCATED INDEPENDENT GAUGES — the Pyramid network (added 2026-08-18)
+
+**Salerno et al. (2025), ESSD 17, 4293** — the **Pyramid Meteorological Network**: 7 in-situ AWS in the
+Khumbu (Dudh Koshi), **hourly**, 1994–2023, **CC BY 4.0**, on Zenodo (`10.5281/zenodo.15211352`) with
+**no login** (the mountaingenius geoportal asks for registration; it is not needed — Zenodo carries the
+same Level-1 data). Precipitation (`RR`) exists at 5 of the 7; timestamps are **NPT (UTC+5:45)**.
+Level-1 files are raw and **ungapfilled**.
+
+**Why this matters more than any gridded product we have surveyed: it is INDEPENDENT of both sides of
+our comparison** (no reanalysis, no satellite, no DHM input — "ERA5" appears nowhere in the paper),
+and **two of its stations are effectively co-located with two of our four problem high-altitude
+stations**:
+
+| Our DHM station | Pyramid station | Separation |
+|---|---|---|
+| Lukla Airport (27.69, 86.73, 2,860 m) | AWS3 Lukla (27.70, 86.72, 2,660 m) | **~1.4 km** |
+| Syangboche Airport (27.817, 86.717, 3,700 m) | AWS5 Namche (27.80, 86.71, 3,570 m) | **~1.9 km** |
+
+⇒ **This gives the track its first genuine GAUGE-vs-GAUGE comparison.** Every prior option compared a
+gauge against a satellite or reanalysis field; no such product can settle whether a gauge is wrong.
+
+#### ⚠️ The Group A high-altitude diurnal result now looks like an ARTEFACT, not physics
+
+Computed directly from the Level-1 files (JJAS, all years; **independently recomputed by the
+orchestrator, not taken on report**):
+
+| Station | Peak hours (NPT) | Minimum | Normalised at 07, 08 |
+|---|---|---|---|
+| AWS3 Lukla 2,660 m | **22, 23, 00** | hour 10 | **0.29, 0.28** |
+| AWS5 Namche 3,570 m | **23, 00, 22** | hour 11 | 0.36, 0.18 |
+
+**Our DHM Lukla peaks at 02 UTC ≡ 07:45 NPT — squarely inside Pyramid Lukla's diurnal MINIMUM, from an
+instrument 1.4 km away.** That is near anti-phase. Combined with Group A's 0.01 mm resolution and its
+sub-0.1 mm noise floor (22–34 % of its wet hours), the most likely reading is that **the Group A
+diurnal signal is noise-floor contamination rather than a physical high-altitude mode**.
+**Framed as a testable hypothesis, not a settled refutation** — our own figure is already
+`withdrawn_unreproducible` / `RAW_PROVISIONAL`, so what has changed is that an independent co-located
+instrument can now *settle* it, which nothing previously could.
+
+**⚠️ One reported figure did NOT survive checking, recorded so it is not propagated:** the
+investigating agent gave Pyramid Lukla's wet-hour fraction as 11.7 % against our 54–55 %. Recomputed
+over **JJAS** at the 0.2 mm threshold it is **33.1 %** — the agent appears to have used the full annual
+record. The gap is real but far softer than reported, so **the wet-fraction argument is weak; the
+diurnal-phase argument is the load-bearing one.**
+
+#### Norris et al.'s 3 km threshold does not hold in the Khumbu
+
+The section above treats *"below 3 km bimodal 0600/2100 LT; above 3 km unimodal 1500 LT"* as the
+literature baseline our data failed to match. In the Khumbu, **nocturnal peaking persists at 3,570 m
+and 4,260 m**, and the afternoon mode co-emerges only at **5,035 m** (where amplitude also collapses,
+max/min ≈ 3 against 10–16 lower down). ⇒ **The baseline itself is wrong for this valley.** Our data
+not matching it was never, on its own, evidence that our data were wrong.
+
+#### ⛔ NOT a correction source — D6 is REINFORCED, not relaxed
+
+The obvious temptation is to use co-located independent gauges to correct our own. **Do not.** The
+paper is candid that *"the main weakness of this data network is the lack of heated rain gauges"*.
+**Pyramid's gauges are unheated, so they undercatch snow in the same direction and for the same reason
+as DHM's.** Correcting toward them would **not** remove undercatch — it would substitute one
+undercatching gauge for another *while appearing authoritative*, which is worse than no correction at
+all. And the flood-safety hazard is unchanged: ERA5-Land over-estimates over the Himalaya while both
+gauge networks under-catch, so fitting a downward correction toward either injects a **dry bias into a
+flood-forecasting system**.
+Its ≤20 % snow-underestimate figure is **inherited from Salerno et al. (2015), not re-measured here** —
+it is not a transfer function and must not be used as one.
+⇒ **Use Pyramid as a referee on SHAPE and TIMING** — normalised diurnal profiles, wet-hour fraction,
+seasonality — **where undercatch largely cancels. Never as a magnitude reference.** [[D6]] [[D9]] stand.
+
+**Corroboration and a remaining open question.** Pyramid's DJF share of annual precipitation (Lukla
+3.2 %, Namche 2.7 %, Pheriche 1.4 %, Pyramid 0.9 %) matches our Syangboche 2.7 % and Lete 3.8 %,
+leaving **Humde 20.3 % and Olangchunggola 17.6 % as the outliers**. But those two sit in Manang and
+Kanchenjunga, not the Khumbu, so a real regional gradient remains a live alternative — this **narrows**
+the question rather than closing it.
+
+**Caveats on the source itself:** no instrument make/model, orifice height or wind exposure is given in
+either the paper or the README, which caps how far any quantitative bias attribution can go; and
+station longitudes disagree between the paper's table and the README for South Col and Changri Nup
+(they appear transposed). Neither of those two carries precipitation, so nothing above is affected,
+but the metadata warrants a check before any spatial use.
+
 ## Decisions
 
 | # | Decision | Rationale |
@@ -346,7 +426,7 @@ matters most for Dudh Koshi runoff.
 | **D3a** | Hourly matched pairs may be **computed and reported, but never interpreted as model error** without an explicit representativeness-error decomposition alongside. | A categorical ban would suppress the operationally relevant quantity. The danger is misattribution, not the statistic itself. |
 | **D4** | **Zero-run adjudication uses a satellite QPE. ERA5-Land is NEVER a QC input.** Use **IMERG Early/Late (satellite-only)**, not IMERG-Final. | Using ERA5 to clean the reference and then judging ERA5 by it manufactures agreement. IMERG-**Final** incorporates GPCC gauge analysis and is therefore *not* independent of the gauge network; Early/Late are satellite-only. Used strictly as a daily wet/dry discriminator — it underestimates in high mountains and is weak on snowfall, never a magnitude reference, and its own miss rate must be characterised before it adjudicates anything. |
 | **D5** | **Harmonise to a common 0.2 mm/h detection floor for all frequency statistics; keep unthresholded values for mass statistics.** | The two populations have incomparable reporting granularity. Any pooled wet-day frequency or POD/FAR compares reporting chains, not climates. |
-| **D6** | **No numeric undercatch correction. Season-stratify and carry a signed caveat — scoped correctly.** | Transfer functions are gauge-type-specific; we know neither gauge type nor wind speed. **The sign constraint applies to catch efficiency on POST-QC data only: for a correctly-functioning gauge, catch ≤ true precipitation.** It is *not* a universal bound on reported values — this sample contains a gauge reporting 1,728 mm/day. Stated correctly: *a post-QC gauge total is a lower bound on true precipitation; a pre-QC one is not.* |
+| **D6** | **No numeric undercatch correction. Season-stratify and carry a signed caveat — scoped correctly.** | Transfer functions are gauge-type-specific; we know neither gauge type nor wind speed. **The sign constraint applies to catch efficiency on POST-QC data only: for a correctly-functioning gauge, catch ≤ true precipitation.** It is *not* a universal bound on reported values — this sample contains a gauge reporting 1,728 mm/day. Stated correctly: *a post-QC gauge total is a lower bound on true precipitation; a pre-QC one is not.* **REINFORCED 2026-08-18:** the co-located Pyramid AWS (see Literature grounding) are **also unheated** and undercatch in the SAME direction, so they are **not** a correction source — using them would swap one undercatching gauge for another while looking authoritative. Referee on SHAPE and TIMING only, never on magnitude. |
 | **D7** | **Phase 1 characterises; it commits to no correction design and pre-selects no Phase-2 hypothesis.** *(D7 and D8 merged after review.)* | The earlier preference for temporal disaggregation rested on the withdrawn r = 0.998 result. With the tail shown to be non-transferable (−49 % to +241 %), neither temporal nor spatial correction is established as viable by this data. Phase 1 measures both and decides afterwards. |
 | **D8** | **Time-boxed research, judgement call at the end.** No pre-registered thresholds. | Genuinely exploratory work on a thesis cycle. *Accepted risk: with no stated bar, a null result is harder to declare.* |
 | **D9** | **Safety constraint, independent of D8:** no precipitation-derived correction reaches the operational forcing path without a hydrological test showing it does not degrade discharge forecast skill — evaluated on high-flow events, not on all-flow averages. | D8 governs the *research* gate, which the owner chose to leave to judgement. This is a separate *deployment* constraint. Better agreement with gauges does not imply better runoff forcing, and an all-flow average can improve while flood performance degrades. |

@@ -400,6 +400,45 @@ between stations — **reported by elevation band as well as per station**. *Mar
 inform but do not suffice to design a disaggregator — that needs temporal dependence structure, which
 is a Phase-2 question.*
 
+### ⭐ M-A10 · Co-located gauge-vs-gauge adjudication (Pyramid network) — NEW 2026-08-18
+**Depends: M-A3.** *(Needs the QC mask; does NOT need ERA5-Land, so it can run in parallel with M-A5/M-A6.)*
+
+**The first genuine gauge-vs-gauge comparison this track has ever had.** The Pyramid Meteorological
+Network (Salerno et al. 2025, ESSD 17, 4293; Zenodo `10.5281/zenodo.15211352`, CC BY 4.0, no login)
+publishes **hourly in-situ AWS** precipitation in the Khumbu, **independent of both ERA5-Land and DHM**,
+with two stations effectively co-located with two of our four problem high-altitude stations:
+**AWS3 Lukla ≈1.4 km from DHM Lukla Airport**, **AWS5 Namche ≈1.9 km from Syangboche Airport**.
+
+**Why it earns its own milestone rather than folding into M-A6/M-A7:** M-A6 compares a gauge against a
+*model field* and M-A7 characterises *our* timing — neither can answer "is our gauge wrong?", because
+no satellite or reanalysis product can adjudicate a gauge. This can.
+
+**Scope:** JJAS 2020–2023 (the overlap window), the two co-located pairs, **DHM vs Pyramid vs
+ERA5-Land**, reporting the **normalised diurnal profile** and **wet-hour fraction** on hours retained by
+the M-A3 mask, with the retained-hour count carried alongside every statistic (Rule 1).
+
+**The hypothesis it exists to settle:** our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT**, which sits inside
+Pyramid Lukla's diurnal **minimum** (normalised 0.29/0.28 at 07–08, peaks at 22–00 NPT) — near
+anti-phase from 1.4 km away. Combined with Group A's 0.01 mm resolution and sub-0.1 mm noise floor, the
+hypothesis is that **the Group A high-altitude diurnal signal is noise-floor contamination, not
+physics.** Confirming it would retire a finding the vision has carried as UNRESOLVED since 2026-08-13.
+
+**⛔ NOT a correction source, and this is binding.** Pyramid's gauges are **explicitly unheated** — the
+paper names that as its main weakness — so they undercatch snow in the same direction as DHM's.
+Correcting toward them would substitute one undercatching gauge for another *while appearing
+authoritative*; and fitting model forcing downward toward either gauge network injects a **dry bias into
+a flood-forecasting system**. **Referee on SHAPE and TIMING only, where undercatch largely cancels;
+never on magnitude.** The paper's "≤20 % snow underestimate" is inherited from Salerno et al. (2015),
+not re-measured — it is not a transfer function. Vision D6/D9 stand, reinforced.
+
+**Exit:** the two co-located pairs' normalised diurnal profiles and wet-hour fractions, mask-consistent
+and retained-count-carrying; an explicit verdict on the noise-floor hypothesis; and — if confirmed — the
+consequent correction to the vision's Group A diurnal claims. **No magnitude comparison is reported.**
+
+**Data handling:** CC BY 4.0 permits redistribution *with attribution*, but **M-D1's bar on third-party
+data in this public repo stands regardless** — the files live in `data/` alongside the DHM workbook,
+never committed. Attribution is required on any published result.
+
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**
 
@@ -595,7 +634,9 @@ proving the intended binding rather than treating "unused" as an invariant.
     {"id": "M-A6",  "depends_on": ["M-A3", "M-A5"]},
     {"id": "M-A7",  "depends_on": ["M-A2", "M-A3"]},
     {"id": "M-A8",  "depends_on": ["M-D2", "M-A6", "M-A7"]},
-    {"id": "M-A9",  "depends_on": ["M-A6", "M-A7", "M-A8"]},
+    {"id": "M-A10", "depends_on": ["M-A3"],
+     "note": "Co-located Pyramid adjudication. Needs only the QC mask — runs in PARALLEL with M-A5/M-A6."},
+    {"id": "M-A9",  "depends_on": ["M-A6", "M-A7", "M-A8", "M-A10"]},
     {"id": "M-DEC", "depends_on": ["M-A9"], "kind": "decision",
      "note": "Owner Phase-2 GO / NO-GO. M-A9 exits with a RECOMMENDATION; only this node authorises Track G."},
     {"id": "M-G1",  "depends_on": ["M-DEC"]},
@@ -702,6 +743,156 @@ Phase 1 commits to no correction design.
 - **We validate ERA5-Land the dataset, not ERA5-Land as our pipeline delivers it.** Our models are
   forced through the Gateway; this track reads CDS. Parity between the two is a real question, parked
   as M-G5 (OD-2b).
+
+## Forcing-correction architecture (added 2026-08-18)
+
+| # | Question | Decision |
+|---|---|---|
+| **OD-12** | Must the modeller train on elevation bands so we can correct band-wise? | **No.** Correct the **basin-average** series in the **forcing pipeline**, using **hypsometric weighting** — the elevation dependence enters only through the weights, which are computed offline, once per basin. **The model never changes and keeps consuming `BasinAverageForecast`.** |
+| **OD-13** | Where does the correction live, and when is it switched on? | **In the forcing pipeline, behind a seam — built now, enabled at the Nepal re-training step, never before.** See the train/serve invariant below: it is the binding constraint, not the correction itself |
+
+### Why band-wise modelling is not required — the pieces already exist
+
+- `BandRecord` (`types/basin_package.py:109`, from `bands.gpkg`) already carries `min_elevation_m`,
+  `max_elevation_m` and **`area_km2`** per band. **That is hypsometry, already in the basin package.**
+- `ElevationBandForecast` (`types/weather.py:62`) is already a first-class `WeatherForecastResult`
+  variant beside `BasinAverageForecast`, so the band-wise route stays open without being taken now.
+
+**The cheap operator:** take the **observed elevation-banded diurnal profiles** (M-A7's deliverable),
+weight them by each basin's **band `area_km2`**, and collapse to an **observation-derived expected
+basin-average diurnal shape**. Compare with the IFS basin-average diurnal shape. The correction is a
+**redistribution in time of an unchanged daily total** — it moves rain to the right hours, it does not
+change how much fell. That last property matters: it keeps the correction **orthogonal to D6/D9**,
+which forbid touching magnitude.
+
+**When band-wise WOULD be required:** if a basin's diurnal phase varies so strongly with elevation that
+a single collapsed profile misrepresents the mixture — plausible for basins spanning ~500–8,000 m, where
+the low band peaks nocturnally and the ~5,000 m band peaks in the afternoon. **Testable:** compare the
+hypsometrically-weighted mixture against a band-wise correction re-aggregated to basin average. If they
+agree within the operator-sensitivity envelope, the cheap route is sufficient. **Do the cheap one first
+and measure**; `ElevationBandForecast` is the escape hatch if it fails.
+
+### ⚠️ THE BINDING CONSTRAINT: train/serve consistency, not the correction
+
+Runoff models are **pre-trained on GLOBAL data** (no operational Nepali observations exist yet) and
+**re-trained in Nepal after deployment**. That makes *when* the correction is enabled more important
+than *how* it is computed:
+
+- **A model learns the timing relationship implicit in its training forcing.** Feeding it forcing whose
+  diurnal phase differs from what it trained on is a **train/serve skew** — an OOD input, not a fix.
+- This is the same logic as **OD-6** (aquacast trained on ERA5-Land and run on ERA5-Land, so the bias
+  largely cancels). **But global pre-training WEAKENS that cancellation**, because the model learns
+  timing mostly from regions where the reanalysis phase is fine, not from the Himalaya where it is ~12 h
+  wrong. ⇒ For a globally pre-trained model, correcting the operational forcing is **plausibly
+  beneficial** — the model expects physically-timed rain. **Plausibly, not certainly: the sign is an
+  empirical question the Nepal re-training will settle, and it must be measured, not assumed.**
+
+**The invariant, whichever way that goes: TRAIN AND SERVE MUST MATCH.** An
+uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
+
+⇒ **Sequencing:**
+1. **Now (pre-deployment):** build the correction operator and its seam. **Do not enable it.** Global
+   pre-training stays on uncorrected forcing.
+2. **At Nepal deployment/re-training:** apply the **same** operator to the Nepali training forcing *and*
+   the operational forcing, then re-train. Consistent *and* closer to physical truth.
+3. **Measure both ways at step 2** — corrected-consistent vs uncorrected-consistent — because that is
+   the only point where we control both sides and can actually tell which is better.
+
+**And OD-10 remains the better long-run answer:** if DHM's parallel downscaling delivers a
+convection-permitting product, that fixes the phase *physically*, and this correction becomes
+unnecessary rather than merely adequate. Build the seam so that swap costs nothing.
+
+### M-D4 · Lightning data — partner ask (NEW, partner-gated)
+**Depends: —.** Ask project partners for stroke-level lightning: **timestamp, lat/lon, detection
+network**, 2020–2025, box 26–31 N / 80–89 E (the same box as our ERA5-Land, so it drops straight into
+the elevation banding). Networks differ in how they are obtained: **WWLLN** is research-consortium and
+usually free to academic partners — the likeliest yes; **GLD360** (Vaisala) and **ENTLN** are
+commercial, so an existing partner licence matters more than price; **Blitzortung** is free but its
+Nepal coverage is probably thin.
+**⛔ Do NOT draft the acquisition plan until the data is in hand.** This track has now specified against
+documentation three times and been wrong every time — the ERA5-Land accumulation convention, the CDS
+payload shape, and the CDS cost limit. The plan gets written **after** we see the real format, exactly
+as Plan 171's own constraint 3 requires.
+
+## Decisions register — forcing strategy for operational P (added 2026-08-18)
+
+| # | Question | Decision |
+|---|---|---|
+| **OD-7** | How do we get long hourly gauge series? | **From project partners — do NOT scrape the public DHM rainfall portal.** The portal is real-time only; starting collection now yields **a couple of months before delivery**, and every use we have (diurnal climatology, seasonality) needs **long** series. A few months of self-collected data is not worth the ingest machinery it would require. **Ask partners for the archive instead** |
+| **OD-8** | Lightning data | **Pursue, via partners.** Hourly, real-time, global, and **independent of precipitation retrieval** — it indicates *when* convection occurs without undercatch or orographic-retrieval error, which is exactly the disputed quantity. Best value-per-effort of the timing sources. It gives **no amounts**, which is fine: amounts are not the problem |
+| **OD-9** | Weather radar | **Not available** (owner, 2026-08-18). Nepal has one C-band dual-pol radar at **Surkhet (2019, western)**, with Palpa and Udaipur planned; Surkhet's ~200 km range does not usefully cover our central/eastern basins. **Not on the critical path. Do not design around it** |
+| **OD-10** 📌 **TODO** | Do we build convection-permitting downscaling ourselves? | **NO.** DHM has **several parallel projects improving their own weather forecasts**, and may couple their downscaled NWP to this system in future. Duplicating that is wasted effort in someone else's lane. ⇒ **What we owe instead is a forcing interface that can accept an externally produced downscaled product later** — the investment goes into the *seam*, not into the model |
+| **OD-11** | How much P work is warranted at all? | **Only what is necessary to get P right for operational runoff forecasting** (owner, 2026-08-18). See the scope test below — this is a real constraint, not a platitude, and it currently excludes most diurnal work from the delivery path |
+
+### 📌 TODO — OD-10's forcing seam review (owner-noted 2026-08-18, NOT scheduled)
+
+**The one item here that is answerable NOW, with no new data.** OD-10 says we will not build
+convection-permitting downscaling ourselves, and will instead accept an externally produced downscaled
+product from DHM if their parallel projects deliver one. That promise is only worth anything if the
+**forcing seam can actually take it without redesign**.
+
+**Scope (~half a day, architectural review — no new research):** can `WeatherForecastResult` accept an
+external downscaled product as-is? `BasinAverageForecast` and `ElevationBandForecast`
+(`types/weather.py:62`) already exist, so the seam may largely be there already — the review is to find
+out, not to build. Questions: what would a DHM-supplied product look like as a `WeatherForecastResult`;
+does the adapter boundary assume ECMWF/ICON-shaped input anywhere; and what would have to change if the
+answer is "a new variant".
+
+**Why it is worth doing independently of the precipitation research:** it de-risks the *cheapest
+possible* fix for the diurnal phase problem — someone else solving it physically — and it is the kind of
+seam that is painful to retrofit once models are trained against a fixed forcing shape.
+
+**Not scheduled.** Recorded so it is not lost; owner to slot it.
+
+### ✅ RESOLVED 2026-08-18 — v1 IS SUB-DAILY (3-hourly), so DIURNAL PHASE IS ON THE CRITICAL PATH
+
+**Owner, 2026-08-18: Nepal v1 produces a forecast every 3 hours.** The gating question below is
+answered, and the answer puts the diurnal work **on the delivery path, not in characterisation**.
+
+**A ~12 h phase error is FOUR TIMESTEPS of displacement at 3-hourly resolution.** ERA5's Himalayan
+foothill peak is off by up to ~12 h, and the failure is structural — parametrised convection cannot
+produce the nocturnal peak, and ERA5 and IMDAA fail *identically* despite different models and data
+(Norris et al. 2017; Hunt et al. 2022). At 3 h that error is not a refinement; it puts the rain in the
+wrong part of the day.
+
+⚠️ **Correction to an earlier framing in this file (written 2026-08-18, before the timestep was
+fixed): "a diurnal phase error integrates out of a daily total" was TOO CLEAN.** A 12 h shift does not
+merely redistribute rain *within* a day — it displaces rain **across day boundaries**, moving a monsoon
+burst from day *D* to *D+1*. It averages out over a long climatology; it does **not** average out for
+the individual days a flood system exists to get right. The error was therefore never fully harmless
+even at daily resolution. At 3-hourly it is direct.
+
+⇒ **Consequences, binding:**
+- **M-A7 (temporal characterisation) moves onto the critical path.** The elevation-banded, observation-
+  derived diurnal profile is no longer optional context — it is the only defensible sub-daily timing
+  source we have, because no available model of this class gets the phase right.
+- **The lightning ask (OD-8) is now urgent rather than a cheap option.** It is the one timing source
+  that is independent of precipitation retrieval, so it can validate phase where gauges are sparse and
+  satellites struggle over terrain.
+- **M-A10's co-located adjudication becomes load-bearing**, not merely interesting: if our Group A
+  high-altitude diurnal signal is noise-floor contamination, a 3-hourly product built on it would
+  encode an artefact into operational timing.
+- **OD-10's forcing seam matters more, not less.** If DHM's parallel downscaling projects deliver a
+  convection-permitting product, that is the *physical* fix for phase; our interface must be able to
+  take it without redesign.
+
+**Owner clarification, same day: v1 delivers BOTH a daily AND a 3-hourly product.** So the earlier
+open question — cycle cadence vs output resolution — is closed in the direction that sets the
+requirement at its **strongest**:
+
+| Product | What a phase error does | What it requires |
+|---|---|---|
+| **3-hourly** | ~12 h ⇒ **four timesteps** of displacement — rain in the wrong part of the day | the full **intra-day profile** |
+| **daily** | displaces rain **across the day boundary** — a burst lands on *D+1* instead of *D* | correct **day-attribution** |
+
+**One fix serves both, and that is the useful part:** getting the intra-day phase right *necessarily*
+fixes day-attribution, because day-boundary displacement is just the phase error crossing midnight.
+There is no trade-off between the two products and no reason to build two corrections — **the 3-hourly
+requirement dominates, and the daily product inherits the benefit for free.**
+
+**Unchanged by any of this:** vision **D6/D9** stand. No numeric undercatch correction at any timestep;
+the flood-safety asymmetry — correcting forcing *down* toward undercatching gauges injects a **dry bias
+into a flood-forecasting system** — is independent of resolution.
 
 ## Decisions register — all resolved 2026-08-12
 

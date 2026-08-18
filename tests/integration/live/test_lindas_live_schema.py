@@ -28,13 +28,19 @@ See Plan 058 §T1 for the recommended roster-widening follow-up.
 from __future__ import annotations
 
 import math
+import time
 from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
 import pytest
 
+from sapphire_flow.adapters.bafu_observation import BafuObservationAdapter
 from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
+from sapphire_flow.adapters.lindas_rate_limiter import (
+    LINDAS_RETRY_FLOOR_S,
+    TokenBucketLindasLimiter,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import GeoCoord
 from sapphire_flow.types.enums import (
@@ -156,6 +162,19 @@ def _make_reference_stations() -> list[StationConfig]:
     ]
 
 
+@pytest.fixture(scope="module")
+def _shared_live_limiter() -> TokenBucketLindasLimiter:
+    """Major fix (round 2): one limiter shared by EVERY adapter this module
+    constructs. Each test class used to build its own fresh (full-bucket)
+    limiter, so `TestLiveLindasRateLimit`'s zero-429 assertion started
+    immediately after `TestLiveLindasSchema` had already spent the real
+    upstream bucket on 7 live requests — the local model had no idea, and
+    would send its own first burst unpaced straight into a 429. A single
+    limiter instance tracks the REAL upstream state across every request
+    this module makes, live or not."""
+    return TokenBucketLindasLimiter()
+
+
 @pytest.mark.live_lindas
 class TestLiveLindasSchema:
     """Live-endpoint schema-drift check for BAFU LINDAS.
@@ -163,10 +182,14 @@ class TestLiveLindasSchema:
     Only runs when ``-m live_lindas`` is passed explicitly.
     """
 
-    def test_reference_station_quorum_returns_well_formed_observations(self) -> None:
+    def test_reference_station_quorum_returns_well_formed_observations(
+        self, _shared_live_limiter: TokenBucketLindasLimiter
+    ) -> None:
         """River quorum ≥1 station non-empty; global river-parameter coverage passes."""
         client = httpx.Client(timeout=_LIVE_TIMEOUT_S)
-        adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
+        adapter = HydroScraperAdapter(
+            endpoint=_ENDPOINT, http_client=client, limiter=_shared_live_limiter
+        )
         stations = _make_reference_stations()
         since = {s.id: ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)) for s in stations}
 
@@ -242,3 +265,68 @@ class TestLiveLindasSchema:
                 f"station {obs.station_id}: unexpected parameter {obs.parameter!r} — "
                 "LINDAS schema may have changed"
             )
+
+
+@pytest.mark.live_lindas
+class TestLiveLindasRateLimit:
+    """Plan 175 T6 — the only test that would catch BAFU changing the
+    measured burst ceiling (docs/decisions/bafu-lindas-rate-limit.md). This
+    test is ITSELF a LINDAS caller (D6), so it goes through the same shared
+    limiter as every other caller — otherwise the gate would become a
+    source of the 429s it exists to prevent.
+    """
+
+    def test_burst_of_calls_beyond_the_bucket_all_eventually_succeed(
+        self, _shared_live_limiter: TokenBucketLindasLimiter
+    ) -> None:
+        """Major fix: elapsed time alone cannot prove proactive pacing is
+        doing anything — if BAFU's own 429-retry-and-recover behaviour
+        happens to take about as long as our pacing would, this assertion
+        stays green even with pacing silently removed, and it stays green
+        even if BAFU quietly raises its ceiling (our bucket would just pace
+        more calls than strictly necessary, still burning >= the expected
+        wall-clock). The only signal that isolates "we paced correctly" from
+        "we got rate-limited and recovered" is the actual response statuses:
+        a correctly paced operational caller should see ZERO 429s.
+
+        Uses `_shared_live_limiter` (round 2 fix) — a fresh limiter here
+        would think the upstream bucket is full even though
+        `TestLiveLindasSchema` already spent it on 7 real requests earlier
+        in this module."""
+        statuses: list[int] = []
+
+        def _record_status(response: httpx.Response) -> None:
+            statuses.append(response.status_code)
+
+        client = httpx.Client(
+            timeout=_LIVE_TIMEOUT_S, event_hooks={"response": [_record_status]}
+        )
+        adapter = BafuObservationAdapter(
+            endpoint=_ENDPOINT, http_client=client, limiter=_shared_live_limiter
+        )
+
+        n_calls = 5  # > the measured burst-3 ceiling
+        started_at = time.monotonic()
+        for _ in range(n_calls):
+            rows = adapter.fetch_all_observations()
+            assert rows, "whole-graph fetch returned zero rows"
+        elapsed_s = time.monotonic() - started_at
+
+        assert 429 not in statuses, (
+            f"{statuses.count(429)} of {len(statuses)} underlying HTTP "
+            f"response(s) came back 429 across {n_calls} calls — proactive "
+            f"pacing did not prevent rate limiting (statuses: {statuses})"
+        )
+
+        # Secondary, informational bound: n_calls beyond the burst-3 capacity
+        # must each pay at least the retry floor in pacing. This is NOT the
+        # primary gate (see docstring) — if BAFU raised the ceiling this
+        # bound stops binding tightly, which is a prompt to update
+        # bafu-lindas-rate-limit.md, not evidence pacing regressed on its
+        # own (the 429-free assertion above is what actually proves that).
+        min_expected_s = (n_calls - 3) * LINDAS_RETRY_FLOOR_S
+        assert elapsed_s >= min_expected_s, (
+            f"{n_calls} calls completed in {elapsed_s:.1f}s — expected pacing "
+            f"to take at least {min_expected_s:.1f}s if the burst-3 ceiling "
+            "still holds"
+        )

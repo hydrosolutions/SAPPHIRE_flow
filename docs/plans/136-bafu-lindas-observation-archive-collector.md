@@ -50,6 +50,25 @@ or were the loop's own additions. Final locked design:
 The remaining `/plan` "majors" were the loop re-inflating its own dedup; the design is now proportionate and
 internally consistent. **Owner owns the READY flip.**
 
+**Two corrections from Plan 175 (2026-08-17), stated as corrections, not quiet edits:**
+
+1. **The `:05` cron this plan's T8/T9 design assumed is WRONG — it collided with `ingest-observations`'s
+   `*/5 * * * *` tick, every hour, against LINDAS's measured 3-request burst ceiling.** Plan 175 D4/T4 moved
+   this collector's cron to `37 * * * *` (`docker-compose.yml` init env fallback + `cli/register_deployments.py`
+   Python fallback + this plan's own `config/overlays/mac-mini.toml` comment, all three updated). The
+   `hourly-at-:05` cadence reasoning in §"Live LINDAS probe evidence" and the T5/T9 task text below is
+   superseded by this correction — read `:05` there as `:37`.
+2. **The 429 fatal-on-first-attempt bug this plan's T8 heartbeat design did not anticipate is fixed.**
+   `BafuObservationAdapter._post_with_retries` (T2 below) now routes through the shared
+   `adapters/lindas_rate_limiter.py` limiter (Plan 175 T1/T2): a 429 is retried (paced, bounded) instead of
+   becoming an immediate fatal `AdapterError`. T8's CRITICAL-heartbeat contract (a total failure still writes
+   `CRITICAL` before re-raising) is unchanged and still holds — a 429 now only reaches that path after the
+   limiter's own retry budget is exhausted, not on the very first response.
+
+This plan's `cadence = hourly` finding (§"Live LINDAS probe evidence") is **also** falsified — LINDAS
+actually publishes on a 10-minute grid, so an hourly poll was discarding ~83% of observations. That
+correction, with its measurement, belongs to **Plan 176** (which depends on Plan 175), not here.
+
 ## Context — collect now, because LINDAS has no history
 
 LINDAS (`lindas.admin.ch/foen/hydro`) serves BAFU river-gauge **observations** in **real time only** —
