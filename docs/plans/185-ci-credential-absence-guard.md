@@ -29,6 +29,22 @@ recurs for fork PRs, for a rotated-and-not-yet-mirrored token, and for any futur
 private dependency — and each time it presents as a broken build rather than as a
 missing credential.
 
+## ⚖️ Proportionality — read before proposing any addition (owner, 2026-08-18)
+
+**This is a ~3-file change**: one step in `ci.yml`, one assertion, one paragraph in
+`docs/standards/cicd.md`. It is a guard around an install command, not a subsystem.
+
+Reviewers: **ask what to REMOVE before asking what to add.** Plan 164 reached 16
+requirements before a proportionality pass cut it to 109 lines — do not repeat that
+here. An addition earns its place only by naming the concrete failure it prevents; a
+failure that has never occurred and has no mechanism to occur is not one.
+
+Explicitly **not** wanted: an abstraction layer over CI config, a general
+credential-management framework, retry/backoff logic, matrix expansion, a new script
+under `tools/`, or extending the guard to secrets other than `AQUACAST_TOKEN` (D5).
+If the guard cannot be expressed as a readable shell conditional in the workflow, the
+design is wrong — say so rather than building scaffolding around it.
+
 ## The design fork this must resolve
 
 The naive fix — skip the extra whenever the token is missing — **re-opens the exact
