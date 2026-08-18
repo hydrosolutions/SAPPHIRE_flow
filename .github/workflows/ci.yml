@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     # Plan 185 D6 — pinned exactly. Specifying ANY permissions block zeroes the
     # unspecified ones, so contents: read must be restated here or checkout
-    # breaks; pull-requests: read is new, for the `gh pr diff` lock-change check
+    # breaks; pull-requests: read is new, for the `gh api` lock-change check
     # below.
     permissions: { contents: read, pull-requests: read }
     env:
@@ -104,25 +104,33 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-      # Plan 185 — GitHub structurally withholds Actions secrets from
-      # Dependabot-triggered runs, so AQUACAST_TOKEN_PRESENT is false on every
-      # Dependabot PR even though the secret exists (mirrored into the
-      # Dependabot store too, see docs/standards/cicd.md). Detect whether
-      # THIS PR touches uv.lock — the one case where the extra's resolution
-      # can actually change (D1 case 3) — so the steps below can tell "safe
-      # to degrade" apart from "must fail". Guarded to the one case that
-      # needs it: never consulted on `push`, where the token is present
-      # anyway (case 1) and `github.event.pull_request.number` would be
-      # empty, which `gh` treats as "no selector" and falls back to guessing
-      # a PR from the branch.
+      # Plan 185 — GitHub structurally withholds Actions secrets from runs it
+      # attributes to Dependabot, so AQUACAST_TOKEN_PRESENT is false on every
+      # such run even though the secret exists (mirrored into the Dependabot
+      # store too, see docs/standards/cicd.md). That attribution is keyed on
+      # `github.actor` — the identity that triggered THIS run — not on the
+      # PR's author: a maintainer can push a further commit onto a
+      # Dependabot-opened branch, and that push (and the `pull_request`
+      # `synchronize` event it fires) runs as the maintainer, with secrets
+      # restored. Checking `github.event.pull_request.user.login` instead
+      # would still read "dependabot[bot]" for that human-triggered run and
+      # misclassify a real missing-credential failure as an expected
+      # degrade. Detect whether THIS PR touches uv.lock — the one case
+      # where the extra's resolution can actually change (D1 case 3) — so
+      # the steps below can tell "safe to degrade" apart from "must fail".
+      # Guarded to the one case that needs it: never consulted on `push`,
+      # where the token is present anyway (case 1) and
+      # `github.event.pull_request.number` would be empty, which `gh`
+      # treats as "no selector" and falls back to guessing a PR from the
+      # branch.
       - name: Detect uv.lock change (Dependabot degraded-coverage guard)
         if: >-
           env.AQUACAST_TOKEN_PRESENT != 'true' &&
           github.event_name == 'pull_request' &&
-          github.event.pull_request.user.login == 'dependabot[bot]'
+          github.actor == 'dependabot[bot]'
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          if gh pr diff "${{ github.event.pull_request.number }}" --name-only > "$RUNNER_TEMP/pr-files.txt"; then
+          if gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/pr-files.txt"; then
             if grep -qxF 'uv.lock' "$RUNNER_TEMP/pr-files.txt"; then
               echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
             else
@@ -134,19 +142,19 @@ jobs:
             echo "::error::Could not read this PR's changed files via gh; failing closed (treating as if uv.lock changed)."
             echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
           fi
-      # D1 case 3 — token absent, and NOT the one case (Dependabot PR,
-      # uv.lock untouched) that is allowed to degrade instead. Covers both
-      # "the secret was deleted/misconfigured" and "this PR changes
+      # D1 case 3 — token absent, and NOT the one case (Dependabot-actor
+      # run, uv.lock untouched) that is allowed to degrade instead. Covers
+      # both "the secret was deleted/misconfigured" and "this PR changes
       # uv.lock", which is where the extra's resolution is most likely to
       # actually break (OD-2).
       - name: AQUACAST_TOKEN absent — fail
         if: >-
           env.AQUACAST_TOKEN_PRESENT != 'true' &&
           !(github.event_name == 'pull_request' &&
-            github.event.pull_request.user.login == 'dependabot[bot]' &&
+            github.actor == 'dependabot[bot]' &&
             env.UV_LOCK_CHANGED == 'false')
         run: |
-          echo "::error::AQUACAST_TOKEN is not available to this run. GitHub structurally withholds Actions secrets from Dependabot-triggered runs, so this may be expected — but a deleted/misconfigured secret looks identical, and a PR that changes uv.lock cannot skip the extra either way. Mirror AQUACAST_TOKEN into BOTH the Actions and Dependabot secret stores (Settings > Secrets and variables), matching RECAP_DG_CLIENT_TOKEN."
+          echo "::error::AQUACAST_TOKEN is not available to this run. GitHub structurally withholds Actions secrets from runs it attributes to Dependabot, so this may be expected — but a deleted/misconfigured secret looks identical, and a PR that changes uv.lock cannot skip the extra either way. Mirror AQUACAST_TOKEN into BOTH the Actions and Dependabot secret stores (Settings > Secrets and variables), matching RECAP_DG_CLIENT_TOKEN."
           exit 1
       # `--extra aquacast` ONLY here (owner, 2026-08-18), and only when the
       # token actually reached this run (Plan 185 D1 case 1) — otherwise the
@@ -157,15 +165,15 @@ jobs:
       - name: Install (aquacast extra)
         if: env.AQUACAST_TOKEN_PRESENT == 'true'
         run: uv sync --frozen --extra aquacast
-      # D1 case 2 / D3 — token absent, Dependabot PR, uv.lock untouched:
-      # degrade loudly instead of failing red. The plain sync still runs
-      # everything else in tests/unit/; only the aquacast shim's own tests
-      # (behind importorskip) lose coverage on this run.
+      # D1 case 2 / D3 — token absent, Dependabot-actor run, uv.lock
+      # untouched: degrade loudly instead of failing red. The plain sync
+      # still runs everything else in tests/unit/; only the aquacast shim's
+      # own tests (behind importorskip) lose coverage on this run.
       - name: Install (no aquacast extra — degraded)
         if: >-
           env.AQUACAST_TOKEN_PRESENT != 'true' &&
           github.event_name == 'pull_request' &&
-          github.event.pull_request.user.login == 'dependabot[bot]' &&
+          github.actor == 'dependabot[bot]' &&
           env.UV_LOCK_CHANGED == 'false'
         run: |
           uv sync --frozen

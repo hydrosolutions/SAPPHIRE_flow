@@ -441,10 +441,10 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 1 | `lint` | `aquasecurity/trivy-action` (fs scan, `uses:`) | — | `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .` | No (but requires trivy installed) |
 | 2 | `unit` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | 2 | `unit` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
-| 2 | `unit` | `Detect uv.lock change (Dependabot degraded-coverage guard)` — `gh pr diff --name-only` (Plan 185 D6) | — | n/a — only runs when `AQUACAST_TOKEN` is absent on a Dependabot PR | Yes — reads the PR's changed-files list via `gh`, needs `pull-requests: read` |
+| 2 | `unit` | `Detect uv.lock change (Dependabot degraded-coverage guard)` — `gh api --paginate .../pulls/.../files` matched on `filename` and `previous_filename` (Plan 185 D6) | — | n/a — only runs when `AQUACAST_TOKEN` is absent on a run `github.actor` attributes to Dependabot | Yes — reads the PR's changed-files list via `gh`, needs `pull-requests: read` |
 | 2 | `unit` | `AQUACAST_TOKEN absent — fail` (Plan 185 D1 case 3) | — | n/a — fails only when the token is absent outside the one degrade-eligible case | Yes — reachability of `secrets.AQUACAST_TOKEN` is a CI-only condition |
 | 2 | `unit` | `Install (aquacast extra)` — `uv sync --frozen --extra aquacast` (Plan 185 D1 case 1) | — | `uv sync --extra aquacast` (needs a local `aquacast` credential) | No — requires `AQUACAST_TOKEN` |
-| 2 | `unit` | `Install (no aquacast extra — degraded)` — `uv sync --frozen` + `::warning::` (Plan 185 D1 case 2 / D3) | — | `uv sync` | Yes — only runs when `AQUACAST_TOKEN` is absent on a Dependabot PR |
+| 2 | `unit` | `Install (no aquacast extra — degraded)` — `uv sync --frozen` + `::warning::` (Plan 185 D1 case 2 / D3) | — | `uv sync` | Yes — only runs when `AQUACAST_TOKEN` is absent on a run `github.actor` attributes to Dependabot |
 | 2 | `unit` | `Prove the aquacast shim test ran` — asserts `1 passed` on the shim's discovery test (Plan 185 D4) | — | `uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q` (requires the `aquacast` extra) | No (but requires `AQUACAST_TOKEN`) |
 | 2 | `unit` | `uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v` | — | `uv run pytest tests/unit/` (requires system deps above) | No (but requires system deps) |
 | 2 | `wheel-only-guard` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
@@ -488,12 +488,15 @@ that need it, and the failure reads as a broken dependency install, not a missin
 credential (`fatal: could not read Username for 'https://github.com'`).
 
 The `unit` job's `--extra aquacast` install (`ci.yml:103` at introduction, Plan 159)
-guards against this: when `AQUACAST_TOKEN` is unreachable, a Dependabot PR that does not
-touch `uv.lock` degrades to a plain `uv sync --frozen` with a visible `::warning::`
-naming the lost `tests/unit/models/test_aquacast_shim.py` coverage, while every other
-case — the secret missing outright, or a PR (Dependabot or not) that changes `uv.lock`
-— still fails, naming `AQUACAST_TOKEN` and the store it belongs in. See the `unit` job
-rows in the table above for the exact step sequence.
+guards against this: when `AQUACAST_TOKEN` is unreachable on a run `github.actor`
+attributes to Dependabot, and that run's PR does not touch `uv.lock`, it degrades to a
+plain `uv sync --frozen` with a visible `::warning::` naming the lost
+`tests/unit/models/test_aquacast_shim.py` coverage. Every other case — the secret
+missing outright, a PR (Dependabot-authored or not) that changes `uv.lock`, or a
+Dependabot-opened PR that a maintainer has since pushed a further commit to (that
+push's run carries the maintainer as `github.actor`, not Dependabot) — still fails,
+naming `AQUACAST_TOKEN` and the store it belongs in. See the `unit` job rows in the
+table above for the exact step sequence.
 
 ### `dependency-safety.yml` (Plan 119)
 

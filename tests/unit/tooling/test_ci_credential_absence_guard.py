@@ -4,16 +4,25 @@ Structural assertions over the parsed ``unit`` job in ``ci.yml`` (steps
 selected by ``name``, never by regex over the raw text — see
 ``test_trivy_gate_observability.py``) plus prose assertions on
 ``docs/standards/cicd.md``. In the manner of ``test_recap_wheel_guard.py``
-(Plan 082 Task 2H): a single selector each, not a bespoke evaluator for the
-`if:` boolean expressions — Plan 185's own proportionality note explicitly
-rejects a Python re-implementation of GitHub Actions expression semantics as
-disproportionate to a two-branch conditional.
+(Plan 082 Task 2H): one guard, one file, structural selectors — not a
+bespoke evaluator for the `if:` boolean expressions. Where an `if:`
+condition is itself the safety property under test (D1 case 3's fail gate,
+the Dependabot-actor guards), assertions compare the FULL normalized
+condition string, not substrings — a substring check passes even after the
+condition's `!`/`&&`/`||` structure is broken.
 
 Three outcomes (D1):
 1. Token present -> install the extra (unchanged).
-2. Token absent, Dependabot PR, uv.lock NOT touched -> plain sync + warning.
-3. Token absent, anything else (including a Dependabot PR that DOES touch
+2. Token absent, run triggered by the Dependabot actor, uv.lock NOT touched
+   -> plain sync + warning.
+3. Token absent, anything else (including such a run whose PR DOES touch
    uv.lock) -> fail, naming AQUACAST_TOKEN.
+
+D6 (fixer round): "Dependabot-triggered" is decided by `github.actor` (who
+triggered THIS run), never `github.event.pull_request.user.login` (the PR's
+original author) — a maintainer pushing a further commit onto a
+Dependabot-opened branch runs as the maintainer, and the author-based
+predicate would misclassify that human-triggered run as degrade-eligible.
 """
 
 from __future__ import annotations
@@ -36,6 +45,18 @@ def _cicd_md_text() -> str:
     return (_REPO_ROOT / "docs/standards/cicd.md").read_text()
 
 
+def _cicd_md_new_section() -> str:
+    """Just the Plan 185 runbook paragraph, not the whole document — a
+    passing assertion here must mean this specific section says the thing,
+    not that the word appears somewhere else on the page."""
+    marker = "### Private dependency credentials — both secret stores (Plan 185)"
+    text = _cicd_md_text()
+    start = text.index(marker)
+    rest = text[start:]
+    next_heading = rest.find("\n### ", 1)
+    return rest if next_heading == -1 else rest[:next_heading]
+
+
 def _unit_job() -> dict[str, Any]:
     return _ci_yml()["jobs"][_JOB_NAME]
 
@@ -45,6 +66,13 @@ def _step(name: str) -> dict[str, Any]:
         if step.get("name") == name:
             return step
     raise AssertionError(f"no step named {name!r} in the {_JOB_NAME} job")
+
+
+def _normalized_if(name: str) -> str:
+    """The step's `if:` with YAML folding/indentation whitespace collapsed,
+    so equality checks pin the boolean structure (`!`, `&&`, `||`, operand
+    order) without being sensitive to incidental line-wrapping."""
+    return " ".join(_step(name)["if"].split())
 
 
 class TestTokenPresenceReadFromJobLevelEnv:
@@ -68,36 +96,85 @@ class TestTokenPresenceReadFromJobLevelEnv:
 class TestJobPermissions:
     """D6 — pinned permissions block; contents: read must be restated."""
 
-    def test_job_restates_contents_read(self) -> None:
-        assert _unit_job().get("permissions", {}).get("contents") == "read"
+    def test_job_permissions_are_exactly_contents_and_pull_requests_read(
+        self,
+    ) -> None:
+        assert _unit_job().get("permissions") == {
+            "contents": "read",
+            "pull-requests": "read",
+        }
 
-    def test_job_grants_pull_requests_read(self) -> None:
-        assert _unit_job().get("permissions", {}).get("pull-requests") == "read"
+
+class TestActorNotAuthorDecidesDependabotAttribution:
+    """D6 fixer round — GitHub withholds secrets by who triggered THIS run
+    (`github.actor`), not by the PR's original author
+    (`github.event.pull_request.user.login`), which stays 'dependabot[bot]'
+    even after a maintainer pushes a further commit to the branch."""
+
+    def test_no_condition_in_the_unit_job_reads_pull_request_user_login(
+        self,
+    ) -> None:
+        for step in _unit_job()["steps"]:
+            condition = step.get("if", "")
+            assert "user.login" not in condition, (
+                f"step {step.get('name')!r} still keys Dependabot "
+                "attribution off the PR author, not github.actor"
+            )
+
+    def test_exactly_the_three_dependabot_gated_steps_read_github_actor(
+        self,
+    ) -> None:
+        gated = {
+            step["name"]
+            for step in _unit_job()["steps"]
+            if "dependabot[bot]" in step.get("if", "")
+        }
+        assert gated == {
+            "Detect uv.lock change (Dependabot degraded-coverage guard)",
+            "AQUACAST_TOKEN absent — fail",
+            "Install (no aquacast extra — degraded)",
+        }
+        for name in gated:
+            assert "github.actor == 'dependabot[bot]'" in _step(name)["if"]
 
 
 class TestLockChangeDetection:
-    """D6 — exact uv.lock diff via `gh pr diff`, guarded to the one case that
-    needs it; fails closed on an API failure."""
+    """D6 — exact uv.lock touch via the paginated pull-request-files API,
+    guarded to the one case that needs it; fails closed on an API failure."""
 
-    def test_detect_step_exists_and_is_guarded_to_dependabot_pull_requests(
-        self,
-    ) -> None:
-        step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
-        condition = step["if"]
-        assert "env.AQUACAST_TOKEN_PRESENT != 'true'" in condition
-        assert "github.event_name == 'pull_request'" in condition
-        assert "github.event.pull_request.user.login == 'dependabot[bot]'" in condition
+    def test_detect_step_condition_matches_exactly(self) -> None:
+        assert _normalized_if(
+            "Detect uv.lock change (Dependabot degraded-coverage guard)"
+        ) == (
+            "env.AQUACAST_TOKEN_PRESENT != 'true' && "
+            "github.event_name == 'pull_request' && "
+            "github.actor == 'dependabot[bot]'"
+        )
 
     def test_detect_step_uses_gh_token_env(self) -> None:
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
         assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
 
-    def test_detect_step_reads_pr_diff_name_only(self) -> None:
+    def test_detect_step_reads_the_paginated_files_api_not_a_capped_diff(
+        self,
+    ) -> None:
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
-        assert (
-            'gh pr diff "${{ github.event.pull_request.number }}" --name-only'
-            in step["run"]
-        )
+        run = step["run"]
+        # `gh pr diff --name-only` only ever shows a rename's post-rename
+        # path (a rename-away from uv.lock is invisible to it) and GitHub
+        # truncates a PR diff past 300 changed files. The paginated
+        # pull-request-files endpoint has neither limit.
+        assert "gh api" in run
+        assert "--paginate" in run
+        assert "/pulls/" in run and "/files" in run
+        assert "gh pr diff" not in run
+        assert "--name-only" not in run
+
+    def test_detect_step_checks_both_filename_and_previous_filename(self) -> None:
+        step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
+        run = step["run"]
+        assert ".filename" in run
+        assert ".previous_filename" in run
 
     def test_detect_step_matches_uv_lock_exactly_not_a_substring(self) -> None:
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
@@ -106,10 +183,10 @@ class TestLockChangeDetection:
     def test_detect_step_fails_closed_on_gh_failure(self) -> None:
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
         run = step["run"]
-        # the success/failure branch of the `gh pr diff` command must be
-        # tested BEFORE its output is trusted (an `if gh ...; then` guard),
-        # and the else branch must set UV_LOCK_CHANGED=true (fail closed).
-        assert "if gh pr diff" in run
+        # the success/failure branch of the `gh api` command must be tested
+        # BEFORE its output is trusted (an `if gh ...; then` guard), and the
+        # else branch must set UV_LOCK_CHANGED=true (fail closed).
+        assert run.strip().startswith("if gh api")
         else_clause = run.split("else", 1)[1]
         assert "UV_LOCK_CHANGED=true" in else_clause
 
@@ -119,18 +196,31 @@ class TestLockChangeDetection:
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
         assert "github.event_name == 'pull_request'" in step["if"]
 
+    def test_only_the_detect_step_ever_sets_uv_lock_changed(self) -> None:
+        # If any later step could also write UV_LOCK_CHANGED, the fail
+        # step's "fails closed on API failure" guarantee could be
+        # overwritten before it is read.
+        setters = [
+            step["name"]
+            for step in _unit_job()["steps"]
+            if "UV_LOCK_CHANGED=" in step.get("run", "")
+        ]
+        assert setters == ["Detect uv.lock change (Dependabot degraded-coverage guard)"]
+
 
 class TestFailCase:
-    """D1 case 3 — token absent, and not the one degrade-eligible case."""
+    """D1 case 3 — token absent, and not the one degrade-eligible case.
+    The single most safety-critical condition in this guard: its exact
+    structure (leading `!`, the `&&`-wrapped negated clause) is what makes
+    "must fail" and "safe to degrade" mutually exclusive."""
 
-    def test_fail_step_condition_excludes_only_the_degrade_eligible_case(
-        self,
-    ) -> None:
-        step = _step("AQUACAST_TOKEN absent — fail")
-        condition = step["if"]
-        assert "env.AQUACAST_TOKEN_PRESENT != 'true'" in condition
-        assert "dependabot[bot]" in condition
-        assert "env.UV_LOCK_CHANGED == 'false'" in condition
+    def test_fail_step_condition_matches_exactly(self) -> None:
+        assert _normalized_if("AQUACAST_TOKEN absent — fail") == (
+            "env.AQUACAST_TOKEN_PRESENT != 'true' && "
+            "!(github.event_name == 'pull_request' && "
+            "github.actor == 'dependabot[bot]' && "
+            "env.UV_LOCK_CHANGED == 'false')"
+        )
 
     def test_fail_step_names_the_token_and_exits_nonzero(self) -> None:
         step = _step("AQUACAST_TOKEN absent — fail")
@@ -153,16 +243,17 @@ class TestInstalledCase:
 
 
 class TestDegradedCase:
-    """D1 case 2 + D3 — plain sync, visible ::warning:: annotation."""
+    """D1 case 2 + D3 — plain sync, visible ::warning:: annotation. The
+    condition is the exact negation-free counterpart of the fail step's:
+    both must partition the "token absent" space with no overlap and no gap."""
 
-    def test_degraded_step_condition_requires_dependabot_and_untouched_lock(
-        self,
-    ) -> None:
-        step = _step("Install (no aquacast extra — degraded)")
-        condition = step["if"]
-        assert "env.AQUACAST_TOKEN_PRESENT != 'true'" in condition
-        assert "dependabot[bot]" in condition
-        assert "env.UV_LOCK_CHANGED == 'false'" in condition
+    def test_degraded_step_condition_matches_exactly(self) -> None:
+        assert _normalized_if("Install (no aquacast extra — degraded)") == (
+            "env.AQUACAST_TOKEN_PRESENT != 'true' && "
+            "github.event_name == 'pull_request' && "
+            "github.actor == 'dependabot[bot]' && "
+            "env.UV_LOCK_CHANGED == 'false'"
+        )
 
     def test_degraded_step_still_syncs_the_base_project(self) -> None:
         step = _step("Install (no aquacast extra — degraded)")
@@ -236,13 +327,16 @@ class TestFinalUnitTestStepUnchanged:
 
 
 class TestCicdMdDocumentsBothSecretStores:
-    """T2 — the runbook paragraph."""
+    """T2 — the runbook paragraph, scoped to the new section (not the whole
+    document, where these words could appear unrelated to this guard)."""
 
-    def test_states_the_token_must_be_mirrored_into_both_stores(self) -> None:
-        text = _cicd_md_text()
-        assert "AQUACAST_TOKEN" in text
-        assert "Dependabot" in text
+    def test_new_section_names_both_stores_by_name(self) -> None:
+        section = _cicd_md_new_section()
+        assert "AQUACAST_TOKEN" in section
+        assert "Dependabot" in section
+        assert "Actions" in section
+        assert "both" in section.lower()
 
-    def test_names_recap_dg_client_token_as_the_precedent(self) -> None:
-        text = _cicd_md_text()
-        assert "RECAP_DG_CLIENT_TOKEN" in text
+    def test_new_section_names_recap_dg_client_token_as_the_precedent(self) -> None:
+        section = _cicd_md_new_section()
+        assert "RECAP_DG_CLIENT_TOKEN" in section
