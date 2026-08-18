@@ -114,7 +114,15 @@ class DeploymentConfig(BaseModel):
     # the "double-dark" regression this flip fixes. "hybrid" resolves the
     # per-parameter MeteoSwiss priority chain (Plan 115b4 §5B; no CAMELS-CH
     # tier) at read time. "single" remains selectable as an explicit opt-out.
-    reanalysis_source: Literal["single", "hybrid"] = "hybrid"
+    # "era5_land" (Plan 183 T4) reads the `historical_forcing` rows the
+    # Plan 183 backfill wrote under ForcingSource.ERA5_LAND — ERA5-Land read
+    # DIRECTLY from the `sloth-dynamic` store (the same store aquacast's
+    # training lineage reads), via the same generic per-source reader every
+    # other single-source mode uses. This is distinct from the Data-Gateway-
+    # mediated ERA5-Land path `architecture-context.md` describes for
+    # production Nepal ingest (§ "SAPPHIRE Data Gateway") — that remains a
+    # separate, later integration. v0 (Swiss) has no reason to select this.
+    reanalysis_source: Literal["single", "hybrid", "era5_land"] = "hybrid"
 
     alert_model_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
     forecast_combination_strategy: ModelCombinationStrategy = (

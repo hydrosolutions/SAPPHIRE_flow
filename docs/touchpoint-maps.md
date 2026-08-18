@@ -25,6 +25,13 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
   renaming, unit conversion and precipitation **de-accumulation** are adapter-private if-chains, and
   `types/forcing_schema.py` declares the canonical contract with **zero consumers**. A
   rate-vs-accumulation mismatch therefore produces plausible **wrong** forcing rather than an error.
+  ⚠️ **Plan-number collision, both filed 2026-08-18**: `183-forcing-canonicalisation-seam.md`
+  (this DRAFT) is a DIFFERENT plan from `183-era5-land-swiss-forcing.md` (READY, implemented) — do
+  not conflate them. `Era5LandReanalysisAdapter` (Plan 183 era5-land) is exactly the "second adapter"
+  F1 warns about: it follows the SAME pre-existing adapter-private mapping-table pattern
+  `meteoswiss_open_data_reanalysis.py` uses (not the not-yet-built seam), so it is consistent with
+  today's convention but does not reduce F1's risk — worth the owner's attention before a THIRD
+  source (e.g. IMERG/M-A5b) is added.
   Also: `exact_extract_grid_extractor.py:98` **overwrites** the CRS (`.rio.write_crs`) instead of
   reading it, so a non-4326 grid is silently mis-georeferenced; and `adapters/__init__.py` is empty —
   there is no registry to extend.

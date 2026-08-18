@@ -1,13 +1,16 @@
-"""Plan 072 T3 / Plan 115b4 §5D — acceptance tests for the ``reanalysis_source``
-flag.
+"""Plan 072 T3 / Plan 115b4 §5D / Plan 183 T4 — acceptance tests for the
+``reanalysis_source`` flag.
 
-``DeploymentConfig.reanalysis_source: Literal["single", "hybrid"] = "hybrid"``.
-Plan 115b4 §5D (Release A, the last step, only after §5A's parameter-drop fix
-lands) flips the default from ``"single"`` to ``"hybrid"`` — the "double-dark"
-regression means ``"single"`` can no longer read MeteoSwiss's per-product
-source tags via a station's single ``nwp_source`` binding. ``"single"``
-remains selectable (opt-out) for any station/deployment that needs it; any
-other value is rejected at the Pydantic boundary.
+``DeploymentConfig.reanalysis_source: Literal["single", "hybrid", "era5_land"]
+= "hybrid"``. Plan 115b4 §5D (Release A, the last step, only after §5A's
+parameter-drop fix lands) flips the default from ``"single"`` to
+``"hybrid"`` — the "double-dark" regression means ``"single"`` can no longer
+read MeteoSwiss's per-product source tags via a station's single
+``nwp_source`` binding. ``"single"`` remains selectable (opt-out) for any
+station/deployment that needs it. Plan 183 T4 adds ``"era5_land"`` — the v1
+(Nepal) ERA5-Land injection point, read via the same generic
+``PerSourceStoreReader`` every other single-source mode uses. Any other
+value is rejected at the Pydantic boundary.
 """
 
 from __future__ import annotations
@@ -34,6 +37,13 @@ class TestReanalysisSourceFlag:
         )
 
         assert cfg.reanalysis_source == "single"
+
+    def test_accepts_era5_land(self) -> None:
+        cfg = DeploymentConfig(
+            max_retention_days=_RETENTION, reanalysis_source="era5_land"
+        )
+
+        assert cfg.reanalysis_source == "era5_land"
 
     def test_rejects_invalid_value(self) -> None:
         with pytest.raises(ValidationError):

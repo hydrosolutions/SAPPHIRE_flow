@@ -37,6 +37,11 @@ class ForcingSource(Enum):
     # snowmelt), persisted under the literal `recap_gateway.py:_SNOW_SOURCE`.
     # Round-trips that same literal — see test_forcing_sources.py.
     RECAP_SNOW_REANALYSIS = "recap_snow_reanalysis"
+    # Plan 183: ERA5-Land daily aggregates read from the `sloth-dynamic` store
+    # (s3://sloth-dynamic/v1/era5/) — the same store aquacast's data plane
+    # (`aquaire`) reads. Written ALONGSIDE the MeteoSwiss rows under a
+    # distinct source so both lineages stay queryable/comparable (Plan 183 T2).
+    ERA5_LAND = "era5_land_sloth_dynamic"
 
 
 SOURCE_ATTRIBUTIONS: dict[ForcingSource, str] = {
@@ -53,4 +58,5 @@ SOURCE_ATTRIBUTIONS: dict[ForcingSource, str] = {
     # attribution-maintenance value, not a placeholder, and may be revised
     # then without re-opening this plan.
     ForcingSource.RECAP_SNOW_REANALYSIS: "SnowMapper Operational (MIT License, 2026)",
+    ForcingSource.ERA5_LAND: "ERA5-Land (Copernicus Climate Change Service, C3S)",
 }
