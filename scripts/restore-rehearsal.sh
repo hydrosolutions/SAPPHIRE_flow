@@ -165,8 +165,21 @@ last_value="${seq%%|*}"
 is_called="${seq##*|}"
 max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM pipeline_health" "${DB_NAME}")" \
     || fail "pipeline_health max(id) query failed"
-if [[ "${is_called}" == "f" && "${last_value}" == "${max_id}" ]]; then
-    fail "pipeline_health_id_seq: last_value == MAX(id) with is_called=false — next nextval() collides with an existing row"
+# The value the NEXT nextval() call on this sequence will emit: last_value
+# itself when is_called=false (nextval() has never been called against this
+# restored state, so the first call returns last_value verbatim), or
+# last_value+1 when is_called=true (nextval() already handed out
+# last_value, so the next call advances past it). An earlier round of this
+# check only handled the is_called=false branch, silently missing a real
+# collision: a restored is_called=true sequence whose last_value+1 still
+# equals an existing row's id.
+if [[ "${is_called}" == "t" ]]; then
+    next_val=$((last_value + 1))
+else
+    next_val="${last_value}"
+fi
+if [[ "${next_val}" -eq "${max_id}" ]]; then
+    fail "pipeline_health_id_seq: next nextval() (${next_val}) collides with an existing pipeline_health.id == ${max_id} (last_value=${last_value}, is_called=${is_called})"
 fi
 
 # Plausibility only — the restore container cannot reach production

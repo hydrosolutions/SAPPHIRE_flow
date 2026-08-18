@@ -73,6 +73,37 @@ fake invented the sequence it checked, hiding the bug):
       surfacing as some other query error — the exact class of bug that
       shipped in round one (`access_tokens_id_seq`, which never existed)
       and was hidden by a fake that simply invented the answer.
+
+Locked 2026-08-18, fourth round (independent Codex review of the (n)/(o)
+fixer commit found four further gaps, all fixed here):
+  (p) the collision predicate in (e)/(n) only ever checked the
+      is_called=false branch — when is_called=true, nextval() has already
+      handed out `last_value`, so the next call emits `last_value + 1`,
+      which can independently collide with MAX(id). The script now derives
+      the actual next-emitted value from `is_called` before comparing.
+  (q) the `to_regclass` fake in `_write_fake_docker` matched ANY relation
+      query (`*"to_regclass"*`), not just `pipeline_health_id_seq` — so a
+      regression that reverted the real script's guard to check
+      `access_tokens_id_seq` (while keeping `pipeline_health` in the error
+      text) would still have passed every test. The fake now matches only
+      the exact `to_regclass('pipeline_health_id_seq')` query text; any
+      other relation falls through to the fake's "unrecognised exec"
+      branch and fails the run.
+  (r) the fresh-database test asserted only the sole token after `--` in
+      the `createdb` argv, so a stray positional token BEFORE the
+      separator (e.g. `createdb -U postgres other -- rehearsal`) would
+      still have passed. The test now pins the full expected argv
+      (`["createdb", "-U", "postgres", "--", <db>]`) rather than a partial
+      shape.
+  (s) the `--network none` position test derived the image's index as
+      "the last token in argv", so a doubled-image invocation like
+      `docker run IMAGE --network none IMAGE` (which Docker actually
+      parses as running IMAGE with `--network`/`none`/`IMAGE` as its
+      container COMMAND, i.e. no isolation at all) would still have
+      passed. The test now requires the sentinel image to appear exactly
+      once and uses its real index.
+All four proven red against the pre-fix (n)/(o)-round script/tests and
+green after.
 """
 
 from __future__ import annotations
@@ -156,7 +187,7 @@ def _write_fake_docker(
                 echo "abcd1234ef56"
                 exit 0
                 ;;
-              *"to_regclass"*)
+              *"to_regclass('pipeline_health_id_seq')"*)
                 echo "{seq_exists}"
                 exit 0
                 ;;
@@ -380,6 +411,57 @@ class TestSequenceCollisionRisk:
 
         assert result.returncode == 0, result.stderr
 
+    def test_last_value_plus_one_equals_max_id_with_is_called_true_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """MAJOR regression guard: the collision predicate must also cover
+        is_called=true. When is_called=true, nextval() has already handed
+        out `last_value`, so the NEXT call emits `last_value + 1` — a
+        predicate that only ever checks the is_called=false branch (as an
+        earlier round of this script did) never fires here, even though
+        last_value + 1 colliding with an existing pipeline_health.id is
+        exactly the same class of bug."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="6",
+            seq_last_value="5",
+            seq_is_called="t",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert "PASS" not in result.stdout
+        assert "is_called" in result.stderr
+        assert "pipeline_health_id_seq" in result.stderr
+        assert len(_rm_calls(args_log)) == 1, (
+            "teardown must still happen when the sequence check fails"
+        )
+
+    def test_last_value_plus_one_below_max_id_with_is_called_true_passes(
+        self, tmp_path: Path
+    ) -> None:
+        """The healthy, common production case: is_called=true and
+        last_value already equals MAX(id) (nextval() was last used to
+        produce the highest existing row), so the next nextval() call
+        (last_value + 1) is one past MAX(id) and does not collide."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="5",
+            seq_last_value="5",
+            seq_is_called="t",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+
 
 class TestSequenceExistenceGuard:
     def test_missing_sequence_fails_loudly_and_names_it(self, tmp_path: Path) -> None:
@@ -445,15 +527,19 @@ class TestRestoresIntoFreshDatabase:
             f"createdb call must use '--' to unambiguously separate "
             f"options from the database name: {createdb_argv}"
         )
-        sep_index = createdb_argv.index("--")
-        positional = createdb_argv[sep_index + 1 :]
-        assert len(positional) == 1, (
-            f"expected exactly one positional argument (the database "
-            f"name) after '--', got {positional}: {createdb_argv}"
-        )
-        created_db = positional[0]
+        created_db = createdb_argv[-1]
         assert created_db != "postgres", (
             f"created database must not be 'postgres': {createdb_argv}"
+        )
+        # Pin the FULL argv, not merely "the sole token after --": a
+        # broken invocation with a stray positional BEFORE the separator
+        # (e.g. `createdb -U postgres other -- rehearsal`) would still
+        # satisfy a check that only inspects tokens after `--`, even
+        # though real createdb would reject or misinterpret that extra
+        # argument. Exact-argv equality closes that gap.
+        assert createdb_argv == ["createdb", "-U", "postgres", "--", created_db], (
+            f"unexpected createdb argv (stray positional token before or "
+            f"after '--'?): {createdb_argv}"
         )
 
         pg_restore_argv = _last_exec_argv(args_log, "pg_restore")
@@ -602,12 +688,24 @@ class TestNetworkIsolation:
 
         assert result.returncode == 0, result.stderr
         run_argv = _run_call_argv(args_log)
-        assert run_argv[-1] == sentinel_image, (
+        # Membership of the sentinel image in run_argv is not enough either:
+        # deriving image_idx as "the last token" (as an earlier round of
+        # this test did) would still pass a doubled-image invocation like
+        # `docker run IMAGE --network none IMAGE` — Docker takes the FIRST
+        # positional token as the image, so that command line actually runs
+        # with no --network isolation, yet "last token == sentinel_image"
+        # and "network_idx < len(argv)-1" would both hold. Requiring the
+        # image to appear exactly once pins its real, unambiguous position.
+        assert run_argv.count(sentinel_image) == 1, (
+            f"expected the image to appear exactly once in `docker run` "
+            f"argv: {run_argv}"
+        )
+        image_idx = run_argv.index(sentinel_image)
+        assert image_idx == len(run_argv) - 1, (
             f"expected the image to be the final positional argument of "
             f"`docker run`: {run_argv}"
         )
         network_idx = run_argv.index("--network")
-        image_idx = len(run_argv) - 1
         assert network_idx < image_idx, (
             f"--network must appear before the image argument, else "
             f"Docker treats it as the container's command: {run_argv}"

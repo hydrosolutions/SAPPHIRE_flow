@@ -104,7 +104,12 @@ satisfied; `createdb` now calls with an explicit `--` end-of-options marker, and
 database name is the sole positional token after it. (3) **minor** — the `--network none` test checked
 token membership only, not position, so `docker run IMAGE --network none` (which Docker parses as the
 container's *command*, not a `run` option) would have passed; the test now also asserts `--network none`
-precedes the image argument. All three proven red against the pre-fix script and green after.
+precedes the image argument. Items (1) and (2) proven red against the pre-fix script itself and green
+after. **Correction (fourth round, below): item (3) was not, in fact, proven red against the pre-fix
+production script** — that script already built `docker run -d --network none --name ... IMAGE` in the
+correct order, so a position assertion could only pass against it. It was proven red via a deliberately
+misordered/duplicated invocation constructed for the test (a mutation test), not against the actual
+pre-fix production script — the record above overstated that.
 
 **Third fixer round (2026-08-18, same branch):** the second round's retarget to `audit_log_id_seq`/`audit_log`
 was itself replaced with **`pipeline_health_id_seq`/`pipeline_health`** — the owner's call: exactly two tables
@@ -121,6 +126,49 @@ proven red against the pre-fix script and green after; doc correction: the T5 bu
 is not required" sentence (§ "T5 — rehearse the restore", step 1) was wrong and is corrected above — this
 container holds a fully-restored production dump including every tenant's access-token hashes, so egress
 isolation IS required.
+
+**Fourth fixer round (2026-08-18, same branch), an independent Codex pass over the third round's diff found
+four further gaps, all fixed:** (1) **major** — the sequence-collision predicate in (n) above only ever
+checked the `is_called=false` branch (`last_value == MAX(id)`); when `is_called=true`, `nextval()` has
+already handed out `last_value`, so the *next* call emits `last_value + 1`, which independently colliding
+with `MAX(id)` was never checked. The script now derives the actual next-emitted value from `is_called`
+first. (2) **major** — the test fake's `to_regclass` case matched ANY relation query
+(`*"to_regclass"*`), not specifically `pipeline_health_id_seq`, so a regression that reverted the real
+guard to query `access_tokens_id_seq` (while leaving the `pipeline_health` error text untouched) would
+still have passed every test — the exact vacuous-fake pattern this round's own existence guard was added
+to stop recurring, just moved one query over. The fake now matches the exact query text; anything else
+falls through to its "unrecognised exec" branch and fails the run. (3) **major** — the fresh-database
+test asserted only the sole positional token after `--` in the `createdb` argv, ignoring stray positional
+tokens before it (`createdb -U postgres other -- rehearsal` would have passed); the test now pins the
+full expected argv exactly. (4) **minor** — the `--network none` position test derived the image's index
+as "the last token in argv", so a doubled-image invocation (`docker run IMAGE --network none IMAGE`,
+which Docker actually runs with no isolation at all — the same failure mode the second-round item (3)
+test above targets, just via a different, unguarded derivation) would have passed; the test now requires
+the sentinel image to appear exactly once and uses its real index. Proof: (1) is a real bug in the
+actually-committed third-round script — proven red by stashing this round's script fix (keeping the new
+test) and confirming the `is_called=true` collision test fails against the unmodified pre-fix script,
+then restoring the fix. (2), (3), and (4) are test-rigor tightenings, not bugs the committed script ever
+shipped — each proven red by constructing a deliberately regressed copy of the script/invocation the
+new, tighter assertion is meant to catch (a query against `access_tokens_id_seq`; a stray `createdb`
+positional before `--`; a doubled `docker run` image token) and confirming the new test fails against
+that copy, then confirming the real (unmodified) script/tests still pass.
+
+**Outstanding (not resolved by this round): the mandatory live acceptance run of the exact committed
+script against the real mac-mini artifact has still not been re-performed since the fourth-round fixes.**
+This fixer round ran in a sandboxed environment with no network path to the mac-mini (`ssh
+sapphire@192.168.1.136` times out from here) and no copy of the 1.1 GB dump, so it could not execute
+`scripts/restore-rehearsal.sh` against real data — doing so, and recording
+`access_tokens=1 forecasts=206 observations=83292 alembic=0048`, remains the acceptance bar before this
+branch merges, per hold-at-PR. The "VERIFIED RESTORE PROCEDURE" section above recorded those exact numbers
+from a *manual* run of the restore procedure (`createdb` + `--no-owner --no-acl` by hand), not from an
+automated run of this specific script revision — the two are the same procedure but not the same
+artifact-under-test, which is why the automated run is still owed.
+
+**Minor, accepted as-is:** commit `d6cf850` on this branch predates its version bump (the message
+self-discloses this as an interrupted-session checkpoint); the immediately following commit brought the
+version current, so branch HEAD is not out of sync, but the individual checkpoint commit does not itself
+carry a bump. Left as documented history rather than rewritten via interactive rebase (out of reach in
+this environment); squash before merge if the team wants every individual commit to carry its own bump.
 
 ## Status
 
