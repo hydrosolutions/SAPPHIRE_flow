@@ -408,13 +408,15 @@ class TestSequenceCollisionRisk:
             "teardown must still happen when the sequence check fails"
         )
 
-    def test_last_value_below_max_id_with_is_called_false_passes(
-        self, tmp_path: Path
-    ) -> None:
-        """is_called=false is only a collision risk when last_value has
-        already caught up to MAX(id) -- a freshly-created, never-advanced
-        sequence (last_value < max_id would be a different, pre-existing
-        data problem outside this script's scope) is not this bug."""
+    def test_last_value_below_max_id_fails(self, tmp_path: Path) -> None:
+        """A sequence BELOW MAX(id) is the most common real restore defect,
+        not an out-of-scope data problem: with the sequence at 1 and rows up
+        to 5, the first insert after recovery emits id=1 and dies on a
+        duplicate key. An earlier revision used an equality-only predicate
+        and this test asserted returncode == 0, blessing exactly that bug --
+        a restored database that throws on its first write has not been
+        successfully restored, which is the whole proposition this script
+        certifies."""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         args_log = tmp_path / "docker-args.log"
@@ -424,6 +426,46 @@ class TestSequenceCollisionRisk:
             pipeline_health_max_id="5",
             seq_last_value="1",
             seq_is_called="f",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0, result.stdout
+        assert "pipeline_health_id_seq" in result.stderr
+        assert len(_rm_calls(args_log)) == 1, (
+            "teardown must still happen when the sequence check fails"
+        )
+
+    def test_empty_table_with_fresh_sequence_passes(self, tmp_path: Path) -> None:
+        """Boundary the `-le` predicate must NOT break: an empty
+        pipeline_health gives max_id = 0 (coalesce) against a fresh
+        sequence at last_value=1, is_called=false -> next_val=1 > 0. This
+        is a legitimate restore and must pass."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="0",
+            seq_last_value="1",
+            seq_is_called="f",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+
+    def test_healthy_restore_sequence_above_max_id_passes(self, tmp_path: Path) -> None:
+        """The normal case: pg_dump emits setval(max_id, true), so
+        last_value == max_id with is_called=true -> next_val = max_id + 1."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="5",
+            seq_last_value="5",
+            seq_is_called="t",
         )
         result = _run_script(tmp_path, fake, _dump_file(tmp_path))
 

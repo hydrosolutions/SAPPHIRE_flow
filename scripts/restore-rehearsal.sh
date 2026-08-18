@@ -178,8 +178,16 @@ if [[ "${is_called}" == "t" ]]; then
 else
     next_val="${last_value}"
 fi
-if [[ "${next_val}" -eq "${max_id}" ]]; then
-    fail "pipeline_health_id_seq: next nextval() (${next_val}) collides with an existing pipeline_health.id == ${max_id} (last_value=${last_value}, is_called=${is_called})"
+# `-le`, not `-eq`. A sequence that was never advanced is the single most
+# common real restore defect, and an equality-only predicate exempts it
+# entirely: with the sequence at 1 and rows up to 5, next_val=1 != 5 passes,
+# yet the first insert after recovery emits id=1 and dies on a duplicate
+# key. Any next_val at or below MAX(id) means the sequence will hand out
+# already-taken ids, so the restore is not usable. Legitimate cases are
+# unaffected: a healthy dump restores `setval(max_id, true)` -> next_val =
+# max_id + 1, and an empty table has max_id = 0 (coalesce) < next_val = 1.
+if [[ "${next_val}" -le "${max_id}" ]]; then
+    fail "pipeline_health_id_seq: next nextval() (${next_val}) is at or below MAX(pipeline_health.id) == ${max_id} — the next insert would collide on the primary key (last_value=${last_value}, is_called=${is_called})"
 fi
 
 # Plausibility only — the restore container cannot reach production

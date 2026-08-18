@@ -179,6 +179,27 @@ re-ran the ssh connectivity probe to the mac-mini from this sandbox (`ssh -o Con
 sapphire@192.168.1.136` — connection timed out), so the live acceptance run above remains genuinely
 un-performable from here and stays the open item gating merge.
 
+**Sixth fixer round (2026-08-18, same branch), found by the orchestrator reading the committed script rather
+than by any review or test:** the sequence-collision predicate was `-eq`, and the accompanying test
+(`test_last_value_below_max_id_with_is_called_false_passes`) asserted that `last_value=1, is_called=f,
+max_id=5` **passes**, rationalised in its own docstring as "a different, pre-existing data problem outside
+this script's scope". That rationalisation is wrong and it exempted the single most common real restore
+defect: a sequence that was never advanced. With the sequence at 1 and rows up to 5, the first insert after
+recovery emits `id=1` and dies on a duplicate key — a database that throws on its first write has not been
+successfully restored, which is precisely the proposition this script exists to certify. The predicate is now
+`-le`. Boundary cases verified to be unaffected and newly locked by their own tests: a healthy dump restores
+`setval(max_id, true)` so `next_val = max_id + 1` (passes), and an empty table gives `max_id = 0` via
+`coalesce` against a fresh sequence at `next_val = 1` (passes). The inverted test was proven red against the
+`-eq` script with a real assertion (`assert 0 != 0`), not an import error.
+
+**The pattern across all six rounds, stated plainly:** every genuine defect in this file was found by
+*running it against a real dump* or by *reading it closely* — none by its unit tests, which stayed green
+throughout. Twice the tests actively concealed a defect: round three's fake invented an
+`access_tokens_id_seq` that has never existed in this schema, and round six's test asserted the buggy
+behaviour as correct. A rehearsal tool is unusually hostile to isolated testing, because the thing it
+verifies is exactly the thing the fakes replace. The live acceptance run is therefore not a formality here —
+it is the only gate that has ever caught anything.
+
 **Minor, accepted as-is:** commit `d6cf850` on this branch predates its version bump (the message
 self-discloses this as an interrupted-session checkpoint); the immediately following commit brought the
 version current, so branch HEAD is not out of sync, but the individual checkpoint commit does not itself
