@@ -20,6 +20,14 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 - **ForecastInterface / model execution** — model boundary, adapters, data
   requirements, operational input assembly + time-series preprocessing,
   ModelFailure / ModelOutputError.
+  ⚠️ **Adding a NEW NWP/forcing source? Read `docs/plans/183-forcing-canonicalisation-seam.md`
+  (DRAFT) first.** A 2026-08-18 review found there is **no shared canonicalisation layer**: variable
+  renaming, unit conversion and precipitation **de-accumulation** are adapter-private if-chains, and
+  `types/forcing_schema.py` declares the canonical contract with **zero consumers**. A
+  rate-vs-accumulation mismatch therefore produces plausible **wrong** forcing rather than an error.
+  Also: `exact_extract_grid_extractor.py:98` **overwrites** the CRS (`.rio.write_crs`) instead of
+  reading it, so a non-4326 grid is silently mis-georeferenced; and `adapters/__init__.py` is empty —
+  there is no registry to extend.
 - **Forecast cycle / assignment selection** — cycle phase sequence, assignment
   resolution / priority / fallback, STATION vs GROUP dispatch, combination modes,
   alerting / persistence attach points.
