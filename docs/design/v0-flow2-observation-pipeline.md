@@ -336,8 +336,10 @@ during initial design but never became load-bearing**, since LINDAS serves
 current values only and per-station incrementality was never implemented
 (confirmed by measurement in Plan 186 — `since` appears in
 `adapters/hydro_scraper.py` only in signatures, never read). The SPARQL
-`FILTER` clause below still works if a future need for time-range querying
-arises, but no code path uses it operationally:
+`FILTER` clause below is syntactically valid, but it filters **a single-row
+snapshot**: the graph holds exactly one `measurementTime` per gauge, so the
+clause can only ever return that one current value or nothing at all. It is
+not a time-range query over history, and no code path uses it operationally:
 
 ```sparql
 FILTER(?measurementTime >= "2025-03-01T00:00:00Z"^^xsd:dateTime
@@ -588,8 +590,14 @@ S1 (stores) ──┬── S2 (CAMELS-CH adapter) ──┐
 
 ### Resolved
 
-1. ~~**LINDAS time-range query**~~: **Yes** — SPARQL FILTER on datetime works.
-   40-day retention limit. See § 5.
+1. ~~**LINDAS time-range query**~~: **No — this answer was WRONG and is
+   retracted.** The original entry claimed SPARQL datetime FILTER works with a
+   "40-day retention limit". **Measured 2026-08-18:** querying every
+   `measurementTime` triple for gauge `2009` returns **exactly 1** — LINDAS
+   holds one current value per gauge and no history at all, so there is no
+   retention window to filter and the FILTER clause can only match that single
+   row. Consistent with Plan 111 Phase 0 (2026-07-08) and Plan 136's
+   real-time-only premise, both of which this entry contradicted. See § 5.
 
 2. ~~**PostgreSQL aggregation**~~: **Viable for v0.** Architecture plans permanent
    daily aggregates for v1. See § 7.
