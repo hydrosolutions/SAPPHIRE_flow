@@ -154,7 +154,12 @@ def common_retained_frame(
         pl.col("timestamp"), pl.col("value_mm").alias("dhm_value_mm")
     )
     pyramid = pyramid_retained.select(
-        pl.col("timestamp"), pl.col("value_mm").alias("pyramid_value_mm")
+        # The two sides come from DIFFERENT loaders — `pl.read_excel` yields
+        # `Datetime("ms")` for DHM, `pl.read_csv` `Datetime("us")` for
+        # Pyramid — so the join key's dtype is derived from the DHM side
+        # rather than assumed equal; unequal units raise `SchemaError`.
+        pl.col("timestamp").cast(dhm.schema["timestamp"]),
+        pl.col("value_mm").alias("pyramid_value_mm"),
     )
     paired = dhm.join(pyramid, on="timestamp", how="inner")
     return PairedRetention(

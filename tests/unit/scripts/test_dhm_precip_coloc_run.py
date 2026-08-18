@@ -16,22 +16,25 @@ from __future__ import annotations
 import random
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
 
+from scripts.dhm_precip import coloc_run
 from scripts.dhm_precip.coloc_pairs import COLOCATED_PAIRS
 from scripts.dhm_precip.coloc_run import (
     DhmRetainedWindows,
+    _production_dhm_retained_provider,
     _write_report,
     run_coloc_adjudication,
 )
 from scripts.dhm_precip.coloc_verdict import IndeterminateReason, Verdict
-from scripts.dhm_precip.domain_types import Station
+from scripts.dhm_precip.domain_types import LongFrameInventory, Station
 from scripts.dhm_precip.params import DEFAULT_PARAMS
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    import pytest
 
 _HOUR_OFFSET = DEFAULT_PARAMS.coloc_dhm_utc_to_npt_hour_offset
 _DAYS = range(1, 7)
@@ -380,3 +383,103 @@ class TestWrittenReportCarriesEveryExitDeliverable:
         assert "M-A1" in text
 
         assert "Affected claims" not in self._report_text(tmp_path)
+
+
+# --- The production seam: the mask join, against real loader dtypes ------
+
+
+_MS_FIXTURE_STATIONS = (_LUKLA, _SYANGBOCHE)
+_MS_FIXTURE_HOURS = [datetime(2020, 7, 1) + timedelta(hours=h) for h in range(10 * 24)]
+_SENTINEL_TIMESTAMP = datetime(2020, 7, 3, 5)
+
+
+def _millisecond_long_frame() -> pl.DataFrame:
+    """What `pl.read_excel` actually hands `load_long_frame` from the pinned
+    workbook: a `timestamp` column at MILLISECOND precision. Values vary
+    hour to hour so neither `frozen_sensor` instance fires — the only
+    masked key is the Lukla sentinel, which `range_check` rejects."""
+    rows = [
+        {
+            "source_row_index": index,
+            "station": str(station),
+            "timestamp": ts,
+            "value_mm": (
+                DEFAULT_PARAMS.sentinel_value
+                if station == _LUKLA and ts == _SENTINEL_TIMESTAMP
+                else 0.1 * (index % 7 + 1)
+            ),
+        }
+        for station in _MS_FIXTURE_STATIONS
+        for index, ts in enumerate(_MS_FIXTURE_HOURS)
+    ]
+    return pl.DataFrame(
+        rows,
+        schema={
+            "source_row_index": pl.Int64,
+            "station": pl.Utf8,
+            "timestamp": pl.Datetime("ms"),
+            "value_mm": pl.Float64,
+        },
+    )
+
+
+def _patch_workbook_io(
+    monkeypatch: pytest.MonkeyPatch, long_frame: pl.DataFrame
+) -> None:
+    """Mocks ONLY the file-I/O boundary (CLAUDE.md: mock at external
+    boundaries). Everything after it — `on_grid_view`, `normalise_hourly_axis`,
+    `iter_observations_by_station`, `qc_mask.iter_station_results` and the
+    mask anti-join — is the real production composition."""
+    inventory = LongFrameInventory(
+        all_columns=tuple(str(station) for station in _MS_FIXTURE_STATIONS),
+        empty_columns=(),
+        total_rows=len(_MS_FIXTURE_HOURS),
+    )
+    monkeypatch.setattr(coloc_run, "resolve_source_path", lambda: Path("workbook.xlsx"))
+    monkeypatch.setattr(coloc_run, "resolve_coords_path", lambda: Path("coords.csv"))
+    monkeypatch.setattr(
+        coloc_run,
+        "load_long_frame",
+        lambda _path, *, expected_sha256: (long_frame, inventory),
+    )
+    monkeypatch.setattr(
+        coloc_run,
+        "load_station_coordinates",
+        lambda _path, *, expected_stations: None,
+    )
+
+
+class TestProductionProviderJoinsTheMaskAgainstTheLoadersOwnDtype:
+    """The seam every other test in this file bypasses by injecting a
+    `DhmRetainedProvider`. `_production_dhm_retained_provider` is the only
+    place a frame the runner CONSTRUCTS (the QC mask) meets a frame the
+    WORKBOOK produced, and `pl.read_excel` yields `Datetime('ms')` — a mask
+    frame pinned to `Datetime('us')` makes the anti-join raise
+    `SchemaError`, so `main()` can never write a report against real data
+    while the suite stays green."""
+
+    def test_mask_join_survives_a_millisecond_precision_workbook_timestamp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_workbook_io(monkeypatch, _millisecond_long_frame())
+
+        provider = _production_dhm_retained_provider(DEFAULT_PARAMS)
+        retained = provider(_LUKLA).full_record
+
+        timestamps = set(retained.get_column("timestamp").to_list())
+        # The anti-join ran and dropped exactly the masked key — not a
+        # no-op that would also pass a mismatched-dtype join if polars ever
+        # started coercing silently.
+        assert _SENTINEL_TIMESTAMP not in timestamps
+        assert datetime(2020, 7, 3, 6) in timestamps
+        assert timestamps == set(_MS_FIXTURE_HOURS) - {_SENTINEL_TIMESTAMP}
+
+    def test_every_colocated_station_gets_its_retained_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_workbook_io(monkeypatch, _millisecond_long_frame())
+
+        provider = _production_dhm_retained_provider(DEFAULT_PARAMS)
+
+        assert provider(_SYANGBOCHE).full_record.height == len(_MS_FIXTURE_HOURS)
+        assert provider(_LUKLA).full_record.height == len(_MS_FIXTURE_HOURS) - 1

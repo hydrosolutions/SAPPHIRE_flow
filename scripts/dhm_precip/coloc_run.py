@@ -444,12 +444,18 @@ def _production_dhm_retained_provider(params: DhmPrecipParams) -> DhmRetainedPro
     )
     mask, _accounting_rows = qc_mask.iter_station_results(station_observations, params)
 
+    # The mask frame's timestamp dtype is DERIVED from the frame it is
+    # about to be anti-joined against, never pinned: `pl.read_excel` yields
+    # `Datetime("ms")`, so a hard-coded unit (either unit) makes the join
+    # below raise `SchemaError` against real data. Deriving it here keeps
+    # the two sides in agreement by construction whatever the loader — or a
+    # future polars — produces.
     mask_df = pl.DataFrame(
         {
             "station": [str(station) for station, _ts in mask],
             "timestamp": [ts.replace(tzinfo=None) for _station, ts in mask],
         },
-        schema={"station": pl.Utf8, "timestamp": pl.Datetime("us")},
+        schema={"station": pl.Utf8, "timestamp": on_grid.schema["timestamp"]},
     )
     retained_all = (
         on_grid.join(mask_df, on=["station", "timestamp"], how="anti")

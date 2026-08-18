@@ -173,6 +173,41 @@ class TestCommonRetainedFrame:
             _START + timedelta(hours=2),
         ]
 
+    def test_pairs_across_the_two_loaders_own_timestamp_precisions(self) -> None:
+        """The production seam: DHM comes from `pl.read_excel`, which yields
+        `Datetime('ms')`, and Pyramid from `pl.read_csv`, which yields
+        `Datetime('us')`. Joining them raw raises `SchemaError`, so no test
+        that builds both sides at one precision can reach the real
+        pairing."""
+        assert common_retained_frame is not None, (
+            "common_retained_frame not implemented"
+        )
+        timestamps = [_START, _START + timedelta(hours=1), _START + timedelta(hours=2)]
+        dhm = pl.DataFrame(
+            {
+                "station": [_STATION] * 3,
+                "timestamp": timestamps,
+                "value_mm": [1.0, 2.0, 3.0],
+            },
+            schema_overrides={"timestamp": pl.Datetime("ms")},
+        )
+        pyramid = pl.DataFrame(
+            {
+                "station": ["AWS3 Lukla"] * 2,
+                "timestamp": [timestamps[0], timestamps[2]],
+                "value_mm": [0.2, 0.4],
+            },
+            schema_overrides={"timestamp": pl.Datetime("us")},
+        )
+
+        result = common_retained_frame(dhm, pyramid)
+
+        assert result.n_common_retained == 2
+        assert sorted(result.paired["timestamp"].to_list()) == [
+            timestamps[0],
+            timestamps[2],
+        ]
+
 
 class TestPairedWetHourFractionPreventsAsymmetricMaskingArtefact:
     """D3, the review-driven correction: 'asymmetric masking MANUFACTURES the
