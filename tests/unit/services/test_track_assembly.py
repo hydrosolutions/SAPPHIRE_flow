@@ -35,7 +35,6 @@ from tests.conftest import make_station_config
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_stores import (
     FakeBasinStore,
-    FakeModelStateStore,
     FakeObservationStore,
     FakeStationStore,
 )
@@ -90,10 +89,9 @@ def _stores() -> tuple:
     station_store = FakeStationStore()
     basin_store = FakeBasinStore()
     obs_store = FakeObservationStore()
-    state_store = FakeModelStateStore()
     reanalysis = FakeWeatherReanalysisSource()
     station_store.store_station(make_station_config(station_id=_STATION))
-    return obs_store, station_store, basin_store, state_store, reanalysis
+    return obs_store, station_store, basin_store, reanalysis
 
 
 def _record(parameter: str, day: int, *, value: float = 1.0) -> WeatherForecastRecord:
@@ -119,7 +117,7 @@ def test_assembles_frame_at_assignment_own_max_horizon_not_model_scalar() -> Non
     OWN per-feature horizon max (2 here), never the model's declared scalar
     `forecast_horizon_steps` (10, from `_requirements()` above) and never a
     sibling assignment's larger horizon."""
-    obs_store, station_store, basin_store, state_store, reanalysis = _stores()
+    obs_store, station_store, basin_store, reanalysis = _stores()
     model = _FakeModel(_requirements(future_dynamic_features=frozenset({"precip"})))
     horizons = {FeatureName("precip"): FutureSteps(value=2)}
     key = ForcingTrackKey(
@@ -149,13 +147,12 @@ def test_assembles_frame_at_assignment_own_max_horizon_not_model_scalar() -> Non
         obs_store=obs_store,  # type: ignore[arg-type]
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
-        model_state_store=state_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
         clock=_clock,  # type: ignore[arg-type]
     )
 
     assert isinstance(result, ReadyContext)
-    frame = result.run_context.inputs.data.future_dynamic
+    frame = result.inputs.data.future_dynamic
     assert frame.height == 2, "must cap to the assignment's own 2-step horizon"
     assert result.contract == ForcingContract(
         feature_horizons=horizons,
@@ -164,10 +161,139 @@ def test_assembles_frame_at_assignment_own_max_horizon_not_model_scalar() -> Non
     )
 
 
+def test_per_feature_horizon_caps_each_column_independently() -> None:
+    """Review fold-in (major): precip declares a 2-step horizon and temp a
+    10-step horizon on the SAME assignment/track. With 10 real raw days
+    available for BOTH, the assembled frame must cap precip to 2 non-null
+    values and temp to 10 -- never one scalar (group-max) cap applied
+    uniformly to every feature. Fails today: `forecast_horizon_steps =
+    max(h.value for h in horizons.values())` (10) is the ONLY cap
+    `build_future_dynamic_frame` receives, so precip also keeps 10."""
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    model = _FakeModel(
+        _requirements(future_dynamic_features=frozenset({"precip", "temp"}))
+    )
+    horizons = {
+        FeatureName("precip"): FutureSteps(value=2),
+        FeatureName("temp"): FutureSteps(value=10),
+    }
+    key = ForcingTrackKey(
+        nwp_source="ecmwf_ifs",
+        ensemble_mode=EnsembleMode.SINGLE,
+        time_step=_STEP,
+        spatial_representation=SpatialRepresentation.BASIN_AVERAGE,
+        features=frozenset(horizons),
+    )
+    projection = ForcingRequired(
+        key=key,
+        assignment_horizons=horizons,
+        assignment=AssignmentKey((_STATION, _MODEL)),
+    )
+    records = [_record("precip", d) for d in range(1, 11)] + [
+        _record("temp", d) for d in range(1, 11)
+    ]
+    outcome = StationTrackAvailable(
+        cycle=_ISSUE, records=records, provenance=NwpCycleSource.PRIMARY
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=model,  # type: ignore[arg-type]
+        projection=projection,
+        track_outcome=outcome,
+        issue_time=_ISSUE,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        clock=_clock,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    frame = result.inputs.data.future_dynamic
+    assert frame.height == 10
+    assert frame["precip"].drop_nulls().len() == 2
+    assert frame["temp"].drop_nulls().len() == 10
+
+
+def test_expected_member_ids_thread_onto_contract_for_ensemble_only() -> None:
+    """Review fold-in (blocker): the source-derived `expected_member_ids`
+    the caller resolved this track against must land on the
+    `ForcingContract` for an ENSEMBLE assignment (so the runner's defensive
+    re-check can validate against ground truth), and stay `None` for a
+    non-ENSEMBLE (SINGLE) assignment, which has no member axis at all."""
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    reqs = ModelDataRequirements(
+        target_parameters=frozenset(),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset({"precip"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=1,
+        forecast_horizon_steps=2,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.ENSEMBLE,
+    )
+    model = _FakeModel(reqs)
+    horizons = {FeatureName("precip"): FutureSteps(value=2)}
+    key = ForcingTrackKey(
+        nwp_source="ecmwf_ifs",
+        ensemble_mode=EnsembleMode.ENSEMBLE,
+        time_step=_STEP,
+        spatial_representation=SpatialRepresentation.BASIN_AVERAGE,
+        features=frozenset(horizons),
+    )
+    projection = ForcingRequired(
+        key=key,
+        assignment_horizons=horizons,
+        assignment=AssignmentKey((_STATION, _MODEL)),
+    )
+    records = [
+        WeatherForecastRecord(
+            id=uuid4(),
+            station_id=_STATION,
+            nwp_source="ecmwf_ifs",
+            cycle_time=_ISSUE,
+            valid_time=ensure_utc(_ISSUE + timedelta(days=d)),
+            parameter="precip",
+            spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+            band_id=None,
+            member_id=member_id,
+            value=1.0,
+            created_at=_NOW,
+        )
+        for d in range(1, 3)
+        for member_id in (0, 1)
+    ]
+    outcome = StationTrackAvailable(
+        cycle=_ISSUE, records=records, provenance=NwpCycleSource.PRIMARY
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=model,  # type: ignore[arg-type]
+        projection=projection,
+        track_outcome=outcome,
+        issue_time=_ISSUE,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        clock=_clock,  # type: ignore[arg-type]
+        expected_member_ids=frozenset({0, 1}),
+    )
+
+    assert isinstance(result, ReadyContext)
+    assert result.contract is not None
+    assert result.contract.expected_member_ids == frozenset({0, 1})
+
+
 def test_nwp_age_hours_from_this_assignments_own_resolved_cycle() -> None:
     """A stale FALLBACK cycle for one assignment must not be reported as
     fresh via some OTHER shared cycle — nwp_age_hours is per-assignment."""
-    obs_store, station_store, basin_store, state_store, reanalysis = _stores()
+    obs_store, station_store, basin_store, reanalysis = _stores()
     model = _FakeModel(_requirements(future_dynamic_features=frozenset({"precip"})))
     horizons = {FeatureName("precip"): FutureSteps(value=2)}
     key = ForcingTrackKey(
@@ -199,20 +325,19 @@ def test_nwp_age_hours_from_this_assignments_own_resolved_cycle() -> None:
         obs_store=obs_store,  # type: ignore[arg-type]
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
-        model_state_store=state_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
         clock=_clock,  # type: ignore[arg-type]
     )
 
     assert isinstance(result, ReadyContext)
-    assert result.run_context.nwp_age_hours is not None
-    assert result.run_context.nwp_age_hours > 24.0
+    assert result.nwp_age_hours is not None
+    assert result.nwp_age_hours > 24.0
     assert result.provenance.nwp_cycle_source is NwpCycleSource.FALLBACK
     assert result.provenance.nwp_cycle_reference_time == stale_cycle
 
 
 def test_no_forcing_required_assignment_gets_null_provenance_and_no_contract() -> None:
-    obs_store, station_store, basin_store, state_store, reanalysis = _stores()
+    obs_store, station_store, basin_store, reanalysis = _stores()
     model = _FakeModel(_requirements(future_dynamic_features=frozenset()))
     projection = NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL)))
 
@@ -226,7 +351,6 @@ def test_no_forcing_required_assignment_gets_null_provenance_and_no_contract() -
         obs_store=obs_store,  # type: ignore[arg-type]
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
-        model_state_store=state_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
         clock=_clock,  # type: ignore[arg-type]
     )
@@ -235,13 +359,13 @@ def test_no_forcing_required_assignment_gets_null_provenance_and_no_contract() -
     assert result.contract is None
     assert result.provenance.nwp_cycle_source is NwpCycleSource.RUNOFF_ONLY
     assert result.provenance.nwp_cycle_reference_time is None
-    assert result.run_context.nwp_age_hours is None
+    assert result.nwp_age_hours is None
 
 
 def test_unavailable_track_outcome_short_circuits_without_assembling() -> None:
     """D10: an unavailable station at an otherwise-resolved cycle must yield
     `UnavailableTrackContext`, not attempt assembly at all."""
-    obs_store, station_store, basin_store, state_store, reanalysis = _stores()
+    obs_store, station_store, basin_store, reanalysis = _stores()
     model = _FakeModel(_requirements())
     horizons = {
         FeatureName("precip"): FutureSteps(value=2),
@@ -273,7 +397,6 @@ def test_unavailable_track_outcome_short_circuits_without_assembling() -> None:
         obs_store=obs_store,  # type: ignore[arg-type]
         station_store=station_store,  # type: ignore[arg-type]
         basin_store=basin_store,  # type: ignore[arg-type]
-        model_state_store=state_store,  # type: ignore[arg-type]
         forcing_source=reanalysis,  # type: ignore[arg-type]
         clock=_clock,  # type: ignore[arg-type]
     )

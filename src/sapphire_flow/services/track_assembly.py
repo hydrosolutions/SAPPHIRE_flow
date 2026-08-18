@@ -25,9 +25,7 @@ import structlog
 
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.operational_inputs import (
-    ModelRunContext,
     build_future_dynamic_frame,
-    load_warm_up_state,
     observations_to_wide_dataframe,
     raw_forcing_to_dataframe,
 )
@@ -53,7 +51,6 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.forecast_model import StationForecastModel
     from sapphire_flow.protocols.stores import (
         BasinStore,
-        ModelStateStore,
         ObservationStore,
         StationStore,
     )
@@ -75,21 +72,42 @@ class ForcingContract:
     """Per-assignment per-feature forcing contract (D10a) — what the runner
     reads coverage/dispatch/fan-out from on the per-track ``ReadyContext``
     route, REPLACING ``model.data_requirements``' forcing reads on that
-    route only."""
+    route only.
+
+    ``expected_member_ids`` (review fold-in — blocker) is the source-derived
+    exact member set the assembled track satisfied (``None`` for a
+    non-``ENSEMBLE`` contract or a ``NoForcingRequired`` assignment) — the
+    runner's defensive re-check validates each feature's ACTUAL member set
+    against this ground truth, not merely against another feature's set
+    (which passes trivially for a single-feature model or when every
+    feature is uniformly short the same way).
+    """
 
     feature_horizons: FeatureFetchHorizons
     ensemble_mode: EnsembleMode
     future_dynamic_features: frozenset[str]
+    expected_member_ids: frozenset[int] | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ReadyContext:
     """The per-track route's runner input for ONE assignment (D10): T6's
-    assembled per-assignment ``ModelRunContext`` + its own provenance + the
-    per-feature forcing contract (``None`` for a ``NoForcingRequired``
-    assignment — no future forcing at all)."""
+    own assembled inputs/metadata + its own provenance + the per-feature
+    forcing contract (``None`` for a ``NoForcingRequired`` assignment — no
+    future forcing at all).
 
-    run_context: ModelRunContext
+    Carries loose ``inputs``/``observation_staleness_hours``/``nwp_age_hours``
+    fields rather than a prebuilt ``ModelRunContext`` (review fold-in —
+    major): warm-up state has exactly ONE owner, ``_run_single_model``'s
+    existing assignment-local ``load_warm_up_state`` call (unchanged from
+    the legacy route) — T6 does not read the state store at all, so there is
+    no second, uncaught-outside-``WARM_UP_LOAD_FAILED`` load to disagree
+    with it or double the store reads.
+    """
+
+    inputs: StationModelInputs
+    observation_staleness_hours: float | None
+    nwp_age_hours: float | None
     provenance: ForecastProvenance
     contract: ForcingContract | None
 
@@ -137,10 +155,10 @@ def assemble_assignment_inputs(
     obs_store: ObservationStore,
     station_store: StationStore,
     basin_store: BasinStore,
-    model_state_store: ModelStateStore,
     forcing_source: WeatherReanalysisSource,
     clock: Callable[[], UtcDatetime],
     static_naming_models: list[object] | None = None,
+    expected_member_ids: frozenset[int] | None = None,
 ) -> ReadyContext | MissingTrackContext | UnavailableTrackContext:
     """Assemble ONE assignment's own frame (D9).
 
@@ -153,6 +171,20 @@ def assemble_assignment_inputs(
     ``UnavailableTrackContext`` (the model is never called, D10). The caller
     is responsible for ``MissingTrackContext`` (the track never resolved at
     all — T6 has nothing to assemble from in that case).
+
+    ``expected_member_ids`` (review fold-in — blocker) is the source-derived
+    exact member set the caller resolved this track against (T5's
+    ``CandidateAwareForecastSource.expected_member_ids``) — threaded onto
+    the ``ForcingContract`` so the runner's defensive re-check can validate
+    each feature's actual member set against ground truth rather than only
+    against another feature's set. ``None`` for a ``NoForcingRequired``
+    assignment or a non-``ENSEMBLE`` track (no member axis to check).
+
+    Does NOT load warm-up state — that stays the sole responsibility of
+    ``_run_single_model``'s existing assignment-local
+    ``load_warm_up_state`` call (review fold-in — major: a second,
+    independent load here previously discarded the assignment-local
+    ``WARM_UP_LOAD_FAILED`` safety net and could race the first read).
     """
     assignment_key = AssignmentKey((station_id, model_id))
     now = clock()
@@ -180,6 +212,9 @@ def assemble_assignment_inputs(
             resolved_cycle = cycle
             forecast_horizon_steps = max(h.value for h in horizons.values())
             station_records = [r for r in records if r.station_id == station_id]
+            feature_horizons = {
+                str(name): steps.value for name, steps in horizons.items()
+            }
             future_dynamic = build_future_dynamic_frame(
                 station_records,
                 time_step=time_step,
@@ -187,6 +222,7 @@ def assemble_assignment_inputs(
                 forecast_horizon_steps=forecast_horizon_steps,
                 future_dynamic_features=frozenset(horizons),
                 ensemble_mode=reqs.ensemble_mode,
+                feature_horizons=feature_horizons,
             )
             nwp_age_hours = (now - cycle).total_seconds() / 3600.0
             if nwp_age_hours < 0:
@@ -198,6 +234,11 @@ def assemble_assignment_inputs(
                 feature_horizons=horizons,
                 ensemble_mode=reqs.ensemble_mode,
                 future_dynamic_features=frozenset(horizons),
+                expected_member_ids=(
+                    expected_member_ids
+                    if reqs.ensemble_mode is EnsembleMode.ENSEMBLE
+                    else None
+                ),
             )
         case _:
             raise ValueError(
@@ -272,8 +313,6 @@ def assemble_assignment_inputs(
                 ]
             )
 
-    warm_up = load_warm_up_state(model_state_store, station_id, model_id, lambda: now)
-
     inputs = StationModelInputs(
         station_id=station_id,
         data=StationInputData(
@@ -286,20 +325,14 @@ def assemble_assignment_inputs(
         forecast_horizon_steps=forecast_horizon_steps,
         time_step=time_step,
     )
-    run_context = ModelRunContext(
-        station_id=station_id,
-        model_id=model_id,
-        inputs=inputs,
-        observation_staleness_hours=observation_staleness_hours,
-        nwp_age_hours=nwp_age_hours,
-        prior_state=warm_up.prior_state,
-        warm_up_source=warm_up.warm_up_source,
-        warm_up_state_age_hours=warm_up.warm_up_state_age_hours,
-    )
     provenance = ForecastProvenance(
         nwp_cycle_source=cycle_source,
         nwp_cycle_reference_time=resolved_cycle,
     )
     return ReadyContext(
-        run_context=run_context, provenance=provenance, contract=contract
+        inputs=inputs,
+        observation_staleness_hours=observation_staleness_hours,
+        nwp_age_hours=nwp_age_hours,
+        provenance=provenance,
+        contract=contract,
     )

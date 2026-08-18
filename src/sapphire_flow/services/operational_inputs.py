@@ -215,6 +215,7 @@ def _filter_and_cap_daily_records(
     records: list[_AggregatedNwpPoint],
     issue_time: UtcDatetime,
     forecast_horizon_steps: int,
+    feature_horizons: dict[str, int] | None = None,
 ) -> list[_AggregatedNwpPoint]:
     """Drop backdated daily buckets and cap to the forecast horizon.
 
@@ -228,13 +229,36 @@ def _filter_and_cap_daily_records(
     would wrongly drop a full day of genuinely future NWP precip and open a
     day-wide gap against the past array's last day (Plan 129's "no gap"
     seam-continuity claim). Then keeps the earliest ``forecast_horizon_steps``
-    distinct future valid_times. The retained valid_time set is identical
-    across all members, so every ensemble member yields the same daily
-    buckets.
+    distinct future valid_times.
+
+    ``feature_horizons`` (Plan 151 T6, review fold-in — major), when given,
+    caps EACH parameter to its own earliest ``feature_horizons[parameter]``
+    valid_times independently (falling back to ``forecast_horizon_steps``
+    for a parameter absent from the mapping) — so the retained valid_time
+    set can now DIFFER per feature. ``None`` (the default, and every legacy
+    caller) keeps one shared valid_time set across every parameter and
+    member, exactly as before.
     """
-    future_times = sorted({r.valid_time for r in records if r.valid_time >= issue_time})
-    kept_times = frozenset(future_times[:forecast_horizon_steps])
-    return [r for r in records if r.valid_time in kept_times]
+    if feature_horizons is None:
+        future_times = sorted(
+            {r.valid_time for r in records if r.valid_time >= issue_time}
+        )
+        kept_times = frozenset(future_times[:forecast_horizon_steps])
+        return [r for r in records if r.valid_time in kept_times]
+
+    by_parameter: dict[str, list[_AggregatedNwpPoint]] = defaultdict(list)
+    for r in records:
+        by_parameter[r.parameter].append(r)
+
+    kept: list[_AggregatedNwpPoint] = []
+    for parameter, param_records in by_parameter.items():
+        horizon = feature_horizons.get(parameter, forecast_horizon_steps)
+        future_times = sorted(
+            {r.valid_time for r in param_records if r.valid_time >= issue_time}
+        )
+        kept_times = frozenset(future_times[:horizon])
+        kept.extend(r for r in param_records if r.valid_time in kept_times)
+    return kept
 
 
 def build_future_dynamic_frame(
@@ -245,6 +269,7 @@ def build_future_dynamic_frame(
     forecast_horizon_steps: int,
     future_dynamic_features: frozenset[str],
     ensemble_mode: EnsembleMode,
+    feature_horizons: dict[str, int] | None = None,
 ) -> pl.DataFrame:
     """Public: the shared hourly-to-model-time_step reduction (aggregate,
     broadcast deterministic features across members, drop backdated buckets,
@@ -253,6 +278,17 @@ def build_future_dynamic_frame(
     forcing track's OWN records with byte-identical behaviour to the legacy
     superset assembler below, which now calls this too (pure refactor, no
     behaviour change).
+
+    ``feature_horizons`` (Plan 151 T6, review fold-in — major) is the
+    PER-FEATURE cap: when given, each parameter is capped to its OWN
+    ``feature_horizons[parameter]`` (falling back to the scalar
+    ``forecast_horizon_steps`` for a parameter absent from the mapping)
+    INSTEAD of one scalar cap applied uniformly to every feature. Without
+    this, a 2-day precip / 10-day temp assignment fed 10 raw days of both
+    would retain 10 values for precip too — silently over-delivering data
+    the assignment never declared (D9). ``None`` (the default) preserves the
+    legacy scalar-cap behaviour byte-for-byte — the superset assembler below
+    never passes it.
     """
     daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
     daily_nwp_records = _broadcast_deterministic_features_to_members(daily_nwp_records)
@@ -260,10 +296,42 @@ def build_future_dynamic_frame(
         daily_nwp_records,
         issue_time=issue_time,
         forecast_horizon_steps=forecast_horizon_steps,
+        feature_horizons=feature_horizons,
     )
     return _pivot_nwp_records(
         kept_daily_records, future_dynamic_features, ensemble_mode
     )
+
+
+def reduced_daily_step_times(
+    records: list[WeatherForecastRecord],
+    *,
+    time_step: timedelta,
+    issue_time: UtcDatetime,
+) -> dict[tuple[str, int | None], frozenset[UtcDatetime]]:
+    """Public: the clean daily bucket VALID_TIMES per ``(parameter,
+    member_id)`` AFTER the same aggregation + backdated-bucket drop that
+    :func:`build_future_dynamic_frame` (and legacy assembly) apply — Plan
+    151 T5's completeness gate (D8) needs the exact SET, not just a count
+    (review fold-in, blocker): two members can each individually reach a
+    horizon's step COUNT while covering entirely different calendar days
+    (member 0 = days 1-2, member 1 = days 3-4), which a count-only compare
+    would wrongly accept even though ``_filter_and_cap_daily_records``'s
+    global earliest-N-times cap would then silently retain one member and
+    drop the other. Deliberately does NOT apply the horizon CAP
+    (`_filter_and_cap_daily_records`'s ``forecast_horizon_steps``
+    truncation) — a completeness check needs the true available set, not
+    one already truncated to some other consumer's horizon.
+    """
+    daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
+    kept_times = frozenset(
+        r.valid_time for r in daily_nwp_records if r.valid_time >= issue_time
+    )
+    times: dict[tuple[str, int | None], set[UtcDatetime]] = defaultdict(set)
+    for r in daily_nwp_records:
+        if r.valid_time in kept_times:
+            times[(r.parameter, r.member_id)].add(r.valid_time)
+    return {key: frozenset(vals) for key, vals in times.items()}
 
 
 def reduced_daily_step_counts(
@@ -272,24 +340,15 @@ def reduced_daily_step_counts(
     time_step: timedelta,
     issue_time: UtcDatetime,
 ) -> dict[tuple[str, int | None], int]:
-    """Public: count clean daily buckets per ``(parameter, member_id)`` AFTER
-    the same aggregation + backdated-bucket drop that :func:`build_future_dynamic_frame`
-    (and legacy assembly) apply — Plan 151 T5's completeness gate (D8) counts
-    "steps" in these units, not raw hourly rows, so it agrees with assembly
-    around a non-midnight issue cycle. Deliberately does NOT apply the
-    horizon CAP (`_filter_and_cap_daily_records`'s ``forecast_horizon_steps``
-    truncation) — a completeness check needs the true available count, not
-    one already truncated to some other consumer's horizon.
-    """
-    daily_nwp_records = _aggregate_nwp_records_to_time_step(records, time_step)
-    kept_times = frozenset(
-        r.valid_time for r in daily_nwp_records if r.valid_time >= issue_time
-    )
-    counts: dict[tuple[str, int | None], int] = defaultdict(int)
-    for r in daily_nwp_records:
-        if r.valid_time in kept_times:
-            counts[(r.parameter, r.member_id)] += 1
-    return dict(counts)
+    """Public: count clean daily buckets per ``(parameter, member_id)`` —
+    see :func:`reduced_daily_step_times` for the underlying set this counts
+    and why a count alone is not sufficient for the completeness gate."""
+    return {
+        key: len(vals)
+        for key, vals in reduced_daily_step_times(
+            records, time_step=time_step, issue_time=issue_time
+        ).items()
+    }
 
 
 def _pivot_nwp_records(

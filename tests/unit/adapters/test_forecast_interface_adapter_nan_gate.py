@@ -633,3 +633,81 @@ def test_predict_slices_each_future_known_variable_to_its_own_horizon() -> None:
     assert precip.height == 2
     assert precip["precip"].to_list() == [0.0, 1.0]
     assert temp.height == 10
+
+
+def _two_horizon_station_input_data_with_precip(
+    precip_values: list[float],
+) -> StationInputData:
+    timestamps = _timestamps(*range(3, 13))
+    return StationInputData(
+        past_targets=_time_frame(
+            {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+        ),
+        past_dynamic=_time_frame({"timestamp": _timestamps(0, 1, 2)}),
+        future_dynamic=_time_frame(
+            {
+                "timestamp": timestamps,
+                "precip": precip_values,
+                "temp": [float(i) for i in range(10)],
+            }
+        ),
+        static=None,
+    )
+
+
+def test_nan_gate_slices_future_known_variable_to_its_own_horizon_before_counting() -> (
+    None
+):
+    """Review fold-in (minor — T8 finding 8): locks the NaN-GATE side of the
+    D9 slice specifically, not just the InputSeries data the test above
+    covers -- removing the gate-side slice in
+    `_variables_over_nan_tolerance` would leave every OTHER added test
+    green. precip declares max_nan=0/future_steps=2; its first 2 raw values
+    are clean but every value AFTER its own horizon is NaN. Without the
+    NaN-gate-side slice, the gate counts NaNs over the WHOLE 10-row frame
+    and raises, even though the model never declared (or would ever
+    receive) those trailing rows."""
+    precip_values = [0.0, 1.0, *([float("nan")] * 8)]
+    data = _two_horizon_station_input_data_with_precip(precip_values)
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_two_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=10,
+        time_step=_STEP,
+    )
+
+    # Must NOT raise -- the trailing NaNs sit outside precip's own horizon.
+    adapter.predict(object(), inputs, random.Random(123))
+
+
+def test_nan_gate_still_fails_on_nan_inside_own_horizon() -> None:
+    """Paired negative case: a NaN INSIDE precip's own declared 2-step
+    horizon must still fail `max_nan=0` -- proving the slice narrows the
+    counted WINDOW, not the tolerance itself."""
+    precip_values = [0.0, float("nan"), *([1.0] * 8)]
+    data = _two_horizon_station_input_data_with_precip(precip_values)
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_two_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=10,
+        time_step=_STEP,
+    )
+
+    with pytest.raises(ModelOutputError, match="max_nan"):
+        adapter.predict(object(), inputs, random.Random(123))

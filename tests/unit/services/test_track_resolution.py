@@ -7,7 +7,9 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import polars as pl
+import pytest
 
+from sapphire_flow.adapters.recap_gateway import RecapTransientError
 from sapphire_flow.services.track_resolution import (
     commit_track,
     resolve_candidate,
@@ -30,7 +32,7 @@ from sapphire_flow.types.forcing_track import (
     StationUnavailableReason,
 )
 from sapphire_flow.types.ids import StationId
-from sapphire_flow.types.weather import BasinAverageForecast
+from sapphire_flow.types.weather import BasinAverageForecast, WeatherForecastRecord
 from tests.fakes.fake_stores import FakeWeatherForecastStore
 
 _STATION_A = StationId(UUID(int=1))
@@ -151,6 +153,7 @@ def test_incomplete_candidate_walks_back_and_never_persists() -> None:
         in_scope_station_ids=frozenset({_STATION_A}),
         weather_forecast_store=store,
         nwp_source=_NWP_SOURCE,
+        track_features=frozenset({"precip"}),
     )
     assert isinstance(result.station_outcomes[_STATION_A], StationTrackAvailable)
     # The FRESH (rejected) candidate's rows must never have reached the store.
@@ -310,6 +313,7 @@ def test_partial_station_beside_complete_sibling_drops_before_persist() -> None:
         in_scope_station_ids=frozenset({_STATION_A, _STATION_B}),
         weather_forecast_store=store,
         nwp_source=_NWP_SOURCE,
+        track_features=frozenset({"precip"}),
     )
 
     assert isinstance(result.station_outcomes[_STATION_A], StationTrackAvailable)
@@ -404,6 +408,7 @@ def test_readback_maps_per_station_availability_within_same_accepted_cycle() -> 
         in_scope_station_ids=frozenset({_STATION_A, _STATION_B}),
         weather_forecast_store=store,
         nwp_source=_NWP_SOURCE,
+        track_features=frozenset({"precip"}),
     )
 
     assert result.resolved_cycle == accepted.resolved_cycle
@@ -413,3 +418,256 @@ def test_readback_maps_per_station_availability_within_same_accepted_cycle() -> 
     assert result.station_outcomes[_STATION_B] == StationTrackUnavailable(
         reason=StationUnavailableReason.NO_DATA_AT_CYCLE
     )
+
+
+def _staggered_member_forecast(
+    station_id: StationId,
+    cycle: object,
+    *,
+    feature: str,
+    days_by_member: dict[int, list[int]],
+) -> BasinAverageForecast:
+    """Each member gets its OWN list of day offsets -- unlike ``_forecast``,
+    which applies the SAME day range to every member."""
+    rows: list[dict[str, object]] = []
+    for member_id, days in days_by_member.items():
+        for day in days:
+            valid_time = ensure_utc(cycle + timedelta(days=day))
+            rows.append(
+                {
+                    "valid_time": valid_time,
+                    "parameter": feature,
+                    "member_id": member_id,
+                    "value": 1.0,
+                }
+            )
+    return BasinAverageForecast(
+        nwp_source=_NWP_SOURCE, cycle_time=cycle, values=pl.DataFrame(rows)
+    )
+
+
+def test_transient_error_walks_back_to_older_complete_candidate() -> None:
+    """Review fold-in (major): a typed `RecapTransientError` on the freshest
+    candidate must NOT abort walk-back -- it is classified TRANSIENT and the
+    resolver tries the next older cycle, exactly like an ABSENT_AT_CYCLE
+    candidate. Fails today: the exception propagates uncaught out of
+    `resolve_candidate` and no older candidate is ever tried."""
+    track_request = _track_request(feature_steps={"precip": 2})
+    fresh = _NOMINAL_NOW
+    older = ensure_utc(fresh - timedelta(hours=_CADENCE_HOURS))
+    calls: list[object] = []
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        calls.append(cycle)
+        if cycle == fresh:
+            raise RecapTransientError("connection reset")
+        forecast = _forecast(_STATION_A, cycle, feature_days={"precip": 2})
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED, cycle=cycle, stations={_STATION_A: forecast}
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=24.0,
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+
+    assert accepted is not None
+    assert accepted.resolved_cycle == older
+    assert calls == [fresh, older]
+
+
+def test_fatal_auth_error_still_propagates_uncaught() -> None:
+    """The transient carve-out must not widen to every exception -- a
+    non-transient typed error (anything other than `RecapTransientError`)
+    still propagates uncaught, exactly as D31 requires."""
+
+    class _FatalError(Exception):
+        pass
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        raise _FatalError("misconfigured HRU")
+
+    with pytest.raises(_FatalError):
+        resolve_candidate(
+            _track_request(feature_steps={"precip": 2}),
+            fetch_candidate=fetch_candidate,
+            expected_member_ids=frozenset({0}),
+            nominal_cycle_source=_always_primary,
+            nominal_now=_NOMINAL_NOW,
+            issue_time=_ISSUE,
+            cycle_cadence_hours=_CADENCE_HOURS,
+            max_cycle_age_hours=24.0,
+            clock=_clock,
+            id_gen=_id_gen,
+        )
+
+
+def test_missing_polygon_column_station_gets_specific_reason() -> None:
+    """D27: a station the adapter excluded via `missing_polygon_column` must
+    resolve to the SPECIFIC `MISSING_POLYGON_COLUMN` reason, not the generic
+    `NO_DATA_AT_CYCLE` every other never-returned station gets. Fails today:
+    `AcceptedCandidate` has no field carrying the set through, so
+    `commit_track` cannot tell the two cases apart."""
+    track_request = _track_request(feature_steps={"precip": 2})
+    store = FakeWeatherForecastStore()
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        complete = _forecast(_STATION_A, cycle, feature_days={"precip": 2})
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED,
+            cycle=cycle,
+            stations={_STATION_A: complete},
+            missing_polygon_column=frozenset({_STATION_B}),
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=6.0,
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+    assert accepted is not None
+    assert _STATION_B in accepted.missing_polygon_column
+
+    result = commit_track(
+        accepted,
+        in_scope_station_ids=frozenset({_STATION_A, _STATION_B}),
+        weather_forecast_store=store,
+        nwp_source=_NWP_SOURCE,
+        track_features=frozenset({"precip"}),
+    )
+    assert result.station_outcomes[_STATION_B] == StationTrackUnavailable(
+        reason=StationUnavailableReason.MISSING_POLYGON_COLUMN
+    )
+
+
+def test_commit_track_does_not_resurrect_unrelated_preexisting_rows() -> None:
+    """Review fold-in (major): station B never appeared in this candidate's
+    `.stations` at all (not complete, not incomplete-at-cycle) -- yet the
+    store already holds UNRELATED rows for (B, nwp_source, this cycle) from
+    an earlier write (a different track, or a legacy path). `commit_track`
+    must classify B as unavailable WITHOUT reading those rows back as if
+    this candidate had produced them. Fails today: readback is keyed only
+    on (station_id, nwp_source, cycle_time), so it "resurrects" B as
+    `StationTrackAvailable`."""
+    track_request = _track_request(feature_steps={"precip": 2})
+    store = FakeWeatherForecastStore()
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        complete = _forecast(_STATION_A, cycle, feature_days={"precip": 2})
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED, cycle=cycle, stations={_STATION_A: complete}
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=6.0,
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+    assert accepted is not None
+    assert _STATION_B not in accepted.complete_station_records
+    assert _STATION_B not in accepted.incomplete_at_cycle
+
+    # Unrelated pre-existing rows for B at the SAME (nwp_source, cycle) --
+    # e.g. a different track's earlier write. Never returned by THIS
+    # candidate.
+    store._records.append(
+        WeatherForecastRecord(
+            id=uuid4(),
+            station_id=_STATION_B,
+            nwp_source=_NWP_SOURCE,
+            cycle_time=accepted.resolved_cycle,
+            valid_time=ensure_utc(accepted.resolved_cycle + timedelta(days=1)),
+            parameter="precip",
+            spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+            band_id=None,
+            member_id=None,
+            value=1.0,
+            created_at=_NOMINAL_NOW,
+        )
+    )
+
+    result = commit_track(
+        accepted,
+        in_scope_station_ids=frozenset({_STATION_A, _STATION_B}),
+        weather_forecast_store=store,
+        nwp_source=_NWP_SOURCE,
+        track_features=frozenset({"precip"}),
+    )
+
+    assert result.station_outcomes[_STATION_B] == StationTrackUnavailable(
+        reason=StationUnavailableReason.NO_DATA_AT_CYCLE
+    )
+
+
+def test_staggered_member_valid_times_rejects_candidate_and_walks_back() -> None:
+    """Review fold-in (blocker): member 0 covers days 1-2 and member 1
+    covers days 3-4 -- each individually satisfies a two-step COUNT, but
+    they share NO common valid_time, so downstream assembly's earliest-N cap
+    would retain only days 1-2 and silently drop member 1 entirely. The
+    candidate must be REJECTED (not COMPLETE) and walk-back must continue to
+    an older, genuinely-common-timestamp candidate. Fails today:
+    count-based `_station_complete` accepts the freshest (staggered)
+    candidate outright."""
+    track_request = _track_request(
+        feature_steps={"precip": 2}, ensemble_mode=EnsembleMode.ENSEMBLE
+    )
+    expected = frozenset({0, 1})
+    fresh = _NOMINAL_NOW
+    older = ensure_utc(fresh - timedelta(hours=_CADENCE_HOURS))
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        if cycle == fresh:
+            forecast = _staggered_member_forecast(
+                _STATION_A,
+                cycle,
+                feature="precip",
+                days_by_member={0: [1, 2], 1: [3, 4]},
+            )
+        else:
+            forecast = _staggered_member_forecast(
+                _STATION_A,
+                cycle,
+                feature="precip",
+                days_by_member={0: [1, 2], 1: [1, 2]},
+            )
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED, cycle=cycle, stations={_STATION_A: forecast}
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=expected,
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=24.0,
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+
+    assert accepted is not None
+    assert accepted.resolved_cycle == older

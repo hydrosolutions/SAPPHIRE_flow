@@ -1059,3 +1059,93 @@ a design fork; each changes a ratified decision's **observable consequence**, so
 **Verified (2026-08-18, no longer an assumption):** `AssignmentFailureCause` (`services/run_station_forecast.py:72`,
 8 members) is consumed by **no** exhaustive `match` in the repo — the only nearby `match` is on the `AssignmentOutcome`
 union (`:497-502`), and every `src/` use is a construction site. The two additive members need **no** new match arms.
+
+## Fixer round (post-implementation review fold-in, 2026-08-18)
+An independent Codex pass over the committed T5–T7 diff (`3481179`) plus a Claude design pass raised two blockers,
+six majors, and two minors. All findings against T5–T7 (the committed slice) are resolved below; the one finding
+about T8 is recorded as **explicitly deferred**, not resolved, for the reason stated.
+
+- **Blocker — T8 (flow wiring, golden tests, docs) is absent.** Correct as reported: `flows/run_forecast_cycle.py`
+  has zero references to `resolve_candidate`/`commit_track`/`assemble_assignment_inputs`/
+  `run_all_station_forecasts_per_track` — only tests call T5–T7. **NOT resolved in this fixer round, by design.**
+  T8 is its own phase in the plan's dependency graph (`depends_on: ["T7"]`), separately estimated at ~1,000–1,600
+  diff lines (dominant among all eight tasks), and its own task text specifies a materially different risk profile
+  than a fixer patch is suited for: precise cross-cycle preflight semantics (D11), a fail-loud freshness heartbeat
+  that must honour Plan 116's existing contract (D26) at every new fatal exit, a group/per-track overlap rule
+  (D30-overlap-deferral) with a demonstrated history of getting the direction wrong during design review, configured
+  retries threaded from `RecapGatewayConfig.max_retries` (D28), and five documentation files. Building this from a
+  review-findings list — without the red-first/independent-Codex-review loop this repo's own workflow mandates for
+  non-trivial changes (`docs/workflow.md` § Multi-Model Review; `CLAUDE.md` "Multi-model review is mandatory for all
+  non-trivial plans and patches") — risks exactly the kind of silent contract violation (D26/D30) the plan spent
+  substantial review effort pinning down precisely. **Recommendation:** run T8 as its own `implement` pass against
+  this plan's existing T8 task text (already fully specified, phase-gated, with its own red-first criteria and exit
+  gate) rather than folding it into a fixer round on top of T5–T7.
+- **Blocker — all-members-at-horizon not enforced (staggered valid_times).** `_station_complete` compared per-member
+  step *counts*, so member 0 covering days 1–2 and member 1 covering days 3–4 each individually satisfied a two-step
+  requirement while sharing no common valid_time — `_filter_and_cap_daily_records`'s downstream earliest-N-times cap
+  would then silently retain one member's days and drop the other member entirely. **Fix:** `reduced_daily_step_times`
+  (renamed from `reduced_daily_step_counts`, which is now a thin wrapper) returns the actual valid_time *set* per
+  `(parameter, member_id)`; `_station_complete`'s ENSEMBLE branch now requires every expected member's earliest
+  `horizon.value` valid_times to be the *identical* set, not just of adequate count. The runner's defensive
+  `_assert_consistent_member_set` also gained an `expected_member_ids` parameter (threaded through
+  `ForcingContract.expected_member_ids` ← `assemble_assignment_inputs(expected_member_ids=...)`) so a single-feature
+  or uniformly-partial-across-features model is checked against the source's ground-truth member set, not merely
+  against itself. Locked by `test_staggered_member_valid_times_rejects_candidate_and_walks_back`
+  (`tests/unit/services/test_track_resolution.py`) and
+  `test_single_feature_partial_ensemble_checked_against_expected_member_ids`
+  (`tests/unit/services/test_run_station_forecast_per_track.py`); both proven RED against the pre-fix code.
+- **Major — typed `RecapTransientError` was not classified TRANSIENT.** `resolve_candidate` let a
+  `RecapTransientError` (raised only once the source's own retry budget is exhausted) propagate uncaught instead of
+  walking back like an `ABSENT_AT_CYCLE` candidate. **Fix:** `resolve_candidate` now catches `RecapTransientError`
+  specifically, logs `nwp.candidate_rejected` with `reason="transient_error"`, and continues to the next older
+  candidate; every other exception still propagates uncaught (D31). Locked by
+  `test_transient_error_walks_back_to_older_complete_candidate` (RED against pre-fix), paired with
+  `test_fatal_auth_error_still_propagates_uncaught` (a regression guard — passes before and after; proves the
+  carve-out did not widen to swallow fatal errors).
+- **Major — `RawFetchOutcome.missing_polygon_column` was discarded (D27).** A station the adapter explicitly excluded
+  for a missing HRU polygon column fell through to the generic `NO_DATA_AT_CYCLE`, losing the diagnostic D27 was
+  written to preserve. **Fix:** `AcceptedCandidate` gained a `missing_polygon_column: frozenset[StationId]` field,
+  populated in `resolve_candidate` from the accepted outcome; `commit_track`'s per-station fallback checks it before
+  defaulting to `NO_DATA_AT_CYCLE`. Locked by `test_missing_polygon_column_station_gets_specific_reason`; proven RED
+  against the pre-fix code.
+- **Major — `commit_track` could "resurrect" unrelated pre-existing rows.** Readback was keyed only on
+  `(station_id, nwp_source, cycle_time)`, so a station absent from *this* candidate's results but with old rows
+  already in the store for the same key (a different track, or a legacy write) would be misclassified
+  `StationTrackAvailable`. **Fix:** readback is now attempted only for stations in
+  `accepted.complete_station_records`; every other in-scope station is classified from `incomplete_at_cycle` /
+  `missing_polygon_column` / the generic fallback without touching the store. `commit_track` also gained a
+  `track_features` parameter so readback is filtered to this track's own features. Locked by
+  `test_commit_track_does_not_resurrect_unrelated_preexisting_rows`; proven RED against the pre-fix code.
+- **Major — one scalar horizon capped every feature.** `build_future_dynamic_frame` /
+  `_filter_and_cap_daily_records` applied one `forecast_horizon_steps` to every parameter, so a precip=2/temp=10
+  assignment retained 10 values for both. **Fix:** both functions accept an optional `feature_horizons: dict[str,
+  int]` that caps each parameter to its own horizon independently (`None`, the default and every legacy caller,
+  preserves the old scalar behaviour byte-for-byte); `assemble_assignment_inputs` now derives and passes it. Locked
+  by `test_per_feature_horizon_caps_each_column_independently` (precip retains 2 non-null values, temp retains 10 on
+  the same 10-row frame); proven RED against the pre-fix code.
+- **Major — warm-up state was loaded twice.** `assemble_assignment_inputs` (T6) built a full `ModelRunContext`
+  including a `load_warm_up_state` call, which `_run_single_model` (T7) then discarded and reloaded from scratch —
+  doubling the store read and moving the first read's failure mode outside the assignment-local
+  `WARM_UP_LOAD_FAILED` path. **Fix:** `ReadyContext` now carries loose `inputs` / `observation_staleness_hours` /
+  `nwp_age_hours` fields instead of a prebuilt `ModelRunContext`; `assemble_assignment_inputs` no longer loads
+  warm-up state at all — `_run_single_model`'s existing assignment-local load is the sole owner. Locked by
+  `test_assembly_and_runner_share_exactly_one_warm_up_load` (asserts `state_store.accessed_model_ids == [_MODEL_HIGH]`
+  over the full T6→T7 pipeline); proven RED against the pre-fix code (the pre-fix pipeline reads state twice).
+- **Minor — the NaN-gate slice lacked its own lock.** T6's red-first criterion asserts the past-/future-known
+  tolerance-map slice at *both* the `InputSeries`-construction site and the NaN-gate site independently, but only
+  the construction-site test existed; the gate-side slice (already correct, landed under T2) had no test that would
+  fail if it regressed. **Fix (test-only — no code defect):** two new tests in
+  `tests/unit/adapters/test_forecast_interface_adapter_nan_gate.py` — trailing NaNs outside a two-step feature's
+  declared horizon must not trip `max_nan=0`, paired with a NaN inside the declared horizon that still must.
+- **Minor — `_forecast_result_to_records` didn't document which legacy conversion site it mirrors.** **Fix:** a
+  docstring on the function now names the pre-extracted-dict site (`flows/run_forecast_cycle.py:1356`) it matches,
+  not the gridded/extracted site (`:1275`).
+
+**Test soundness:** every correctness-fix locking test above was confirmed to fail against the pre-fix code by
+reverting the `src/` half of the fix (`git apply -R` on the isolated production-code patch, keeping the new tests),
+running the affected tests (8 of 9 new/changed locking tests failed as expected; the ninth,
+`test_fatal_auth_error_still_propagates_uncaught`, is a regression-guard pair that is correctly green both before and
+after), then restoring the fix and re-confirming full green.
+
+**Exit gate:** `uv run pytest -q` full suite green, `uv run pyright src/` at 404 (ratchet ceiling 432, no new
+findings), `uv run ruff check .` clean beyond the 12 pre-existing alembic `E501`s.

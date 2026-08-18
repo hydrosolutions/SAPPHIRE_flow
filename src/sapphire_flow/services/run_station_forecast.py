@@ -148,6 +148,7 @@ def _assert_consistent_member_set(
     future_dynamic: pl.DataFrame,
     features: frozenset[str],
     ensemble_mode: EnsembleMode,
+    expected_member_ids: frozenset[int] | None = None,
 ) -> str | None:
     """Plan 151 D10a: the pre-run defensive re-check. `assess_future_coverage`
     called PER FEATURE no longer performs its own cross-feature "identical
@@ -155,13 +156,36 @@ def _assert_consistent_member_set(
     invariant over the ASSEMBLED frame before `predict` is ever called. T5's
     per-station exact-`expected_member_ids` gate is strictly stronger and
     runs before persist — this is a defensive re-check, not the primary
-    guard. Returns an error detail string if inconsistent, else ``None``."""
+    guard. Returns an error detail string if inconsistent, else ``None``.
+
+    ``expected_member_ids`` (review fold-in — blocker), when supplied, is
+    checked FIRST against every feature's actual member set — not merely
+    features against each other. A cross-feature-only compare passes
+    trivially for a single-feature model, or when every feature is
+    UNIFORMLY short the same true member set (e.g. all features carry only
+    30 of 51 expected members) — it can only ever catch DIVERGENCE between
+    features, never agreement on a wrong set."""
     if ensemble_mode is not EnsembleMode.ENSEMBLE or not features:
         return None
     member_sets = {
         feature: member_indices(future_dynamic.columns, feature)
         for feature in sorted(features)
     }
+    if expected_member_ids is not None:
+        wrong = {
+            feature: members
+            for feature, members in sorted(member_sets.items())
+            if members != expected_member_ids
+        }
+        if wrong:
+            detail = ", ".join(
+                f"{feature}={sorted(members)}" for feature, members in wrong.items()
+            )
+            return (
+                f"ensemble member set(s) do not match expected "
+                f"{sorted(expected_member_ids)}: {detail}"
+            )
+        return None
     reference = next(iter(member_sets.values()))
     if any(members != reference for members in member_sets.values()):
         detail = ", ".join(
@@ -295,6 +319,7 @@ def _run_single_model(
             inputs.data.future_dynamic,
             forcing_contract.future_dynamic_features,
             forcing_contract.ensemble_mode,
+            forcing_contract.expected_member_ids,
         )
         if member_check is not None:
             log.warning(
@@ -707,7 +732,11 @@ def run_all_station_forecasts_per_track(
                 )
                 continue
             case ReadyContext(
-                run_context=context, provenance=provenance, contract=contract
+                inputs=run_inputs_data,
+                observation_staleness_hours=observation_staleness_hours,
+                nwp_age_hours=nwp_age_hours,
+                provenance=provenance,
+                contract=contract,
             ):
                 pass
 
@@ -715,9 +744,9 @@ def run_all_station_forecasts_per_track(
             outcome = _run_single_model(
                 station_id=station_id,
                 assignment=assignment,
-                inputs=context.inputs,
-                observation_staleness_hours=context.observation_staleness_hours,
-                nwp_age_hours=context.nwp_age_hours,
+                inputs=run_inputs_data,
+                observation_staleness_hours=observation_staleness_hours,
+                nwp_age_hours=nwp_age_hours,
                 model_state_store=model_state_store,
                 models=models,
                 artifact_store=artifact_store,
