@@ -4,7 +4,7 @@ created: 2026-08-18
 revised: 2026-08-18
 plan: 185
 title: CI credential-absence guard — a withheld secret must degrade loudly, not fail red
-scope: Guard the `unit` job's private-extra install so a STRUCTURALLY absent credential (a Dependabot PR) degrades with a visible warning, while an absent credential on a run that should have had it — or on a PR that changes `uv.lock` — still fails. Two tasks: one `ci.yml` change, one paragraph in `docs/standards/cicd.md`. Explicitly NOT fork-PR support, NOT other secrets, NOT any new file.
+scope: Guard the `unit` job's private-extra install so a STRUCTURALLY absent credential (a Dependabot-actor run) degrades with a visible warning, while an absent credential on a run that should have had it — or on a PR that changes `uv.lock` — still fails. Two tasks: one `ci.yml` change, one paragraph in `docs/standards/cicd.md`. Explicitly NOT fork-PR support, NOT other secrets, NOT a new tool/framework. (Amended post-implementation: one locking test file under `tests/unit/tooling/`, matching the pre-existing one-guard-one-file convention there, is in scope — see the fixer note under Proportionality.)
 depends_on: []
 blocks: []
 ---
@@ -24,8 +24,9 @@ OD-3 (fork PRs cannot change `uv.lock`) is an accepted consequence, not a fork.
 
 **Ask what to REMOVE before asking what to add.** An addition earns its place only by
 naming the concrete failure it prevents. Explicitly **not** wanted: abstraction over CI
-config, a credential framework, retry/backoff, matrix expansion, any new file under
-`tools/` or `tests/`, or extending the guard to secrets other than `AQUACAST_TOKEN`.
+config, a credential framework, retry/backoff, matrix expansion, a bespoke evaluator for
+GitHub Actions expression semantics, or extending the guard to secrets other than
+`AQUACAST_TOKEN`.
 
 > **This budget has already failed once.** A `/plan` loop grew this doc 151 → 496 lines
 > and stalled, having proposed *a Python re-implementation of GitHub Actions expression
@@ -33,6 +34,18 @@ config, a credential framework, retry/backoff, matrix expansion, any new file un
 > NEEDS_CHANGES on proportionality grounds and its delete-list is what this rewrite
 > applies. If a reviewer's suggestion is larger than the conditional it guards, it is
 > wrong by construction.
+
+> **Fixer note, post-implementation.** The original "NOT any new file" line above was
+> written against that rejected evaluator, but its literal wording also covered a much
+> smaller thing: a locking test file. `tests/unit/tooling/` already holds one file per
+> CI guard (`test_recap_wheel_guard.py`, `test_recap_dependency_pin.py`,
+> `test_trivy_gate_observability.py`) — each parses `ci.yml`, selects steps by `name`,
+> and asserts structurally, exactly the shape this plan's own tests use. Multi-model
+> review flagged the new file as an undocumented deviation from that line; this note is
+> the documented decision: the non-goal is narrowed to "no new tool, framework, or
+> expression evaluator", and `tests/unit/tooling/test_ci_credential_absence_guard.py`
+> stays, sized to the behavioral assertions the review demanded (exact `if:` string
+> equality, not substring checks) — not expanded beyond them.
 
 ## Why this exists
 
@@ -64,6 +77,10 @@ worse, not better — hence D4.
      `AQUACAST_TOKEN` and the store it belongs in.
   Case 3 covers both "somebody deleted the secret" and "this PR changes `uv.lock`",
   which is where the extra's resolution is most likely to break (per OD-2 below).
+  **Accepted limit:** a deleted *Dependabot-store* copy is indistinguishable from
+  structural withholding, so on a Dependabot run with `uv.lock` unchanged it degrades
+  (case 2) rather than failing. Distinguishing them would need a reachability check,
+  which is out of scope — presence is not validity.
 - **D2 — presence is read from a job-level env value, not a detect step.** Secrets are
   permitted in a job-level `env:` block, and a step-level `if:` can read the `env`
   context; only `if:` itself cannot reference `secrets.*` directly. So:
@@ -93,11 +110,32 @@ worse, not better — hence D4.
   *non-optional* dependency: without it no job syncs at all, so there is nothing to
   degrade to. Fork-PR support is a non-goal.
 - **D6 — a `uv.lock` change is detected exactly, not by proxy.**
+  *(Amended post-implementation, fixer round — independent review found real gaps in
+  both mechanisms this decision originally pinned; both are corrected below, without
+  reopening D1–D5.)*
   ```bash
-  gh pr diff "${{ github.event.pull_request.number }}" --name-only
+  gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+    --jq '.[] | .filename, (.previous_filename // empty)'
   ```
-  matched on an exact `uv.lock` line. **Capture the command's success before testing
-  its output**, so an API failure fails closed rather than reading as "no lock change".
+  matched on an exact `uv.lock` line, against **both** `filename` and
+  `previous_filename` so a rename-away-from-`uv.lock` still counts as a touch.
+  *(Was: `gh pr diff --name-only`. A diff's name-only listing carries only the
+  post-rename path — a rename-away is invisible to it — and GitHub silently truncates
+  a PR diff past 300 changed files.)*
+  **Capture the command's success before testing its output**, so an API failure fails
+  closed rather than reading as "no lock change".
+
+  *(Amended second fixer round — independent review found `--paginate` does NOT lift
+  the pull-request-files endpoint's own hard 3000-file response cap ("The paginated
+  pull-request-files endpoint has neither limit" above was wrong on that point): a PR
+  with more changed files than that could have `uv.lock` sit outside the returned
+  pages and read as "no change" despite the command exiting 0. Fixed by reading the
+  PR's own `changed_files` count first —
+  `gh api "repos/.../pulls/<number>" --jq '.changed_files'` — and failing closed,
+  exactly like an API failure, both when that lookup itself fails and when the count
+  exceeds 3000. Only once the count is confirmed within the cap does the paginated
+  `/files` listing get trusted.)*
+
   Three things are pinned here, not left to implementation:
   ```yaml
   # on the job — specifying ANY permission zeroes the unspecified ones, so
@@ -108,9 +146,20 @@ worse, not better — hence D4.
   if: >-
     env.AQUACAST_TOKEN_PRESENT != 'true' &&
     github.event_name == 'pull_request' &&
-    github.event.pull_request.user.login == 'dependabot[bot]'
+    github.actor == 'dependabot[bot]'
   env: { GH_TOKEN: "${{ github.token }}" }
   ```
+  **`github.actor`, not the PR author.** *(Was: `github.event.pull_request.user.login
+  == 'dependabot[bot]'`.)* GitHub withholds Actions secrets from a run according to who
+  **triggered that specific run** (`github.actor`), not who opened the PR. A maintainer
+  can push a further commit onto a Dependabot-opened branch; that push's
+  `pull_request` `synchronize` event runs as the maintainer, with secrets restored —
+  but `github.event.pull_request.user.login` still reads `dependabot[bot]` forever (it
+  is fixed at PR-open time, unaffected by who pushes afterward). The original predicate
+  would have misclassified a real missing-credential failure on that human-triggered
+  run as an expected degrade — exactly the class of bug D1 case 3 exists to prevent.
+  `github.actor` reflects the triggering identity per-run, so a human push with the
+  token absent for an unrelated reason still falls through to the fail case.
   **The event guard is load-bearing.** CI also runs on `push` (`ci.yml:4-5`), where
   `github.event.pull_request.number` is empty; `gh` treats an empty selector as *no*
   selector and falls back to guessing a PR from the current branch. On `push` the token
@@ -176,3 +225,31 @@ job-level-env simplification, the D4 `1 passed` check, and the D6 exact-diff mec
 → this rewrite. The Codex pass also found two **pre-existing repo** faults unrelated to
 this plan: a broken `bump-my-version` config (fixed, `d01a809`) and the advisory
 gate-parity drift (out of scope, above).
+
+**Post-implementation fixer round** (independent Codex diff review + Claude design
+review over the committed diff): six majors — the PR-author-vs-`github.actor` gap
+(D6, three sites), the `gh pr diff` rename/300-file gap (D6), non-locking substring
+tests, the new test file's undocumented deviation from "NOT any new file", and the
+fail-step's `if:` needing exact-string (not substring) assertions. All six resolved in
+`ci.yml`, the test file, and this doc (D6 amendments + proportionality note above);
+none disputed.
+
+**Second post-implementation fixer round** (independent Codex diff review): two
+majors, one minor. Major 1 — `--paginate` does not lift the pull-request-files
+endpoint's own hard 3000-file cap, so a PR past that size could have `uv.lock` fall
+outside the returned pages and silently read as "no change"; fixed by reading the
+PR's `changed_files` count first and failing closed (as an API failure would) both
+when that lookup fails and when the count exceeds 3000 (D6 amendment above). Major 2
+— no test locked the detect step's grep-match→`true`/no-match→`false` branch
+mapping itself (only the outer API-failure fail-closed path was pinned); added a
+test that isolates the inner `if`/`else` fragment and asserts each branch's exact
+assignment — proven to fail (RED) against a mutant with the assignments swapped
+before being accepted. Minor — two `ci.yml` comments were stale: the `unit`-job
+private-clone comment still said the job "does not install the aquacast extra by
+default" though the credentialed path now does unconditionally, and the Plan 185
+comment block read as if `AQUACAST_TOKEN_PRESENT` were unconditionally false on every
+Dependabot-attributed run, when GitHub substitutes a same-named Dependabot-store
+secret in for a withheld Actions-store one — which is exactly why mirroring
+`AQUACAST_TOKEN` into the Dependabot store fixed the original outage (see "Why this
+exists" above). Both comments corrected to describe the actual conditional behavior.
+All three resolved in `ci.yml` and the test file; none disputed.

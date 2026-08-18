@@ -20,6 +20,18 @@ year, verified) and a published extraction bundle for 26 stations.
 apparatus it had invented. Reverted. This plan is deliberately short — the analysis is a comparison,
 not a system.**
 
+**A SECOND `/plan` sweep the same day expanded it to 420 lines and ESCALATED** (stalled after 3 rounds,
+2 blockers + 5 majors), its blockers again sitting inside apparatus it had itself invented — task
+scaffolding, bundle-identity verification, manifest cross-checks. Reverted again. **Four findings were
+genuinely analytical and are folded in below by hand** (D4's shoulder-season gap, D11, D12, and the
+withdrawn "50–100 %" citation); the rest concerned the sweep's own additions. Two headline findings did
+NOT survive checking: the "primary extraction operator is unspecified" blocker (`era5_extract.py:258`
+already declares NEAREST as *THE* operator, and the `series_*.nc` files it cited do not exist).
+
+**⚠️ THE IN-DOCUMENT PROPORTIONALITY BLOCK BELOW DID NOT RESTRAIN THE WORKFLOW.** It was added
+specifically to prevent the second expansion and failed. **Do not re-run `/plan` on this plan expecting
+a different result — review it by hand.**
+
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT ON THIS PLAN AND ON ITS REVIEW
 
 **Owner instruction, 2026-08-18: "we must not over-engineer this plan."** This is a standing constraint
@@ -62,8 +74,19 @@ provide.
 - **D3 — Never headline an hourly matched pair.** One gauge vs one 0.1° cell (~110 km²) is dominated by
   representativeness error at that scale. Aggregate, and state the scale beside every number.
 
-- **D4 — Warm season quantitative; cold-season high-altitude qualitative only.** Snow undercatch is
-  50–100 %, so a winter "bias" at 3,700 m measures the gauge (vision D6).
+- **D4 — Warm season quantitative; cold-season high-altitude qualitative only.** A winter "bias" at
+  3,700 m measures the gauge, not the model (vision D6). **⛔ The "50–100 %" snow-undercatch figure an
+  earlier draft attributed to vision D6 is WITHDRAWN — D6 constrains the SIGN only and states we know
+  neither gauge type nor wind speed. Cite primary literature or give no number.**
+
+  **⚠️ OPEN — owner's call, do not leave implicit.** The carve-out is scoped to calendar DJF but the
+  mechanism is not. At the six stations ≥2,400 m (Syangboche 3,700, Humde 3,401, Olangchunggola 3,119,
+  Lukla 2,860, Ghorepani 2,742, Lete 2,490) freezing levels in **MAM and ON** are frequently at or below
+  station height, so shoulder-month snow undercatch is physically plausible — and would enter the
+  MONTHLY magnitude estimands with no flag, since D6's caveat governs sign rather than usability.
+  Either extend the qualitative-only treatment to MAM/ON at those six, or say in the Exit that those
+  months are **not screened** for undercatch, so the "quantitative" label there is asserted rather than
+  verified.
 
 - **D5 — Representativeness is characterised, not decomposed.** One point vs one cell cannot separate
   grid error from model error. Use M-A5's operator-sensitivity envelope, the elevation mismatch, and
@@ -102,6 +125,18 @@ provide.
   the data (**provenance is second-hand, not a DHM statement — record it as such**). Magnitude
   estimands are therefore unblocked and need no rescaling factor. *Had it been a mean of sub-hourly
   samples, every magnitude in D1 would have been wrong by a constant.*
+
+- **D11 — Consume Plan 173's M-A6 exclusion list; do not re-derive it.** 173 produces that list from the
+  exact monsoon-retention predicate *precisely so M-A6 does not invent its own rule* (173 `scope:`,
+  and its §:164/:232). **Apply it before every station, elevation and cross-station summary, and report
+  which stations it removed and why.** Omitting it silently pools stations 173 already judged unusable,
+  which changes every cross-station number in the Exit.
+
+- **D12 — Categorical scores at DAILY and MONTHLY grain only.** At a JJAS/DJF grain "wet" means ≥0.2 mm
+  accumulated over whole months, so both sides are wet in essentially every station-year: POD→1.0,
+  CSI→1.0, FAR→0 *by construction*, while the totals may still differ by hundreds of mm. That is D3's
+  scale-validity objection one tier up — a well-defined number that reads as perfect agreement and is
+  analytically vacuous. Report categorical skill where wet/dry is informative, and nowhere else.
 
 ## Exit
 
