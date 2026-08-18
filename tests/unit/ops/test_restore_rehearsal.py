@@ -56,6 +56,23 @@ commit found three further gaps):
       membership: both tokens must appear before the image argument in the
       `docker run` invocation, since Docker treats anything after the image
       as the container's command rather than a `run` option.
+
+Locked 2026-08-18, third round (the (k) fix above was itself wrong — its own
+fake invented the sequence it checked, hiding the bug):
+  (n) the sequence-collision plausibility check targets
+      `pipeline_health_id_seq` / `pipeline_health`, NOT `audit_log_id_seq` /
+      `audit_log`. Both are real BIGINT `autoincrement=True` columns
+      (migrations 0001 and 0045 respectively; `docker/bootstrap-roles.sql:139`
+      names both as "the BIGSERIAL-keyed tables"), but `pipeline_health` is
+      the pair checked here because it is guaranteed non-empty in any real
+      dump (the forecast/BAFU flows write health records continuously)
+      whereas `audit_log` may be sparse.
+  (o) the script asserts the sequence relation EXISTS
+      (`to_regclass('pipeline_health_id_seq')` non-null) before querying it,
+      so a missing relation fails loudly and names itself rather than
+      surfacing as some other query error — the exact class of bug that
+      shipped in round one (`access_tokens_id_seq`, which never existed)
+      and was hidden by a fake that simply invented the answer.
 """
 
 from __future__ import annotations
@@ -80,9 +97,10 @@ def _write_fake_docker(
     pg_restore_exit: int = 0,
     pg_restore_stderr: str = "",
     access_tokens_count: str = "3",
-    audit_log_max_id: str = "5",
+    pipeline_health_max_id: str = "5",
     seq_last_value: str = "5",
     seq_is_called: str = "t",
+    seq_exists: str = "pipeline_health_id_seq",
 ) -> Path:
     """A stateful fake `docker` that recognises the exact subcommands
     restore-rehearsal.sh issues and answers each on its merits, logging
@@ -138,12 +156,16 @@ def _write_fake_docker(
                 echo "abcd1234ef56"
                 exit 0
                 ;;
-              *"audit_log_id_seq"*)
+              *"to_regclass"*)
+                echo "{seq_exists}"
+                exit 0
+                ;;
+              *"pipeline_health_id_seq"*)
                 echo "{seq_last_value}|{seq_is_called}"
                 exit 0
                 ;;
-              *"coalesce(max(id), 0) FROM audit_log"*)
-                echo "{audit_log_max_id}"
+              *"coalesce(max(id), 0) FROM pipeline_health"*)
+                echo "{pipeline_health_max_id}"
                 exit 0
                 ;;
               *)
@@ -323,7 +345,7 @@ class TestSequenceCollisionRisk:
         fake = _write_fake_docker(
             bin_dir,
             args_log,
-            audit_log_max_id="5",
+            pipeline_health_max_id="5",
             seq_last_value="5",
             seq_is_called="f",
         )
@@ -332,7 +354,7 @@ class TestSequenceCollisionRisk:
         assert result.returncode != 0
         assert "PASS" not in result.stdout
         assert "is_called" in result.stderr
-        assert "audit_log_id_seq" in result.stderr
+        assert "pipeline_health_id_seq" in result.stderr
         assert len(_rm_calls(args_log)) == 1, (
             "teardown must still happen when the sequence check fails"
         )
@@ -350,13 +372,41 @@ class TestSequenceCollisionRisk:
         fake = _write_fake_docker(
             bin_dir,
             args_log,
-            audit_log_max_id="5",
+            pipeline_health_max_id="5",
             seq_last_value="1",
             seq_is_called="f",
         )
         result = _run_script(tmp_path, fake, _dump_file(tmp_path))
 
         assert result.returncode == 0, result.stderr
+
+
+class TestSequenceExistenceGuard:
+    def test_missing_sequence_fails_loudly_and_names_it(self, tmp_path: Path) -> None:
+        """BLOCKER regression guard: round one queried `access_tokens_id_seq`
+        directly, a relation that has never existed (access_tokens.id is a
+        UUID primary key, migration 0047) — and a vacuous test fake hid the
+        bug by inventing the sequence in its mock. The script must check
+        relation EXISTENCE (`to_regclass`) before querying it, and fail
+        naming the missing relation rather than surfacing some other error
+        (e.g. `ERROR: relation "..." does not exist` bleeding through as an
+        opaque psql failure)."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log, seq_exists="")
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert "PASS" not in result.stdout
+        assert "pipeline_health_id_seq" in result.stderr
+        assert "does not exist" in result.stderr
+        assert len(_rm_calls(args_log)) == 1, (
+            "teardown must still happen when the existence guard fails"
+        )
+        # The guard must run BEFORE the sequence is actually queried — a
+        # missing relation should never reach the last_value/is_called call.
+        assert not _exec_calls(args_log, "last_value")
 
 
 class TestRestoresIntoFreshDatabase:
@@ -418,8 +468,9 @@ class TestRestoresIntoFreshDatabase:
         content_query_substrings = [
             "count(*) FROM access_tokens",
             "version_num FROM alembic_version",
-            "audit_log_id_seq",
-            "coalesce(max(id), 0) FROM audit_log",
+            "to_regclass",
+            "pipeline_health_id_seq",
+            "coalesce(max(id), 0) FROM pipeline_health",
         ]
         for substring in content_query_substrings:
             psql_argv = _last_exec_argv(args_log, substring)

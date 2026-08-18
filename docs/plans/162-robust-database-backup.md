@@ -106,6 +106,22 @@ token membership only, not position, so `docker run IMAGE --network none` (which
 container's *command*, not a `run` option) would have passed; the test now also asserts `--network none`
 precedes the image argument. All three proven red against the pre-fix script and green after.
 
+**Third fixer round (2026-08-18, same branch):** the second round's retarget to `audit_log_id_seq`/`audit_log`
+was itself replaced with **`pipeline_health_id_seq`/`pipeline_health`** — the owner's call: exactly two tables
+in this schema use `BIGINT ... autoincrement=True` (`audit_log`, migration 0045; `pipeline_health`, migration
+0001 — independently corroborated by `docker/bootstrap-roles.sql:139`, "the BIGSERIAL-keyed tables (audit_log,
+pipeline_health)"), and `pipeline_health` is guaranteed non-empty in any real dump because the forecast/BAFU
+flows write health records continuously, whereas `audit_log` may be sparse. Also added: a guard that asserts
+the sequence relation **exists** (`to_regclass('pipeline_health_id_seq')` non-null) before querying it, so a
+missing relation fails loudly and names itself rather than surfacing as some other query error — the same
+class of bug (a check that silently targets a relation that has never existed) must not be able to recur
+undetected. The `--` end-of-options `createdb` test and the `--network none` position test from the second
+round needed no further change; both already satisfy this round's requirements. All new/changed locking tests
+proven red against the pre-fix script and green after; doc correction: the T5 build spec's "`--network none`
+is not required" sentence (§ "T5 — rehearse the restore", step 1) was wrong and is corrected above — this
+container holds a fully-restored production dump including every tenant's access-token hashes, so egress
+isolation IS required.
+
 ## Status
 
 > **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status
@@ -435,8 +451,11 @@ against them.
 
 **`scripts/restore-rehearsal.sh <dump-path>`**
 1. `docker run -d` a Postgres **pinned by `tag@sha256` digest** (repo policy, `docs/standards/security.md:554`),
-   **no named volume** — ephemeral container filesystem only — and **`--network none` is not required** because
-   nothing needs to reach it: every command runs *inside* the container via `docker exec`.
+   **no named volume** — ephemeral container filesystem only — and **`--network none`**: this container holds a
+   fully-restored production dump, including every tenant's `access_tokens` hashes, so egress isolation IS
+   required, even though every *intended* interaction runs *inside* the container via `docker exec`. (An
+   earlier draft of this spec said `--network none` was "not required because nothing needs to reach it" —
+   that was my error; it closes an exfiltration path, not a reachability need.)
 2. **Wait for the FINAL server, not the temporary one.** Postgres's official entrypoint starts a temp server,
    runs init scripts, stops it, then starts the real one — so `pg_isready` alone can return true against a
    server that is about to disappear mid-restore. Wait for the initialisation-complete marker **and** require a

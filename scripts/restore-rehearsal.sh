@@ -128,15 +128,18 @@ if [[ "${pg_restore_status}" -ne 0 ]]; then
 fi
 
 # --- content assertions: pg_restore exit 0 alone proves nothing. -----------
-# The sequence check below deliberately targets audit_log, NOT
+# The sequence check below deliberately targets pipeline_health, NOT
 # access_tokens: migration 0047 gives access_tokens.id a UUID primary key
-# (no sequence at all), so `access_tokens_id_seq` never exists — that
-# earlier version of this check would fail after every genuinely
-# successful restore. audit_log.id (migration 0045) is a real BIGINT
-# `autoincrement=True` column, which Postgres backs with a genuine
-# `audit_log_id_seq` — the sequence-collision plausibility check needs a
-# real serial column, and this is the only one in scope for this rehearsal.
-CHECKS_DONE="access_tokens row count, alembic_version, audit_log_id_seq"
+# (no sequence at all), so `access_tokens_id_seq` never exists — an earlier
+# version of this check would have failed after every genuinely successful
+# restore, and a vacuous test fake (inventing the sequence in the mock)
+# hid that for a full review round. Exactly two tables in this schema use
+# `BIGINT ... autoincrement=True` — audit_log (migration 0045) and
+# pipeline_health (migration 0001) — and pipeline_health is the pair
+# checked here because it is guaranteed non-empty in any real dump (the
+# forecast/BAFU flows write health records continuously; audit_log may be
+# sparse). ------------------------------------------------------------------
+CHECKS_DONE="access_tokens row count, alembic_version, pipeline_health_id_seq"
 
 count="$(psql_exec "SELECT count(*) FROM access_tokens" "${DB_NAME}")" \
     || fail "access_tokens query failed (table missing from restore?)"
@@ -147,14 +150,23 @@ version="$(psql_exec "SELECT version_num FROM alembic_version" "${DB_NAME}")" \
     || fail "alembic_version query failed"
 [[ -n "${version}" ]] || fail "alembic_version is empty"
 
-seq="$(psql_exec "SELECT last_value || '|' || is_called FROM audit_log_id_seq" "${DB_NAME}")" \
-    || fail "audit_log_id_seq query failed"
+# Guard: verify the relation exists BEFORE querying it. This is the fix for
+# the exact class of bug that shipped once already (access_tokens_id_seq
+# was queried directly for a full review round despite never existing) — a
+# missing relation must fail loudly and name itself, never masquerade as
+# some other query error.
+seq_regclass="$(psql_exec "SELECT to_regclass('pipeline_health_id_seq')" "${DB_NAME}")" \
+    || fail "pipeline_health_id_seq existence check query failed"
+[[ -n "${seq_regclass}" ]] || fail "pipeline_health_id_seq does not exist (to_regclass returned null) — cannot run the sequence-collision check"
+
+seq="$(psql_exec "SELECT last_value || '|' || is_called FROM pipeline_health_id_seq" "${DB_NAME}")" \
+    || fail "pipeline_health_id_seq query failed"
 last_value="${seq%%|*}"
 is_called="${seq##*|}"
-max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM audit_log" "${DB_NAME}")" \
-    || fail "audit_log max(id) query failed"
+max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM pipeline_health" "${DB_NAME}")" \
+    || fail "pipeline_health max(id) query failed"
 if [[ "${is_called}" == "f" && "${last_value}" == "${max_id}" ]]; then
-    fail "audit_log_id_seq: last_value == MAX(id) with is_called=false — next nextval() collides with an existing row"
+    fail "pipeline_health_id_seq: last_value == MAX(id) with is_called=false — next nextval() collides with an existing row"
 fi
 
 # Plausibility only — the restore container cannot reach production
