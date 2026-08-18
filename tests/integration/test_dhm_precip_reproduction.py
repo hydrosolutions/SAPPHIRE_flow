@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
 
 import polars as pl
 import pytest
@@ -327,18 +326,18 @@ class TestQcMaskAgainstTheRealWorkbook:
 
 
 def _write_synthetic_pyramid_csv(path, *, years, npt_peak_hour: int = 14) -> None:
-    """A minimal Lvl1-shaped file (`TIMESTAMP,RR`, NPT wall-clock). The real
-    Zenodo CSVs are gitignored and absent, but the DHM side of this runner
-    — the side that was broken — is the REAL workbook."""
-    lines = ["TIMESTAMP,RR"]
+    """A minimal file in the REAL Lvl1 shape (semicolon-delimited, CR-only
+    line endings, `year;month;day;hour;AT;RR;AP;RH;WS;WD`, NPT wall-clock).
+    The real Zenodo CSVs are gitignored and absent, but the DHM side of this
+    runner — the side that was broken — is the REAL workbook."""
+    lines = ["year;month;day;hour;AT;RR;AP;RH;WS;WD"]
     lines += [
-        f"{datetime(year, 7, day, hour).isoformat(sep=' ')},"
-        f"{5.0 if hour == npt_peak_hour else 0.0}"
+        f"{year};7;{day};{hour};;{5.0 if hour == npt_peak_hour else 0.0};;;;"
         for year in years
         for day in range(1, 7)
         for hour in range(24)
     ]
-    path.write_text("\n".join(lines) + "\n")
+    path.write_bytes(("\r".join(lines) + "\r\n").encode("utf-8"))
 
 
 class TestColocRunnerReachesItsReportAgainstTheRealWorkbook:

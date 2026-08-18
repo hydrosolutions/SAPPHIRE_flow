@@ -24,18 +24,19 @@ have real test coverage for) and the real `pyramid_loader`.
 
 **Residual risk, honestly unresolved at implementation time (Plan 182
 fixer round):** this runner has NOT been executed end-to-end against the
-real production DHM workbook or the real Pyramid Lvl1 CSVs — neither is
-present in any workspace this plan has been implemented or fixed in
-(`DHM_PRECIP_XLSX` unset; `data/dhm_precip/pyramid/` gitignored and empty,
-per `pyramid_loader.py`'s own docstring). The wiring in
+real production DHM workbook or the real Pyramid Lvl1 CSVs
+(`DHM_PRECIP_XLSX` unset; `data/dhm_precip/pyramid/` gitignored). The
+Pyramid half of that risk is now retired: `pyramid_loader.py`'s format is
+VERIFIED against the real Zenodo files (2026-08-18) and covered by the
+env-gated real-file tests in
+`tests/unit/scripts/test_dhm_precip_pyramid_loader.py`. The wiring in
 `_production_dhm_retained_provider` below reuses ALREADY-TESTED primitives
 (`load_long_frame`, `on_grid_view`, `normalise_hourly_axis`,
 `iter_observations_by_station`, `qc_mask.iter_station_results` — the exact
 sequence `pipeline.py` runs in production) in the same order and with the
 same arguments, but the composition itself is unexecuted against real
 data. Running it end-to-end the first time both data sources are available
-— and re-verifying `pyramid_loader.py`'s column-name assumptions against
-the real Zenodo files — is the tracked follow-on.
+is the tracked follow-on.
 
 Usage:
     uv run python scripts/dhm_precip/coloc_run.py --out <dir>

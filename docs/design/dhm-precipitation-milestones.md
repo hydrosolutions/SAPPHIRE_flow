@@ -525,11 +525,17 @@ drizzle confound, the CC BY 4.0 attribution and the affected-claims list when H1
 runner test now drives the pipeline through the **real registry bounds** and asserts a decisive verdict
 is REACHABLE.
 
-**Residual risk, still unresolved:** `data/dhm_precip/pyramid/` is gitignored and the real Zenodo files
-were not present in any workspace this plan has been implemented or fixed in, so
-`pyramid_loader.py`'s column-name assumptions (`TIMESTAMP`, `RR`) remain undocumented-but-typed guesses,
-not verified against a real file — a mismatch raises loudly (`PyramidSchemaMismatchError`) rather than
-silently misreading. `coloc_run.py`'s `main()` wires the real production DHM ingest+mask pipeline
+**Pyramid schema — RESOLVED 2026-08-18.** `pyramid_loader.py`'s format assumptions were wrong on every
+count except `RR`: the real Zenodo Lvl1 files are **semicolon**-delimited with **CR-only** line endings
+and carry **no `TIMESTAMP` column** (header `year;month;day;hour;AT;RR;AP;RH;WS;WD`, an empty field for
+each missing reading). The loader now reads that format and is covered by real-file tests gated on
+`DHM_PRECIP_PYRAMID_DIR`, which lock the measured JJAS populations (AWS3 Lukla 21,567 retained / 7,133
+positive; AWS5 Namche 33,180 / 9,280) and the 0.2 mm smallest positive reading D7's matched-resolution
+design rests on. (Caveat measured at the same time: 0.2 mm is the floor and dominant quantum, but ~4% of
+positive JJAS hours are quantised at 0.24 mm — a different bucket/logger era — so positives are NOT all
+multiples of 0.2.)
+
+**Residual risk, still unresolved:** `coloc_run.py`'s `main()` wires the real production DHM ingest+mask pipeline
 (`loader`, `views`, `normalise`, `observations`, `qc_mask` — the same call sequence `pipeline.py` already
 uses in production) and the real `pyramid_loader`, but this wiring has NOT been executed end-to-end
 against real data (`DHM_PRECIP_XLSX` unset in every workspace to date). `run_coloc_adjudication()`

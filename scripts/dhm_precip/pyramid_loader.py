@@ -8,19 +8,30 @@ them as-is, unconverted; D2's UTC<->NPT reconciliation (the declared ±1.75h
 uncertainty) happens downstream in the diurnal-profile comparison
 (`stats_coloc`), never here.
 
-**Residual risk, flagged for the human reviewer**: `data/dhm_precip/pyramid/`
-is gitignored and the real files are not present in this workspace at
-implementation time, so the exact Lvl1 column names could not be verified
-against a real file. `TIMESTAMP_COLUMN`/`PRECIP_COLUMN` below are this
-loader's best-documented guess (the plan itself names the precipitation
-column `RR` when it says "AWS4/AWSSC/CNG_SNP carry no usable RR for this
-work"); a mismatch against the real files raises `PyramidSchemaMismatchError`
-loudly rather than silently misreading, and is a one-line fix at the top of
-this module once the real schema is confirmed.
+**Format — VERIFIED against the real Zenodo files (2026-08-18), no longer a
+guess:**
+
+- **semicolon**-delimited (`;`), NOT comma;
+- **CR-only line endings** (``\r``, classic-Mac) with a final ``\r\n``, so a
+  naive reader sees the whole file as one enormous line — the bytes are read
+  and newline-normalised before parsing;
+- there is **no `TIMESTAMP` column**. The header is exactly
+  `year;month;day;hour;AT;RR;AP;RH;WS;WD`; the time is four INTEGER columns
+  (`hour` is 0-23) from which the timestamp is constructed here;
+- `RR` is the precipitation column, in mm, and an **empty field means
+  missing** — Lvl1 is published ungapfilled ("when the data are missing, the
+  field is empty", `README_.txt`), so every column is read as text and cast
+  explicitly rather than letting a leading run of empty fields decide an
+  inferred dtype.
+
+A file that does not match this schema still fails loudly and specifically
+(`PyramidSchemaMismatchError` / `PyramidInvalidTimestampError` /
+`PyramidParseFailureError`) rather than silently producing empty data.
 """
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
@@ -37,8 +48,10 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-TIMESTAMP_COLUMN: Final = "TIMESTAMP"
+SEPARATOR: Final = ";"
+TIME_COLUMNS: Final = ("year", "month", "day", "hour")
 PRECIP_COLUMN: Final = "RR"
+TIMESTAMP_ALIAS: Final = "timestamp"
 
 
 class PyramidLoaderError(Exception):
@@ -65,10 +78,10 @@ class PyramidDuplicateTimestampError(PyramidLoaderError):
 
 
 class PyramidInvalidTimestampError(PyramidLoaderError):
-    """The `TIMESTAMP` column did not parse to an actual datetime (e.g. it
-    stayed a plain string because `try_parse_dates` could not infer the
-    format) — every downstream hour-of-day/timestamp-join operation
-    silently assumes a real temporal dtype, so this is checked at the
+    """A row's `year`/`month`/`day`/`hour` fields did not yield an actual
+    datetime (non-integer text, an out-of-range component, or an empty
+    field) — every downstream hour-of-day/timestamp-join operation silently
+    assumes a real temporal value on every row, so this is checked at the
     boundary rather than discovered as a confusing failure deep in
     `stats_coloc`."""
 
@@ -110,40 +123,65 @@ def load_pyramid_lvl1_csv(
             f"source file not found or not a file: {path}"
         )
     try:
-        raw = pl.read_csv(path, try_parse_dates=True)
+        text = path.read_bytes().decode("utf-8")
     except OSError as exc:
         raise PyramidSourceUnreadableError(
             f"source file not readable: {path}: {exc}"
         ) from exc
+    except UnicodeDecodeError as exc:
+        raise PyramidParseFailureError(f"{path} is not valid UTF-8: {exc}") from exc
+
+    # CR-only (classic-Mac) line endings: without this normalisation every
+    # reader sees the whole file as a single enormous line.
+    normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+    try:
+        # `infer_schema_length=0` => every column arrives as text. The real
+        # files open with thousands of consecutive EMPTY `RR` fields, which
+        # would otherwise infer a Null dtype and discard the column.
+        raw = pl.read_csv(
+            io.StringIO(normalised), separator=SEPARATOR, infer_schema_length=0
+        )
     except Exception as exc:  # noqa: BLE001 — any parse-time failure becomes a typed error
         raise PyramidParseFailureError(f"failed to parse {path}: {exc}") from exc
 
-    missing = {TIMESTAMP_COLUMN, PRECIP_COLUMN} - set(raw.columns)
+    missing = {*TIME_COLUMNS, PRECIP_COLUMN} - set(raw.columns)
     if missing:
         raise PyramidSchemaMismatchError(
             f"{path} is missing expected column(s) {sorted(missing)} "
-            f"(has {raw.columns}) — see this module's docstring: the real "
-            "Pyramid Lvl1 schema was unverified at implementation time"
+            f"(has {raw.columns}) — the real Pyramid Lvl1 header is "
+            "year;month;day;hour;AT;RR;AP;RH;WS;WD"
         )
 
-    if not raw.schema[TIMESTAMP_COLUMN].is_temporal():
+    time_parts = [pl.col(name).cast(pl.Int32, strict=False) for name in TIME_COLUMNS]
+    try:
+        stamped = raw.with_columns(pl.datetime(*time_parts).alias(TIMESTAMP_ALIAS))
+    except Exception as exc:  # noqa: BLE001 — any timestamp-construction failure is typed
         raise PyramidInvalidTimestampError(
-            f"{path} column {TIMESTAMP_COLUMN!r} did not parse as a "
-            f"timestamp (dtype {raw.schema[TIMESTAMP_COLUMN]}) — every row "
-            "must carry an actual datetime, never a string"
+            f"{path} could not build a timestamp from {list(TIME_COLUMNS)}: {exc}"
+        ) from exc
+
+    n_bad_timestamp = int(stamped[TIMESTAMP_ALIAS].null_count())
+    if n_bad_timestamp > 0:
+        raise PyramidInvalidTimestampError(
+            f"{path} has {n_bad_timestamp} row(s) whose {list(TIME_COLUMNS)} "
+            "fields did not yield a datetime — every row must carry an "
+            "actual datetime, never a null or a string"
         )
-    dup_count = int(raw[TIMESTAMP_COLUMN].is_duplicated().sum())
+    dup_count = int(stamped[TIMESTAMP_ALIAS].is_duplicated().sum())
     if dup_count > 0:
         raise PyramidDuplicateTimestampError(
             f"{path} has {dup_count} row(s) sharing a duplicated "
-            f"{TIMESTAMP_COLUMN!r} value — D3's pairing requires a "
+            f"{TIMESTAMP_ALIAS!r} value — D3's pairing requires a "
             "one-to-one timestamp join"
         )
 
-    casted = raw.with_columns(
+    casted = stamped.with_columns(
         pl.col(PRECIP_COLUMN).cast(pl.Float64, strict=False).alias("value_mm")
     )
-    cast_failed = raw[PRECIP_COLUMN].is_not_null() & casted["value_mm"].is_null()
+    # An EMPTY `RR` field is a genuine missing reading (Lvl1 is ungapfilled)
+    # and arrives as a null, so it is never a cast failure; non-numeric TEXT
+    # is, and must fail loudly.
+    cast_failed = stamped[PRECIP_COLUMN].is_not_null() & casted["value_mm"].is_null()
     if cast_failed.sum() > 0:
         raise PyramidParseFailureError(
             f"{path} column {PRECIP_COLUMN!r} contains a non-numeric value "
@@ -152,7 +190,7 @@ def load_pyramid_lvl1_csv(
 
     frame = casted.select(
         pl.lit(str(station)).alias("station"),
-        pl.col(TIMESTAMP_COLUMN).alias("timestamp"),
+        pl.col(TIMESTAMP_ALIAS).alias("timestamp"),
         pl.col("value_mm"),
     )
     n_raw = frame.height

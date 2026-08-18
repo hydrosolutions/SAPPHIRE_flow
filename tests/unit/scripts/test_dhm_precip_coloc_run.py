@@ -97,7 +97,9 @@ def _write_pyramid_csv(
     genuinely pairable). `pre_split_peak_hour` shifts the PYRAMID phase
     before `split_year` — D12's stationarity check is Pyramid's, not
     DHM's."""
-    lines = ["TIMESTAMP,RR"]
+    # The REAL Zenodo Lvl1 shape: semicolon-delimited, CR-only line endings,
+    # `year;month;day;hour;AT;RR;AP;RH;WS;WD` (no TIMESTAMP column).
+    lines = ["year;month;day;hour;AT;RR;AP;RH;WS;WD"]
     for utc_ts in _july_hours(years):
         npt_ts = utc_ts + timedelta(hours=_HOUR_OFFSET)
         peak = (
@@ -105,10 +107,11 @@ def _write_pyramid_csv(
             if pre_split_peak_hour is not None and npt_ts.year < split_year
             else npt_peak_hour
         )
+        rr = 5.0 if npt_ts.hour == peak else 0.0
         lines.append(
-            f"{npt_ts.isoformat(sep=' ')},{5.0 if npt_ts.hour == peak else 0.0}"
+            f"{npt_ts.year};{npt_ts.month};{npt_ts.day};{npt_ts.hour};;{rr};;;;"
         )
-    path.write_text("\n".join(lines) + "\n")
+    path.write_bytes(("\r".join(lines) + "\r\n").encode("utf-8"))
 
 
 def _write_agreeing_pyramid_files(tmp_path: Path, *, npt_peak_hour: int = 14) -> None:
