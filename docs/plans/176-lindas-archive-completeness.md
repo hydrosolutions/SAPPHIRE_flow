@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-17
 plan: 176
 title: LINDAS archive completeness — capture the 10-minute grid we have been sampling hourly
@@ -13,7 +13,7 @@ supersedes: []
 
 ## Status
 
-**DRAFT** (2026-08-17). Split out of Plan 175 after review escalation — see § Why this is its own plan.
+**READY** (owner flip 2026-08-18). Split out of Plan 175 after review escalation — see § Why this is its own plan.
 All measurements below are live, from the development machine on 2026-08-17.
 
 **The execution-isolation question is CLOSED** (owner, 2026-08-17): the collector moves onto the
@@ -371,7 +371,9 @@ mirroring `tests/unit/test_compose_schedule_default.py`.
 
 ### T3 — data-derived `cycle_at`, fetch-then-dedup, heartbeat-on-skip (D2 + D3)
 
-In `flows/collect_bafu_observations.py`: `cycle_at` from the response's newest `measurement_time`
+In `flows/collect_bafu_observations.py`: `cycle_at` from the response's **modal** `measurement_time`
+across distinct `(gauge_code, lindas_kind)` identities (D2 — *not* the newest; `max()` is retained only
+for the freshness gate)
 truncated to the grid; remove the pre-fetch short-circuit (`:346-356`); dedup after the fetch, before the
 writes; **heartbeat on every successful fetch including a skip** (D3). Rewrite the module docstring
 (`:17-25`), which documents the clock-derived hourly contract.
@@ -382,8 +384,13 @@ writes; **heartbeat on every successful fetch including a skip** (D3). Rewrite t
 - RED against (a) current hourly truncation, (b) a 5-minute-truncation mutant — the weaker test list
   passed both — and (c) any clock-derived implementation.
 - The clock-derived kill needs **pinned clocks**: identical `run_at` with `12:07` then `12:17` *data*
-  must produce **two** archives; `run_at` values in **different hours** with identical newest data must
+  must produce **two** archives; `run_at` values in **different hours** with identical modal data must
   produce **one**. ("Different clock times" alone passes hourly code when both fall in one hour.)
+- **Modal, not `max()`** (D2): a response where a *minority* gauge sits one slot ahead of the bulk must
+  key to the **bulk's** slot. Proven RED against a `max()` mutant — which would key to the outlier,
+  claim the next slot's path early, and make the real bulk response dedup-skip. (Not an observed
+  behaviour of the live feed — see D2's robustness note — so this test locks the invariant, not a
+  reproduction.)
 - D3: a later same-slot **fresh** poll writes no files but refreshes the heartbeat; a later same-slot
   **frozen** poll writes no files and emits `stale_measurement_time`.
 - Existing tests to reconcile deliberately: `tests/unit/flows/test_collect_bafu_observations.py:113`
@@ -440,9 +447,8 @@ report nonsense for everything written before D2. For legacy files, derive the o
 be trusted to be named by their slot. Test this explicitly against a clock-keyed legacy file — the
 archive currently holds 307 of them.
 
-**Scope note (deliberate):** this is on-demand auditability, not automatic detection. The Goal calls it
-"reliable detection", which overstates a manually-invoked CLI. Wiring it to a schedule or an alert would
-be new monitoring infrastructure, and is **explicitly out of scope** — the honest claim is that a gap
+**Scope note (deliberate):** this is on-demand auditability, not automatic detection — wiring it to a
+schedule or an alert would be new monitoring infrastructure, and is **explicitly out of scope** — the honest claim is that a gap
 becomes *discoverable on request* rather than invisible, which is the actual change from today.
 
 ```json
