@@ -17,7 +17,9 @@ supersedes: []
 All measurements below are live, from the development machine on 2026-08-17.
 
 **The execution-isolation question is CLOSED** (owner, 2026-08-17): the collector moves onto the
-existing `ingest` pool — see § Execution isolation. The plan is unblocked; it still needs its own
+existing `ingest` pool — see § Execution isolation. **T0 (2026-08-18) then measured pickup latency at
+≤3 s even on the shared pool**, so that move is insurance rather than a precondition, and the plan's
+critical path is the *cadence*, not the orchestration. The plan is unblocked; it still needs its own
 review round before READY, since three of its decisions reverse Plan 136 properties.
 
 ## Why this is its own plan
@@ -57,14 +59,21 @@ Four defects stand between the current state and that goal, and the fourth defea
 3. **Staleness thresholds.** Both 3-hour constants are justified by "three missed *hourly* cycles"
    (`collect_bafu_observations.py:66-73`, `ops/watchdog.py:129`). At a 10-minute cadence that is ~18
    missed snapshots before anything alarms.
-4. **Worker starvation — the blocker.** The collector's `DeploymentSpec`
-   (`cli/register_deployments.py:145-151`) sets no `work_pool_name`, so it lands on
-   `WORK_POOL = "default"` (`:20`). **Plan 098 measured 25–60 min lateness on that pool** during
-   forecast-cycle windows (`docs/plans/archive/098-guaranteed-cadence-observation-ingest.md:141-144`) —
-   runs complete fast once they start; they simply are not picked up. Plan 098 created the `ingest` pool
-   precisely to escape this. A cron interval is therefore **not** a poll-interval guarantee, and
+4. **Worker starvation — a risk, NOT a blocker (revised 2026-08-18 by measurement).** The collector's
+   `DeploymentSpec` (`cli/register_deployments.py:145-151`) sets no `work_pool_name`, so it lands on
+   `WORK_POOL = "default"` (`:20`). Plan 098 measured **25–60 min lateness** on that pool during
+   forecast-cycle windows (`docs/plans/archive/098-guaranteed-cadence-observation-ingest.md:141-144`),
+   and created the `ingest` pool to escape it. On that basis an earlier draft of this plan called
+   starvation a blocker and declared the goal unreachable without isolation.
+
+   **T0 measured it, and it does not reproduce today** (§ Evidence — pickup latency). Pickup latency is
+   **≤3 s** for the collector on the shared `default` pool, in a sample that genuinely includes
+   contention. So the ceiling on completeness is currently the *cadence*, not the orchestration.
+
+   The risk is still real in principle — a cron interval is not a poll-interval guarantee, and
    `concurrency_limit=1` does not help (it prevents same-deployment overlap only, and enqueues rather
-   than drops). A starved collector polling at `:01` and then `:45` loses every slot in between.
+   than drops). It is simply **not currently active**, so isolation is cheap insurance rather than a
+   precondition, and **T1 is no longer a hard gate on the rest of the plan.**
 
 ## Evidence (live, 2026-08-17)
 
@@ -100,6 +109,25 @@ band; **that was wrong and is retracted here.**
 
 The only clean data: lag **≤14.1** and **≤15.0** min, one clean publish gap of **10.8 min** — mutually
 consistent, implying jitter of roughly **a minute**. BAFU's publishing looks steady, not erratic.
+
+### Pickup latency — measured 2026-08-18 (T0), and it changes defect 4
+
+Prefect `Scheduled → Running` deltas over the most recent runs on the mini:
+
+| Deployment | Pool | n | median | p90 | max |
+|---|---|---|---|---|---|
+| `collect-bafu-observations` | **`default`** (the busy one) | 77 | 0 s | 2 s | **3 s** |
+| `ingest-observations` | `ingest` | 67 | 0 s | 2 s | **4 s** |
+
+**The sample includes genuine contention**, which is what makes it worth anything: `forecast-cycle`
+runs every 6 h taking **380–415 s**, and the collector's `:05` tick lands squarely inside the
+`00:00–00:06` window. Plan 098's 25–60 min lateness therefore does **not** reproduce — most likely
+because the mini now runs *control-only* cycles (~6.5 min) rather than the long CPU-pegging runs of
+that era.
+
+Recorded as a measurement with a date, not a settled property: it is exactly the kind of fact that
+changed once and can change again (a return to NWP-heavy cycles would plausibly bring it back).
+**Re-measure before treating starvation as either present or absent.**
 
 ### Snapshot size and storage
 
@@ -139,7 +167,8 @@ failure that hid the original incident: the collector alerted on the current run
 
 ## Execution isolation — RESOLVED (owner, 2026-08-17)
 
-**Decided: option 1 — route the collector onto the existing `ingest` pool**
+**Decided: option 1 — route the collector onto the existing `ingest` pool** *(justification revised
+2026-08-18 — see § Validation: the starvation this guards against is not currently active)*
 (`prefect-worker-ingest`), adding `bafu_observation_archive:/data/bafu_observations:rw` to that
 worker's volumes (it currently mounts only `config.toml:ro`). The owner confirmed the mini's storage
 pressure is resolved, so resources were no longer the deciding factor; option 1 was chosen because the
@@ -168,19 +197,21 @@ Risk is low but it is the same mechanism, so host acceptance measures it rather 
 topology can guarantee against a global server throttle, so this plan must be able to *tell us* when a
 slot was missed, not merely try not to miss one.
 
-### Validation (folds into Plan 175's T0 — needs mini access, gates nothing)
+### Validation — ANSWERED by T0 (2026-08-18)
 
-Plan 098's Phase 0 root-cause test is recorded as **partially done**: mechanism (a) vs (b) was never
-fully separated. The experiment that settles it has, however, **already been running for months** —
-`ingest-observations` has been on the dedicated `ingest` worker since Plan 098 shipped. So the question
-is answered by reading a result, not by running a new test:
+Plan 098's Phase 0 root-cause test was recorded as *partially done*: mechanism (a) worker-side poll
+starvation vs (b) server-side dequeue latency was never separated. This plan proposed reading the
+result of the experiment that had already been running for months — `ingest-observations` on its
+dedicated worker since Plan 098 shipped.
 
-> Has `ingest-observations` held its 5-minute cadence during forecast-cycle windows since Plan 098?
+**Result: cadence is held, by both flows, including the collector on the shared pool** (§ Evidence —
+pickup latency). Neither mechanism is currently costing us slots. Consequences:
 
-Measure `Scheduled`→`Running` deltas (`prefect flow-run ls`) for `ingest-observations` across a
-forecast-cycle window. **Cadence held** ⇒ (a) was dominant, a dedicated worker works, and this plan's
-prevention story is sound. **Still late** ⇒ (b) is live, no worker topology fixes it, and this plan's
-guarantee must be restated as best-effort prevention plus reliable detection.
+- **The prevention story is sound**, and it did not even require the pool move.
+- **Detection (D7/T8) matters more than isolation**, not less: with orchestration healthy, any future
+  gap will come from something we have not measured, and the audit is what will surface it.
+- **T1 is demoted** from "do this first, everything else is theatre" to cheap insurance that may be
+  sequenced anywhere.
 
 ## Decisions
 
@@ -237,9 +268,10 @@ recorded here before READY. **`_format_bafu_obs_stale_alert` (`ops/watchdog.py:6
 and its tests move to minutes-aware rendering. *This means Plan 175's "no watchdog edits" non-goal does
 not apply to this plan; the watchdog is in scope here.*
 
-**D5 — RESOLVED: the collector runs on the `ingest` pool** (§ Execution isolation). Without cadence
-isolation D1 would be a schedule that reality need not honour; with it, mechanism (a) — the dominant
-cause of the 25–60 min starvation — is removed. Mechanism (b) residual is covered by D7's detection.
+**D5 — RESOLVED: the collector runs on the `ingest` pool** (§ Execution isolation). The owner's choice
+stands, but T0 revised its *justification*: pickup latency is ≤3 s today even on the shared `default`
+pool, so this is insurance against a regression (mechanism (a) returning with heavier cycles), not a
+repair of an active fault. Mechanism (b) residual is covered by D7's detection either way.
 
 **D6 — gzip the archived raw payload, reversing a Plan 136 decision.** Plan 136 locked "plain `.json`, no
 gzip, no retention knob" — reasonable at 2.15 GB/yr, decided under the hourly assumption D1 falsifies. At
@@ -258,7 +290,7 @@ everything" into a number. It also gives the before/after measurement for this p
 
 ## Tasks
 
-### T1 — cadence-isolated execution (do first; everything else is theatre without it)
+### T1 — cadence-isolated execution (cheap insurance; no longer a gate)
 
 Per **D5**: route the collector's `DeploymentSpec` to `INGEST_POOL`, and add
 `bafu_observation_archive:/data/bafu_observations:rw` to `prefect-worker-ingest` in `docker-compose.yml`
