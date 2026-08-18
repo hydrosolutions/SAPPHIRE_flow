@@ -20,7 +20,9 @@ that is re-opened here.
 
 What is missing is the ~150-line operator script that calls it, plus actually running it. Sibling
 plans on this track were inflated to 400-583 lines across review rounds by invented scope and had to
-be discarded. **Please push back on anything that grows this.**
+be discarded. **Please push back on anything that grows this.** Concretely: this plan should come out of review
+at roughly its current length. If a round adds a task, a new module, a schema change, or a Prefect
+flow, that round has gone wrong.
 
 **Out of scope by decision:** persisting provenance to a new table (Plan 155's own deferred T1
 deviation — needs schema); artifact invalidation on source revision; changing the gate, the alias map,
@@ -53,7 +55,12 @@ Three properties the script must respect rather than reimplement:
 3. **`require_real_transaction` refuses to issue any write on an AUTOCOMMIT connection**, so the
    script must open a genuine transaction — otherwise a mid-loop gate failure leaves a partial import.
 
-## Owner decisions
+## Owner decisions — ALL FOUR CONFIRMED (owner, 2026-08-18)
+
+**D1-D4 below are settled, not open.** The recommendation column is the decision. Re-arguing them is
+a finding against the reviewer, not the plan; if a reviewer believes one is *unimplementable* as
+written, say precisely which line of code makes it so.
+
 
 | # | Decision | Recommendation |
 |---|---|---|
