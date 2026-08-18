@@ -16,8 +16,9 @@ supersedes: []
 **DRAFT** (2026-08-17). Split out of Plan 175 after review escalation — see § Why this is its own plan.
 All measurements below are live, from the development machine on 2026-08-17.
 
-**One owner question blocks drafting to READY** — see § Owner question. If the answer is no, this plan's
-goal is unreachable as specified and should be re-scoped rather than built.
+**The execution-isolation question is CLOSED** (owner, 2026-08-17): the collector moves onto the
+existing `ingest` pool — see § Execution isolation. The plan is unblocked; it still needs its own
+review round before READY, since three of its decisions reverse Plan 136 properties.
 
 ## Why this is its own plan
 
@@ -117,8 +118,15 @@ Capturing 6× the data with gzip costs **~4× less disk than today's hourly plai
 
 ## Goal
 
-The archive contains **every 10-minute slot LINDAS publishes**, with no gaps, proven by the archive's own
-contents rather than by run states — and without a 6× disk bill.
+The archive contains **every 10-minute slot LINDAS publishes**, proven by the archive's own contents
+rather than by run states — and without a 6× disk bill.
+
+Stated precisely, because the difference matters: this plan delivers **best-effort prevention plus
+reliable detection**, not an absolute guarantee. Prevention is over-polling (D1) on an uncontended
+worker (§ Execution isolation). Detection is a **gap audit over the archive** — a first-class
+deliverable (**T8**), not a nice-to-have, because Plan 098's residual mechanism (b) means no schedule or
+worker topology can *guarantee* pickup. A missed slot must be **known**, not silent. That is the same
+failure that hid the original incident: the collector alerted on the current run and never on gaps.
 
 ## Non-goals
 
@@ -129,25 +137,50 @@ contents rather than by run states — and without a 6× disk bill.
 - Backfilling what has already been lost. It is unrecoverable; this plan stops the bleeding only.
 - Per-station operational polling / whole-graph ingest (Plan 175 D5) — still deferred.
 
-## Owner question (blocks READY)
+## Execution isolation — RESOLVED (owner, 2026-08-17)
 
-**Is adding a work pool / worker for the collector acceptable?** Defect 4 cannot be fixed by scheduling
-alone: on the shared `default` pool, a ≤4-minute cron gap can become a 25–60 minute poll gap under
-forecast-cycle load, and every slot in between is lost. Options, cheapest first:
+**Decided: option 1 — route the collector onto the existing `ingest` pool**
+(`prefect-worker-ingest`), adding `bafu_observation_archive:/data/bafu_observations:rw` to that
+worker's volumes (it currently mounts only `config.toml:ro`). The owner confirmed the mini's storage
+pressure is resolved, so resources were no longer the deciding factor; option 1 was chosen because the
+`ingest` worker is nearly idle and already provides everything a new worker would.
 
-1. **Route the collector onto the existing `ingest` pool** (created by Plan 098 for exactly this
-   starvation), mounting the observation-archive volume on that worker. Smallest repo-native change; no
-   new container. Risk: the collector then shares a pool with `ingest-observations`, so their LINDAS
-   calls can overlap — which Plan 175's limiter and 429 retry now make survivable, but it partially
-   re-couples what Plan 175 D4 deliberately separated.
-2. **A dedicated lightweight pool + worker** for cadence-sensitive collectors. Cleanest isolation, one
-   more container in `docker-compose.yml` and one more thing to monitor.
-3. **Neither** — accept best-effort capture. Then this plan's goal is unachievable as written and should
-   be re-scoped honestly to "capture more, not all", because a starved worker silently drops slots and we
-   would be claiming a guarantee we cannot make.
+**Why this is sufficient, from Plan 098's own mechanism analysis** (`archive/098-…md:150-212`):
 
-**Recommendation: option 1**, escalating to 2 only if measurement shows the shared pool still starves.
-It reuses infrastructure built for this exact failure and keeps the change proportionate.
+- **(a) worker-side poll-cycle starvation** — the `ProcessWorker` poll loop is a single async event
+  loop; saturated by *managing* a CPU-pegging forecast-cycle subprocess it skips polls (25–60 min ≈
+  150–360 missed 10 s polls). Plan 098 judged this dominant. **A dedicated worker with its own event
+  loop resolves it outright — and `prefect-worker-ingest` already is one.**
+- **(b) server-side dequeue latency** — mitigated by having a separate *pool*, which option 1 also
+  provides, but Plan 098 is explicit that it "does NOT help if the slowness is a global server
+  throttle."
+
+A brand-new fourth worker would therefore have bought isolation only from `ingest-observations` itself —
+12 runs/hour of a 2-station poll, seconds each — not from the forecast-cycle load that caused the
+starvation. That delta did not justify a fourth container.
+
+**Load check.** The collector adds ~18 runs/hour to the ingest worker's 12, so ~30 short subprocess
+spawns/hour on a 512 m worker. These are *short, network-bound* runs — categorically unlike the
+long CPU-pegging forecast-cycle subprocess whose management starved the `default` worker's event loop.
+Risk is low but it is the same mechanism, so host acceptance measures it rather than assuming.
+
+**Residual risk (b) is real and is why detection is a first-class deliverable — see § Goal.** No worker
+topology can guarantee against a global server throttle, so this plan must be able to *tell us* when a
+slot was missed, not merely try not to miss one.
+
+### Validation (folds into Plan 175's T0 — needs mini access, gates nothing)
+
+Plan 098's Phase 0 root-cause test is recorded as **partially done**: mechanism (a) vs (b) was never
+fully separated. The experiment that settles it has, however, **already been running for months** —
+`ingest-observations` has been on the dedicated `ingest` worker since Plan 098 shipped. So the question
+is answered by reading a result, not by running a new test:
+
+> Has `ingest-observations` held its 5-minute cadence during forecast-cycle windows since Plan 098?
+
+Measure `Scheduled`→`Running` deltas (`prefect flow-run ls`) for `ingest-observations` across a
+forecast-cycle window. **Cadence held** ⇒ (a) was dominant, a dedicated worker works, and this plan's
+prevention story is sound. **Still late** ⇒ (b) is live, no worker topology fixes it, and this plan's
+guarantee must be restated as best-effort prevention plus reliable detection.
 
 ## Decisions
 
@@ -204,8 +237,9 @@ recorded here before READY. **`_format_bafu_obs_stale_alert` (`ops/watchdog.py:6
 and its tests move to minutes-aware rendering. *This means Plan 175's "no watchdog edits" non-goal does
 not apply to this plan; the watchdog is in scope here.*
 
-**D5 — the collector needs cadence-isolated execution** (see § Owner question). Pending the owner's
-answer; without it D1 is a schedule that reality need not honour.
+**D5 — RESOLVED: the collector runs on the `ingest` pool** (§ Execution isolation). Without cadence
+isolation D1 would be a schedule that reality need not honour; with it, mechanism (a) — the dominant
+cause of the 25–60 min starvation — is removed. Mechanism (b) residual is covered by D7's detection.
 
 **D6 — gzip the archived raw payload, reversing a Plan 136 decision.** Plan 136 locked "plain `.json`, no
 gzip, no retention knob" — reasonable at 2.15 GB/yr, decided under the hourly assumption D1 falsifies. At
@@ -215,14 +249,23 @@ the existing `_atomic_write` (`:191-195`) — **the gzip stream must close befor
 or the atomic rename can publish a truncated file. Still no retention knob; compression removes the need.
 Existing plain `.json` snapshots stay readable; no migration, readers tolerate both extensions.
 
+**D7 — a missed slot must be detectable, not just unlikely.** Because residual mechanism (b) cannot be
+designed away, completeness is *verified* rather than assumed. **Locked:** an audit over the archive that
+reports, for a given window, which 10-minute slots are present and which are missing — derived from the
+archived `cycle_at` values, not from Prefect run states (a run can succeed having fetched a slot already
+held, and a run that never started leaves no state at all). This is what turns "we think we catch
+everything" into a number. It also gives the before/after measurement for this plan's own effect.
+
 ## Tasks
 
 ### T1 — cadence-isolated execution (do first; everything else is theatre without it)
 
-Implement the § Owner question decision (D5). If option 1: route the collector's `DeploymentSpec` to
-`INGEST_POOL` and mount the observation-archive volume on that worker in `docker-compose.yml`. Verify the
-volume is actually present on the target worker — a pool move with a missing mount fails at write time,
-after the fetch, which would look like a collector bug rather than a deploy bug.
+Per **D5**: route the collector's `DeploymentSpec` to `INGEST_POOL`, and add
+`bafu_observation_archive:/data/bafu_observations:rw` to `prefect-worker-ingest` in `docker-compose.yml`
+— it currently mounts only `./config.toml:ro`. **Verify the mount before shipping:** a pool move with a
+missing volume fails at *write* time, after a successful fetch, which reads as a collector bug rather
+than a deploy bug. A test asserting the deployment's `work_pool_name` keeps a future edit from silently
+returning it to `default`.
 
 **Test:** the registered deployment's `work_pool_name` is asserted, so a future edit cannot silently
 return it to `default`.
@@ -283,13 +326,20 @@ first-sighting lag over a longer window turns that assumption into evidence, rep
 gap so the margin can be re-derived rather than re-guessed, and is what would detect BAFU changing the
 grid or lag instead of us assuming it stable.
 
+### T8 — the completeness audit (D7)
+
+A script/CLI that walks the archive for a window and reports present vs missing 10-minute slots from the
+archived `cycle_at` values. Run it before and after this plan lands: the "before" number quantifies what
+the hourly cadence has already cost, the "after" number is the acceptance evidence. Keep it cheap enough
+to run regularly — a silent hole is the failure mode this plan exists to end.
+
 ```json
 {
   "phases": [
     {"id": "phase-1", "tasks": ["1"], "parallel": false},
     {"id": "phase-2", "tasks": ["3"], "parallel": false, "depends_on": ["phase-1"]},
     {"id": "phase-3", "tasks": ["2", "4", "5"], "parallel": true, "depends_on": ["phase-2"]},
-    {"id": "phase-4", "tasks": ["6", "7"], "parallel": true, "depends_on": ["phase-3"]}
+    {"id": "phase-4", "tasks": ["6", "7", "8"], "parallel": true, "depends_on": ["phase-3"]}
   ]
 }
 ```
