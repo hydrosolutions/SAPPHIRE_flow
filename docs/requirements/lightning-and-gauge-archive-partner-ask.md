@@ -17,6 +17,22 @@ Two separate asks. They will probably go to **different partners**, so they can 
 >
 > Any **one** of **WWLLN**, **GLD360** or **ENTLN** is enough — we do not need all three.
 
+### ⚠️ SAY THIS EXPLICITLY — it is a RESEARCH ARCHIVE request, not an operational feed
+
+**We do not need lightning operationally, and there is no budget for a paid operational product.**
+Lightning is used **once**, to characterise diurnal timing by elevation band (M-A7). What ships into
+the operational system is the **derived climatological profile** — not a live lightning feed. The
+system will never call a lightning API in production.
+
+**Why this matters for the ask:** research/academic licences and operational licences are priced and
+permitted very differently. If the request is not explicit, a partner may quote an **operational**
+licence, and we would wrongly conclude the data is unaffordable when a research archive would have been
+free or nearly so. **State up front: historical archive, research use, no redistribution, no operational
+dependency.**
+
+**If a partner can only offer an operational/real-time feed, that is the wrong product for us** — decline
+politely rather than negotiating price.
+
 **Which partner.** **WWLLN** is a research consortium and is usually free to academic members — the
 likeliest yes, so ask there first. **GLD360** (Vaisala) and **ENTLN** are commercial: what matters is
 whether a partner already **holds a licence**, not the price.
