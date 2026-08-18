@@ -261,13 +261,12 @@ class BafuObservationAdapter:
         silently skipped."""
 
         def send(remaining_s: float) -> httpx.Response:
-            # Blocker fix (round 2): deliberately NOT threaded into
-            # `timeout=` — HTTPX 0.28 applies a single float independently to
-            # each of connect/read/write/pool, so doing so would let ONE
-            # phase wait up to the full remaining budget while REPLACING this
-            # client's own (stricter) configured timeout. The aggregate 120 s
-            # deadline is enforced by the limiter's deadline-runner wrapper
-            # around this call instead (see lindas_rate_limiter.py).
+            # Not threaded into `timeout=`: HTTPX 0.28 applies a single
+            # float independently to each of connect/read/write/pool, so
+            # doing so would let ONE phase wait the whole remaining budget
+            # while REPLACING this client's own (stricter) configured
+            # timeouts. Those configured timeouts bound each attempt; the
+            # limiter's deadline bounds when a new attempt may start.
             del remaining_s
             return self._http_client.post(
                 self._endpoint,

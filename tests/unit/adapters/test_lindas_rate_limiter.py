@@ -64,17 +64,10 @@ def _limiter(  # type: ignore[no-untyped-def]
     *,
     clock: _FakeClock,
     sleeper: _SleepSpy,
-    deadline_runner=None,
     **config_kwargs,
 ):
     config = module.LindasLimiterConfig(**config_kwargs)
-    kwargs = {"config": config, "clock": clock, "sleeper": sleeper}
-    # Only forwarded when a test explicitly injects one — keeps every
-    # pre-existing call site working unchanged against a limiter build that
-    # does not yet know about `deadline_runner`.
-    if deadline_runner is not None:
-        kwargs["deadline_runner"] = deadline_runner
-    return module.TokenBucketLindasLimiter(**kwargs)
+    return module.TokenBucketLindasLimiter(config=config, clock=clock, sleeper=sleeper)
 
 
 def _responses(*statuses: int, headers: dict[str, str] | None = None):  # type: ignore[no-untyped-def]
@@ -86,32 +79,6 @@ def _responses(*statuses: int, headers: dict[str, str] | None = None):  # type: 
         return httpx.Response(status, headers=headers or {})
 
     return send
-
-
-def _slow_deadline_runner(
-    clock: _FakeClock, sleeper: _SleepSpy, *, response_delay_s: float
-):  # type: ignore[no-untyped-def]
-    """Deterministic (fake-clock, no real threads) stand-in for
-    `_run_with_deadline`'s hard-cutoff semantics: if `send` would take
-    `response_delay_s` to answer and that exceeds the attempt's remaining
-    budget, the calling side must get control back at EXACTLY `remaining_s`
-    (never later) with a timeout — never wait out `send`'s full delay and
-    never return whatever `send` eventually produces. This is exactly what
-    the real thread-join primitive guarantees: the calling thread's wait is
-    bounded to `remaining_s` regardless of what the background thread is
-    still doing."""
-
-    def runner(send, remaining_s: float):  # type: ignore[no-untyped-def]
-        if response_delay_s > remaining_s:
-            sleeper(remaining_s)
-            raise httpx.TimeoutException(
-                f"simulated deadline overrun ({response_delay_s}s > "
-                f"{remaining_s}s remaining)"
-            )
-        sleeper(response_delay_s)
-        return send(remaining_s)
-
-    return runner
 
 
 _START = datetime(2026, 8, 17, 8, 0, 0, tzinfo=UTC)
@@ -437,123 +404,82 @@ class TestBucketPacing:
 
 
 class TestDeadlineActuallyEnforced:
-    """Round-2 blocker fix: `timeout=remaining_s` on an HTTP client call does
-    NOT bound that call's wall-clock time to `remaining_s` — HTTPX applies
-    the value independently to each of connect/read/write/pool, so a request
-    slow across more than one phase can still overrun the deadline even
-    though each individual phase stayed under it. `call()` now runs `send`
-    through a `deadline_runner` (`_run_with_deadline` in production; a
-    deterministic fake here) that enforces a real hard cutoff instead. These
-    tests inject the fake and assert on `call()`'s own reaction: it must
-    never return a too-late response, and elapsed time must never exceed the
-    configured deadline."""
+    """The total deadline bounds when a NEW attempt may start, and no sleep
+    may run past it. It does not abort an in-flight request — each attempt is
+    bounded by the HTTP client's own configured phase timeouts. (An earlier
+    design ran `send` on a daemon thread joined with a hard timeout; that
+    bounded the caller's wait but abandoned the thread and its live request,
+    so repeated timeouts leaked both while reporting the call exhausted.)
 
-    def test_a_slow_response_that_would_eventually_succeed_is_never_returned(
+    Here a slow `send` consumes budget by advancing the fake clock, which is
+    exactly what a slow real request does to the deadline."""
+
+    @staticmethod
+    def _slow_send(clock: _FakeClock, *, cost_s: float, status: int = 503):  # type: ignore[no-untyped-def]
+        def send(remaining_s: float) -> httpx.Response:
+            del remaining_s
+            clock.advance(cost_s)
+            return httpx.Response(status)
+
+        return send
+
+    def test_no_new_attempt_starts_once_the_budget_is_spent(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(
+            module,
+            clock=clock,
+            sleeper=spy,
+            total_deadline_s=30.0,
+            max_attempts=99,
+        )
+
+        # Each attempt burns 20s of wall clock, so the second attempt lands
+        # past the 30s deadline and a third must never start.
+        send = self._slow_send(clock, cost_s=20.0)
+        with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
+            limiter.call(send)
+
+        assert exc_info.value.bound == "deadline"
+        # Bounded by the attempts actually begun before the deadline, NOT by
+        # max_attempts=99 — proves the deadline, not the attempt cap, stopped it.
+        assert exc_info.value.attempts <= 2
+
+    def test_a_single_attempt_slower_than_the_whole_budget_still_terminates(
         self,
     ) -> None:
         module = _import_module()
         clock = _FakeClock(_START)
         spy = _SleepSpy(clock)
-        # `send` would take 200s to answer (and WOULD succeed if awaited) —
-        # far longer than the 30s deadline below.
-        runner = _slow_deadline_runner(clock, spy, response_delay_s=200.0)
         limiter = _limiter(
             module,
             clock=clock,
             sleeper=spy,
-            deadline_runner=runner,
             total_deadline_s=30.0,
             max_attempts=5,
         )
 
+        # One attempt costs 200s — far past the deadline. The call must end
+        # on the deadline bound rather than looping.
+        send = self._slow_send(clock, cost_s=200.0)
         with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
-            limiter.call(_responses(200))
+            limiter.call(send)
 
         assert exc_info.value.bound == "deadline"
-        elapsed_s = (clock.now - _START).total_seconds()
-        assert elapsed_s <= 30.0
+        assert exc_info.value.attempts == 1
 
-    def test_a_request_slow_across_multiple_phases_still_bounds_to_the_deadline(
-        self,
-    ) -> None:
-        # Models a request that is merely slow (not hung) across MORE THAN
-        # ONE HTTPX phase — e.g. a slow connect followed by a slow read, each
-        # individually under a generous per-phase timeout, whose SUM still
-        # overruns the call's remaining budget. `timeout=remaining_s` cannot
-        # catch this (each phase re-arms independently); the deadline runner
-        # bounds total attempt time directly instead.
+    def test_a_non_retryable_response_is_returned_even_if_it_was_slow(self) -> None:
+        # The deadline gates STARTING work, so a slow attempt that does come
+        # back with a usable answer must be honoured, not discarded.
         module = _import_module()
         clock = _FakeClock(_START)
         spy = _SleepSpy(clock)
-        runner = _slow_deadline_runner(clock, spy, response_delay_s=90.0)
-        limiter = _limiter(
-            module,
-            clock=clock,
-            sleeper=spy,
-            deadline_runner=runner,
-            total_deadline_s=60.0,
-            max_attempts=5,
-        )
+        limiter = _limiter(module, clock=clock, sleeper=spy, total_deadline_s=30.0)
 
-        with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
-            limiter.call(_responses(200))
-
-        assert exc_info.value.bound == "deadline"
-        elapsed_s = (clock.now - _START).total_seconds()
-        assert elapsed_s <= 60.0
-
-
-class TestDeadlineRunnerPrimitive:
-    """Exercises the REAL `_run_with_deadline` (the production
-    `deadline_runner` default) directly, through actual OS threads — this
-    is the one deliberate exception to this file's "fakes only, never real
-    time" rule, because the property under test (a background thread cannot
-    be prevented from continuing, but the JOINING thread's wait can be
-    bounded) is inherent to the concurrency primitive itself and cannot be
-    expressed through the fake clock. Durations are kept small (well under
-    1s) to stay fast."""
-
-    def test_a_fast_send_returns_its_response_normally(self) -> None:
-        module = _import_module()
-
-        def fast_send(remaining_s: float) -> httpx.Response:
-            del remaining_s
-            return httpx.Response(200)
-
-        response = module._run_with_deadline(fast_send, 5.0)  # noqa: SLF001
+        response = limiter.call(self._slow_send(clock, cost_s=200.0, status=200))
 
         assert response.status_code == 200
-
-    def test_a_hanging_send_does_not_block_the_caller_past_the_deadline(
-        self,
-    ) -> None:
-        import time as _time
-
-        module = _import_module()
-
-        def hanging_send(remaining_s: float) -> httpx.Response:
-            del remaining_s
-            _time.sleep(5.0)  # never observed by the assertions below
-            return httpx.Response(200)
-
-        started = _time.perf_counter()
-        with pytest.raises(httpx.TimeoutException):
-            module._run_with_deadline(hanging_send, 0.05)  # noqa: SLF001
-        elapsed_s = _time.perf_counter() - started
-
-        # The calling thread must return near the 0.05s budget, not wait out
-        # the background thread's full 5s sleep.
-        assert elapsed_s < 1.0
-
-    def test_a_send_that_raises_forwards_the_original_exception(self) -> None:
-        module = _import_module()
-
-        def failing_send(remaining_s: float) -> httpx.Response:
-            del remaining_s
-            raise httpx.ConnectError("no route to host")
-
-        with pytest.raises(httpx.ConnectError):
-            module._run_with_deadline(failing_send, 5.0)  # noqa: SLF001
 
 
 class TestRetryAfterOverflowGuard:
@@ -599,71 +525,116 @@ class TestRetryAfterOverflowGuard:
 
 
 class TestConcurrentAcquisition:
-    """Major fix: `_acquire_token` must serialize concurrent callers so no
-    two threads can observe the same empty bucket, sleep in parallel, and
-    both proceed as though each had reserved a distinct refilled token.
+    """`_acquire_token` must serialize concurrent callers so no two threads
+    can observe the same empty bucket, wait in parallel, and both proceed as
+    though each had reserved a distinct refilled token.
 
-    Real threads + real `time.sleep`/`datetime.now` (a small refill period
-    to stay fast) — this is deliberately NOT the fake-clock/fake-sleeper
-    style used everywhere else in this file, because a fake clock is not
-    itself thread-safe and would not exercise the actual race the lock
-    closes (see also `TestDeadlineRunnerPrimitive`, which makes the same
-    real-threads exception for the same reason)."""
+    Timestamps are recorded INSIDE `send` — i.e. when a request is actually
+    dispatched — not when `call()` returns. Timing the returns would let an
+    implementation that fires the whole burst immediately and merely delays
+    its return values pass, which is precisely the failure this guards.
 
-    def test_concurrent_callers_stay_paced_at_the_refill_period(self) -> None:
+    Real threads + real `time.sleep`/`datetime.now` (a small refill period to
+    stay fast): a fake clock is not thread-safe and would not exercise the
+    race the lock closes. Workers are released together by a barrier so they
+    genuinely contend."""
+
+    def test_dispatches_are_paced_at_the_refill_period(self) -> None:
         module = _import_module()
         capacity = 2
         refill_period_s = 0.15
-        config = module.LindasLimiterConfig(
-            capacity=capacity,
-            refill_period_s=refill_period_s,
-            max_attempts=5,
-            total_deadline_s=10.0,
-        )
-        limiter = module.TokenBucketLindasLimiter(config=config)
-
         n_threads = 6
-        finish_times: list[float] = []
-        finish_lock = threading.Lock()
+        limiter = module.TokenBucketLindasLimiter(
+            config=module.LindasLimiterConfig(
+                capacity=capacity,
+                refill_period_s=refill_period_s,
+                max_attempts=5,
+                total_deadline_s=10.0,
+            )
+        )
+
+        send_times: list[float] = []
+        send_lock = threading.Lock()
+        barrier = threading.Barrier(n_threads)
         started_at = real_time.perf_counter()
 
         def worker() -> None:
             def send(remaining_s: float) -> httpx.Response:
                 del remaining_s
+                with send_lock:
+                    send_times.append(real_time.perf_counter() - started_at)
                 return httpx.Response(200)
 
-            response = limiter.call(send)
-            assert response.status_code == 200
-            with finish_lock:
-                finish_times.append(real_time.perf_counter() - started_at)
+            barrier.wait(timeout=5.0)
+            assert limiter.call(send).status_code == 200
 
         threads = [threading.Thread(target=worker) for _ in range(n_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5.0)
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=10.0)
 
-        assert not any(t.is_alive() for t in threads), "a worker thread hung"
-        assert len(finish_times) == n_threads
+        assert not any(th.is_alive() for th in threads), "a worker thread hung"
+        assert len(send_times) == n_threads
 
-        # Under the pre-fix race, every caller beyond `capacity` observes the
-        # SAME empty bucket concurrently, sleeps ~one refill period IN
-        # PARALLEL, and all wake and force-consume together — so the last of
-        # the 6 calls finishes around one refill period after start
-        # regardless of how many callers overflowed capacity. A correctly
-        # locked bucket instead serializes the `n_threads - capacity`
-        # overflow callers one after another, so the LAST call cannot finish
-        # before roughly `(n_threads - capacity) * refill_period_s`. Assert
-        # a threshold comfortably above the buggy (~1 period) case and
-        # comfortably below the correctly-serialized (~4 periods) case.
-        last_finish = max(finish_times)
-        overflow = n_threads - capacity
-        assert last_finish >= (overflow - 1) * refill_period_s, (
-            f"last of {n_threads} calls (capacity={capacity}) finished after "
-            f"only {last_finish:.3f}s — concurrent callers were not "
-            "serialized against each other, so more than the bucket's "
-            "capacity worth of load escaped unpaced"
+        ordered = sorted(send_times)
+        # The bucket starts full, so `capacity` dispatches may go out at once.
+        # Every dispatch beyond that must wait for a refill it alone consumed.
+        # Under the pre-fix race all overflow callers waited in PARALLEL and
+        # dispatched together, collapsing these gaps to ~0.
+        for i in range(capacity, n_threads):
+            gap = ordered[i] - ordered[i - 1]
+            assert gap >= refill_period_s * 0.5, (
+                f"dispatch {i} went out only {gap:.3f}s after dispatch "
+                f"{i - 1} (refill period {refill_period_s}s) — overflow "
+                "callers were not serialized, so more than the bucket's "
+                "capacity worth of load escaped unpaced"
+            )
+
+        # And the burst itself must not exceed capacity: the first `capacity`
+        # dispatches are the only ones allowed to be near-simultaneous.
+        burst = [s for s in ordered if s < refill_period_s * 0.5]
+        assert len(burst) <= capacity, (
+            f"{len(burst)} dispatches went out inside half a refill period — "
+            f"burst exceeded capacity={capacity}"
         )
+
+
+class TestRefillIsMonotonic:
+    """Fix: `_refill` must ignore a non-advancing clock rather than rewind
+    `_last_refill`.
+
+    `_drain` used to read the clock BEFORE taking the lock, so a caller that
+    then blocked could hand `_refill` a timestamp older than `_last_refill`.
+    That moved `_last_refill` backward, and the next refill measured elapsed
+    time from the rewound point — crediting the same seconds twice and
+    handing back the tokens the 429 drain had just removed."""
+
+    def test_a_stale_refill_cannot_credit_the_same_seconds_twice(self) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        spy = _SleepSpy(clock)
+        limiter = _limiter(module, clock=clock, sleeper=spy, refill_period_s=4.0)
+
+        limiter._drain()  # noqa: SLF001 - invariant under test
+
+        # A caller that read the clock before blocking on the lock hands
+        # `_refill` a timestamp from BEFORE the drain. Rewinding
+        # `_last_refill` here is harmless on its own — the damage lands on
+        # the NEXT refill, which then measures elapsed time from the rewound
+        # point and credits seconds that never passed.
+        limiter._refill(_START - timedelta(seconds=30))  # noqa: SLF001
+
+        # No real time has passed since the drain, so the bucket is still
+        # empty and this caller must wait a full refill period.
+        limiter._acquire_token(deadline_remaining_s=60.0)  # noqa: SLF001
+
+        assert spy.calls, (
+            "a drained bucket handed out a token with no wait — the stale "
+            "refill rewound `_last_refill`, so the next refill credited 30s "
+            "of phantom elapsed time"
+        )
+        assert spy.calls[0] == pytest.approx(4.0, abs=0.01)
 
 
 class TestThrottledVsRetryingEvents:
