@@ -742,6 +742,76 @@ Phase 1 commits to no correction design.
   forced through the Gateway; this track reads CDS. Parity between the two is a real question, parked
   as M-G5 (OD-2b).
 
+## Forcing-correction architecture (added 2026-08-18)
+
+| # | Question | Decision |
+|---|---|---|
+| **OD-12** | Must the modeller train on elevation bands so we can correct band-wise? | **No.** Correct the **basin-average** series in the **forcing pipeline**, using **hypsometric weighting** — the elevation dependence enters only through the weights, which are computed offline, once per basin. **The model never changes and keeps consuming `BasinAverageForecast`.** |
+| **OD-13** | Where does the correction live, and when is it switched on? | **In the forcing pipeline, behind a seam — built now, enabled at the Nepal re-training step, never before.** See the train/serve invariant below: it is the binding constraint, not the correction itself |
+
+### Why band-wise modelling is not required — the pieces already exist
+
+- `BandRecord` (`types/basin_package.py:109`, from `bands.gpkg`) already carries `min_elevation_m`,
+  `max_elevation_m` and **`area_km2`** per band. **That is hypsometry, already in the basin package.**
+- `ElevationBandForecast` (`types/weather.py:62`) is already a first-class `WeatherForecastResult`
+  variant beside `BasinAverageForecast`, so the band-wise route stays open without being taken now.
+
+**The cheap operator:** take the **observed elevation-banded diurnal profiles** (M-A7's deliverable),
+weight them by each basin's **band `area_km2`**, and collapse to an **observation-derived expected
+basin-average diurnal shape**. Compare with the IFS basin-average diurnal shape. The correction is a
+**redistribution in time of an unchanged daily total** — it moves rain to the right hours, it does not
+change how much fell. That last property matters: it keeps the correction **orthogonal to D6/D9**,
+which forbid touching magnitude.
+
+**When band-wise WOULD be required:** if a basin's diurnal phase varies so strongly with elevation that
+a single collapsed profile misrepresents the mixture — plausible for basins spanning ~500–8,000 m, where
+the low band peaks nocturnally and the ~5,000 m band peaks in the afternoon. **Testable:** compare the
+hypsometrically-weighted mixture against a band-wise correction re-aggregated to basin average. If they
+agree within the operator-sensitivity envelope, the cheap route is sufficient. **Do the cheap one first
+and measure**; `ElevationBandForecast` is the escape hatch if it fails.
+
+### ⚠️ THE BINDING CONSTRAINT: train/serve consistency, not the correction
+
+Runoff models are **pre-trained on GLOBAL data** (no operational Nepali observations exist yet) and
+**re-trained in Nepal after deployment**. That makes *when* the correction is enabled more important
+than *how* it is computed:
+
+- **A model learns the timing relationship implicit in its training forcing.** Feeding it forcing whose
+  diurnal phase differs from what it trained on is a **train/serve skew** — an OOD input, not a fix.
+- This is the same logic as **OD-6** (aquacast trained on ERA5-Land and run on ERA5-Land, so the bias
+  largely cancels). **But global pre-training WEAKENS that cancellation**, because the model learns
+  timing mostly from regions where the reanalysis phase is fine, not from the Himalaya where it is ~12 h
+  wrong. ⇒ For a globally pre-trained model, correcting the operational forcing is **plausibly
+  beneficial** — the model expects physically-timed rain. **Plausibly, not certainly: the sign is an
+  empirical question the Nepal re-training will settle, and it must be measured, not assumed.**
+
+**The invariant, whichever way that goes: TRAIN AND SERVE MUST MATCH.** An
+uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
+
+⇒ **Sequencing:**
+1. **Now (pre-deployment):** build the correction operator and its seam. **Do not enable it.** Global
+   pre-training stays on uncorrected forcing.
+2. **At Nepal deployment/re-training:** apply the **same** operator to the Nepali training forcing *and*
+   the operational forcing, then re-train. Consistent *and* closer to physical truth.
+3. **Measure both ways at step 2** — corrected-consistent vs uncorrected-consistent — because that is
+   the only point where we control both sides and can actually tell which is better.
+
+**And OD-10 remains the better long-run answer:** if DHM's parallel downscaling delivers a
+convection-permitting product, that fixes the phase *physically*, and this correction becomes
+unnecessary rather than merely adequate. Build the seam so that swap costs nothing.
+
+### M-D4 · Lightning data — partner ask (NEW, partner-gated)
+**Depends: —.** Ask project partners for stroke-level lightning: **timestamp, lat/lon, detection
+network**, 2020–2025, box 26–31 N / 80–89 E (the same box as our ERA5-Land, so it drops straight into
+the elevation banding). Networks differ in how they are obtained: **WWLLN** is research-consortium and
+usually free to academic partners — the likeliest yes; **GLD360** (Vaisala) and **ENTLN** are
+commercial, so an existing partner licence matters more than price; **Blitzortung** is free but its
+Nepal coverage is probably thin.
+**⛔ Do NOT draft the acquisition plan until the data is in hand.** This track has now specified against
+documentation three times and been wrong every time — the ERA5-Land accumulation convention, the CDS
+payload shape, and the CDS cost limit. The plan gets written **after** we see the real format, exactly
+as Plan 171's own constraint 3 requires.
+
 ## Decisions register — forcing strategy for operational P (added 2026-08-18)
 
 | # | Question | Decision |
