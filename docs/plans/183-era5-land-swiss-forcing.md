@@ -327,3 +327,44 @@ the control for it is a deliberately broken resume.
 
 **Scope for this round: R2-1, R2-2, R2-3 only.** Everything in the previous round's out-of-scope list
 still applies.
+
+## Live store probe + owner decisions (2026-08-18)
+
+`s3://sloth-dynamic/v1/era5/` was read directly with `AWS_PROFILE=work`. It is reachable, and the
+path convention T1 had **inferred** from prose (`{root}/{store_variable}.zarr`) is confirmed —
+16 variables, including the two D2 persists. That closes the implementer's residual risk.
+
+| measured | value |
+|---|---|
+| extent | **1980-01-01 → 2025-12-31**, 16802 daily steps |
+| grid | 1801 x 3600 (0.1°), dims named `lat`/`lon` (`_standardize_dims` renames) |
+| chunking | **(1826, 50, 50)** — time-major: ~5 years x 5° x 5° per chunk |
+
+### D4 — the climatology window is the FULL record, and per-organisation configurable
+T3's hardcoded 1981-2020 is replaced by `ERA5_LAND_RECORD_START/_END` (the measured extent) with
+`DeploymentConfig.climatology_window` as a per-org override. Nothing in this repo recorded which
+window the delivered `caravan:` statics used, and the only window documented anywhere in-repo — the
+Gateway feature catalog — says **1991-2020**. Comparing a recomputation over one window against
+indices published for another is not a parity test; at 5% it measures the offset between windows.
+**Still worth confirming with Sandro which window the Caravan statics use.**
+
+### The chunk layout makes R2-2 load-bearing, and annual chunking wasteful
+Chunks span **1826 days**, so reading one day reads five years of that block. Per five-year block per
+variable: global ≈ **47 GB**; cropped to a Swiss bbox ≈ **72 MB**. R2-2's spatial subset is the
+difference between the two — not an optimisation.
+
+The corollary is a **follow-on, not a defect**: `run_era5_land_backfill` chunks by *year*, so each
+5-year store chunk is fetched ~5x. Aligning backfill spans to the store's time chunking would cut
+that redundancy. Deferred deliberately — correctness first, and the cost is tolerable at Swiss scale.
+
+### Running T3 for real: backfill yes, parity NO — the reference side is missing
+The dev machine's local stack (postgres up, 2 stations, 2 basins) can run the backfill today. It
+**cannot** run the parity check: both basins carry 300 attributes and **zero `caravan:`-prefixed**
+keys. The four indices exist under bare names with different semantics — `high_prec_freq` is 18.41
+and 13.692 (days/year) where Caravan's is a fraction (~0.033 Swiss mean). Those are CAMELS-CH
+attributes, not Caravan's.
+
+So `validate_era5_land_against_caravan` would skip every basin — reported as skips with reasons,
+which is exactly what the B1 fix bought. **T3 is blocked on the Plan 155 Caravan import running for
+real**, which still has no production caller. That is the next step for this track, not more work
+inside Plan 183.
