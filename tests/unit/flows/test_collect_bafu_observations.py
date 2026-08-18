@@ -171,18 +171,58 @@ class TestModalTieBreakPicksTheOLDERSlot:
 
         assert module._modal_cycle_at(rows) == older  # noqa: SLF001
 
-    def test_the_newer_slot_stays_claimable_after_a_tie(self) -> None:
-        # The point of picking the older slot: the newer one must still be
-        # reachable once a response genuinely represents it.
-        module = _import_flow_module()
-        newer = ensure_utc(datetime(2026, 7, 21, 15, 40, tzinfo=UTC))
-        complete = [
-            _row("2135", measurement_time=newer),
-            _row("2200", measurement_time=newer),
-            _row("2300", measurement_time=newer),
-        ]
+    def test_a_tie_then_a_complete_response_archives_both_slots(
+        self, tmp_path: Path
+    ) -> None:
+        """The consequence of picking the older slot, exercised end-to-end.
 
-        assert module._modal_cycle_at(complete) == newer  # noqa: SLF001
+        (An earlier version of this test asserted only that an all-newer
+        response keys to the newer slot — which involves no tie at all and
+        passes unchanged under the `min`->`max` mutant it claimed to guard.
+        It proved nothing; this runs a real tie through the archive.)
+
+        A half-advanced response must land under the OLDER slot, leaving the
+        newer slot unclaimed so the complete response can still archive it.
+        Under `max()` the tie would claim the newer slot early and the
+        complete response would dedup-skip, losing it permanently.
+        """
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        older = datetime(2026, 7, 21, 15, 30, tzinfo=UTC)
+        newer = datetime(2026, 7, 21, 15, 40, tzinfo=UTC)
+
+        # Mid-transition: two gauges advanced, two have not.
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(
+                [
+                    _row("2135", measurement_time=older),
+                    _row("2200", measurement_time=older),
+                    _row("2300", measurement_time=newer),
+                    _row("2400", measurement_time=newer),
+                ]
+            ),
+            clock=_ClockSpy(datetime(2026, 7, 21, 15, 45, tzinfo=UTC)),
+        )
+        # Transition complete: the whole network is on the newer slot.
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(
+                [
+                    _row("2135", measurement_time=newer),
+                    _row("2200", measurement_time=newer),
+                    _row("2300", measurement_time=newer),
+                    _row("2400", measurement_time=newer),
+                ]
+            ),
+            clock=_ClockSpy(datetime(2026, 7, 21, 15, 47, tzinfo=UTC)),
+        )
+
+        stems = sorted(p.name for p in tmp_path.rglob("*.parquet"))
+        assert stems == [
+            "obs-20260721T153000Z.parquet",
+            "obs-20260721T154000Z.parquet",
+        ], f"a tie must not consume the newer slot — got {stems}"
 
 
 class TestCycleAtIsDataDerived:

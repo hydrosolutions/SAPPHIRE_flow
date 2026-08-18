@@ -58,6 +58,7 @@ import os
 import time
 from collections import Counter
 from datetime import UTC, datetime
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import httpx
@@ -85,17 +86,21 @@ log = structlog.get_logger(__name__)
 # So the real exclusion is this env gate; the markers are secondary.
 _OPT_IN_ENV = "RUN_LINDAS_LAG_MEASUREMENT"
 
-pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(
-        os.environ.get(_OPT_IN_ENV) != "1",
-        reason=(
-            f"extended live measurement — set {_OPT_IN_ENV}=1 to run. "
-            "Gated by env, not marker, because the nightly job's path-based "
-            "selection overrides marker exclusion."
-        ),
+_requires_opt_in = pytest.mark.skipif(
+    os.environ.get(_OPT_IN_ENV) != "1",
+    reason=(
+        f"extended live measurement — set {_OPT_IN_ENV}=1 to run. "
+        "Gated by env, not marker, because the nightly job's path-based "
+        "selection overrides marker exclusion."
     ),
-]
+)
+
+# NOTE: the gate is applied to the LIVE class only, deliberately. Putting it on
+# `pytestmark` skipped the whole module — including any fast, network-free test
+# of this file's own arithmetic. That is exactly how the `strict=True` bug below
+# survived: the gate that (correctly) kept the polling loop out of CI also
+# hid a defect that made the measurement impossible to produce at all.
+pytestmark = pytest.mark.live
 
 _ENDPOINT = "https://lindas.admin.ch/query"
 _LIVE_TIMEOUT_S = 30
@@ -104,6 +109,24 @@ _LIVE_TIMEOUT_S = 30
 # real measurement run should use (or widen) the defaults.
 _POLL_INTERVAL_S = float(os.environ.get("LINDAS_LAG_POLL_INTERVAL_S", "60"))
 _DURATION_S = float(os.environ.get("LINDAS_LAG_DURATION_S", str(45 * 60)))
+
+
+def _consecutive_gaps_s(
+    sightings: list[tuple[UtcDatetime, UtcDatetime]],
+) -> list[float]:
+    """Seconds between consecutive slot first-sightings.
+
+    Extracted from the live test body so the arithmetic can be verified without
+    a 45-minute network loop. It previously used
+    ``zip(sightings, sightings[1:], strict=True)``, which **always** raises:
+    the second argument is one shorter by construction, which is the entire
+    point of pairing a sequence with its own tail. The live test therefore
+    could never reach its summary. `itertools.pairwise` says what is meant.
+    """
+    return [
+        (b_seen - a_seen).total_seconds()
+        for (_, a_seen), (_, b_seen) in pairwise(sightings)
+    ]
 
 
 def _modal_measurement_time(
@@ -123,6 +146,7 @@ def _modal_measurement_time(
 
 
 @pytest.mark.live_lindas_lag
+@_requires_opt_in
 class TestLiveLindasPublishLag:
     def test_slot_transition_gaps_over_an_extended_window(self) -> None:
         client = httpx.Client(timeout=_LIVE_TIMEOUT_S)
@@ -171,10 +195,7 @@ class TestLiveLindasPublishLag:
             "trusting the gap numbers below"
         )
 
-        gaps_s = [
-            (b_seen - a_seen).total_seconds()
-            for (_, a_seen), (_, b_seen) in zip(sightings, sightings[1:], strict=True)
-        ]
+        gaps_s = _consecutive_gaps_s(sightings)
         min_gap_s = min(gaps_s)
         min_lag_s = min(lags_s)
 
@@ -200,3 +221,29 @@ class TestLiveLindasPublishLag:
 
         # Sanity floor only, NOT the D1 margin itself (see module docstring).
         assert min_gap_s >= 60
+
+
+class TestConsecutiveGapsArithmetic:
+    """Fast and network-free — deliberately NOT behind the live opt-in gate.
+
+    The live loop above cannot run in CI, so without this the gap arithmetic
+    has no coverage at all, which is how a `zip(..., strict=True)` that raises
+    on every input shipped unnoticed.
+    """
+
+    @staticmethod
+    def _sighting(minute: int) -> tuple[UtcDatetime, UtcDatetime]:
+        slot = ensure_utc(datetime(2026, 8, 18, 13, minute, tzinfo=UTC))
+        return slot, ensure_utc(datetime(2026, 8, 18, 13, minute + 15, tzinfo=UTC))
+
+    def test_pairs_a_sequence_with_its_own_tail_without_raising(self) -> None:
+        # Three sightings -> two gaps. The pre-fix `strict=True` raised here.
+        sightings = [self._sighting(0), self._sighting(10), self._sighting(20)]
+
+        assert _consecutive_gaps_s(sightings) == [600.0, 600.0]
+
+    def test_two_sightings_yield_one_gap(self) -> None:
+        assert _consecutive_gaps_s([self._sighting(0), self._sighting(10)]) == [600.0]
+
+    def test_a_single_sighting_yields_no_gaps(self) -> None:
+        assert _consecutive_gaps_s([self._sighting(0)]) == []

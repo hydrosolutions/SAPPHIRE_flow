@@ -34,21 +34,32 @@ All cron schedules are deployment-configurable — set as `CronSchedule` paramet
 
 ### LINDAS-caller schedule separation (Plan 175 D4/D6)
 
-**Different work pools do NOT serialise contention against the same external
-endpoint.** `ingest-observations` (`ingest` pool) and `collect-bafu-observations`
-(`default` pool) both call `lindas.admin.ch`; a per-flow `concurrency_limit`
-only bounds concurrent runs of *that* deployment, never two different
+**A shared work pool does NOT serialise contention against the same external
+endpoint either.** `ingest-observations` and `collect-bafu-observations` both
+call `lindas.admin.ch` and, since Plan 176, both run on the `ingest` pool — but
+the worker is `--type process`, so each flow run is a separate subprocess with
+its own in-process rate limiter. Same pool, same worker, still no shared budget.
+(Before Plan 176 they sat on *different* pools, which was no better.) A per-flow
+`concurrency_limit` only bounds concurrent runs of *that* deployment, never two different
 deployments hitting the same upstream host at the same wall-clock minute.
-Two separate worker processes on two separate pools start their runs
-independently — LINDAS sees both as unrelated clients regardless of pool
-topology. The mechanism that actually removed the two flows' hourly collision
-was moving `collect-bafu-observations` off `5 * * * *` (which the ingest
-flow's `*/5 * * * *` also hits every hour) onto `37 * * * *` — a schedule
-fact, not a work-pool fact.
+Separate worker *processes* start their runs independently — LINDAS sees them as
+unrelated clients whether they sit on the same pool or different ones (they were
+on different pools under Plan 098, and share the `ingest` pool since Plan 176;
+neither arrangement shares a rate-limit budget, because `--type process` gives
+each run its own subprocess). The mechanism that actually removed the two flows'
+hourly collision was moving `collect-bafu-observations` off `5 * * * *` (which
+the ingest flow's `*/5 * * * *` also hits every hour) — first onto `37 * * * *`
+(Plan 175), now onto Plan 176 D1's denser property-defined list. **A schedule
+fact, not a work-pool fact** — which is why the D1 rule is expressed as
+"no minute divisible by 5" rather than as a pool assignment.
 
 **Rule for any future LINDAS-calling schedule**: the cron minute must not be
 divisible by 5 (`ingest-observations`'s tick) and must not collide with
-`collect-bafu-forecasts`'s `0 * * * *`. See
+`collect-bafu-forecasts`'s `0 * * * *`. The BAFU observation collector's own
+schedule is defined by **properties, not a literal** (Plan 176 D1: max cyclic
+inter-poll gap ≤4 min, min ≥3 min, every minute non-divisible by 5) — quote the
+properties, not the minute list, which supersedes Plan 175's single `37 * * * *`
+tick and is asserted by test rather than pinned in prose. See
 `docs/decisions/bafu-lindas-rate-limit.md` for the measured rate-limit
 contract this rule protects (burst 3, ~1 slot refill per 3–4 s, no
 `Retry-After`).
