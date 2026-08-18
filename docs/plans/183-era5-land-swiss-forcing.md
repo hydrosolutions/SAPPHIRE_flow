@@ -260,3 +260,68 @@ backfill populates). Modifying the shared `ExactExtractGridExtractor`. The forci
 ### Plan-number collision — owner decision, not the implementer's
 `docs/plans/183-forcing-canonicalisation-seam.md` (committed `edb4a43`, same day) also claims 183. Two
 plans, one number. Renumbering is the owner's call; flagged here so it is not silently inherited.
+
+## Second fixer round — verified input (2026-08-18)
+
+Commit `2ca2579` addressed all four findings above. `/implement` escalated a second time for the
+**same reason as the first** — its verify agent had pytest auto-backgrounded and was forced to report
+before the result arrived. Re-run by hand on `2ca2579`: **4225 passed, 15 skipped, 11 deselected**
+(660 s), ruff clean, pyright ratchet `432 <= 432`. Gates are green; both escalations were about the
+verifier's wall-clock, not the code.
+
+An independent round-2 Codex pass then reviewed the fix. Its findings were checked against the code —
+and, where the claim was about a test, **by running that test against the pre-fix source**. Two of its
+items are real, one is rejected, and one was simply wrong.
+
+### R2-1 [major] The land-coverage fix traded a false negative for a false positive
+`adapters/era5_land_reanalysis.py:270`. `shapely.intersects` is true for a cell that touches the basin
+only along an edge or at a corner — zero overlap area. `exact_extract` gives such a cell weight 0, so it
+contributes nothing to the mean. A NaN ocean cell touching the boundary therefore enters `total` but can
+never enter `land`, depressing the fraction and raising `ExtractionError` on a basin that is entirely
+fine. Measure positive-area overlap instead (e.g. `shapely.area(shapely.intersection(geom, cells)) > 0`),
+which is also what "contributing cell" means to the extractor.
+
+### R2-2 [major] Nothing subsets space anywhere — this is what makes the backfill impractical
+`adapters/era5_land_reanalysis.py:355`. `read_variable` slices on `valid_time` **only**. The full global
+ERA5-Land grid (1801x3600) is then materialised — by `da0.values` in the coverage check, and by
+`exact_extract` itself — for every day of every chunk. For this plan's actual deliverable, 40 years x
+two parameters over Swiss basins, that reads the whole global record to use a few hundred cells of it:
+roughly 26 MB per day per parameter against a Swiss bounding box worth single-digit KB.
+
+Round 2 saw only the `values_all` line, which is the symptom. Subset to the **fleet's** bounding box
+(plus a margin) inside `read_variable`, before extraction; per-basin cropping in the coverage check then
+becomes an ordinary detail rather than the only defence, and `values_all` stops mattering. This is the
+one change that decides whether T2's 40-year backfill is runnable.
+
+### R2-3 [minor] The round-trip test does not exercise the writer
+`tests/unit/adapters/test_reanalysis_selection.py:60`. It stores rows it hardcodes as
+`parameter="temperature"` and reads them back, never calling `Era5LandReanalysisAdapter.fetch_reanalysis`.
+So it proves the *reader* honours the source and parameter filter — useful — but its docstring claims it
+closes the `mean_temperature` silent failure, which it cannot: the adapter never runs. Drive the
+round-trip through the adapter into the store, then read via the selected reader, or correct the
+docstring to claim only what the test does.
+
+### R2-4 [REJECTED] "`CaravanValidationResult` has no `__bool__`"
+Reported as a blocker: `if validate_era5_land_against_caravan(...)` is truthy even for an all-skipped
+fleet. Rejected. Every dataclass is truthy; `is_full_parity_pass` already requires non-empty coverage,
+zero skips, all four indices and every agreement within tolerance
+(`services/era5_land_validation.py:255-270`), and the class docstring says to read it. A `__bool__` that
+means "full parity" would trade one silent misreading for another, subtler one. No caller exists.
+**Do not add it.**
+
+### R2-5 [REVIEWER WRONG] "the sub-cell locking test passes pre-fix"
+Checked by reverting `adapters/era5_land_reanalysis.py` to `98e842a` and running the test:
+
+```
+FAILED TestLandCoverageCheck::test_raises_for_sub_cell_basin_with_no_contained_cell_centre
+E  Failed: DID NOT RAISE <class 'sapphire_flow.exceptions.ExtractionError'>
+```
+
+It discriminates exactly as intended — the pre-fix guard skipped the basin. Its sibling
+(`test_sub_cell_basin_fully_inside_a_land_cell_passes`) does pass both ways, correctly: it is a
+no-false-positive guard, not a locking test. The backfill resume test was likewise judged against the
+wrong control — the fixer changed the *test*, not the backfill code, so "passes pre-fix" says nothing;
+the control for it is a deliberately broken resume.
+
+**Scope for this round: R2-1, R2-2, R2-3 only.** Everything in the previous round's out-of-scope list
+still applies.
