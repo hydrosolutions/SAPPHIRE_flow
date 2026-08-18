@@ -10,17 +10,22 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import polars as pl
+import pytest
 
 try:
     from scripts.dhm_precip.stats_coloc import (
+        NonPositiveGrandMeanError,
         common_retained_frame,
+        dhm_utc_to_npt,
         normalised_diurnal_profile,
         paired_wet_hour_fraction,
         peak_hour,
         zero_below_threshold,
     )
 except ImportError:
+    NonPositiveGrandMeanError = None  # type: ignore[assignment]
     common_retained_frame = None  # type: ignore[assignment]
+    dhm_utc_to_npt = None  # type: ignore[assignment]
     normalised_diurnal_profile = None  # type: ignore[assignment]
     paired_wet_hour_fraction = None  # type: ignore[assignment]
     peak_hour = None  # type: ignore[assignment]
@@ -232,3 +237,73 @@ class TestPairedWetHourFractionPreventsAsymmetricMaskingArtefact:
         result = paired_wet_hour_fraction(paired.paired, wet_threshold_mm=0.2)
         assert result.n_common_retained == 12
         assert result.dhm_wet_fraction == result.pyramid_wet_fraction
+
+
+class TestDhmUtcToNpt:
+    """D2 — the UTC->NPT reconciliation `coloc_adjudication` applies to
+    every DHM frame before it touches anything else in this module."""
+
+    def test_shifts_every_timestamp_by_the_hour_offset(self) -> None:
+        assert dhm_utc_to_npt is not None, "dhm_utc_to_npt not implemented"
+        frame = pl.DataFrame(
+            {
+                "station": [_STATION],
+                "timestamp": [datetime(2021, 7, 1, 2, 0)],
+                "value_mm": [1.0],
+            }
+        )
+        result = dhm_utc_to_npt(frame, hour_offset=6, jjas_months=(6, 7, 8, 9))
+        assert result["timestamp"].to_list() == [datetime(2021, 7, 1, 8, 0)]
+
+    def test_reapplies_jjas_filter_after_the_shift(self) -> None:
+        """A UTC-JJAS hour can cross a calendar-month boundary once shifted
+        into NPT — 30 Sept 23:00 UTC + 6h -> 1 Oct 05:00 NPT, no longer
+        JJAS on the timebase everything else is compared on, and must be
+        dropped rather than silently retained."""
+        assert dhm_utc_to_npt is not None, "dhm_utc_to_npt not implemented"
+        frame = pl.DataFrame(
+            {
+                "station": [_STATION, _STATION],
+                "timestamp": [
+                    datetime(2021, 9, 30, 23, 0),  # crosses out of JJAS
+                    datetime(2021, 7, 1, 2, 0),  # stays well inside JJAS
+                ],
+                "value_mm": [1.0, 2.0],
+            }
+        )
+        result = dhm_utc_to_npt(frame, hour_offset=6, jjas_months=(6, 7, 8, 9))
+        assert result.height == 1
+        assert result["timestamp"].to_list() == [datetime(2021, 7, 1, 8, 0)]
+
+    def test_never_touches_a_pyramid_frame_shape_it_is_not_given(self) -> None:
+        """Sanity check: calling it with `hour_offset=0` is a pure identity
+        shift plus a JJAS re-filter — never anything else — so the
+        function has no hidden network-specific behaviour beyond the shift
+        it's told to apply."""
+        assert dhm_utc_to_npt is not None, "dhm_utc_to_npt not implemented"
+        frame = pl.DataFrame(
+            {
+                "station": [_STATION],
+                "timestamp": [datetime(2021, 7, 1, 2, 0)],
+                "value_mm": [1.0],
+            }
+        )
+        result = dhm_utc_to_npt(frame, hour_offset=0, jjas_months=(6, 7, 8, 9))
+        assert result["timestamp"].to_list() == frame["timestamp"].to_list()
+
+
+class TestNormalisedDiurnalProfileRejectsNonPositiveGrandMean:
+    """A zero (or non-finite) grand mean would otherwise silently divide
+    into an infinite/NaN `normalised_value`, and `peak_hour`'s sort would
+    then pick an arbitrary hour instead of reporting "no usable signal"."""
+
+    def test_all_zero_values_raises_rather_than_dividing_by_zero(self) -> None:
+        assert normalised_diurnal_profile is not None, (
+            "normalised_diurnal_profile not implemented"
+        )
+        assert NonPositiveGrandMeanError is not None, (
+            "NonPositiveGrandMeanError not implemented"
+        )
+        frame = _frame([2, 14], [0.0, 0.0], days=3)
+        with pytest.raises(NonPositiveGrandMeanError):
+            normalised_diurnal_profile(frame)

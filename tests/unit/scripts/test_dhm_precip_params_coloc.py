@@ -49,9 +49,33 @@ class TestThresholdLadderValidation:
         with pytest.raises(ValueError, match="strictly ascending"):
             DhmPrecipParams(coloc_threshold_ladder_mm=(0.2, 0.1, 0.0))
 
+    def test_rejects_duplicate_rungs(self) -> None:
+        """'Strictly ascending' via `sorted(ladder) == list(ladder)` alone
+        permits duplicates (non-decreasing, not strictly ascending) —
+        locks the pairwise-strict fix."""
+        with pytest.raises(ValueError, match="strictly ascending"):
+            DhmPrecipParams(coloc_threshold_ladder_mm=(0.0, 0.1, 0.1, 0.2))
+
+    def test_rejects_a_ladder_not_starting_at_zero(self) -> None:
+        """`coloc_adjudication.py` treats the first rung as
+        `dhm_peak_all_hour` ("all values") — only true when it's the
+        zero-floor no-op."""
+        with pytest.raises(ValueError, match="must start at 0.0"):
+            DhmPrecipParams(coloc_threshold_ladder_mm=(0.1, 0.2))
+
     def test_rejects_matched_resolution_threshold_not_in_ladder(self) -> None:
         with pytest.raises(ValueError, match="coloc_matched_resolution_threshold_mm"):
             DhmPrecipParams(
                 coloc_threshold_ladder_mm=(0.0, 0.1),
                 coloc_matched_resolution_threshold_mm=0.2,
             )
+
+
+class TestFullRecordSplitYearMatchesTheRealSourceRecord:
+    def test_default_split_year_is_within_the_real_dhm_record_span(self) -> None:
+        """The real DHM source workbook spans 2020-01-01 -> 2025-12-31 in
+        its entirety (`docs/design/dhm-precipitation-vision.md:20`) — the
+        split year must land strictly inside that span, or the
+        disjoint-period check can never see data on one side by
+        construction (the bug the original `2020` default had)."""
+        assert 2020 < DEFAULT_PARAMS.coloc_full_record_split_year < 2025

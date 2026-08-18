@@ -24,6 +24,12 @@ class ColocatedPair:
     bars the Lvl2 gap-filled monthly reconstruction)."""
     separation_km: float
     elevation_delta_m: float
+    overlap_start_year: int = 2020
+    """D5a — the JJAS overlap window's first year for THIS station. Not
+    uniform across pairs: 'Lukla's overlap is only 2021-2023.'"""
+    overlap_end_year: int = 2023
+    """D5a — the JJAS overlap window's last year (inclusive) for this
+    station."""
 
     def __post_init__(self) -> None:
         if self.separation_km <= 0.0:
@@ -36,6 +42,12 @@ class ColocatedPair:
                 f"elevation_delta_m must be >= 0, got {self.elevation_delta_m} "
                 f"for {self.dhm_station!r}"
             )
+        if self.overlap_start_year > self.overlap_end_year:
+            raise ValueError(
+                f"overlap_start_year ({self.overlap_start_year}) must be <= "
+                f"overlap_end_year ({self.overlap_end_year}) for "
+                f"{self.dhm_station!r}"
+            )
 
 
 COLOCATED_PAIRS: tuple[ColocatedPair, ...] = (
@@ -45,6 +57,7 @@ COLOCATED_PAIRS: tuple[ColocatedPair, ...] = (
         pyramid_csv_filename="AWS3_Z2660_Lvl1.csv",
         separation_km=1.4,
         elevation_delta_m=200.0,
+        overlap_start_year=2021,
     ),
     ColocatedPair(
         dhm_station=Station("Syangboche Airport"),

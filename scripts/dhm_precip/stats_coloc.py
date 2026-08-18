@@ -27,6 +27,16 @@ class NoProfileRowsError(ValueError):
     """`peak_hour` was asked for a station with zero retained profile rows."""
 
 
+class NonPositiveGrandMeanError(ValueError):
+    """`normalised_diurnal_profile` found a station whose retained values
+    sum to a non-positive or non-finite grand mean (e.g. every retained hour
+    is exactly zero, or every value is null/NaN after upstream QC). Dividing
+    by it would silently produce an infinite, NaN or meaningless
+    `normalised_value` — `peak_hour`'s sort would then pick an arbitrary
+    hour rather than report "no usable signal". Raised instead, so a caller
+    can map it to INDETERMINATE rather than trust a garbage peak."""
+
+
 def zero_below_threshold(frame: pl.DataFrame, threshold_mm: float) -> pl.DataFrame:
     """D7.2 — the ablation ZEROES values below `threshold_mm`; it never
     DROPS the row. Zeroing (not dropping) is what makes the ablation
@@ -63,6 +73,19 @@ def normalised_diurnal_profile(frame: pl.DataFrame) -> pl.DataFrame:
     grand_mean = with_hour.group_by("station").agg(
         pl.col("value_mm").mean().alias("_grand_mean")
     )
+    bad = grand_mean.filter(
+        pl.col("_grand_mean").is_null()
+        | pl.col("_grand_mean").is_nan()
+        | pl.col("_grand_mean").is_infinite()
+        | (pl.col("_grand_mean") <= 0.0)
+    )
+    if bad.height > 0:
+        stations = sorted(str(s) for s in bad["station"].to_list())
+        raise NonPositiveGrandMeanError(
+            f"non-positive or non-finite grand mean for station(s) {stations} "
+            "— cannot normalise (every retained hour is zero, or no usable "
+            "signal survived upstream QC)"
+        )
     return (
         hourly.join(grand_mean, on="station")
         .with_columns(
@@ -70,6 +93,29 @@ def normalised_diurnal_profile(frame: pl.DataFrame) -> pl.DataFrame:
         )
         .drop("_grand_mean")
     )
+
+
+def dhm_utc_to_npt(
+    frame: pl.DataFrame, *, hour_offset: int, jjas_months: tuple[int, ...]
+) -> pl.DataFrame:
+    """D2 — the UTC->NPT reconciliation that makes DHM (UTC, period-ending)
+    and Pyramid (NPT wall-clock) comparable on the same clock. Shifts every
+    `timestamp` forward by `hour_offset` WHOLE hours (D2's rounded 5h45m
+    offset, `params.coloc_dhm_utc_to_npt_hour_offset` — normally 6) and
+    RE-APPLIES the JJAS filter on the SHIFTED timestamp: a UTC-JJAS hour can
+    cross a calendar-month boundary once shifted into NPT (e.g. 30 Sept
+    23:00 UTC -> 05:00 NPT the next day, with the default +6h offset), and
+    silently retaining an hour that is no longer JJAS on the timebase
+    everything else is compared on would reintroduce exactly the kind of
+    unmatched-population artefact D3 exists to prevent.
+
+    Every OTHER function in this module is network-agnostic — this one is
+    NOT: it must be called on DHM frames only, never on Pyramid's (which
+    are already NPT)."""
+    shifted = frame.with_columns(
+        (pl.col("timestamp") + pl.duration(hours=hour_offset)).alias("timestamp")
+    )
+    return shifted.filter(pl.col("timestamp").dt.month().is_in(jjas_months))
 
 
 def peak_hour(profile: pl.DataFrame, *, station: Station) -> int:

@@ -243,3 +243,59 @@ no co-located partner.
 **Lvl1 files only.** `AWS3_Z2660_Lvl1.csv` (Lukla), `AWS5_Z3570_Lvl1.csv` (Namche). Note `AWS0` and
 `AWS1` are two instruments at the same 5,035 m site, and `AWS4`/`AWSSC`/`CNG_SNP` carry no usable `RR`
 for this work.
+
+## Fixer round 2026-08-18 — post-commit diff review (4 blockers + 5 majors resolved)
+
+An independent Codex diff-review pass over the committed implementation (`4d71186`) found the library
+did not actually implement several of the design decisions above, despite being marked CODE COMPLETE.
+All resolved in place; **test-soundness proved for every correctness fix** (each locking test confirmed
+RED against the pre-fix commit via `git stash`, then restored):
+
+- **D2 UTC->NPT reconciliation was dead configuration (blocker).** `coloc_dhm_utc_to_npt_hour_offset`
+  was declared in `params.py` but never applied — DHM's UTC hour-of-day and Pyramid's NPT hour-of-day
+  were compared as if on the same clock, in both the D3 pairing join and every D9 gate. Fixed:
+  `stats_coloc.dhm_utc_to_npt` shifts every DHM timestamp by the declared offset AND re-applies the
+  JJAS filter on the shifted timestamp (a UTC-JJAS hour can cross a month boundary once shifted into
+  NPT), applied once in `coloc_adjudication.adjudicate_station` before anything else touches DHM data.
+- **D5's disjoint-period stationarity split was structurally broken (blocker).** The real DHM source
+  record spans 2020-01-01 -> 2025-12-31 in its entirety (`docs/design/dhm-precipitation-vision.md:20`)
+  — a `pre-2020` partition against a `2020` split year is ALWAYS empty, so `peak_hour` raised
+  `NoProfileRowsError` before any real adjudication completed; the integration test hid this by
+  fabricating a 2019 DHM year that cannot exist in the real record. Fixed: the default split moved to
+  2023 (splitting the real 2020-2025 span into two non-empty halves); `StationVerdictInputs` gained
+  `disjoint_period_data_sufficient`, and gate 0 maps insufficient data to `INDETERMINATE`
+  (`ADEQUACY_INSUFFICIENT_DISJOINT_DATA`) rather than crashing, for any station whose own record still
+  doesn't straddle the split.
+- **The D5 bootstrap peak-hour spread was computed but never gated on (blocker).** A five-season sample
+  with a wide (e.g. 12h) circular peak-hour spread could still receive `H1_SUPPORTED`/`H1_REFUTED`.
+  Fixed: `StationVerdictInputs` gained `bootstrap_spread_hours`; gate 0 now rejects a spread above
+  `coloc_bootstrap_adequate_max_spread_hours` (`ADEQUACY_BOOTSTRAP_SPREAD_TOO_WIDE`) before the
+  matched-resolution gate ever runs.
+- **D9's phase peaks were computed independently per side, before D3 pairing (major).** The threshold
+  ladder and the Pyramid peak were each computed from that side's OWN retained population, then paired
+  ONLY for the wet-hour fraction — contrary to D3's own fix, letting hour-dependent missingness
+  manufacture a phase difference the gates would then "see". Fixed: `adjudicate_station` pairs FIRST
+  (`common_retained_frame`), then derives the ladder and the Pyramid peak from the SAME paired
+  population; the standalone full-record profile remains separate (D5b's climatological check).
+- **`synthesize_verdict` accepted a duplicated or unregistered station (major).** One station's verdict
+  supplied twice (or a single station, or a station outside `coloc_pairs.COLOCATED_PAIRS`) could
+  synthesize a decisive Group A verdict without the second required station's evidence. Fixed:
+  `synthesize_verdict` now requires EXACTLY the two registered stations, each exactly once
+  (`DuplicateStationVerdictError`, `UnregisteredStationVerdictError`).
+- **The Pyramid loader had no D4 physical-range boundary (major).** Timestamps were not type-validated,
+  NaN/infinite/out-of-range precipitation survived into `retained`, and duplicate timestamps were
+  unchecked. Fixed: `load_pyramid_lvl1_csv` now returns a `PyramidLoadResult` (retained frame + `n_raw`/
+  `n_nonfinite`/`n_out_of_range`/`n_retained`), validates the timestamp dtype and uniqueness, and
+  excludes non-finite/out-of-range `value_mm` using the SAME D4 bounds DHM's own mask uses.
+- **The library could not produce the plan's Exit deliverables (blocker) — no runner existed.** Fixed:
+  `scripts/dhm_precip/coloc_run.py` composes both pairs, both windows, full profile tables (not just
+  peak-hour scalars), the exact two-station synthesis, and a Markdown report writer. Its
+  loader-agnostic core (`run_coloc_adjudication`) is exercised end-to-end against synthetic fixtures;
+  `main()` wires the real production DHM ingest+mask pipeline and the real Pyramid loader, but — honest
+  residual risk — has not been run against real data, since neither the pinned DHM workbook nor the
+  real Pyramid Lvl1 CSVs have been present in any workspace to date. See
+  `docs/design/dhm-precipitation-milestones.md`'s M-A10 entry for the up-to-date status.
+- **Minors also resolved:** an all-zero/non-finite grand mean now raises `NonPositiveGrandMeanError`
+  instead of silently dividing by zero (`stats_coloc.normalised_diurnal_profile`); the threshold ladder
+  validation now rejects duplicate rungs and requires the first rung to be exactly `0.0`
+  (`params.py`).

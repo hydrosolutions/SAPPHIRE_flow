@@ -477,21 +477,48 @@ M-A7 to apply. **No magnitude comparison anywhere in the output.**
 data in this public repo stands regardless** — the files live in `data/` alongside the DHM workbook,
 never committed. Attribution is required on any published result.
 
-**Library CODE COMPLETE 2026-08-18 (Plan 182):** the analysis library —
-`scripts/dhm_precip/circular.py` (circular hour arithmetic, including D9's "toward" as a
+**Library + runner CODE COMPLETE 2026-08-18, hardened 2026-08-18 (Plan 182 fixer round — a Codex
+diff-review pass found 4 blockers + 5 majors in the first cut, all resolved in place):** the analysis
+library — `scripts/dhm_precip/circular.py` (circular hour arithmetic, including D9's "toward" as a
 circular-distance reduction, never a signed direction), `scripts/dhm_precip/coloc_verdict.py` (the D9
-ordered-gate verdict rule, per-station + synthesis), `scripts/dhm_precip/stats_coloc.py` (D7.2 zeroing
-ablation, normalised profile, D3 common-retained-timestamp pairing and paired wet-hour fraction),
-`scripts/dhm_precip/coloc_bootstrap.py` (D5 circular bootstrap + small-sample adequacy rule),
-`scripts/dhm_precip/coloc_pairs.py` (the two-pair registry) and `scripts/dhm_precip/pyramid_loader.py`
-(Lvl1 CSV loader), composed by `scripts/dhm_precip/coloc_adjudication.py`. **Residual risk, unresolved
-at implementation time:** `data/dhm_precip/pyramid/` is gitignored and the real Zenodo files were not
-present in this workspace, so `pyramid_loader.py`'s column-name assumptions (`TIMESTAMP`, `RR`) are
-undocumented-but-typed guesses, not verified against a real file — a mismatch raises loudly
-(`PyramidSchemaMismatchError`) rather than silently misreading, and is a one-line fix once the real
-schema is confirmed. No CLI/report-writer analogous to M-A1's `run.py` exists yet — building one against
-the real files, and re-verifying `pyramid_loader.py`'s schema assumptions against them, is the follow-on
-before this milestone's Exit deliverables can actually be produced.
+ordered-gate verdict rule — now including D5's bootstrap-spread and insufficient-disjoint-data gates —
+per-station + synthesis over EXACTLY the two registered stations), `scripts/dhm_precip/stats_coloc.py`
+(D7.2 zeroing ablation, normalised profile, D3 common-retained-timestamp pairing, paired wet-hour
+fraction, and the D2 UTC->NPT reconciliation — `dhm_utc_to_npt`, applied to every DHM frame before
+anything else touches it), `scripts/dhm_precip/coloc_bootstrap.py` (D5 circular bootstrap +
+small-sample adequacy rule), `scripts/dhm_precip/coloc_pairs.py` (the two-pair registry, now also
+carrying each pair's own D5a overlap-year range) and `scripts/dhm_precip/pyramid_loader.py` (Lvl1 CSV
+loader with the D4 physical-range boundary: finite, in-range, duplicate-timestamp and timestamp-dtype
+validation), composed by `scripts/dhm_precip/coloc_adjudication.py` (pairs FIRST, then computes the
+matched-resolution ladder/Pyramid peak from the SAME paired population — never independently) and
+`scripts/dhm_precip/coloc_run.py` (the runner: both pairs, both windows, full profile tables, the exact
+two-station synthesis, and a Markdown report writer).
+
+**What the fixer round corrected** (`docs/plans/182-co-located-gauge-adjudication.md` review, 4
+blockers + 5 majors): (1) the declared UTC->NPT offset was dead configuration — DHM (UTC) and Pyramid
+(NPT) hours were compared raw; (2) the D5 disjoint-period stationarity split at year 2020 was
+structurally broken (the real DHM source record only starts 2020-01-01 — `pre` was always empty and
+`peak_hour` raised) — the default split moved to 2023 and insufficient-disjoint-data now maps to
+INDETERMINATE rather than crashing; (3) the D5 bootstrap peak-hour spread was computed but never gated
+on; (4) D9's phase peaks were computed independently per side before D3 pairing, letting hour-dependent
+masking manufacture a phase difference — now paired first; (5) `synthesize_verdict` accepted a
+duplicated or unregistered station; (6) the Pyramid loader had no physical-range boundary. See that
+plan doc's fixer-round changelog for the full list including minors.
+
+**Residual risk, still unresolved:** `data/dhm_precip/pyramid/` is gitignored and the real Zenodo files
+were not present in any workspace this plan has been implemented or fixed in, so
+`pyramid_loader.py`'s column-name assumptions (`TIMESTAMP`, `RR`) remain undocumented-but-typed guesses,
+not verified against a real file — a mismatch raises loudly (`PyramidSchemaMismatchError`) rather than
+silently misreading. `coloc_run.py`'s `main()` wires the real production DHM ingest+mask pipeline
+(`loader`, `views`, `normalise`, `observations`, `qc_mask` — the same call sequence `pipeline.py` already
+uses in production) and the real `pyramid_loader`, but this wiring has NOT been executed end-to-end
+against real data (`DHM_PRECIP_XLSX` unset in every workspace to date). `run_coloc_adjudication()`
+itself — the tested core — IS exercised end-to-end against synthetic fixtures
+(`tests/unit/scripts/test_dhm_precip_coloc_run.py`), including both pairs, both windows, and the exact
+two-station synthesis. Running the real wiring once both data sources are available, and re-verifying
+`pyramid_loader.py`'s schema assumptions against the real files, is the tracked follow-on before this
+milestone's Exit deliverables (a real H1 verdict, filed as an M-A7 correction if supported) can actually
+be produced.
 
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**

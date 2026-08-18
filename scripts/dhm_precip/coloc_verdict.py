@@ -6,7 +6,8 @@ round-2 contradiction (a case satisfying both "refuted" and "INDETERMINATE"
 at once) and the round-2 undefined "toward" direction for antipodal peaks
 (`circular.moves_toward` never needs a signed direction).
 
-Gate 0 (adequacy, D5): small-sample or non-stationary window -> INDETERMINATE.
+Gate 0 (adequacy, D5): small-sample, insufficient disjoint-period data,
+  non-stationary window, or too-wide bootstrap peak spread -> INDETERMINATE.
 Gate 1 (matched-resolution, D7.1): DHM@matched-resolution vs Pyramid disagree
   by more than the circular threshold -> INDETERMINATE (sub-threshold counts
   are not the explanation).
@@ -25,6 +26,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from scripts.dhm_precip.circular import circ_dist_hours, moves_toward
+from scripts.dhm_precip.coloc_pairs import COLOCATED_PAIRS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -43,7 +45,9 @@ class Verdict(StrEnum):
 
 class IndeterminateReason(StrEnum):
     ADEQUACY_SMALL_SAMPLE = "adequacy_small_sample"
+    ADEQUACY_INSUFFICIENT_DISJOINT_DATA = "adequacy_insufficient_disjoint_data"
     ADEQUACY_NONSTATIONARY = "adequacy_nonstationary"
+    ADEQUACY_BOOTSTRAP_SPREAD_TOO_WIDE = "adequacy_bootstrap_spread_too_wide"
     MATCHED_RESOLUTION_DISAGREEMENT = "matched_resolution_disagreement"
     ABLATION_AMBIGUOUS = "ablation_ambiguous"
     STATION_DISAGREEMENT = "station_disagreement"
@@ -63,7 +67,24 @@ class StationVerdictInputs:
     """D5 — the overlap window's season-year count feeding the adequacy
     gate. Not the bootstrap `n_season_years` for a DIFFERENT window; the
     caller supplies whichever window it is evaluating."""
+    disjoint_period_data_sufficient: bool
+    """D5 — whether BOTH sides of `params.coloc_full_record_split_year`
+    had at least one retained profile row for this station. The real DHM
+    source record only spans 2020-2025 in its entirety, so a station whose
+    own history doesn't straddle the split (or a synthetic/partial input)
+    can legitimately fail this — the caller must set it `False` rather than
+    let peak-hour extraction raise, and gate 0 maps `False` straight to
+    INDETERMINATE, never a crash and never a silently-skipped stationarity
+    check."""
     disjoint_period_peak_diff_hours: float
+    """Only meaningful when `disjoint_period_data_sufficient` is `True` —
+    ignored otherwise (that gate fires first)."""
+    bootstrap_spread_hours: float
+    """D5 — the circular bootstrap spread of the peak hour across monsoon
+    season-years, on the SAME window `season_year_count` describes. 'If the
+    circular bootstrap spread on the peak hour exceeds ±2h, the overlap
+    window cannot support a phase verdict' — gated below, before the
+    matched-resolution comparison ever runs."""
     dhm_peak_all_hour: float
     dhm_peak_matched_resolution_hour: float
     pyramid_peak_hour: float
@@ -100,6 +121,16 @@ def evaluate_station_verdict(
             ablation_movement_hours=None,
             moved_toward_pyramid=False,
         )
+    if not inputs.disjoint_period_data_sufficient:
+        return StationVerdict(
+            station=inputs.station,
+            verdict=Verdict.INDETERMINATE,
+            reason=IndeterminateReason.ADEQUACY_INSUFFICIENT_DISJOINT_DATA,
+            gate_stopped_at="adequacy",
+            matched_resolution_diff_hours=None,
+            ablation_movement_hours=None,
+            moved_toward_pyramid=False,
+        )
     if (
         inputs.disjoint_period_peak_diff_hours
         > params.coloc_stationarity_max_circular_diff_hours
@@ -108,6 +139,16 @@ def evaluate_station_verdict(
             station=inputs.station,
             verdict=Verdict.INDETERMINATE,
             reason=IndeterminateReason.ADEQUACY_NONSTATIONARY,
+            gate_stopped_at="adequacy",
+            matched_resolution_diff_hours=None,
+            ablation_movement_hours=None,
+            moved_toward_pyramid=False,
+        )
+    if inputs.bootstrap_spread_hours > params.coloc_bootstrap_adequate_max_spread_hours:
+        return StationVerdict(
+            station=inputs.station,
+            verdict=Verdict.INDETERMINATE,
+            reason=IndeterminateReason.ADEQUACY_BOOTSTRAP_SPREAD_TOO_WIDE,
             gate_stopped_at="adequacy",
             matched_resolution_diff_hours=None,
             ablation_movement_hours=None,
@@ -163,13 +204,41 @@ class SynthesisVerdict:
     station_verdicts: tuple[StationVerdict, ...]
 
 
+class DuplicateStationVerdictError(ValueError):
+    """`synthesize_verdict` received the same station's verdict more than
+    once — a duplicated station can manufacture a decisive Group A verdict
+    while the second REQUIRED station's evidence never actually
+    contributed."""
+
+
+class UnregisteredStationVerdictError(ValueError):
+    """`synthesize_verdict` did not receive EXACTLY the two registered
+    co-located DHM stations (`coloc_pairs.COLOCATED_PAIRS`) — either an
+    unexpected station was included, or a required one is missing. D9's
+    synthesis is defined over the group's two stations, never an ad hoc
+    subset or superset."""
+
+
 def synthesize_verdict(
     station_verdicts: Sequence[StationVerdict],
 ) -> SynthesisVerdict:
     """D9 — 'Disagreement => INDETERMINATE for Group A, and the disagreement
-    is itself reported as the finding, never averaged.'"""
-    if not station_verdicts:
-        raise ValueError("synthesize_verdict requires at least one station verdict")
+    is itself reported as the finding, never averaged.' Requires EXACTLY
+    the two registered co-located DHM stations, each exactly once."""
+    stations = [v.station for v in station_verdicts]
+    if len(stations) != len(set(stations)):
+        raise DuplicateStationVerdictError(
+            f"duplicate station verdict(s) among {stations} — synthesis "
+            "requires each registered station's verdict exactly once"
+        )
+    expected = {pair.dhm_station for pair in COLOCATED_PAIRS}
+    got = set(stations)
+    if got != expected:
+        raise UnregisteredStationVerdictError(
+            f"expected exactly the registered stations {sorted(expected)}, "
+            f"got {sorted(got)} (missing {sorted(expected - got)}, "
+            f"unexpected {sorted(got - expected)})"
+        )
     verdicts = {v.verdict for v in station_verdicts}
     if len(verdicts) > 1:
         return SynthesisVerdict(
