@@ -80,6 +80,34 @@ simultaneously; state the implication only conditionally — *if both gauges are
 retained sample, half the observed pair discrepancy is a lower bound on the within-cell contribution at
 ~4.3 km*. **n = 1 pair, one valley, one separation. Never a network-wide estimate.**
 
+## D9 — TWO THINGS THE `/plan` ROUND SURFACED THAT BELONG IN THE PLAN
+
+*(A `/plan` sweep on 2026-08-18 stalled after expanding this doc from 90 to 1,235 lines and finding
+blockers mostly in apparatus it had itself invented. The expansion is reverted. **Two of its findings
+are real and are kept here**; both concern facts about the world, not about the document.)*
+
+- **D9a — M-D3's "sum vs mean" is STILL UNANSWERED, and it rescales every magnitude statistic in this
+  milestone.** DHM confirmed timestamps are period-ending and that off-grid rows are processing errors,
+  but **has not said whether the hourly value is a SUM over the hour or a MEAN of sub-hourly samples**.
+  A mean-of-samples reported as an hourly depth is wrong by a constant factor.
+  **Scope of the damage, precisely:** it moves **MAGNITUDES** — the matched-hour mean difference, the
+  conditional accumulated difference, the wet-hour intensity bias — but **not normalised SHAPE**
+  (diurnal profile, wet/dry timing, between-station profile correlation).
+  ⇒ **Every magnitude estimand in D1 is conditional on this answer.** Either report them with the
+  dependency stated on the figure, or hold them until M-D3 resolves. **Do not silently assume SUM.**
+  *(The plan's first draft omitted this dependency entirely — a real gap, not an invented one.)*
+
+- **D9b — Read the operator-sensitivity schema from the artefact, not from memory.** Verified against
+  the real published bundle (2026-08-18):
+  `scope, station, season, statistic, quantile, nearest_value, bilinear_value, delta_absolute,
+  delta_unit, ratio, n_hours_common_finite, n_hours_excluded, n_wet_nearest, n_wet_bilinear,
+  sign_agreement_fraction`
+  with **`statistic ∈ {QUANTILE, WET_MEAN_INTENSITY, WET_FREQUENCY}`** — *absolute / ratio /
+  sign-agreement are COLUMNS, not statistic values.* **`sign_agreement_fraction` is legitimately NULL**
+  on `STATION`-scope rows (it is an across-station quantity). M-A6 consumes this file for D5's
+  representativeness characterisation; a validator that requires it non-null would reject every valid
+  station row.
+
 ## Exit
 
 Error characterisation across the 26 stations: named estimands (D1) at stated scales (D3), season- and
