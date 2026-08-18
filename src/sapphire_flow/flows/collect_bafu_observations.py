@@ -1,6 +1,8 @@
-"""Collector flow for the BAFU LINDAS observation archive (Plan 136).
+"""Collector flow for the BAFU LINDAS observation archive (Plan 136; cadence
+and dedup redesigned by Plan 176).
 
-Hourly Prefect flow: fetches the WHOLE ``foen/hydro`` graph in a single
+Over-polling Prefect flow (Plan 176 D1 — schedule properties enforced at
+registration, not here): fetches the WHOLE ``foen/hydro`` graph in a single
 SPARQL request (`adapters/bafu_observation.py`), then archives both the raw
 SPARQL-results JSON payload and long-form parsed rows to a QUARANTINED
 filesystem path, keyed by BAFU gauge code + LINDAS-observed kind
@@ -14,32 +16,44 @@ never falls back to any operational path, never writes observation
 ``PipelineHealthRecord`` of run-stats *metadata* to the operational DB; see
 the note at the call site.)
 
-**Restatement-safe dedup — path-existence on a per-cycle snapshot identity.**
-Archive layout is one immutable parquet snapshot per hourly slot, named by
-``cycle_at = clock().replace(minute=0, second=0, microsecond=0)``. A retry
-within the same hour resolves to the same ``cycle_at``, finds the snapshot
-already present, and short-circuits BEFORE any network fetch (unlike the
-sibling forecast collector, ``cycle_at`` is known from the clock alone —
-no fetch is needed to determine it). A new hour writes a new snapshot.
-Restatements are preserved by construction: a corrected value simply lands
-in a later cycle's snapshot, never overwriting an earlier one.
+**Restatement-safe dedup — path-existence on a DATA-DERIVED snapshot
+identity (Plan 176 D2).** LINDAS publishes on a 10-minute grid, decoupled
+from the poll rate (D1 over-polls at ≤4 min intervals) — so the archive key
+can no longer be the clock. ``cycle_at`` is the response's MODAL
+``measurement_time`` across distinct ``(gauge_code, lindas_kind)``
+identities, truncated to the 10-minute grid — i.e. *what the data is*, not
+*when we asked*. Consequently **the flow must fetch BEFORE it can dedup**:
+the key is unknowable from the clock alone. A poll that lands on an
+already-archived slot dedup-skips the WRITE only — see D3 below. Because
+each slot is archived exactly once at first sighting, restatements are
+preserved *only when the network's modal slot has advanced* between two
+fetches (a corrected value landing with literally zero network advance is a
+known, accepted narrowing of Plan 136's original clock-keyed guarantee — see
+``TestRestatement`` in the test module).
 
-**Heartbeat + freshness (Flow 4 staleness hook).** One best-effort
-``PipelineHealthRecord`` (``check_type=BAFU_OBSERVATION_FRESHNESS``) per
-non-deduped run. Freshness is NETWORK-level (the newest ``measurement_time``
-across all archived rows), never a per-gauge minimum — a dead gauge can sit
-in the LINDAS graph for >1 year without ever going stale itself. A total
-fetch failure (HTTP error, parse/schema-drift error, a truncated fetch, or
-an empty whole-graph response) writes a **CRITICAL** heartbeat FIRST, then
-re-raises so the Prefect run is marked failed — mirroring
-``collect_bafu_forecasts.py`` but explicitly wrapping the fetch so an
-outage is never silently invisible to Flow 4.
+**Heartbeat + freshness, including on a dedup skip (Plan 176 D3).** One
+best-effort ``PipelineHealthRecord`` (``check_type=BAFU_OBSERVATION_
+FRESHNESS``) per successful fetch — dedup skip included. If a dedup skip
+were to also skip the heartbeat, a frozen graph would resolve forever to
+its existing parquet path and the staleness gate below would become
+unreachable after the first archived copy. Freshness is NETWORK-level (the
+newest ``measurement_time`` across all fetched rows, via ``max()`` — a
+different question from "which slot is this", which uses the mode), never
+a per-gauge minimum — a dead gauge can sit in the LINDAS graph for >1 year
+without ever going stale itself. A total fetch failure (HTTP error,
+parse/schema-drift error, a truncated fetch, or an empty whole-graph
+response) writes a **CRITICAL** heartbeat FIRST, then re-raises so the
+Prefect run is marked failed — mirroring ``collect_bafu_forecasts.py`` but
+explicitly wrapping the fetch so an outage is never silently invisible to
+Flow 4.
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -68,9 +82,18 @@ log = structlog.get_logger(__name__)
 # served-but-frozen LINDAS graph would otherwise report OK forever and stay
 # invisible to the watchdog (which reads only status + checked_at). The
 # collection still SUCCEEDS (the snapshot is archived, the run does not
-# re-raise). Kept aligned with ops/watchdog.py's BAFU_OBS_STALE_THRESHOLD
-# (hourly collector → ~3 missed cycles); a plain constant, NOT config.
-_STALE_MEASUREMENT_THRESHOLD = timedelta(hours=3)
+# re-raise). Plan 176 D4: re-derived from the 10-minute grid — worst-case
+# HEALTHY age is ~15 min publish lag plus one ~10-11 min publish interval
+# (~26 min); 30 min clears a healthy feed without hiding a frozen one.
+# Distinct from ops/watchdog.py's BAFU_OBS_STALE_THRESHOLD (the HEARTBEAT
+# gate, ~3 missed polls) — the two are different quantities and are no
+# longer coincidentally equal (the old "both 3h" was itself the bug D4
+# fixes). A plain constant, NOT config.
+_STALE_MEASUREMENT_THRESHOLD = timedelta(minutes=30)
+
+# Plan 176 D2: LINDAS publishes on this grid — `cycle_at` is truncated to it,
+# not to the clock hour.
+_GRID_MINUTES = 10
 
 _ROW_SCHEMA = {
     "gauge_code": pl.Utf8,
@@ -203,6 +226,35 @@ def _date_parts(cycle_at: UtcDatetime) -> tuple[str, str, str]:
     return f"{cycle_at:%Y}", f"{cycle_at:%m}", f"{cycle_at:%d}"
 
 
+def _truncate_to_grid(ts: UtcDatetime) -> UtcDatetime:
+    minute = (ts.minute // _GRID_MINUTES) * _GRID_MINUTES
+    return ensure_utc(ts.replace(minute=minute, second=0, microsecond=0))
+
+
+def _modal_cycle_at(rows: list[BafuObservationRow]) -> UtcDatetime:
+    """Plan 176 D2: the archive key is DATA-derived — the response's modal
+    ``measurement_time`` across distinct ``(gauge_code, lindas_kind)``
+    identities, truncated to the 10-minute grid. Not ``max()`` (D2's
+    robustness note): a minority gauge sitting one slot ahead of the bulk
+    must not claim the next slot's path early and strand the real bulk
+    response as a dedup-skip.
+
+    One representative timestamp per identity — the adapter groups triples
+    by subject, so every parameter row for a given (gauge_code,
+    lindas_kind) already shares one ``measurement_time``.
+    """
+    per_identity: dict[tuple[str, str], UtcDatetime] = {
+        (row.gauge_code, row.lindas_kind): row.measurement_time for row in rows
+    }
+    counts = Counter(per_identity.values())
+    max_count = max(counts.values())
+    # Tie-break: earliest timestamp among the modal candidates — the more
+    # conservative reading when two slots are equally represented (not an
+    # observed situation; see D2's robustness note).
+    modal_ts = min(ts for ts, count in counts.items() if count == max_count)
+    return _truncate_to_grid(modal_ts)
+
+
 def _parquet_path(base_path: Path, cycle_at: UtcDatetime) -> Path:
     year, month, day = _date_parts(cycle_at)
     return (
@@ -211,8 +263,14 @@ def _parquet_path(base_path: Path, cycle_at: UtcDatetime) -> Path:
 
 
 def _raw_payload_path(base_path: Path, cycle_at: UtcDatetime) -> Path:
+    # Plan 176 D6: gzipped — reverses Plan 136's "plain .json, no gzip"
+    # (decided under the hourly-cadence assumption D1 falsifies; SPARQL
+    # JSON compresses ~42x, bringing the denser 10-minute archive to
+    # ~0.58 GB/yr instead of ~12.87 GB/yr). Existing plain `.json`
+    # snapshots from before this change stay on disk, unmigrated; readers
+    # must tolerate both extensions.
     year, month, day = _date_parts(cycle_at)
-    return base_path / "raw" / year / month / day / f"{_cycle_stem(cycle_at)}.json"
+    return base_path / "raw" / year / month / day / f"{_cycle_stem(cycle_at)}.json.gz"
 
 
 def _already_archived(base_path: Path, cycle_at: UtcDatetime) -> bool:
@@ -221,11 +279,21 @@ def _already_archived(base_path: Path, cycle_at: UtcDatetime) -> bool:
     return _parquet_path(base_path, cycle_at).exists()
 
 
+def _write_gzipped_json(tmp: Path, payload: dict[str, Any]) -> None:
+    # Plan 176 D6: the gzip stream MUST close before _atomic_write's
+    # os.replace() runs, or the atomic rename can publish a truncated file.
+    # `_atomic_write` calls this function synchronously and only proceeds to
+    # the rename after it returns — the `with` block's close() happens
+    # inside that call, before that ever happens.
+    with gzip.open(tmp, "wb") as gz:
+        gz.write(json.dumps(payload).encode("utf-8"))
+
+
 def _write_raw_payload(
     base_path: Path, cycle_at: UtcDatetime, payload: dict[str, Any]
 ) -> Path:
     path = _raw_payload_path(base_path, cycle_at)
-    _atomic_write(path, lambda tmp: tmp.write_text(json.dumps(payload)))
+    _atomic_write(path, lambda tmp: _write_gzipped_json(tmp, payload))
     return path
 
 
@@ -327,7 +395,6 @@ def collect_bafu_observations_flow(
     clock_t = cast("Callable[[], UtcDatetime]", clock)
     archive_base_path = Path(_configured_path)
     run_at = clock_t()
-    cycle_at = ensure_utc(run_at.replace(minute=0, second=0, microsecond=0))
 
     _conn: object = None
     if adapter is None:
@@ -339,22 +406,13 @@ def collect_bafu_observations_flow(
     log.info(
         "bafu_observation.starting",
         archive_base_path=str(archive_base_path),
-        cycle_at=cycle_at.isoformat(),
+        run_at=run_at.isoformat(),
     )
 
     try:
-        if _already_archived(archive_base_path, cycle_at):
-            log.debug(
-                "bafu_observation.dedup_skip",
-                cycle_at=cycle_at.isoformat(),
-            )
-            return BafuObservationCollectionResult(
-                row_count=0,
-                gauge_count=0,
-                newest_measurement_time=None,
-                dedup_skipped=True,
-            )
-
+        # Plan 176 D2: the archive key is DATA-derived — it cannot be known
+        # before the fetch, so dedup can no longer short-circuit here (the
+        # old pre-fetch check is gone). Every call reaches the network.
         try:
             rows, raw_payload = _fetch_observations_task(adapter_t)
         except AdapterError as exc:
@@ -384,27 +442,15 @@ def collect_bafu_observations_flow(
             )
 
         gauge_count = len({(r.gauge_code, r.lindas_kind) for r in rows})
+        # Freshness gate uses max() — "is any part of the network fresh?" —
+        # a different question from _modal_cycle_at's "which slot is this
+        # snapshot?" (D2's robustness note).
         newest_measurement_time = ensure_utc(max(r.measurement_time for r in rows))
+        cycle_at = _modal_cycle_at(rows)
 
-        _write_raw_payload(archive_base_path, cycle_at, raw_payload)
-        # Parquet is written last and unconditionally — it is the dedup
-        # completion marker (_already_archived keys on it).
-        _write_rows_parquet(archive_base_path, cycle_at, rows)
-
-        log.info(
-            "bafu_observation.complete",
-            row_count=len(rows),
-            gauge_count=gauge_count,
-            cycle_at=cycle_at.isoformat(),
-            newest_measurement_time=newest_measurement_time.isoformat(),
-        )
-
-        # Freshness gate: a served-but-frozen graph (every gauge stale) has a
-        # NETWORK-newest measurement_time far behind run_at. That collection
-        # still SUCCEEDED — the snapshot is archived above and we do NOT
-        # re-raise — but the heartbeat must be CRITICAL so the watchdog alarms
-        # (it reads only status + checked_at, never the measurement time). A
-        # single dead gauge stays OK because network-newest is fresh.
+        # Freshness: a served-but-frozen graph (every gauge stale) has a
+        # NETWORK-newest measurement_time far behind run_at. A single dead
+        # gauge stays OK because network-newest is fresh.
         measurement_age = run_at - newest_measurement_time
         is_stale = measurement_age > _STALE_MEASUREMENT_THRESHOLD
         if is_stale:
@@ -413,6 +459,30 @@ def collect_bafu_observations_flow(
                 newest_measurement_time=newest_measurement_time.isoformat(),
                 age_seconds=measurement_age.total_seconds(),
                 threshold_seconds=_STALE_MEASUREMENT_THRESHOLD.total_seconds(),
+            )
+
+        # Plan 176 D3: a dedup skip still computes freshness and appends a
+        # heartbeat using run_at — ONLY the archive writes are skipped. If a
+        # skip also skipped the heartbeat, a frozen graph stuck on an
+        # already-archived slot would make this gate unreachable after the
+        # first archived copy.
+        dedup_skipped = _already_archived(archive_base_path, cycle_at)
+        if not dedup_skipped:
+            _write_raw_payload(archive_base_path, cycle_at, raw_payload)
+            # Parquet is written last and unconditionally — it is the dedup
+            # completion marker (_already_archived keys on it).
+            _write_rows_parquet(archive_base_path, cycle_at, rows)
+            log.info(
+                "bafu_observation.complete",
+                row_count=len(rows),
+                gauge_count=gauge_count,
+                cycle_at=cycle_at.isoformat(),
+                newest_measurement_time=newest_measurement_time.isoformat(),
+            )
+        else:
+            log.debug(
+                "bafu_observation.dedup_skip",
+                cycle_at=cycle_at.isoformat(),
             )
 
         _append_health_record(
@@ -426,6 +496,14 @@ def collect_bafu_observations_flow(
             newest_measurement_time=newest_measurement_time,
             error_type="stale_measurement_time" if is_stale else None,
         )
+
+        if dedup_skipped:
+            return BafuObservationCollectionResult(
+                row_count=0,
+                gauge_count=0,
+                newest_measurement_time=None,
+                dedup_skipped=True,
+            )
 
         return BafuObservationCollectionResult(
             row_count=len(rows),

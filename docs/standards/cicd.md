@@ -37,7 +37,7 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 | `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive | **v1** (§A2) |
 | `nwp_grids` | `/data/nwp_grids` | prefect-worker (rw, v0) | NWP Zarr archive hot tier | v0+ |
 | `bafu_forecast_archive` | `/data/bafu_forecasts` | prefect-worker (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-forecasts` deployment (Plan 111 route-C) — permanent, forward-only, gated off by default | v0 |
-| `bafu_observation_archive` | `/data/bafu_observations` | prefect-worker (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-observations` deployment (Plan 136), keyed on `(gauge_code, lindas_kind)` — permanent, forward-only, gated off by default | v0 |
+| `bafu_observation_archive` | `/data/bafu_observations` | prefect-worker (rw, v0), prefect-worker-ingest (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-observations` deployment (Plan 136), keyed on `(gauge_code, lindas_kind)` — permanent, forward-only, gated off by default. Plan 176 D5 moved the deployment's `work_pool_name` to `ingest`, so `prefect-worker-ingest` mounts it too | v0 |
 | `backups` | `/data/backups` | prefect-worker (rw) | pg_dump backup files (§A10) | v0+v1 |
 | `prefect_data` | `/data/prefect` | prefect-server | Prefect server state | v0+v1 |
 | `caddy_data` | Caddy internal | caddy | TLS certificates, OCSP staples | v0+v1 |
@@ -210,13 +210,25 @@ previous image tag, per the rule above) — `0033`'s `downgrade()` is a delibera
 rather than claiming a schema-level reversal it cannot honestly provide (the deleted
 binding rows' station set cannot be reconstructed from what remains in the database).
 
-**Ingest-worker rollback (Plan 098)** — if the combined deploy lands but `prefect-worker-ingest` then fails to start or crashes (e.g. missing `/data/artifacts` tmpfs, too-low `mem_limit`, missing `db_password`, or a wrong overlay path), `init` has already re-routed `ingest-observations` onto the `ingest` pool and the `default` worker no longer claims it, so the obs feed is **dead** until recovery. Restore the pre-098 state (LATE obs, not dead obs):
+**Ingest-worker rollback (Plan 098, extended by Plan 176)** — if the combined deploy lands but `prefect-worker-ingest` then fails to start or crashes (e.g. missing `/data/artifacts` tmpfs, too-low `mem_limit`, missing `db_password`, or a wrong overlay path), `init` has already re-routed the ingest-pool deployments and the `default` worker no longer claims them, so those feeds are **dead** until recovery.
+
+> ⚠️ **TWO deployments now live on the `ingest` pool, not one.** Plan 176 moved `collect-bafu-observations` there alongside `ingest-observations`. A rollback that reroutes only `ingest-observations` leaves the **BAFU observation collector stranded on a pool with no worker** — it will never run, and because the collector's own alerting is a *freshness heartbeat*, the symptom is a stale-heartbeat alert some time later rather than an obvious failure at rollback time. Reroute **both**, or keep `prefect-worker-ingest` running.
+
+Restore the pre-098 state (LATE obs, not dead obs):
 
 0. **Before opening the upgrade window**, tag the current image as a rollback anchor. The project ships no registry-publish workflow (see "No image publish / release workflow" below), so images are local-only — if the pre-upgrade image is pruned there is nothing to roll back to. Confirm the current tag with `docker images sapphire-flow --format "{{.Tag}}"`, then `docker tag sapphire-flow:${OLD_VERSION} sapphire-flow:rollback-backup`.
 1. `docker compose stop prefect-worker prefect-worker-ingest` — quiesce both workers.
-2. Revert `register_deployments.py` to the pre-098 routing (no `INGEST_POOL`; `ingest-observations` routes to `WORK_POOL = "default"`) and deploy the previous image — either rebuild the revert or point `VERSION` in `.env` back to the tagged `rollback-backup` / `${OLD_VERSION}` image from step 0, then `docker compose up -d`. If the revert also crosses a DB-migration boundary, follow the schema-rollback note above (restore from backup + redeploy). 098 itself ships no migration, so this applies only if 098 is bundled with a migration-carrying release.
-3. `docker compose run --rm init` — re-registers `ingest-observations` back onto the `default` pool (`init` is idempotent).
-4. `docker compose up -d prefect-worker` **without** the `prefect-worker-ingest` service — the `default` worker serves the obs feed again.
+2. **Rebuild** with `register_deployments.py` reverted to all-`default` routing (no `INGEST_POOL`; **both** `ingest-observations` **and** `collect-bafu-observations` route to `WORK_POOL = "default"`), then `docker compose up -d --build`.
+
+   > ⚠️ **Do NOT substitute "point `VERSION` back to the previous image" here.** These two are not equivalent, and the difference is what strands a feed. This emergency path exists to remove the `ingest` worker — but *every* released image from Plan 098 onward routes at least one deployment to `INGEST_POOL` (098: `ingest-observations`; 176: the collector too). Rolling back to an older image and then starting only `prefect-worker` re-creates the exact fault you are recovering from, just on a different deployment. **Image rollback is for a bad release; routing rollback is for a bad worker — they are separate procedures.** If you genuinely need both, do the image rollback first, then apply the routing patch on top and rebuild. If the revert also crosses a DB-migration boundary, follow the schema-rollback note above (restore from backup + redeploy). 098 itself ships no migration, so this applies only if 098 is bundled with a migration-carrying release.
+3. `docker compose run --rm init` — re-registers **both** `ingest-observations` and `collect-bafu-observations` back onto the `default` pool (`init` is idempotent). **Verify BOTH before stopping the ingest worker**, because a deployment left on `ingest` is silently workerless and only surfaces later as a stale-heartbeat alert:
+
+   ```
+   for d in ingest-observations collect-bafu-observations; do
+     docker compose exec -T prefect-worker prefect deployment inspect "$d/$d" | grep -i work_pool
+   done
+   ```
+4. `docker compose up -d prefect-worker` **without** the `prefect-worker-ingest` service — the `default` worker serves both feeds again. Note the archive volume: `bafu_observation_archive` must be mounted on whichever worker runs the collector, or its writes fail *after* a successful fetch (which reads as a collector bug, not a deploy one).
 
 The symmetric partial-deploy failures (Phase 1 without Phase 2 → workerless `ingest` pool; Phase 2 before the pool is created → ingest worker polls an empty pool) reduce to the same recovery: revert routing to `WORK_POOL`, re-run `init`, run only the `default` worker.
 

@@ -37,6 +37,43 @@ rather than an urgent staging fix. It should land before the DHM deployment, not
 else. Encryption (D5) keeps its own justification independent of destination: dumps carry `access_tokens` and
 `tenant_id`, and an artifact that is safe at rest is safe on any of these sinks.
 
+## 🔬 VERIFIED RESTORE PROCEDURE (2026-08-18) — the rehearsal found two real DR blockers
+
+**The backup IS restorable — proven with data**, against the live 1.1 GB artifact
+(`sapphire_20260818_081448_40ee7bc2.dump`) on the mac-mini:
+
+```
+tokens | forecasts | observations | alembic
+     1 |       206 |        83292 |    0048
+```
+
+`access_tokens` present — the table whose absence started this whole thread — and `alembic_version` matching
+production.
+
+**But the obvious path does NOT work. Two independent blockers, invisible until someone actually tried:**
+
+| Attempt | Result |
+|---|---|
+| restore into the image's default `postgres` DB | ✗ `ERROR: schema "tiger" already exists` — the PostGIS image pre-initialises `tiger`/`tiger_data`/`topology` there |
+| fresh DB, owners preserved | ✗ `ERROR: role "sapphire" does not exist` — `pg_dump` does **not** back up cluster roles, but the dump is full of `OWNER TO` / ACL statements |
+| **fresh DB + `--no-owner --no-acl`** | **✓ restored clean, content verified** |
+
+**The verified procedure — put this in the DR runbook:**
+1. `createdb` a **fresh** database (never the PostGIS image's default).
+2. `pg_restore --single-transaction --exit-on-error --no-owner --no-acl`.
+3. Run `bootstrap-roles.sh` afterwards to recreate roles and converge grants.
+
+**This is exactly what an earlier review of this plan predicted** (*"pg_dump does not back up cluster roles,
+while the dump can reference object owners and app-role ACLs"*) and which I cut from T5's small scope as "not
+needed to answer *can we restore?*". It **was** the answer. Had the mini died this week and been restored onto
+new hardware, both failures would have hit with no documented answer — the dump was always fine, the
+**procedure** was missing.
+
+⚠️ **`scripts/restore-rehearsal.sh` as merged in #180 CANNOT SUCCEED against any real dump** — it restores into
+`-d postgres` without `--no-owner --no-acl`, and discards `pg_restore`'s stderr so the reason is invisible.
+Fix required: `createdb` + the two flags + surface stderr + a multi-arch digest (the current pin is amd64 and
+runs under emulation on arm64).
+
 ## Status
 
 > **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status

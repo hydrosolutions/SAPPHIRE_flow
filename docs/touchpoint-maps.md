@@ -97,6 +97,18 @@ include them in the task context packet.
   whole registry); a past-only second branch stays constructible (Plan 151's
   shape). `supported_time_steps` is projected from the future-forced
   branch(es) only, never a past-only one
+- Plan 151 T2 (D4, `adapters/forecast_interface.py::_assert_single_future_known_product`,
+  called from `_project_requirements` per branch): a SEPARATE, per-branch
+  construction-time guard — exactly ONE non-empty `future_known` product per
+  branch, and exactly ONE `ensemble_mode` across that product's variables —
+  same `UnsupportedModelRequirementError` / registry-skip treatment as the
+  Plan 156 guard above. `past_known` products are NOT counted. Two new public
+  per-time-step accessors on `ForecastInterfaceAdapter`,
+  `future_feature_horizons(time_step)` / `future_feature_modes(time_step)`,
+  expose the SELECTED branch's per-feature future horizons/modes without the
+  `_project_requirements` max-collapse — consumed by
+  `services/track_projection.py` (Plan 151 T3), with no other caller yet
+  (T8 wires the per-track path in a later run)
 - Plan 156 (follow-up): the accepted one-future-forced-plus-past-only shape is
   only constructible, not deliverable — `_station_inputs_from_frames`
   (predict/train time) raises `UnsupportedModelRequirementError` via
@@ -830,7 +842,11 @@ for the separate Monday-publish transient this subsystem must not be confused wi
 - either LINDAS-caller cron schedule (`SCHEDULE_INGEST_OBSERVATIONS`,
   `SCHEDULE_COLLECT_BAFU_OBSERVATIONS`) in `docker-compose.yml` or
   `cli/register_deployments.py`
-- `tools/record_fixtures.py`'s BAFU path, `tests/integration/live/test_lindas_live_schema.py`
+- `tools/record_fixtures.py`'s BAFU path, `tests/integration/live/test_lindas_live_schema.py`,
+  `tests/integration/live/test_lindas_publish_lag.py` (Plan 176 T7 — extended publish-lag
+  measurement; `live_lindas_lag` marker, NOT swept by the `live_lindas` weekly workflow)
+- `cli/bafu_observation_audit.py` (Plan 176 T8) reads the archive only — it is
+  NOT a LINDAS caller and carries no limiter
 
 **Upstream inputs to inspect:**
 
@@ -862,6 +878,16 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   store/QC) → store → QC → result union of fetch + QC failures
 - the two cron defaults, each living in TWO places (compose init env + the Python
   fallback) — see the Prefect/Docker/deployment map for the general pattern
+- Plan 176 D2/D3: `collect_bafu_observations_flow`'s `cycle_at` is now DATA-derived
+  (the response's modal `measurement_time`, truncated to the 10-minute grid) —
+  the flow FETCHES BEFORE it can dedup (the key is unknowable from the clock
+  alone). A dedup skip still appends a freshness heartbeat using `run_at`; only
+  the archive WRITES are skipped (D3 — the trap inside D2)
+- Plan 176 D5: `collect-bafu-observations` now shares the `ingest` pool with
+  `ingest-observations` — this does **not** create implicit rate-limit
+  coordination between them (see "Pacing is process-local" below); it is
+  insurance against worker-side poll-cycle starvation, unrelated to the
+  schedule-separation contract this map otherwise documents
 
 **Downstream consumers to inspect when behavior changes:**
 
@@ -885,14 +911,20 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `adapters/hydro_scraper.py` (**every** public method, including
   `verify_gauge_reachable` — fixer-round hardening closed a gap where that probe
   POSTed directly), `tools/record_fixtures.py` (constructs `HydroScraperAdapter`
-  and calls `fetch_observations`), and
-  `tests/integration/live/test_lindas_live_schema.py`. A new LINDAS caller that
-  builds its own `httpx.Client` POST instead of going through one of these two
-  adapters silently re-opens the collision this subsystem exists to close.
+  and calls `fetch_observations`), `tests/integration/live/test_lindas_live_schema.py`,
+  and `tests/integration/live/test_lindas_publish_lag.py` (Plan 176 T7). A new
+  LINDAS caller that builds its own `httpx.Client` POST instead of going
+  through one of these two adapters silently re-opens the collision this
+  subsystem exists to close.
 - **Pacing is process-local, not cluster-wide.** A token bucket inside one process
   cannot enforce a shared budget across two different Prefect work-pool processes —
   cross-process safety rests on schedule separation (the two cron minutes), not on
-  the limiter. Do not treat the limiter as a substitute for schedule separation.
+  the limiter. **Still true after Plan 176 D5 moved both LINDAS-calling
+  deployments onto the SAME `ingest` pool**: `ProcessWorker` submits each flow
+  run as its own OS subprocess, so co-location on one pool does not give the
+  two deployments a shared limiter instance either — do not assume the pool
+  move bought any pacing coordination it did not have before. Do not treat
+  the limiter as a substitute for schedule separation.
 - **`Retry-After` is untrusted input.** Any change to the limiter's parsing must keep
   the clamp (`LINDAS_MAX_DELAY_S`), the floor (`LINDAS_RETRY_FLOOR_S` — a
   `Retry-After` value BELOW the floor is clamped UP, not honoured verbatim), and the

@@ -1,5 +1,5 @@
 ---
-status: READY-PENDING-RESTALENESS
+status: READY
 created: 2026-08-10
 plan: 151
 title: Forecast-cycle redesign Phase 3 — ForcingTrackKey projection + per-track resolution + per-assignment assembly (one atomic phase)
@@ -15,9 +15,36 @@ supersedes: []
 **READY — Phase 3 of the forecast-cycle redesign** (owner-ratified 2026-08-11: D26 freshness cost accepted, D31 spec
 edit approved, D21 global sweep confirmed — **no open forks remained**).
 **Staleness-corrected 2026-08-18** against `main` `c81041e` after 142 commits of drift: every `file:line` re-anchored
-and every claim re-verified. Two corrections change a ratified decision's observable consequence and are filed under
-*Open items → Requires owner re-ratification*; **status stays `READY-PENDING-RESTALENESS` until the owner re-ratifies
-those two**. Everything else was pure correction — no decision was reopened.
+and every claim re-verified. **Three** corrections change a ratified decision's observable consequence and are filed
+under *Open items → Requires owner re-ratification* (D21, D32, and — added by the 2026-08-18 independent sweep —
+`D34-atmost-guard-unreachable`). Everything else was pure correction — no decision was reopened.
+
+**OWNER RE-RATIFIED 2026-08-18 — all three settled; status returns to `READY`:**
+- **D21** — the corrected failure mode is **ACCEPTED**: a non-conforming FI model is SKIPPED at discovery with
+  `log.exception("model_discovery_unsupported_requirement")` while every other model loads. A hard abort would need a
+  separate onboarding-time check outside `discover_models()`; that is **not funded** here.
+- **D32 — option (b) CHOSEN**: accept **construct-only**. T2's red-first narrows to construction-time assertions; the
+  delivery-level assert (`adapters/forecast_interface.py:997-1021`) is **NOT** relaxed. Consequence: D2's
+  selected-branch rule stays unexercised end-to-end until Plan 153, and **T6's branch-specific past-variable /
+  `max_nan` criterion is restated against a SINGLE-branch fixture** (this unblocks the criterion marked BLOCKED at T6).
+  Option (a) was rejected: relaxing the assert imports Plan 153 multi-resolution scope into a phase whose non-goals
+  exist to exclude it.
+- **D34 — option (a) CHOSEN**: **DROP the T7 route-time `AT_MOST` guard.** The axis is unreachable twice over (FI
+  pinned at v0.1.19 has no `horizon_semantics`; and `discover_models()` hands the runner a `ForecastInterfaceAdapter`
+  that does not expose `input_requirement` at all). **Revisit trigger:** an FI bump to >= v0.1.20 **AND** a
+  per-track-eligible model declaring divergent per-variable `min_future_steps`. The per-feature `AT_MOST` limitation
+  stays RECORDED in D10a as an accepted cost. Option (b) was rejected as gold-plating a doubly-unreachable path.
+
+**Second independent Codex sweep, 2026-08-18 (after the rulings above).** A correctness/buildability pass found four
+further defects, all folded in and none reopening a decision: T1's spec-edit scope omitted two corrections that left
+the AUTHORITATIVE spec contradicting D4/D22 (mixed-mode "SPLITS" vs rejected) and D1/D12 (`nwp_source: NwpSource` vs
+`str`); T4 was assigned cadence threading it cannot perform (the resolver does not exist until T5, flow wiring is
+T8's) — **T4 adds the config field, T5 defines the parameter, T8 threads it**; four criteria labelled red-first are
+already GREEN and are now marked **regression gates**, with the preamble requiring at least one genuinely failing
+test per task; and T1's key-equality criterion was unbuildable (no horizon field exists to vary) and is now
+structural, with the behavioural half carried by T3. The same sweep independently re-confirmed D10a, the registry
+behaviour, D34, the pyright/ruff baselines, and that **no ForecastInterface anticipated-failure violation exists**.
+
 Phase 3 of the forecast-cycle redesign (`docs/design/forecast-cycle-redesign.md`, build-sequence item 3).
 This is the **one atomic phase** the redesign refuses to split: a per-`(track,station)` cycle has no coherent consumer
 while assembly is a single shared frame, so track resolution and per-assignment assembly land together. It drops the
@@ -44,14 +71,47 @@ implementation own the mechanism.
 **Citations** were carried from the reviewed drafts and spot-verified against the worktree; the confirming review pass
 re-verifies them before READY.
 
+## Build scope for THIS run — T1–T4 ONLY (2026-08-18)
+
+**This run implements T1, T2, T3 and T4 only. It does NOT implement T5, T6, T7 or T8.** Those follow in a second PR
+off the same branch. Nothing outside T1–T4 may be built, wired, or "prepared" in this run.
+
+**Why the split.** The 2026-08-18 independent sweep tested the redesign's "one atomic phase" claim and found it holds
+only for **T5–T8** — a resolved cycle has no coherent consumer until assignment-local assembly exists, and T8 cannot
+activate any proper subset of T5–T7. **T1–T4 is a separable preparation slice**: T1 adds types no production code
+consumes, T3 is a pure projector/reducer with zero production callers, and T4 adds an adapter capability no caller can
+invoke until T8. Estimated whole-phase diff is ~4,500–6,500 lines with T4 (~700–1,100) and T8 (~1,000–1,600)
+dominating — too large to review as one PR. See *Atomicity re-examined* under `## Phase dependency graph`.
+
+**The two owner rulings that change T1–T4 work** (both ratified 2026-08-18 — build to these, not to any superseded
+text elsewhere in this document):
+- **D32 = option (b), construct-only.** T2's red-first is **construction-time only**. The delivery-level assert
+  (`adapters/forecast_interface.py:997-1021`) is **NOT** relaxed. Do not attempt end-to-end delivery of a
+  future-forced + past-only model — that is Plan 153.
+- **D34 = option (a), guard DROPPED.** The T7 route-time `AT_MOST` guard is **not built**. It belongs to the second
+  run in any case, but do not add T1–T4 scaffolding for it either. The limitation stays recorded in D10a.
+
+**Honest carry-over — what T1–T4 leaves in the tree.** T1's types, T3's reducer and T4's `fetch_requirement` have
+**no production caller** at the end of this run. That is the point of the slice, not an oversight. `pyright` and
+`ruff` must still pass, and dead-code lints must **not** be silenced to accommodate them. T2 is the ONE part of this
+slice that is **globally live** — its conformance sweep runs at every FI adapter construction reached by
+`discover_models()`, for all four FI entry points including legacy-path and GROUP-only models. That is the single
+real regression risk in this run, and T2's gate carries it.
+
+**Exit gate for this run:** the per-task gate below applied to T1–T4, plus the whole-repo gate — `uv run pytest -q` at
+`passed >= 4181` with no baseline test regressing, `pyright` ≤ 432 over `src/` via the ratchet, and `ruff check` with
+no new findings beyond the 12 pre-existing `E501`s. **Hold at PR — do not merge.**
+
 ## Review scope — staleness confirmation only (2026-08-18)
 **This round is a staleness confirmation, not a design review.** The only question a reviewer answers is: *what in this
 plan is now wrong because `main` moved 142 commits?* Not whether the design is the right one.
 
-- The design was **owner-ratified 2026-08-11 and has no open forks**, except the two filed under *Open items →
-  Requires owner re-ratification* (D21's corrected sweep failure mode, and `D32-multibranch-delivery`). Those two are
-  **the owner's to settle, not a reviewer's**. Do not propose answers to them as findings.
-- **D1–D31 are settled. Do not reopen, re-argue, or "strengthen" them.** A finding that reduces to preferring a
+- The design was **owner-ratified 2026-08-11 and has no open forks**, except the three filed under *Open items →
+  Requires owner re-ratification* (D21's corrected sweep failure mode, `D32-multibranch-delivery`, and
+  `D34-atmost-guard-unreachable`). Those three are **the owner's to settle, not a reviewer's**. Do not propose answers
+  to them as findings.
+- **D1–D31 are settled, as are D33 and the D10a coverage rule. Do not reopen, re-argue, or "strengthen" them.**
+  (D21 / D32 / D34 are the owner's three open items above — the ONLY unsettled decisions in this document.) A finding that reduces to preferring a
   different design is out of scope by construction.
 - The **atomic 8-task phase shape**, the **phase dependency graph**, and every **Non-goal** are **fixed for this round**.
 - **In-scope findings are exactly these five:** (1) a `file:line` citation that is still wrong; (2) a factual claim
@@ -59,7 +119,9 @@ plan is now wrong because `main` moved 142 commits?* Not whether the design is t
   (a false red-first); (4) an exit gate that cannot pass; (5) a collision with work that landed since 2026-08-11.
   Anything else is out of scope.
 - **Proportionality rule — growth is a defect signal.** This document is a deliberate reconstruction after two `/plan`
-  runs over-expanded it (999 → 1316 → 1940 lines) by re-litigating settled design. It is now ~757 lines. A reviewer
+  runs over-expanded it (999 → 1316 → 1940 lines) by re-litigating settled design. It is now ~1035 lines, having
+  absorbed four verified correction rounds (staleness re-anchoring, the `plan` loop, and two independent Codex
+  sweeps); growth beyond that is a defect signal. A reviewer
   proposing net-new scope, new tasks, or new decisions has mis-scoped the round; so has a round that ends longer than
   it began by more than the corrections require.
 
@@ -88,9 +150,11 @@ plan is now wrong because `main` moved 142 commits?* Not whether the design is t
    the locked one-cycle-per-track contract (`docs/spec/types-and-protocols.md:3289-3294,3313-3316`); see D26 for the
    reversal and its cost.
 4. **Walk-back cadence comes from configuration, not a third Protocol member** — the more proportional choice given
-   the plan's own precedent for config-threaded policy inputs. **No such field exists today**, so T4 **adds and
-   validates** `RecapGatewayConfig.cycle_cadence_hours` (`config/recap_gateway.py`) and threads it into the `services/`
-   resolver on **both** construction branches, exactly as `max_cycle_age_hours` is threaded. The earlier
+   the plan's own precedent for config-threaded policy inputs. **No such field exists today**, so **T4 adds and
+   validates** `RecapGatewayConfig.cycle_cadence_hours` (`config/recap_gateway.py`); **T5** defines the `services/`
+   resolver parameter that consumes it, and **T8** threads it on **both** construction branches, exactly as
+   `max_cycle_age_hours` is threaded. *(Task split corrected 2026-08-18 — the ruling itself, cadence-from-configuration
+   rather than a third Protocol member, is unchanged and NOT reopened.)* The earlier
    "the adapter already carries the constant it needs" phrasing was **withdrawn** — the adapter's private constant is
    not a contract, and "configuration" and "adapter constant" cannot both be the source. See D24.
 
@@ -110,9 +174,12 @@ station, and enforces **no** exact ensemble membership.
      for the **selected** branch, in both the NaN-tolerance gate and `InputSeries` construction.
    - *Consumption-side (runner) collapse.* Even with per-feature fetch and per-assignment assembly, `_run_single_model`
      re-derives its forcing decisions from the globally collapsed `ModelDataRequirements`: coverage from the single
-     `forecast_horizon_steps` (`services/run_station_forecast.py:173-188`), fan-out from the global mode (`:250-252`),
-     and the whole `future_dynamic_features` set to `fan_out_ensemble` (`:295`). Phase 3 therefore carries the per-feature
-     contract into the runner (D10).
+     `forecast_horizon_steps` (`services/run_station_forecast.py:173-188`), fan-out mode (`:250-252`), and the whole
+     `future_dynamic_features` set to `fan_out_ensemble` (`:295`). The **horizon** axis is the one that actually bites:
+     `assess_future_coverage` takes ONE `required_steps: int` and demands EVERY required feature reach it
+     (`services/nwp_coverage.py:75-81,128-150`), so "precip 2 steps + temp 10 steps" is rejected
+     `INSUFFICIENT_COVERAGE` (`run_station_forecast.py:199`) even after T3/T6 fix the first two collapses. Phase 3
+     therefore carries the per-feature contract into the runner — stated as a rule in **D10a** and built in **T7**.
 
 2. **One assembly / one shared cycle per station.** `assemble_station_operational_inputs`
    (`services/operational_inputs.py:385`) reads NWP for one `cycle_time` (`:494`) and produces one frame for every
@@ -157,7 +224,8 @@ regardless, since removing the superset path leaves MeteoSwiss with no assembly 
   **per station** (against the track's `fetch_horizons` max) **before** any persist, committing only the complete
   stations, then persisting, reading back, and mapping per-station availability.
 - **Per-assignment assembly** from the track's available records, with the FI per-variable, per-time-step slice.
-- The **runner consumption seam** via a discriminated input, plus a per-feature forcing contract on `ReadyContext`.
+- The **runner consumption seam** via a discriminated input, plus a per-feature forcing contract on `ReadyContext`
+  that the runner actually consumes for coverage, ensemble dispatch, and fan-out (D10a).
 - **Fail-loud cross-cycle combination** as a preflight before any per-station write.
 - **CONTROL-only stays green** via `isinstance` dispatch; homogeneous control output is pinned by golden tests.
 
@@ -255,11 +323,21 @@ chain** — it never darkens the station.
     `ABSENT_INCOMPLETE` for a payload in which **no** in-scope station is complete (D8) — `fetch_requirement` returns
     whatever each HRU yielded, per station, without judging it; the completeness verdict is the services-side gate's
     job (D8), never the adapter's.
-    - **Two `fetch_forecasts` behaviours the plan did not model; T4 must decide each for `fetch_requirement`:** (a) the
-      **uncontained** `AdapterError` at `:923-935` for a mixed/PF-only HRU (Plan 154's control-coverage gate) — keep the
-      fail-loud or route it per-station? (b) the total-loss re-raise at `:986-1000` (`RecapDataUnavailableError`,
-      `code="source_data_missing"`, chaining `__cause__`) versus the plain `{}` at `:1004` for the
-      all-well-formed-empty case — both must map onto the candidate taxonomy.
+    - **Three `fetch_forecasts` behaviours mapped onto the candidate taxonomy — LOCKED HERE, not left for T4 to decide**
+      (2026-08-18; leaving them open risked softening Plan 154's malformed-payload guard mid-build). Current behaviour is
+      precise and the mapping preserves it; `file:line` re-anchored at the same time:
+      - **Malformed partial-control payload** — the **uncontained** `AdapterError` (`recap_gateway.py:927-935`: some
+        variables returned control rows while others returned a well-formed EMPTY response in the *same* cycle, Plan
+        154's control-coverage gate) → **candidate-FATAL**. This is a data-**integrity** fault, not a gap, so it is
+        **not** walk-back eligible: walking back would silently paper over a malformed source response and erode the
+        very guard Plan 154 added. Fail loud, exactly as today.
+      - **Total loss after contained per-HRU failures** — the re-raised `RecapDataUnavailableError` (`:974-1000`,
+        `code="source_data_missing"`, chaining `__cause__`) → **walk-back-eligible absence** (`ABSENT_INCOMPLETE`).
+      - **All responses well-formed but empty** — the plain `{}` (`:1002`) → **walk-back-eligible absence**
+        (`ABSENT_INCOMPLETE`) as well.
+      The last two share a candidate status but must stay **tellable apart**: `nwp.candidate_rejected` carries distinct
+      diagnostics for "every in-scope HRU failed" (including the chained Gateway text) versus "every response was
+      well-formed empty", so an operator can still separate a source outage from a genuinely empty cycle.
   - **Missing polygon column = per-station unavailability on the per-track path; the legacy path is unchanged**
     (reviewer blocker-fix, decided here rather than deferred). Today `_iter_long_rows` raises one **batch-wide**
     `AdapterError` when any resolved polygon lacks a response column (`recap_gateway.py:511-526`). That fail-loud
@@ -282,7 +360,8 @@ chain** — it never darkens the station.
     containment survives Plan 154 intact (`recap_gateway.py:886-906`).
     Phase A is therefore re-scoped to exclude stations served by the per-track path, while still covering group-member
     stations, so an unvalidated partial candidate can never land in Postgres for a migrated station.
-- **D8 — Completeness is a PER-STATION predicate; the candidate verdict is derived from it.** Two gates that must not
+- **D8 (completeness) — Completeness is a PER-STATION predicate; the candidate verdict is derived from it** (distinct
+  from the ledger's `D8-group`, which is a routing decision). Two gates that must not
   be conflated, plus the rule that reconciles them.
   1. **Raw completeness — evaluated per `(station, feature, member, horizon)`.** For the pre-extracted recap path the
      candidate is already a `dict[StationId, WeatherForecastResult]` accumulated per HRU
@@ -346,10 +425,70 @@ chain** — it never darkens the station.
   `ModelRunContext` plus the assignment's own `ForecastProvenance`, and writes each `OperationalForecast`'s cycle
   fields from **that** provenance rather than the shared runner arguments (`run_station_forecast.py:145-146,:400-401`).
   A pre-run defensive assert re-checks the expected member set over the assembled frame.
-  - **The runner's horizon read now goes through a seam.** Plan 159 T0d interposed `resolve_required_steps(...)`
-    (`services/horizon_semantics.py`) at `run_station_forecast.py:177-182`, between the requirement declaration and
-    `assess_future_coverage` (`:183-188`). The runner still re-derives from the collapsed `ModelDataRequirements`, but
-    the per-feature contract must route **through** that seam, not around it by reading the requirement directly.
+  - **D10a — on the `ReadyContext` route the runner's forcing reads come from the CONTRACT, not
+    `ModelDataRequirements`** (reviewer major-fix, 2026-08-18; the Problem section promised this and neither D10 nor T7
+    previously said it, so T8's own heterogeneous golden would have failed with no task assigned to fix it).
+    - **Horizon — the axis that actually diverges.** `assess_future_coverage` takes ONE `required_steps: int` and
+      requires **every** required feature to reach it (`services/nwp_coverage.py:75-81,128-150`), and `RequiredSteps`
+      carries a single `steps: int` with no per-feature dimension (`services/horizon_semantics.py:51`). A heterogeneous
+      assignment — T6's own "precip 2 steps + temp 10 steps" red-first — would assemble correctly and then be rejected
+      `INSUFFICIENT_COVERAGE` (`run_station_forecast.py:183-188,:199`) on the short feature, silently defeating the two
+      collapses T3/T6 just fixed.
+    - **Mechanism — the Plan 159 seam is called ONCE PER ASSIGNMENT, unchanged; the per-feature split happens AFTER it.**
+      `resolve_required_steps` is **not** per-feature: it takes `(model, model_id, declared_steps, *, opt_in)`
+      (`horizon_semantics.py:119-125`) and delegates to `_model_declared_floor(model)` (`:74-117`), whose signature takes
+      **only the model** — it walks the model's entire `input_requirement.dynamic` tree (spatial → spec → `future_known`
+      source → variable) and returns ONE scalar, "The binding floor across variables is the LARGEST" (`:114-115`). Calling
+      it per feature would reuse that same model-wide floor every time, varying only `declared_steps`. **So:** call it
+      **once per assignment**, exactly as today (`run_station_forecast.py:177-182`), for the resolved ceiling; then call
+      `assess_future_coverage` **per feature** with `required_features=frozenset({f})` and `required_steps=min(ceiling,
+      the contract's horizon for f)`. That fixes the "precip 2 / temp 10" collapse with **no signature change** to
+      `horizon_semantics.py` or `nwp_coverage.py` — neither joins the touched set — and without claiming per-feature
+      precision the seam cannot provide.
+    - **Accepted cost (parallel to the member-set cost below): per-feature `AT_MOST` floors are NOT expressible through
+      this seam.** Every feature shares the model-wide **maximum** floor, so `min(max floor, f's horizon)` ≠ `min(f's own
+      floor, f's horizon)` whenever another variable's floor dominates. **The `AT_MOST` axis is dead TWICE OVER — two
+      INDEPENDENT structural reasons, both verified 2026-08-18 — and the second of them is what makes T7's guard
+      unimplementable as it was first written:**
+      - **(a) The pinned FI has no such field at all.** `pyproject.toml:104` pins ForecastInterface **v0.1.19**, and the
+        installed package contains neither `horizon_semantics` nor `min_future_steps` (grepped: zero hits). Every
+        variable the walk reaches therefore hits the "not declared" branch and `_model_declared_floor` returns `None`
+        for every model (`services/horizon_semantics.py:103-106`).
+      - **(b) The model the runner holds is the ADAPTER, which does not expose `input_requirement`.**
+        `discover_models()` **always** wraps an FI model in `ForecastInterfaceAdapter`
+        (`services/model_registry.py:92-114`); the adapter keeps the raw model private as `self._model`
+        (`adapters/forecast_interface.py:450`) and has **no `__getattr__` passthrough** — its own `config_hash`
+        docstring records that as a deliberate choice (`:462-473`). `_model_declared_floor` reads
+        `getattr(model, "input_requirement", None)` (`horizon_semantics.py:85`), so it returns `None` on its very first
+        line for every discovered FI model. **Confirmed at runtime:** `discover_models()` yields
+        `ForecastInterfaceAdapter` for `nwp_regression`, `nwp_rainfall_runoff`, `seasonal_precip_runoff_regression` and
+        `cmal_pool_pt`, and `hasattr(m, "input_requirement")` is **False** for every one.
+        **Consequence for any guard:** a route-time check that reads divergent per-variable floors off the model can
+        never observe them in production. A guard tested against a **raw** FI fake would pass while the
+        production-shaped adapter route never sees a divergent floor — a test that proves nothing. Reaching into
+        `self._model` from the runner is not an escape: it violates the single-FI-boundary rule
+        (`CLAUDE.md` § ForecastInterface Adherence).
+      A third, weaker observation still holds but is *not* a separate deadness: the only in-repo ceiling declaration is
+      the **model-keyed** opt-in `HORIZON_CEILING_FLOORS` (`types/ids.py:69-71`), inherently model-wide, whose one entry
+      `cmal_pool_pt` is `ArtifactScope.GROUP` (`models/aquacast/_shim.py:566`) and is excluded from this route by
+      D8-group / D30. **The trap is real but doubly unreachable:** an FI bump to ≥ v0.1.20 with divergent per-variable
+      `min_future_steps` would silently give a short feature a floor it never declared, and T2's D4 sweep does **not**
+      reject divergent floors — but such a model would ALSO have to defeat (b) before any guard could see it. Whether
+      Phase 3 funds a guard at all is **`D34-atmost-guard-unreachable`** (*Open items → Requires owner
+      re-ratification*) and is **not decided here**.
+    - **Mode and feature set do NOT diverge today — recorded, not assumed.** Post-Plan-156 at most one time-step branch
+      may carry `future_known` (`adapters/forecast_interface.py:487-497`), and both `future_dynamic_features` and the
+      OR-ed `ensemble_mode` accumulate **only** from `spec.future_known` (`:512-515`, mode built `:579-581`) — so both
+      already equal the SELECTED branch's values, and neither is a live collapse (a non-FI model declares them directly,
+      `types/model.py:271,275,277`, and D2 broadcasts its scalar). They are nevertheless read from the contract on this
+      route: it is one substitution at each of two call sites (`:250-252`, `:291-295`) and it removes the coupling that
+      would silently reintroduce the divergence the moment **D32-multibranch-delivery** relaxes the
+      single-deliverable-branch assert. T7 pins this as a **no-behaviour-delta equality**, not a behaviour change.
+    - **Cost (recorded, not hidden):** called per feature, `assess_future_coverage`'s cross-feature "identical member
+      set across features" check (`nwp_coverage.py:116-126`) no longer fires on this route. Not a loss of strength:
+      T5's per-station exact-`expected_member_ids` gate (D8) is strictly stronger and runs **before** persist, and the
+      pre-run defensive member-set assert above re-checks the assembled frame. The **legacy route keeps the single
+      scalar call verbatim** — that is what the T7 legacy red-first pins.
   - **Legacy vs per-track dispatch needs an explicit discriminant.** A legacy NWP context must not be forced to choose
     between carrying a per-feature contract it never built and skipping coverage entirely. The runner-boundary type
     discriminates the two routes explicitly rather than inferring the route from an empty contract.
@@ -374,19 +513,38 @@ chain** — it never darkens the station.
   for fallback, member-level at DEBUG (`docs/standards/logging.md`).
 
 ## Phases
-The phase lands **atomically**, but the tree stays green at every task gate because the per-track path is dormant
-behind the `isinstance` dispatch until the final wiring task. Every task is **red-first**: the acceptance test is
-written to fail against pre-task code, then the implementation turns it green, and test soundness is proven. Each task
+The phase lands **atomically**, and the tree stays green at every task gate — but **not** because the whole phase is
+dormant behind the `isinstance` dispatch until the final wiring task. That blanket claim was too broad; corrected
+2026-08-18, per task: **T1 / T3 / T4 / T5 are genuinely unused** until T8 wires them. **T2 is globally LIVE the moment
+it lands** — its conformance sweep runs inside *every* `ForecastInterfaceAdapter` construction
+(`adapters/forecast_interface.py:443-453`), which `discover_models()` reaches repo-wide, including for legacy-path and
+GROUP-only FI models, before any dispatch exists. **T6 is globally LIVE too** — its FI per-variable slicing changes the
+shared `predict` / `predict_batch` paths (`:646-718`, `:750-824`), which every route uses. **T7** preserves the legacy
+route explicitly (the scalar `assess_future_coverage` call, byte-for-byte). **T8** activates per-track routing.
+**The safety CONCLUSION is unchanged — control-only stays green at every task gate — but it rests on two facts, not on
+unreachability, and this plan says so explicitly:** (i) every current FI entry point *conforms* to T2's sweep (the four
+of `pyproject.toml:165-175`, per D21's standing check), and (ii) every current model's per-variable horizons are
+*uniform*, so T6's slice is a no-behaviour-delta on them. Every task must carry **at least one separately named
+acceptance test that genuinely FAILS against pre-task code**, which the implementation then turns green, with test
+soundness proven. **A preservation / regression gate does NOT satisfy that requirement** (corrected 2026-08-18 — the
+blanket "every criterion is red-first" claim was false): several criteria below are explicitly labelled *REGRESSION
+gate, EXPECTED to stay GREEN* — T2's multi-spatial guard, T4's legacy `fetch_forecasts` behaviour, T7's legacy ENSEMBLE
+caller, and T8's same-cycle / trackless / group-only / legacy-adapter cases. They prove nothing was **broken**, not that
+anything new was **built**, and are named as such rather than counted toward the red-first requirement. T3, T5 and T6
+carry no already-green criteria. Each task
 lands its production change **and its test consumers together** — no task leaves a known failure. **Per-task exit gate
 (corrected 2026-08-18 — it is "no NEW findings versus a pinned baseline", never "clean"):** the focused modules, plus
-full `uv run pytest -q` still green at the pinned counts; `pyright` gated by `tools/pyright_ratchet.py` against
+full `uv run pytest -q` green at **`passed >= 4181` with NO baseline test regressing** — every task is red-first and
+adds tests, so the total is **expected to rise**; the measured baseline below is a **floor, not an equality**, and a
+gate demanding `== 4181` would fail on the first new passing test; `pyright` gated by `tools/pyright_ratchet.py` against
 `tools/pyright_baseline.json` **scoped to `src/`** (pre-push hook `pyright-ratchet`, `.pre-commit-config.yaml:61-69`),
 which must not exceed the pinned **432** — a task that legitimately reduces it regenerates the baseline via
 `tools/pyright_baseline.py` in that task's own commit; and `uv run ruff check` introducing **no new findings** beyond
 the 12 pre-existing ones already on `main`.
 
 **Measured baseline (2026-08-18, `main` `c81041e`, before any Phase 3 work):** `uv run pytest -q` = **4181 passed,
-15 skipped, 11 deselected**; `uv run pyright` over `src/` = **exactly 432**, i.e. precisely AT the ratchet, not above it
+15 skipped, 11 deselected** — the RECORD of what was measured, and the **floor** the gate above compares against, never
+an equality target; `uv run pyright` over `src/` = **exactly 432**, i.e. precisely AT the ratchet, not above it
 (bare `uv run pyright` also reports 432 — zero is *not* the gate); `uv run ruff check` **exits 1** with 12 pre-existing
 `E501 Line too long` findings, all in `alembic/versions/0037_calculated_station_formulas.py` (4) and
 `alembic/versions/0038_calculated_station_formula_trigger.py` (8) — outside `src/`, unrelated to Phase 3. Stated so a
@@ -402,12 +560,24 @@ burning fixer rounds reformatting alembic migrations.
     members, the per-`(station, feature, member, horizon)` wording of the completeness gate (`:3289-3294`,
     `:3308-3311`), the `OutputHorizon` deferral, **and the `fetch_requirement` return-type change from
     `CandidateFetchResult` to the raw fetch outcome (`:3210-3213`, `:3318-3324`), with `CandidateFetchResult`
-    constructed services-side (D31)** — so READY ratifies these authoritative contract changes rather than deferring
-    them. **`TrackFetchResult` keeps its single `resolved_cycle` field unchanged** (`:3313-3316`): Phase 3 does **not**
+    constructed services-side (D31)**; **the mixed-mode granularity note (`:3245`), rewritten from "a mixed-mode
+    requirement SPLITS into per-mode `ForcingRequired`" to: a mixed-mode requirement is REJECTED at construction,
+    raising `UnsupportedModelRequirementError` (D4 as corrected; and D22 — exactly ONE forcing track per assignment, so
+    splitting is a follow-on, not this contract)**; **and `ForcingTrackKey.nwp_source` (`:3256`), retyped from
+    `NwpSource  # existing NewType/enum` to the repo's existing `str` — no `NwpSource` type exists
+    (`types/station.py:106`; D1, D12)** — so READY ratifies these authoritative contract changes rather than deferring
+    them. Those last two correct an AUTHORITATIVE spec that today contradicts a settled decision; neither reopens the
+    decision (added 2026-08-18 — they were previously owned by no task). **`TrackFetchResult` keeps its single `resolved_cycle` field unchanged** (`:3313-3316`): Phase 3 does **not**
     introduce a per-assignment or per-horizon-class cycle (D5, D26).
   - **Red-first:** `FutureSteps(value=0)` and `value=-1` raise `ValueError`; `ForcingTrackKey` is hashable and usable
-    as a dict key, with keys built from differently-ordered inputs comparing and hashing equal; two keys differing only
-    in per-feature horizon values are equal (horizons are not in the dedup identity); keys differing in one feature
+    as a dict key, with keys built from differently-ordered inputs comparing and hashing equal; the key carries **no
+    horizon field at all** — asserted **structurally** (its fields are exactly the five ratified ones: `nwp_source`,
+    `ensemble_mode`, `time_step`, `spatial_representation`, `features`, and no horizon-valued attribute exists), because
+    D1 excludes horizons from `ForcingTrackKey` entirely, so "two keys differing only in horizon" is not constructible
+    at T1's own abstraction boundary (corrected 2026-08-18; the **behavioural** half — that two requirements differing
+    only in per-feature horizons project to the SAME key and dedup onto one `ResolvedTrackRequest` — belongs to **T3**,
+    which owns the projector and reducer, and is already covered by T3's dedup criterion: cross-referenced here, not
+    duplicated); keys differing in one feature
     name, mode, `time_step`, or spatial representation are not equal; the outcome and projection unions narrow via
     `isinstance`/`match`; the two new enum members exist and are distinct.
 
@@ -427,23 +597,34 @@ burning fixer rounds reformatting alembic migrations.
     owner's answer there; a **past-only branch** exposes empty future horizons and does
     **not** raise from a mode accessor; multi-product and mixed-mode branches raise
     `UnsupportedModelRequirementError`; the existing multi-spatial guard is unchanged (it now raises that same type
-    since Plan 156, `forecast_interface.py:539`).
+    since Plan 156, `forecast_interface.py:539`) — that last one is a **REGRESSION gate, EXPECTED to stay GREEN**: it
+    already raises `UnsupportedModelRequirementError` (`adapters/forecast_interface.py:537`) with a passing test at
+    `tests/unit/adapters/test_forecast_interface_adapter.py:235`, so it proves T2 broke nothing and is **not** one of
+    T2's genuinely failing tests.
 
 - **T3 — Track projection + `resolve_tracks()` (D2, D5).**
   - **In scope:** the pure `services/` projector over the explicit join, and the deterministic reducer.
   - **Red-first:** the projector maps a join to `ForcingRequired` with per-feature horizons and the locked key shape; a
     model whose **selected branch** has no `future_known` projects to `NoForcingRequired` **even when another branch
     has future forcing**; a fallback model projects to `NoForcingRequired`; a non-FI multi-feature model broadcasts its
-    scalar horizon to every feature; two assignments with identical track fields dedup to one `ResolvedTrackRequest`
-    whose `fetch_horizons` is the per-feature max, with each assignment's own horizons retained; reducer output order
+    scalar horizon to every feature; two assignments with identical track fields **but DIFFERENT per-feature horizons**
+    project to the same `ForcingTrackKey` and dedup to one `ResolvedTrackRequest`
+    whose `fetch_horizons` is the per-feature max, with each assignment's own horizons retained — this criterion
+    **already covered the dedup case**; the horizon divergence is made explicit here so that it carries the behavioural
+    half of T1's key-equality assertion (A4), with no new criterion added; reducer output order
     is deterministic.
 
 - **T4 — Source contract + adapter migration (D6, D7 containment).**
   - **In scope:** `CandidateAwareForecastSource` (`@runtime_checkable`) in `protocols/adapters.py`;
     `fetch_requirement` + `expected_member_ids` on `recap_gateway` as a **pure single-cycle** fetch with **no** internal
     walk-back and **per-HRU containment**; wire the adapter factory's return type for dispatch. **Add and validate
-    `RecapGatewayConfig.cycle_cadence_hours`** (the walk-back cadence source, ruling 4 / D24) and thread it alongside
-    `max_cycle_age_hours` on both construction branches. Legacy adapters and fakes untouched.
+    `RecapGatewayConfig.cycle_cadence_hours`** (the walk-back cadence source, ruling 4 / D24) — **the configuration
+    field ONLY**. **Threading it is NOT T4's** (corrected 2026-08-18): D7 puts the walk-back resolver in `services/`,
+    **T5** creates that resolver and defines the cadence parameter that consumes the value, and **T8** owns flow
+    integration and therefore threads the configured cadence through both construction branches. Today those two
+    branches only construct and return the adapter (`flows/run_forecast_cycle.py:465-478`), so T4 cannot thread a bound
+    into a resolver that does not exist yet — and parking the policy on the adapter instead would violate D7.
+    Legacy adapters and fakes untouched.
   - **Ownership: the adapter classifies TRANSPORT, the service classifies COMPLETENESS** (reviewer major-fix). The
     spec sketches `fetch_requirement -> CandidateFetchResult`, but the adapter must not judge completeness (D7/D8) —
     it cannot, since the threshold is a `services/`-side `ResolvedTrackRequest.fetch_horizons`. `fetch_requirement`
@@ -462,13 +643,22 @@ burning fixer rounds reformatting alembic migrations.
     batch-wide, `recap_gateway.py:511-526`); **a duplicate-polygon misconfiguration still raises
     `RecapConfigurationError` naming both stations with ZERO Gateway calls** — the D27 regression proving a config
     error was not silently downgraded into per-station containment (mirrors
-    `tests/unit/adapters/test_recap_gateway.py:644`); a transport failure is **raised** rather than returned as a
-    status; an auth/config error is fatal, never walked back. Legacy `fetch_forecasts` behaviour is asserted
-    **unchanged** throughout.
+    `tests/unit/adapters/test_recap_gateway.py:644`); **a MALFORMED partial-control payload
+    (Plan 154's control-coverage gate, `recap_gateway.py:927-935`) is candidate-FATAL and does NOT become
+    walk-back-eligible** — the resolver must not try an older cycle after it (D7's locked mapping); a transport failure
+    is **raised** rather than returned as a status; an auth/config error is fatal, never walked back;
+    **`cycle_cadence_hours` parses and validates** — a valid value round-trips through the parsed `RecapGatewayConfig`
+    and a non-positive / malformed value is rejected with the typed configuration error; this fails today because the
+    field does not exist (`config/recap_gateway.py:29`). **T4 asserts CONFIG PARSING AND VALIDATION ONLY — never
+    threading**, since the consumer (T5's resolver) and the wiring (T8) are both outside this task. Legacy
+    `fetch_forecasts` behaviour is asserted **unchanged** throughout — that one is a **REGRESSION gate, EXPECTED to
+    stay GREEN**, already covered by the legacy regression tests from `tests/unit/adapters/test_recap_gateway.py:2318`;
+    it proves T4 broke nothing and is **not** one of T4's genuinely failing tests.
 
 - **T5 — Per-track resolution: walk-back policy + completeness + `TrackFetchResult` (D7, D8).**
   - **In scope:** the pure fetch/validate half (walk-back bounded by `max_cycle_age_hours` threaded on **both**
-    construction branches; the **per-station** completeness validator keyed on `expected_member_ids` and on the track's
+    construction branches, plus the **cadence parameter that consumes T4's `RecapGatewayConfig.cycle_cadence_hours`** —
+    T5 defines the parameter, T8 supplies the value; the **per-station** completeness validator keyed on `expected_member_ids` and on the track's
     `fetch_horizons` max, plus the candidate verdict derived from the per-station verdicts) and the serial convergence
     half (persist **only complete stations**, readback, per-station availability, complete `TrackFetchResult`). Name the
     conversion boundary between the candidate payload and the records the validator reads — there are now **two**
@@ -495,15 +685,40 @@ burning fixer rounds reformatting alembic migrations.
   - **Red-first:** an assignment needing precip 2 steps and temp 10 assembles a frame where precip's short horizon is
     accepted and temp gets 10 — **fails** under the single-scalar path. Because the NaN gate and `InputSeries`
     construction are separate paths, assert **each site independently**. A branch-specific past variable and a
-    branch-specific `max_nan` are honoured from the selected branch only. `ReadyContext.nwp_age_hours` differs between
-    a fresh and an older-resolved assignment. **T6 asserts `ReadyContext` only** — `ModelRunContext` is not constructed
+    branch-specific `max_nan` are honoured from the selected branch only — **this criterion is BLOCKED pending
+    `D32-multibranch-delivery`**: every delivery entry point rejects any >1-dynamic-branch requirement
+    (`adapters/forecast_interface.py:997-1021`), so as written it either fails its own red-first or expands into the
+    deferred multi-resolution non-goal. Under D32 option (b) it must be restated against a **single-branch** fixture.
+    The criterion is deliberately left unrewritten here — the owner has not ruled on D32.
+    `ReadyContext.nwp_age_hours` differs between a fresh and an older-resolved assignment. **T6 asserts `ReadyContext` only** — `ModelRunContext` is not constructed
     until `_run_single_model` (`run_station_forecast.py:239`), which T7 owns.
 
 - **T7 — Runner consumption seam (D10).**
   - **In scope:** resolve the two pre-run arms in `run_all_station_forecasts` before `_run_single_model`; the
     discriminated `AssignmentRunInput` with an explicit legacy-vs-per-track discriminant; migrate `_run_single_model`
     to receive its context and write provenance from it; the pre-run defensive member-set assert; keep the fallback
-    chain and the Plan 150 backstop intact.
+    chain and the Plan 150 backstop intact. **Plus D10a — the runner's three forcing reads.** On the `ReadyContext`
+    route, derive them from the context's per-feature contract instead of `model.data_requirements`: coverage
+    evaluated **per feature** at `assess_future_coverage` with `required_steps=min(ceiling, contract horizon for f)`,
+    the ceiling from the single per-assignment `resolve_required_steps` call (replacing the scalar coverage call at
+    `run_station_forecast.py:173-188`), ENSEMBLE dispatch (`:250-252`), and `fan_out_ensemble(..., future_features=…)`
+    (`:291-295`). Without this the flagship heterogeneous station returns `AssignmentFailure(INSUFFICIENT_COVERAGE)`
+    and T8's heterogeneous golden fails with no task owning the fix. The legacy route keeps the scalar call unchanged;
+    `nwp_coverage.py` is **called differently, not modified**, and `horizon_semantics.py` exactly as today.
+  - **Guard on the seam's model-wide floor (D10a's accepted cost) — BLOCKED on `D34-atmost-guard-unreachable`; do not
+    build it until the owner rules.** The *concern* stands: a per-track-eligible model whose variables declare divergent
+    `horizon_semantics=AT_MOST` floors would silently receive another variable's floor. **The guard as originally
+    specified — a route-time precondition check reading those floors off the model — cannot be implemented**, for the
+    two structural reasons recorded in D10a: the pinned FI v0.1.19 has no `horizon_semantics` / `min_future_steps` field
+    at all, and, independently, the model the runner holds is a `ForecastInterfaceAdapter` that exposes no
+    `input_requirement` (no `__getattr__` passthrough, `adapters/forecast_interface.py:450`, `:462-473`), so
+    `_model_declared_floor` returns `None` before it can read anything. A check written against that seam would be
+    unreachable in production and greenable only against a raw FI fake. **If** the owner picks D34 option (b), the check
+    stays **route-time, not T2's construction-time sweep** — per-track eligibility (adapter `isinstance` dispatch + the
+    D30 overlap exclusion) is invisible to T2's repo-wide sweep, which would then also reject GROUP-only models that
+    never take this route — and it consumes the new **public** per-variable horizon-semantics accessor at the FI
+    boundary (T2 scope), never `getattr` on the discovered model. Under option (a) this bullet and its red-first are
+    deleted and the double-deadness plus its revisit trigger are recorded instead.
   - **Transitional API:** the seam changes the input shape of `_run_single_model` **and** `run_all_station_forecasts`,
     so T7 must keep every current caller green — including the integration caller
     (`tests/integration/test_e2e_pipeline.py:653`) — either by retaining a behaviour-preserving entry point or by
@@ -512,13 +727,33 @@ burning fixer rounds reformatting alembic migrations.
     missing track returns the higher-priority success and records `MISSING_CONTEXT`, **asserting the model registry,
     artifact store, model-state store, and QC were not accessed** for the failing arm; an unavailable-track assignment
     records `TRACK_UNAVAILABLE` and advances the chain; a resolved-but-partial context trips the pre-run assert as an
-    assignment-local failure; a **legacy ENSEMBLE caller** still performs coverage and fan-out unchanged.
+    assignment-local failure; a **legacy ENSEMBLE caller** still performs coverage and fan-out unchanged (the scalar
+    `assess_future_coverage` call, byte-for-byte) — a **REGRESSION gate, EXPECTED to stay GREEN**, since that path
+    already exists (`services/run_station_forecast.py:173`) and is already tested
+    (`tests/unit/services/test_run_station_forecast_fanout.py:312`); it proves T7 broke nothing and is **not** one of
+    T7's genuinely failing tests. **D10a:** a heterogeneous `ReadyContext` — precip contracted at 2
+    steps, temp at 10, frame assembled to match — reaches `predict` instead of returning
+    `AssignmentFailure(INSUFFICIENT_COVERAGE)`; this **fails today**, because the scalar `required_steps=10` makes
+    `min(counts)=2` inadequate (`nwp_coverage.py:144-150`). Paired with the opposite case so the gate is proven
+    *tightened, not deleted*: a `ReadyContext` whose frame is genuinely short on **one** feature relative to **that
+    feature's** contracted horizon still fails `INSUFFICIENT_COVERAGE`. **The guard — BLOCKED pending
+    `D34-atmost-guard-unreachable`, and dropped entirely under option (a):** a per-track-eligible model whose variables
+    declare `AT_MOST` with **differing** `min_future_steps` fails loudly (chain advances) instead of silently applying
+    the model-wide max floor to every feature, while uniform — or absent — floors resolve unchanged. Under option (b)
+    this criterion must be asserted through the new public FI accessor against an **adapter-wrapped** model — the
+    production shape — not a raw FI fake, which would make the test vacuous (D10a(b)). And an
+    equality assertion that the contract's mode and feature set match `model.data_requirements`' for a single-branch
+    model, pinning D10a's mode/feature-set substitution as a no-behaviour-delta.
 
 - **T8 — Flow wiring + golden tests + fail-loud combination (D11, D12, D13).**
   - **In scope:** wire `flows/run_forecast_cycle.py` to project and dedup tracks, resolve each track sequentially,
     assemble per assignment, and run via the migrated runner — **behind the `isinstance` dispatch**. Legacy adapters
     keep the superset path; the GROUP path keeps Phase A, **re-scoped** so it no longer fetches/persists for stations
-    served by the per-track path while still covering group-member stations (D7). Add the cross-cycle preflight at the
+    served by the per-track path while still covering group-member stations (D7). **Thread the configured walk-back
+    cadence** — T4's `RecapGatewayConfig.cycle_cadence_hours` — into T5's resolver parameter on **both** construction
+    branches (`flows/run_forecast_cycle.py:465-478`), exactly as `max_cycle_age_hours` is threaded (moved here from T4
+    on 2026-08-18: the resolver it feeds does not exist until T5, and flow integration is T8's; D24's decision is
+    unchanged). Add the cross-cycle preflight at the
     top of the per-station persist block, and the new log events. **Set `retries=` on the candidate-fetch task** from
     `RecapGatewayConfig.max_retries` (`config/recap_gateway.py:51`) — today that field is parsed but consumed nowhere
     and `_fetch_nwp_task` (`flows/run_forecast_cycle.py:1009-1015`) sets no `retries=`, so T4's "raise transients so a
@@ -550,9 +785,23 @@ burning fixer rounds reformatting alembic migrations.
     cross-cycle test yields `forecasts_stored == 0` and a CRITICAL `FORECAST_FRESHNESS` record **by design**: T8's
     golden must **assert** it, not collide with it. 116 is the only merged plan in this window that mutated a Phase-3
     blast-radius file.
+  - **Every new FATAL resolution exit must emit a freshness record too** (2026-08-18) — **distinct from the
+    cross-cycle-mismatch note above**, which covers the zero-write fail-loud on a flow that still completes normally.
+    `_emit_forecast_freshness_record` has exactly **four** call sites (`flows/run_forecast_cycle.py:1805`, `:2016`,
+    `:2644` — the fatal GROUP-store path — and `:2744`, normal completion), and `:2744` sits **inside the `try`**: the
+    outer `finally` (`:2791-2793`) only closes the HTTP client. T4/T5 make auth/config and store failures **flow-fatal**
+    and T8 adds the retrying candidate task, so a fatal auth/config or store failure during per-track resolution can
+    escape past all four sites and produce **no** `FORECAST_FRESHNESS` record at all — the exact inverse of Plan 116's
+    contract (a dark cycle that also silences its own freshness heartbeat).
+    **In scope:** every new fatal resolution exit emits a **forced-CRITICAL** freshness record before it returns or
+    re-raises. **Red-first:** a fatal auth/config failure (and, separately, a fatal store failure) during track
+    resolution yields **exactly ONE** `FORECAST_FRESHNESS` record, forced CRITICAL, carrying the correct
+    `forecasts_stored` count — fails today, because the flow escapes with none.
   - **Red-first / golden:** a homogeneous single-track control station produces **byte-identical** output to
     pre-Phase-3 `main`, and this golden **fails** if the homogeneous case is mis-routed; a heterogeneous control
-    station produces per-assignment outputs; two combinable assignments on different cycles fail loud with **zero**
+    station produces per-assignment outputs (this one is only reachable because of **D10a** — with the runner
+    still reading the scalar `forecast_horizon_steps` it would fail `INSUFFICIENT_COVERAGE` inside
+    `_run_single_model`); two combinable assignments on different cycles fail loud with **zero**
     forecast/state writes while same-cycle combination is unchanged; a **trackless combinable model** (null cycle)
     combines with an NWP model without failing, and an all-trackless station combines normally; a **group-only feature**
     is still fetched via the re-scoped Phase A and the group forecast succeeds at its shared readback cycle regardless
@@ -560,8 +809,16 @@ burning fixer rounds reformatting alembic migrations.
     per-track-eligible is routed to the LEGACY path (D30): it is absent from the resolved track set, Phase A still
     writes its rows, and the group forecast succeeds at the shared readback cycle**; a legacy-adapter
     deployment is unchanged.
-  - **Exit gate (whole repo):** the same baseline-relative gate as every task (full `uv run pytest -q` green at the
-    pinned counts; `pyright` at or below the ratcheted **432** over `src/`; `ruff check` with no new findings beyond the
+    **Which of these are REGRESSION gates, EXPECTED to stay GREEN** (corrected 2026-08-18 — they were mislabelled
+    red-first): same-cycle combination unchanged (already-existing behaviour, tested at
+    `tests/unit/flows/test_run_forecast_cycle.py:5368`), the **trackless** and all-trackless combination cases, the
+    **group-only** Phase A case, and the **legacy-adapter deployment unchanged** case. They preserve behaviour that
+    already works and do not satisfy T8's red-first requirement; T8's genuinely failing tests are at least the
+    heterogeneous per-assignment golden, the cross-cycle fail-loud preflight with zero writes, and the fatal-exit
+    `FORECAST_FRESHNESS` record above.
+  - **Exit gate (whole repo):** the same baseline-relative gate as every task (full `uv run pytest -q` green at
+    **`passed >= 4181` with no baseline test regressing** — the phase's own new tests are expected to push the total
+    well above the floor; `pyright` at or below the ratcheted **432** over `src/`; `ruff check` with no new findings beyond the
     12 pre-existing alembic `E501`s) — **plus** `uv run pytest tests/integration/test_e2e_pipeline.py -m slow -q`,
     explicitly overriding the default `not slow` exclusion (`pyproject.toml:132`; the `slow` marker is declared at
     `:130`) so the end-to-end control-only path actually runs.
@@ -586,6 +843,14 @@ two edits to that file are genuinely serialized — T3's explicit dependency on 
 task that may run alongside T2/T3: it touches `protocols/adapters.py` and `recap_gateway.py`, disjoint from the FI
 adapter.
 
+**Atomicity re-examined (2026-08-18).** An independent sweep tested the redesign's "one atomic phase" claim and found it
+holds only for **T5–T8**: a resolved cycle has no consumer until assignment-local assembly, and T8 cannot activate any
+proper subset. **T1–T4 is a separable capability/preparation slice** — types, FI accessors, the pure projector/reducer,
+and the source contract — that ships no behaviour change on its own. Estimated diff is dominated by **T4 (~700–1,100
+lines)** and **T8 (~1,000–1,600)**, with T5–T7 the next cluster. **Consequence for PR strategy only:** if this build is
+ever split, the **T1–T4 / T5–T8 boundary is the single cleanest cut**. Recorded as a finding — the phase graph, the task
+list and the plan's structure are unchanged.
+
 ## Non-goals
 - Removing the legacy station-superset path (Phase 4).
 - Multi-track assignments / multi-product / mixed-mode requirements (D22).
@@ -597,7 +862,7 @@ adapter.
 
 ## Open items
 
-**Requires owner re-ratification (staleness, 2026-08-18):** `main` moved under two ratified decisions. Neither reopens
+**Requires owner re-ratification (staleness, 2026-08-18):** `main` moved under three ratified decisions. Neither reopens
 a design fork; each changes a ratified decision's **observable consequence**, so it is surfaced, not absorbed.
 - **D21-sweep-failure-mode.** *Old:* a multi-product / mixed-mode requirement **hard-aborts** at registration.
   *New fact:* the sweep must raise `UnsupportedModelRequirementError`, not `ConfigurationError` (D4) —
@@ -619,6 +884,26 @@ a design fork; each changes a ratified decision's **observable consequence**, so
   **(b)** accept **construct-only** and narrow T2's red-first to construction-time assertions; *cost:* D2's
   selected-branch rule stays unexercised end-to-end until Plan 153, and T6's branch-specific past-variable / `max_nan`
   criteria must be restated against a single-branch model.
+- **D34-atmost-guard-unreachable** (new, 2026-08-18; collides with D10a / T7). *Old:* D10a records per-feature
+  `AT_MOST` floors as an accepted cost and funds a T7 **route-time guard** that fails loud if a per-track-eligible model
+  declares divergent per-variable floors. *New fact:* that guard is **unimplementable as specified**, for **two
+  independent structural reasons** (both verified 2026-08-18, detail in D10a): **(i)** the repo pins ForecastInterface
+  **v0.1.19** (`pyproject.toml:104`), whose installed package has neither `horizon_semantics` nor `min_future_steps`, so
+  `_model_declared_floor` returns `None` at its "not declared" branch for every model
+  (`services/horizon_semantics.py:103-106`); and **(ii)** even after an FI bump, the discovered model is the
+  **`ForecastInterfaceAdapter`**, which stores the raw model privately (`adapters/forecast_interface.py:450`) and has no
+  `__getattr__` passthrough (`:462-473`), so `getattr(model, "input_requirement", None)` is `None` — confirmed at
+  runtime for all four FI entry points. A guard proved green against a **raw** FI fake would therefore prove nothing
+  about the production route, and reading `self._model` from the runner would violate the single-FI-boundary rule
+  (`CLAUDE.md`). *Consequence — two options, and **this plan does not decide**:*
+  **(a)** **Drop the T7 guard**, record the double-deadness in D10a, and attach a revisit **trigger**: *revisit when FI
+  >= v0.1.20 lands AND a per-track-eligible model declares divergent `min_future_steps`.* *Cost:* no fail-loud on the
+  day that trigger fires; the wrong-floor trap stays documented but unguarded.
+  **(b)** **Add a public per-variable horizon-semantics accessor at the FI boundary** — T2 scope, since T2 already owns
+  the pre-collapse accessors — and have the guard consume that instead of `getattr` on the model. *Cost:* real net-new
+  scope on T2 and a **widened** FI boundary surface, funded for a code path that is currently **doubly** unreachable.
+  *Plan author's recommendation: **(a)**.* Option (b) funds a boundary accessor for a path no model can reach today —
+  precisely the gold-plating this document's reconstruction exists to avoid.
 
 **Resolved (owner-ratified 2026-08-10 unless noted):**
 - **D1-types-location** — new `types/forcing_track.py`; `ModelRunContext` stays service-local (Plan 148).
@@ -628,7 +913,8 @@ a design fork; each changes a ratified decision's **observable consequence**, so
 - **D5-combine** — fail-loud, as a preflight before any per-station write.
 - **D6-adapter-scope** — migrate `recap_gateway` only.
 - **D7-walkback** — bounded solely by the existing `max_cycle_age_hours`.
-- **D8-group** — group stays on the legacy superset path in Phase 3.
+- **D8-group** (routing; unrelated to Design D8, which is the completeness predicate) — group stays on the legacy
+  superset path in Phase 3.
 - **D9-records-type** — `StationTrackAvailable.records` is the station-keyed `WeatherForecastRecord` list from readback
   at the track's single `resolved_cycle` (singular by D5/D26 — no per-assignment readback source).
 - **D10-completeness-pre-extract** — for the pre-extracted recap path the gate boundary is **before persist**; the
@@ -666,9 +952,12 @@ a design fork; each changes a ratified decision's **observable consequence**, so
 - **D24-cadence-source** (owner, 2026-08-11; **corrected after review**) — the walk-back candidate cadence comes from
   **configuration**, not a third Protocol member. The original wording added "recap already carries the constant it
   needs"; that is **withdrawn** as self-contradictory — an adapter-private constant is not a configuration contract,
-  and `config/recap_gateway.py:29` has **no** cadence field today. T4 therefore **adds and validates**
-  `RecapGatewayConfig.cycle_cadence_hours` and threads it on both construction branches, exactly as
-  `max_cycle_age_hours` is threaded. (Re-verified 2026-08-18: still no cadence field.)
+  and `config/recap_gateway.py:29` has **no** cadence field today. **T4 adds and validates**
+  `RecapGatewayConfig.cycle_cadence_hours`; **T5** defines the resolver parameter that consumes it and **T8** threads it
+  on both construction branches, exactly as `max_cycle_age_hours` is threaded. *(Task assignment corrected 2026-08-18 —
+  T4 cannot thread a bound into a `services/` resolver that T5 has not created yet, and D7 forbids parking the policy on
+  the adapter. The DECISION — cadence from configuration, not a third Protocol member — is unchanged and NOT reopened.)*
+  (Re-verified 2026-08-18: still no cadence field.)
 - **D26-horizon-axis** (owner, 2026-08-11; **revised 2026-08-11 after review**) — per-feature horizons are
   **retained**. Collapsing to a scalar was considered and rejected: per-variable horizons are named inside
   build-sequence item 3 of the ratified redesign, and the FI `max` collapse flattens per-variable `future_steps`
@@ -742,6 +1031,8 @@ a design fork; each changes a ratified decision's **observable consequence**, so
   transient transport errors so a retry can fire; that requires a real consumer, so T8 sets `retries=` on the
   candidate-fetch task from `RecapGatewayConfig.max_retries` (`config/recap_gateway.py:51`, parsed but consumed nowhere
   today; `flows/run_forecast_cycle.py:1009-1015` sets no `retries=`). Without it a single transient terminates the track.
+- **D33-runner-forcing-contract** — the runner's three forcing reads come from the context contract on the per-track
+  route; see Design D10a, in scope at T7.
 - **D31-candidate-ownership — SPEC EDIT, folded into T1** (reviewer blocker-fix). The spec pins
   `fetch_requirement(...) -> CandidateFetchResult` (`docs/spec/types-and-protocols.md:3210-3213`) whose `status` is
   the **completeness** taxonomy (`:3318-3324`), but the adapter cannot judge completeness — the threshold is a `services/`-side
