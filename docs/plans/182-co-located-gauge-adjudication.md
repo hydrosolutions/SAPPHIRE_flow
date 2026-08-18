@@ -56,14 +56,24 @@ statistic used **≥0.2 mm**, which *excludes those values entirely*, and the un
 **Nothing in the plan isolated the suspected contaminant**, so both H1 and H0 could produce the observed
 anti-phase and the analysis would have declared H1 anyway — then modified M-A7 on that basis.
 
-- **D7 (NEW) — THE ABLATION IS THE IDENTIFYING TEST, and it is now the primary result.**
-  Recompute the **DHM** normalised diurnal profile at a ladder of thresholds — **all values**,
-  **≥0.1 mm**, **≥0.2 mm** — and report the phase at each.
-  - If the DHM peak **moves toward Pyramid's** as sub-0.1 mm values are excluded ⇒ **H1 supported**:
-    the signal was carried by resolution-level counts.
-  - If the DHM peak **survives** removal of every suspected value ⇒ **H1 refuted**, whatever the
-    anti-phase looks like. The signal is then in the real rain and needs another explanation.
-  This is the comparison that discriminates; the Pyramid contrast alone never did.
+- **D7 — THE ABLATION IS THE IDENTIFYING TEST, and it is the primary result. REVISED after round 2,
+  which showed the first version was NOT specific to sensor noise.**
+  Recompute the normalised diurnal profile at a ladder of thresholds — **all values**, **≥0.1 mm**,
+  **≥0.2 mm** — and report the phase at each. **Three constraints make it interpretable; without them
+  it is not:**
+  1. **Zero the sub-threshold values; NEVER drop the row.** The timestamp population must be
+     **identical at every rung**. Deleting rows changes which hours are non-empty and reshapes the
+     normalisation denominator **mechanically**, moving the peak for reasons having nothing to do with
+     H1.
+  2. **Run the SAME ladder on PYRAMID as a negative control.** Pyramid's resolution differs, so if its
+     peak also migrates under thresholding, **the ablation moves peaks by itself** and any DHM movement
+     is uninterpretable. The control is what licenses the inference.
+  3. **State the residual confound rather than hiding it.** Thresholding removes **genuine light
+     precipitation** as well as resolution-level counts. If physical morning drizzle is systematically
+     lighter than nocturnal storms, the DHM peak shifts toward Pyramid's **even when every count is
+     real** — falsely supporting H1. ⇒ **A DHM-only shift is SUGGESTIVE, never conclusive**, unless it
+     can be distinguished from intensity-dependent physical rainfall. **The plan does not currently
+     have a way to make that distinction, and must say so in its verdict.**
 
 - **D8 (NEW) — Co-location is NOT identical exposure, and normalisation does NOT cancel a
   diurnally-varying catch bias.** 1.4–1.9 km and 130–200 m in steep terrain can carry genuine
@@ -121,14 +131,38 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   set the decisive peak while `r` stayed high.
   ⇒ **Establish adequacy properly or not at all:** compare **disjoint** periods (pre-2020 vs 2020+),
   and attach **sampling uncertainty** by bootstrapping whole monsoon seasons (resample season-years,
-  recompute the profile, report the spread of the peak hour). **If the bootstrap spread on the peak hour
-  exceeds ±2 h, the overlap window cannot support a phase verdict** and only the full record may be
+  recompute the profile, report the spread of the peak hour). **⚠️ Round 2: the bootstrap as first written could FALSELY CERTIFY adequacy.** Lukla's overlap is
+  only **three season-years**, and three seasons all peaking at 23:00 yield **zero spread** — which
+  would authorise a verdict while leaving interannual uncertainty entirely unmeasured. And the spread
+  must be **circular** (D9): peaks split 23:00/00:00 are 1 h apart, not 23.
+  ⇒ **Circular intervals throughout, and a small-sample rule: fewer than 5 season-years cannot on its
+  own establish adequacy**, regardless of how narrow the spread looks. With 3 units, report the spread
+  as indicative and rest the verdict on the full record.
+  **If the circular bootstrap spread on the peak hour exceeds ±2 h, the overlap window cannot support a
+  phase verdict** and only the full record may be
   used — with D8's caveat that a non-contemporaneous comparison assumes the diurnal cycle is stationary
   across the record.
 
 - **D6 — A null result is a real result.** If the profiles broadly agree, H1 is not supported and the
   Group A signal survives — which strengthens M-A7 rather than weakening it. **The plan must not be
   written so that only "artefact" counts as success.**
+
+- **D9 (NEW, round 2) — THE VERDICT RULE MUST BE QUANTITATIVE, CIRCULAR, AND ABLE TO SAY
+  "INDETERMINATE".** "Moves toward" and "survives" had no boundary, no uncertainty test, and no rule
+  for the two pairs disagreeing — a rule that cannot return *inconclusive* will always return whatever
+  the analyst expected.
+  - **Phase distance is CIRCULAR.** Hour-of-day wraps: 23 and 00 are **1 h apart, not 23**. Every
+    peak-hour comparison, spread and interval uses circular statistics. Pyramid's peak sits at 22–00,
+    so this bites immediately and ordinary arithmetic would produce nonsense.
+  - **Pre-declared thresholds** (fixed before the numbers are seen): H1 **supported** if the DHM peak
+    moves ≥4 h circularly toward Pyramid's across the ladder *and* the Pyramid control moves <2 h;
+    H1 **refuted** if the DHM peak moves <2 h; **INDETERMINATE otherwise** — including whenever the
+    control moves ≥2 h.
+  - **Per-station verdicts first, then synthesis.** Lukla and Syangboche are reported **separately**.
+    If they disagree, the outcome is **INDETERMINATE for Group A as a whole**, and the disagreement is
+    itself the finding — it is not averaged away.
+  - **INDETERMINATE is a permitted, publishable outcome** and blocks the M-A7 correction rather than
+    licensing it.
 
 ## Exit
 
@@ -140,8 +174,13 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   retention reported separately
 - A **bootstrap spread on the peak hour** by monsoon season (D5); if it exceeds ±2 h on the overlap
   window, the verdict rests on the full record only, stated as such
-- A stated **verdict on H1** with its uncertainty, phrased no finer than ±2 h, and explicitly
-  adjudicated **against D8's micro-climate/wind-driven alternative** as well as against H0
+- **The Pyramid negative control** (D7.2): the same threshold ladder applied to Pyramid, showing
+  whether the ablation moves peaks on its own — without this the DHM result is uninterpretable
+- **Per-station verdicts** (Lukla, Syangboche) under D9's pre-declared circular thresholds, then a
+  synthesis — with **INDETERMINATE** a permitted outcome, including when the two disagree
+- A stated **verdict on H1** with its uncertainty, phrased no finer than ±2 h, explicitly adjudicated
+  **against D8's micro-climate/wind alternative** and **against D7.3's intensity-dependent-drizzle
+  confound**, not only against H0
 - If H1 is supported: an explicit list of which vision/M-A1 claims are affected, **filed as a correction
   for M-A7 to apply** — this plan does not itself rewrite the vision
 - **No magnitude comparison anywhere in the output**
