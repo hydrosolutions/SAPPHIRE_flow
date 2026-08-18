@@ -20,6 +20,36 @@ year, verified) and a published extraction bundle for 26 stations.
 apparatus it had invented. Reverted. This plan is deliberately short — the analysis is a comparison,
 not a system.**
 
+## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT ON THIS PLAN AND ON ITS REVIEW
+
+**Owner instruction, 2026-08-18: "we must not over-engineer this plan."** This is a standing constraint
+on every reviewer and every revision, not a preference. It is repeated here because it is the single
+thing this plan has already failed at once: a `/plan` sweep on 2026-08-18 expanded it to **1,235 lines**
+and then stalled, with its own blockers landing inside apparatus the sweep had invented. It was reverted
+to this form.
+
+**M-A6 is a COMPARISON, not a system.** All inputs already exist on disk. The work is: extract, pair,
+stratify, report. It needs no new framework, no new abstraction layer, no configuration surface, no
+plugin seam, and no validation apparatus beyond what the existing `scripts/dhm_precip/` modules already
+provide.
+
+**Rules for reviewers of this plan:**
+
+1. **"No findings" is a complete and welcome review.** Do not manufacture findings to justify the pass.
+2. **A finding must name a CONCRETE FAILURE of the ANALYSIS** — a number that would come out wrong, a
+   comparison that would be invalid, an estimand that would mislead. Cite the decision it breaks.
+3. **A missing specification is NOT a finding.** "The plan does not say how X is configured" is out of
+   scope unless leaving it unsaid produces a wrong number.
+4. **Do not propose new apparatus.** No registries, no schemas, no abstraction layers, no frameworks,
+   no orchestration, no new file formats. If a decision can be expressed as a sentence, it must not
+   become a module.
+5. **Adding length is a cost, not a contribution.** A revision that grows this document without
+   removing a concrete analytical error has made it worse. Prefer deleting to adding.
+6. **The existing decisions D1–D10 are load-bearing and already reviewed.** Challenge them only on
+   correctness, never on completeness of specification.
+
+**If the review's conclusion is "this plan is adequately scoped and ready", say exactly that and stop.**
+
 ## Decisions
 
 - **D1 — Name the estimands.** Under an MNAR mask "bias" is undefined. Report exactly: **matched-hour

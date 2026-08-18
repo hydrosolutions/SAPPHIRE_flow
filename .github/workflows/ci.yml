@@ -15,9 +15,19 @@ on:
 env:
   UV_FROZEN: "1"
 
+# A new push to a PR branch makes the in-flight run obsolete: nobody reads the
+# result of a run against a commit that is no longer the head. Cancel it and
+# free the runner. NOT applied to `main` — every commit that lands there is a
+# distinct state someone may need a verdict on, and cancelling would leave
+# gaps in the record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
@@ -75,6 +85,7 @@ jobs:
     # breaks; pull-requests: read is new, for the `gh api` lock-change check
     # below.
     permissions: { contents: read, pull-requests: read }
+    timeout-minutes: 25
     env:
       # Plan 185 D2 — read once at job level: a step-level `if:` cannot
       # reference `secrets.*` directly, but it CAN read the `env` context,
@@ -213,7 +224,12 @@ jobs:
           set -o pipefail
           uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q --color=no | tee "$RUNNER_TEMP/aquacast-shim.txt"
           grep -Fq '1 passed' "$RUNNER_TEMP/aquacast-shim.txt"
-      - run: uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v
+      # -n auto: the unit suite is ~3700 tests and was the whole critical path
+      # (~15 min of a ~16 min job; setup is only ~70 s). Verified parallel-safe
+      # on 2026-08-18 — a full `tests/unit/ -n auto` run passed with workers
+      # sharing one PREFECT_HOME. Dropped `-v`: thousands of PASSED lines that
+      # nobody reads on a green run and that bury the failure on a red one.
+      - run: uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing
 
   # A4 — Wheel-only guard for dependency-update installs.
   #
@@ -245,6 +261,7 @@ jobs:
   # docs/standards/security.md per Plan 064 A4 step 3.
   wheel-only-guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
@@ -282,6 +299,7 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     services:
       postgres:
         image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5  # postgis/postgis:16-3.4
@@ -336,6 +354,7 @@ jobs:
   # The e2e job gates on this job succeeding (see `needs:` below).
   build-image-and-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # security-events: write is required by github/codeql-action/upload-sarif
     # (T2, Plan 180). contents: read is the checkout minimum. Declared
     # explicitly rather than relying on the repo's ambient

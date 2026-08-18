@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-18
 plan: 186
 title: Whole-graph observation ingest — one request for the network, not one per station
@@ -13,7 +13,7 @@ supersedes: []
 
 ## Status
 
-**DRAFT** (2026-08-18). Resolves **Plan 175 D5**, deferred there by owner decision and documented in
+**READY** (owner flip 2026-08-18). Resolves **Plan 175 D5**, deferred there by owner decision and documented in
 `docs/decisions/bafu-lindas-rate-limit.md` rather than fixed.
 
 **`/plan` ESCALATED (stalled, 3 rounds, 3 blockers + 3 majors residual); this is the reconstruction.**
@@ -67,7 +67,9 @@ Concretely, for this plan:
   and it would make the plan bigger for a *reason*.
 - **The quarantine boundary (D2) is the one design risk worth real scrutiny.** Plan 136 kept the
   evaluation-only archive honest by giving it a separate adapter; D2 downgrades that to a separate
-  mapper over shared query/parse code. That is a weaker structural guarantee. Say so if you think it is
+  mapper over a shared **query builder and key helper only** — grouping, validation, parsing and mapping
+  all stay adapter-local. That is still a weaker structural guarantee than a separate adapter. Say so if
+  you think it is
   too weak — that is a correctness argument, not scope creep.
 - An honest **"this is proportionate, no blockers"** is a valid and expected outcome.
 
@@ -126,7 +128,9 @@ This is what keeps the plan small: there is no per-station time-window semantics
 
 ## Goal
 
-Observation ingest costs **one LINDAS request per run, independent of station count**, with per-station
+Observation ingest costs **one logical batch fetch per run, independent of station count** — with retry
+attempts constant in station count too, since the limiter still spends `max_retries + 1` on a persistent
+429 (that is the retry contract, not a violation of this goal). Per-station
 outcomes and health reporting unchanged from Plan 175.
 
 ## Non-goals
@@ -187,8 +191,10 @@ an implementation detail. **Locked precedence, evaluated in this order:**
 
 1. **Weather configs are skipped entirely** — no outcome, no request. Today's behaviour
    (`hydro_scraper.py:105`), locked by an existing no-request test.
-2. **A code failing the injection guard gets a config-local `MALFORMED_RESPONSE`** before any request
-   (`hydro_scraper.py:126`), exactly as now.
+2. **A code that matches no gauge in the response yields `NO_DATA`** — see Q2. This *replaces* today's
+   pre-request `MALFORMED_RESPONSE` from the injection guard (`hydro_scraper.py:126`), which no longer
+   fires in this path because ingest stops interpolating the code into SPARQL. The guard survives in
+   `_build_sparql_query` for `verify_gauge_reachable`.
 3. **Only the remaining valid river/lake configs enter the index** and are eligible for whole-response
    faults.
 4. **If no eligible config remains, make NO request at all.**
@@ -199,15 +205,34 @@ discovering. `NO_DATA` and `MALFORMED_RESPONSE` stay strictly **subject-local**:
 unparseable timestamp for one gauge must not touch another. Exactly one outcome per eligible config,
 always.
 
-## Open questions for the owner
+## Owner decisions (RESOLVED 2026-08-18)
 
-1. **Is the whole-batch failure mode acceptable?** Today a transport failure can drop 3 stations and
-   keep 166; afterwards it drops all or none. Arguably better (no more silent partial coverage) but it
-   is a change in kind, and at 2 stations it is indistinguishable.
-2. **Should the per-station path be deleted or retained as a fallback?** Retaining it means two code
-   paths and two sets of failure semantics; deleting it means a LINDAS whole-graph outage has no
-   per-station fallback. My inclination is **delete** — the fallback would share the same endpoint and
-   the same outage, so it buys nothing real.
+**Q1 — the whole-batch failure mode is ACCEPTED.** A transport or HTTP fault now fails every eligible
+station at once rather than some. Ratifies a consequence D4 already documents; arguably an improvement,
+since partial coverage can no longer pass silently. At 2 stations the two behaviours are
+indistinguishable anyway.
+
+**Q2 — the per-station path is DELETED from ingest — but NOT deleted outright.** Checking the callers
+before folding this changed its shape, and two consequences follow that the first draft would have got
+wrong:
+
+- **`verify_gauge_reachable` keeps its single-gauge query.** `_build_sparql_query` has two callers:
+  `hydro_scraper.py:127` (the ingest fetch this plan replaces) and `:300` (`verify_gauge_reachable`, the
+  onboarding-time existence probe). Probing one gauge is a genuinely different operation from bulk
+  ingest — it runs once per station at onboarding, not every 5 minutes — so it stays per-station and
+  keeps the builder alive. **The decision is "delete from the ingest path", not "delete the builder".**
+- **D4's precedence step 2 changes, and this is the part worth review.** With ingest no longer
+  interpolating `site_code` into SPARQL, **there is no injection surface left in that path** — the code
+  becomes a lookup key into the whole-graph index. So the `_SITE_CODE_RE` guard no longer fires during
+  ingest, and a malformed code becomes a **lookup miss ⇒ `NO_DATA`**, not the pre-request
+  `MALFORMED_RESPONSE` it produces today. The guard stays where it is still needed:
+  `_build_sparql_query`, i.e. `verify_gauge_reachable`.
+
+  Deliberate and stated rather than discovered: `NO_DATA` is the honest cause here — the gauge is not in
+  the response — where `MALFORMED_RESPONSE` would be describing a request that is no longer made.
+
+**No fallback is retained.** A per-station fallback would hit the same endpoint and share the same
+outage, so it buys nothing real while doubling the failure semantics.
 
 ## Tasks
 
@@ -246,9 +271,15 @@ subject-local failure to every station, or emits a single outcome on 503, passes
 - **`NO_DATA` shapes:** a subject absent from the graph; a subject present with `measurementTime` only.
 - **Tolerated:** an onboarded subject carrying an unrecognised predicate alongside a valid parameter
   still succeeds.
-- **Precedence (D4):** a mixed batch of weather + invalid-code + valid configs under a 429 — weather
-  gets no outcome, the invalid code keeps `MALFORMED_RESPONSE`, valid ones get `RATE_LIMITED`; and an
-  all-weather / all-invalid batch makes **zero** requests.
+- **Precedence (D4/Q2):** a mixed batch of weather + unmatched-code + valid configs under a 429 —
+  weather gets no outcome, valid ones get `RATE_LIMITED`. An **all-weather** batch makes **zero**
+  requests. Note an unmatched code no longer short-circuits pre-request: it is a lookup miss in the
+  response, so a batch of only-unmatched codes still makes **one** fetch and returns `NO_DATA` each.
+  Lock that explicitly — it is the behaviour change Q2 introduces, and the easiest thing to regress back
+  to `MALFORMED_RESPONSE` by reflex.
+- **The guard survives where it is still needed:** `verify_gauge_reachable` with a code failing
+  `_SITE_CODE_RE` still raises/returns as today — deleting the per-station *ingest* path must not
+  weaken the onboarding probe's injection guard.
 
 **Verification.** `uv run pytest tests/unit/adapters/test_hydro_scraper.py tests/integration/adapters/test_hydro_scraper.py tests/unit/flows/test_ingest_observations_fetch_health.py -q`
 

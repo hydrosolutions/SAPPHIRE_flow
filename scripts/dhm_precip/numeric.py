@@ -34,3 +34,9 @@ def as_int(value: object) -> int:
     if isinstance(value, float) and value.is_integer():
         return int(value)
     raise TypeError(f"expected an integer scalar, got {type(value)}: {value!r}")
+
+
+def as_str(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    raise TypeError(f"expected a string scalar, got {type(value)}: {value!r}")

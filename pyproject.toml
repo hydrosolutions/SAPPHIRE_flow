@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.763"
+version = "0.1.766"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -45,6 +45,7 @@ dependencies = [
     "recap-dg-client",
     "requests>=2.33.1",
     "rioxarray>=0.19.0",
+    "s3fs>=2024.1.0",  # Plan 183: read-only zarr access to s3://sloth-dynamic
     "scikit-learn>=1.9.0",
     "shapely",
     "sqlalchemy>=2.0",
@@ -59,7 +60,7 @@ dependencies = [
 check = "sapphire_flow.cli.check:main"
 
 [build-system]
-requires = ["uv_build>=0.12.5,<0.13.0"]
+requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -77,6 +78,7 @@ dev = [
     "pytest-asyncio",
     "pytest-cov>=7.0.0",
     "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.5",
     "testcontainers[postgres]",
     "xlsxwriter>=3.2.9",
@@ -125,7 +127,6 @@ markers = [
     "deployment_destructive: destructive compose tests; excluded by default",
     "live: tests that hit external APIs and are excluded from default CI (run nightly)",
     "live_lindas: calls live LINDAS endpoint; excluded by default, run by weekly workflow",
-    "live_lindas_lag: extended LINDAS publish-lag measurement (Plan 176 T7); excluded by default AND by the live_lindas weekly workflow's 10-min timeout — run manually/on a dedicated longer schedule",
     "live_stac: calls live MeteoSwiss STAC endpoint; excluded by default, run manually or on a schedule",
     "live_recap: calls live recap Data Gateway; excluded by default (needs RECAP_API_KEY)",
     "slow: long-running tests excluded from default CI integration job (runs nightly)",
@@ -133,7 +134,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.763"
+current_version = "0.1.766"
 commit = false
 tag = false
 allow_dirty = true

@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.forcing_track import ForcingTrackKey, RawFetchOutcome
     from sapphire_flow.types.forecast import ForeignForecast
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
@@ -36,6 +37,41 @@ class WeatherForecastSource(Protocol):
 
         Callers discriminate via ``isinstance(result, GriddedForecast)``.
         """
+        raise NotImplementedError
+
+
+@runtime_checkable
+class CandidateAwareForecastSource(Protocol):
+    """Plan 151 D6: a SEPARATE, narrow capability Protocol (widening
+    ``WeatherForecastSource`` would make every legacy adapter/fake
+    non-conforming) for a per-forcing-track, walk-back-aware fetch. The
+    adapter factory's return type is the dispatch contract — a migrated
+    adapter satisfies BOTH this and ``WeatherForecastSource``; the flow
+    selects the per-track path via ``isinstance(source,
+    CandidateAwareForecastSource)``. Walk-back POLICY is a pure
+    ``services/`` concern (D7), never inside the adapter.
+    """
+
+    def fetch_requirement(
+        self,
+        track: ForcingTrackKey,
+        stations: list[StationWeatherSource],
+        nominal_cycle: UtcDatetime,
+    ) -> RawFetchOutcome:
+        """Fetch EXACTLY ``nominal_cycle`` — NO adapter-side walk-back.
+
+        Returns the raw fetch outcome (transport classification only,
+        D31-candidate-ownership) — never judges completeness, which needs
+        the services-side ``ResolvedTrackRequest.fetch_horizons`` this
+        method cannot see. Raises a typed transient transport error, or a
+        typed auth/config error, rather than returning either as a status.
+        """
+        raise NotImplementedError
+
+    def expected_member_ids(self, track: ForcingTrackKey) -> frozenset[int]:
+        """The source's raw member identity for ``track`` — source-DERIVED
+        (Ruling 1), never a literal. Exact-member-set completeness (D8) is
+        checked against this."""
         raise NotImplementedError
 
 

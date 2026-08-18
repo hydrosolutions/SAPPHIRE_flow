@@ -74,6 +74,138 @@ new hardware, both failures would have hit with no documented answer — the dum
 Fix required: `createdb` + the two flags + surface stderr + a multi-arch digest (the current pin is amd64 and
 runs under emulation on arm64).
 
+**Fix implemented (2026-08-18), branch `fix/plan-162-t5-restore-path`, committed locally, not yet
+merged/deployed — NOT yet re-run against the real mac-mini artifact; that live run is the acceptance bar for
+this fix.** `createdb`s a fresh database and restores into it with `--no-owner --no-acl`; `pg_restore`'s and
+`createdb`'s stderr are now captured and surfaced in the `FAIL:` message (previously discarded via
+`>/dev/null 2>&1`); the container is launched with `--network none` (holds a fully-restored dump, including
+`access_tokens` across every tenant — nothing needs container-initiated network access). An intermediate round
+re-pinned the image to `imresamu/postgis:16-3.4@sha256:6da75969...`, a genuine multi-arch manifest
+(linux/amd64 + linux/arm64), because the `docker-compose.yml`/`ci.yml` `postgis/postgis:16-3.4` pin is
+single-platform amd64 for every `16-3.4*` tag that vendor has ever published — the mac-mini runs it under
+emulation. **The owner reverted that swap**: the image pin is back to the same `postgis/postgis:16-3.4@sha256:
+44126d872...` digest as compose/CI, accepting the emulation cost rather than adding a second, less-audited
+vendor namespace for a container that holds every tenant's access-token hashes (`RESTORE_IMAGE` still overrides
+for anyone who wants native arm64 locally). See `docs/standards/security.md` "Image pinning" for the full
+rationale. Locking tests in `tests/unit/ops/test_restore_rehearsal.py` cover fresh-database targeting (name
+equality across `createdb`/`pg_restore`/content queries, not just "some createdb happened"), exact
+`--no-owner`/`--no-acl` argv tokens, stderr surfacing for both `createdb` and `pg_restore`, and `--network none`
+— proven red against the buggy/absent behaviour and green against the fix.
+
+**Second fixer round (2026-08-18, same branch), an independent Codex pass over that diff found three more
+gaps, all fixed:** (1) **blocker** — the post-restore sequence-collision check queried
+`access_tokens_id_seq`, but migration 0047 gives `access_tokens.id` a UUID primary key, so that sequence
+never exists; the real query would have failed after every genuinely successful restore, including the
+verified 1.1 GB mac-mini run above. Retargeted to `audit_log_id_seq`/`audit_log` (migration 0045's real
+BIGINT `autoincrement=True` column). (2) **major** — the fresh-database locking test treated "the last
+`createdb` argv token" as the database name, which a broken invocation like
+`createdb rehearsal --maintenance-db template1` (creates/restores into `template1`) would still have
+satisfied; `createdb` now calls with an explicit `--` end-of-options marker, and the test asserts the
+database name is the sole positional token after it. (3) **minor** — the `--network none` test checked
+token membership only, not position, so `docker run IMAGE --network none` (which Docker parses as the
+container's *command*, not a `run` option) would have passed; the test now also asserts `--network none`
+precedes the image argument. Items (1) and (2) proven red against the pre-fix script itself and green
+after. **Correction (fourth round, below): item (3) was not, in fact, proven red against the pre-fix
+production script** — that script already built `docker run -d --network none --name ... IMAGE` in the
+correct order, so a position assertion could only pass against it. It was proven red via a deliberately
+misordered/duplicated invocation constructed for the test (a mutation test), not against the actual
+pre-fix production script — the record above overstated that.
+
+**Third fixer round (2026-08-18, same branch):** the second round's retarget to `audit_log_id_seq`/`audit_log`
+was itself replaced with **`pipeline_health_id_seq`/`pipeline_health`** — the owner's call: exactly two tables
+in this schema use `BIGINT ... autoincrement=True` (`audit_log`, migration 0045; `pipeline_health`, migration
+0001 — independently corroborated by `docker/bootstrap-roles.sql:139`, "the BIGSERIAL-keyed tables (audit_log,
+pipeline_health)"), and `pipeline_health` is guaranteed non-empty in any real dump because the forecast/BAFU
+flows write health records continuously, whereas `audit_log` may be sparse. Also added: a guard that asserts
+the sequence relation **exists** (`to_regclass('pipeline_health_id_seq')` non-null) before querying it, so a
+missing relation fails loudly and names itself rather than surfacing as some other query error — the same
+class of bug (a check that silently targets a relation that has never existed) must not be able to recur
+undetected. The `--` end-of-options `createdb` test and the `--network none` position test from the second
+round needed no further change; both already satisfy this round's requirements. All new/changed locking tests
+proven red against the pre-fix script and green after; doc correction: the T5 build spec's "`--network none`
+is not required" sentence (§ "T5 — rehearse the restore", step 1) was wrong and is corrected above — this
+container holds a fully-restored production dump including every tenant's access-token hashes, so egress
+isolation IS required.
+
+**Fourth fixer round (2026-08-18, same branch), an independent Codex pass over the third round's diff found
+four further gaps, all fixed:** (1) **major** — the sequence-collision predicate in (n) above only ever
+checked the `is_called=false` branch (`last_value == MAX(id)`); when `is_called=true`, `nextval()` has
+already handed out `last_value`, so the *next* call emits `last_value + 1`, which independently colliding
+with `MAX(id)` was never checked. The script now derives the actual next-emitted value from `is_called`
+first. (2) **major** — the test fake's `to_regclass` case matched ANY relation query
+(`*"to_regclass"*`), not specifically `pipeline_health_id_seq`, so a regression that reverted the real
+guard to query `access_tokens_id_seq` (while leaving the `pipeline_health` error text untouched) would
+still have passed every test — the exact vacuous-fake pattern this round's own existence guard was added
+to stop recurring, just moved one query over. The fake now matches the exact query text; anything else
+falls through to its "unrecognised exec" branch and fails the run. (3) **major** — the fresh-database
+test asserted only the sole positional token after `--` in the `createdb` argv, ignoring stray positional
+tokens before it (`createdb -U postgres other -- rehearsal` would have passed); the test now pins the
+full expected argv exactly. (4) **minor** — the `--network none` position test derived the image's index
+as "the last token in argv", so a doubled-image invocation (`docker run IMAGE --network none IMAGE`,
+which Docker actually runs with no isolation at all — the same failure mode the second-round item (3)
+test above targets, just via a different, unguarded derivation) would have passed; the test now requires
+the sentinel image to appear exactly once and uses its real index. Proof: (1) is a real bug in the
+actually-committed third-round script — proven red by stashing this round's script fix (keeping the new
+test) and confirming the `is_called=true` collision test fails against the unmodified pre-fix script,
+then restoring the fix. (2), (3), and (4) are test-rigor tightenings, not bugs the committed script ever
+shipped — each proven red by constructing a deliberately regressed copy of the script/invocation the
+new, tighter assertion is meant to catch (a query against `access_tokens_id_seq`; a stray `createdb`
+positional before `--`; a doubled `docker run` image token) and confirming the new test fails against
+that copy, then confirming the real (unmodified) script/tests still pass.
+
+**Outstanding (not resolved by this round): the mandatory live acceptance run of the exact committed
+script against the real mac-mini artifact has still not been re-performed since the fourth-round fixes.**
+This fixer round ran in a sandboxed environment with no network path to the mac-mini (`ssh
+sapphire@192.168.1.136` times out from here) and no copy of the 1.1 GB dump, so it could not execute
+`scripts/restore-rehearsal.sh` against real data — doing so, and recording
+`access_tokens=1 forecasts=206 observations=83292 alembic=0048`, remains the acceptance bar before this
+branch merges, per hold-at-PR. The "VERIFIED RESTORE PROCEDURE" section above recorded those exact numbers
+from a *manual* run of the restore procedure (`createdb` + `--no-owner --no-acl` by hand), not from an
+automated run of this specific script revision — the two are the same procedure but not the same
+artifact-under-test, which is why the automated run is still owed.
+
+**Fifth fixer round (2026-08-18, same branch), a further independent review found one more test-rigor gap
+(no script-logic change — `scripts/restore-rehearsal.sh` is byte-identical to the fourth round):** the
+`--network none` position test's checks ("sentinel appears exactly once", "sentinel is the final positional
+token", "`--network none` precedes it") are all still satisfied by a decoy invocation such as `docker run -d
+decoy-image --network none --name X -e Y SENTINEL` — Docker's real grammar takes the *first* positional token
+after the options as the image (`decoy-image` here), so everything from `--network` onward becomes that
+container's COMMAND, i.e. no isolation at all, while the sentinel still passes every one of the prior checks.
+The test now pins the complete expected `docker run` argv — the exact invocation the script issues, with only
+the image swapped for the sentinel — which rules out any decoy positional token anywhere before the image.
+Proven red via a deliberately constructed decoy argv (the real script has never emitted one) and green
+against the real script's actual argv shape. This confirms — again — that this fixer round re-verified: it
+re-ran the ssh connectivity probe to the mac-mini from this sandbox (`ssh -o ConnectTimeout=6 -o BatchMode=yes
+sapphire@192.168.1.136` — connection timed out), so the live acceptance run above remains genuinely
+un-performable from here and stays the open item gating merge.
+
+**Sixth fixer round (2026-08-18, same branch), found by the orchestrator reading the committed script rather
+than by any review or test:** the sequence-collision predicate was `-eq`, and the accompanying test
+(`test_last_value_below_max_id_with_is_called_false_passes`) asserted that `last_value=1, is_called=f,
+max_id=5` **passes**, rationalised in its own docstring as "a different, pre-existing data problem outside
+this script's scope". That rationalisation is wrong and it exempted the single most common real restore
+defect: a sequence that was never advanced. With the sequence at 1 and rows up to 5, the first insert after
+recovery emits `id=1` and dies on a duplicate key — a database that throws on its first write has not been
+successfully restored, which is precisely the proposition this script exists to certify. The predicate is now
+`-le`. Boundary cases verified to be unaffected and newly locked by their own tests: a healthy dump restores
+`setval(max_id, true)` so `next_val = max_id + 1` (passes), and an empty table gives `max_id = 0` via
+`coalesce` against a fresh sequence at `next_val = 1` (passes). The inverted test was proven red against the
+`-eq` script with a real assertion (`assert 0 != 0`), not an import error.
+
+**The pattern across all six rounds, stated plainly:** every genuine defect in this file was found by
+*running it against a real dump* or by *reading it closely* — none by its unit tests, which stayed green
+throughout. Twice the tests actively concealed a defect: round three's fake invented an
+`access_tokens_id_seq` that has never existed in this schema, and round six's test asserted the buggy
+behaviour as correct. A rehearsal tool is unusually hostile to isolated testing, because the thing it
+verifies is exactly the thing the fakes replace. The live acceptance run is therefore not a formality here —
+it is the only gate that has ever caught anything.
+
+**Minor, accepted as-is:** commit `d6cf850` on this branch predates its version bump (the message
+self-discloses this as an interrupted-session checkpoint); the immediately following commit brought the
+version current, so branch HEAD is not out of sync, but the individual checkpoint commit does not itself
+carry a bump. Left as documented history rather than rewritten via interactive rebase (out of reach in
+this environment); squash before merge if the team wants every individual commit to carry its own bump.
+
 ## Status
 
 > **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status
@@ -84,7 +216,12 @@ runs under emulation on arm64).
 unencrypted (FileVault off), containing `access_tokens` and `tenant_id`.
 
 **READY** (2026-08-15) — **build scope is PHASE A only** (T1-T4 + the backup component; see "Phase A — BUILD
-NOW"). Phase B/C specs are retained below but explicitly **not** in this build.
+NOW"). Phase B/C specs are retained below as specs, mostly **not yet started, with one exception: T5** (the
+restore rehearsal) **is under active build/fix right now**, five fixer rounds deep on branch
+`fix/plan-162-t5-restore-path` — see the "VERIFIED RESTORE PROCEDURE" section above. A reader who jumps
+straight to this Status block should not conclude T5 is merely a retained, un-started spec:
+`scripts/restore-rehearsal.sh` exists, is under test, and is gated on one outstanding item — the live
+acceptance run of the current script revision against the real mac-mini artifact — before that branch merges.
 Reviewed three times: two full rounds on the whole plan plus a focused pass on the narrowed Phase A scope; the
 last round's blockers were coherence, not design. Operational reliability (category **A**). **Backups are
 live-broken**: the last successful
@@ -403,8 +540,11 @@ against them.
 
 **`scripts/restore-rehearsal.sh <dump-path>`**
 1. `docker run -d` a Postgres **pinned by `tag@sha256` digest** (repo policy, `docs/standards/security.md:554`),
-   **no named volume** — ephemeral container filesystem only — and **`--network none` is not required** because
-   nothing needs to reach it: every command runs *inside* the container via `docker exec`.
+   **no named volume** — ephemeral container filesystem only — and **`--network none`**: this container holds a
+   fully-restored production dump, including every tenant's `access_tokens` hashes, so egress isolation IS
+   required, even though every *intended* interaction runs *inside* the container via `docker exec`. (An
+   earlier draft of this spec said `--network none` was "not required because nothing needs to reach it" —
+   that was my error; it closes an exfiltration path, not a reachability need.)
 2. **Wait for the FINAL server, not the temporary one.** Postgres's official entrypoint starts a temp server,
    runs init scripts, stops it, then starts the real one — so `pg_isready` alone can return true against a
    server that is about to disappear mid-restore. Wait for the initialisation-complete marker **and** require a

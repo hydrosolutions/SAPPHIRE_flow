@@ -312,11 +312,22 @@ Three points make this structural rather than incidental:
 
 ### Where our data does NOT fit the literature
 
-**Group A above ~2,500 m.** Norris et al. predict unimodal, peaking 1500 LT above 3 km. Olangchunggola
-peaks 03 UTC and Lukla 02 UTC (≈ 08–09 local), matching neither the literature nor our own hill band.
-Both are the stations with 54–55 % wet-hour fractions — the most noise-contaminated in the sample.
-Treat the high-altitude end as **unresolved**, not contradictory. This is awkward: it is the band that
-matters most for Dudh Koshi runoff.
+**Group A above ~2,500 m — HALF RESOLVED by M-A10 (2026-08-18).** Norris et al. predict unimodal,
+peaking 1500 LT above 3 km. Olangchunggola peaks 03 UTC and Lukla 02 UTC (≈ 08–09 local), matching
+neither the literature nor our own hill band.
+
+**Lukla's 02 UTC peak was a QC artefact and is now retired** — see the M-A10 record in
+`dhm-precipitation-milestones.md`. It was 6 sentinel values of −9999999 at 02–03 UTC normalised over an
+UNMASKED profile (which drives the grand mean negative and flips the normalisation's sign). Under the
+M-A3 mask Lukla peaks at **16 UTC ≡ 21 NPT**, within 2 h of Pyramid AWS3's independent 23 NPT.
+
+**Olangchunggola's 03 UTC ≡ 08 NPT peak REMAINS UNRESOLVED**, and is neither a sentinel artefact (it
+carries zero JJAS sentinels) nor noise-floor contamination (the peak is immovable across the 0.0 / 0.1 /
+0.2 mm ablation ladder). It has no co-located Pyramid station, so M-A10 cannot adjudicate it. The
+high-altitude morning peak is therefore a **single-station** open question, not a Group A pattern — the
+earlier "both are the most noise-contaminated stations (54–55 % wet-hour fractions)" framing conflated
+two stations with different causes. This is awkward: it is the band that matters most for Dudh Koshi
+runoff.
 
 ### References
 
@@ -366,13 +377,19 @@ orchestrator, not taken on report**):
 | AWS3 Lukla 2,660 m | **22, 23, 00** | hour 10 | **0.29, 0.28** |
 | AWS5 Namche 3,570 m | **23, 00, 22** | hour 11 | 0.36, 0.18 |
 
-**Our DHM Lukla peaks at 02 UTC ≡ 07:45 NPT — squarely inside Pyramid Lukla's diurnal MINIMUM, from an
-instrument 1.4 km away.** That is near anti-phase. Combined with Group A's 0.01 mm resolution and its
-sub-0.1 mm noise floor (22–34 % of its wet hours), the most likely reading is that **the Group A
-diurnal signal is noise-floor contamination rather than a physical high-altitude mode**.
-**Framed as a testable hypothesis, not a settled refutation** — our own figure is already
-`withdrawn_unreproducible` / `RAW_PROVISIONAL`, so what has changed is that an independent co-located
-instrument can now *settle* it, which nothing previously could.
+**~~Our DHM Lukla peaks at 02 UTC ≡ 07:45 NPT — squarely inside Pyramid Lukla's diurnal MINIMUM~~ —
+WITHDRAWN 2026-08-18, the figure was a QC artefact.** The 02 UTC peak is reproducible ONLY on unmasked
+data: Lukla carries 6 sentinel values of −9999999 at 02 UTC (5) and 03 UTC (1) in JJAS, which drag the
+grand mean to −2,499,750 mm; normalising against a negative mean flips the sign, so the most-contaminated
+hour reports as the largest positive "peak" (+20 normalised at 02 UTC) while genuine rain at 16 UTC
+(+472 mm) reports as −0.00. Under the M-A3 mask Lukla peaks at **16 UTC ≡ 21 NPT** — 2 h from Pyramid
+AWS3's 23 NPT, i.e. **agreement, not anti-phase**.
+
+**The H1 reading it supported is correspondingly NOT supported.** M-A10's first real run finds the
+nocturnal peak immovable across the whole ablation ladder at both co-located pairs — the opposite of the
+signature noise-floor contamination would leave. The formal verdict is INDETERMINATE (D5 adequacy: five
+monsoon seasons cannot pin a peak hour to ±2 h), so this is recorded as *evidence against H1*, not as a
+settled refutation of it. See the M-A10 record for the per-pair numbers.
 
 **⚠️ One reported figure did NOT survive checking, recorded so it is not propagated:** the
 investigating agent gave Pyramid Lukla's wet-hour fraction as 11.7 % against our 54–55 %. Recomputed

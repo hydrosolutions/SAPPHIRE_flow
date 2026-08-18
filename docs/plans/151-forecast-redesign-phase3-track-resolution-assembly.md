@@ -45,6 +45,11 @@ test per task; and T1's key-equality criterion was unbuildable (no horizon field
 structural, with the behavioural half carried by T3. The same sweep independently re-confirmed D10a, the registry
 behaviour, D34, the pyright/ruff baselines, and that **no ForecastInterface anticipated-failure violation exists**.
 
+**FIRST SLICE LANDED 2026-08-18 — T1–T4 merged via PR #182 (squash `707237e` on `main`).** Types, FI accessors +
+conformance sweep, the projector/`resolve_tracks()` reducer, and the `CandidateAwareForecastSource` contract with the
+recap adapter's `fetch_requirement` / `expected_member_ids` and `RecapGatewayConfig.cycle_cadence_hours` are now on
+`main`. **This document now drives the SECOND and FINAL slice — T5–T8** (see *Build scope for THIS run*).
+
 Phase 3 of the forecast-cycle redesign (`docs/design/forecast-cycle-redesign.md`, build-sequence item 3).
 This is the **one atomic phase** the redesign refuses to split: a per-`(track,station)` cycle has no coherent consumer
 while assembly is a single shared frame, so track resolution and per-assignment assembly land together. It drops the
@@ -71,36 +76,53 @@ implementation own the mechanism.
 **Citations** were carried from the reviewed drafts and spot-verified against the worktree; the confirming review pass
 re-verifies them before READY.
 
-## Build scope for THIS run — T1–T4 ONLY (2026-08-18)
+## Build scope for THIS run — T5–T8 (2026-08-18, second and final slice)
 
-**This run implements T1, T2, T3 and T4 only. It does NOT implement T5, T6, T7 or T8.** Those follow in a second PR
-off the same branch. Nothing outside T1–T4 may be built, wired, or "prepared" in this run.
+**This run implements T5, T6, T7 and T8.** T1–T4 are **DONE and MERGED** — PR **#182**, squash **`707237e`** on
+`main`: `types/forcing_track.py` (the D1 domain types, the two additive `AssignmentFailureCause` members and the two
+new `StationUnavailableReason` members, plus T1's spec edits), the FI **per-time-step pre-collapse accessors** and the
+construction-time **conformance sweep**, `services/track_projection.py` (the pure projector **and** `resolve_tracks()`),
+and **`CandidateAwareForecastSource`** with `fetch_requirement` / `expected_member_ids` on the recap adapter together
+with `RecapGatewayConfig.cycle_cadence_hours`. **Do not rebuild, re-derive, re-litigate or "improve" any of it —
+consume it.** T1–T4's task entries below are retained as the specification the merged slice was built to, not as work.
 
-**Why the split.** The 2026-08-18 independent sweep tested the redesign's "one atomic phase" claim and found it holds
-only for **T5–T8** — a resolved cycle has no coherent consumer until assignment-local assembly exists, and T8 cannot
-activate any proper subset of T5–T7. **T1–T4 is a separable preparation slice**: T1 adds types no production code
-consumes, T3 is a pure projector/reducer with zero production callers, and T4 adds an adapter capability no caller can
-invoke until T8. Estimated whole-phase diff is ~4,500–6,500 lines with T4 (~700–1,100) and T8 (~1,000–1,600)
-dominating — too large to review as one PR. See *Atomicity re-examined* under `## Phase dependency graph`.
+**This slice is the atomic core.** The T1–T4 cut was possible only because those tasks were dormant — types with no
+consumer, a reducer with no caller, an adapter capability nothing could invoke. **T5–T8 is genuinely inseparable:** a
+resolved cycle has no consumer until assignment-local assembly exists (T6), which has no consumer until the runner seam
+(T7), which is not reachable until flow wiring (T8) — and **T8 cannot activate any proper subset** of T5–T7. Expect
+**~3,000–4,000 lines**, with **T8 (~1,000–1,600)** dominating.
 
-**The two owner rulings that change T1–T4 work** (both ratified 2026-08-18 — build to these, not to any superseded
-text elsewhere in this document):
-- **D32 = option (b), construct-only.** T2's red-first is **construction-time only**. The delivery-level assert
-  (`adapters/forecast_interface.py:997-1021`) is **NOT** relaxed. Do not attempt end-to-end delivery of a
-  future-forced + past-only model — that is Plan 153.
-- **D34 = option (a), guard DROPPED.** The T7 route-time `AT_MOST` guard is **not built**. It belongs to the second
-  run in any case, but do not add T1–T4 scaffolding for it either. The limitation stays recorded in D10a.
+**The safety property for THIS run is DIFFERENT and WEAKER than the first slice's, and must be stated honestly.** In
+the first slice everything but T2's sweep was dormant, so "the tree stays green" rested largely on unreachability. Here
+it does not: **T8 is the task that ACTIVATES the per-track route** behind the `isinstance` dispatch, and T6 changes the
+shared FI `predict` / `predict_batch` paths the moment it lands. **Control-only forecasting stays green because the
+dispatch keeps legacy adapters and the GROUP path on the existing superset path** — and because the golden tests pin
+that byte-for-byte. **Those goldens are this run's primary safety net, not dormancy.** A golden that is weakened,
+skipped or re-baselined to accommodate the new route is a build failure, not a fix.
 
-**Honest carry-over — what T1–T4 leaves in the tree.** T1's types, T3's reducer and T4's `fetch_requirement` have
-**no production caller** at the end of this run. That is the point of the slice, not an oversight. `pyright` and
-`ruff` must still pass, and dead-code lints must **not** be silenced to accommodate them. T2 is the ONE part of this
-slice that is **globally live** — its conformance sweep runs at every FI adapter construction reached by
-`discover_models()`, for all four FI entry points including legacy-path and GROUP-only models. That is the single
-real regression risk in this run, and T2's gate carries it.
+**The two owner rulings that govern this run** (both ratified 2026-08-18 — build to these, not to any superseded text
+elsewhere in this document):
+- **D32 = option (b), construct-only.** The delivery-level assert
+  (`_assert_single_deliverable_dynamic_branch`, `adapters/forecast_interface.py:1078-1102`, called at `:827`, `:847`,
+  `:892`, `:1113`) is **NOT** relaxed, so a multi-branch model cannot reach delivery. **T6's branch-specific
+  past-variable / `max_nan` criterion is therefore asserted against a SINGLE-branch fixture** — restated in T6 below
+  and no longer gated on anything. End-to-end multi-resolution delivery is Plan 153.
+- **D34 = option (a), the guard is DROPPED.** The T7 route-time `AT_MOST` guard is **not built** — the in-scope item and
+  its red-first criterion are **removed**, not deferred. The per-feature `AT_MOST` limitation stays recorded as an
+  **accepted cost in D10a**, with the revisit trigger below.
 
-**Exit gate for this run:** the per-task gate below applied to T1–T4, plus the whole-repo gate — `uv run pytest -q` at
-`passed >= 4181` with no baseline test regressing, `pyright` ≤ 432 over `src/` via the ratchet, and `ruff check` with
-no new findings beyond the 12 pre-existing `E501`s. **Hold at PR — do not merge.**
+**Exit gate for this run:** the per-task gate below applied to T5–T8, plus the whole-repo gate — `uv run pytest -q` at
+**`passed >= 4284`** with **no baseline test regressing**; `pyright` **≤ 432** over `src/` via
+`tools/pyright_ratchet.py`; and `uv run ruff check` with **no new findings** beyond the **12 pre-existing `E501`s** in
+`alembic/versions/0037_calculated_station_formulas.py` (4) and
+`alembic/versions/0038_calculated_station_formula_trigger.py` (8). **The 4284 floor was MEASURED on 2026-08-18 against
+merged `main` `707237e`** (4284 passed / 15 skipped / 15 deselected, 695s; pyright exactly 432; ruff clean over
+`src/ tests/`). It is **not** the pre-Phase-3 4181, which predates T1–T4's own tests — do not reuse that number.
+
+**T8 additionally requires:** `uv run pytest tests/integration/test_e2e_pipeline.py -m slow -q`, explicitly overriding
+the default `not slow` exclusion (`pyproject.toml:132`), so the end-to-end control-only path actually runs.
+
+**Hold at PR — do not merge.**
 
 ## Review scope — staleness confirmation only (2026-08-18)
 **This round is a staleness confirmation, not a design review.** The only question a reviewer answers is: *what in this
@@ -534,17 +556,19 @@ anything new was **built**, and are named as such rather than counted toward the
 carry no already-green criteria. Each task
 lands its production change **and its test consumers together** — no task leaves a known failure. **Per-task exit gate
 (corrected 2026-08-18 — it is "no NEW findings versus a pinned baseline", never "clean"):** the focused modules, plus
-full `uv run pytest -q` green at **`passed >= 4181` with NO baseline test regressing** — every task is red-first and
-adds tests, so the total is **expected to rise**; the measured baseline below is a **floor, not an equality**, and a
-gate demanding `== 4181` would fail on the first new passing test; `pyright` gated by `tools/pyright_ratchet.py` against
+full `uv run pytest -q` green at **`passed >= 4284` with NO baseline test regressing** — every task is
+red-first and adds tests, so the total is **expected to rise**; the baseline is a **floor, not an equality**, and a
+gate demanding equality would fail on the first new passing test; `pyright` gated by `tools/pyright_ratchet.py` against
 `tools/pyright_baseline.json` **scoped to `src/`** (pre-push hook `pyright-ratchet`, `.pre-commit-config.yaml:61-69`),
 which must not exceed the pinned **432** — a task that legitimately reduces it regenerates the baseline via
 `tools/pyright_baseline.py` in that task's own commit; and `uv run ruff check` introducing **no new findings** beyond
 the 12 pre-existing ones already on `main`.
 
 **Measured baseline (2026-08-18, `main` `c81041e`, before any Phase 3 work):** `uv run pytest -q` = **4181 passed,
-15 skipped, 11 deselected** — the RECORD of what was measured, and the **floor** the gate above compares against, never
-an equality target; `uv run pyright` over `src/` = **exactly 432**, i.e. precisely AT the ratchet, not above it
+15 skipped, 11 deselected** — the RECORD of what was measured **before T1–T4**. It is **NOT this run's floor**: PR #182
+(`707237e`) added T1–T4's own tests, so the floor for the T5–T8 run is the re-measured post-merge count: **4284 passed
+/ 15 skipped / 15 deselected**, measured 2026-08-18 against `707237e`; `uv run pyright` over
+`src/` = **exactly 432**, i.e. precisely AT the ratchet, not above it
 (bare `uv run pyright` also reports 432 — zero is *not* the gate); `uv run ruff check` **exits 1** with 12 pre-existing
 `E501 Line too long` findings, all in `alembic/versions/0037_calculated_station_formulas.py` (4) and
 `alembic/versions/0038_calculated_station_formula_trigger.py` (8) — outside `src/`, unrelated to Phase 3. Stated so a
@@ -685,13 +709,15 @@ burning fixer rounds reformatting alembic migrations.
   - **Red-first:** an assignment needing precip 2 steps and temp 10 assembles a frame where precip's short horizon is
     accepted and temp gets 10 — **fails** under the single-scalar path. Because the NaN gate and `InputSeries`
     construction are separate paths, assert **each site independently**. A branch-specific past variable and a
-    branch-specific `max_nan` are honoured from the selected branch only — **this criterion is BLOCKED pending
-    `D32-multibranch-delivery`**: every delivery entry point rejects any >1-dynamic-branch requirement
-    (`adapters/forecast_interface.py:997-1021`), so as written it either fails its own red-first or expands into the
-    deferred multi-resolution non-goal. Under D32 option (b) it must be restated against a **single-branch** fixture.
-    The criterion is deliberately left unrewritten here — the owner has not ruled on D32.
+    branch-specific `max_nan` are honoured from the selected branch only — **restated under D32 option (b)
+    (construct-only, ratified 2026-08-18): assert it against a SINGLE-branch fixture.** The delivery-level assert
+    `_assert_single_deliverable_dynamic_branch` (`adapters/forecast_interface.py:1078-1102`, called at `:827`, `:847`,
+    `:892`, `:1113`) is **NOT** relaxed, so a multi-branch model cannot reach delivery at all; the criterion is that the
+    past- and future-known tolerance maps (and `max_nan`) are derived from **that one selected `DynamicInputSpec`**
+    rather than flattened across the requirement (`forecast_interface.py:727`, `:757`). End-to-end multi-branch
+    delivery is Plan 153 and is **out of scope here**.
     `ReadyContext.nwp_age_hours` differs between a fresh and an older-resolved assignment. **T6 asserts `ReadyContext` only** — `ModelRunContext` is not constructed
-    until `_run_single_model` (`run_station_forecast.py:239`), which T7 owns.
+    until `_run_single_model` (`run_station_forecast.py:243`), which T7 owns.
 
 - **T7 — Runner consumption seam (D10).**
   - **In scope:** resolve the two pre-run arms in `run_all_station_forecasts` before `_run_single_model`; the
@@ -701,24 +727,14 @@ burning fixer rounds reformatting alembic migrations.
     route, derive them from the context's per-feature contract instead of `model.data_requirements`: coverage
     evaluated **per feature** at `assess_future_coverage` with `required_steps=min(ceiling, contract horizon for f)`,
     the ceiling from the single per-assignment `resolve_required_steps` call (replacing the scalar coverage call at
-    `run_station_forecast.py:173-188`), ENSEMBLE dispatch (`:250-252`), and `fan_out_ensemble(..., future_features=…)`
-    (`:291-295`). Without this the flagship heterogeneous station returns `AssignmentFailure(INSUFFICIENT_COVERAGE)`
+    `run_station_forecast.py:177-192`), ENSEMBLE dispatch (`:254-256`), and `fan_out_ensemble(..., future_features=…)`
+    (`:295-299`). Without this the flagship heterogeneous station returns `AssignmentFailure(INSUFFICIENT_COVERAGE)`
     and T8's heterogeneous golden fails with no task owning the fix. The legacy route keeps the scalar call unchanged;
     `nwp_coverage.py` is **called differently, not modified**, and `horizon_semantics.py` exactly as today.
-  - **Guard on the seam's model-wide floor (D10a's accepted cost) — BLOCKED on `D34-atmost-guard-unreachable`; do not
-    build it until the owner rules.** The *concern* stands: a per-track-eligible model whose variables declare divergent
-    `horizon_semantics=AT_MOST` floors would silently receive another variable's floor. **The guard as originally
-    specified — a route-time precondition check reading those floors off the model — cannot be implemented**, for the
-    two structural reasons recorded in D10a: the pinned FI v0.1.19 has no `horizon_semantics` / `min_future_steps` field
-    at all, and, independently, the model the runner holds is a `ForecastInterfaceAdapter` that exposes no
-    `input_requirement` (no `__getattr__` passthrough, `adapters/forecast_interface.py:450`, `:462-473`), so
-    `_model_declared_floor` returns `None` before it can read anything. A check written against that seam would be
-    unreachable in production and greenable only against a raw FI fake. **If** the owner picks D34 option (b), the check
-    stays **route-time, not T2's construction-time sweep** — per-track eligibility (adapter `isinstance` dispatch + the
-    D30 overlap exclusion) is invisible to T2's repo-wide sweep, which would then also reject GROUP-only models that
-    never take this route — and it consumes the new **public** per-variable horizon-semantics accessor at the FI
-    boundary (T2 scope), never `getattr` on the discovered model. Under option (a) this bullet and its red-first are
-    deleted and the double-deadness plus its revisit trigger are recorded instead.
+  - **No `AT_MOST` guard — deliberately NOT built (D34 option (a), ratified 2026-08-18).** The per-feature `AT_MOST`
+    limitation stays recorded as an **accepted cost in D10a**; **revisit trigger:** an FI bump to **>= v0.1.20** **AND**
+    a per-track-eligible model declaring divergent per-variable `min_future_steps`. Nothing is to be built, stubbed or
+    left `TODO` for it in this run.
   - **Transitional API:** the seam changes the input shape of `_run_single_model` **and** `run_all_station_forecasts`,
     so T7 must keep every current caller green — including the integration caller
     (`tests/integration/test_e2e_pipeline.py:653`) — either by retaining a behaviour-preserving entry point or by
@@ -729,19 +745,16 @@ burning fixer rounds reformatting alembic migrations.
     records `TRACK_UNAVAILABLE` and advances the chain; a resolved-but-partial context trips the pre-run assert as an
     assignment-local failure; a **legacy ENSEMBLE caller** still performs coverage and fan-out unchanged (the scalar
     `assess_future_coverage` call, byte-for-byte) — a **REGRESSION gate, EXPECTED to stay GREEN**, since that path
-    already exists (`services/run_station_forecast.py:173`) and is already tested
+    already exists (`services/run_station_forecast.py:187`) and is already tested
     (`tests/unit/services/test_run_station_forecast_fanout.py:312`); it proves T7 broke nothing and is **not** one of
     T7's genuinely failing tests. **D10a:** a heterogeneous `ReadyContext` — precip contracted at 2
     steps, temp at 10, frame assembled to match — reaches `predict` instead of returning
     `AssignmentFailure(INSUFFICIENT_COVERAGE)`; this **fails today**, because the scalar `required_steps=10` makes
     `min(counts)=2` inadequate (`nwp_coverage.py:144-150`). Paired with the opposite case so the gate is proven
     *tightened, not deleted*: a `ReadyContext` whose frame is genuinely short on **one** feature relative to **that
-    feature's** contracted horizon still fails `INSUFFICIENT_COVERAGE`. **The guard — BLOCKED pending
-    `D34-atmost-guard-unreachable`, and dropped entirely under option (a):** a per-track-eligible model whose variables
-    declare `AT_MOST` with **differing** `min_future_steps` fails loudly (chain advances) instead of silently applying
-    the model-wide max floor to every feature, while uniform — or absent — floors resolve unchanged. Under option (b)
-    this criterion must be asserted through the new public FI accessor against an **adapter-wrapped** model — the
-    production shape — not a raw FI fake, which would make the test vacuous (D10a(b)). And an
+    feature's** contracted horizon still fails `INSUFFICIENT_COVERAGE`. **There is NO `AT_MOST` guard
+    criterion — D34 option (a) dropped it outright (see the in-scope note above); do not write one, and do not treat
+    its absence as a gap to fill.** And an
     equality assertion that the contract's mode and feature set match `model.data_requirements`' for a single-branch
     model, pinning D10a's mode/feature-set substitution as a no-behaviour-delta.
 
@@ -755,7 +768,7 @@ burning fixer rounds reformatting alembic migrations.
     on 2026-08-18: the resolver it feeds does not exist until T5, and flow integration is T8's; D24's decision is
     unchanged). Add the cross-cycle preflight at the
     top of the per-station persist block, and the new log events. **Set `retries=` on the candidate-fetch task** from
-    `RecapGatewayConfig.max_retries` (`config/recap_gateway.py:51`) — today that field is parsed but consumed nowhere
+    `RecapGatewayConfig.max_retries` (`config/recap_gateway.py:60`) — today that field is parsed but consumed nowhere
     and `_fetch_nwp_task` (`flows/run_forecast_cycle.py:1009-1015`) sets no `retries=`, so T4's "raise transients so a
     retry can fire" design would otherwise have **no** consumer and a transient would terminate the track on first
     failure (reviewer major-fix).
@@ -817,7 +830,7 @@ burning fixer rounds reformatting alembic migrations.
     heterogeneous per-assignment golden, the cross-cycle fail-loud preflight with zero writes, and the fatal-exit
     `FORECAST_FRESHNESS` record above.
   - **Exit gate (whole repo):** the same baseline-relative gate as every task (full `uv run pytest -q` green at
-    **`passed >= 4181` with no baseline test regressing** — the phase's own new tests are expected to push the total
+    **`passed >= 4284` with no baseline test regressing** — the phase's own new tests are expected to push the total
     well above the floor; `pyright` at or below the ratcheted **432** over `src/`; `ruff check` with no new findings beyond the
     12 pre-existing alembic `E501`s) — **plus** `uv run pytest tests/integration/test_e2e_pipeline.py -m slow -q`,
     explicitly overriding the default `not slow` exclusion (`pyproject.toml:132`; the `slow` marker is declared at
@@ -847,9 +860,9 @@ adapter.
 holds only for **T5–T8**: a resolved cycle has no consumer until assignment-local assembly, and T8 cannot activate any
 proper subset. **T1–T4 is a separable capability/preparation slice** — types, FI accessors, the pure projector/reducer,
 and the source contract — that ships no behaviour change on its own. Estimated diff is dominated by **T4 (~700–1,100
-lines)** and **T8 (~1,000–1,600)**, with T5–T7 the next cluster. **Consequence for PR strategy only:** if this build is
-ever split, the **T1–T4 / T5–T8 boundary is the single cleanest cut**. Recorded as a finding — the phase graph, the task
-list and the plan's structure are unchanged.
+lines)** and **T8 (~1,000–1,600)**, with T5–T7 the next cluster. **Consequence for PR strategy only:** the **T1–T4 / T5–T8
+boundary is the single cleanest cut** — and the build **WAS** split there: T1–T4 merged as PR #182 (`707237e`); T5–T8
+is this run. The phase graph, the task list and the plan's structure are unchanged by that split.
 
 ## Non-goals
 - Removing the legacy station-superset path (Phase 4).
