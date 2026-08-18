@@ -83,9 +83,22 @@ DEFAULT_RELATIVE_TOLERANCE: Final[float] = 0.05
 # but cannot count toward CaravanValidationResult.is_full_parity_pass.
 DEFAULT_MIN_COVERAGE_FRACTION: Final[float] = 0.9
 
-# Caravan's published training window (Plan 183 T3).
-CARAVAN_WINDOW_START: Final[date] = date(1981, 1, 1)
-CARAVAN_WINDOW_END: Final[date] = date(2020, 12, 31)
+# The climatology window T3 recomputes over. Owner decision 2026-08-18: use the
+# FULL ERA5-Land record, not a Caravan-specific sub-window. These bounds are the
+# sloth-dynamic store's measured extent (`v1/era5/*.zarr`, 16802 daily steps,
+# 1980-01-01 -> 2025-12-31, verified against the live store on 2026-08-18) — they
+# are a DEFAULT, not a truth: a deployment whose reference statics were computed
+# over a different window MUST override them via
+# `DeploymentConfig.climatology_window`, or T3 compares across windows and the
+# tolerance measures the wrong thing. The end bound ages as the store grows;
+# `Era5LandReanalysisAdapter.discover_boundary()` reports the live maximum.
+ERA5_LAND_RECORD_START: Final[date] = date(1980, 1, 1)
+ERA5_LAND_RECORD_END: Final[date] = date(2025, 12, 31)
+
+# Back-compat aliases: T3's window was hardcoded to Caravan's 1981-2020 before
+# the owner decision above.
+CARAVAN_WINDOW_START: Final[date] = ERA5_LAND_RECORD_START
+CARAVAN_WINDOW_END: Final[date] = ERA5_LAND_RECORD_END
 
 CARAVAN_PREFIX: Final[str] = "caravan:"
 

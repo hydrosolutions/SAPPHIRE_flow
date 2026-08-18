@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import timedelta
+from datetime import date, timedelta  # noqa: TC003
 from pathlib import Path  # noqa: TC003
 from typing import Any, Literal, Self, cast
 
@@ -123,6 +123,26 @@ class DeploymentConfig(BaseModel):
     # production Nepal ingest (§ "SAPPHIRE Data Gateway") — that remains a
     # separate, later integration. v0 (Swiss) has no reason to select this.
     reanalysis_source: Literal["single", "hybrid", "era5_land"] = "hybrid"
+
+    # Per-organisation climatology window for the ERA5-Land/Caravan parity check
+    # (Plan 183 T3). `None` uses the full ERA5-Land record
+    # (`services/era5_land_validation.ERA5_LAND_RECORD_START/_END`). Set it when
+    # this deployment's reference static attributes were computed over a
+    # DIFFERENT window — comparing a recomputation over one window against
+    # indices published for another is not a parity test, and a small tolerance
+    # will simply be measuring the offset between the two windows.
+    climatology_window: tuple[date, date] | None = None
+
+    @field_validator("climatology_window")
+    @classmethod
+    def _window_is_ordered(
+        cls, value: tuple[date, date] | None
+    ) -> tuple[date, date] | None:
+        if value is not None and value[0] >= value[1]:
+            raise ValueError(
+                f"climatology_window start {value[0]} must precede end {value[1]}"
+            )
+        return value
 
     alert_model_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
     forecast_combination_strategy: ModelCombinationStrategy = (

@@ -393,9 +393,12 @@ class TestValidateEra5LandAgainstCaravan:
         assert result.agreements[0].within_tolerance is True
         assert result.skips == []
         assert len(result.coverage) == 1
-        assert result.coverage[0].expected_days == 14610
+        # Derived, never hardcoded: the default window is the FULL ERA5-Land
+        # record (owner decision 2026-08-18) and widens as the store grows.
+        expected_days = (mod.ERA5_LAND_RECORD_END - mod.ERA5_LAND_RECORD_START).days + 1
+        assert result.coverage[0].expected_days == expected_days
         assert result.coverage[0].compared_days == 2
-        assert result.coverage[0].coverage_fraction == pytest.approx(2 / 14610)
+        assert result.coverage[0].coverage_fraction == pytest.approx(2 / expected_days)
         # The one thing a caller must not be able to miss:
         assert result.is_full_parity_pass is False
         assert result.basins_below_coverage_floor == result.coverage
