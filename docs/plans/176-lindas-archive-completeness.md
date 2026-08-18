@@ -129,6 +129,29 @@ Recorded as a measurement with a date, not a settled property: it is exactly the
 changed once and can change again (a return to NWP-heavy cycles would plausibly bring it back).
 **Re-measure before treating starvation as either present or absent.**
 
+### D2's failure mode, OBSERVED live (2026-08-18 08:37 UTC)
+
+Not a prediction — it happened during Plan 175's deployment, and it is the clearest evidence in this
+plan. When the collector moved from `5 * * * *` to `37 * * * *`, both schedules fired inside the same
+hour. The `:37` run:
+
+```
+flow run : 2026-08-18 08:37:00.026  Completed      <- ran, and reported success
+archive  : 08:05:03  obs-20260818T080000Z.parquet  <- written by the earlier :05 run
+           (nothing written at 08:37)
+```
+
+The `:37` run computed `cycle_at = 08:00` (hour-truncated from the clock), found that path already
+present, dedup-skipped, and **archived nothing while reporting `Completed`.**
+
+In Plan 175's transition this is harmless — a one-off, and from 09:37 each run claims its own hour. But
+it is **exactly** what D2 exists to prevent, executed in front of us: a clock-derived `cycle_at` makes
+every run after the first in its clock bucket a silent no-op. Under D1's ~20 runs/hour that would be
+**19 green runs an hour archiving nothing**, looking perfectly healthy in Prefect.
+
+This retires the open question of whether D2's data-derived key is over-clever. It is load-bearing: a
+clock-derived key cannot survive decoupling the poll rate from the grid.
+
 ### Snapshot size and storage
 
 | Per snapshot | Size |
@@ -215,16 +238,27 @@ pickup latency). Neither mechanism is currently costing us slots. Consequences:
 
 ## Decisions
 
-**D1 — over-poll; do not match the poll rate to the grid.** A grid-matched schedule with a fixed offset
-(e.g. `7,17,27,37,47,57`) cannot deliver completeness: the lag is a band, not a constant, so a late slot
-and an early next slot can both become visible **between** two polls; the poll sees only the newer, and
-the older is gone. **Locked: max inter-poll gap ≤4 min** (a ~2.7× margin on the only clean 10.8 min
-publish gap), **every scheduled minute non-divisible by 5** so the collector never shares a minute with
-`ingest-observations` at `*/5`, and the gap bound must hold **cyclically** (across the `:59 → :01` wrap),
-not just within the hour. Properties are locked, **not a literal cron string**; a test asserts them. A
-satisfying example: `1,4,7,11,14,17,21,24,27,31,34,37,41,44,47,51,54,57` — cyclic gaps 3–4 min, none
-divisible by 5. Also lock a **≥3-minute minimum** gap so a valid-but-clustered list cannot interact badly
-with Plan 175's 120 s total retry deadline.
+**D1 — over-poll; do not match the poll rate to the grid.**
+
+> **Why not simply poll every 10 minutes, to match the publish grid?** *Because that skips
+> observations.* The publish lag is a **band, not a constant**. If one slot publishes late and the next
+> publishes early, both become visible **between** two 10-minute polls — the poll sees only the newer
+> one, and the older is **gone forever**, because LINDAS keeps no history. Matching the poll rate to the
+> grid rate is only safe with zero jitter, and there is jitter. This killed the first version of this
+> decision (`7,17,27,37,47,57`), which is recorded as rejected for exactly this reason.
+
+**Locked: max inter-poll gap ≤4 min** — roughly **2.5× more often than the grid**, ~18–20 runs/hour, a
+~2.7× margin on the only clean 10.8 min publish gap observed. Every scheduled minute must be
+**non-divisible by 5**, so the collector never shares a minute with `ingest-observations` at `*/5`, and
+the gap bound must hold **cyclically** (across the `:59 → :01` wrap), not just within the hour.
+Properties are locked, **not a literal cron string**; a test asserts them. A satisfying example:
+`1,4,7,11,14,17,21,24,27,31,34,37,41,44,47,51,54,57` — cyclic gaps 3–4 min, none divisible by 5. Also
+lock a **≥3-minute minimum** gap so a valid-but-clustered list cannot interact badly with Plan 175's
+120 s total retry deadline.
+
+Polling faster still is cheap (capacity is ~45 req/min and D2 keeps storage tracking the grid, not the
+poll rate), so if T7's longer measurement ever shows a publish gap under ~8 min, tighten the bound
+rather than accept the risk.
 
 *Honest justification.* The clean evidence suggests jitter of ~1 minute, i.e. small. Over-polling is
 chosen not because BAFU is erratic but because **two clean data points cannot bound jitter**, and the
@@ -232,7 +266,8 @@ failure is asymmetric: one unnoticed excursion destroys a slot permanently and u
 insurance costs a rounding error against a measured ~45 req/min capacity. This makes the jitter question
 moot rather than answering it from thin evidence. Load: one request per run, ~20/hour.
 
-**D2 — `cycle_at` is derived from the DATA, not the clock.** Once poll rate is decoupled from the grid, a
+**D2 — `cycle_at` is derived from the DATA, not the clock.** *(Its failure mode was OBSERVED live on
+2026-08-18 — see § Evidence. This is not a theoretical concern.)* Once poll rate is decoupled from the grid, a
 clock-derived key is actively wrong: polls at `12:22` and `12:24` both bucket to `12:20`, so the second
 dedup-skips even if it carried a genuinely new slot. **Locked: `cycle_at` = the response's newest
 `measurement_time`, truncated to the 10-minute grid.** The archive is keyed by *what the data is*, not
