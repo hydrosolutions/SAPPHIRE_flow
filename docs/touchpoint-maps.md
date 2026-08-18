@@ -25,6 +25,13 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
   renaming, unit conversion and precipitation **de-accumulation** are adapter-private if-chains, and
   `types/forcing_schema.py` declares the canonical contract with **zero consumers**. A
   rate-vs-accumulation mismatch therefore produces plausible **wrong** forcing rather than an error.
+  ⚠️ **Plan-number collision, both filed 2026-08-18**: `183-forcing-canonicalisation-seam.md`
+  (this DRAFT) is a DIFFERENT plan from `183-era5-land-swiss-forcing.md` (READY, implemented) — do
+  not conflate them. `Era5LandReanalysisAdapter` (Plan 183 era5-land) is exactly the "second adapter"
+  F1 warns about: it follows the SAME pre-existing adapter-private mapping-table pattern
+  `meteoswiss_open_data_reanalysis.py` uses (not the not-yet-built seam), so it is consistent with
+  today's convention but does not reduce F1's risk — worth the owner's attention before a THIRD
+  source (e.g. IMERG/M-A5b) is added.
   Also: `exact_extract_grid_extractor.py:98` **overwrites** the CRS (`.rio.write_crs`) instead of
   reading it, so a non-4326 grid is silently mis-georeferenced; and `adapters/__init__.py` is empty —
   there is no registry to extend.
@@ -168,6 +175,15 @@ gates.
   retired the `camels-ch`/POINT weather binding (migration `0033`) — MUST NOT
   write a `camels-ch` `station_weather_sources` row; only the non-weather
   `icon_ch2_eps`/BASIN_AVERAGE forecast binding is written alongside it
+- ERA5-Land REANALYSIS bindings (Plan 183, sloth-dynamic store) mirror the same
+  bind-then-backfill shape via a SEPARATE one-shot entrypoint —
+  `bind_era5_land_reanalysis_fleet` / `run_era5_land_backfill`
+  (`services/era5_land_backfill.py`), driven by
+  `scripts/backfill_era5_land_history.py` (fixer round, Plan 183: the T4
+  `reanalysis_source="era5_land"` reader mode has no effect until this backfill
+  has populated `historical_forcing` under `ForcingSource.ERA5_LAND` — selecting
+  the mode alone does not write anything). Deliberately NOT wired into station
+  onboarding's Step 4c — see `services/era5_land_backfill.py`'s module docstring.
 - preprocessing: `resample_to_time_step` (precip SUM, temp/discharge MEAN,
   `swe`/`snow_depth` MEAN, `snowmelt` SUM — Plan 145 D2 canonical snow keys in
   `_V0_AGGREGATION_FALLBACK`), NWP hourly→daily + issue-time filter + horizon

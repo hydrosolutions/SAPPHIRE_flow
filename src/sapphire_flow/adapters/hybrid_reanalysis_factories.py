@@ -97,11 +97,22 @@ def default_hybrid_forcing_source(
 def select_reanalysis_source(
     *,
     forcing_store: HistoricalForcingStore,
-    mode: Literal["single", "hybrid"],
+    mode: Literal["single", "hybrid", "era5_land"],
 ) -> WeatherReanalysisSource:
     """Pick the read-side reanalysis source for the configured ``mode``."""
     if mode == "hybrid":
         return default_hybrid_forcing_source(forcing_store=forcing_store)
+    if mode == "era5_land":
+        # Plan 183 T4: reads the already-ingested `historical_forcing` rows
+        # the Plan 183 ERA5-Land backfill wrote under ForcingSource.ERA5_LAND
+        # (ERA5-Land read directly from the `sloth-dynamic` store — the same
+        # store aquacast's training lineage reads), via the SAME generic
+        # per-source reader every other single-source mode uses. Distinct
+        # from the Data-Gateway-mediated ERA5-Land path
+        # `architecture-context.md` describes for production Nepal ingest.
+        return PerSourceStoreReader(
+            forcing_store=forcing_store, source=ForcingSource.ERA5_LAND
+        )
     from sapphire_flow.adapters.store_backed_reanalysis import (
         StoreBackedReanalysisSource,
     )

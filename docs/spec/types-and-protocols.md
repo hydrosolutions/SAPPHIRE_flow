@@ -3577,7 +3577,19 @@ cost — `HydroScraperAdapter` and `ReplayStationAdapter` both satisfy it; a
 
 #### WeatherReanalysisSource
 
-Retained for v1 (Nepal / ERA5-Land). Not implemented in v0.
+Retained for v1 (Nepal / ERA5-Land). `MeteoSwissOpenDataReanalysisAdapter`
+implements it for v0 (Swiss). **Plan 183** adds a second concrete
+implementation, `Era5LandReanalysisAdapter` (`adapters/era5_land_reanalysis.py`)
+— reads ERA5-Land basin-averaged forcing DIRECTLY from
+`s3://sloth-dynamic/v1/era5/`, the same store aquacast's training lineage
+(`aquaire`) reads, restricted to `{"precipitation", "temperature"}` (radiation
+deferred). This exists to VALIDATE v0 Swiss models against the training
+lineage (Plan 183 T3 — Caravan climate-index parity), and is selectable via
+`DeploymentConfig.reanalysis_source = "era5_land"`
+(`adapters/hybrid_reanalysis_factories.py::select_reanalysis_source`) — it is
+distinct from the eventual Data-Gateway-mediated ERA5-Land path
+`architecture-context.md` describes for production Nepal ingest, which
+remains unimplemented.
 
 ```python
 class WeatherReanalysisSource(Protocol):

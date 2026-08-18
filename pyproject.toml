@@ -45,6 +45,7 @@ dependencies = [
     "recap-dg-client",
     "requests>=2.33.1",
     "rioxarray>=0.19.0",
+    "s3fs>=2024.1.0",  # Plan 183: read-only zarr access to s3://sloth-dynamic
     "scikit-learn>=1.9.0",
     "shapely",
     "sqlalchemy>=2.0",
