@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-18
 plan: 183
 title: ERA5-Land forcing from the sloth-dynamic store — the lineage aquacast was trained on
@@ -10,6 +10,11 @@ supersedes: []
 ---
 
 # Plan 183 — ERA5-Land forcing from the sloth-dynamic store
+
+**READY** (owner, 2026-08-18). D1 = 5 % relative per basin; D2 = two forcings, radiation deferred.
+Reviewed across three passes: one blocker (the `mean_temperature` vs `temperature` canonical-name
+error, which would have failed SILENTLY), a missing chunked-backfill precedent, an unimplementable
+cell-count acceptance, and a correction to T3’s framing. All folded. **Keep it small when building.**
 
 ## ⚠️ Note to reviewers: proportionality
 
