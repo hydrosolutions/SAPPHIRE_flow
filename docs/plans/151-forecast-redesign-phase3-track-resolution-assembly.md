@@ -34,6 +34,17 @@ under *Open items → Requires owner re-ratification* (D21, D32, and — added b
   that does not expose `input_requirement` at all). **Revisit trigger:** an FI bump to >= v0.1.20 **AND** a
   per-track-eligible model declaring divergent per-variable `min_future_steps`. The per-feature `AT_MOST` limitation
   stays RECORDED in D10a as an accepted cost. Option (b) was rejected as gold-plating a doubly-unreachable path.
+
+**Second independent Codex sweep, 2026-08-18 (after the rulings above).** A correctness/buildability pass found four
+further defects, all folded in and none reopening a decision: T1's spec-edit scope omitted two corrections that left
+the AUTHORITATIVE spec contradicting D4/D22 (mixed-mode "SPLITS" vs rejected) and D1/D12 (`nwp_source: NwpSource` vs
+`str`); T4 was assigned cadence threading it cannot perform (the resolver does not exist until T5, flow wiring is
+T8's) — **T4 adds the config field, T5 defines the parameter, T8 threads it**; four criteria labelled red-first are
+already GREEN and are now marked **regression gates**, with the preamble requiring at least one genuinely failing
+test per task; and T1's key-equality criterion was unbuildable (no horizon field exists to vary) and is now
+structural, with the behavioural half carried by T3. The same sweep independently re-confirmed D10a, the registry
+behaviour, D34, the pyright/ruff baselines, and that **no ForecastInterface anticipated-failure violation exists**.
+
 Phase 3 of the forecast-cycle redesign (`docs/design/forecast-cycle-redesign.md`, build-sequence item 3).
 This is the **one atomic phase** the redesign refuses to split: a per-`(track,station)` cycle has no coherent consumer
 while assembly is a single shared frame, so track resolution and per-assignment assembly land together. It drops the
@@ -108,7 +119,9 @@ plan is now wrong because `main` moved 142 commits?* Not whether the design is t
   (a false red-first); (4) an exit gate that cannot pass; (5) a collision with work that landed since 2026-08-11.
   Anything else is out of scope.
 - **Proportionality rule — growth is a defect signal.** This document is a deliberate reconstruction after two `/plan`
-  runs over-expanded it (999 → 1316 → 1940 lines) by re-litigating settled design. It is now ~933 lines, having absorbed three verified correction rounds; growth beyond that is a defect signal. A reviewer
+  runs over-expanded it (999 → 1316 → 1940 lines) by re-litigating settled design. It is now ~1035 lines, having
+  absorbed four verified correction rounds (staleness re-anchoring, the `plan` loop, and two independent Codex
+  sweeps); growth beyond that is a defect signal. A reviewer
   proposing net-new scope, new tasks, or new decisions has mis-scoped the round; so has a round that ends longer than
   it began by more than the corrections require.
 
@@ -137,9 +150,11 @@ plan is now wrong because `main` moved 142 commits?* Not whether the design is t
    the locked one-cycle-per-track contract (`docs/spec/types-and-protocols.md:3289-3294,3313-3316`); see D26 for the
    reversal and its cost.
 4. **Walk-back cadence comes from configuration, not a third Protocol member** — the more proportional choice given
-   the plan's own precedent for config-threaded policy inputs. **No such field exists today**, so T4 **adds and
-   validates** `RecapGatewayConfig.cycle_cadence_hours` (`config/recap_gateway.py`) and threads it into the `services/`
-   resolver on **both** construction branches, exactly as `max_cycle_age_hours` is threaded. The earlier
+   the plan's own precedent for config-threaded policy inputs. **No such field exists today**, so **T4 adds and
+   validates** `RecapGatewayConfig.cycle_cadence_hours` (`config/recap_gateway.py`); **T5** defines the `services/`
+   resolver parameter that consumes it, and **T8** threads it on **both** construction branches, exactly as
+   `max_cycle_age_hours` is threaded. *(Task split corrected 2026-08-18 — the ruling itself, cadence-from-configuration
+   rather than a third Protocol member, is unchanged and NOT reopened.)* The earlier
    "the adapter already carries the constant it needs" phrasing was **withdrawn** — the adapter's private constant is
    not a contract, and "configuration" and "adapter constant" cannot both be the source. See D24.
 
@@ -509,8 +524,14 @@ route explicitly (the scalar `assess_future_coverage` call, byte-for-byte). **T8
 **The safety CONCLUSION is unchanged — control-only stays green at every task gate — but it rests on two facts, not on
 unreachability, and this plan says so explicitly:** (i) every current FI entry point *conforms* to T2's sweep (the four
 of `pyproject.toml:165-175`, per D21's standing check), and (ii) every current model's per-variable horizons are
-*uniform*, so T6's slice is a no-behaviour-delta on them. Every task is **red-first**: the acceptance test is
-written to fail against pre-task code, then the implementation turns it green, and test soundness is proven. Each task
+*uniform*, so T6's slice is a no-behaviour-delta on them. Every task must carry **at least one separately named
+acceptance test that genuinely FAILS against pre-task code**, which the implementation then turns green, with test
+soundness proven. **A preservation / regression gate does NOT satisfy that requirement** (corrected 2026-08-18 — the
+blanket "every criterion is red-first" claim was false): several criteria below are explicitly labelled *REGRESSION
+gate, EXPECTED to stay GREEN* — T2's multi-spatial guard, T4's legacy `fetch_forecasts` behaviour, T7's legacy ENSEMBLE
+caller, and T8's same-cycle / trackless / group-only / legacy-adapter cases. They prove nothing was **broken**, not that
+anything new was **built**, and are named as such rather than counted toward the red-first requirement. T3, T5 and T6
+carry no already-green criteria. Each task
 lands its production change **and its test consumers together** — no task leaves a known failure. **Per-task exit gate
 (corrected 2026-08-18 — it is "no NEW findings versus a pinned baseline", never "clean"):** the focused modules, plus
 full `uv run pytest -q` green at **`passed >= 4181` with NO baseline test regressing** — every task is red-first and
@@ -539,12 +560,24 @@ burning fixer rounds reformatting alembic migrations.
     members, the per-`(station, feature, member, horizon)` wording of the completeness gate (`:3289-3294`,
     `:3308-3311`), the `OutputHorizon` deferral, **and the `fetch_requirement` return-type change from
     `CandidateFetchResult` to the raw fetch outcome (`:3210-3213`, `:3318-3324`), with `CandidateFetchResult`
-    constructed services-side (D31)** — so READY ratifies these authoritative contract changes rather than deferring
-    them. **`TrackFetchResult` keeps its single `resolved_cycle` field unchanged** (`:3313-3316`): Phase 3 does **not**
+    constructed services-side (D31)**; **the mixed-mode granularity note (`:3245`), rewritten from "a mixed-mode
+    requirement SPLITS into per-mode `ForcingRequired`" to: a mixed-mode requirement is REJECTED at construction,
+    raising `UnsupportedModelRequirementError` (D4 as corrected; and D22 — exactly ONE forcing track per assignment, so
+    splitting is a follow-on, not this contract)**; **and `ForcingTrackKey.nwp_source` (`:3256`), retyped from
+    `NwpSource  # existing NewType/enum` to the repo's existing `str` — no `NwpSource` type exists
+    (`types/station.py:106`; D1, D12)** — so READY ratifies these authoritative contract changes rather than deferring
+    them. Those last two correct an AUTHORITATIVE spec that today contradicts a settled decision; neither reopens the
+    decision (added 2026-08-18 — they were previously owned by no task). **`TrackFetchResult` keeps its single `resolved_cycle` field unchanged** (`:3313-3316`): Phase 3 does **not**
     introduce a per-assignment or per-horizon-class cycle (D5, D26).
   - **Red-first:** `FutureSteps(value=0)` and `value=-1` raise `ValueError`; `ForcingTrackKey` is hashable and usable
-    as a dict key, with keys built from differently-ordered inputs comparing and hashing equal; two keys differing only
-    in per-feature horizon values are equal (horizons are not in the dedup identity); keys differing in one feature
+    as a dict key, with keys built from differently-ordered inputs comparing and hashing equal; the key carries **no
+    horizon field at all** — asserted **structurally** (its fields are exactly the five ratified ones: `nwp_source`,
+    `ensemble_mode`, `time_step`, `spatial_representation`, `features`, and no horizon-valued attribute exists), because
+    D1 excludes horizons from `ForcingTrackKey` entirely, so "two keys differing only in horizon" is not constructible
+    at T1's own abstraction boundary (corrected 2026-08-18; the **behavioural** half — that two requirements differing
+    only in per-feature horizons project to the SAME key and dedup onto one `ResolvedTrackRequest` — belongs to **T3**,
+    which owns the projector and reducer, and is already covered by T3's dedup criterion: cross-referenced here, not
+    duplicated); keys differing in one feature
     name, mode, `time_step`, or spatial representation are not equal; the outcome and projection unions narrow via
     `isinstance`/`match`; the two new enum members exist and are distinct.
 
@@ -564,23 +597,34 @@ burning fixer rounds reformatting alembic migrations.
     owner's answer there; a **past-only branch** exposes empty future horizons and does
     **not** raise from a mode accessor; multi-product and mixed-mode branches raise
     `UnsupportedModelRequirementError`; the existing multi-spatial guard is unchanged (it now raises that same type
-    since Plan 156, `forecast_interface.py:539`).
+    since Plan 156, `forecast_interface.py:539`) — that last one is a **REGRESSION gate, EXPECTED to stay GREEN**: it
+    already raises `UnsupportedModelRequirementError` (`adapters/forecast_interface.py:537`) with a passing test at
+    `tests/unit/adapters/test_forecast_interface_adapter.py:235`, so it proves T2 broke nothing and is **not** one of
+    T2's genuinely failing tests.
 
 - **T3 — Track projection + `resolve_tracks()` (D2, D5).**
   - **In scope:** the pure `services/` projector over the explicit join, and the deterministic reducer.
   - **Red-first:** the projector maps a join to `ForcingRequired` with per-feature horizons and the locked key shape; a
     model whose **selected branch** has no `future_known` projects to `NoForcingRequired` **even when another branch
     has future forcing**; a fallback model projects to `NoForcingRequired`; a non-FI multi-feature model broadcasts its
-    scalar horizon to every feature; two assignments with identical track fields dedup to one `ResolvedTrackRequest`
-    whose `fetch_horizons` is the per-feature max, with each assignment's own horizons retained; reducer output order
+    scalar horizon to every feature; two assignments with identical track fields **but DIFFERENT per-feature horizons**
+    project to the same `ForcingTrackKey` and dedup to one `ResolvedTrackRequest`
+    whose `fetch_horizons` is the per-feature max, with each assignment's own horizons retained — this criterion
+    **already covered the dedup case**; the horizon divergence is made explicit here so that it carries the behavioural
+    half of T1's key-equality assertion (A4), with no new criterion added; reducer output order
     is deterministic.
 
 - **T4 — Source contract + adapter migration (D6, D7 containment).**
   - **In scope:** `CandidateAwareForecastSource` (`@runtime_checkable`) in `protocols/adapters.py`;
     `fetch_requirement` + `expected_member_ids` on `recap_gateway` as a **pure single-cycle** fetch with **no** internal
     walk-back and **per-HRU containment**; wire the adapter factory's return type for dispatch. **Add and validate
-    `RecapGatewayConfig.cycle_cadence_hours`** (the walk-back cadence source, ruling 4 / D24) and thread it alongside
-    `max_cycle_age_hours` on both construction branches. Legacy adapters and fakes untouched.
+    `RecapGatewayConfig.cycle_cadence_hours`** (the walk-back cadence source, ruling 4 / D24) — **the configuration
+    field ONLY**. **Threading it is NOT T4's** (corrected 2026-08-18): D7 puts the walk-back resolver in `services/`,
+    **T5** creates that resolver and defines the cadence parameter that consumes the value, and **T8** owns flow
+    integration and therefore threads the configured cadence through both construction branches. Today those two
+    branches only construct and return the adapter (`flows/run_forecast_cycle.py:465-478`), so T4 cannot thread a bound
+    into a resolver that does not exist yet — and parking the policy on the adapter instead would violate D7.
+    Legacy adapters and fakes untouched.
   - **Ownership: the adapter classifies TRANSPORT, the service classifies COMPLETENESS** (reviewer major-fix). The
     spec sketches `fetch_requirement -> CandidateFetchResult`, but the adapter must not judge completeness (D7/D8) —
     it cannot, since the threshold is a `services/`-side `ResolvedTrackRequest.fetch_horizons`. `fetch_requirement`
@@ -602,12 +646,19 @@ burning fixer rounds reformatting alembic migrations.
     `tests/unit/adapters/test_recap_gateway.py:644`); **a MALFORMED partial-control payload
     (Plan 154's control-coverage gate, `recap_gateway.py:927-935`) is candidate-FATAL and does NOT become
     walk-back-eligible** — the resolver must not try an older cycle after it (D7's locked mapping); a transport failure
-    is **raised** rather than returned as a status; an auth/config error is fatal, never walked back. Legacy
-    `fetch_forecasts` behaviour is asserted **unchanged** throughout.
+    is **raised** rather than returned as a status; an auth/config error is fatal, never walked back;
+    **`cycle_cadence_hours` parses and validates** — a valid value round-trips through the parsed `RecapGatewayConfig`
+    and a non-positive / malformed value is rejected with the typed configuration error; this fails today because the
+    field does not exist (`config/recap_gateway.py:29`). **T4 asserts CONFIG PARSING AND VALIDATION ONLY — never
+    threading**, since the consumer (T5's resolver) and the wiring (T8) are both outside this task. Legacy
+    `fetch_forecasts` behaviour is asserted **unchanged** throughout — that one is a **REGRESSION gate, EXPECTED to
+    stay GREEN**, already covered by the legacy regression tests from `tests/unit/adapters/test_recap_gateway.py:2318`;
+    it proves T4 broke nothing and is **not** one of T4's genuinely failing tests.
 
 - **T5 — Per-track resolution: walk-back policy + completeness + `TrackFetchResult` (D7, D8).**
   - **In scope:** the pure fetch/validate half (walk-back bounded by `max_cycle_age_hours` threaded on **both**
-    construction branches; the **per-station** completeness validator keyed on `expected_member_ids` and on the track's
+    construction branches, plus the **cadence parameter that consumes T4's `RecapGatewayConfig.cycle_cadence_hours`** —
+    T5 defines the parameter, T8 supplies the value; the **per-station** completeness validator keyed on `expected_member_ids` and on the track's
     `fetch_horizons` max, plus the candidate verdict derived from the per-station verdicts) and the serial convergence
     half (persist **only complete stations**, readback, per-station availability, complete `TrackFetchResult`). Name the
     conversion boundary between the candidate payload and the records the validator reads — there are now **two**
@@ -677,7 +728,10 @@ burning fixer rounds reformatting alembic migrations.
     artifact store, model-state store, and QC were not accessed** for the failing arm; an unavailable-track assignment
     records `TRACK_UNAVAILABLE` and advances the chain; a resolved-but-partial context trips the pre-run assert as an
     assignment-local failure; a **legacy ENSEMBLE caller** still performs coverage and fan-out unchanged (the scalar
-    `assess_future_coverage` call, byte-for-byte). **D10a:** a heterogeneous `ReadyContext` — precip contracted at 2
+    `assess_future_coverage` call, byte-for-byte) — a **REGRESSION gate, EXPECTED to stay GREEN**, since that path
+    already exists (`services/run_station_forecast.py:173`) and is already tested
+    (`tests/unit/services/test_run_station_forecast_fanout.py:312`); it proves T7 broke nothing and is **not** one of
+    T7's genuinely failing tests. **D10a:** a heterogeneous `ReadyContext` — precip contracted at 2
     steps, temp at 10, frame assembled to match — reaches `predict` instead of returning
     `AssignmentFailure(INSUFFICIENT_COVERAGE)`; this **fails today**, because the scalar `required_steps=10` makes
     `min(counts)=2` inadequate (`nwp_coverage.py:144-150`). Paired with the opposite case so the gate is proven
@@ -695,7 +749,11 @@ burning fixer rounds reformatting alembic migrations.
   - **In scope:** wire `flows/run_forecast_cycle.py` to project and dedup tracks, resolve each track sequentially,
     assemble per assignment, and run via the migrated runner — **behind the `isinstance` dispatch**. Legacy adapters
     keep the superset path; the GROUP path keeps Phase A, **re-scoped** so it no longer fetches/persists for stations
-    served by the per-track path while still covering group-member stations (D7). Add the cross-cycle preflight at the
+    served by the per-track path while still covering group-member stations (D7). **Thread the configured walk-back
+    cadence** — T4's `RecapGatewayConfig.cycle_cadence_hours` — into T5's resolver parameter on **both** construction
+    branches (`flows/run_forecast_cycle.py:465-478`), exactly as `max_cycle_age_hours` is threaded (moved here from T4
+    on 2026-08-18: the resolver it feeds does not exist until T5, and flow integration is T8's; D24's decision is
+    unchanged). Add the cross-cycle preflight at the
     top of the per-station persist block, and the new log events. **Set `retries=` on the candidate-fetch task** from
     `RecapGatewayConfig.max_retries` (`config/recap_gateway.py:51`) — today that field is parsed but consumed nowhere
     and `_fetch_nwp_task` (`flows/run_forecast_cycle.py:1009-1015`) sets no `retries=`, so T4's "raise transients so a
@@ -751,6 +809,13 @@ burning fixer rounds reformatting alembic migrations.
     per-track-eligible is routed to the LEGACY path (D30): it is absent from the resolved track set, Phase A still
     writes its rows, and the group forecast succeeds at the shared readback cycle**; a legacy-adapter
     deployment is unchanged.
+    **Which of these are REGRESSION gates, EXPECTED to stay GREEN** (corrected 2026-08-18 — they were mislabelled
+    red-first): same-cycle combination unchanged (already-existing behaviour, tested at
+    `tests/unit/flows/test_run_forecast_cycle.py:5368`), the **trackless** and all-trackless combination cases, the
+    **group-only** Phase A case, and the **legacy-adapter deployment unchanged** case. They preserve behaviour that
+    already works and do not satisfy T8's red-first requirement; T8's genuinely failing tests are at least the
+    heterogeneous per-assignment golden, the cross-cycle fail-loud preflight with zero writes, and the fatal-exit
+    `FORECAST_FRESHNESS` record above.
   - **Exit gate (whole repo):** the same baseline-relative gate as every task (full `uv run pytest -q` green at
     **`passed >= 4181` with no baseline test regressing** — the phase's own new tests are expected to push the total
     well above the floor; `pyright` at or below the ratcheted **432** over `src/`; `ruff check` with no new findings beyond the
@@ -887,9 +952,12 @@ a design fork; each changes a ratified decision's **observable consequence**, so
 - **D24-cadence-source** (owner, 2026-08-11; **corrected after review**) — the walk-back candidate cadence comes from
   **configuration**, not a third Protocol member. The original wording added "recap already carries the constant it
   needs"; that is **withdrawn** as self-contradictory — an adapter-private constant is not a configuration contract,
-  and `config/recap_gateway.py:29` has **no** cadence field today. T4 therefore **adds and validates**
-  `RecapGatewayConfig.cycle_cadence_hours` and threads it on both construction branches, exactly as
-  `max_cycle_age_hours` is threaded. (Re-verified 2026-08-18: still no cadence field.)
+  and `config/recap_gateway.py:29` has **no** cadence field today. **T4 adds and validates**
+  `RecapGatewayConfig.cycle_cadence_hours`; **T5** defines the resolver parameter that consumes it and **T8** threads it
+  on both construction branches, exactly as `max_cycle_age_hours` is threaded. *(Task assignment corrected 2026-08-18 —
+  T4 cannot thread a bound into a `services/` resolver that T5 has not created yet, and D7 forbids parking the policy on
+  the adapter. The DECISION — cadence from configuration, not a third Protocol member — is unchanged and NOT reopened.)*
+  (Re-verified 2026-08-18: still no cadence field.)
 - **D26-horizon-axis** (owner, 2026-08-11; **revised 2026-08-11 after review**) — per-feature horizons are
   **retained**. Collapsing to a scalar was considered and rejected: per-variable horizons are named inside
   build-sequence item 3 of the ratified redesign, and the FI `max` collapse flattens per-variable `future_steps`
