@@ -86,13 +86,39 @@ trap Plan 159's unit tests were specifically written to avoid.
 **Per-station, verified:** a GROUP call with two stations of **different** areas must convert each
 with its own. A test with equal areas cannot detect the batch-wide bug.
 
-## Open questions for the owner
+## Decisions (owner, 2026-08-18)
 
-| # | Question | Recommendation |
+| # | Decision | Resolution |
 |---|---|---|
-| **Q1** | Precipitation `mm/day` → `mm`: at a daily step these are numerically identical, so is it a relabel or a conversion? | **Relabel**, and assert the daily step explicitly. If a sub-daily branch ever appears, `mm/day` over a 3h step is *not* `mm`, and a silent relabel would be wrong by 8×. Fail loudly on a non-daily step rather than assume. |
-| **Q2** | Where does `area` come from — the resolved Caravan static (`caravan:area`), or `Basin.area_km2`? | **The static the model was given**, so the conversion uses exactly the number PT was trained against. Plan 155 D15 exists because the two differ; reaching past the resolved statics would reintroduce the mismatch it prevents. |
-| **Q3** | What if `area` is missing at predict time? | **Raise.** `_units.py` already fails loudly on non-finite/missing area, naming the station. Do not fall back to a basin lookup. |
+| **D1** | Precipitation `mm/day` → `mm`: relabel or conversion? | **RESOLVED: relabel — and only for DAILY models.** At a daily step the two are numerically identical. **Assert the step is daily and raise otherwise**: `mm/day` over a 3h step is *not* `mm`, so a silent relabel on a future sub-daily branch would be wrong by **8×**. The guard is the point, not the relabel. |
+| **D2** | Where does `area` come from — the resolved Caravan static, or `Basin.area_km2`? | **RESOLVED: the static the model was given** (`caravan:area`, resolved by Plan 155 D15/D16), so the conversion uses exactly the number PT was trained against. Reaching past the resolved statics to `Basin.area_km2` would reintroduce the CAMELS-CH/Caravan mismatch D15 exists to prevent — and for `area` specifically that silently rescales every discharge. |
+| **D3** | What if `area` is missing at predict time? | **RESOLVED: raise, naming the station.** `_units.py` already does this for non-finite/missing area. **No fallback to a basin lookup** — a fallback would silently reintroduce D2's mismatch at exactly the moment the intended value is absent. |
+
+## Follow-on idea (owner, 2026-08-18) — validate data AVAILABILITY at onboarding
+
+Owner's suggestion: at model onboarding, check that the data a model needs is actually available for
+the stations registered to it. **Recorded here as a future plan candidate, deliberately not a task
+in 181** — it is a distinct capability, not part of the shim boundary.
+
+**What already exists**, checked before writing this: `services/model_onboarding.py::validate_compatibility`
+(`:159`) already compares a model's declared requirements against each station and reports
+`missing_target_parameters`, `missing_past_dynamic`, `missing_future_dynamic`,
+`missing_static_features`, `time_step_compatible`, `fi_unit_mismatches` and
+`station_codes_resolvable` (`types/model_onboarding.py:18-27`).
+
+**What it does NOT check — the actual gap.** It validates *declared capability*: that a station
+advertises the parameter, and that its basin carries the static's KEY. It does not validate that the
+**data is present and deep enough** — that the station has `lookback` steps of gap-free history, or
+that the statics resolve to finite VALUES rather than merely existing as keys.
+
+That distinction is exactly what bit Plan 155: a station can pass compatibility and still be
+unforecastable. Plan 155 T3 (gap-free 210-day depth) and the `operational_inputs` lookback guard
+address the runtime half; an onboarding-time check would surface it **before** a model is registered
+rather than at the first cycle.
+
+**Worth its own plan.** Sizing note for whoever writes it: the expensive part is not the check, it is
+deciding what onboarding should DO with a partial answer — refuse the model, register it with the
+short stations excluded, or register and warn.
 
 ## Non-goals
 - Retraining in SAP3 (Plan 152 D3), multi-resolution (Plan 153), the worker image (Plan 159 T2).
