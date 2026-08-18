@@ -217,11 +217,29 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   rule are both **strictly below** the 4 h decision boundary, and the 2 h refute-boundary sits at or
   above both. No decision turns on a difference smaller than the measurement uncertainty.
 
-  **INDETERMINATE is a permitted, publishable outcome. It BLOCKS the M-A7 correction rather than
-  licensing it** — the asymmetry is deliberate: an unproven artefact must not silently reshape
-  operational timing.
+  **⛔ D5 THRESHOLD RE-EXAMINED POST-RUN 2026-08-18 — DELIBERATELY NOT CHANGED.** The first real run
+  returned INDETERMINATE at BOTH pairs on this gate alone (Lukla 13.00 h, Syangboche 3.00 h against the
+  2 h bar), raising the obvious question of whether the bar is miscalibrated for a 5-season record. **It
+  is not, and the reason is structural.** `params.py`'s D9 coherence validator enforces
+  `coloc_ablation_refuted_max_hours >= coloc_bootstrap_adequate_max_spread_hours`, and that invariant is
+  correct: an ablation movement cannot be declared "small enough to refute H1" if the peak-hour
+  uncertainty exceeds the movement threshold itself. The bootstrap bar is therefore **capped by** the 2 h
+  refute boundary, which is in turn pinned above D2's 1.75 h alignment floor and below the 4 h support
+  boundary. **2 h is already the largest admissible value — derived from the lattice, not chosen.** Both
+  3 h and 4 h are rejected outright by the validator.
 
-- **D11 — ⛔ CORRECTED 2026-08-18: THE FULL RECORD IS THE ADJUDICATED COMPARISON. The overlap is
+  Two escapes were considered and **rejected as post-hoc tuning**: raising the whole lattice (support
+  4→6, refute 2→4) loosens REFUTATION specifically, biasing toward the very conclusion the run is
+  trending toward; and 3 h would clear Syangboche only by landing exactly on its observed 3.00 h, and
+  only because the comparison is a strict `>`. **The binding limitation is the DHM record length, not the
+  threshold**: the bootstrap resamples DHM season-years and DHM has exactly 5 complete JJAS seasons
+  (2020–2025), so Lukla cannot clear any coherent bar until that record lengthens. The root cause is D2's
+  ±1.75 h alignment uncertainty against an integer-hour peak, which leaves the lattice almost no room by
+  construction — the one genuine lever is **pinning down Pyramid's unstated period convention** (the ±1 h
+  component of D2), which is a question for the Pyramid authors, not a parameter change. Recorded here so
+  a later reader does not "fix" this gate.
+
+  **INDETERMINATE is a permitted, publishable outcome.- **D11 — ⛔ CORRECTED 2026-08-18: THE FULL RECORD IS THE ADJUDICATED COMPARISON. The overlap is
   corroboration.** *(Implementation review found the plan structurally unable to produce a verdict.)*
 
   **The contradiction I introduced:** D9's ordered gates say *"the first gate that fires decides; no

@@ -580,12 +580,17 @@ sentinels (Lukla is the only station in the workbook that does), and its peak is
 ablation ladder (03 UTC ≡ 08 NPT at all of 0.0 / 0.1 / 0.2 mm) — neither a sentinel artefact nor
 noise-floor contamination. It has no co-located Pyramid station, so M-A10 cannot adjudicate it.
 
-**⚠️ OPEN — the D5 threshold may be miscalibrated for a 5-season record.** The 2.0 h bar is applied to
-`circular_range_hours`, the smallest arc containing EVERY one of 1000 bootstrap draws. The statistic is
-sound and does NOT drift with resample count (it saturates by n=100), but on integer peak hours a 2.0 h
-arc demands that essentially every monsoon season agree to within one hour. Syangboche — five seasons
-spanning a 3 h nocturnal arc, an obviously well-determined peak — fails it. Whether the bar should move,
-and to what, is a plan-level decision recorded in Plan 182, NOT retuned post hoc here.
+**✅ RESOLVED — the D5 threshold was re-examined post-run and deliberately LEFT ALONE.** The 2.0 h bar
+looked miscalibrated for a 5-season record (it is the only thing standing between Syangboche and a
+decisive verdict), but it turns out to be **derived, not chosen**: `params.py`'s D9 coherence validator
+enforces `ablation_refuted_max >= bootstrap_adequate_max`, so the bootstrap bar is capped by the 2 h
+refute boundary — itself pinned above D2's 1.75 h alignment floor and below the 4 h support boundary.
+Both 3 h and 4 h are rejected by the validator, and the invariant is correct (a movement cannot be
+"small enough to refute H1" if peak-hour uncertainty exceeds the movement threshold). **The binding
+limitation is the DHM record length**: the bootstrap resamples DHM season-years and DHM has exactly 5
+complete JJAS seasons, so Lukla cannot clear any coherent bar until that record lengthens. The one real
+lever is pinning down Pyramid's unstated period convention (D2's ±1 h component) — a question for the
+Pyramid authors, not a parameter change. See Plan 182 D9 for the full record of what was rejected.
 
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**
