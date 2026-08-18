@@ -257,9 +257,11 @@ MeteoSwiss. Mirror it — a script, not a flow.
 Running T3 against real S3/Caravan data (no credentials in the build environment; owner action after the
 backfill populates). Modifying the shared `ExactExtractGridExtractor`. The forcing-canonicalisation seam.
 
-### Plan-number collision — owner decision, not the implementer's
-`docs/plans/183-forcing-canonicalisation-seam.md` (committed `edb4a43`, same day) also claims 183. Two
-plans, one number. Renumbering is the owner's call; flagged here so it is not silently inherited.
+### Plan-number collision — RESOLVED 2026-08-18
+`183-forcing-canonicalisation-seam.md` (committed `edb4a43`, same day) also claimed 183. No branch was
+working it — a single DRAFT commit on main, no follow-ups — so the owner had it renumbered to **187**
+rather than this one, which was already READY, implemented and carried in a branch name. References in
+`touchpoint-maps.md` and `docs/design/dhm-precipitation-milestones.md` were updated with it.
 
 ## Second fixer round — verified input (2026-08-18)
 
