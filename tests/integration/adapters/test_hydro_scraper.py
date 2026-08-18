@@ -31,6 +31,10 @@ _FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
 
 _SINCE = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
 
+_DIM = "https://environment.ld.admin.ch/foen/hydro/dimension"
+_RIVER_BASE = "https://environment.ld.admin.ch/foen/hydro/river/observation"
+_LAKE_BASE = "https://environment.ld.admin.ch/foen/hydro/lake/observation"
+
 _STATION_1_ID = StationId(UUID("00000000-0000-0000-0000-000000000001"))
 _STATION_2_ID = StationId(UUID("00000000-0000-0000-0000-000000000002"))
 
@@ -66,7 +70,43 @@ def _make_station(
     )
 
 
-def _sparql_response(bindings: list[dict]) -> httpx.Response:
+def _triple(subject: str, predicate: str, obj: str) -> dict[str, object]:
+    return {
+        "subject": {"type": "uri", "value": subject},
+        "predicate": {"type": "uri", "value": predicate},
+        "object": {"type": "literal", "value": obj},
+    }
+
+
+def _river_bindings(
+    code: str,
+    timestamp: str,
+    discharge: str | None = None,
+    water_level: str | None = None,
+    water_temperature: str | None = None,
+) -> list[dict[str, object]]:
+    subject = f"{_RIVER_BASE}/{code}"
+    bindings = [_triple(subject, f"{_DIM}/measurementTime", timestamp)]
+    if discharge is not None:
+        bindings.append(_triple(subject, f"{_DIM}/discharge", discharge))
+    if water_level is not None:
+        bindings.append(_triple(subject, f"{_DIM}/waterLevel", water_level))
+    if water_temperature is not None:
+        bindings.append(_triple(subject, f"{_DIM}/waterTemperature", water_temperature))
+    return bindings
+
+
+def _lake_bindings(
+    code: str, timestamp: str, water_level: str
+) -> list[dict[str, object]]:
+    subject = f"{_LAKE_BASE}/{code}"
+    return [
+        _triple(subject, f"{_DIM}/measurementTime", timestamp),
+        _triple(subject, f"{_DIM}/waterLevel", water_level),
+    ]
+
+
+def _sparql_response(bindings: list[dict[str, object]]) -> httpx.Response:
     body = json.dumps({"results": {"bindings": bindings}})
     return httpx.Response(
         200,
@@ -75,58 +115,18 @@ def _sparql_response(bindings: list[dict]) -> httpx.Response:
     )
 
 
-def _make_bindings(
-    timestamp: str,
-    discharge: str | None = None,
-    water_level: str | None = None,
-    water_temperature: str | None = None,
-) -> list[dict]:
-    dim = "https://environment.ld.admin.ch/foen/hydro/dimension"
-    bindings = [
-        {
-            "predicate": {"value": f"{dim}/measurementTime"},
-            "object": {"value": timestamp},
-        },
-    ]
-    if discharge is not None:
-        bindings.append(
-            {"predicate": {"value": f"{dim}/discharge"}, "object": {"value": discharge}}
-        )
-    if water_level is not None:
-        bindings.append(
-            {
-                "predicate": {"value": f"{dim}/waterLevel"},
-                "object": {"value": water_level},
-            }
-        )
-    if water_temperature is not None:
-        bindings.append(
-            {
-                "predicate": {"value": f"{dim}/waterTemperature"},
-                "object": {"value": water_temperature},
-            }
-        )
-    return bindings
+def _make_client(response: httpx.Response) -> tuple[httpx.Client, list[httpx.Request]]:
+    """Plan 186 T2: ingest now sends ONE whole-graph request regardless of
+    the requested station count, so the mock transport no longer routes by
+    per-station code in the query text — it just returns one fixed
+    response and records every request it saw."""
+    captured: list[httpx.Request] = []
 
-
-def _make_client(
-    responses_by_code: dict[str, httpx.Response],
-    default: httpx.Response | None = None,
-) -> httpx.Client:
     def handler(request: httpx.Request) -> httpx.Response:
-        body = request.content.decode()
-        params = parse_qs(body)
-        query = params.get("query", [""])[0]
-        for code, response in responses_by_code.items():
-            if f"/river/observation/{code}" in query:
-                return response
-            if f"/lake/observation/{code}" in query:
-                return response
-        if default is not None:
-            return default
-        return httpx.Response(404)
+        captured.append(request)
+        return response
 
-    return httpx.Client(transport=httpx.MockTransport(handler))
+    return httpx.Client(transport=httpx.MockTransport(handler)), captured
 
 
 def _coherent_limiter(*, max_retries: int = 2) -> TokenBucketLindasLimiter:
@@ -159,22 +159,18 @@ class TestHydroScraperAdapter:
         station_1 = _make_station(_STATION_1_ID, "2044")
         station_2 = _make_station(_STATION_2_ID, "2160")
 
-        client = _make_client(
-            {
-                "2044": _sparql_response(
-                    _make_bindings(
-                        "2024-06-15T10:00:00+00:00",
-                        discharge="100.5",
-                        water_level="2.1",
-                    )
-                ),
-                "2160": _sparql_response(
-                    _make_bindings(
-                        "2024-06-15T11:00:00+00:00", discharge="55.0", water_level="1.5"
-                    )
-                ),
-            }
-        )
+        bindings = [
+            *_river_bindings(
+                "2044",
+                "2024-06-15T10:00:00+00:00",
+                discharge="100.5",
+                water_level="2.1",
+            ),
+            *_river_bindings(
+                "2160", "2024-06-15T11:00:00+00:00", discharge="55.0", water_level="1.5"
+            ),
+        ]
+        client, requests_seen = _make_client(_sparql_response(bindings))
         adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
         since: dict[StationId, UtcDatetime] = {
             _STATION_1_ID: _SINCE,
@@ -182,6 +178,8 @@ class TestHydroScraperAdapter:
         }
 
         obs = adapter.fetch_observations([station_1, station_2], since)
+
+        assert len(requests_seen) == 1
 
         by_station: dict[StationId, dict[str, float]] = {}
         for o in obs:
@@ -195,20 +193,16 @@ class TestHydroScraperAdapter:
         for o in obs:
             assert o.source == ObservationSource.MEASURED
 
-    def test_single_station_failure_others_succeed(self) -> None:
+    def test_whole_batch_failure_others_fail_too(self) -> None:
+        # Plan 186 D4: a transport/HTTP fault is now WHOLE-BATCH — a real
+        # change from the old per-station system, where only the failing
+        # station's request was affected.
         import structlog.testing
 
         station_1 = _make_station(_STATION_1_ID, "2044")
         station_2 = _make_station(_STATION_2_ID, "2160")
 
-        client = _make_client(
-            {
-                "2044": httpx.Response(500),
-                "2160": _sparql_response(
-                    _make_bindings("2024-06-15T11:00:00+00:00", discharge="55.0")
-                ),
-            }
-        )
+        client, _requests_seen = _make_client(httpx.Response(500))
         # Plan 175 T3: a no-op sleeper — the 500 now retries through the
         # shared limiter, and this test must not perform real multi-second
         # sleeps waiting for the retry cap.
@@ -225,14 +219,15 @@ class TestHydroScraperAdapter:
         with structlog.testing.capture_logs() as captured:
             obs = adapter.fetch_observations([station_1, station_2], since)
 
-        station_ids = {o.station_id for o in obs}
-        assert _STATION_1_ID not in station_ids
-        assert _STATION_2_ID in station_ids
-        assert any(e.get("event") == "observation.fetch_failed" for e in captured)
+        assert obs == []
+        failed_events = [
+            e for e in captured if e.get("event") == "observation.fetch_failed"
+        ]
+        assert len(failed_events) == 2
 
     def test_empty_bindings_returns_empty_list(self) -> None:
         station = _make_station(_STATION_1_ID, "2044")
-        client = _make_client({"2044": _sparql_response([])})
+        client, _ = _make_client(_sparql_response([]))
         adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
 
         obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
@@ -241,8 +236,8 @@ class TestHydroScraperAdapter:
 
     def test_malformed_timestamp_skipped(self) -> None:
         station = _make_station(_STATION_1_ID, "2044")
-        bindings = _make_bindings("not-a-timestamp", discharge="42.0")
-        client = _make_client({"2044": _sparql_response(bindings)})
+        bindings = _river_bindings("2044", "not-a-timestamp", discharge="42.0")
+        client, _ = _make_client(_sparql_response(bindings))
         adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
 
         obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
@@ -313,16 +308,12 @@ class TestHydroScraperAdapter:
         station_1 = _make_station(_STATION_1_ID, "2044")
         station_2 = _make_station(_STATION_2_ID, "2160")
 
-        client = _make_client(
-            {
-                "2044": httpx.Response(503),
-                "2160": _sparql_response(
-                    _make_bindings("2024-06-15T10:00:00+00:00", discharge="77.0")
-                ),
-            }
-        )
-        # Plan 175 T3: no-op sleeper — see test_single_station_failure_others_
-        # succeed above for why.
+        # Plan 186 D4: a 503 is now whole-batch, so BOTH stations fail (not
+        # "station 1 fails, station 2 succeeds" as in the old per-station
+        # system) — this test now locks that both outcomes carry the cause.
+        client, _ = _make_client(httpx.Response(503))
+        # Plan 175 T3: no-op sleeper — see test_whole_batch_failure_others_
+        # fail_too above for why.
         adapter = HydroScraperAdapter(
             endpoint=_ENDPOINT,
             http_client=client,
@@ -338,90 +329,78 @@ class TestHydroScraperAdapter:
         warning_events = [
             e for e in captured if e.get("event") == "observation.fetch_failed"
         ]
-        assert len(warning_events) == 1
-        assert warning_events[0]["log_level"] == "warning"
-
-        station_ids = {o.station_id for o in obs}
-        assert _STATION_1_ID not in station_ids
-        assert _STATION_2_ID in station_ids
+        assert len(warning_events) == 2
+        assert all(e["log_level"] == "warning" for e in warning_events)
+        assert obs == []
 
     def test_fetch_handles_empty_bindings(self) -> None:
         station = _make_station(_STATION_1_ID, "2044")
-        client = _make_client({"2044": _sparql_response([])})
+        client, _ = _make_client(_sparql_response([]))
         adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
 
         obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
 
         assert obs == []
 
-    def test_fetch_lake_station_uses_lake_uri_path(self) -> None:
+    def test_fetch_makes_one_whole_graph_request_regardless_of_station_kind(
+        self,
+    ) -> None:
+        # Plan 186 T2: the request no longer encodes ANY station's code or
+        # kind — the same fixed whole-graph query is sent whether the batch
+        # is river, lake, or mixed. Query-shape assertions ("river/
+        # observation/2500 not in query") no longer apply; what matters is
+        # that exactly one request is made and it selects ?subject.
         station = _make_station(_STATION_1_ID, "2500", station_kind=StationKind.LAKE)
-        captured: list[httpx.Request] = []
-        empty_envelope = json.dumps({"results": {"bindings": []}}).encode()
+        bindings = _lake_bindings("2500", "2024-06-15T10:00:00+00:00", "394.8")
+        client, requests_seen = _make_client(_sparql_response(bindings))
 
-        def handler(request: httpx.Request) -> httpx.Response:
-            captured.append(request)
-            return httpx.Response(
-                200,
-                content=empty_envelope,
-                headers={"content-type": "application/sparql-results+json"},
-            )
+        adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
+        obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
 
-        adapter = HydroScraperAdapter(
-            endpoint=_ENDPOINT,
-            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        )
-        adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
-
-        assert len(captured) == 1
-        query = parse_qs(captured[0].content.decode())["query"][0]
-        assert "lake/observation/2500" in query
-        assert "river/observation/2500" not in query
+        assert len(requests_seen) == 1
+        query = parse_qs(requests_seen[0].content.decode())["query"][0]
+        assert "SELECT ?subject ?predicate ?object" in query
+        assert "BIND" not in query
+        assert len(obs) == 1
+        assert obs[0].value == pytest.approx(394.8)
 
     def test_fetch_does_not_embed_since_in_sparql_query(self) -> None:
         station = _make_station(_STATION_1_ID, "2044")
-        captured: list[httpx.Request] = []
-        empty_envelope = json.dumps({"results": {"bindings": []}}).encode()
+        client, requests_seen = _make_client(_sparql_response([]))
 
-        def handler(request: httpx.Request) -> httpx.Response:
-            captured.append(request)
-            return httpx.Response(
-                200,
-                content=empty_envelope,
-                headers={"content-type": "application/sparql-results+json"},
-            )
-
-        adapter = HydroScraperAdapter(
-            endpoint=_ENDPOINT,
-            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-        )
+        adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
         adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
 
-        assert len(captured) == 1
-        query = parse_qs(captured[0].content.decode())["query"][0]
+        assert len(requests_seen) == 1
+        query = parse_qs(requests_seen[0].content.decode())["query"][0]
         assert "xsd:dateTime" not in query
         assert "FILTER (?measurementTime" not in query
         assert "2024-01-01" not in query
 
-    def test_fetch_rejects_invalid_station_code(self) -> None:
+    def test_fetch_no_longer_pre_request_rejects_invalid_station_code(self) -> None:
+        # Plan 186 Q2: ingest no longer interpolates site_code into SPARQL,
+        # so there is no injection surface and no pre-request guard in this
+        # path any more. An "invalid" code is simply a lookup miss against
+        # the whole-graph response -> NO_DATA, not a pre-request
+        # MALFORMED_RESPONSE. The guard survives only in
+        # `verify_gauge_reachable` (see the unit-test suite).
         import structlog.testing
 
         station = _make_station(_STATION_1_ID, "'; DROP TABLE")
-        adapter = HydroScraperAdapter(
-            endpoint=_ENDPOINT,
-            http_client=httpx.Client(
-                transport=httpx.MockTransport(lambda r: httpx.Response(200))
-            ),
-        )
+        client, requests_seen = _make_client(_sparql_response([]))
+        adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
 
         with structlog.testing.capture_logs() as captured:
             obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
 
         assert obs == []
+        # A request WAS made this time (D4: only a pre-request guard could
+        # avoid it, and Q2 deliberately removes that guard from ingest).
+        assert len(requests_seen) == 1
         failed = [e for e in captured if e.get("event") == "observation.fetch_failed"]
         assert len(failed) == 1
         assert failed[0]["log_level"] == "warning"
-        assert "Invalid site_code" in failed[0]["error"]
+        assert failed[0]["failure_cause"] == "no_data"
 
     def test_mixed_river_and_lake_stations(self) -> None:
         river_station = _make_station(
@@ -431,23 +410,16 @@ class TestHydroScraperAdapter:
             _STATION_2_ID, "2500", station_kind=StationKind.LAKE
         )
 
-        client = _make_client(
-            {
-                "2044": _sparql_response(
-                    _make_bindings(
-                        "2024-06-15T10:00:00+00:00",
-                        discharge="100.5",
-                        water_level="2.1",
-                    )
-                ),
-                "2500": _sparql_response(
-                    _make_bindings(
-                        "2024-06-15T10:00:00+00:00",
-                        water_level="394.8",
-                    )
-                ),
-            }
-        )
+        bindings = [
+            *_river_bindings(
+                "2044",
+                "2024-06-15T10:00:00+00:00",
+                discharge="100.5",
+                water_level="2.1",
+            ),
+            *_lake_bindings("2500", "2024-06-15T10:00:00+00:00", "394.8"),
+        ]
+        client, _ = _make_client(_sparql_response(bindings))
         adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
         since: dict[StationId, UtcDatetime] = {
             _STATION_1_ID: _SINCE,

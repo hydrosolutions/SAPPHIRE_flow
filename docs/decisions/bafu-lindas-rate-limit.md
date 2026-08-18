@@ -79,20 +79,35 @@ from — the bucket is per-endpoint-per-source-IP, not per-process. An ad-hoc
 mini's next scheduled poll into a 429, even though the two processes share no
 code.
 
-**The per-station fan-out does not scale (D5, deferred by owner decision).**
-LINDAS's ceiling is 3 requests; `docs/v0-scope.md` targets ~1000 stations.
-One request per station per poll is structurally impossible at that scale:
-against the burst-3 ceiling, a poll of `N` stations costs `N` requests, and
-once `N` exceeds the budget the excess stations pay the ~4 s/station retry
-floor — at ~4 s/station a 1000-station poll takes over an hour, far past its
-own 5-minute cadence. The collector already demonstrates the way out: **one**
-whole-graph SPARQL query returns all 233 gauges in ~0.1 s. Converting the
-operational ingest path to whole-graph-plus-local-filter is the real fix, but
-it must NOT reuse the quarantined `BafuObservationAdapter` (Plan 136 DC-2
-forbids that adapter constructing `RawObservation`/`StationId`) — it needs a
-shared query/parse layer with two distinct mappers. **Not solved here.**
-Revisit once onboarding grows past a handful of stations (2 on the mini as of
-2026-08-17) — T0's live station/failure count is the trigger to re-open this.
+**The per-station fan-out does not scale (D5) — RESOLVED by Plan 186
+(2026-08-18).** LINDAS's ceiling is 3 requests; `docs/v0-scope.md` cites
+~1000 stations as an architectural ceiling, not v0's actual target (~170,
+the BAFU basin list in `config.toml`). One request per station per poll was
+structurally impossible at that scale:
+
+| Stations | Time for one ingest pass (old, per-station) | Against a 5-min cadence |
+|---|---|---|
+| 2 (mini, 2026-08-17) | ~8 s | fine |
+| 10 | ~40 s | fine |
+| 60 | ~4 min | at the edge |
+| 169 (`config.toml`'s basin list) | ~11 min | overlapping runs, permanently behind |
+| ~1000 (architectural ceiling) | ~67 min | structurally impossible |
+
+`HydroScraperAdapter.fetch_observations_batch` now issues **one** whole-graph
+SPARQL query per ingest run (`adapters/lindas_hydro_query.py`, shared with
+the Plan 136 collector's query text — grouping/validation/failure policy
+stay separate, since the collector's grouping loop raises on a malformed
+binding and reusing it operationally would destroy per-station isolation),
+indexed by `(gauge_code, lindas_kind)` and filtered locally to whichever
+stations are onboarded. Cost is now **flat in station count**: one request
+regardless of whether 2 or 1000 stations are configured. Retry attempts on a
+persistent 429/5xx are still `max_retries + 1` (the retry contract, not a
+regression) but no longer multiply by station count either. A
+transport/HTTP fault on that one request now fails every eligible station at
+once (whole-batch) rather than some — a real, deliberately-accepted change
+in kind (Plan 186 Q1). See
+`docs/plans/186-whole-graph-observation-ingest.md` for the full decision
+record (D1–D4) and test matrix.
 
 **Pacing is process-local, not cluster-wide (D6).** A token bucket inside one
 Python process cannot enforce a shared budget across two different Prefect

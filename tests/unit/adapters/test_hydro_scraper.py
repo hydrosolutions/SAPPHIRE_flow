@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import random
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 import httpx
@@ -17,6 +19,9 @@ from sapphire_flow.exceptions import AdapterError
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import FetchOutcomeCause, StationKind
 from tests.conftest import make_station_config
+
+if TYPE_CHECKING:
+    from sapphire_flow.types.observation import StationFetchOutcome
 
 _ENDPOINT = "https://lindas.admin.ch/query"
 _SINCE: UtcDatetime = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
@@ -259,7 +264,61 @@ def _batch_adapter(
     )
 
 
-def _fetch_one_outcome(adapter: HydroScraperAdapter, code: str = "2044"):  # type: ignore[no-untyped-def]
+# Plan 186 T2 — the whole-graph response shape: every triple now carries its
+# own ?subject (unlike the old per-station response, which BIND-ed one
+# subject and never projected it).
+_DIM = "https://environment.ld.admin.ch/foen/hydro/dimension"
+_RIVER_BASE = "https://environment.ld.admin.ch/foen/hydro/river/observation"
+_LAKE_BASE = "https://environment.ld.admin.ch/foen/hydro/lake/observation"
+
+
+def _triple(subject: str, predicate: str, obj: str) -> dict[str, object]:
+    return {
+        "subject": {"type": "uri", "value": subject},
+        "predicate": {"type": "uri", "value": predicate},
+        "object": {"type": "literal", "value": obj},
+    }
+
+
+def _river_triples(
+    code: str,
+    ts: str = "2026-04-17T00:00:00Z",
+    *,
+    discharge: str | None = "42.0",
+    water_level: str | None = None,
+    water_temperature: str | None = None,
+) -> list[dict[str, object]]:
+    subject = f"{_RIVER_BASE}/{code}"
+    triples = [_triple(subject, f"{_DIM}/measurementTime", ts)]
+    if discharge is not None:
+        triples.append(_triple(subject, f"{_DIM}/discharge", discharge))
+    if water_level is not None:
+        triples.append(_triple(subject, f"{_DIM}/waterLevel", water_level))
+    if water_temperature is not None:
+        triples.append(_triple(subject, f"{_DIM}/waterTemperature", water_temperature))
+    return triples
+
+
+def _lake_triples(
+    code: str,
+    ts: str = "2026-04-17T00:00:00Z",
+    *,
+    water_level: str = "394.2",
+) -> list[dict[str, object]]:
+    subject = f"{_LAKE_BASE}/{code}"
+    return [
+        _triple(subject, f"{_DIM}/measurementTime", ts),
+        _triple(subject, f"{_DIM}/waterLevel", water_level),
+    ]
+
+
+def _whole_graph_response(bindings: list[dict[str, object]]) -> dict[str, object]:
+    return {"results": {"bindings": bindings}}
+
+
+def _fetch_one_outcome(
+    adapter: HydroScraperAdapter, code: str = "2044"
+) -> StationFetchOutcome:
     station = make_station_config(code=code)
     result = adapter.fetch_observations_batch([station], {station.id: _SINCE})
     assert len(result.outcomes) == 1
@@ -328,34 +387,10 @@ class TestBatchFailureCauseMapping:
         assert outcome.observations == ()
 
     def test_unparseable_timestamp_maps_to_malformed_response(self) -> None:
+        bindings = _river_triples("2044", ts="not-a-timestamp", discharge="42.0")
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "results": {
-                        "bindings": [
-                            {
-                                "predicate": {
-                                    "value": (
-                                        "https://environment.ld.admin.ch/foen/hydro"
-                                        "/dimension/measurementTime"
-                                    )
-                                },
-                                "object": {"value": "not-a-timestamp"},
-                            },
-                            {
-                                "predicate": {
-                                    "value": (
-                                        "https://environment.ld.admin.ch/foen/hydro"
-                                        "/dimension/discharge"
-                                    )
-                                },
-                                "object": {"value": "42.0"},
-                            },
-                        ]
-                    }
-                },
-            )
+            return httpx.Response(200, json=_whole_graph_response(bindings))
 
         adapter = _batch_adapter(httpx.MockTransport(handler))
         outcome = _fetch_one_outcome(adapter)
@@ -391,34 +426,10 @@ class TestTypedFailuresLogAsFetchFailedNotCompleted:
         assert failed["failure_cause"] == FetchOutcomeCause.NO_DATA.value
 
     def test_malformed_response_logs_fetch_failed_not_fetch_completed(self) -> None:
+        bindings = _river_triples("2044", ts="not-a-timestamp", discharge="42.0")
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "results": {
-                        "bindings": [
-                            {
-                                "predicate": {
-                                    "value": (
-                                        "https://environment.ld.admin.ch/foen/hydro"
-                                        "/dimension/measurementTime"
-                                    )
-                                },
-                                "object": {"value": "not-a-timestamp"},
-                            },
-                            {
-                                "predicate": {
-                                    "value": (
-                                        "https://environment.ld.admin.ch/foen/hydro"
-                                        "/dimension/discharge"
-                                    )
-                                },
-                                "object": {"value": "42.0"},
-                            },
-                        ]
-                    }
-                },
-            )
+            return httpx.Response(200, json=_whole_graph_response(bindings))
 
         adapter = _batch_adapter(httpx.MockTransport(handler))
         with structlog.testing.capture_logs() as captured:
@@ -435,34 +446,10 @@ class TestTypedFailuresLogAsFetchFailedNotCompleted:
     def test_clean_fetch_still_logs_fetch_completed_not_fetch_failed(self) -> None:
         # Guards the other direction: the fix must not turn a genuinely
         # successful fetch into a `fetch_failed` too.
+        bindings = _river_triples("2044", ts="2026-04-17T00:00:00Z", discharge="42.0")
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                json={
-                    "results": {
-                        "bindings": [
-                            {
-                                "predicate": {
-                                    "value": (
-                                        "https://environment.ld.admin.ch/foen/hydro"
-                                        "/dimension/measurementTime"
-                                    )
-                                },
-                                "object": {"value": "2026-04-17T00:00:00Z"},
-                            },
-                            {
-                                "predicate": {
-                                    "value": (
-                                        "https://environment.ld.admin.ch/foen/hydro"
-                                        "/dimension/discharge"
-                                    )
-                                },
-                                "object": {"value": "42.0"},
-                            },
-                        ]
-                    }
-                },
-            )
+            return httpx.Response(200, json=_whole_graph_response(bindings))
 
         adapter = _batch_adapter(httpx.MockTransport(handler))
         with structlog.testing.capture_logs() as captured:
@@ -481,10 +468,13 @@ class TestMalformedBindingsSurviveAsTypedFailures:
     (and every other station in it) before any health record was written."""
 
     def test_bindings_missing_predicate_key(self) -> None:
+        # A binding attributable to a requested subject (has "subject") but
+        # missing "predicate" — subject-local malformed, not NO_DATA.
+        subject = f"{_RIVER_BASE}/2044"
+        bindings = [{"subject": {"value": subject}, "object": {"value": "x"}}]
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200, json={"results": {"bindings": [{"object": {"value": "x"}}]}}
-            )
+            return httpx.Response(200, json=_whole_graph_response(bindings))
 
         adapter = _batch_adapter(httpx.MockTransport(handler))
         outcome = _fetch_one_outcome(adapter)
@@ -510,39 +500,34 @@ class TestMalformedBindingsSurviveAsTypedFailures:
         assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
 
     def test_nonnumeric_param_value(self) -> None:
+        bindings = _river_triples(
+            "2044", ts="2024-06-15T10:00:00+00:00", discharge="not-a-number"
+        )
+
         def handler(request: httpx.Request) -> httpx.Response:
-            dim = "https://environment.ld.admin.ch/foen/hydro/dimension"
-            return httpx.Response(
-                200,
-                json={
-                    "results": {
-                        "bindings": [
-                            {
-                                "predicate": {"value": f"{dim}/measurementTime"},
-                                "object": {"value": "2024-06-15T10:00:00+00:00"},
-                            },
-                            {
-                                "predicate": {"value": f"{dim}/discharge"},
-                                "object": {"value": "not-a-number"},
-                            },
-                        ]
-                    }
-                },
-            )
+            return httpx.Response(200, json=_whole_graph_response(bindings))
 
         adapter = _batch_adapter(httpx.MockTransport(handler))
         outcome = _fetch_one_outcome(adapter)
 
         assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
 
-    def test_binding_item_is_not_a_dict(self) -> None:
+    def test_binding_item_not_attributable_to_any_subject_is_ignored(self) -> None:
+        # Plan 186 D2: a raw item that cannot be attributed to a subject (not
+        # even a dict) is not a per-station fault — there is no station to
+        # blame it on — so `_group_by_requested_subject` never groups it and
+        # it is simply never looked at. It must not corrupt or fail the
+        # station whose OWN triples are interleaved right next to it.
+        bindings = ["not-a-dict", *_river_triples("2044")]
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"results": {"bindings": ["not-a-dict"]}})
+            return httpx.Response(200, json=_whole_graph_response(bindings))
 
         adapter = _batch_adapter(httpx.MockTransport(handler))
         outcome = _fetch_one_outcome(adapter)
 
-        assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+        assert outcome.failure_cause is None
+        assert len(outcome.observations) == 1
 
     def test_top_level_response_is_a_list(self) -> None:
         # Major fix (round 2): `response.json()` returning a top-level LIST
@@ -579,3 +564,437 @@ class TestMalformedBindingsSurviveAsTypedFailures:
         outcome = _fetch_one_outcome(adapter)
 
         assert outcome.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+
+
+def _river_stations(n: int, *, prefix: str = "9") -> list:  # type: ignore[type-arg]
+    """`n` distinct river StationConfigs — `make_station_config` defaults to
+    a FIXED rng seed, so a distinct `rng` per call is required or every
+    station collapses onto the same id."""
+    return [
+        make_station_config(code=f"{prefix}{i:03d}", rng=random.Random(i))
+        for i in range(n)
+    ]
+
+
+class TestFlatInStationCount:
+    """Plan 186 D1/T2/T4 — the plan's headline acceptance criterion: ingest
+    cost is ONE logical batch fetch per run, independent of station count."""
+
+    def test_flat_in_station_count_exactly_one_request_for_many_stations(
+        self,
+    ) -> None:
+        request_count = 0
+        stations = _river_stations(10)
+        bindings = [t for s in stations for t in _river_triples(s.code)]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        # max_retries=0 isolates the invariant from the retry contract: this
+        # locks "one logical batch fetch", not "one HTTP attempt ever" (a
+        # persistent 429 legitimately costs more attempts — see below).
+        adapter = _batch_adapter(httpx.MockTransport(handler), max_retries=0)
+        since = {s.id: _SINCE for s in stations}
+
+        result = adapter.fetch_observations_batch(stations, since)
+
+        assert request_count == 1
+        assert len(result.outcomes) == len(stations)
+        assert all(o.failure_cause is None for o in result.outcomes)
+
+    def test_retry_attempts_constant_in_station_count_not_multiplied(self) -> None:
+        # T2: the retry contract is RETAINED — a persistent 429 still costs
+        # `max_retries + 1` HTTP attempts, but that count must not scale
+        # with the number of stations in the batch (a per-station retry
+        # loop would multiply it).
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(429)
+
+        max_retries = 2
+        stations = _river_stations(5)
+        adapter = _batch_adapter(httpx.MockTransport(handler), max_retries=max_retries)
+        since = {s.id: _SINCE for s in stations}
+
+        result = adapter.fetch_observations_batch(stations, since)
+
+        assert attempts == max_retries + 1
+        assert len(result.outcomes) == len(stations)
+        assert all(
+            o.failure_cause is FetchOutcomeCause.RATE_LIMITED for o in result.outcomes
+        )
+
+
+class TestWholeBatchCausesMultiStation:
+    """D4: transport/HTTP causes are now WHOLE-BATCH — every eligible
+    station gets the same cause from one failed request, a real change in
+    kind from the old per-station system."""
+
+    @pytest.mark.parametrize(
+        ("status", "expected_cause"),
+        [
+            (403, FetchOutcomeCause.HTTP_STATUS_ERROR),
+            (503, FetchOutcomeCause.HTTP_STATUS_ERROR),
+        ],
+    )
+    def test_http_status_failure_broadcasts_to_every_eligible_station(
+        self, status: int, expected_cause: FetchOutcomeCause
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status)
+
+        stations = _river_stations(4)
+        adapter = _batch_adapter(httpx.MockTransport(handler), max_retries=1)
+        since = {s.id: _SINCE for s in stations}
+
+        result = adapter.fetch_observations_batch(stations, since)
+
+        assert len(result.outcomes) == len(stations)
+        assert all(o.failure_cause is expected_cause for o in result.outcomes)
+        assert all(o.observations == () for o in result.outcomes)
+
+    def test_transport_exhaustion_broadcasts_to_every_eligible_station(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route to host", request=request)
+
+        stations = _river_stations(4)
+        adapter = _batch_adapter(httpx.MockTransport(handler), max_retries=1)
+        since = {s.id: _SINCE for s in stations}
+
+        result = adapter.fetch_observations_batch(stations, since)
+
+        assert len(result.outcomes) == len(stations)
+        assert all(
+            o.failure_cause is FetchOutcomeCause.TRANSPORT_ERROR
+            for o in result.outcomes
+        )
+
+
+class TestSubjectLocalIsolation:
+    """D4: NO_DATA and MALFORMED_RESPONSE stay strictly subject-local — the
+    mutant most likely to survive a thinner suite is one that broadcasts a
+    subject-local failure to every station instead of isolating it."""
+
+    def test_malformed_binding_for_one_gauge_leaves_the_other_successful(
+        self,
+    ) -> None:
+        station_a = make_station_config(code="5001", rng=random.Random(1))
+        station_b = make_station_config(code="5002", rng=random.Random(2))
+        bindings = [
+            *_river_triples("5001", ts="not-a-timestamp", discharge="42.0"),
+            *_river_triples("5002", ts="2026-04-17T00:00:00Z", discharge="10.0"),
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {station_a.id: _SINCE, station_b.id: _SINCE}
+
+        result = adapter.fetch_observations_batch([station_a, station_b], since)
+
+        outcomes_by_station = {o.station_id: o for o in result.outcomes}
+        assert (
+            outcomes_by_station[station_a.id].failure_cause
+            is FetchOutcomeCause.MALFORMED_RESPONSE
+        )
+        assert outcomes_by_station[station_b.id].failure_cause is None
+        assert len(outcomes_by_station[station_b.id].observations) == 1
+
+    def test_nonnumeric_value_for_one_gauge_leaves_the_other_successful(self) -> None:
+        station_a = make_station_config(code="5003", rng=random.Random(3))
+        station_b = make_station_config(code="5004", rng=random.Random(4))
+        bindings = [
+            *_river_triples("5003", discharge="not-a-number"),
+            *_river_triples("5004", discharge="10.0"),
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {station_a.id: _SINCE, station_b.id: _SINCE}
+
+        result = adapter.fetch_observations_batch([station_a, station_b], since)
+
+        outcomes_by_station = {o.station_id: o for o in result.outcomes}
+        assert (
+            outcomes_by_station[station_a.id].failure_cause
+            is FetchOutcomeCause.MALFORMED_RESPONSE
+        )
+        assert outcomes_by_station[station_b.id].failure_cause is None
+
+
+class TestNoDataShapes:
+    def test_subject_absent_from_graph_yields_no_data(self) -> None:
+        # A code that matches no gauge in the response (D4 step 2) — the
+        # graph has data, just not for this subject.
+        other_bindings = _river_triples("6002")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(other_bindings))
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter, code="6001")
+
+        assert outcome.failure_cause is FetchOutcomeCause.NO_DATA
+
+    def test_subject_present_with_measurement_time_only_yields_no_data(self) -> None:
+        bindings = _river_triples("6003", discharge=None)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter, code="6003")
+
+        assert outcome.failure_cause is FetchOutcomeCause.NO_DATA
+
+
+class TestToleratedUnrecognizedPredicate:
+    def test_unrecognized_predicate_alongside_valid_parameter_still_succeeds(
+        self,
+    ) -> None:
+        subject = f"{_RIVER_BASE}/7001"
+        bindings = [
+            *_river_triples("7001", discharge="42.0"),
+            _triple(subject, f"{_DIM}/someNewPredicate", "1.0"),
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        outcome = _fetch_one_outcome(adapter, code="7001")
+
+        assert outcome.failure_cause is None
+        assert {o.parameter for o in outcome.observations} == {"discharge"}
+
+
+class TestPrecedence:
+    """D4/Q2 — weather is skipped entirely (no outcome, no request); an
+    unmatched code is now a lookup MISS (`NO_DATA`) rather than a
+    pre-request `MALFORMED_RESPONSE`, since ingest no longer interpolates
+    the code into SPARQL at all."""
+
+    def test_mixed_batch_under_429_weather_skipped_valid_rate_limited(self) -> None:
+        weather = make_station_config(
+            code="WEATHER01", station_kind=StationKind.WEATHER, rng=random.Random(11)
+        )
+        unmatched = make_station_config(code="UNMATCHED", rng=random.Random(12))
+        valid = make_station_config(code="8001", rng=random.Random(13))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429)
+
+        adapter = _batch_adapter(httpx.MockTransport(handler), max_retries=1)
+        since = {s.id: _SINCE for s in (weather, unmatched, valid)}
+
+        result = adapter.fetch_observations_batch([weather, unmatched, valid], since)
+
+        outcome_station_ids = {o.station_id for o in result.outcomes}
+        assert weather.id not in outcome_station_ids
+        assert len(result.outcomes) == 2
+        assert all(
+            o.failure_cause is FetchOutcomeCause.RATE_LIMITED for o in result.outcomes
+        )
+
+    def test_all_weather_batch_makes_zero_requests(self) -> None:
+        request_made = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_made
+            request_made = True
+            return httpx.Response(200, json=_whole_graph_response([]))
+
+        weather_stations = [
+            make_station_config(
+                code=f"WEATHER{i}",
+                station_kind=StationKind.WEATHER,
+                rng=random.Random(20 + i),
+            )
+            for i in range(3)
+        ]
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {s.id: _SINCE for s in weather_stations}
+
+        result = adapter.fetch_observations_batch(weather_stations, since)
+
+        assert not request_made
+        assert result.outcomes == ()
+
+    def test_only_unmatched_codes_still_makes_one_fetch_and_returns_no_data_each(
+        self,
+    ) -> None:
+        # The Q2 behaviour change, easiest to regress back to
+        # MALFORMED_RESPONSE by reflex: an unmatched code no longer
+        # short-circuits pre-request. It is a lookup miss in the response,
+        # so a batch of ONLY unmatched codes still makes exactly one fetch.
+        request_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal request_count
+            request_count += 1
+            return httpx.Response(200, json=_whole_graph_response([]))
+
+        stations = [
+            make_station_config(code=f"NOMATCH{i}", rng=random.Random(30 + i))
+            for i in range(2)
+        ]
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {s.id: _SINCE for s in stations}
+
+        result = adapter.fetch_observations_batch(stations, since)
+
+        assert request_count == 1
+        assert len(result.outcomes) == 2
+        assert all(
+            o.failure_cause is FetchOutcomeCause.NO_DATA for o in result.outcomes
+        )
+
+
+class TestDuplicateCodeAndKindCollision:
+    """Fixer round (post-186 review) — D4's closing guarantee is 'exactly
+    one outcome per eligible config, always'. Two eligible `StationConfig`s
+    that share one `(code, station_kind)` key (e.g. the same physical BAFU
+    gauge onboarded under two tenant rows) used to collapse onto one index
+    entry, silently dropping one config's outcome. These lock BOTH the
+    success path and the whole-batch-failure path against that regression."""
+
+    def test_success_duplicate_code_and_kind_each_get_their_own_outcome(self) -> None:
+        station_a = make_station_config(
+            code="2044", network="bafu", rng=random.Random(41)
+        )
+        station_b = make_station_config(
+            code="2044", network="other-tenant", rng=random.Random(42)
+        )
+        assert station_a.id != station_b.id
+        bindings = _river_triples("2044", discharge="42.0")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {station_a.id: _SINCE, station_b.id: _SINCE}
+
+        result = adapter.fetch_observations_batch([station_a, station_b], since)
+
+        outcome_station_ids = {o.station_id for o in result.outcomes}
+        assert len(result.outcomes) == 2
+        assert outcome_station_ids == {station_a.id, station_b.id}
+        assert all(o.failure_cause is None for o in result.outcomes)
+        assert all(len(o.observations) == 1 for o in result.outcomes)
+
+    def test_whole_batch_failure_duplicate_code_and_kind_each_get_their_own_outcome(
+        self,
+    ) -> None:
+        station_a = make_station_config(
+            code="2044", network="bafu", rng=random.Random(43)
+        )
+        station_b = make_station_config(
+            code="2044", network="other-tenant", rng=random.Random(44)
+        )
+        assert station_a.id != station_b.id
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429)
+
+        adapter = _batch_adapter(httpx.MockTransport(handler), max_retries=1)
+        since = {station_a.id: _SINCE, station_b.id: _SINCE}
+
+        result = adapter.fetch_observations_batch([station_a, station_b], since)
+
+        outcome_station_ids = {o.station_id for o in result.outcomes}
+        assert len(result.outcomes) == 2
+        assert outcome_station_ids == {station_a.id, station_b.id}
+        assert all(
+            o.failure_cause is FetchOutcomeCause.RATE_LIMITED for o in result.outcomes
+        )
+
+
+class TestLakeStationKindFiltering:
+    """Fixer round (post-186 review) — the whole-graph query and its
+    grouping stage discriminate subjects purely by URI segment, carrying no
+    per-predicate station-kind filter. A LAKE station's matched subject must
+    still never emit `discharge`/`water_temperature` (RIVER-only
+    dimensions), matching the non-goal of not changing what gets stored."""
+
+    def test_lake_subject_with_river_only_params_emits_only_water_level(self) -> None:
+        subject = f"{_LAKE_BASE}/2208"
+        bindings = [
+            _triple(subject, f"{_DIM}/measurementTime", "2026-04-17T00:00:00Z"),
+            _triple(subject, f"{_DIM}/waterLevel", "394.2"),
+            _triple(subject, f"{_DIM}/discharge", "99.0"),
+            _triple(subject, f"{_DIM}/waterTemperature", "12.5"),
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        lake_station = make_station_config(
+            code="2208", station_kind=StationKind.LAKE, rng=random.Random(45)
+        )
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        result = adapter.fetch_observations_batch(
+            [lake_station], {lake_station.id: _SINCE}
+        )
+
+        assert len(result.outcomes) == 1
+        outcome = result.outcomes[0]
+        assert outcome.failure_cause is None
+        parameters = {o.parameter for o in outcome.observations}
+        assert parameters == {"water_level"}
+
+
+class TestOperationalQueryLimitGuard:
+    """Fixer round (post-186 review) — the collector path
+    (`bafu_observation.py`) already treats a cap-sized whole-graph response
+    as a coverage failure; the operational path did not, so a truncated
+    response would silently degrade into ordinary per-subject NO_DATA
+    instead of a visible batch failure."""
+
+    def test_exactly_at_limit_is_a_whole_batch_coverage_failure(self) -> None:
+        from sapphire_flow.adapters.lindas_hydro_query import QUERY_LIMIT
+
+        bindings = [
+            _triple(
+                f"{_RIVER_BASE}/{9000 + i}",
+                f"{_DIM}/measurementTime",
+                "2026-04-17T00:00:00Z",
+            )
+            for i in range(QUERY_LIMIT)
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_whole_graph_response(bindings))
+
+        stations = _river_stations(3, prefix="9")
+        adapter = _batch_adapter(httpx.MockTransport(handler))
+        since = {s.id: _SINCE for s in stations}
+
+        result = adapter.fetch_observations_batch(stations, since)
+
+        assert len(result.outcomes) == len(stations)
+        assert all(
+            o.failure_cause is FetchOutcomeCause.MALFORMED_RESPONSE
+            for o in result.outcomes
+        )
+        assert all(o.observations == () for o in result.outcomes)
+
+
+class TestVerifyGaugeGuardSurvivesQ2:
+    """Q2: deleting the per-station INGEST path must not weaken the
+    onboarding-time injection guard, which lives on in `_build_sparql_query`
+    / `verify_gauge_reachable` only."""
+
+    def test_verify_gauge_reachable_still_rejects_invalid_site_code(self) -> None:
+        adapter = _make_adapter(
+            httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+        )
+        with pytest.raises(ValueError, match="Invalid site_code"):
+            adapter.verify_gauge_reachable("'; DROP TABLE", StationKind.RIVER)
