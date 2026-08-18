@@ -52,6 +52,7 @@ from forecast_interface import (
     DynamicInputs,
     DynamicInputSpec,
     EpistemicUncertaintyData,
+    FailureCause,
     InputRequirement,
     InputSeries,
     ModelFailure,
@@ -68,6 +69,7 @@ from forecast_interface import (
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.models.aquacast._units import (
+    AreaConversionError,
     m3_per_s_to_mm_per_day,
     mm_per_day_to_m3_per_s,
 )
@@ -237,20 +239,38 @@ def _aquacast_value_and_unit(
     value_columns: Sequence[str],
     area_km2: object,
     station: str,
+    time_step: timedelta,
 ) -> tuple[Unit, pl.DataFrame]:
-    """canonical -> aquacast, for ONE declared (name, unit, data) triple."""
+    """canonical -> aquacast, for ONE declared (name, unit, data) triple.
+
+    Mirrors `_translate_declared_unit`'s D1 daily-step guard: the precipitation
+    `mm` -> `mm/day` relabel is numerically identical to the aquacast unit ONLY at a
+    daily step, so this data path must refuse a non-daily step exactly like the
+    declaration path does, rather than silently mislabeling by up to 8x.
+    """
     if name == _DISCHARGE and unit is Unit.M3_PER_S:
         factor = _discharge_scale(area_km2=area_km2, station=station, to_aquacast=True)
         return Unit.MM_PER_DAY, _scale_columns(
             data, columns=value_columns, factor=factor
         )
     if name == _PRECIPITATION and unit is Unit.MM:
+        if time_step != _DAILY_STEP:
+            raise ConfigurationError(
+                f"cannot relabel {_PRECIPITATION!r} {unit.value!r} as "
+                f"{Unit.MM_PER_DAY.value!r} at time_step {time_step}: mm over a "
+                "non-daily step is not mm/day (Plan 181 D1)"
+            )
         return Unit.MM_PER_DAY, data
     return unit, data
 
 
 def _series_inbound(
-    name: str, series: InputSeries, *, area_km2: object, station: str
+    name: str,
+    series: InputSeries,
+    *,
+    area_km2: object,
+    station: str,
+    time_step: timedelta,
 ) -> tuple[str, InputSeries]:
     aquacast_name = CANONICAL_TO_AQUACAST_NAME.get(name, name)
     value_columns = [c for c in series.data.columns if c != "datetime"]
@@ -261,6 +281,7 @@ def _series_inbound(
         value_columns=value_columns,
         area_km2=area_km2,
         station=station,
+        time_step=time_step,
     )
     if len(value_columns) == 1 and value_columns[0] != aquacast_name:
         data = data.rename({value_columns[0]: aquacast_name})
@@ -268,11 +289,17 @@ def _series_inbound(
 
 
 def _translate_data_group(
-    group: dict[str, dict[str, InputSeries]], *, area_km2: object, station: str
+    group: dict[str, dict[str, InputSeries]],
+    *,
+    area_km2: object,
+    station: str,
+    time_step: timedelta,
 ) -> dict[str, dict[str, InputSeries]]:
     return {
         product: dict(
-            _series_inbound(name, series, area_km2=area_km2, station=station)
+            _series_inbound(
+                name, series, area_km2=area_km2, station=station, time_step=time_step
+            )
             for name, series in variables.items()
         )
         for product, variables in group.items()
@@ -290,10 +317,16 @@ def _to_aquacast_station_inputs(
                 data={
                     rep: DynamicInputs(
                         past_known=_translate_data_group(
-                            dyn.past_known, area_km2=area_km2, station=station_key
+                            dyn.past_known,
+                            area_km2=area_km2,
+                            station=station_key,
+                            time_step=time_step,
                         ),
                         future_known=_translate_data_group(
-                            dyn.future_known, area_km2=area_km2, station=station_key
+                            dyn.future_known,
+                            area_km2=area_km2,
+                            station=station_key,
+                            time_step=time_step,
                         ),
                     )
                     for rep, dyn in spatial.data.items()
@@ -396,6 +429,23 @@ def _to_canonical_result(result: ModelResult, *, inputs: ModelInputs) -> ModelRe
     return ModelSuccess(output=_to_canonical_output(result.output, inputs=inputs))
 
 
+def _area_failure(
+    exc: AreaConversionError, *, model_name: str, issue_datetime: datetime
+) -> ModelFailure:
+    """A missing/invalid station `area` is an ANTICIPATED input-data failure — the
+    mandatory FI rule is `ModelFailure`, never a raise, for exactly this case
+    (`CLAUDE.md` § ForecastInterface Adherence). `AreaConversionError` is the ONLY
+    `ConfigurationError` subtype this boundary intercepts; every other
+    `ConfigurationError` (e.g. D1's non-daily precipitation guard) keeps raising —
+    those are configuration/programming defects, not anticipated bad station data."""
+    return ModelFailure(
+        model_name=model_name,
+        issue_datetime=issue_datetime,
+        cause=FailureCause.INPUT_DATA,
+        message=str(exc),
+    )
+
+
 class AquacastShim:
     """Base for one trained aquacast config.
 
@@ -424,6 +474,11 @@ class AquacastShim:
                 f"{cls.__name__} must set CONFIG_FILENAME — AquacastShim binds a "
                 "trained config at import time and cannot be constructed without one"
             )
+        # A stable name for `ModelFailure.model_name`, captured up front: an
+        # anticipated `predict`/`hindcast` input failure (Plan 181 fixer, FI
+        # adherence) must be able to name itself even though the failure can happen
+        # BEFORE `self._inner` is ever reached.
+        self._model_name: str = filename.removesuffix(".yaml")
         # Imported lazily so `sapphire_flow` stays importable WITHOUT the `aquacast`
         # extra. discover_models tolerates an entry point that fails to construct, but
         # an import-time failure here would break unrelated model discovery.
@@ -458,7 +513,12 @@ class AquacastShim:
         issue_datetime: datetime,
         rng: Random,
     ) -> ModelResult:
-        aquacast_inputs = _to_aquacast_inputs(inputs)
+        try:
+            aquacast_inputs = _to_aquacast_inputs(inputs)
+        except AreaConversionError as exc:
+            return _area_failure(
+                exc, model_name=self._model_name, issue_datetime=issue_datetime
+            )
         result = self._inner.predict(
             artifact, inputs=aquacast_inputs, issue_datetime=issue_datetime, rng=rng
         )
@@ -484,7 +544,15 @@ class AquacastShim:
                 f"{type(self._inner).__name__} does not implement hindcast; "
                 f"{type(self).__name__} cannot proxy it"
             )
-        aquacast_inputs = _to_aquacast_inputs(inputs)
+        try:
+            aquacast_inputs = _to_aquacast_inputs(inputs)
+        except AreaConversionError as exc:
+            # Mirrors aquacast's OWN hindcast (`operational/model.py`), which reports
+            # a whole-batch failure against `issue_list[0]` — the earliest requested
+            # issue — since `ModelFailure.issue_datetime` is singular.
+            return _area_failure(
+                exc, model_name=self._model_name, issue_datetime=issue_datetimes[0]
+            )
         result = inner_hindcast(
             artifact, inputs=aquacast_inputs, issue_datetimes=issue_datetimes, rng=rng
         )
