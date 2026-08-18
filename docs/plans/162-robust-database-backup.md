@@ -1,5 +1,5 @@
 ---
-status: PARTIAL
+status: READY
 created: 2026-08-14
 plan: 162
 title: Robust database backup — complete, verified restorable, loud on failure, and safe to move off the machine
@@ -38,6 +38,10 @@ else. Encryption (D5) keeps its own justification independent of destination: du
 `tenant_id`, and an artifact that is safe at rest is safe on any of these sinks.
 
 ## Status
+
+> **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status
+> in this repo (DRAFT → READY → COMPLETE) and caused `/implement`'s preflight to refuse the plan. What is
+> done versus open is stated in prose below; the status line stays READY while any task remains buildable.
 **PARTIAL — Phase A merged 2026-08-16 as PR #161 (`a9239b6a`). NOT yet deployed.**
 ⛔ **Phase B is a hard gate before any customer release**: dumps still sit on the same device as the database,
 unencrypted (FileVault off), containing `access_tokens` and `tenant_id`.

@@ -1,5 +1,5 @@
 ---
-status: PARTIAL
+status: READY
 created: 2026-08-14
 plan: 161
 title: DATABASE_URL credential handling — a `/` in the password silently killed every backup
@@ -41,6 +41,10 @@ out of the hazard class by construction — but **not obsolete**. The remaining 
 **do not hand-set a DB password until this lands.**
 
 ## Status
+
+> **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status
+> in this repo (DRAFT → READY → COMPLETE) and caused `/implement`'s preflight to refuse the plan. What is
+> done versus open is stated in prose below; the status line stays READY while any task remains buildable.
 **PARTIAL — T1 merged 2026-08-16 as PR #152 (`7fdee00`) and DEPLOYED (mini 0.1.721).** T2
 (construct-don't-splice at both producer sites) and T3 (alert hysteresis, absorbed by Plan 162) remain OPEN.
 ⚠️ Until T2 lands, **do not set a DB password by hand** — `make_url` silently truncates at an `@`.
