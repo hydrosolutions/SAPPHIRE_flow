@@ -154,6 +154,36 @@ class TestBindEra5LandReanalysisFleet:
         assert any(b.nwp_source == ForcingSource.ERA5_LAND.value for b in bindings)
 
 
+class TestRunEra5LandBackfillValidation:
+    """Minor (second fixer round): a non-positive ``station_batch_size``
+    makes ``_chunk()`` (``range(0, len(items), size)``) come back empty —
+    the backfill would silently report success having done zero work."""
+
+    def test_negative_station_batch_size_raises(self) -> None:
+        mod = _import_module()
+        adapter = _FakeAdapter(boundary=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)))
+
+        with pytest.raises(ValueError, match="station_batch_size"):
+            mod.run_era5_land_backfill(
+                adapter=adapter,
+                forcing_store=FakeHistoricalForcingStore(),
+                station_configs=[_binding(StationId(uuid4()))],
+                station_batch_size=-1,
+            )
+
+    def test_zero_station_batch_size_raises(self) -> None:
+        mod = _import_module()
+        adapter = _FakeAdapter(boundary=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)))
+
+        with pytest.raises(ValueError, match="station_batch_size"):
+            mod.run_era5_land_backfill(
+                adapter=adapter,
+                forcing_store=FakeHistoricalForcingStore(),
+                station_configs=[_binding(StationId(uuid4()))],
+                station_batch_size=0,
+            )
+
+
 class TestRunEra5LandBackfillChunkedResumable:
     def test_no_boundary_yet_writes_nothing(self) -> None:
         mod = _import_module()

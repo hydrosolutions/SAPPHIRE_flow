@@ -457,6 +457,59 @@ class TestLandCoverageCheck:
 
         assert rows
 
+    def test_edge_and_corner_touching_ocean_cells_do_not_count_as_contributing(
+        self,
+    ) -> None:
+        """R2-1 regression: a basin positioned entirely inside ONE land cell,
+        whose bounding box happens to TOUCH (zero overlap area) three
+        neighbouring ocean cells along an edge/edge/corner, must not have
+        those three counted toward ``total`` — ``shapely.intersects`` counts
+        all four (a boolean touch test), depressing land_fraction to 1/4 and
+        raising ExtractionError on a basin that is genuinely 100% land."""
+        era5_land_adapter_cls = _import_adapter()
+        sid = StationId(uuid.uuid4())
+        # A 2x2 grid, 1-degree cells: (lon=5,lat=45) is land; the other three
+        # ((6,45), (5,46), (6,46)) are NaN (ocean).
+        values = np.array([[[0.004, np.nan], [np.nan, np.nan]]], dtype=np.float64)
+        ds = xr.Dataset(
+            {
+                "total_precipitation_sum": xr.DataArray(
+                    values,
+                    dims=["time", "latitude", "longitude"],
+                    coords={
+                        "time": [datetime(2026, 4, 1)],
+                        "latitude": [45.0, 46.0],
+                        "longitude": [5.0, 6.0],
+                    },
+                )
+            }
+        )
+        # Top-right quarter of the land cell [4.5,5.5]x[44.5,45.5]: shares
+        # its right edge (x=5.5) with cell (6,45), its top edge (y=45.5)
+        # with cell (5,46), and only the single corner point (5.5, 45.5)
+        # with cell (6,46) — zero-area touches with all three.
+        basin = _make_basin(sid, geom=box(5.0, 45.0, 5.5, 45.5))
+        config = _make_config(sid)
+        adapter = era5_land_adapter_cls(
+            extractor=ExactExtractGridExtractor(),
+            basins={sid: basin},
+            clock=lambda: _EPOCH,
+            open_store=lambda path: ds,
+            min_land_fraction=0.5,
+        )
+
+        rows = adapter.fetch_reanalysis(
+            [config],
+            ensure_utc(datetime(2026, 4, 1, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 4, 4, tzinfo=UTC)),
+            ["precipitation"],
+        )
+
+        assert rows, (
+            "a basin fully inside one land cell must not be rejected because "
+            "its bbox happens to touch neighbouring ocean cells at zero area"
+        )
+
     def test_passes_when_basin_fully_land(self) -> None:
         era5_land_adapter_cls = _import_adapter()
         sid = StationId(uuid.uuid4())
@@ -481,6 +534,117 @@ class TestLandCoverageCheck:
         )
 
         assert rows
+
+
+class _RecordingExtractor:
+    """Records the ``grid`` it was handed, without doing any real
+    extraction — used to prove ``fetch_reanalysis`` bounds the DataArray to
+    the fleet's extent before it ever reaches the extractor (R2-2)."""
+
+    def __init__(self) -> None:
+        self.grids: list[xr.Dataset] = []
+
+    def extract(self, grid, configs, basins, cycle_time, nwp_source):  # noqa: ANN001, ANN201
+        self.grids.append(grid)
+        return {}
+
+
+class TestSpatialSubsetting:
+    """R2-2 regression: the store's full grid must never reach the
+    extractor unbounded — ``fetch_reanalysis`` bounds ``read_variable`` to
+    the fleet's own basin extent."""
+
+    def test_extractor_receives_a_grid_bounded_to_the_fleet_extent(self) -> None:
+        era5_land_adapter_cls = _import_adapter()
+        sid = StationId(uuid.uuid4())
+        # A basin far smaller than the grid it sits on.
+        basin = _make_basin(sid, geom=box(6.0, 5.5, 6.5, 6.0))
+        config = _make_config(sid)
+        # A grid MUCH larger than the basin's extent — simulating the
+        # store's global shape; only a small bounded slice around the basin
+        # should ever reach the extractor.
+        ds = _raw_dataset(
+            variable="total_precipitation_sum", fill_value=0.004, n_lat=40, n_lon=40
+        )
+        ds = ds.assign_coords(
+            latitude=np.linspace(-40.0, 40.0, 40),
+            longitude=np.linspace(-60.0, 60.0, 40),
+        )
+        recorder = _RecordingExtractor()
+        adapter = era5_land_adapter_cls(
+            extractor=recorder,
+            basins={sid: basin},
+            clock=lambda: _EPOCH,
+            open_store=lambda path: ds,
+        )
+
+        adapter.fetch_reanalysis(
+            [config],
+            ensure_utc(datetime(2026, 4, 1, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 4, 4, tzinfo=UTC)),
+            ["precipitation"],
+        )
+
+        assert len(recorder.grids) == 1
+        received = recorder.grids[0]
+        assert received.sizes["latitude"] < 40
+        assert received.sizes["longitude"] < 40
+
+    def test_read_variable_without_bbox_is_unbounded(self) -> None:
+        """The default (``bbox=None``, used by callers like T3 validation
+        that legitimately want the whole requested window) keeps the old
+        unsliced-in-space behaviour."""
+        era5_land_adapter_cls = _import_adapter()
+        ds = _raw_dataset(
+            variable="total_precipitation_sum", fill_value=0.004, n_lat=10, n_lon=10
+        )
+        adapter = era5_land_adapter_cls(
+            extractor=ExactExtractGridExtractor(),
+            basins={},
+            clock=lambda: _EPOCH,
+            open_store=lambda path: ds,
+        )
+
+        da = adapter.read_variable(
+            "precipitation",
+            ensure_utc(datetime(2026, 4, 1, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 4, 4, tzinfo=UTC)),
+        )
+
+        assert da.sizes["latitude"] == 10
+        assert da.sizes["longitude"] == 10
+
+
+class TestConstructorValidation:
+    def test_negative_min_land_fraction_raises(self) -> None:
+        era5_land_adapter_cls = _import_adapter()
+        with pytest.raises(ValueError, match="min_land_fraction"):
+            era5_land_adapter_cls(
+                extractor=ExactExtractGridExtractor(),
+                basins={},
+                clock=lambda: _EPOCH,
+                min_land_fraction=-0.1,
+            )
+
+    def test_min_land_fraction_above_one_raises(self) -> None:
+        era5_land_adapter_cls = _import_adapter()
+        with pytest.raises(ValueError, match="min_land_fraction"):
+            era5_land_adapter_cls(
+                extractor=ExactExtractGridExtractor(),
+                basins={},
+                clock=lambda: _EPOCH,
+                min_land_fraction=1.5,
+            )
+
+    def test_zero_min_land_fraction_raises(self) -> None:
+        era5_land_adapter_cls = _import_adapter()
+        with pytest.raises(ValueError, match="min_land_fraction"):
+            era5_land_adapter_cls(
+                extractor=ExactExtractGridExtractor(),
+                basins={},
+                clock=lambda: _EPOCH,
+                min_land_fraction=0.0,
+            )
 
 
 class TestDiscoverBoundary:

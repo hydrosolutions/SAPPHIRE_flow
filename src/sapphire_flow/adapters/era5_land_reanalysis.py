@@ -196,6 +196,65 @@ def _grid_step(coords: np.ndarray) -> float | None:
     return float(np.median(np.diff(unique)))
 
 
+#: Grid-step multiples of margin applied around a bbox before subsetting.
+#: >1 so a raster that would otherwise collapse to a single row/column right
+#: at the bbox's edge (exact_extract/rioxarray need >=2 points per axis to
+#: infer resolution) keeps enough neighbouring cells on both sides.
+_BBOX_MARGIN_GRID_STEPS: Final[int] = 2
+
+
+def _spatial_subset(
+    da: xr.DataArray, bbox: tuple[float, float, float, float]
+) -> xr.DataArray:
+    """R2-2 fix: bound ``da`` to ``bbox`` (+ a small grid-step margin, so a
+    cell whose CENTRE falls just outside the bbox but still OVERLAPS a
+    polygon near the edge is retained) before any values materialise.
+    Without this, ``read_variable`` sliced only on ``valid_time`` and the
+    full global 1801x3600 ERA5-Land grid was read for every chunk of the
+    40-year, two-parameter, ~296-basin backfill this plan exists to run —
+    reading the whole planet to use a few hundred cells of it."""
+    minx, miny, maxx, maxy = bbox
+    lon_all = da["longitude"].values
+    lat_all = da["latitude"].values
+    lon_step = _grid_step(lon_all) or 0.0
+    lat_step = _grid_step(lat_all) or 0.0
+    lon_margin = _BBOX_MARGIN_GRID_STEPS * lon_step
+    lat_margin = _BBOX_MARGIN_GRID_STEPS * lat_step
+    lon_idx = np.nonzero(
+        (lon_all >= minx - lon_margin) & (lon_all <= maxx + lon_margin)
+    )[0]
+    lat_idx = np.nonzero(
+        (lat_all >= miny - lat_margin) & (lat_all <= maxy + lat_margin)
+    )[0]
+    if lon_idx.size == 0 or lat_idx.size == 0:
+        raise ExtractionError(
+            f"ERA5-Land spatial subset bbox {bbox} does not intersect the "
+            "store's grid extent"
+        )
+    return da.isel(longitude=lon_idx, latitude=lat_idx)
+
+
+def _fleet_bbox(
+    configs: list[StationWeatherSource], basins: dict[StationId, Basin]
+) -> tuple[float, float, float, float] | None:
+    """The union bounding box of every config's basin — ``None`` when no
+    config has a basin on record, in which case ``read_variable`` falls back
+    to an unsliced (global) read rather than raising."""
+    bounds = [
+        basins[cfg.station_id].geometry.bounds
+        for cfg in configs
+        if cfg.station_id in basins
+    ]
+    if not bounds:
+        return None
+    return (
+        min(b[0] for b in bounds),
+        min(b[1] for b in bounds),
+        max(b[2] for b in bounds),
+        max(b[3] for b in bounds),
+    )
+
+
 def _assert_land_coverage(
     grid: xr.Dataset,
     parameter: str,
@@ -235,6 +294,23 @@ def _assert_land_coverage(
     per basin, per (year, station-batch, parameter) chunk was O(10^11)
     point-in-polygon predicates before extraction even began. Cropping first
     bounds the per-basin cost by the basin's own extent, not the globe's.
+
+    **R2-1 fix (second fixer round, 2026-08-18):** "contributing cell" is a
+    POSITIVE-AREA overlap test (``shapely.area(shapely.intersection(...)) >
+    0``), not ``shapely.intersects`` (a boolean TOUCH test). ``intersects``
+    is true for a cell that touches the basin only along an edge or at a
+    corner — zero overlap area, zero weight in ``exact_extract``'s
+    coverage-weighted mean. Counting such a cell toward ``total`` let a NaN
+    ocean cell that merely brushes the boundary depress ``fraction`` and
+    raise ``ExtractionError`` on a basin that was otherwise entirely fine —
+    trading M2's false negative for a false positive on the same metric.
+
+    **R2-2 fix (second fixer round, 2026-08-18):** the ``grid`` this function
+    receives is now ALREADY spatially subset to the fleet's bounding box (see
+    ``read_variable``'s ``bbox`` parameter, applied in ``fetch_reanalysis``)
+    — the M3 crop below is a further, per-basin narrowing within that
+    already-small window, not the only thing standing between this function
+    and the full 1801x3600 global grid.
     """
     first_time = grid["valid_time"].values[0]
     da0 = grid[parameter].sel(valid_time=first_time).transpose("latitude", "longitude")
@@ -273,12 +349,16 @@ def _assert_land_coverage(
             lon_grid + lon_step / 2,
             lat_grid + lat_step / 2,
         )
-        intersects = shapely.intersects(geom, cells)
-        total = int(intersects.sum())
+        # R2-1: a POSITIVE-AREA overlap test, not shapely.intersects (which is
+        # also true for a cell that merely touches the basin along an edge
+        # or at a corner, contributing zero weight to exact_extract's mean).
+        overlap_area = shapely.area(shapely.intersection(geom, cells))
+        contributing = overlap_area > 0.0
+        total = int(contributing.sum())
         if total == 0:
             continue
         cropped_values = values_all[np.ix_(lat_idx, lon_idx)]
-        land = int(np.sum(intersects & ~np.isnan(cropped_values)))
+        land = int(np.sum(contributing & ~np.isnan(cropped_values)))
         fraction = land / total
         if fraction < min_land_fraction:
             low_coverage.append(
@@ -318,6 +398,10 @@ class Era5LandReanalysisAdapter:
         open_store: Callable[[str], xr.Dataset] = _default_store_opener,
         min_land_fraction: float = 0.5,
     ) -> None:
+        if not (0.0 < min_land_fraction <= 1.0):
+            raise ValueError(
+                f"min_land_fraction must be in (0.0, 1.0], got {min_land_fraction}"
+            )
         self._store_root = store_root.rstrip("/")
         self._extractor = extractor
         self._basins = basins
@@ -329,14 +413,28 @@ class Era5LandReanalysisAdapter:
         return f"{self._store_root}/{store_variable}.zarr"
 
     def read_variable(
-        self, aquaire_name: str, start: UtcDatetime, end: UtcDatetime
+        self,
+        aquaire_name: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        *,
+        bbox: tuple[float, float, float, float] | None = None,
     ) -> xr.DataArray:
         """T1 — open one variable's zarr read-only, apply the AQUAIRE
         mapping verbatim (unit transform, native -> canonical), sliced to
         the half-open ``[start, end)`` window. Returns a
         ``(valid_time, latitude, longitude)`` DataArray in AQUAIRE's
         canonical units. Supports all four mapped variables — only two are
-        operationally persisted, see ``fetch_reanalysis``/D2."""
+        operationally persisted, see ``fetch_reanalysis``/D2.
+
+        **R2-2 fix:** when ``bbox`` is given, the DataArray is ALSO spatially
+        subset (``_spatial_subset``, + a one-grid-step margin) before
+        anything materialises — ``fetch_reanalysis`` passes the fleet's own
+        bounding box. Without this, the store's full global 1801x3600 grid
+        was read for every chunk of the backfill regardless of how few
+        basins were requested (``bbox=None`` — the default, used directly by
+        callers like T3 validation that want the whole window — keeps the
+        old unsliced-in-space behaviour)."""
         var = _BY_AQUAIRE_NAME.get(aquaire_name)
         if var is None:
             raise AdapterError(f"unknown ERA5-Land variable: {aquaire_name!r}")
@@ -353,6 +451,8 @@ class Era5LandReanalysisAdapter:
         start_ts = pd.Timestamp(start).tz_localize(None)
         end_ts = pd.Timestamp(end).tz_localize(None) - pd.Timedelta(microseconds=1)
         da = ds[var.store_variable].sel(valid_time=slice(start_ts, end_ts))
+        if bbox is not None:
+            da = _spatial_subset(da, bbox)
         return var.transform(da)
 
     def discover_boundary(self) -> UtcDatetime | None:
@@ -395,10 +495,13 @@ class Era5LandReanalysisAdapter:
             return []
 
         cycle_time = self._clock()
+        # R2-2: bound the read to this fleet's basin extent, not the store's
+        # full global grid — see read_variable's ``bbox``/_spatial_subset.
+        bbox = _fleet_bbox(matching, self._basins)
         rows: list[RawHistoricalForcing] = []
         for aquaire_name in aquaire_names:
             canonical = _canonical_parameter(aquaire_name)
-            da = self.read_variable(aquaire_name, start, end)
+            da = self.read_variable(aquaire_name, start, end, bbox=bbox)
             grid = da.to_dataset(name=canonical)
             _assert_land_coverage(
                 grid, canonical, matching, self._basins, self._min_land_fraction

@@ -328,6 +328,74 @@ the control for it is a deliberately broken resume.
 **Scope for this round: R2-1, R2-2, R2-3 only.** Everything in the previous round's out-of-scope list
 still applies.
 
+## Third fixer round — R2-1/R2-2/R2-3 closed, plus a fourth independently-found major (2026-08-18)
+
+A follow-up review (Claude design pass + independent Codex pass over the diff) confirmed the round-2
+scope had NOT been implemented in the committed history — `main...HEAD` (commits `28d4dee` +
+`97a7735`) stopped at the round-1 fixes (T3 coverage floor, land-mask coverage, the operator
+entrypoint). This round closes all three round-2 items, plus one additional MAJOR the round-2 pass
+had not surfaced: `frac_snow` used the wrong formula.
+
+### R2-1 — fixed
+`_assert_land_coverage` (`adapters/era5_land_reanalysis.py`) now measures "contributing cell" as
+POSITIVE-AREA overlap (`shapely.area(shapely.intersection(geom, cells)) > 0`), not
+`shapely.intersects` (a boolean touch test true for a cell sharing only an edge or corner with the
+basin, zero weight in `exact_extract`'s mean). Locking test:
+`test_edge_and_corner_touching_ocean_cells_do_not_count_as_contributing` — a basin fully inside one
+land cell, whose bbox touches three NaN neighbours at zero area, must NOT be rejected. Proved to fail
+against the pre-fix `intersects` check (`land_fraction=0.25, cells=4` -> `ExtractionError`, exactly the
+false positive described).
+
+### R2-2 — fixed
+`read_variable` gained a `bbox` keyword; `fetch_reanalysis` now computes the fleet's own basin
+bounding box (`_fleet_bbox`) and passes it through, so `_spatial_subset` crops the DataArray (+ a
+2-grid-step margin, so exact_extract/rioxarray never lose an axis down to <2 points) BEFORE anything
+materialises — not just in the already-existing per-basin coverage-check crop. `bbox=None` (T3
+validation's own direct caller) keeps the old unsliced-in-space read. Locking test:
+`TestSpatialSubsetting::test_extractor_receives_a_grid_bounded_to_the_fleet_extent` — a basin on a
+40x40 synthetic grid must reach the extractor on a STRICTLY SMALLER grid. Proved to fail against the
+pre-fix adapter (`assert 40 < 40`, i.e. the extractor received the whole unsliced grid).
+
+### R2-3 — fixed
+`test_era5_land_mode_reader_returns_both_parameters_end_to_end`
+(`tests/unit/adapters/test_reanalysis_selection.py`) now drives the round-trip through
+`Era5LandReanalysisAdapter.fetch_reanalysis` (a synthetic zarr-shaped store via `open_store`) into
+`forcing_store.store_forcing`, THEN reads back via the selected reader — the writer's own
+AQUAIRE -> SAP3-canonical rename (`mean_temperature` -> `temperature`, `_canonical_parameter`) now
+actually runs. Verified this catches the regression it claims to: temporarily reverting
+`_canonical_parameter` to an identity function makes the test fail (`{'precipitation'} ==
+{'precipitation', 'temperature'}`); the PREVIOUS version (hardcoded `store_forcing` rows) would not
+have noticed.
+
+### A fourth MAJOR, found independently of the round-2 review: `frac_snow`'s formula
+`services/era5_land_validation.py`'s `frac_snow` summed precipitation on individual sub-zero DAYS —
+Addor et al.'s `frac_snow_daily`, not Caravan's actually-published `frac_snow`, which is a
+CALENDAR-MONTH CLIMATOLOGY: group every day by calendar month (pooled across years), take each
+month's MEAN precipitation and MEAN temperature, classify a month as snow when its mean temperature is
+below 0 degC, and divide summed snow-month mean precipitation by summed all-month mean precipitation.
+The two disagree whenever a month has both sub-zero and above-zero days but a non-negative monthly
+mean: four same-month days at `[-1, -1, 5, 5]` degC give `0.5` under the (wrong) daily formula and
+`0.0` under Caravan's own. `frac_snow`/`compute_climate_indices` now take a `dates: Sequence[date]`
+parameter and implement the month-climatology formula; `validate_era5_land_against_caravan` passes
+`common_days` through. Locking test:
+`test_same_month_sub_zero_days_do_not_count_when_month_mean_is_not` — proved to fail against the
+pre-fix per-day formula (calling the old 2-argument `frac_snow` directly on the counterexample returns
+`0.5`, not the correct `0.0`).
+
+### Minors closed
+- `station_batch_size <= 0` (`run_era5_land_backfill`) and an out-of-`(0.0, 1.0]`
+  `min_land_fraction` (`Era5LandReanalysisAdapter.__init__`, plus the CLI's own
+  `--station-batch-size`/`--min-land-fraction` flags) now raise/exit non-zero instead of silently
+  chunking zero work or disabling the land-mask guard. Both proved to fail against the pre-fix code.
+
+### Version-bump history note (not rewritten)
+An independent review also flagged that commit `28d4dee` (of the two code commits preceding this
+round) does not carry its own patch bump — only `97a7735` does, contrary to CLAUDE.md's per-commit
+bump rule. Left as-is here rather than rewritten: an interactive rebase to inject a bump into an
+already-committed, not-yet-pushed commit is exactly the kind of history rewrite the operator's own git
+safety rules steer away from by default, and no push/PR/merge has happened yet on this branch for it
+to matter downstream. This round's own commit carries a correct bump. Flagged for the owner in case a
+history rewrite is still wanted before PR.
 ## Live store probe + owner decisions (2026-08-18)
 
 `s3://sloth-dynamic/v1/era5/` was read directly with `AWS_PROFILE=work`. It is reachable, and the

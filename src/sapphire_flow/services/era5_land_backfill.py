@@ -194,6 +194,14 @@ def run_era5_land_backfill(
     ``adapter.discover_boundary()`` — the store's own high-water mark —
     accepted as a parameter so tests (and a caller with a fixed target) can
     bypass that discovery call."""
+    if station_batch_size <= 0:
+        # A non-positive size makes range(0, len(items), size) come back
+        # empty (Python silently no-ops rather than raising for a negative
+        # step here) — the backfill would report "success" having chunked
+        # and fetched nothing at all.
+        raise ValueError(
+            f"station_batch_size must be positive, got {station_batch_size}"
+        )
     resolved_end = end if end is not None else adapter.discover_boundary()
     empty = BackfillResult(
         chunks_processed=0,

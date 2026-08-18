@@ -26,6 +26,20 @@ per basin — deliberately tight, and expected to be revised once real numbers
 are seen, so ``compare_climate_indices`` always records the observed
 ``relative_diff`` (not just pass/fail).
 
+**``frac_snow`` is Caravan's CALENDAR-MONTH CLIMATOLOGY, not a per-day
+classification (fixer round, 2026-08-18).** Caravan's published attribute is
+``frac_snow`` — the OLDER, coarser sibling of Addor et al.'s ``frac_snow_daily``
+— which classifies a whole CALENDAR MONTH (Jan..Dec, aggregated over every
+year in the series) as "snow" when that month's CLIMATOLOGICAL MEAN
+temperature is below 0 degC, then divides the summed climatological mean
+precipitation of snow months by the summed climatological mean precipitation
+of all twelve months. A per-day formula (summing precipitation on individual
+sub-zero DAYS) disagrees with this whenever a month has some sub-zero and
+some above-zero days but a non-negative monthly mean — e.g. four same-month
+days at [-1, -1, 5, 5] degC give 0.5 per-day but 0.0 under Caravan's own
+formula, since that month's mean temperature (2.0 degC) never drops below
+zero.
+
 **Coverage is data, never silently narrowed (fixer round, 2026-08-18).**
 ``validate_era5_land_against_caravan`` used to ``continue`` past a station
 missing a basin, Caravan attributes, or overlapping precipitation/temperature
@@ -45,6 +59,7 @@ return agreements" can no longer mistake a narrow comparison for a broad one.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Final
@@ -94,23 +109,53 @@ def p_mean(precipitation_mm_day: Sequence[float]) -> float:
 
 
 def frac_snow(
-    precipitation_mm_day: Sequence[float], temperature_degc: Sequence[float]
+    precipitation_mm_day: Sequence[float],
+    temperature_degc: Sequence[float],
+    dates: Sequence[date],
 ) -> float:
-    """Fraction of precipitation falling as snow: precipitation on days with
-    mean temperature < 0 degC, divided by total precipitation (Addor et al.
-    2017)."""
-    if len(precipitation_mm_day) != len(temperature_degc):
+    """Fraction of precipitation falling as snow — Caravan's published
+    ``frac_snow`` (Addor et al. 2017), NOT the daily variant
+    (``frac_snow_daily``). Caravan's ``frac_snow`` is a CALENDAR-MONTH
+    CLIMATOLOGY: group every day into its calendar month (Jan..Dec, pooled
+    across every year in ``dates``), take each month's MEAN precipitation and
+    MEAN temperature, classify a month as snow when its mean temperature is
+    below 0 degC, and divide the summed mean precipitation of snow months by
+    the summed mean precipitation of all twelve months. A day is never
+    classified on its own — a handful of sub-zero days inside an otherwise
+    mild month do not count as snow unless that month's own climatological
+    mean drops below zero."""
+    if len(precipitation_mm_day) != len(temperature_degc) or len(
+        precipitation_mm_day
+    ) != len(dates):
         raise ValueError(
-            "frac_snow: precipitation/temperature series length mismatch "
-            f"({len(precipitation_mm_day)} != {len(temperature_degc)})"
+            "frac_snow: precipitation/temperature/dates series length mismatch "
+            f"({len(precipitation_mm_day)} != {len(temperature_degc)} != "
+            f"{len(dates)})"
         )
-    total = sum(precipitation_mm_day)
+    if not precipitation_mm_day:
+        raise ValueError("frac_snow: empty precipitation series")
+
+    monthly_precip: dict[int, list[float]] = defaultdict(list)
+    monthly_temp: dict[int, list[float]] = defaultdict(list)
+    for p, t, d in zip(precipitation_mm_day, temperature_degc, dates, strict=True):
+        monthly_precip[d.month].append(p)
+        monthly_temp[d.month].append(t)
+
+    month_mean_precip = {
+        month: sum(values) / len(values) for month, values in monthly_precip.items()
+    }
+    month_mean_temp = {
+        month: sum(values) / len(values) for month, values in monthly_temp.items()
+    }
+
+    total = sum(month_mean_precip.values())
     if total <= 0:
         raise ValueError("frac_snow: zero or negative total precipitation")
+
     snow = sum(
-        p
-        for p, t in zip(precipitation_mm_day, temperature_degc, strict=True)
-        if t < _SNOW_TEMP_THRESHOLD_C
+        mean_p
+        for month, mean_p in month_mean_precip.items()
+        if month_mean_temp[month] < _SNOW_TEMP_THRESHOLD_C
     )
     return snow / total
 
@@ -147,11 +192,13 @@ def low_prec_dur(precipitation_mm_day: Sequence[float]) -> float:
 
 
 def compute_climate_indices(
-    precipitation_mm_day: Sequence[float], temperature_degc: Sequence[float]
+    precipitation_mm_day: Sequence[float],
+    temperature_degc: Sequence[float],
+    dates: Sequence[date],
 ) -> dict[str, float]:
     return {
         "p_mean": p_mean(precipitation_mm_day),
-        "frac_snow": frac_snow(precipitation_mm_day, temperature_degc),
+        "frac_snow": frac_snow(precipitation_mm_day, temperature_degc, dates),
         "high_prec_freq": high_prec_freq(precipitation_mm_day),
         "low_prec_dur": low_prec_dur(precipitation_mm_day),
     }
@@ -361,7 +408,7 @@ def validate_era5_land_against_caravan(
 
         precip_series = [precip_by_day[d] for d in common_days]
         temp_series = [temp_by_day[d] for d in common_days]
-        computed = compute_climate_indices(precip_series, temp_series)
+        computed = compute_climate_indices(precip_series, temp_series, common_days)
 
         basin_agreements = compare_climate_indices(
             station_id=station.id,

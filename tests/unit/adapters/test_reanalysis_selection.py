@@ -12,14 +12,24 @@ do. Distinct from the Data-Gateway-mediated ERA5-Land path
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
+import numpy as np
+import xarray as xr
+from shapely.geometry import box
+
+from sapphire_flow.adapters.era5_land_reanalysis import Era5LandReanalysisAdapter
 from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
 from sapphire_flow.adapters.hybrid_reanalysis_factories import (
     select_reanalysis_source,
 )
 from sapphire_flow.adapters.per_source_store_reader import PerSourceStoreReader
 from sapphire_flow.adapters.store_backed_reanalysis import StoreBackedReanalysisSource
+from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
+    ExactExtractGridExtractor,
+)
+from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     SpatialRepresentation,
@@ -27,9 +37,12 @@ from sapphire_flow.types.enums import (
     WeatherSourceStatus,
 )
 from sapphire_flow.types.forcing_sources import ForcingSource
+from sapphire_flow.types.ids import BasinId
 from sapphire_flow.types.station import StationWeatherSource
-from tests.conftest import make_raw_historical_forcing, make_station_config
+from tests.conftest import make_station_config
 from tests.fakes.fake_stores import FakeHistoricalForcingStore
+
+_EPOCH = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 
 
 class TestSelectReanalysisSource:
@@ -58,34 +71,36 @@ class TestSelectReanalysisSource:
         assert source._source is ForcingSource.ERA5_LAND  # noqa: SLF001
 
     def test_era5_land_mode_reader_returns_both_parameters_end_to_end(self) -> None:
-        """Minor (fixer round): the private-attribute assertion above would
-        pass even if the selected reader returned zero rows for a real store
-        — the exact silent-failure mode this plan exists to close (writing
-        ``mean_temperature`` instead of ``temperature`` would fail exactly
-        this way). Round-trip a writer -> store -> selected-reader read and
-        assert BOTH canonical parameters actually come back."""
+        """R2-3 fix (second fixer round, 2026-08-18): the private-attribute
+        assertion above would pass even if the selected reader returned zero
+        rows for a real store — the exact silent-failure mode this plan
+        exists to close (writing ``mean_temperature`` instead of
+        ``temperature`` would fail exactly this way). The PREVIOUS version of
+        this test stored hardcoded ``parameter="precipitation"``/
+        ``"temperature"`` rows directly via ``forcing_store.store_forcing``,
+        so ``Era5LandReanalysisAdapter.fetch_reanalysis`` — the code that
+        actually performs the AQUAIRE -> SAP3-canonical rename
+        (``mean_temperature`` -> ``temperature``) — never ran; a regression
+        reintroducing ``parameter="mean_temperature"`` there would NOT have
+        been caught. This version drives the round-trip through the real
+        adapter: WRITE via ``Era5LandReanalysisAdapter.fetch_reanalysis`` +
+        ``forcing_store.store_forcing``, then READ via the selected reader,
+        and assert BOTH canonical parameters actually come back."""
         forcing_store = FakeHistoricalForcingStore()
-        station = make_station_config()
+        basin = Basin(
+            id=BasinId(uuid.uuid4()),
+            code="test-basin",
+            name="Test basin",
+            geometry=box(6.0, 46.0, 10.0, 48.0),
+            area_km2=100.0,
+            attributes=None,
+            band_geometries=None,
+            created_at=_EPOCH,
+            network="bafu",
+        )
+        station = make_station_config(basin_id=basin.id)
         start = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
         end = ensure_utc(datetime(2020, 1, 3, tzinfo=UTC))
-        forcing_store.store_forcing(
-            [
-                make_raw_historical_forcing(
-                    station_id=station.id,
-                    source=ForcingSource.ERA5_LAND.value,
-                    parameter="precipitation",
-                    valid_time=datetime(2020, 1, 1, tzinfo=UTC),
-                    value=3.0,
-                ),
-                make_raw_historical_forcing(
-                    station_id=station.id,
-                    source=ForcingSource.ERA5_LAND.value,
-                    parameter="temperature",
-                    valid_time=datetime(2020, 1, 1, tzinfo=UTC),
-                    value=7.5,
-                ),
-            ]
-        )
         binding = StationWeatherSource(
             station_id=station.id,
             nwp_source=ForcingSource.ERA5_LAND.value,
@@ -93,6 +108,39 @@ class TestSelectReanalysisSource:
             status=WeatherSourceStatus.ACTIVE,
             role=WeatherSourceRole.REANALYSIS,
         )
+
+        def _open_store(path: str) -> xr.Dataset:
+            variable = (
+                "temperature_2m_mean"
+                if "temperature" in path
+                else ("total_precipitation_sum")
+            )
+            fill_value = 280.65 if variable == "temperature_2m_mean" else 0.003
+            return xr.Dataset(
+                {
+                    variable: xr.DataArray(
+                        np.full((2, 4, 4), fill_value, dtype=np.float64),
+                        dims=["time", "latitude", "longitude"],
+                        coords={
+                            "time": [datetime(2020, 1, 1), datetime(2020, 1, 2)],
+                            "latitude": np.linspace(46.0, 48.0, 4),
+                            "longitude": np.linspace(6.0, 10.0, 4),
+                        },
+                    )
+                }
+            )
+
+        adapter = Era5LandReanalysisAdapter(
+            extractor=ExactExtractGridExtractor(),
+            basins={station.id: basin},
+            clock=lambda: _EPOCH,
+            open_store=_open_store,
+        )
+        written_rows = adapter.fetch_reanalysis(
+            [binding], start, end, ["precipitation", "temperature"]
+        )
+        assert written_rows, "adapter produced no rows to write — fixture is wrong"
+        forcing_store.store_forcing(written_rows)
 
         source = select_reanalysis_source(forcing_store=forcing_store, mode="era5_land")
         rows = source.fetch_reanalysis(

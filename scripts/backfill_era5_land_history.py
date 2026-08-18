@@ -142,6 +142,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if args.station_batch_size is not None and args.station_batch_size <= 0:
+        print(
+            "ERROR: --station-batch-size must be positive, got "
+            f"{args.station_batch_size}.",
+            file=sys.stderr,
+        )
+        return 1
+    if not (0.0 < args.min_land_fraction <= 1.0):
+        print(
+            "ERROR: --min-land-fraction must be in (0.0, 1.0], got "
+            f"{args.min_land_fraction}.",
+            file=sys.stderr,
+        )
+        return 1
+
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         print(

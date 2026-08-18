@@ -10,7 +10,7 @@ from the synthetic series, not re-derived from the implementation.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import uuid4
 
 import pytest
@@ -51,22 +51,49 @@ class TestPMean:
 
 
 class TestFracSnow:
-    def test_fraction_of_precip_on_sub_zero_days(self) -> None:
+    def test_fraction_of_precip_in_sub_zero_climatological_months(self) -> None:
+        """Two DISTINCT calendar months, each internally consistent (Jan is
+        entirely cold, Feb entirely mild) — per-day and per-month
+        classification agree here, so this alone would not catch a
+        per-day-vs-per-month regression (see the counterexample below)."""
         mod = _import_module()
         precip = [10.0, 10.0, 10.0, 10.0]
         temp = [-1.0, -1.0, 5.0, 5.0]
+        dates = [
+            date(2020, 1, 1),
+            date(2020, 1, 2),
+            date(2020, 2, 1),
+            date(2020, 2, 2),
+        ]
 
-        assert mod.frac_snow(precip, temp) == pytest.approx(0.5)
+        assert mod.frac_snow(precip, temp, dates) == pytest.approx(0.5)
+
+    def test_same_month_sub_zero_days_do_not_count_when_month_mean_is_not(
+        self,
+    ) -> None:
+        """Caravan's ``frac_snow`` classifies the whole CALENDAR MONTH by its
+        climatological mean temperature, not each day individually. Four
+        January days at [-1, -1, 5, 5] degC average to +2.0 degC for the
+        month — above zero — so NONE of that month's precipitation counts as
+        snow, even though two of the four days were individually sub-zero.
+        A per-day formula (summing precip on sub-zero days) would wrongly
+        return 0.5 here; Caravan's own formula returns 0.0."""
+        mod = _import_module()
+        precip = [10.0, 10.0, 10.0, 10.0]
+        temp = [-1.0, -1.0, 5.0, 5.0]
+        dates = [date(2020, 1, d) for d in (1, 2, 3, 4)]
+
+        assert mod.frac_snow(precip, temp, dates) == pytest.approx(0.0)
 
     def test_length_mismatch_raises(self) -> None:
         mod = _import_module()
         with pytest.raises(ValueError, match="length mismatch"):
-            mod.frac_snow([1.0, 2.0], [0.0])
+            mod.frac_snow([1.0, 2.0], [0.0], [date(2020, 1, 1)])
 
     def test_zero_total_precipitation_raises(self) -> None:
         mod = _import_module()
         with pytest.raises(ValueError, match="zero or negative"):
-            mod.frac_snow([0.0, 0.0], [-1.0, 1.0])
+            mod.frac_snow([0.0, 0.0], [-1.0, 1.0], [date(2020, 1, 1), date(2020, 1, 2)])
 
 
 class TestHighPrecFreq:
