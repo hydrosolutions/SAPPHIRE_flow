@@ -266,8 +266,22 @@ without a cap turns an upstream `Retry-After: 86400` into a day-long sleep insid
 **Locked:** parse both delta-seconds and HTTP-date forms (via the injected clock, so tests stay
 deterministic); reject negative, malformed, and past values by falling back to the floor; clamp any
 single delay to `LINDAS_MAX_DELAY_S = 60.0`; and enforce a `LINDAS_TOTAL_DEADLINE_S = 120.0` budget
-across all attempts so bounded *attempts* also means bounded *wall-clock*. Nothing on the LINDAS path
-may block longer than that deadline.
+across all attempts so bounded *attempts* also means bounded *wall-clock*.
+
+**AMENDED at implementation (2026-08-18), after independent review.** This decision originally said
+"nothing on the LINDAS path may block longer than that deadline". Delivering that literally required
+running `send` on a daemon thread joined with a hard timeout — which bounded the *caller's* wait but
+abandoned the thread and its in-flight request, so repeated timeouts leaked threads and live LINDAS
+requests while the call reported itself exhausted. That is a stricter-sounding guarantee that was not
+true of the work actually happening, so the thread was removed.
+
+**The guarantee as built: no NEW attempt and no retry sleep starts past the 120 s deadline.** An attempt
+already in flight is bounded by the HTTP client's own configured phase timeouts (~55 s total across
+phases for the collector's client; 30 s per phase for ingest), so a late attempt can finish after the
+120 s mark. Bucket-starvation waits count against the same budget, and `_acquire_token` returns False
+rather than falling through, so a request is never dispatched without a token. Recorded here rather than
+left as an undocumented divergence: the weaker bound is the honest one, and it is what the code, the
+decision record and the touchpoint map now all say.
 
 **D8 — health-record counts live in `detail`, and the schema is locked here** (folded major).
 `PipelineHealthRecord` (`types/pipeline.py:15-24`) has fields `check_type`, `checked_at`, `status`,

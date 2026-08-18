@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003
 
 import polars as pl
 import pytest
 
+from sapphire_flow.adapters.lindas_rate_limiter import (
+    LindasLimiterConfig,
+    TokenBucketLindasLimiter,
+)
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import AdapterError
 from sapphire_flow.types.bafu_observation import BafuObservationRow
-from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import PipelineHealthStatus
 from tests.fakes.fake_stores import FakePipelineHealthStore
 
@@ -84,6 +88,31 @@ class _ClockSpy:
     def __call__(self) -> object:
         self.calls += 1
         return self._value
+
+
+def _coherent_limiter(*, max_retries: int = 2) -> TokenBucketLindasLimiter:
+    """Limiter whose injected sleeper ADVANCES its injected clock.
+
+    A no-op sleeper paired with the real clock is an incoherent time source:
+    the limiter's wait budget drains while the bucket never refills, so a
+    starved bucket — e.g. after a 429 drains it — can never be waited out.
+    Production never sees this (`time.sleep` and `datetime.now` always agree);
+    only the DI seam can. Here the sleep costs no real time but time still
+    MOVES, which is what the limiter's arithmetic assumes.
+    """
+    now = [ensure_utc(datetime(2026, 8, 17, 8, 0, 0, tzinfo=UTC))]
+
+    def clock() -> UtcDatetime:
+        return now[0]
+
+    def sleeper(seconds: float) -> None:
+        now[0] = ensure_utc(now[0] + timedelta(seconds=seconds))
+
+    return TokenBucketLindasLimiter(
+        config=LindasLimiterConfig(max_attempts=max_retries + 1),
+        clock=clock,
+        sleeper=sleeper,
+    )
 
 
 class TestQuarantineGate:
@@ -317,8 +346,8 @@ class TestHeartbeat:
         adapter = BafuObservationAdapter(
             endpoint="https://lindas.admin.ch/query",
             http_client=client,
-            sleeper=lambda _seconds: None,
             max_retries=2,
+            limiter=_coherent_limiter(),
         )
 
         result = module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
@@ -381,7 +410,7 @@ class TestHeartbeat:
         adapter = BafuObservationAdapter(
             endpoint="https://lindas.admin.ch/query",
             http_client=client,
-            sleeper=lambda _seconds: None,
+            limiter=_coherent_limiter(),
             max_retries=1,
         )
 
@@ -426,7 +455,7 @@ class TestHeartbeat:
         adapter = BafuObservationAdapter(
             endpoint="https://lindas.admin.ch/query",
             http_client=client,
-            sleeper=lambda _seconds: None,
+            limiter=_coherent_limiter(),
             max_retries=1,
         )
 
@@ -469,7 +498,7 @@ class TestHeartbeat:
         adapter = BafuObservationAdapter(
             endpoint="https://lindas.admin.ch/query",
             http_client=client,
-            sleeper=lambda _seconds: None,
+            limiter=_coherent_limiter(),
             max_retries=1,
         )
 

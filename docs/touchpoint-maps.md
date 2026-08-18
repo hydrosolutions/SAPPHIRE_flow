@@ -840,9 +840,9 @@ for the separate Monday-publish transient this subsystem must not be confused wi
 
 - `TokenBucketLindasLimiter.call` — pacing (token-bucket acquire, once per HTTP
   attempt, including retries — round 2) + bounded 429/5xx/transport retry (attempt
-  cap AND wall-clock deadline, independently), with `send` run through
-  `_run_with_deadline` (or an injected `deadline_runner`) for the actual deadline
-  enforcement, not just a check
+  cap AND wall-clock deadline, independently). `send` runs on the calling
+  thread; the deadline gates when a new attempt or retry sleep may START, and
+  each attempt is bounded by the HTTP client's own phase timeouts
 - `BafuObservationAdapter._post_with_retries` / `HydroScraperAdapter._fetch_one` —
   both translate `LindasRateLimitExhausted` into their own error shape
   (`AdapterError` for the collector; `StationFetchOutcome.failure_cause` for ingest)
@@ -893,25 +893,16 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   enough to overflow `float()` or exceed CPython's int-string-conversion digit
   limit (round 2) — both must clamp to `LINDAS_MAX_DELAY_S`, never raise past
   `_parse_retry_after`.
-- **The 120 s deadline covers bucket wait too, and is enforced by a real hard
-  cutoff, not a checked-after-the-fact bound.** `TokenBucketLindasLimiter.call`
-  starts its clock BEFORE token acquisition, not after, and re-checks the
-  remaining budget before every attempt. `send` itself is never invoked directly —
-  it runs through `_run_with_deadline` (or an injected `deadline_runner`), which
-  joins a background thread with a hard `remaining_s` timeout (round 2: passing
-  `timeout=remaining_s` into an HTTP client's `.post()` does NOT bound total
-  wall-clock time — HTTPX applies that value independently per connect/read/
-  write/pool phase). Neither `BafuObservationAdapter` nor `HydroScraperAdapter`
-  passes `timeout=remaining_s` to its HTTP client anymore; the client's own
-  configured timeout governs each phase instead. A 429 response drains the local
-  token count to zero (upstream proof the bucket is actually empty), AND (round 2)
-  a token is acquired before EVERY attempt including retries — not just the call's
-  first — so a `call()` that retried does not leave the next independent `call()`
-  free to spend a token the local model never actually charged for that retry's
-  real HTTP attempt. Do not reorder `start`/token acquisition, drop the 429 drain,
-  revert to per-call (not per-attempt) acquisition, or reintroduce
-  `timeout=remaining_s` without re-reading `lindas_rate_limiter.py`'s module
-  docstring.
+- **The 120 s deadline covers bucket wait too, and bounds when work STARTS.**
+  `TokenBucketLindasLimiter.call` starts its clock BEFORE token acquisition, not
+  after, and re-checks the remaining budget before every attempt. The guarantee
+  is: **no new attempt and no retry sleep starts past the deadline.** It does
+  NOT abort an in-flight request — each attempt is bounded by the HTTP client's
+  own configured connect/read/write/pool timeouts. An earlier version ran `send`
+  on a daemon thread joined with a hard timeout to get a stricter bound; that
+  bounded the caller's wait but abandoned the thread and its live request, so
+  repeated timeouts leaked both while reporting the call exhausted. The thread
+  was removed in favour of the weaker, honest bound.
 - **The fetch health record is written IMMEDIATELY after fetch reconciliation, before
   store/QC.** Moving it later would let a downstream storage/QC failure suppress the
   one signal this subsystem exists to guarantee.

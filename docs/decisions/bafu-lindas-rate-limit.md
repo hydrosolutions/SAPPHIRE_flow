@@ -49,7 +49,8 @@ rate-limiting the collector, and nothing in the repo understood what an HTTP
   limiter (capacity 3, refill 1 per 4 s) plus bounded 429/5xx/transport retry
   behind a small `LindasRateLimiter` Protocol. `Retry-After` is honoured when
   present (delta-seconds and HTTP-date forms) but treated as **untrusted
-  input**: clamped to 60 s per wait, with a 120 s total wall-clock deadline
+  input**: clamped to 60 s per wait, with a 120 s deadline after which no
+  new attempt or retry sleep starts
   across all attempts of one call. Malformed/negative/past values fall back
   to the 4 s floor.
 - `BafuObservationAdapter` and `HydroScraperAdapter` both route every POST
@@ -159,21 +160,31 @@ ENFORCED, the cross-call bucket sync still leaked one call's worth of
 credit, and two more untrusted-input/shape edges were unguarded. Fixed in
 the same round:
 
-- **The 120 s deadline is now actually enforced, not just checked.**
-  Passing `timeout=remaining_s` to an HTTPX request does NOT bound that
-  request's wall-clock time to `remaining_s` — HTTPX 0.28 applies a single
-  float independently to each of connect/read/write/pool, so a request slow
-  across more than one phase could still overrun the deadline (and it
-  replaced each caller's own, stricter, already-configured client timeout
-  with up to 120 s per phase). `TokenBucketLindasLimiter.call` now runs
-  `send` through `_run_with_deadline` (or an injected `deadline_runner`),
-  which executes it on a background thread and joins with a hard
-  `remaining_s` timeout — the calling thread returns within budget
-  regardless of which phase `send` is blocked in. `BafuObservationAdapter`
-  and `HydroScraperAdapter` no longer pass `timeout=remaining_s` at all; the
-  HTTP client's own configured timeout governs each phase, and the deadline
-  runner bounds the aggregate. Bucket-starvation waits are capped the same
-  way (`_acquire_token(deadline_remaining_s=...)`).
+- **The 120 s deadline bounds when work STARTS — and the thread that once
+  claimed more was removed.** Passing `timeout=remaining_s` to an HTTPX request
+  does NOT bound that request's wall clock to `remaining_s`: HTTPX 0.28 applies
+  a single float independently to each of connect/read/write/pool, so a request
+  slow across more than one phase can still overrun (and it would replace each
+  caller's own, stricter, already-configured client timeout with up to 120 s per
+  phase). An intermediate design therefore ran `send` on a daemon thread joined
+  with a hard `remaining_s` timeout.
+
+  **That design was reverted.** It bounded the *calling* thread's wait but
+  abandoned the background thread and its in-flight request, so repeated
+  timeouts leaked threads and live LINDAS requests while the call reported
+  itself exhausted — a stricter-sounding guarantee that was not true of the
+  work actually happening. The limiter now calls `send` on the calling thread.
+
+  **The guarantee, stated honestly: no NEW attempt and no retry sleep starts
+  past the deadline.** An attempt already in flight is bounded by the HTTP
+  client's own configured phase timeouts — in practice ~55 s total across
+  phases for the collector's client and 30 s per phase for ingest — so a late
+  attempt can finish after the 120 s mark. Bucket-starvation waits are capped
+  against the same budget (`_acquire_token(deadline_remaining_s=...)`), and
+  `_acquire_token` returns False rather than falling through, so `send` is
+  never dispatched without a token. `BafuObservationAdapter` and
+  `HydroScraperAdapter` do not pass `timeout=remaining_s`; their own configured
+  client timeouts govern each phase.
 - **A token is now acquired before EVERY attempt, not just the call's
   first.** A retried HTTP request also spends real upstream capacity; only
   charging the call's first attempt meant a `call()` that retried (429 →

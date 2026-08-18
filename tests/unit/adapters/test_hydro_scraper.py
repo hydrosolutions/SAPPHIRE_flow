@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs
 
 import httpx
@@ -9,6 +9,10 @@ import pytest
 import structlog.testing
 
 from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
+from sapphire_flow.adapters.lindas_rate_limiter import (
+    LindasLimiterConfig,
+    TokenBucketLindasLimiter,
+)
 from sapphire_flow.exceptions import AdapterError
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import FetchOutcomeCause, StationKind
@@ -42,6 +46,31 @@ def _sparql_body_with_bindings(count: int) -> dict[str, object]:
     }
 
 
+def _coherent_limiter(*, max_retries: int) -> TokenBucketLindasLimiter:
+    """Limiter whose injected sleeper ADVANCES its injected clock.
+
+    A no-op sleeper paired with the real clock is an incoherent time source:
+    the limiter's wait budget drains while the bucket never refills, so a
+    post-429 drain can never be waited out. Production never sees this
+    (`time.sleep` and `datetime.now` always agree); only the DI seam can. Here
+    the sleep costs no real time but time still MOVES, which is what the
+    limiter's arithmetic assumes.
+    """
+    now = [ensure_utc(datetime(2026, 8, 17, 8, 0, 0, tzinfo=UTC))]
+
+    def clock() -> UtcDatetime:
+        return now[0]
+
+    def sleeper(seconds: float) -> None:
+        now[0] = ensure_utc(now[0] + timedelta(seconds=seconds))
+
+    return TokenBucketLindasLimiter(
+        config=LindasLimiterConfig(max_attempts=max_retries + 1),
+        clock=clock,
+        sleeper=sleeper,
+    )
+
+
 def _make_adapter(
     handler: httpx.MockTransport, *, max_retries: int = 2
 ) -> HydroScraperAdapter:
@@ -52,8 +81,8 @@ def _make_adapter(
     return HydroScraperAdapter(
         endpoint=_ENDPOINT,
         http_client=client,
-        sleeper=lambda _seconds: None,
         max_retries=max_retries,
+        limiter=_coherent_limiter(max_retries=max_retries),
     )
 
 
@@ -225,8 +254,8 @@ def _batch_adapter(
     return HydroScraperAdapter(
         endpoint=_ENDPOINT,
         http_client=client,
-        sleeper=lambda _seconds: None,
         max_retries=max_retries,
+        limiter=_coherent_limiter(max_retries=max_retries),
     )
 
 

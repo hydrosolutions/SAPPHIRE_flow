@@ -196,8 +196,10 @@ class TestRetryAfterHonoured:
 
 class TestD7Blocker:
     """Locks the folded D7 blocker: an unbounded Retry-After must never
-    produce an unbounded sleep, and total wall-clock is bounded independently
-    of the attempt count."""
+    produce an unbounded sleep, and one call()'s wall clock is bounded
+    independently of the attempt count — i.e. no new attempt and no retry
+    sleep starts past the deadline. An attempt already in flight is bounded
+    by the HTTP client's own phase timeouts, not by this deadline."""
 
     def test_retry_after_86400_is_clamped_to_max_delay(self) -> None:
         module = _import_module()
@@ -386,10 +388,14 @@ class TestExhaustion:
 class TestBucketPacing:
     def test_n_calls_beyond_capacity_pace_at_the_floor(self) -> None:
         module = _import_module()
-        clock = _FakeClock(_START)  # never advances on its own
-        spy = _SleepSpy()  # deliberately NOT paired with clock: a frozen
-        # clock means the bucket never refills between calls, so every call
-        # beyond the initial capacity must wait the full floor.
+        clock = _FakeClock(_START)
+        # The sleeper IS paired with the clock: a sleep that does not advance
+        # the clock is not a thing that can happen in production (`time.sleep`
+        # and `datetime.now` always agree), and pretending otherwise made the
+        # limiter's local wait budget drain while its wall-clock budget did
+        # not. Refill is still the only thing that advances time here, so
+        # every call beyond the initial capacity must wait the full floor.
+        spy = _SleepSpy(clock)
         limiter = _limiter(module, clock=clock, sleeper=spy, max_attempts=5)
 
         n = 6
@@ -401,6 +407,50 @@ class TestBucketPacing:
         expected_paced_calls = n - capacity
         assert len(spy.calls) >= expected_paced_calls
         assert all(c >= module.LINDAS_RETRY_FLOOR_S for c in spy.calls)
+
+
+class TestAcquisitionNeverDispatchesWithoutAToken:
+    """Fix: `_acquire_token` returns False rather than silently falling
+    through when the call's budget runs out mid-wait.
+
+    It used to return `None` on both paths, leaving `call()` to infer failure
+    from the wall clock. With a sleeper that does not advance the injected
+    clock — a documented DI seam — the wall-clock check still saw budget
+    left, so `send` was dispatched having consumed no token at all: an
+    unpaced request, which is the one thing this limiter exists to prevent."""
+
+    def test_a_wait_that_exhausts_the_budget_raises_instead_of_sending(
+        self,
+    ) -> None:
+        module = _import_module()
+        clock = _FakeClock(_START)
+        # Sleeper deliberately does NOT advance the clock, so the local wait
+        # budget drains while the wall clock does not — the exact seam.
+        spy = _SleepSpy()
+        limiter = _limiter(
+            module,
+            clock=clock,
+            sleeper=spy,
+            capacity=1,
+            total_deadline_s=10.0,
+            max_attempts=5,
+        )
+
+        limiter.call(_responses(200))  # consumes the only token
+
+        sent = 0
+
+        def counting_send(remaining_s: float) -> httpx.Response:
+            del remaining_s
+            nonlocal sent
+            sent += 1
+            return httpx.Response(200)
+
+        with pytest.raises(LindasRateLimitExhaustedError) as exc_info:
+            limiter.call(counting_send)
+
+        assert exc_info.value.bound == "deadline"
+        assert sent == 0, "dispatched a request without holding a token"
 
 
 class TestDeadlineActuallyEnforced:
@@ -635,6 +685,67 @@ class TestRefillIsMonotonic:
             "of phantom elapsed time"
         )
         assert spy.calls[0] == pytest.approx(4.0, abs=0.01)
+
+
+class TestWaitersDoNotConvoy:
+    """Regression lock for the lock-held-during-sleep defect.
+
+    The dispatch-spacing test above cannot catch it: an implementation that
+    sleeps while HOLDING the lock still paces dispatches correctly — it just
+    serializes every waiter behind every other waiter's full sleep, so a
+    caller's own deadline is not evaluated until it wins the lock. That is
+    invisible to timing-of-dispatch assertions.
+
+    This observes the property directly: two callers that both find an empty
+    bucket must be able to be INSIDE their wait at the same time. The sleeper
+    trips a 2-party barrier, so a convoying implementation never gets both
+    parties there and the barrier times out."""
+
+    def test_two_waiters_can_be_in_their_wait_simultaneously(self) -> None:
+        module = _import_module()
+        both_waiting = threading.Barrier(2)
+        overlapped = threading.Event()
+
+        def sleeper(seconds: float) -> None:
+            try:
+                both_waiting.wait(timeout=2.0)
+                overlapped.set()
+            except threading.BrokenBarrierError:
+                # Expected once one waiter has won the token and only a
+                # single party is left waiting — not a failure by itself.
+                pass
+            real_time.sleep(seconds)
+
+        limiter = module.TokenBucketLindasLimiter(
+            config=module.LindasLimiterConfig(
+                capacity=1,
+                refill_period_s=0.3,
+                max_attempts=5,
+                total_deadline_s=10.0,
+            ),
+            sleeper=sleeper,
+        )
+
+        def send(remaining_s: float) -> httpx.Response:
+            del remaining_s
+            return httpx.Response(200)
+
+        limiter.call(send)  # drains the single token
+
+        threads = [
+            threading.Thread(target=lambda: limiter.call(send)) for _ in range(2)
+        ]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=10.0)
+
+        assert not any(th.is_alive() for th in threads), "a worker thread hung"
+        assert overlapped.is_set(), (
+            "the two waiters never overlapped inside their wait — waiters are "
+            "convoyed (the wait happens while holding the bucket lock), so a "
+            "caller's deadline cannot be evaluated until it wins the lock"
+        )
 
 
 class TestThrottledVsRetryingEvents:

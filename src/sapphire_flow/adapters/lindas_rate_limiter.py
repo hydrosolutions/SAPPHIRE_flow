@@ -86,8 +86,10 @@ LINDAS_RETRY_FLOOR_S = 4.0
 # D7: an upstream `Retry-After` is untrusted input; never sleep longer than this
 # for a single wait regardless of what the header claims.
 LINDAS_MAX_DELAY_S = 60.0
-# D7: bounded *wall-clock* across all attempts of one call(), independent of
-# the attempt-count bound below.
+# D7: bounds one call()'s wall clock independently of the attempt-count bound
+# below. Precisely: no NEW attempt and no retry sleep starts past it. It does
+# NOT abort an attempt already in flight — that is bounded by the HTTP client's
+# own configured phase timeouts (see the module docstring).
 LINDAS_TOTAL_DEADLINE_S = 120.0
 _BUCKET_CAPACITY = 3
 _DEFAULT_MAX_ATTEMPTS = 6
@@ -202,6 +204,32 @@ class TokenBucketLindasLimiter:
         # distinct refilled token — see `TestConcurrentAcquisition`.
         self._lock = threading.Lock()
 
+    def _deadline_error(
+        self,
+        *,
+        attempts: int,
+        last_status: int | None,
+        last_exc: Exception | None,
+        elapsed_s: float,
+        detail: str,
+    ) -> LindasRateLimitExhaustedError:
+        log.warning(
+            "lindas.exhausted",
+            attempts=attempts,
+            last_status=last_status,
+            bound="deadline",
+            elapsed_s=elapsed_s,
+        )
+        return LindasRateLimitExhaustedError(
+            f"LINDAS request exceeded its {self._config.total_deadline_s}s "
+            f"total deadline {detail} "
+            f"(last_status={last_status}, bound=deadline)",
+            attempts=attempts,
+            last_status=last_status,
+            last_exc=last_exc,
+            bound="deadline",
+        )
+
     def _remaining_or_raise(
         self,
         *,
@@ -254,7 +282,14 @@ class TokenBucketLindasLimiter:
             # phantom credit for every retry the previous call() made. The
             # wait this can force is itself deadline-aware (never sleeps past
             # the remaining budget).
-            self._acquire_token(deadline_remaining_s=remaining_s)
+            if not self._acquire_token(deadline_remaining_s=remaining_s):
+                raise self._deadline_error(
+                    attempts=attempt - 1,
+                    last_status=last_status,
+                    last_exc=last_exc,
+                    elapsed_s=(self._clock() - start).total_seconds(),
+                    detail=f"waiting for a token before attempt {attempt}",
+                )
             remaining_s = self._remaining_or_raise(
                 start=start, attempt=attempt, last_status=last_status, last_exc=last_exc
             )
@@ -355,7 +390,7 @@ class TokenBucketLindasLimiter:
             floor_s=floor,
         )
 
-    def _acquire_token(self, *, deadline_remaining_s: float) -> None:
+    def _acquire_token(self, *, deadline_remaining_s: float) -> bool:
         """Reserve one token, waiting for refill if the bucket is empty.
 
         The lock covers only the bucket ARITHMETIC — never the wait. An
@@ -367,8 +402,11 @@ class TokenBucketLindasLimiter:
         concurrency guarantee (only one caller can consume a given refilled
         token) without the convoy.
 
-        Returns without consuming when the remaining budget runs out; the
-        caller's `_remaining_or_raise` then reports the deadline bound.
+        Returns True when a token was consumed, False when the call's
+        remaining budget ran out first. The caller MUST NOT invoke `send` on
+        False: with an injected sleeper that does not advance the injected
+        clock (a documented DI seam), the wall-clock check would still see
+        budget left and would otherwise dispatch an unpaced request.
         """
         remaining_s = max(deadline_remaining_s, 0.0)
         while True:
@@ -376,13 +414,13 @@ class TokenBucketLindasLimiter:
                 self._refill(self._clock())
                 if self._tokens >= 1.0:
                     self._tokens -= 1.0
-                    return
+                    return True
                 wait_s = (1.0 - self._tokens) * self._config.refill_period_s
             # An empty bucket's wait counts against the call's deadline like
             # everything else — never sleep past the remaining budget.
             wait_s = min(wait_s, remaining_s)
             if wait_s <= 0.0:
-                return
+                return False
             self._sleeper(wait_s)
             remaining_s -= wait_s
 
