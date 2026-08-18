@@ -168,10 +168,14 @@ def _shared_live_limiter() -> TokenBucketLindasLimiter:
     constructs. Each test class used to build its own fresh (full-bucket)
     limiter, so `TestLiveLindasRateLimit`'s zero-429 assertion started
     immediately after `TestLiveLindasSchema` had already spent the real
-    upstream bucket on 7 live requests — the local model had no idea, and
-    would send its own first burst unpaced straight into a 429. A single
-    limiter instance tracks the REAL upstream state across every request
-    this module makes, live or not."""
+    upstream bucket — the local model had no idea, and would send its own
+    first burst unpaced straight into a 429. A single limiter instance
+    tracks the REAL upstream state across every request this module makes,
+    live or not.
+
+    Plan 186: `TestLiveLindasSchema` now spends exactly ONE real request
+    (whole-graph fetch replacing the old one-per-station loop), not 7 — see
+    the docstring update below."""
     return TokenBucketLindasLimiter()
 
 
@@ -291,8 +295,9 @@ class TestLiveLindasRateLimit:
 
         Uses `_shared_live_limiter` (round 2 fix) — a fresh limiter here
         would think the upstream bucket is full even though
-        `TestLiveLindasSchema` already spent it on 7 real requests earlier
-        in this module."""
+        `TestLiveLindasSchema` already spent it on 1 real request (Plan 186:
+        a whole-graph fetch, not 7 per-station ones) earlier in this
+        module."""
         statuses: list[int] = []
 
         def _record_status(response: httpx.Response) -> None:

@@ -851,8 +851,14 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `LindasLimiterConfig`, the `LindasRateLimiter` Protocol)
 - either LINDAS-caller adapter (`adapters/bafu_observation.py`,
   `adapters/hydro_scraper.py`)
+- the shared query layer (`adapters/lindas_hydro_query.py`, Plan 186 T1/D2) — SPARQL
+  query text/constants (`build_whole_graph_query`, `QUERY_LIMIT`, the dimension/graph
+  URIs) and the non-raising `parse_subject_key` helper. Both callers import from here;
+  grouping, validation and failure policy stay adapter-local (see D2 below)
 - `HydroScraperAdapter.fetch_observations_batch` / `StationFetchOutcome` /
-  `FetchOutcomeCause` — the ingest flow's per-station failure reporting
+  `FetchOutcomeCause` — the ingest flow's per-station failure reporting. Since Plan
+  186, this issues ONE whole-graph fetch per call (not one request per station) and
+  filters locally to the passed `station_configs`
 - `ingest_observations_flow`'s `PipelineCheckType.OBSERVATION_INGEST_FETCH` health
   record
 - either LINDAS-caller cron schedule (`SCHEDULE_INGEST_OBSERVATIONS`,
@@ -873,8 +879,9 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `[adapters.bafu_observation].archive_base_path` (the Plan 136 collector's
   quarantine gate — unrelated to this subsystem's limiter, but shares the
   endpoint)
-- the onboarded station roster feeding `ingest_observations_flow` (station count is
-  what makes D5's scaling ceiling bite)
+- the onboarded station roster feeding `ingest_observations_flow` (D5's scaling
+  ceiling on the OLD per-station design; Plan 186 made ingest cost flat in station
+  count, so this is no longer a scaling risk — see below)
 
 **Core implementation touchpoints:**
 
@@ -883,9 +890,17 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   cap AND wall-clock deadline, independently). `send` runs on the calling
   thread; the deadline gates when a new attempt or retry sleep may START, and
   each attempt is bounded by the HTTP client's own phase timeouts
-- `BafuObservationAdapter._post_with_retries` / `HydroScraperAdapter._fetch_one` —
-  both translate `LindasRateLimitExhausted` into their own error shape
-  (`AdapterError` for the collector; `StationFetchOutcome.failure_cause` for ingest)
+- `BafuObservationAdapter._post_with_retries` / `HydroScraperAdapter.
+  fetch_observations_batch` — both translate `LindasRateLimitExhausted` into their
+  own error shape (`AdapterError` for the collector; `StationFetchOutcome.
+  failure_cause` for ingest, broadcast to every eligible station — D4)
+- `HydroScraperAdapter._group_by_requested_subject` / `._extract_one` (Plan 186 T2)
+  — the ingest-local grouping/extraction split D2 requires: bindings are grouped by
+  *usable subject only* (non-raising `parse_subject_key`, dropped silently if
+  unattributable or not one of the requested `(code, station_kind)` keys), then each
+  requested station's OWN group is validated independently via `_parse_bindings_typed`
+  — a malformed binding for a station not in this batch is never looked at, and one
+  station's malformed/absent data cannot fail another (subject-local, D4)
 - `protocols/adapters.py`'s `BatchStationDataSource` — narrow capability Protocol
   for `fetch_observations_batch`; `HydroScraperAdapter` and `ReplayStationAdapter`
   both satisfy it (round 2 — `ingest_observations_flow`'s `adapter=` parameter is
@@ -969,10 +984,42 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `ReplayStationAdapter` both do — not a `StationDataSource` Protocol change;
   widening that Protocol itself was the explicit rejected alternative (see
   `docs/spec/types-and-protocols.md` § StationDataSource).
-- **The per-station fan-out does not scale past a handful of stations (D5,
-  deferred).** `docs/v0-scope.md`'s ~1000-station target is NOT met by this
-  subsystem's polling model — see `bafu-lindas-rate-limit.md` for the arithmetic.
-  Do not treat a passing test suite as evidence this scales.
+- **The per-station fan-out was replaced by a whole-graph fetch (D5, RESOLVED —
+  Plan 186).** `HydroScraperAdapter.fetch_observations_batch` issues ONE SPARQL
+  request per call regardless of station count, indexed by `(gauge_code,
+  lindas_kind)` and filtered locally — see `bafu-lindas-rate-limit.md` for the
+  before/after arithmetic. Do not reintroduce a per-station request loop; the
+  `flat_in_station_count` test in `tests/unit/adapters/test_hydro_scraper.py`
+  locks this with `max_retries=0`.
+- **Whole-batch vs subject-local failure semantics (D4) — do not blur these.** A
+  transport/HTTP fault on the one request (429/5xx/connect error) fails EVERY
+  eligible station in the batch with the same cause — a deliberate change in kind
+  from the old per-station isolation (Q1, accepted). A malformed binding or an
+  absent/incomplete subject stays SUBJECT-LOCAL — it must never touch another
+  station's outcome. A mutant that broadcasts a subject-local fault, or that
+  emits a single outcome instead of one-per-eligible-station on a whole-batch
+  fault, is the one most likely to survive a thin test suite — see the "Subject-
+  local isolation" / "Whole-batch causes" test classes for the lock.
+- **An unmatched/invalid station code is now a lookup MISS (`NO_DATA`), not a
+  pre-request `MALFORMED_RESPONSE` (Q2).** Ingest no longer interpolates
+  `site_code` into SPARQL at all, so `_SITE_CODE_RE`'s injection guard has no
+  surface left in this path and does not fire here. The guard survives ONLY in
+  `_build_sparql_query` / `verify_gauge_reachable` (the onboarding-time probe,
+  still one-request-per-gauge). Do not "fix" a NO_DATA-on-bad-code result back to
+  MALFORMED_RESPONSE by reflex — that would be reintroducing a guard this design
+  deliberately removed from the ingest path.
+- **The quarantine boundary is query-sharing only, not adapter-sharing (D2).**
+  `adapters/lindas_hydro_query.py` shares SPARQL text/constants and the
+  non-raising `parse_subject_key` key helper — nothing else. `BafuObservationAdapter`
+  keeps its own raising, fail-the-whole-fetch grouping (`_SparqlTriple`,
+  correct for an archive snapshot); `HydroScraperAdapter` keeps its own
+  non-raising, subject-local grouping. Do not lift `BafuObservationAdapter`'s
+  grouping loop into the shared module and call it from ingest — it raises on a
+  malformed binding anywhere in the graph, which would fail every station in one
+  batch and destroy the D4 isolation guarantee above. This is a WEAKER structural
+  guarantee than Plan 136's separate-adapter quarantine (DC-2) — a separate
+  mapper, not a separate adapter — flagged deliberately in Plan 186, not an
+  oversight.
 - **A cron default lives in TWO places; the compose fallback is the one that
   deploys.** See the Prefect/Docker/deployment map's general version of this
   contract; `tests/unit/test_compose_schedule_default.py` locks both

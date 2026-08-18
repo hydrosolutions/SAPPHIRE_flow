@@ -18,6 +18,14 @@ independent of any onboarding classification), and yields one
 EVALUATION-ONLY. Never constructs ``RawObservation``/``StationId`` (DC-2) —
 see ``flows/collect_bafu_observations.py`` for the quarantined archive write
 path.
+
+Plan 186 D2: the operational ingest path (``adapters/hydro_scraper.py``) now
+ALSO issues a whole-graph query, sharing this module's query text/constants
+and a non-raising subject-key helper via ``adapters/lindas_hydro_query.py``.
+The quarantine boundary moved from "separate adapter" to "separate parse +
+separate mapper" — this module's grouping/validation stays its own (raising,
+fail-the-whole-fetch, correct for an archive snapshot); ingest's grouping is
+non-raising and subject-local (correct for operational per-station outcomes).
 """
 
 from __future__ import annotations
@@ -31,6 +39,14 @@ import structlog
 from pydantic import BaseModel, ValidationError
 
 from sapphire_flow import __version__
+from sapphire_flow.adapters.lindas_hydro_query import DIMENSION_URL as _DIMENSION_URL
+from sapphire_flow.adapters.lindas_hydro_query import LAKE_SEGMENT as _LAKE_SEGMENT
+from sapphire_flow.adapters.lindas_hydro_query import QUERY_LIMIT as _QUERY_LIMIT
+from sapphire_flow.adapters.lindas_hydro_query import RIVER_SEGMENT as _RIVER_SEGMENT
+from sapphire_flow.adapters.lindas_hydro_query import (
+    build_whole_graph_query,
+    parse_subject_key,
+)
 from sapphire_flow.adapters.lindas_rate_limiter import (
     LindasLimiterConfig,
     TokenBucketLindasLimiter,
@@ -50,32 +66,12 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_GRAPH_URI = "https://lindas.admin.ch/foen/hydro"
-_BASE_URL = "https://environment.ld.admin.ch/foen/hydro"
-_DIMENSION_URL = f"{_BASE_URL}/dimension"
-_RIVER_SEGMENT = "/river/observation/"
-_LAKE_SEGMENT = "/lake/observation/"
-
 # Mirrors adapters/hydro_scraper.py's _PARAM_MAP target values (DC-2).
 _PARAM_MAP: dict[str, BafuObservationParameter] = {
     "discharge": "discharge",
     "waterLevel": "water_level",
     "waterTemperature": "water_temperature",
 }
-# measurementTime is a recognized non-parameter predicate (supplies the row
-# timestamp); the three above are the only recognized parameter predicates.
-_DIMENSION_PREDICATES = (
-    "discharge",
-    "waterLevel",
-    "waterTemperature",
-    "measurementTime",
-)
-
-# Generous safety cap, well above the ~730 rows the live probe (2026-07-21)
-# returned for 233 gauges — a bounded-request courtesy guard, not a
-# per-page limit. Hitting it means the whole-graph fetch is silently missing
-# part of the network (T2 truncation guard).
-_QUERY_LIMIT = 10000
 
 # Identifying User-Agent (same posture as adapters/bafu_forecast.py) so BAFU
 # can see who is polling the public endpoint and object if needed.
@@ -181,18 +177,8 @@ class BafuObservationAdapter:
 
     @staticmethod
     def _build_query() -> str:
-        predicates = ", ".join(
-            f"<{_DIMENSION_URL}/{name}>" for name in _DIMENSION_PREDICATES
-        )
-        return (
-            f"SELECT ?subject ?predicate ?object\n"
-            f"FROM <{_GRAPH_URI}>\n"
-            f"WHERE {{\n"
-            f"  ?subject ?predicate ?object .\n"
-            f"  FILTER (?predicate IN ({predicates}))\n"
-            f"}}\n"
-            f"LIMIT {_QUERY_LIMIT}"
-        )
+        # Plan 186 T1/D2: shared query text — see adapters/lindas_hydro_query.
+        return build_whole_graph_query()
 
     @classmethod
     def _parse_bindings(
@@ -301,11 +287,14 @@ class BafuObservationAdapter:
 
     @staticmethod
     def _parse_subject(subject: str) -> tuple[str, LindasKind]:
-        if _RIVER_SEGMENT in subject:
-            return subject.rsplit(_RIVER_SEGMENT, 1)[1], "river"
-        if _LAKE_SEGMENT in subject:
-            return subject.rsplit(_LAKE_SEGMENT, 1)[1], "lake"
-        raise AdapterError(
-            f"Subject URI {subject!r} has neither {_RIVER_SEGMENT!r} nor "
-            f"{_LAKE_SEGMENT!r} — cannot discriminate river/lake kind"
-        )
+        # Plan 186 T1/D2: shared non-raising key helper — this adapter wraps
+        # it and raises, since an unparseable subject in the archive
+        # snapshot IS a schema-drift signal worth failing loudly for
+        # (unlike ingest, which treats it as a lookup miss).
+        key = parse_subject_key(subject)
+        if key is None:
+            raise AdapterError(
+                f"Subject URI {subject!r} has neither {_RIVER_SEGMENT!r} nor "
+                f"{_LAKE_SEGMENT!r} — cannot discriminate river/lake kind"
+            )
+        return key

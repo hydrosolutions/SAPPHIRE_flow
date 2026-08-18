@@ -333,11 +333,18 @@ from "endpoint broken" (needs attention — a 5xx or transport failure) from
 | `lindas.retrying` | WARNING | A 5xx or a transport failure (not a 429) is about to be retried — "endpoint/network trouble", deliberately distinct from `lindas.throttled` so an operator can tell rate limiting apart from an actual endpoint fault. Kwargs: `attempt`, `status` (`None` for a transport failure), `delay_s`. |
 | `lindas.exhausted` | WARNING | The call gave up: either the attempt cap or the wall-clock deadline was hit first (see `bound` kwarg: `"attempts"` or `"deadline"`). Kwargs: `attempts`, `last_status`, `bound`, and (deadline bound only) `elapsed_s`. This is what a caller (`BafuObservationAdapter`, `HydroScraperAdapter`) turns into its own error/outcome shape — see `observation.fetch_failed` below and `bafu_observation`'s `AdapterError`. |
 
-`HydroScraperAdapter._fetch_one` reuses the pre-existing `observation.fetch_failed`
-event name for every per-station failure path (rate-limit exhaustion, a
-non-2xx status, a malformed response, or a rejected `site_code`) — now
+`HydroScraperAdapter.fetch_observations_batch` (Plan 186 — one whole-graph
+request, not one per station; `_whole_batch_failure` / `_extract_one` are the
+two internal emitters, replacing the old per-station `_fetch_one`) reuses the
+pre-existing `observation.fetch_failed` event name for every per-station
+failure path — a rate-limit/HTTP/transport exhaustion is now WHOLE-BATCH (one
+`fetch_failed` per eligible station, same `failure_cause`), while a malformed
+binding or an absent/incomplete subject stays subject-local (D4) — each now
 additionally carrying a `failure_cause` kwarg (`FetchOutcomeCause.value`; see
-`docs/spec/types-and-protocols.md` § `FetchOutcomeCause`). `ingest_observations_flow`'s
+`docs/spec/types-and-protocols.md` § `FetchOutcomeCause`). The request itself
+logs `observation.whole_graph_fetch_started` (DEBUG) /
+`observation.whole_graph_fetch_completed` (INFO), replacing the old
+per-station `observation.fetch_started`. `ingest_observations_flow`'s
 best-effort `OBSERVATION_INGEST_FETCH` health-record write reuses the generic
 `pipeline.health_record_write_failed` pattern (Plan 136 precedent) if the store
 itself is unreachable — that write failure never fails the ingest run.

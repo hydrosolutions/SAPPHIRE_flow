@@ -46,7 +46,7 @@ skill evaluation. Bulk-imported during station onboarding (Flow 5 step 5.4).
 | **Access** | Public SPARQL endpoint, no authentication |
 | **Format** | SPARQL JSON → parsed to records |
 | **Station IDs** | Same 4-digit BAFU codes as CAMELS-CH |
-| **Rate limits** | None documented; sequential per-station queries |
+| **Rate limits** | Burst-3, ~1 slot/3-4s (`docs/decisions/bafu-lindas-rate-limit.md`); a single whole-graph query per ingest run since Plan 186, so this no longer scales with station count |
 
 **Role in v0**: Operational observation ingest (Flow 2). Scheduled every N minutes
 to keep the observations table current.
@@ -173,11 +173,22 @@ camelsch.load_timeseries(data_dir, basin_ids, variables)
 
 ### Operational path (LINDAS → Observation)
 
+**Updated for Plan 186** (whole-graph ingest superseded the one-request-per-station
+design this diagram originally described — see `docs/decisions/bafu-lindas-rate-limit.md`
+and Plan 175 D5):
+
 ```
-LINDAS SPARQL query per station
-    → JSON bindings: {measurementTime, discharge, waterLevel, waterTemperature}
+ONE whole-graph LINDAS SPARQL query per ingest run (not one per station)
+    → JSON bindings: {?subject, measurementTime, discharge, waterLevel, waterTemperature}
     │
-    ├── Parameter extraction:
+    ├── Group bindings by subject, filtered locally to onboarded (code, station_kind)
+    │   pairs — a station absent from the graph, or present without the requested
+    │   parameter, yields NO_DATA; a malformed binding for one station never affects
+    │   another (subject-local). A transport/HTTP fault on the one request fails every
+    │   eligible station in the batch at once (whole-batch — this is the one behaviour
+    │   that genuinely changed in kind, not just in request count).
+    │
+    ├── Parameter extraction (per matched subject):
     │   "discharge" → float (m³/s, native units)
     │   "waterLevel" → float (m, station datum)
     │   "waterTemperature" → float (°C)
@@ -189,7 +200,10 @@ LINDAS SPARQL query per station
     │   value: float (native units)
     │   source: ObservationSource.MEASURED
     │
-    ├── Incremental: only fetch since last-seen timestamp per station
+    ├── NOT incremental: `since` is accepted (Protocol shape) but never read — LINDAS
+    │   serves current values only, so there is no history to filter. De-duplication is
+    │   the store's upsert (`ON CONFLICT DO UPDATE`), which makes re-fetching an
+    │   unchanged value harmless.
     │
     └── ObservationStore.store_raw_observations(batch)
         → qc_status = 'raw', then Stage 1 QC runs
@@ -282,27 +296,53 @@ from load (adapter). The download is a one-time setup step, not part of the pipe
 
 ### LINDAS adapter (operational ingest)
 
-The `hydro_data_scraper` constructs SPARQL queries. Our adapter wraps this:
+**Superseded by Plan 186.** The paragraphs below described the ORIGINAL one-
+request-per-station design and its planned incremental (`since`-filtered) fetch.
+Neither shipped that way: Plan 175 made per-station fan-out survivable (shared
+rate limiter, honest per-station failure reporting) but not scalable past a
+handful of stations, and Plan 186 replaced it with a single whole-graph SPARQL
+request filtered locally to onboarded stations — see
+`docs/decisions/bafu-lindas-rate-limit.md` for the measurements and the ceiling
+this closed.
 
-- **Input**: list of station configs, last-seen timestamps
-- **Output**: `list[RawObservation]`
-- **Protocol fit**: Maps cleanly to `StationDataSource.fetch_observations()`.
-- **Incremental**: Pass `since` timestamps to the SPARQL query (or filter client-side).
-- **Error handling**: Per-station — if one station fails, others proceed.
-- **Deduplication**: At the store level (upsert on station + timestamp + parameter),
-  not in the adapter.
+`HydroScraperAdapter` (`adapters/hydro_scraper.py`) wraps the shared query
+layer (`adapters/lindas_hydro_query.py`, also used by the Plan 136 evaluation
+collector):
 
-**Confirmed: LINDAS supports time-range filtering.** The SPARQL endpoint accepts standard
-`FILTER` clauses on `measurementTime`:
+- **Input**: list of station configs, `since` (Protocol-shaped, unread).
+- **Output**: `list[RawObservation]` (`fetch_observations`) or typed
+  per-station outcomes (`fetch_observations_batch` — observations + a
+  `FetchOutcomeCause`).
+- **Protocol fit**: Maps to `StationDataSource.fetch_observations()`; `since`
+  stays in the signature for Protocol compatibility with the replay adapter,
+  fakes, and `tools/record_fixtures.py`, but is never read — LINDAS serves
+  current values only, so there is no per-station time window to preserve.
+- **NOT incremental**: one whole-graph fetch per run, indexed by
+  `(gauge_code, lindas_kind)` and filtered to the passed `station_configs`.
+  De-duplication happens at the store (upsert), not via a `since` filter.
+- **Error handling**: a transport/HTTP fault (429/5xx/connect error) now
+  fails **every eligible station in the batch at once** — a real change from
+  the old per-station isolation, since there is only one request to fail. A
+  malformed binding or an absent/incomplete subject stays **subject-local**:
+  it affects only that one station's outcome.
+- **Deduplication**: At the store level (upsert on station + timestamp +
+  parameter), not in the adapter.
+
+**Historical note — the `since`/time-range filtering below was investigated
+during initial design but never became load-bearing**, since LINDAS serves
+current values only and per-station incrementality was never implemented
+(confirmed by measurement in Plan 186 — `since` appears in
+`adapters/hydro_scraper.py` only in signatures, never read). The SPARQL
+`FILTER` clause below still works if a future need for time-range querying
+arises, but no code path uses it operationally:
 
 ```sparql
 FILTER(?measurementTime >= "2025-03-01T00:00:00Z"^^xsd:dateTime
     && ?measurementTime <= "2025-03-16T23:59:59Z"^^xsd:dateTime)
 ```
 
-**Strategy**: Poll every ~10 minutes. Use incremental fetch with SPARQL FILTER since
-the last-seen timestamp per station. This captures all 10-minute observations without
-data loss.
+**Strategy (current)**: Poll every ~10 minutes; each poll issues one
+whole-graph fetch regardless of how many stations are onboarded.
 
 **Critical limitation**: LINDAS retains only **40 days** of historical data. No backfill
 beyond this window is possible via SPARQL. For historical data, CAMELS-CH (or direct
@@ -310,7 +350,8 @@ BAFU data service requests) must be used.
 
 **Station availability**: ~170 automated BAFU stations have real-time LINDAS telemetry
 (out of ~230 total BAFU gauging stations). All use the same 4-digit codes as CAMELS-CH.
-The adapter should query all available stations, not just a preconfigured subset.
+Plan 186 removed the scaling ceiling that made polling the full fleet impractical; the
+adapter fetches the whole graph and filters locally to whichever subset is onboarded.
 
 ---
 

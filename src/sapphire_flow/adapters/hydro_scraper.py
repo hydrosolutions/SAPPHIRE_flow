@@ -3,12 +3,16 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from sapphire_flow.adapters.lindas_hydro_query import (
+    build_whole_graph_query,
+    parse_subject_key,
+)
 from sapphire_flow.adapters.lindas_rate_limiter import (
     LindasLimiterConfig,
     TokenBucketLindasLimiter,
@@ -98,10 +102,16 @@ class HydroScraperAdapter:
         station_configs: list[StationConfig],
         since: dict[StationId, UtcDatetime],
     ) -> HydroScraperBatchResult:
-        """Plan 175 T3/D9 — per-station typed outcomes (observations +
-        failure cause), so the ingest flow can report a truthful
-        `stations_failed` instead of silently returning whatever partial
-        data survived. Not part of the `StationDataSource` Protocol."""
+        """Plan 186 D1/D4 — one whole-graph SPARQL request per call, then a
+        local filter to the passed `station_configs` (indexed by `(code,
+        station_kind)`), replacing the former one-request-per-station loop.
+        `since` stays accepted-but-unread (D3 — LINDAS serves current values
+        only; no per-station time-window semantics exist to preserve).
+
+        Per-station typed outcomes (observations + failure cause) so the
+        ingest flow can report a truthful `stations_failed`. Not part of the
+        `StationDataSource` Protocol."""
+        del since
         eligible: list[StationConfig] = []
         for station_config in station_configs:
             if station_config.station_kind == StationKind.WEATHER:
@@ -112,39 +122,22 @@ class HydroScraperAdapter:
                 )
                 continue
             eligible.append(station_config)
-        outcomes = tuple(self._fetch_one(sc) for sc in eligible)
-        return HydroScraperBatchResult(outcomes=outcomes)
 
-    def _fetch_one(self, station_config: StationConfig) -> StationFetchOutcome:
-        station_id = station_config.id
-        log.debug(
-            "observation.fetch_started",
-            station_id=str(station_id),
-            station_kind=station_config.station_kind.value,
-        )
+        # D4 step 4: no eligible config remains -> no request at all.
+        if not eligible:
+            return HydroScraperBatchResult(outcomes=())
+
+        # D4 steps 2/3: every remaining valid config is eligible for the
+        # whole-response fetch, regardless of whether its code will
+        # ultimately match a subject in the response (a miss becomes
+        # NO_DATA at extraction time, not a pre-request rejection).
+        index: dict[tuple[str, str], StationConfig] = {
+            (sc.code, sc.station_kind.value): sc for sc in eligible
+        }
+
+        log.debug("observation.whole_graph_fetch_started", station_count=len(eligible))
         t0 = time.perf_counter()
-        try:
-            query = self._build_sparql_query(
-                station_config.code, station_config.station_kind
-            )
-        except ValueError as exc:
-            # Rejected before any request is sent (e.g. a site_code that
-            # fails the SPARQL-injection guard) — not one of D9's network-
-            # facing causes, but it must not raise past this adapter either;
-            # MALFORMED_RESPONSE is the closest bucket (the request could
-            # not even be constructed).
-            log.warning(
-                "observation.fetch_failed",
-                station_id=str(station_id),
-                error=str(exc),
-                failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE.value,
-            )
-            return StationFetchOutcome(
-                station_id=station_id,
-                observations=(),
-                failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE,
-                failure_detail=str(exc),
-            )
+        query = build_whole_graph_query()
 
         def send(remaining_s: float) -> httpx.Response:
             # Not threaded into `timeout=`: HTTPX 0.28 applies a single
@@ -163,6 +156,9 @@ class HydroScraperAdapter:
         try:
             response = self._limiter.call(send)
         except LindasRateLimitExhaustedError as exc:
+            # D4: a transport/HTTP fault is now WHOLE-BATCH — every eligible
+            # config gets the same cause, since there is no per-subject
+            # information to isolate the failure to.
             cause = (
                 FetchOutcomeCause.RATE_LIMITED
                 if exc.last_status == 429
@@ -172,22 +168,10 @@ class HydroScraperAdapter:
                     else FetchOutcomeCause.TRANSPORT_ERROR
                 )
             )
-            log.warning(
-                "observation.fetch_failed",
-                station_id=str(station_id),
-                error=str(exc),
-                failure_cause=cause.value,
-            )
-            return StationFetchOutcome(
-                station_id=station_id,
-                observations=(),
-                failure_cause=cause,
-                failure_detail=str(exc),
-            )
+            return self._whole_batch_failure(index, cause, str(exc))
 
         log.debug(
-            "observation.http_response",
-            station_id=str(station_id),
+            "observation.whole_graph_http_response",
             url=self._endpoint,
             status_code=response.status_code,
             response_bytes=len(response.content),
@@ -195,54 +179,110 @@ class HydroScraperAdapter:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            log.warning(
-                "observation.fetch_failed",
-                station_id=str(station_id),
-                error=str(exc),
-                failure_cause=FetchOutcomeCause.HTTP_STATUS_ERROR.value,
-            )
-            return StationFetchOutcome(
-                station_id=station_id,
-                observations=(),
-                failure_cause=FetchOutcomeCause.HTTP_STATUS_ERROR,
-                failure_detail=str(exc),
+            return self._whole_batch_failure(
+                index, FetchOutcomeCause.HTTP_STATUS_ERROR, str(exc)
             )
 
         try:
             bindings = response.json()["results"]["bindings"]
         except (ValueError, KeyError, TypeError) as exc:
-            # Major fix (round 2): TypeError covers a wrong-SHAPED (but
-            # valid-JSON) envelope — a top-level list (`[]["results"]`), a
-            # `results` that is itself a list (`[]["bindings"]`), or
-            # `{"results": null}` (`None["bindings"]`) — where indexing with
-            # a string key raises TypeError, not KeyError/ValueError. Must be
-            # caught here so it becomes a typed MALFORMED_RESPONSE outcome,
-            # never a bare TypeError that aborts the whole batch before this
-            # station's health record is written.
+            # Same wrong-shaped-envelope TypeError gap as the collector: no
+            # subjects exist yet at this point, so this is necessarily a
+            # whole-batch fault.
+            return self._whole_batch_failure(
+                index, FetchOutcomeCause.MALFORMED_RESPONSE, str(exc)
+            )
+        if not isinstance(bindings, list):
+            return self._whole_batch_failure(
+                index,
+                FetchOutcomeCause.MALFORMED_RESPONSE,
+                f"bindings must be a list, got {type(bindings).__name__}",
+            )
+        bindings = cast("list[Any]", bindings)
+
+        grouped = self._group_by_requested_subject(bindings, index)
+        outcomes = tuple(
+            self._extract_one(station_config, grouped.get(key, []))
+            for key, station_config in index.items()
+        )
+        duration_ms = round((time.perf_counter() - t0) * 1000, 1)
+        log.info(
+            "observation.whole_graph_fetch_completed",
+            station_count=len(eligible),
+            duration_ms=duration_ms,
+        )
+        return HydroScraperBatchResult(outcomes=outcomes)
+
+    @staticmethod
+    def _whole_batch_failure(
+        index: dict[tuple[str, str], StationConfig],
+        cause: FetchOutcomeCause,
+        detail: str,
+    ) -> HydroScraperBatchResult:
+        outcomes: list[StationFetchOutcome] = []
+        for station_config in index.values():
             log.warning(
                 "observation.fetch_failed",
-                station_id=str(station_id),
-                error=str(exc),
-                failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE.value,
+                station_id=str(station_config.id),
+                error=detail,
+                failure_cause=cause.value,
             )
-            return StationFetchOutcome(
-                station_id=station_id,
-                observations=(),
-                failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE,
-                failure_detail=str(exc),
+            outcomes.append(
+                StationFetchOutcome(
+                    station_id=station_config.id,
+                    observations=(),
+                    failure_cause=cause,
+                    failure_detail=detail,
+                )
             )
+        return HydroScraperBatchResult(outcomes=tuple(outcomes))
 
+    @staticmethod
+    def _group_by_requested_subject(
+        bindings: list[Any],
+        index: dict[tuple[str, str], StationConfig],
+    ) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        """D2 — groups by *usable subject only*, using the shared
+        non-raising key helper: a raw binding whose subject is missing,
+        malformed, unrecognised, or simply not one of `index`'s requested
+        stations is never added to any group and therefore never validated
+        by `_parse_bindings_typed` — a malformed binding for a gauge we do
+        not poll is never looked at."""
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for raw in bindings:
+            if not isinstance(raw, dict):
+                continue
+            raw = cast("dict[str, Any]", raw)
+            subject_field = raw.get("subject")
+            if not isinstance(subject_field, dict):
+                continue
+            subject_field = cast("dict[str, Any]", subject_field)
+            subject_value = subject_field.get("value")
+            if not isinstance(subject_value, str):
+                continue
+            key = parse_subject_key(subject_value)
+            if key is None or key not in index:
+                continue
+            grouped.setdefault(key, []).append(raw)
+        return grouped
+
+    def _extract_one(
+        self,
+        station_config: StationConfig,
+        raw_group: list[dict[str, Any]],
+    ) -> StationFetchOutcome:
+        """D4: NO_DATA and MALFORMED_RESPONSE stay subject-local — `raw_group`
+        is already scoped to this one station's bindings (or empty, for a
+        subject absent from the response / an unmatched code, D4 step 2)."""
+        station_id = station_config.id
         try:
             observations, cause, detail = self._parse_bindings_typed(
-                bindings, station_id
+                raw_group, station_id
             )
         except (KeyError, TypeError, ValueError) as exc:
-            # Major fix: `_parse_bindings_typed` already validates most shape
-            # problems internally and returns a typed MALFORMED_RESPONSE, but
-            # this is a last-resort backstop — an unanticipated shape must
-            # become a typed failure, never an uncaught exception that aborts
-            # the whole batch before its per-station health record is
-            # written (the T3 silent-health-gap this plan closed).
+            # Last-resort backstop — an unanticipated shape must become a
+            # typed failure scoped to THIS station, never an uncaught
+            # exception that aborts the whole batch.
             log.warning(
                 "observation.fetch_failed",
                 station_id=str(station_id),
@@ -255,17 +295,7 @@ class HydroScraperAdapter:
                 failure_cause=FetchOutcomeCause.MALFORMED_RESPONSE,
                 failure_detail=f"unparseable bindings: {exc}",
             )
-        duration_ms = round((time.perf_counter() - t0) * 1000, 1)
         if cause is not None:
-            # Major fix: `_parse_bindings_typed` returning NO_DATA or
-            # MALFORMED_RESPONSE is still a per-station failure — the batch's
-            # own `.failed` property (and `ingest_observations_flow`'s
-            # `stations_fetch_failed` count) already treat any non-None
-            # `failure_cause` as failed. Logging `fetch_completed` here would
-            # tell an operator this station succeeded while the typed outcome
-            # simultaneously says it did not, and a list-façade caller (e.g.
-            # `record_fixtures.py`, which only sees `[]`) would get zero
-            # WARNING signal at all for a malformed/empty response.
             log.warning(
                 "observation.fetch_failed",
                 station_id=str(station_id),
@@ -281,7 +311,6 @@ class HydroScraperAdapter:
         log.info(
             "observation.fetch_completed",
             station_id=str(station_id),
-            duration_ms=duration_ms,
             record_count=len(observations),
         )
         return StationFetchOutcome(
