@@ -14,6 +14,7 @@ could only ever return INDETERMINATE.
 from __future__ import annotations
 
 import random
+import re
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ import polars as pl
 from scripts.dhm_precip.coloc_pairs import COLOCATED_PAIRS
 from scripts.dhm_precip.coloc_run import (
     DhmRetainedWindows,
+    _write_report,
     run_coloc_adjudication,
 )
 from scripts.dhm_precip.coloc_verdict import IndeterminateReason, Verdict
@@ -33,6 +35,8 @@ if TYPE_CHECKING:
 
 _HOUR_OFFSET = DEFAULT_PARAMS.coloc_dhm_utc_to_npt_hour_offset
 _DAYS = range(1, 7)
+
+_HOUR_ROW = re.compile(r"^\| \d+ \|")
 
 _LUKLA = Station("Lukla Airport")
 _SYANGBOCHE = Station("Syangboche Airport")
@@ -235,3 +239,144 @@ class TestSynthesisOverBothPairs:
         assert syangboche.reason == IndeterminateReason.MATCHED_RESOLUTION_DISAGREEMENT
         assert report.synthesis.verdict == Verdict.INDETERMINATE
         assert report.synthesis.reason == IndeterminateReason.STATION_DISAGREEMENT
+
+
+# --- The Exit deliverable: the written report ----------------------------
+
+
+def _h1_supported_provider():
+    """D7 — the ablation moves the DHM peak INTO agreement with Pyramid:
+    a sub-0.2 mm drizzle sits on every NPT-02 hour (mean 0.19), while real
+    rain both instruments can see falls at NPT 14 on one day in three
+    (mean 0.167). At all values the peak is 02; zeroing below 0.2 mm moves
+    it to 14, where Pyramid peaks — 12 h of movement, toward."""
+
+    def provider(station: Station) -> DhmRetainedWindows:
+        pair = next(p for p in COLOCATED_PAIRS if p.dhm_station == station)
+
+        def value(ts: datetime) -> float:
+            if ts.hour == 20:  # NPT 02 — resolution-level drizzle
+                return 0.19
+            if ts.hour == 8 and ts.day % 3 == 1:  # NPT 14 — real rain
+                return 0.5
+            return 0.0
+
+        def frame(years: list[int]) -> pl.DataFrame:
+            return pl.DataFrame(
+                [
+                    {"station": str(station), "timestamp": ts, "value_mm": value(ts)}
+                    for ts in _july_hours(years)
+                ]
+            )
+
+        return DhmRetainedWindows(
+            overlap=frame(
+                list(range(pair.overlap_start_year, pair.overlap_end_year + 1))
+            ),
+            full_record=frame(list(range(pair.dhm_start_year, pair.dhm_end_year + 1))),
+        )
+
+    return provider
+
+
+class TestWrittenReportCarriesEveryExitDeliverable:
+    """Plan 182 Exit — the runner must be able to PRODUCE the deliverables,
+    not just the verdict scalars. Peak-hour integers alone are not the
+    milestone: the profile tables (with hourly `n`), each side's retention
+    per window, D2's alignment uncertainty, D8's micro-climate/wind
+    alternative, D7.3's drizzle confound and Pyramid's CC BY 4.0
+    attribution are all named in Exit."""
+
+    def _report_text(self, tmp_path: Path) -> str:
+        report = _agreeing_report(tmp_path, seed=41)
+        out = tmp_path / "coloc_adjudication.md"
+        _write_report(out, report)
+        return out.read_text()
+
+    def test_full_profile_tables_for_both_networks_in_both_windows(
+        self, tmp_path: Path
+    ) -> None:
+        text = self._report_text(tmp_path)
+        for pair in COLOCATED_PAIRS:
+            for window in ("Full record", "Overlap"):
+                for rung in DEFAULT_PARAMS.coloc_threshold_ladder_mm:
+                    assert (
+                        f"DHM normalised diurnal profile — {window} — "
+                        f"{rung} mm rung" in text
+                    ), (pair.dhm_station, window, rung)
+                assert f"Pyramid normalised diurnal profile — {window}" in text, (
+                    pair.dhm_station,
+                    window,
+                )
+
+        # 2 pairs x 2 windows x (3 ladder rungs + 1 Pyramid) tables, each
+        # with one row per hour of day.
+        hour_rows = [line for line in text.splitlines() if _HOUR_ROW.match(line)]
+        assert (
+            len(hour_rows)
+            == 2 * 2 * (len(DEFAULT_PARAMS.coloc_threshold_ladder_mm) + 1) * 24
+        )
+
+    def test_every_profile_table_carries_its_hourly_n(self, tmp_path: Path) -> None:
+        """D4 — 'Report the retained-hour count beside every statistic.'"""
+        text = self._report_text(tmp_path)
+        headers = [line for line in text.splitlines() if line.startswith("| hour")]
+        assert headers
+        for header in headers:
+            assert "| n |" in header
+
+    def test_each_side_retention_is_reported_per_window(self, tmp_path: Path) -> None:
+        text = self._report_text(tmp_path)
+        assert text.count("n DHM retained (this window)") == 4
+        assert text.count("n Pyramid retained (this window)") == 4
+
+    def test_alignment_uncertainty_and_the_phase_precision_limit(
+        self, tmp_path: Path
+    ) -> None:
+        text = self._report_text(tmp_path)
+        assert "1.75" in text
+        assert "no phase result finer than" in text.lower()
+
+    def test_the_d8_microclimate_and_wind_alternative_is_adjudicated_against(
+        self, tmp_path: Path
+    ) -> None:
+        text = self._report_text(tmp_path).lower()
+        assert "micro-climat" in text
+        assert "wind" in text
+
+    def test_the_d7_3_drizzle_confound_is_stated(self, tmp_path: Path) -> None:
+        text = self._report_text(tmp_path).lower()
+        assert "drizzle" in text
+
+    def test_pyramid_attribution_is_present(self, tmp_path: Path) -> None:
+        text = self._report_text(tmp_path)
+        assert "CC BY 4.0" in text
+        assert "Salerno" in text
+
+    def test_no_magnitude_totals_are_reported(self, tmp_path: Path) -> None:
+        """D1 — 'No mm totals are compared or reported.' The profile tables
+        carry the NORMALISED value and `n` only."""
+        text = self._report_text(tmp_path)
+        assert "mean_value_mm" not in text
+        assert "mm/h" not in text
+
+    def test_affected_claims_are_listed_only_when_h1_is_supported(
+        self, tmp_path: Path
+    ) -> None:
+        _write_agreeing_pyramid_files(tmp_path)
+        supported = run_coloc_adjudication(
+            dhm_retained=_h1_supported_provider(),
+            pyramid_dir=tmp_path,
+            rng=random.Random(43),
+            params=DEFAULT_PARAMS,
+        )
+        assert supported.synthesis.verdict == Verdict.H1_SUPPORTED
+
+        out = tmp_path / "supported.md"
+        _write_report(out, supported)
+        text = out.read_text()
+        assert "Affected claims" in text
+        assert "M-A7" in text
+        assert "M-A1" in text
+
+        assert "Affected claims" not in self._report_text(tmp_path)

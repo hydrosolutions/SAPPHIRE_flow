@@ -69,6 +69,7 @@ from scripts.dhm_precip.coloc_adjudication import (  # noqa: E402
 from scripts.dhm_precip.coloc_pairs import COLOCATED_PAIRS  # noqa: E402
 from scripts.dhm_precip.coloc_verdict import (  # noqa: E402
     SynthesisVerdict,
+    Verdict,
     synthesize_verdict,
 )
 from scripts.dhm_precip.domain_types import Station  # noqa: E402
@@ -175,14 +176,50 @@ def run_coloc_adjudication(
     )
 
 
+_ATTRIBUTION = (
+    "Pyramid Meteorological Network data: Salerno et al. 2025, ESSD 17, 4293 "
+    "(Zenodo `10.5281/zenodo.15211352`), used under **CC BY 4.0**. Lvl1 files "
+    "only — never the Lvl2 gap-filled monthly reconstruction."
+)
+
+_AFFECTED_CLAIMS = (
+    "- the Group A high-altitude **diurnal phase** reported in M-A1, and any "
+    "elevation-banded profile M-A7 would build from it",
+    "- the sub-0.1 mm wet-hour statistics that motivated H1 (22-34 % of Group A "
+    "wet hours, 0.8-2.1 % of mass)",
+    "- the withdrawn wet-hour-fraction contrast (DHM 54-55 % vs Pyramid 33 %), "
+    "which was never resolution-matched",
+    "- OD-12's correction operator, insofar as it consumes M-A7's diurnal shape",
+)
+
+
+def _profile_table(title: str, profile: pl.DataFrame) -> list[str]:
+    """D1/D4 — the NORMALISED value and its hourly `n` only. No mm totals
+    are reported anywhere (D1), so the mean column is deliberately omitted."""
+    rows = profile.sort("hour")
+    lines = [
+        f"##### {title}",
+        "",
+        "| hour (NPT) | n | normalised |",
+        "|---:|---:|---:|",
+    ]
+    lines += [
+        f"| {int(row['hour'])} | {int(row['n'])} | "
+        f"{float(row['normalised_value']):.3f} |"
+        for row in rows.iter_rows(named=True)
+    ]
+    lines.append("")
+    return lines
+
+
 def _window_lines(label: str, window: WindowResult) -> list[str]:
     if isinstance(window, WindowUnavailable):
         return [
             f"#### {label} — UNAVAILABLE (`{window.failure.value}`)",
             "",
             f"- {window.detail}",
-            f"- n DHM retained: {window.n_dhm_retained}",
-            f"- n Pyramid retained: {window.n_pyramid_retained}",
+            f"- n DHM retained (this window): {window.n_dhm_retained}",
+            f"- n Pyramid retained (this window): {window.n_pyramid_retained}",
             "",
         ]
     lines = [
@@ -191,62 +228,144 @@ def _window_lines(label: str, window: WindowResult) -> list[str]:
         f"- n DHM retained (this window): {window.n_dhm_retained}",
         f"- n Pyramid retained (this window): {window.n_pyramid_retained}",
         f"- n common-retained: {window.n_common_retained}",
-        f"- season-years (both sides): {window.season_year_count}",
+        f"- season-years (the smaller of the two networks'): "
+        f"{window.season_year_count}",
         "",
         "D7 threshold ladder (peak hour, NPT):",
         "",
     ]
     lines += [
-        f"- {threshold} mm: hour {peak}"
+        f"- {threshold} mm rung: hour {peak}"
         for threshold, peak in sorted(window.threshold_ladder_peaks.items())
     ]
     lines += [
         f"- Pyramid peak hour: {window.pyramid_peak_hour}",
         "",
-        "D5 bootstrap peak-hour spread:",
+        "D5 bootstrap peak-hour spread (resampled on THIS window's "
+        "adjudicated population):",
         f"- season-years: {window.bootstrap.n_season_years}",
-        f"- spread (h): {window.bootstrap.spread_hours:.2f}",
+        f"- circular spread (h): {window.bootstrap.spread_hours:.2f}",
         f"- adequate sample: {window.bootstrap.adequate_sample}",
         "",
     ]
     if window.wet_hour_fraction is not None:
         lines += [
-            "D3 paired wet-hour fraction (common-retained population only):",
+            "D3 paired wet-hour fraction (common-retained population only, "
+            "matched threshold on both sides):",
             f"- DHM: {window.wet_hour_fraction.dhm_wet_fraction:.3f}",
             f"- Pyramid: {window.wet_hour_fraction.pyramid_wet_fraction:.3f}",
             "",
         ]
+    else:
+        lines += [
+            "D3 wet-hour fraction: **not reported** — this window is unpaired, "
+            "and a wet-hour fraction over differently-selected populations is "
+            "not a comparison.",
+            "",
+        ]
+    for threshold, profile in sorted(window.threshold_ladder_profiles.items()):
+        lines += _profile_table(
+            f"DHM normalised diurnal profile — {label} — {threshold} mm rung",
+            profile,
+        )
+    lines += _profile_table(
+        f"Pyramid normalised diurnal profile — {label}", window.pyramid_profile
+    )
     return lines
 
 
-def _write_report(path: Path, report: ColocAdjudicationReport) -> None:
-    """The Exit deliverable as Markdown."""
+def _method_lines(params: DhmPrecipParams) -> list[str]:
+    return [
+        "## Method, uncertainty and the alternatives this test cannot exclude",
+        "",
+        "- **D2 alignment uncertainty: "
+        f"±{params.coloc_alignment_uncertainty_hours} h.** "
+        "Pyramid is NPT (UTC+5:45) and DHM is UTC period-ending, so hourly bins "
+        f"cannot be made to coincide (45 min), and the Pyramid README does not "
+        "state period-beginning vs period-ending (up to 1 h). Every profile "
+        "below is reported in NPT and **no phase result finer than ±2 h is "
+        "claimed anywhere in this report**.",
+        "- **D8 — co-location is NOT identical exposure.** The pairs are "
+        "1.4-1.9 km apart with 130-200 m of elevation difference in steep "
+        "terrain, and neither network's instrument type, orifice height or wind "
+        "exposure is documented. Normalisation cancels only *hour-independent* "
+        "multiplicative undercatch, and **mountain wind is strongly diurnal** "
+        "(anabatic/katabatic), so a genuine micro-climatic or wind-driven, "
+        "hour-dependent catch difference remains a live alternative this test "
+        "cannot exclude. Every verdict below is adjudicated against H1 **and** "
+        "this alternative, never as 'co-located therefore comparable'.",
+        "- **D7.3 — the intensity-dependent drizzle confound.** Thresholding at "
+        "0.2 mm also removes genuine light rain, so if physical morning drizzle "
+        "is systematically lighter than nocturnal storms, the DHM peak shifts "
+        "under ablation even when every count is real. A DHM-only shift is "
+        "therefore suggestive, not conclusive; only the matched-resolution "
+        "agreement test (gate 1) raises it above suggestion.",
+        "- **D1 — shape, never magnitude.** Profiles are normalised by each "
+        "station's own daily mean and no totals are compared or reported.",
+        "- **D11 — the FULL RECORD is adjudicated; the overlap corroborates.** "
+        "The overlap is 3-4 monsoons, below the 5-season adequacy floor, and "
+        "does not gate any verdict. The full-record comparison is "
+        "non-contemporaneous, which is licensed only by D12's PYRAMID "
+        "stationarity check reported per station below.",
+        "",
+        f"- {_ATTRIBUTION}",
+        "",
+    ]
+
+
+def _write_report(
+    path: Path,
+    report: ColocAdjudicationReport,
+    params: DhmPrecipParams = DEFAULT_PARAMS,
+) -> None:
+    """The Exit deliverable as Markdown: the D7 threshold ladder and the
+    full normalised-profile tables for BOTH networks in BOTH windows (with
+    hourly `n`), each side's retention per window, the D3 paired wet-hour
+    fraction, the D5 bootstrap spread, D12's stationarity checks, the
+    per-station verdicts and the two-station synthesis — plus D2's
+    alignment uncertainty, D8's micro-climate/wind alternative, D7.3's
+    drizzle confound, Pyramid's CC BY 4.0 attribution and, if H1 is
+    supported, the affected-claims list filed for M-A7 (this plan does not
+    itself rewrite the vision, D9 Exit)."""
     lines = [
         "# DHM precipitation — M-A10 co-located gauge-vs-gauge adjudication",
         "",
         f"- generated: `{report.generated_at.isoformat()}`",
         "",
-        "## Per-station adjudication",
-        "",
     ]
+    lines += _method_lines(params)
+    lines += ["## Per-station adjudication", ""]
     for pair in COLOCATED_PAIRS:
         adj = report.pair_adjudications[pair.dhm_station]
-        lines += [f"### {pair.dhm_station} vs {pair.pyramid_station}", ""]
-        lines += _window_lines("Full record (ADJUDICATED, D11)", adj.full_record)
-        lines += _window_lines("Overlap (corroboration only, D11)", adj.overlap)
         lines += [
-            "D12 stationarity:",
-            f"- Pyramid (gates the verdict), split "
-            f"{adj.pyramid_stationarity.split_year}: "
-            f"{adj.pyramid_stationarity.peak_diff_hours:.1f} h "
-            f"(sufficient: {adj.pyramid_stationarity.data_sufficient})",
-            f"- DHM (additional evidence only), split "
-            f"{adj.dhm_stationarity.split_year}: "
-            f"{adj.dhm_stationarity.peak_diff_hours:.1f} h "
-            f"(sufficient: {adj.dhm_stationarity.data_sufficient})",
+            f"### {pair.dhm_station} vs {pair.pyramid_station}",
             "",
-            f"- overlap vs full-record peak difference: "
-            f"{adj.overlap_vs_full_record_peak_diff_hours}",
+            f"- separation {pair.separation_km} km, elevation difference "
+            f"{pair.elevation_delta_m} m (D8)",
+            "",
+        ]
+        lines += _window_lines("Full record", adj.full_record)
+        lines += _window_lines("Overlap", adj.overlap)
+        lines += [
+            "#### D12 stationarity",
+            "",
+            f"- **Pyramid (gates the verdict)**, split "
+            f"{adj.pyramid_stationarity.split_year}: pre "
+            f"{adj.pyramid_stationarity.pre_peak_hour} / post "
+            f"{adj.pyramid_stationarity.post_peak_hour}, circular difference "
+            f"{adj.pyramid_stationarity.peak_diff_hours:.1f} h "
+            f"(sufficient data: {adj.pyramid_stationarity.data_sufficient})",
+            f"- DHM (additional evidence ONLY — the record starts in 2020, so a "
+            f"pre-2020 split is vacuous), split "
+            f"{adj.dhm_stationarity.split_year}: pre "
+            f"{adj.dhm_stationarity.pre_peak_hour} / post "
+            f"{adj.dhm_stationarity.post_peak_hour}, circular difference "
+            f"{adj.dhm_stationarity.peak_diff_hours:.1f} h "
+            f"(sufficient data: {adj.dhm_stationarity.data_sufficient})",
+            "",
+            f"- overlap vs full-record matched-resolution peak difference: "
+            f"{adj.overlap_vs_full_record_peak_diff_hours} h "
+            "(reported, never an error — D11)",
             "",
             f"**Verdict: {adj.station_verdict.verdict.value}** "
             f"(gate stopped at `{adj.station_verdict.gate_stopped_at}`"
@@ -255,6 +374,10 @@ def _write_report(path: Path, report: ColocAdjudicationReport) -> None:
                 if adj.station_verdict.reason is not None
                 else ")"
             ),
+            f"- matched-resolution disagreement: "
+            f"{adj.station_verdict.matched_resolution_diff_hours} h",
+            f"- ablation movement: {adj.station_verdict.ablation_movement_hours} h "
+            f"(toward Pyramid: {adj.station_verdict.moved_toward_pyramid})",
             "",
         ]
 
@@ -268,15 +391,21 @@ def _write_report(path: Path, report: ColocAdjudicationReport) -> None:
             else ""
         ),
         "",
+        "INDETERMINATE is a permitted, publishable outcome: it BLOCKS the M-A7 "
+        "correction rather than licensing it (D9).",
+        "",
     ]
-    if report.synthesis.verdict.value == "H1_SUPPORTED":
+    if report.synthesis.verdict == Verdict.H1_SUPPORTED:
         lines += [
-            "## Correction filed for M-A7",
+            "## Affected claims — filed as a correction for M-A7",
             "",
             "H1 is supported: the Group A high-altitude diurnal signal is "
-            "consistent with noise-floor contamination. This finding is filed "
-            "as a correction for M-A7 to apply — this runner does not itself "
-            "rewrite the vision (D9 Exit).",
+            "consistent with noise-floor contamination, subject to the D8 and "
+            "D7.3 alternatives above. The following claims are affected and are "
+            "filed for M-A7 to apply — this runner does not itself rewrite the "
+            "vision (D9 Exit):",
+            "",
+            *_AFFECTED_CLAIMS,
             "",
         ]
     path.write_text("\n".join(lines) + "\n")
