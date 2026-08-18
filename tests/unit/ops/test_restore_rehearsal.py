@@ -14,11 +14,120 @@ Required cases (docs/plans/162-robust-database-backup.md T5):
       naming that table.
   (d) teardown happens when an assertion fails mid-way.
   (e) a sequence with last_value == MAX(id) and is_called = false FAILS.
+
+Locked 2026-08-18 against the four real-artifact restore failures found by
+running #180's merged script against a live mac-mini dump (see the plan's
+"VERIFIED RESTORE PROCEDURE" section):
+  (f) the restore targets the database `createdb` actually creates, not
+      merely "some createdb call happened and pg_restore doesn't say
+      postgres": createdb must run before pg_restore, the created database
+      must not be named `postgres`, and pg_restore plus every subsequent
+      content-assertion psql call must target that exact database name.
+      Proven against a broken script that creates `rehearsal` but restores
+      into / queries a different database.
+  (g) the pg_restore invocation carries the exact `--no-owner`/`--no-acl`
+      argv tokens (pg_dump does not back up cluster roles, so a fresh
+      cluster otherwise dies on `ERROR: role "sapphire" does not exist`) —
+      checked as exact shlex tokens, not substrings, so a bogus
+      `--no-owner-typo'd` flag cannot satisfy the assertion.
+  (h) when pg_restore fails, its STDERR TEXT (not just a generic message)
+      appears in the script's own failure output.
+  (i) when createdb fails, its STDERR TEXT appears in the script's own
+      failure output (same fix as (h), applied consistently).
+  (j) the restore container is launched with `--network none` — it holds a
+      fully-restored, decrypted dump (including access_tokens across every
+      tenant) and nothing in the script needs container-initiated network
+      access.
+
+Locked 2026-08-18, second round (independent review of the (f)-(j) fixer
+commit found three further gaps):
+  (k) the sequence-collision plausibility check targets `audit_log_id_seq` /
+      `audit_log`, NOT `access_tokens_id_seq` — migration 0047 gives
+      `access_tokens.id` a UUID primary key (no sequence exists at all), so
+      the earlier version of this check would fail after every genuinely
+      successful restore. `audit_log.id` (migration 0045) is a real BIGINT
+      `autoincrement=True` column with a genuine Postgres-backed sequence.
+  (l) the createdb call uses a `--` end-of-options marker, and the test
+      asserts the database name is the sole positional token after it —
+      not merely "the last token in argv", which a broken invocation like
+      `createdb rehearsal --maintenance-db template1` (creates/restores
+      into `template1`, not `rehearsal`) would otherwise still satisfy.
+  (m) the `--network none` check now also asserts POSITION, not just
+      membership: both tokens must appear before the image argument in the
+      `docker run` invocation, since Docker treats anything after the image
+      as the container's command rather than a `run` option.
+
+Locked 2026-08-18, third round (the (k) fix above was itself wrong — its own
+fake invented the sequence it checked, hiding the bug):
+  (n) the sequence-collision plausibility check targets
+      `pipeline_health_id_seq` / `pipeline_health`, NOT `audit_log_id_seq` /
+      `audit_log`. Both are real BIGINT `autoincrement=True` columns
+      (migrations 0001 and 0045 respectively; `docker/bootstrap-roles.sql:139`
+      names both as "the BIGSERIAL-keyed tables"), but `pipeline_health` is
+      the pair checked here because it is guaranteed non-empty in any real
+      dump (the forecast/BAFU flows write health records continuously)
+      whereas `audit_log` may be sparse.
+  (o) the script asserts the sequence relation EXISTS
+      (`to_regclass('pipeline_health_id_seq')` non-null) before querying it,
+      so a missing relation fails loudly and names itself rather than
+      surfacing as some other query error — the exact class of bug that
+      shipped in round one (`access_tokens_id_seq`, which never existed)
+      and was hidden by a fake that simply invented the answer.
+
+Locked 2026-08-18, fourth round (independent Codex review of the (n)/(o)
+fixer commit found four further gaps, all fixed here):
+  (p) the collision predicate in (e)/(n) only ever checked the
+      is_called=false branch — when is_called=true, nextval() has already
+      handed out `last_value`, so the next call emits `last_value + 1`,
+      which can independently collide with MAX(id). The script now derives
+      the actual next-emitted value from `is_called` before comparing.
+  (q) the `to_regclass` fake in `_write_fake_docker` matched ANY relation
+      query (`*"to_regclass"*`), not just `pipeline_health_id_seq` — so a
+      regression that reverted the real script's guard to check
+      `access_tokens_id_seq` (while keeping `pipeline_health` in the error
+      text) would still have passed every test. The fake now matches only
+      the exact `to_regclass('pipeline_health_id_seq')` query text; any
+      other relation falls through to the fake's "unrecognised exec"
+      branch and fails the run.
+  (r) the fresh-database test asserted only the sole token after `--` in
+      the `createdb` argv, so a stray positional token BEFORE the
+      separator (e.g. `createdb -U postgres other -- rehearsal`) would
+      still have passed. The test now pins the full expected argv
+      (`["createdb", "-U", "postgres", "--", <db>]`) rather than a partial
+      shape.
+  (s) the `--network none` position test derived the image's index as
+      "the last token in argv", so a doubled-image invocation like
+      `docker run IMAGE --network none IMAGE` (which Docker actually
+      parses as running IMAGE with `--network`/`none`/`IMAGE` as its
+      container COMMAND, i.e. no isolation at all) would still have
+      passed. The test now requires the sentinel image to appear exactly
+      once and uses its real index.
+All four proven red against the pre-fix (n)/(o)-round script/tests and
+green after.
+
+Locked 2026-08-18, fifth round (a further independent review of the (p)-(s)
+fixer commit found one more gap, fixed here):
+  (t) the (s) fix ("appears exactly once" + "is the final positional
+      token" + "--network none precedes it") still does not prove the
+      sentinel is Docker's actual image argument: all three of those
+      conditions are also satisfied by a decoy invocation like
+      `docker run -d decoy-image --network none --name X -e Y SENTINEL`,
+      where Docker actually treats the FIRST positional token
+      (`decoy-image`) as the image and parses everything from `--network`
+      onward as that container's COMMAND — i.e. no network isolation at
+      all — while SENTINEL still passes every (s)-round check. The test
+      now pins the complete expected `docker run` argv (the real
+      invocation the script issues, with the image swapped for the
+      sentinel), which rules out any decoy positional token anywhere
+      before the image. Proven red via a deliberately constructed decoy
+      invocation (not against the real script, which has never emitted
+      one) and green against the real script/tests.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import textwrap
 from pathlib import Path
@@ -32,19 +141,26 @@ def _write_fake_docker(
     bin_dir: Path,
     args_log: Path,
     *,
+    createdb_exit: int = 0,
+    createdb_stderr: str = "",
     pg_restore_exit: int = 0,
+    pg_restore_stderr: str = "",
     access_tokens_count: str = "3",
-    access_tokens_max_id: str = "5",
+    pipeline_health_max_id: str = "5",
     seq_last_value: str = "5",
     seq_is_called: str = "t",
+    seq_exists: str = "pipeline_health_id_seq",
 ) -> Path:
     """A stateful fake `docker` that recognises the exact subcommands
     restore-rehearsal.sh issues and answers each on its merits, logging
     every invocation (one line per call) so teardown can be asserted on."""
+    quoted_createdb_stderr = shlex.quote(createdb_stderr)
+    quoted_pg_restore_stderr = shlex.quote(pg_restore_stderr)
     script = textwrap.dedent(
         f"""\
         #!/bin/bash
-        printf '%s\\n' "$*" >> "{args_log}"
+        printf '%q ' "$@" >> "{args_log}"
+        printf '\\n' >> "{args_log}"
         case "$1" in
           run)
             echo "fake-container-id"
@@ -65,7 +181,16 @@ def _write_fake_docker(
               *pg_isready*)
                 exit 0
                 ;;
+              *createdb*)
+                if [[ -n {quoted_createdb_stderr} ]]; then
+                  echo {quoted_createdb_stderr} >&2
+                fi
+                exit {createdb_exit}
+                ;;
               *pg_restore*)
+                if [[ -n {quoted_pg_restore_stderr} ]]; then
+                  echo {quoted_pg_restore_stderr} >&2
+                fi
                 exit {pg_restore_exit}
                 ;;
               *"SELECT 1"*)
@@ -80,12 +205,16 @@ def _write_fake_docker(
                 echo "abcd1234ef56"
                 exit 0
                 ;;
-              *"access_tokens_id_seq"*)
+              *"to_regclass('pipeline_health_id_seq')"*)
+                echo "{seq_exists}"
+                exit 0
+                ;;
+              *"pipeline_health_id_seq"*)
                 echo "{seq_last_value}|{seq_is_called}"
                 exit 0
                 ;;
-              *"coalesce(max(id), 0) FROM access_tokens"*)
-                echo "{access_tokens_max_id}"
+              *"coalesce(max(id), 0) FROM pipeline_health"*)
+                echo "{pipeline_health_max_id}"
                 exit 0
                 ;;
               *)
@@ -107,8 +236,66 @@ def _write_fake_docker(
     return fake
 
 
+def _exec_calls(args_log: Path, substring: str) -> list[str]:
+    """Raw (still %q-escaped) `exec ...` lines whose UNESCAPED content
+    contains `substring`. The log lines are shell-escaped (`printf '%q '`),
+    so e.g. `count(*)` is logged as `count\\(\\*\\)` — matching must happen
+    after `shlex.split` restores the literal argv, not on the raw text."""
+    if not args_log.exists():
+        return []
+    return [
+        line
+        for line in args_log.read_text().splitlines()
+        if line.startswith("exec ") and substring in " ".join(shlex.split(line))
+    ]
+
+
+def _all_lines(args_log: Path) -> list[str]:
+    if not args_log.exists():
+        return []
+    return args_log.read_text().splitlines()
+
+
+def _first_index(args_log: Path, substring: str) -> int:
+    """Index (call order) of the first logged line containing `substring`."""
+    for i, line in enumerate(_all_lines(args_log)):
+        if substring in line:
+            return i
+    raise AssertionError(f"no call found matching {substring!r} in {args_log}")
+
+
+def _run_call_argv(args_log: Path) -> list[str]:
+    """The `docker run ...` invocation, argv-parsed. The fake docker logs
+    each positional param shell-escaped (`printf '%q ' "$@"`), so
+    `shlex.split` on the logged line recovers the exact original argv —
+    including any token that contained spaces or shell metacharacters."""
+    for line in _all_lines(args_log):
+        if line.startswith("run "):
+            return shlex.split(line)
+    raise AssertionError(f"no `docker run` call found in {args_log}")
+
+
+def _last_exec_argv(args_log: Path, substring: str) -> list[str]:
+    """argv (drops leading `exec <container>`) of the last exec call whose
+    raw logged line contains `substring`. See `_run_call_argv` for why
+    `shlex.split` on the %q-escaped logged line recovers exact tokens."""
+    calls = _exec_calls(args_log, substring)
+    assert calls, f"no exec call found matching {substring!r}"
+    tokens = shlex.split(calls[-1])
+    return tokens[2:]  # drop "exec" and the container name
+
+
+def _flag_value(argv: list[str], flag: str) -> str:
+    assert flag in argv, f"{flag!r} not present in argv: {argv}"
+    return argv[argv.index(flag) + 1]
+
+
 def _run_script(
-    tmp_path: Path, docker_cmd: Path, dump_path: Path
+    tmp_path: Path,
+    docker_cmd: Path,
+    dump_path: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -116,6 +303,7 @@ def _run_script(
         "RESTORE_CONTAINER_NAME": "test-restore-rehearsal",
         "RESTORE_WAIT_ATTEMPTS": "2",
         "RESTORE_WAIT_INTERVAL": "0",
+        **(extra_env or {}),
     }
     return subprocess.run(
         ["bash", str(_SCRIPT), str(dump_path)],
@@ -206,7 +394,7 @@ class TestSequenceCollisionRisk:
         fake = _write_fake_docker(
             bin_dir,
             args_log,
-            access_tokens_max_id="5",
+            pipeline_health_max_id="5",
             seq_last_value="5",
             seq_is_called="f",
         )
@@ -215,31 +403,408 @@ class TestSequenceCollisionRisk:
         assert result.returncode != 0
         assert "PASS" not in result.stdout
         assert "is_called" in result.stderr
-        assert "access_tokens_id_seq" in result.stderr
+        assert "pipeline_health_id_seq" in result.stderr
         assert len(_rm_calls(args_log)) == 1, (
             "teardown must still happen when the sequence check fails"
         )
 
-    def test_last_value_below_max_id_with_is_called_false_passes(
-        self, tmp_path: Path
-    ) -> None:
-        """is_called=false is only a collision risk when last_value has
-        already caught up to MAX(id) -- a freshly-created, never-advanced
-        sequence (last_value < max_id would be a different, pre-existing
-        data problem outside this script's scope) is not this bug."""
+    def test_last_value_below_max_id_fails(self, tmp_path: Path) -> None:
+        """A sequence BELOW MAX(id) is the most common real restore defect,
+        not an out-of-scope data problem: with the sequence at 1 and rows up
+        to 5, the first insert after recovery emits id=1 and dies on a
+        duplicate key. An earlier revision used an equality-only predicate
+        and this test asserted returncode == 0, blessing exactly that bug --
+        a restored database that throws on its first write has not been
+        successfully restored, which is the whole proposition this script
+        certifies."""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         args_log = tmp_path / "docker-args.log"
         fake = _write_fake_docker(
             bin_dir,
             args_log,
-            access_tokens_max_id="5",
+            pipeline_health_max_id="5",
+            seq_last_value="1",
+            seq_is_called="f",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0, result.stdout
+        assert "pipeline_health_id_seq" in result.stderr
+        assert len(_rm_calls(args_log)) == 1, (
+            "teardown must still happen when the sequence check fails"
+        )
+
+    def test_empty_table_with_fresh_sequence_passes(self, tmp_path: Path) -> None:
+        """Boundary the `-le` predicate must NOT break: an empty
+        pipeline_health gives max_id = 0 (coalesce) against a fresh
+        sequence at last_value=1, is_called=false -> next_val=1 > 0. This
+        is a legitimate restore and must pass."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="0",
             seq_last_value="1",
             seq_is_called="f",
         )
         result = _run_script(tmp_path, fake, _dump_file(tmp_path))
 
         assert result.returncode == 0, result.stderr
+
+    def test_healthy_restore_sequence_above_max_id_passes(self, tmp_path: Path) -> None:
+        """The normal case: pg_dump emits setval(max_id, true), so
+        last_value == max_id with is_called=true -> next_val = max_id + 1."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="5",
+            seq_last_value="5",
+            seq_is_called="t",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+
+    def test_last_value_plus_one_equals_max_id_with_is_called_true_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """MAJOR regression guard: the collision predicate must also cover
+        is_called=true. When is_called=true, nextval() has already handed
+        out `last_value`, so the NEXT call emits `last_value + 1` — a
+        predicate that only ever checks the is_called=false branch (as an
+        earlier round of this script did) never fires here, even though
+        last_value + 1 colliding with an existing pipeline_health.id is
+        exactly the same class of bug."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="6",
+            seq_last_value="5",
+            seq_is_called="t",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert "PASS" not in result.stdout
+        assert "is_called" in result.stderr
+        assert "pipeline_health_id_seq" in result.stderr
+        assert len(_rm_calls(args_log)) == 1, (
+            "teardown must still happen when the sequence check fails"
+        )
+
+    def test_last_value_plus_one_below_max_id_with_is_called_true_passes(
+        self, tmp_path: Path
+    ) -> None:
+        """The healthy, common production case: is_called=true and
+        last_value already equals MAX(id) (nextval() was last used to
+        produce the highest existing row), so the next nextval() call
+        (last_value + 1) is one past MAX(id) and does not collide."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pipeline_health_max_id="5",
+            seq_last_value="5",
+            seq_is_called="t",
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+
+
+class TestSequenceExistenceGuard:
+    def test_missing_sequence_fails_loudly_and_names_it(self, tmp_path: Path) -> None:
+        """BLOCKER regression guard: round one queried `access_tokens_id_seq`
+        directly, a relation that has never existed (access_tokens.id is a
+        UUID primary key, migration 0047) — and a vacuous test fake hid the
+        bug by inventing the sequence in its mock. The script must check
+        relation EXISTENCE (`to_regclass`) before querying it, and fail
+        naming the missing relation rather than surfacing some other error
+        (e.g. `ERROR: relation "..." does not exist` bleeding through as an
+        opaque psql failure)."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log, seq_exists="")
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert "PASS" not in result.stdout
+        assert "pipeline_health_id_seq" in result.stderr
+        assert "does not exist" in result.stderr
+        assert len(_rm_calls(args_log)) == 1, (
+            "teardown must still happen when the existence guard fails"
+        )
+        # The guard must run BEFORE the sequence is actually queried — a
+        # missing relation should never reach the last_value/is_called call.
+        assert not _exec_calls(args_log, "last_value")
+
+
+class TestRestoresIntoFreshDatabase:
+    def test_restore_targets_the_database_createdb_actually_created(
+        self, tmp_path: Path
+    ) -> None:
+        """FIX 1: the PostGIS image pre-initialises tiger/tiger_data/topology
+        in its default `postgres` database, so a restore into it dies on
+        `ERROR: schema "tiger" already exists` against a real dump. The
+        script must `createdb` a fresh database BEFORE restoring, and both
+        pg_restore and every subsequent content-assertion psql call must
+        target the EXACT name that createdb created — not just "not
+        postgres" (a broken script that creates `rehearsal` but restores
+        into/queries a different database must fail this)."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+
+        assert _first_index(args_log, "createdb") < _first_index(
+            args_log, "pg_restore"
+        ), "createdb must run before pg_restore"
+
+        createdb_argv = _last_exec_argv(args_log, "createdb")
+        assert createdb_argv[0] == "createdb"
+        # The database name must be unambiguously the sole positional
+        # argument after a `--` end-of-options marker — NOT merely "the
+        # last token" (a broken invocation like
+        # `createdb rehearsal --maintenance-db template1` would put
+        # 'template1' last while actually creating/restoring into
+        # 'template1', and every earlier assertion here would still pass).
+        assert "--" in createdb_argv, (
+            f"createdb call must use '--' to unambiguously separate "
+            f"options from the database name: {createdb_argv}"
+        )
+        created_db = createdb_argv[-1]
+        assert created_db != "postgres", (
+            f"created database must not be 'postgres': {createdb_argv}"
+        )
+        # Pin the FULL argv, not merely "the sole token after --": a
+        # broken invocation with a stray positional BEFORE the separator
+        # (e.g. `createdb -U postgres other -- rehearsal`) would still
+        # satisfy a check that only inspects tokens after `--`, even
+        # though real createdb would reject or misinterpret that extra
+        # argument. Exact-argv equality closes that gap.
+        assert createdb_argv == ["createdb", "-U", "postgres", "--", created_db], (
+            f"unexpected createdb argv (stray positional token before or "
+            f"after '--'?): {createdb_argv}"
+        )
+
+        pg_restore_argv = _last_exec_argv(args_log, "pg_restore")
+        assert _flag_value(pg_restore_argv, "-d") == created_db, (
+            f"pg_restore's -d target {_flag_value(pg_restore_argv, '-d')!r} "
+            f"does not match the database createdb created ({created_db!r})"
+        )
+
+        # Every content-assertion psql call (excludes the readiness probe,
+        # which deliberately targets the image's default database before
+        # DB_NAME/createdb exist) must also target the created database.
+        content_query_substrings = [
+            "count(*) FROM access_tokens",
+            "version_num FROM alembic_version",
+            "to_regclass",
+            "pipeline_health_id_seq",
+            "coalesce(max(id), 0) FROM pipeline_health",
+        ]
+        for substring in content_query_substrings:
+            psql_argv = _last_exec_argv(args_log, substring)
+            assert _flag_value(psql_argv, "-d") == created_db, (
+                f"psql call for {substring!r} targeted "
+                f"{_flag_value(psql_argv, '-d')!r}, not the created "
+                f"database {created_db!r}: {psql_argv}"
+            )
+
+
+class TestPgRestoreNoOwnerNoAcl:
+    def test_pg_restore_argv_includes_no_owner_and_no_acl(self, tmp_path: Path) -> None:
+        """FIX 2: pg_dump does not back up cluster roles, but the dump is
+        full of OWNER TO / ACL statements referencing them. Without
+        --no-owner --no-acl a fresh cluster dies on
+        `ERROR: role "sapphire" does not exist`. Checked as exact argv
+        tokens (not substrings) so a bogus `--no-owner-typo'd` cannot
+        satisfy the assertion the way real pg_restore would reject it."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+        pg_restore_argv = _last_exec_argv(args_log, "pg_restore")
+        assert "--no-owner" in pg_restore_argv, pg_restore_argv
+        assert "--no-acl" in pg_restore_argv, pg_restore_argv
+
+
+class TestPgRestoreStderrSurfaced:
+    def test_pg_restore_stderr_text_appears_in_script_output(
+        self, tmp_path: Path
+    ) -> None:
+        """FIX 3: the merged script discards pg_restore's stderr
+        (`>/dev/null 2>&1`), so the operator only ever sees the generic
+        "FAIL: pg_restore failed" — the actual diagnostic (e.g. which schema
+        already exists, which role is missing) is invisible. It must be
+        captured and included in the script's own failure output."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        distinctive_error = (
+            'pg_restore: error: could not execute query: ERROR:  schema "tiger" '
+            "already exists"
+        )
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            pg_restore_exit=1,
+            pg_restore_stderr=distinctive_error,
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert distinctive_error in result.stderr, result.stderr
+
+
+class TestCreatedbStderrSurfaced:
+    def test_createdb_stderr_text_appears_in_script_output(
+        self, tmp_path: Path
+    ) -> None:
+        """createdb's stderr must be captured and surfaced the same way
+        pg_restore's is (TestPgRestoreStderrSurfaced) — otherwise an
+        unanticipated createdb failure (disk full, permission issue) shows
+        only the generic "FAIL: createdb 'rehearsal' failed", the exact
+        invisible-diagnostic problem the pg_restore fix eliminated."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        distinctive_error = (
+            "createdb: error: database creation failed: ERROR:  disk full"
+        )
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            createdb_exit=1,
+            createdb_stderr=distinctive_error,
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert "PASS" not in result.stdout
+        assert distinctive_error in result.stderr, result.stderr
+        # pg_restore must never run once createdb has already failed.
+        assert not _exec_calls(args_log, "pg_restore")
+
+
+class TestNetworkIsolation:
+    def test_container_launched_with_network_none(self, tmp_path: Path) -> None:
+        """The restore container holds a fully-restored, decrypted dump
+        (including access_tokens — token hashes, tenant_id, scopes across
+        every tenant) and is pulled from a third-party image not
+        independently audited beyond its manifest. Nothing in this script
+        needs container-initiated network access (every interaction is
+        `docker exec`/`docker cp` from the host), so the container must be
+        launched with `--network none` to close any exfiltration path."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+        run_argv = _run_call_argv(args_log)
+        assert "--network" in run_argv, run_argv
+        assert _flag_value(run_argv, "--network") == "none", run_argv
+
+    def test_network_none_precedes_the_image_argument(self, tmp_path: Path) -> None:
+        """Membership alone is not enough: `docker run IMAGE --network none`
+        would also satisfy a plain "is '--network none' present" check, but
+        Docker treats anything after the image as the container's COMMAND,
+        not a `run` option — so that invocation would silently run the
+        image's entrypoint with `--network` and `none` as its args, giving
+        the container a real network. `--network none` must appear BEFORE
+        the image token, and the image must be the run invocation's final
+        positional argument (this script passes no container command)."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        sentinel_image = "test-registry.example/sentinel-postgis:pinned"
+        container_name = "test-restore-rehearsal"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(
+            tmp_path,
+            fake,
+            _dump_file(tmp_path),
+            extra_env={"RESTORE_IMAGE": sentinel_image},
+        )
+
+        assert result.returncode == 0, result.stderr
+        run_argv = _run_call_argv(args_log)
+        # Membership of the sentinel image in run_argv is not enough either:
+        # deriving image_idx as "the last token" (as an earlier round of
+        # this test did) would still pass a doubled-image invocation like
+        # `docker run IMAGE --network none IMAGE` — Docker takes the FIRST
+        # positional token as the image, so that command line actually runs
+        # with no --network isolation, yet "last token == sentinel_image"
+        # and "network_idx < len(argv)-1" would both hold. Requiring the
+        # image to appear exactly once pins its real, unambiguous position.
+        assert run_argv.count(sentinel_image) == 1, (
+            f"expected the image to appear exactly once in `docker run` "
+            f"argv: {run_argv}"
+        )
+        image_idx = run_argv.index(sentinel_image)
+        assert image_idx == len(run_argv) - 1, (
+            f"expected the image to be the final positional argument of "
+            f"`docker run`: {run_argv}"
+        )
+        network_idx = run_argv.index("--network")
+        assert network_idx < image_idx, (
+            f"--network must appear before the image argument, else "
+            f"Docker treats it as the container's command: {run_argv}"
+        )
+        assert run_argv[network_idx + 1] == "none", run_argv
+        assert network_idx + 1 < image_idx, (
+            f"'none' (the --network value) must also precede the image "
+            f"argument: {run_argv}"
+        )
+        # Even all of the above does not prove the sentinel is Docker's
+        # ACTUAL image argument: "last token" + "exactly one occurrence" +
+        # "--network none precedes it" are all still satisfied by
+        # `docker run -d decoy-image --network none --name X -e Y SENTINEL`
+        # — Docker parses the FIRST positional token after the options as
+        # the image (here, `decoy-image`), and everything from `--network`
+        # onward becomes that container's COMMAND, i.e. no isolation at
+        # all, while every assertion above still holds since SENTINEL is
+        # still the sole, final, --network-preceded token. Pinning the
+        # complete expected argv is the only check that also rules out an
+        # earlier decoy positional; this is the exact real invocation the
+        # script issues (see scripts/restore-rehearsal.sh's `docker run`
+        # call) with only the image swapped for the sentinel.
+        expected_argv = [
+            "run",
+            "-d",
+            "--network",
+            "none",
+            "--name",
+            container_name,
+            "-e",
+            "POSTGRES_PASSWORD=rehearsal",
+            sentinel_image,
+        ]
+        assert run_argv == expected_argv, (
+            f"expected the exact `docker run` argv (no decoy positional "
+            f"token anywhere before the image): got {run_argv}, expected "
+            f"{expected_argv}"
+        )
 
 
 class TestMissingDump:
