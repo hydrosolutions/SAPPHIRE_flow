@@ -34,16 +34,22 @@ import structlog.testing
 import xarray as xr
 
 from scripts.dhm_precip.acquire_era5 import _exit_code_for, build_parser, main, run
-from scripts.dhm_precip.era5_acquire import RealCdsClient, redact_secrets
+from scripts.dhm_precip.era5_acquire import (
+    RealCdsClient,
+    classify_cds_exception,
+    redact_secrets,
+)
 from scripts.dhm_precip.era5_errors import (
     Era5AcquisitionError,
     Era5CredentialsError,
+    Era5PackingPostConditionError,
     Era5TransformFailedError,
     Era5TransientError,
     NonExpressibleWindowError,
 )
 from scripts.dhm_precip.era5_manifest import (
     PackingAccounting,
+    RawWindowRecord,
     TransformYearRecord,
     manifest_path_for,
     raw_artifact_path,
@@ -59,6 +65,15 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _HOUR = np.timedelta64(1, "h")
+
+# The VERBATIM body observed on the first real task-4b attempt (2026-08-17).
+_OBSERVED_COST_LIMIT_BODY = (
+    "403 Client Error: Forbidden for url: "
+    "https://cds.climate.copernicus.eu/api/retrieve/v1/processes/"
+    "reanalysis-era5-land/execution\n"
+    "cost limits exceeded\n"
+    "Your request is too large, please reduce your selection."
+)
 
 _VALID_PROVENANCE = {
     "cds_portal_url": "https://cds.climate.copernicus.eu",
@@ -186,25 +201,40 @@ def _seed_broken_2021(data_root: Path) -> None:
     acc_m = _accumulator_from_true(valid_time, true_mm / 1000.0)
     acc_m[100] -= 1.0  # a full metre: far beyond the packing tolerance
 
+    # D4 (corrected 2026-08-17): the product year is twelve MONTHLY raw
+    # artifacts, and the boundary context is December 2020 / January 2022.
+    # Seeding the old yearly shape would make this fixture fail on missing
+    # artifacts (also exit 4) instead of on the D7 packing post-condition it
+    # exists to exercise.
     prev_ts = np.datetime64("2020-12-31T23:00")
-    year_start_ts = np.datetime64("2021-01-01T00:00")
-    year_end_ts = np.datetime64("2021-12-31T23:00")
     next_ts = np.datetime64("2022-01-01T00:00")
     prev_idx = int(np.where(valid_time == prev_ts)[0][0])
-    year_start_idx = int(np.where(valid_time == year_start_ts)[0][0])
-    year_end_idx = int(np.where(valid_time == year_end_ts)[0][0])
     next_idx = int(np.where(valid_time == next_ts)[0][0])
 
+    window_ids = ["2020-12", *(f"2021-{m:02d}" for m in range(1, 13)), "2022-01"]
+    for month in range(1, 13):
+        month_start = np.datetime64(f"2021-{month:02d}-01T00:00")
+        month_end = (
+            np.datetime64(f"2021-{month + 1:02d}-01T00:00")
+            if month < 12
+            else np.datetime64("2022-01-01T00:00")
+        ) - _HOUR
+        start_idx = int(np.where(valid_time == month_start)[0][0])
+        end_idx = int(np.where(valid_time == month_end)[0][0])
+        _write_raw(
+            raw_artifact_path(f"2021-{month:02d}", data_root),
+            valid_time[start_idx : end_idx + 1],
+            acc_m[start_idx : end_idx + 1],
+        )
     _write_raw(
-        raw_artifact_path("2021", data_root),
-        valid_time[year_start_idx : year_end_idx + 1],
-        acc_m[year_start_idx : year_end_idx + 1],
+        raw_artifact_path("2020-12", data_root),
+        valid_time[[prev_idx]],
+        acc_m[[prev_idx]],
     )
     _write_raw(
-        raw_artifact_path("2020", data_root), valid_time[[prev_idx]], acc_m[[prev_idx]]
-    )
-    _write_raw(
-        raw_artifact_path("2022", data_root), valid_time[[next_idx]], acc_m[[next_idx]]
+        raw_artifact_path("2022-01", data_root),
+        valid_time[[next_idx]],
+        acc_m[[next_idx]],
     )
 
     provenance_kwargs = {
@@ -216,7 +246,7 @@ def _seed_broken_2021(data_root: Path) -> None:
         client_package_version="0.7.7",
         operator_provenance=OperatorProvenance(**provenance_kwargs),
     )
-    for window_id in ("2020", "2021", "2022"):
+    for window_id in window_ids:
         path = raw_artifact_path(window_id, data_root)
         record = RawWindowRecord(
             window_id=window_id,
@@ -312,8 +342,44 @@ class TestExitCodeContract:
                 str(tmp_path),
             ]
         )
-        code = _invoke(args)
-        assert code == 4
+        # Assert the REASON as well as the code. Every transform failure —
+        # including a missing raw artifact — exits 4, so a code-only
+        # assertion would still pass if the fixture stopped producing the D7
+        # packing violation it exists to produce (which is exactly what the
+        # D4 monthly re-slicing would have done to it).
+        with pytest.raises(Era5PackingPostConditionError, match="material negative"):
+            run(args)
+        assert _invoke(args) == 4
+
+    def test_cost_limit_rejection_is_exit_6_not_2(self, tmp_path: Path) -> None:
+        """Plan 171, corrected 2026-08-17. The real 4b failure exited 2
+        ("inputs absent") on valid credentials. It gets its own code, and
+        the dispatch table must reach it despite `Era5RequestTooLargeError`
+        being a SUBCLASS of `Era5RequestFailedError` (exit 3)."""
+        provenance = _write_provenance(tmp_path)
+        window = AcquisitionWindow(year=2021)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "acquire",
+                "--window",
+                "2021",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        client = _ScriptedClient(
+            window=window,
+            raise_sequence=[
+                classify_cds_exception(RuntimeError(_OBSERVED_COST_LIMIT_BODY))
+            ],
+        )
+        code = _invoke(args, client=client, sleep=lambda _s: None)
+        assert code == 6
+        # Deterministic rejection: one attempt, no retry storm.
+        assert client.call_count == 1
 
     def test_missing_provenance_file_is_exit_5(self, tmp_path: Path) -> None:
         args = build_parser().parse_args(
@@ -652,6 +718,73 @@ class TestTransformWindowScoping:
         )
         with pytest.raises(NonExpressibleWindowError):
             run(args)
+
+
+class TestAcquisitionIsMonthly:
+    """D4 CORRECTED 2026-08-17 — the acquisition stage must never issue a
+    year-granular payload: CDS refuses 8,760 hourly fields outright. Driven
+    through `run()`'s own `acquire_fn` seam, so no netCDF is written and the
+    assertion is purely about WHICH windows are requested."""
+
+    def _record(self, window_id: str) -> RawWindowRecord:
+        return RawWindowRecord(
+            window_id=window_id,
+            dataset="reanalysis-era5-land",
+            request_payload={},
+            raw_request_identity="id",
+            sha256="a" * 64,
+            client_package_version="0.7.7",
+            downloaded_at=datetime(2026, 8, 13, tzinfo=UTC),
+        )
+
+    def _run_and_collect(self, args: object) -> list[str]:
+        seen: list[str] = []
+
+        def fake_acquire(
+            window: AcquisitionWindow, **_kwargs: object
+        ) -> RawWindowRecord:
+            seen.append(window.window_id)
+            return self._record(window.window_id)
+
+        assert run(args, acquire_fn=fake_acquire) == 0  # type: ignore[arg-type]
+        return seen
+
+    def test_a_year_granular_window_expands_into_twelve_months(
+        self, tmp_path: Path
+    ) -> None:
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "acquire",
+                "--window",
+                "2021",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        assert self._run_and_collect(args) == [f"2021-{m:02d}" for m in range(1, 13)]
+
+    def test_the_default_window_set_is_74_windows_none_of_them_yearly(
+        self, tmp_path: Path
+    ) -> None:
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "acquire",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        seen = self._run_and_collect(args)
+        assert len(seen) == 74
+        # A bare "YYYY" window id is exactly the payload CDS rejected.
+        assert [w for w in seen if len(w) == 4] == []
 
 
 class TestDiagnoseStage:

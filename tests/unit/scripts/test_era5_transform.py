@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from scripts.dhm_precip.era5_deaccumulate import deaccumulate_precipitation
 from scripts.dhm_precip.era5_errors import (
     Era5MissingBoundaryContextError,
     Era5PackingPostConditionError,
@@ -36,6 +37,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _HOUR = np.timedelta64(1, "h")
+
+
+def _as_ns(values: np.ndarray | np.datetime64) -> np.ndarray:
+    """Epoch-nanosecond ints, so a datetime64[m] fixture axis and a
+    CF-decoded datetime64[ns] product axis are directly comparable."""
+    return np.asarray(values).astype("datetime64[ns]").astype("int64")
+
 
 # The transform driver validates against the REAL study-box grid
 # (`DEFAULT_REQUEST_SPEC.area`, D9's exact-shape check) — a toy 2x2 grid
@@ -103,12 +111,21 @@ def _seed_manifest(
     return manifest
 
 
-def _seed_study_year(data_root: Path, year: int, *, rng_seed: int = 0) -> None:
+def _seed_study_year(
+    data_root: Path, year: int, *, rng_seed: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
     """Builds ONE continuous, physically-consistent accumulator series
     spanning [Dec 31 (year-1) 01:00 .. Jan 1 (year+1) 00:00] and splits it
-    into prev-context / year / next-context raw files, exactly as the real
-    D4 windows would (a single boundary stamp is all the driver ever reads
-    from prev/next)."""
+    into prev-context / TWELVE MONTHLY / next-context raw files, exactly as
+    the real D4 windows now do (D4 corrected 2026-08-17: the acquisition
+    unit is one calendar month, because a whole year exceeds the CDS
+    per-request cost limit). A single boundary stamp is all the driver ever
+    reads from prev/next, so those stay one-stamp files.
+
+    Returns `(valid_time, true_mm)` for the WHOLE series, so a caller can
+    assert published values against the known truth — in particular at the
+    month seams, where the closing `00 UTC` stamp of a month's last
+    accumulation day lives in the NEXT month's artifact."""
     series_start = np.datetime64(f"{year - 1:04d}-12-31T01:00")
     series_end = np.datetime64(f"{year + 1:04d}-01-01T00:00")
     hours = int((series_end - series_start) / _HOUR) + 1
@@ -123,23 +140,32 @@ def _seed_study_year(data_root: Path, year: int, *, rng_seed: int = 0) -> None:
     acc_m = _accumulator_from_true(valid_time, true_mm / 1000.0)
 
     prev_ts = np.datetime64(f"{year - 1:04d}-12-31T23:00")
-    year_start_ts = np.datetime64(f"{year:04d}-01-01T00:00")
-    year_end_ts = np.datetime64(f"{year:04d}-12-31T23:00")
     next_ts = np.datetime64(f"{year + 1:04d}-01-01T00:00")
-
     prev_idx = int(np.where(valid_time == prev_ts)[0][0])
-    year_start_idx = int(np.where(valid_time == year_start_ts)[0][0])
-    year_end_idx = int(np.where(valid_time == year_end_ts)[0][0])
     next_idx = int(np.where(valid_time == next_ts)[0][0])
 
-    prev_window_id = f"{year - 1:04d}-12-31" if year == 2020 else f"{year - 1:04d}"
-    next_window_id = f"{year + 1:04d}-01-01T00" if year == 2025 else f"{year + 1:04d}"
-
-    _write_raw(
-        raw_artifact_path(f"{year:04d}", data_root),
-        valid_time[year_start_idx : year_end_idx + 1],
-        acc_m[year_start_idx : year_end_idx + 1],
+    prev_window_id = f"{year - 1:04d}-12-31" if year == 2020 else f"{year - 1:04d}-12"
+    next_window_id = (
+        f"{year + 1:04d}-01-01T00" if year == 2025 else f"{year + 1:04d}-01"
     )
+
+    seeded: list[tuple[str, Path]] = []
+    for month in range(1, 13):
+        month_start = np.datetime64(f"{year:04d}-{month:02d}-01T00:00")
+        month_end = (
+            np.datetime64(f"{year:04d}-{month + 1:02d}-01T00:00")
+            if month < 12
+            else np.datetime64(f"{year + 1:04d}-01-01T00:00")
+        ) - _HOUR
+        start_idx = int(np.where(valid_time == month_start)[0][0])
+        end_idx = int(np.where(valid_time == month_end)[0][0])
+        window_id = f"{year:04d}-{month:02d}"
+        path = raw_artifact_path(window_id, data_root)
+        _write_raw(
+            path, valid_time[start_idx : end_idx + 1], acc_m[start_idx : end_idx + 1]
+        )
+        seeded.append((window_id, path))
+
     _write_raw(
         raw_artifact_path(prev_window_id, data_root),
         valid_time[[prev_idx]],
@@ -150,12 +176,36 @@ def _seed_study_year(data_root: Path, year: int, *, rng_seed: int = 0) -> None:
         valid_time[[next_idx]],
         acc_m[[next_idx]],
     )
+    seeded.append((prev_window_id, raw_artifact_path(prev_window_id, data_root)))
+    seeded.append((next_window_id, raw_artifact_path(next_window_id, data_root)))
+    _seed_manifest(data_root, window_ids_and_paths=seeded)
+    return valid_time, true_mm
+
+
+def _consumed_window_ids(year: int) -> list[str]:
+    """D4 (corrected 2026-08-17) — the fourteen raw windows `transform_year`
+    consumes: twelve monthly product artifacts plus the two boundary-context
+    neighbours (December of Y-1 / January of Y+1, or the edge windows)."""
+    prev_window_id = f"{year - 1:04d}-12-31" if year == 2020 else f"{year - 1:04d}-12"
+    next_window_id = (
+        f"{year + 1:04d}-01-01T00" if year == 2025 else f"{year + 1:04d}-01"
+    )
+    return [
+        prev_window_id,
+        *(f"{year:04d}-{month:02d}" for month in range(1, 13)),
+        next_window_id,
+    ]
+
+
+def _reseed_manifest_after_edit(data_root: Path, year: int) -> None:
+    """Re-checksum every consumed window after a test has deliberately
+    corrupted one of them, so the transform reaches the post-condition it is
+    meant to fail on rather than tripping the checksum guard first."""
     _seed_manifest(
         data_root,
         window_ids_and_paths=[
-            (f"{year:04d}", raw_artifact_path(f"{year:04d}", data_root)),
-            (prev_window_id, raw_artifact_path(prev_window_id, data_root)),
-            (next_window_id, raw_artifact_path(next_window_id, data_root)),
+            (window_id, raw_artifact_path(window_id, data_root))
+            for window_id in _consumed_window_ids(year)
         ],
     )
 
@@ -198,6 +248,98 @@ class TestHappyPath:
             product_artifact_path(2020, tmp_path), engine="h5netcdf"
         ) as ds:
             assert ds.sizes["valid_time"] == 366 * 24  # 2020 is a leap year
+
+
+class TestMonthSeams:
+    """D4 CORRECTED 2026-08-17 — THE substantive consequence of acquiring
+    monthly: the `23 -> 00 -> 01` seam now falls at EVERY month boundary,
+    not just each year boundary. D6's accumulation day D runs
+    `01 UTC D ... 00 UTC D+1`, so the last accumulation day of any month
+    closes at `00 UTC` on the 1st of the NEXT month — which lives in a
+    different artifact. The transform must join across monthly files exactly
+    as it already joins across yearly ones."""
+
+    def test_the_naive_per_month_alternative_really_does_break(
+        self, tmp_path: Path
+    ) -> None:
+        """Teeth for the test below: deaccumulating a month's artifact ON
+        ITS OWN — the obvious thing to do once acquisition is monthly — is
+        not merely less accurate, it is undefined. The month's first stamp
+        is `00 UTC` on the 1st, which is neither an accumulation-day start
+        nor has a predecessor inside the file. This assertion passes against
+        the CURRENT repo, so it is evidence the joining is load-bearing."""
+        _seed_study_year(tmp_path, 2021)
+        march = raw_artifact_path("2021-03", tmp_path)
+        with xr.open_dataset(march) as ds:
+            month_only = ds.load()
+        with pytest.raises(Era5MissingBoundaryContextError):
+            deaccumulate_precipitation(
+                month_only,
+                required_range=(
+                    np.datetime64("2021-03-01T00:00"),
+                    np.datetime64("2021-03-31T23:00"),
+                ),
+            )
+
+    def test_every_month_seam_is_joined_and_conserved(self, tmp_path: Path) -> None:
+        valid_time, true_mm = _seed_study_year(tmp_path, 2021)
+        transform_year(
+            2021,
+            data_root=tmp_path,
+            provenance=_PROVENANCE,
+            clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+        )
+        with xr.open_dataset(
+            product_artifact_path(2021, tmp_path), engine="h5netcdf"
+        ) as ds:
+            published = ds["precipitation"].load()
+
+        # Key everything by epoch-nanoseconds so the fixture's datetime64[m]
+        # axis and the product's CF-decoded datetime64[ns] axis compare.
+        truth_by_ns = dict(
+            zip(
+                _as_ns(valid_time).tolist(),
+                true_mm[:, 0, 0].tolist(),
+                strict=True,
+            )
+        )
+        published_ns = _as_ns(published["valid_time"].values)
+        published_by_ns = dict(
+            zip(
+                published_ns.tolist(),
+                published.isel(latitude=0, longitude=0).values.tolist(),
+                strict=True,
+            )
+        )
+
+        # The three stamps straddling each month seam. `00:00 on the 1st` is
+        # the one that can only be right if the PREVIOUS month's artifact was
+        # joined in: its increment is acc(00:00 1st) - acc(23:00 last day of
+        # the previous month), and those two stamps live in different files.
+        seam_stamps = [
+            stamp
+            for month in range(1, 13)
+            for first in [np.datetime64(f"2021-{month:02d}-01T00:00")]
+            for stamp in (first - _HOUR, first, first + _HOUR)
+        ]
+        seam_stamps.append(np.datetime64("2021-12-31T23:00"))
+        checked = 0
+        for stamp in seam_stamps:
+            key = int(_as_ns(stamp))
+            if key not in published_by_ns:
+                continue  # 2020-12-31T23:00 is boundary context, trimmed away
+            assert published_by_ns[key] == pytest.approx(truth_by_ns[key], abs=1e-3), (
+                f"month-seam value at {stamp} was not reconstructed from the "
+                "adjacent monthly artifact"
+            )
+            checked += 1
+        assert checked == 36  # 12 seams x 3 stamps, minus the trimmed one, +1
+
+        # And the whole year, not merely the seams: every published stamp
+        # equals the known truth. A seam mis-join shows up here too.
+        expected = np.array([truth_by_ns[k] for k in published_ns.tolist()])
+        actual = published.isel(latitude=0, longitude=0).values
+        assert np.max(np.abs(actual - expected)) < 1e-3
 
 
 class TestResume:
@@ -274,11 +416,29 @@ class TestResume:
 
 
 class TestMissingBoundaryContext:
+    """D4 corrected 2026-08-17: the boundary-context neighbour is now
+    DECEMBER of the previous year (not the whole previous year), and a
+    product year additionally has twelve monthly artifacts of its own — any
+    one of which missing must fail the same way, not silently produce a
+    year with a hole in it."""
+
     def test_missing_neighbour_raw_file_raises(self, tmp_path: Path) -> None:
         _seed_study_year(tmp_path, 2021)
-        raw_artifact_path("2020", tmp_path).unlink()
+        raw_artifact_path("2020-12", tmp_path).unlink()
 
-        with pytest.raises(Era5MissingBoundaryContextError):
+        with pytest.raises(Era5MissingBoundaryContextError, match="2020-12"):
+            transform_year(
+                2021,
+                data_root=tmp_path,
+                provenance=_PROVENANCE,
+                clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+            )
+
+    def test_missing_mid_year_month_raises(self, tmp_path: Path) -> None:
+        _seed_study_year(tmp_path, 2021)
+        raw_artifact_path("2021-07", tmp_path).unlink()
+
+        with pytest.raises(Era5MissingBoundaryContextError, match="2021-07"):
             transform_year(
                 2021,
                 data_root=tmp_path,
@@ -310,19 +470,12 @@ class TestPostConditionFailureLeavesNoFinalFile:
         self, tmp_path: Path
     ) -> None:
         _seed_study_year(tmp_path, 2021)
-        year_path = raw_artifact_path("2021", tmp_path)
-        with xr.open_dataset(year_path) as ds:
+        month_path = raw_artifact_path("2021-01", tmp_path)
+        with xr.open_dataset(month_path) as ds:
             loaded = ds.load()
         loaded["tp"].values[10] -= 1.0  # a material negative diff
-        loaded.to_netcdf(year_path)
-        _seed_manifest(
-            tmp_path,
-            window_ids_and_paths=[
-                ("2021", year_path),
-                ("2020", raw_artifact_path("2020", tmp_path)),
-                ("2022", raw_artifact_path("2022", tmp_path)),
-            ],
-        )
+        loaded.to_netcdf(month_path)
+        _reseed_manifest_after_edit(tmp_path, 2021)
 
         with pytest.raises(Era5PackingPostConditionError, match="material negative"):
             transform_year(
@@ -347,24 +500,24 @@ class TestPostConditionFailureLeavesNoFinalFile:
         good_bytes = product_path.read_bytes()
 
         # Corrupt the raw source so a forced re-transform fails.
-        year_path = raw_artifact_path("2021", tmp_path)
-        with xr.open_dataset(year_path) as ds:
+        month_path = raw_artifact_path("2021-01", tmp_path)
+        with xr.open_dataset(month_path) as ds:
             loaded = ds.load()
         loaded["tp"].values[10] -= 1.0
-        loaded.to_netcdf(year_path)
+        loaded.to_netcdf(month_path)
         manifest = read_manifest(manifest_path_for(tmp_path))
         assert manifest is not None
-        record_2021 = RawWindowRecord(
-            window_id="2021",
+        record_january = RawWindowRecord(
+            window_id="2021-01",
             dataset="reanalysis-era5-land",
-            request_payload={"year": "2021"},
-            raw_request_identity="identity-2021",
-            sha256=checksum_file(year_path),
+            request_payload={"year": "2021-01"},
+            raw_request_identity="identity-2021-01",
+            sha256=checksum_file(month_path),
             client_package_version="0.7.7",
             downloaded_at=datetime(2026, 8, 13, tzinfo=UTC),
         )
         write_manifest_atomic(
-            with_raw_window(manifest, record_2021), manifest_path_for(tmp_path)
+            with_raw_window(manifest, record_january), manifest_path_for(tmp_path)
         )
 
         with pytest.raises(Era5PackingPostConditionError, match="material negative"):
@@ -421,7 +574,7 @@ class TestDatasetImmutability:
         manifest = read_manifest(manifest_path_for(tmp_path))
         assert manifest is not None
         mismatched = replace(
-            manifest.raw_windows["2021"], dataset="reanalysis-era5-single-levels"
+            manifest.raw_windows["2021-01"], dataset="reanalysis-era5-single-levels"
         )
         updated = with_raw_window(manifest, mismatched)
         write_manifest_atomic(updated, manifest_path_for(tmp_path))

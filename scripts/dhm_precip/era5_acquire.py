@@ -24,6 +24,7 @@ from scripts.dhm_precip.era5_errors import (
     Era5AcquisitionError,
     Era5CredentialsError,
     Era5RequestFailedError,
+    Era5RequestTooLargeError,
     Era5StorageError,
     Era5TransientError,
     Era5ValidationError,
@@ -72,11 +73,23 @@ class CdsClient(Protocol):
     ) -> None: ...
 
 
+# --- BODY tokens: the PRIMARY discriminator (Plan 171, corrected
+# 2026-08-17). The buckets below are tested in the order they are declared,
+# and `_TOO_LARGE_TOKENS` is first: the real task-4b failure was a `403`
+# whose body said "cost limits exceeded / Your request is too large", and
+# the previous classifier — which put the bare substring "403" in
+# `_AUTH_TOKENS` and tested that bucket first — reported it as
+# `Era5CredentialsError` (exit 2, "inputs absent") while the credentials
+# were demonstrably valid. Status codes are now a FALLBACK for a body that
+# matched nothing, never the primary discriminator.
+_TOO_LARGE_TOKENS = (
+    "cost limit",
+    "too large",
+    "reduce your selection",
+)
 _AUTH_TOKENS = (
     "unauthorized",
     "invalid credentials",
-    "401",
-    "403",
     "apikey",
     "api key",
 )
@@ -86,7 +99,6 @@ _REJECTED_TOKENS = (
     "not accepted",
     "malformed",
     "invalid request",
-    "400",
 )
 _TRANSIENT_TOKENS = (
     "timeout",
@@ -94,9 +106,14 @@ _TRANSIENT_TOKENS = (
     "connection",
     "queue",
     "temporarily",
-    "50",
-    "503",
 )
+
+# --- STATUS-CODE tokens: consulted ONLY when no body token matched. The
+# 5xx list is now explicit (500/502/503/504) rather than the old bare "50",
+# which matched any message that merely contained those two digits.
+_STATUS_AUTH_TOKENS = ("401", "403")
+_STATUS_REJECTED_TOKENS = ("400",)
+_STATUS_TRANSIENT_TOKENS = ("500", "502", "503", "504")
 
 _SECRET_ENV_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PEPPER")
 
@@ -162,20 +179,44 @@ def _sanitize_era5_error(exc: Era5AcquisitionError) -> Era5AcquisitionError:
 def classify_cds_exception(
     exc: Exception,
 ) -> Era5CredentialsError | Era5RequestFailedError | Era5TransientError:
-    """Best-effort classification of a raw client exception into the retry
-    contract's three buckets (2a). Untested against the live CDS API by
-    constraint 5 — treated conservatively as non-retryable when unrecognised,
-    so an unknown failure mode never causes an infinite retry loop. The
-    raised error's message is always redacted (constraint 2)."""
+    """Classification of a raw client exception into the retry contract's
+    buckets (2a). **Inspect the BODY before the STATUS** (Plan 171, corrected
+    2026-08-17): the first real contact with the live CDS API produced a
+    `403` that was a COST-LIMIT rejection, not an auth failure, and the
+    status-first rule reported it as `Era5CredentialsError`. Unrecognised
+    bodies stay conservatively non-retryable, so an unknown failure mode
+    never causes an infinite retry loop. The raised error's message is
+    always redacted (constraint 2)."""
     raw = str(exc)
     message = raw.lower()
     safe = redact_secrets(raw)
+    if any(token in message for token in _TOO_LARGE_TOKENS):
+        return Era5RequestTooLargeError(
+            f"CDS refused the request as exceeding its cost limit: {safe}"
+        )
     if any(token in message for token in _AUTH_TOKENS):
         return Era5CredentialsError(f"CDS authentication failed: {safe}")
     if any(token in message for token in _REJECTED_TOKENS):
         return Era5RequestFailedError(f"CDS rejected the request: {safe}")
     if any(token in message for token in _TRANSIENT_TOKENS):
         return Era5TransientError(f"transient CDS/transport failure: {safe}")
+    # Nothing in the body was recognised — only NOW does the status code get
+    # a vote, and only as a coarse hint about an otherwise-opaque message.
+    if any(token in message for token in _STATUS_AUTH_TOKENS):
+        return Era5CredentialsError(
+            f"CDS authentication failed (inferred from status code, "
+            f"unrecognised body): {safe}"
+        )
+    if any(token in message for token in _STATUS_REJECTED_TOKENS):
+        return Era5RequestFailedError(
+            f"CDS rejected the request (inferred from status code, "
+            f"unrecognised body): {safe}"
+        )
+    if any(token in message for token in _STATUS_TRANSIENT_TOKENS):
+        return Era5TransientError(
+            f"transient CDS/transport failure (inferred from status code, "
+            f"unrecognised body): {safe}"
+        )
     return Era5RequestFailedError(f"unclassified CDS failure: {safe}")
 
 
@@ -436,6 +477,20 @@ def acquire_window(
         _validate_raw_artifact(tmp_path, window=window, spec=spec)
         sha256 = checksum_file(tmp_path)
         publish_atomic(tmp_path, final_path)
+    except Era5RequestTooLargeError as exc:
+        # The classifier knows only the message; only HERE is the window in
+        # scope, and naming it is the whole point — a cost-limit rejection
+        # is actionable exactly when the operator can see which window was
+        # too big and what the proven-good granularity is.
+        raise Era5RequestTooLargeError(
+            f"CDS refused window {window.window_id!r} as too large: {exc}. "
+            "CDS caps the FIELD COUNT of a single request, not its byte "
+            "size: one calendar year is 8,760 hourly fields and is rejected "
+            "outright, while one calendar month is 744 and succeeds. Plan "
+            "171 D4 (corrected 2026-08-17) therefore sets the acquisition "
+            "unit to ONE CALENDAR MONTH — re-slice this window to monthly "
+            "granularity (e.g. --window 2021-01 ... --window 2021-12)."
+        ) from exc
     finally:
         # A validation failure raises out of the try body above without
         # publishing; make sure no half-written temp file is left around

@@ -10,12 +10,15 @@ import pytest
 
 from scripts.dhm_precip.era5_errors import NonExpressibleWindowError
 from scripts.dhm_precip.era5_request import (
+    ALL_ACQUISITION_WINDOWS,
     DATASET_ID,
     DEFAULT_REQUEST_SPEC,
     STUDY_AREA,
+    STUDY_YEARS,
     AcquisitionWindow,
     Era5RequestSpec,
     build_request_payload,
+    expand_for_acquisition,
     parse_window_arg,
     payload_implied_valid_time_stamps,
 )
@@ -194,3 +197,67 @@ class TestNoCredentialsAnywhere:
     def test_spec_has_no_credential_fields(self) -> None:
         field_names = {f for f in Era5RequestSpec.__dataclass_fields__}
         assert field_names.isdisjoint({"key", "url", "uid", "api_key", "token"})
+
+
+class TestDefaultAcquisitionWindowSetIsMonthly:
+    """Plan 171 D4, CORRECTED 2026-08-17: "A CALENDAR YEAR EXCEEDS THE CDS
+    COST LIMIT". CDS caps FIELD COUNT per request — a year is 8,760 hourly
+    fields and is refused outright, a month is 744 and succeeds (proven by
+    task 2b). The default set is therefore 72 monthly windows for 2020-2025
+    plus the two edge-context windows, which were already month-or-smaller
+    and are unaffected."""
+
+    def test_is_seventy_two_monthly_windows_plus_two_edge_windows(self) -> None:
+        assert len(ALL_ACQUISITION_WINDOWS) == 74
+
+    def test_every_study_year_month_is_present_exactly_once(self) -> None:
+        monthly = [
+            w.window_id
+            for w in ALL_ACQUISITION_WINDOWS
+            if w.month is not None and w.day is None
+        ]
+        expected = [
+            f"{year:04d}-{month:02d}" for year in STUDY_YEARS for month in range(1, 13)
+        ]
+        assert sorted(monthly) == sorted(expected)
+        assert len(monthly) == len(set(monthly)) == 72
+
+    def test_no_year_granular_window_survives_in_the_default_set(self) -> None:
+        # A year-granular window in the acquisition set is exactly the
+        # payload CDS rejected on the first real 4b attempt.
+        assert [w.window_id for w in ALL_ACQUISITION_WINDOWS if w.month is None] == []
+
+    def test_the_two_edge_context_windows_are_unchanged(self) -> None:
+        edges = [w.window_id for w in ALL_ACQUISITION_WINDOWS if w.day is not None]
+        assert edges == ["2019-12-31", "2026-01-01T00"]
+
+    def test_a_monthly_window_payload_stays_within_the_proven_field_count(self) -> None:
+        # 744 fields (31 x 24) is the largest month and is proven to succeed;
+        # 8,760 (a year) is proven to fail. This locks the unit, not a guess.
+        for window in ALL_ACQUISITION_WINDOWS:
+            assert len(window.valid_time_stamps()) <= 744
+
+
+class TestExpandForAcquisition:
+    """D4 — the ACQUISITION stage never issues a year-granular payload, even
+    when the operator names a year on the command line. It expands into that
+    year's twelve monthly windows instead of sending one doomed request."""
+
+    def test_a_year_expands_into_twelve_months(self) -> None:
+        expanded = expand_for_acquisition([AcquisitionWindow(year=2021)])
+        assert [w.window_id for w in expanded] == [
+            f"2021-{m:02d}" for m in range(1, 13)
+        ]
+
+    def test_sub_year_windows_pass_through_unchanged(self) -> None:
+        windows = [
+            AcquisitionWindow(year=2021, month=10),
+            AcquisitionWindow(year=2019, month=12, day=31),
+            AcquisitionWindow(year=2026, month=1, day=1, hour=0),
+        ]
+        assert list(expand_for_acquisition(windows)) == windows
+
+    def test_the_default_set_is_already_fully_expanded(self) -> None:
+        assert (
+            expand_for_acquisition(ALL_ACQUISITION_WINDOWS) == ALL_ACQUISITION_WINDOWS
+        )

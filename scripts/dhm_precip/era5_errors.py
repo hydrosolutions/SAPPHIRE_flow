@@ -33,6 +33,23 @@ class Era5RequestFailedError(Era5AcquisitionError):
     post-download validation (2a). CLI exit code 3."""
 
 
+class Era5RequestTooLargeError(Era5RequestFailedError):
+    """CDS refused the request as exceeding its per-request COST LIMIT — a
+    ceiling on FIELD COUNT, not on bytes (observed 2026-08-17: one calendar
+    year is 8,760 hourly fields and is rejected outright, while one calendar
+    month is 744 and succeeds). Distinct from `Era5CredentialsError` because
+    the credentials are fine and from the generic
+    `Era5RequestFailedError` because the fix is mechanical and known: reduce
+    the window granularity (Plan 171 D4, corrected 2026-08-17 — the
+    acquisition unit is ONE CALENDAR MONTH).
+
+    CLI exit code 6 — deliberately NOT 2 ("inputs absent"), which is what
+    the misclassifying `403`-substring rule used to report and which sent
+    the operator hunting a credential problem that did not exist.
+    Retrying is pointless: an identical payload is rejected identically, so
+    this inherits `Era5RequestFailedError`'s non-retryable disposition."""
+
+
 class Era5ValidationError(Era5RequestFailedError):
     """A downloaded raw artifact failed post-download validation (2a) —
     wrong variable, wrong units, wrong spatial/temporal coverage."""

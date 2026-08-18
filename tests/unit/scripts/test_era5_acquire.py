@@ -11,10 +11,16 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scripts.dhm_precip.era5_acquire import CdsClient, RealCdsClient, acquire_window
+from scripts.dhm_precip.era5_acquire import (
+    CdsClient,
+    RealCdsClient,
+    acquire_window,
+    classify_cds_exception,
+)
 from scripts.dhm_precip.era5_errors import (
     Era5CredentialsError,
     Era5RequestFailedError,
+    Era5RequestTooLargeError,
     Era5StorageError,
     Era5TransientError,
 )
@@ -491,3 +497,90 @@ class TestRealClientDisablesOwnRetryLoop:
                 target=tmp_path / "unused.nc",
             )
         assert captured_kwargs.get("retry_max") == 1
+
+
+# The VERBATIM body observed on the first real task-4b attempt (2026-08-17),
+# reproduced exactly rather than paraphrased. Plan 171's corrected classifier
+# bullet: "a keyword classifier is only ever as good as the real messages it
+# has been shown, and this one had been shown none."
+_OBSERVED_COST_LIMIT_BODY = (
+    "403 Client Error: Forbidden for url: "
+    "https://cds.climate.copernicus.eu/api/retrieve/v1/processes/"
+    "reanalysis-era5-land/execution\n"
+    "cost limits exceeded\n"
+    "Your request is too large, please reduce your selection."
+)
+
+
+class TestClassifyCdsException:
+    """Plan 171, "⛔ CORRECTED 2026-08-17 — 403 IS NOT EXCLUSIVELY AN AUTH
+    SIGNAL". The BODY is the primary discriminator; the status code is a
+    fallback for an unrecognised body, never the first thing tested."""
+
+    def test_verbatim_cost_limit_403_is_too_large_not_credentials(self) -> None:
+        mapped = classify_cds_exception(RuntimeError(_OBSERVED_COST_LIMIT_BODY))
+        assert isinstance(mapped, Era5RequestTooLargeError)
+        assert not isinstance(mapped, Era5CredentialsError)
+
+    def test_genuine_403_auth_body_is_still_credentials(self) -> None:
+        mapped = classify_cds_exception(
+            RuntimeError(
+                "403 Client Error: Forbidden for url: "
+                "https://cds.climate.copernicus.eu/api/retrieve/v1/processes/"
+                "reanalysis-era5-land/execution\n"
+                "unauthorized: invalid credentials"
+            )
+        )
+        assert isinstance(mapped, Era5CredentialsError)
+        assert not isinstance(mapped, Era5RequestTooLargeError)
+
+    def test_bare_403_with_no_body_tokens_falls_back_to_credentials(self) -> None:
+        mapped = classify_cds_exception(RuntimeError("403 Client Error: Forbidden"))
+        assert isinstance(mapped, Era5CredentialsError)
+
+    def test_too_large_is_not_swallowed_by_the_rejected_bucket(self) -> None:
+        # "cost limits exceeded" carries no licence/malformed token, but a
+        # future body might; the too-large bucket is tested before every
+        # other bucket, not merely before the auth one.
+        mapped = classify_cds_exception(
+            RuntimeError("400 Bad Request: your request is too large")
+        )
+        assert isinstance(mapped, Era5RequestTooLargeError)
+
+
+class TestRequestTooLargeIsNotRetriedAndNamesTheWindow:
+    """A cost-limit rejection is deterministic — retrying an identical
+    payload can only burn queue slots. It must fail on the first attempt,
+    and its message must name the window and point at D4's monthly unit."""
+
+    def test_single_attempt_and_message_names_window_and_month(
+        self, tmp_path: Path
+    ) -> None:
+        window = AcquisitionWindow(year=2021)
+        spec = Era5RequestSpec()
+
+        class _TooLargeClient:
+            call_count = 0
+
+            def retrieve_to_path(
+                self, *, dataset: str, payload: Mapping[str, object], target: Path
+            ) -> None:
+                type(self).call_count += 1
+                raise classify_cds_exception(RuntimeError(_OBSERVED_COST_LIMIT_BODY))
+
+        client = _TooLargeClient()
+        with pytest.raises(Era5RequestTooLargeError) as excinfo:
+            acquire_window(
+                window,
+                spec=spec,
+                provenance=_PROVENANCE,
+                client=client,
+                clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+                sleep=_no_sleep,
+                data_root=tmp_path,
+                client_package_version="0.7.7",
+            )
+        assert _TooLargeClient.call_count == 1
+        message = str(excinfo.value)
+        assert "2021" in message
+        assert "month" in message.lower()

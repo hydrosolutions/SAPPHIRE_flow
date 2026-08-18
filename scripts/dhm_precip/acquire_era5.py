@@ -31,6 +31,10 @@ Exit codes:
     4  a D6/D7/D8/D9 transform post-condition failed
     5  storage/manifest write (or read) failed, including a missing or
        incomplete `--provenance` file
+    6  CDS refused the request as exceeding its per-request COST LIMIT (a
+       field-count ceiling). Distinct from 2: the credentials are fine.
+       Re-slice the window to monthly granularity (D4, corrected
+       2026-08-17).
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -74,6 +78,7 @@ from scripts.dhm_precip.era5_errors import (  # noqa: E402
     Era5AcquisitionError,
     Era5CredentialsError,
     Era5RequestFailedError,
+    Era5RequestTooLargeError,
     Era5StorageError,
     Era5TransformFailedError,
     NonExpressibleWindowError,
@@ -94,6 +99,7 @@ from scripts.dhm_precip.era5_request import (  # noqa: E402
     ALL_ACQUISITION_WINDOWS,
     DEFAULT_REQUEST_SPEC,
     STUDY_YEARS,
+    expand_for_acquisition,
     parse_window_arg,
 )
 from scripts.dhm_precip.era5_transform import transform_year  # noqa: E402
@@ -107,8 +113,15 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# SUBCLASSES BEFORE PARENTS — `_exit_code_for` returns the FIRST isinstance
+# match, so a subclass listed after its parent can never be reached (a prior
+# bug of exactly this shape had storage errors exiting 4 instead of 5).
+# `Era5RequestTooLargeError` subclasses `Era5RequestFailedError` (it is a
+# request rejection, and equally non-retryable) but carries its own exit
+# code, so it must precede it here.
 _EXIT_BY_ERROR: tuple[tuple[type[Era5AcquisitionError], int], ...] = (
     (Era5CredentialsError, 2),
+    (Era5RequestTooLargeError, 6),
     (Era5RequestFailedError, 3),
     (Era5TransformFailedError, 4),
     (Era5StorageError, 5),
@@ -148,10 +161,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="AcquisitionWindow spec (YYYY, YYYY-MM, YYYY-MM-DD, or "
-        "YYYY-MM-DDTHH); repeatable. Defaults to the full D4 set of 8 "
-        "windows / 6 study years. For '--stage transform', every resolved "
-        "window's YEAR is transformed (D4: transform is year-granular) — "
-        "an out-of-range year is rejected, not silently skipped.",
+        "YYYY-MM-DDTHH); repeatable. Defaults to the full D4 set of 74 "
+        "windows (72 monthly windows over the 6 study years, plus the 2 "
+        "edge-context windows). For '--stage acquire', a year-granular "
+        "window is EXPANDED into its 12 monthly windows — CDS refuses a "
+        "whole-year payload as exceeding its cost limit (D4, corrected "
+        "2026-08-17). For '--stage transform', every resolved window's "
+        "YEAR is transformed (D4: transform is year-granular) — an "
+        "out-of-range year is rejected, not silently skipped.",
     )
     parser.add_argument(
         "--provenance",
@@ -235,7 +252,12 @@ def run(
     resolved_sleep: Callable[[float], None] = sleep if sleep is not None else time.sleep
 
     if args.stage in ("acquire", "all"):
-        for window in windows:
+        # D4 (corrected 2026-08-17): the ACQUISITION unit is one calendar
+        # month. A year-granular `--window` names a product year, not a
+        # payload — expand it rather than sending 8,760 fields CDS will
+        # refuse. The default set is already monthly, so this is a no-op
+        # there.
+        for window in expand_for_acquisition(windows):
             record = acquire_fn(
                 window,
                 spec=DEFAULT_REQUEST_SPEC,
