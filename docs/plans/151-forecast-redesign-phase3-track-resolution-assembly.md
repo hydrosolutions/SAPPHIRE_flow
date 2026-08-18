@@ -1,5 +1,5 @@
 ---
-status: READY-PENDING-RESTALENESS
+status: READY
 created: 2026-08-10
 plan: 151
 title: Forecast-cycle redesign Phase 3 — ForcingTrackKey projection + per-track resolution + per-assignment assembly (one atomic phase)
@@ -17,8 +17,23 @@ edit approved, D21 global sweep confirmed — **no open forks remained**).
 **Staleness-corrected 2026-08-18** against `main` `c81041e` after 142 commits of drift: every `file:line` re-anchored
 and every claim re-verified. **Three** corrections change a ratified decision's observable consequence and are filed
 under *Open items → Requires owner re-ratification* (D21, D32, and — added by the 2026-08-18 independent sweep —
-`D34-atmost-guard-unreachable`); **status stays `READY-PENDING-RESTALENESS` until the owner re-ratifies all three**.
-Everything else was pure correction — no decision was reopened.
+`D34-atmost-guard-unreachable`). Everything else was pure correction — no decision was reopened.
+
+**OWNER RE-RATIFIED 2026-08-18 — all three settled; status returns to `READY`:**
+- **D21** — the corrected failure mode is **ACCEPTED**: a non-conforming FI model is SKIPPED at discovery with
+  `log.exception("model_discovery_unsupported_requirement")` while every other model loads. A hard abort would need a
+  separate onboarding-time check outside `discover_models()`; that is **not funded** here.
+- **D32 — option (b) CHOSEN**: accept **construct-only**. T2's red-first narrows to construction-time assertions; the
+  delivery-level assert (`adapters/forecast_interface.py:997-1021`) is **NOT** relaxed. Consequence: D2's
+  selected-branch rule stays unexercised end-to-end until Plan 153, and **T6's branch-specific past-variable /
+  `max_nan` criterion is restated against a SINGLE-branch fixture** (this unblocks the criterion marked BLOCKED at T6).
+  Option (a) was rejected: relaxing the assert imports Plan 153 multi-resolution scope into a phase whose non-goals
+  exist to exclude it.
+- **D34 — option (a) CHOSEN**: **DROP the T7 route-time `AT_MOST` guard.** The axis is unreachable twice over (FI
+  pinned at v0.1.19 has no `horizon_semantics`; and `discover_models()` hands the runner a `ForecastInterfaceAdapter`
+  that does not expose `input_requirement` at all). **Revisit trigger:** an FI bump to >= v0.1.20 **AND** a
+  per-track-eligible model declaring divergent per-variable `min_future_steps`. The per-feature `AT_MOST` limitation
+  stays RECORDED in D10a as an accepted cost. Option (b) was rejected as gold-plating a doubly-unreachable path.
 Phase 3 of the forecast-cycle redesign (`docs/design/forecast-cycle-redesign.md`, build-sequence item 3).
 This is the **one atomic phase** the redesign refuses to split: a per-`(track,station)` cycle has no coherent consumer
 while assembly is a single shared frame, so track resolution and per-assignment assembly land together. It drops the
@@ -44,6 +59,37 @@ implementation own the mechanism.
 
 **Citations** were carried from the reviewed drafts and spot-verified against the worktree; the confirming review pass
 re-verifies them before READY.
+
+## Build scope for THIS run — T1–T4 ONLY (2026-08-18)
+
+**This run implements T1, T2, T3 and T4 only. It does NOT implement T5, T6, T7 or T8.** Those follow in a second PR
+off the same branch. Nothing outside T1–T4 may be built, wired, or "prepared" in this run.
+
+**Why the split.** The 2026-08-18 independent sweep tested the redesign's "one atomic phase" claim and found it holds
+only for **T5–T8** — a resolved cycle has no coherent consumer until assignment-local assembly exists, and T8 cannot
+activate any proper subset of T5–T7. **T1–T4 is a separable preparation slice**: T1 adds types no production code
+consumes, T3 is a pure projector/reducer with zero production callers, and T4 adds an adapter capability no caller can
+invoke until T8. Estimated whole-phase diff is ~4,500–6,500 lines with T4 (~700–1,100) and T8 (~1,000–1,600)
+dominating — too large to review as one PR. See *Atomicity re-examined* under `## Phase dependency graph`.
+
+**The two owner rulings that change T1–T4 work** (both ratified 2026-08-18 — build to these, not to any superseded
+text elsewhere in this document):
+- **D32 = option (b), construct-only.** T2's red-first is **construction-time only**. The delivery-level assert
+  (`adapters/forecast_interface.py:997-1021`) is **NOT** relaxed. Do not attempt end-to-end delivery of a
+  future-forced + past-only model — that is Plan 153.
+- **D34 = option (a), guard DROPPED.** The T7 route-time `AT_MOST` guard is **not built**. It belongs to the second
+  run in any case, but do not add T1–T4 scaffolding for it either. The limitation stays recorded in D10a.
+
+**Honest carry-over — what T1–T4 leaves in the tree.** T1's types, T3's reducer and T4's `fetch_requirement` have
+**no production caller** at the end of this run. That is the point of the slice, not an oversight. `pyright` and
+`ruff` must still pass, and dead-code lints must **not** be silenced to accommodate them. T2 is the ONE part of this
+slice that is **globally live** — its conformance sweep runs at every FI adapter construction reached by
+`discover_models()`, for all four FI entry points including legacy-path and GROUP-only models. That is the single
+real regression risk in this run, and T2's gate carries it.
+
+**Exit gate for this run:** the per-task gate below applied to T1–T4, plus the whole-repo gate — `uv run pytest -q` at
+`passed >= 4181` with no baseline test regressing, `pyright` ≤ 432 over `src/` via the ratchet, and `ruff check` with
+no new findings beyond the 12 pre-existing `E501`s. **Hold at PR — do not merge.**
 
 ## Review scope — staleness confirmation only (2026-08-18)
 **This round is a staleness confirmation, not a design review.** The only question a reviewer answers is: *what in this
