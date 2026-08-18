@@ -18,14 +18,26 @@ Required cases (docs/plans/162-robust-database-backup.md T5):
 Locked 2026-08-18 against the four real-artifact restore failures found by
 running #180's merged script against a live mac-mini dump (see the plan's
 "VERIFIED RESTORE PROCEDURE" section):
-  (f) the restore targets a FRESH database via `createdb`, never the image's
-      pre-populated default `postgres` (PostGIS pre-initialises `tiger` there
-      -> `ERROR: schema "tiger" already exists`).
-  (g) the pg_restore invocation carries `--no-owner --no-acl` (pg_dump does
-      not back up cluster roles, so a fresh cluster otherwise dies on
-      `ERROR: role "sapphire" does not exist`).
+  (f) the restore targets the database `createdb` actually creates, not
+      merely "some createdb call happened and pg_restore doesn't say
+      postgres": createdb must run before pg_restore, the created database
+      must not be named `postgres`, and pg_restore plus every subsequent
+      content-assertion psql call must target that exact database name.
+      Proven against a broken script that creates `rehearsal` but restores
+      into / queries a different database.
+  (g) the pg_restore invocation carries the exact `--no-owner`/`--no-acl`
+      argv tokens (pg_dump does not back up cluster roles, so a fresh
+      cluster otherwise dies on `ERROR: role "sapphire" does not exist`) —
+      checked as exact shlex tokens, not substrings, so a bogus
+      `--no-owner-typo'd` flag cannot satisfy the assertion.
   (h) when pg_restore fails, its STDERR TEXT (not just a generic message)
       appears in the script's own failure output.
+  (i) when createdb fails, its STDERR TEXT appears in the script's own
+      failure output (same fix as (h), applied consistently).
+  (j) the restore container is launched with `--network none` — it holds a
+      fully-restored, decrypted dump (including access_tokens across every
+      tenant) and nothing in the script needs container-initiated network
+      access.
 """
 
 from __future__ import annotations
@@ -45,6 +57,8 @@ def _write_fake_docker(
     bin_dir: Path,
     args_log: Path,
     *,
+    createdb_exit: int = 0,
+    createdb_stderr: str = "",
     pg_restore_exit: int = 0,
     pg_restore_stderr: str = "",
     access_tokens_count: str = "3",
@@ -55,6 +69,7 @@ def _write_fake_docker(
     """A stateful fake `docker` that recognises the exact subcommands
     restore-rehearsal.sh issues and answers each on its merits, logging
     every invocation (one line per call) so teardown can be asserted on."""
+    quoted_createdb_stderr = shlex.quote(createdb_stderr)
     quoted_pg_restore_stderr = shlex.quote(pg_restore_stderr)
     script = textwrap.dedent(
         f"""\
@@ -81,7 +96,10 @@ def _write_fake_docker(
                 exit 0
                 ;;
               *createdb*)
-                exit 0
+                if [[ -n {quoted_createdb_stderr} ]]; then
+                  echo {quoted_createdb_stderr} >&2
+                fi
+                exit {createdb_exit}
                 ;;
               *pg_restore*)
                 if [[ -n {quoted_pg_restore_stderr} ]]; then
@@ -136,6 +154,48 @@ def _exec_calls(args_log: Path, substring: str) -> list[str]:
         for line in args_log.read_text().splitlines()
         if line.startswith("exec ") and substring in line
     ]
+
+
+def _all_lines(args_log: Path) -> list[str]:
+    if not args_log.exists():
+        return []
+    return args_log.read_text().splitlines()
+
+
+def _first_index(args_log: Path, substring: str) -> int:
+    """Index (call order) of the first logged line containing `substring`."""
+    for i, line in enumerate(_all_lines(args_log)):
+        if substring in line:
+            return i
+    raise AssertionError(f"no call found matching {substring!r} in {args_log}")
+
+
+def _run_call_argv(args_log: Path) -> list[str]:
+    """The `docker run ...` invocation, argv-parsed. `$*`-logging joins the
+    fake docker's positional params on plain spaces, so this is only
+    reliable for flag/value tokens (none of which contain spaces here) —
+    not for reconstructing anything that was originally a quoted, spaced
+    argument."""
+    for line in _all_lines(args_log):
+        if line.startswith("run "):
+            return shlex.split(line)
+    raise AssertionError(f"no `docker run` call found in {args_log}")
+
+
+def _last_exec_argv(args_log: Path, substring: str) -> list[str]:
+    """argv (drops leading `exec <container>`) of the last exec call whose
+    raw logged line contains `substring`. See `_run_call_argv` for the
+    space-joining caveat — irrelevant for the space-free flag tokens
+    (-d, --no-owner, ...) this helper is used to inspect."""
+    calls = _exec_calls(args_log, substring)
+    assert calls, f"no exec call found matching {substring!r}"
+    tokens = shlex.split(calls[-1])
+    return tokens[2:]  # drop "exec" and the container name
+
+
+def _flag_value(argv: list[str], flag: str) -> str:
+    assert flag in argv, f"{flag!r} not present in argv: {argv}"
+    return argv[argv.index(flag) + 1]
 
 
 def _run_script(
@@ -274,14 +334,17 @@ class TestSequenceCollisionRisk:
 
 
 class TestRestoresIntoFreshDatabase:
-    def test_restore_targets_a_fresh_database_not_postgres(
+    def test_restore_targets_the_database_createdb_actually_created(
         self, tmp_path: Path
     ) -> None:
         """FIX 1: the PostGIS image pre-initialises tiger/tiger_data/topology
         in its default `postgres` database, so a restore into it dies on
         `ERROR: schema "tiger" already exists` against a real dump. The
-        script must `createdb` a fresh database and restore into THAT, never
-        `-d postgres`."""
+        script must `createdb` a fresh database BEFORE restoring, and both
+        pg_restore and every subsequent content-assertion psql call must
+        target the EXACT name that createdb created — not just "not
+        postgres" (a broken script that creates `rehearsal` but restores
+        into/queries a different database must fail this)."""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         args_log = tmp_path / "docker-args.log"
@@ -289,15 +352,40 @@ class TestRestoresIntoFreshDatabase:
         result = _run_script(tmp_path, fake, _dump_file(tmp_path))
 
         assert result.returncode == 0, result.stderr
-        assert _exec_calls(args_log, "createdb"), (
-            "createdb was never invoked — restore did not create a fresh database"
+
+        assert _first_index(args_log, "createdb") < _first_index(
+            args_log, "pg_restore"
+        ), "createdb must run before pg_restore"
+
+        createdb_argv = _last_exec_argv(args_log, "createdb")
+        assert createdb_argv[0] == "createdb"
+        created_db = createdb_argv[-1]
+        assert created_db != "postgres", (
+            f"created database must not be 'postgres': {createdb_argv}"
         )
-        pg_restore_calls = _exec_calls(args_log, "pg_restore")
-        assert pg_restore_calls, "pg_restore was never invoked"
-        assert " -d postgres " not in f" {pg_restore_calls[-1]} ", (
-            "pg_restore targeted the image's pre-populated default "
-            f"'postgres' database instead of a fresh one: {pg_restore_calls[-1]}"
+
+        pg_restore_argv = _last_exec_argv(args_log, "pg_restore")
+        assert _flag_value(pg_restore_argv, "-d") == created_db, (
+            f"pg_restore's -d target {_flag_value(pg_restore_argv, '-d')!r} "
+            f"does not match the database createdb created ({created_db!r})"
         )
+
+        # Every content-assertion psql call (excludes the readiness probe,
+        # which deliberately targets the image's default database before
+        # DB_NAME/createdb exist) must also target the created database.
+        content_query_substrings = [
+            "count(*) FROM access_tokens",
+            "version_num FROM alembic_version",
+            "access_tokens_id_seq",
+            "coalesce(max(id), 0) FROM access_tokens",
+        ]
+        for substring in content_query_substrings:
+            psql_argv = _last_exec_argv(args_log, substring)
+            assert _flag_value(psql_argv, "-d") == created_db, (
+                f"psql call for {substring!r} targeted "
+                f"{_flag_value(psql_argv, '-d')!r}, not the created "
+                f"database {created_db!r}: {psql_argv}"
+            )
 
 
 class TestPgRestoreNoOwnerNoAcl:
@@ -305,7 +393,9 @@ class TestPgRestoreNoOwnerNoAcl:
         """FIX 2: pg_dump does not back up cluster roles, but the dump is
         full of OWNER TO / ACL statements referencing them. Without
         --no-owner --no-acl a fresh cluster dies on
-        `ERROR: role "sapphire" does not exist`."""
+        `ERROR: role "sapphire" does not exist`. Checked as exact argv
+        tokens (not substrings) so a bogus `--no-owner-typo'd` cannot
+        satisfy the assertion the way real pg_restore would reject it."""
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         args_log = tmp_path / "docker-args.log"
@@ -313,9 +403,7 @@ class TestPgRestoreNoOwnerNoAcl:
         result = _run_script(tmp_path, fake, _dump_file(tmp_path))
 
         assert result.returncode == 0, result.stderr
-        pg_restore_calls = _exec_calls(args_log, "pg_restore")
-        assert pg_restore_calls, "pg_restore was never invoked"
-        pg_restore_argv = pg_restore_calls[-1]
+        pg_restore_argv = _last_exec_argv(args_log, "pg_restore")
         assert "--no-owner" in pg_restore_argv, pg_restore_argv
         assert "--no-acl" in pg_restore_argv, pg_restore_argv
 
@@ -346,6 +434,55 @@ class TestPgRestoreStderrSurfaced:
 
         assert result.returncode != 0
         assert distinctive_error in result.stderr, result.stderr
+
+
+class TestCreatedbStderrSurfaced:
+    def test_createdb_stderr_text_appears_in_script_output(
+        self, tmp_path: Path
+    ) -> None:
+        """createdb's stderr must be captured and surfaced the same way
+        pg_restore's is (TestPgRestoreStderrSurfaced) — otherwise an
+        unanticipated createdb failure (disk full, permission issue) shows
+        only the generic "FAIL: createdb 'rehearsal' failed", the exact
+        invisible-diagnostic problem the pg_restore fix eliminated."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        distinctive_error = 'createdb: error: database creation failed: ERROR:  disk full'
+        fake = _write_fake_docker(
+            bin_dir,
+            args_log,
+            createdb_exit=1,
+            createdb_stderr=distinctive_error,
+        )
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode != 0
+        assert "PASS" not in result.stdout
+        assert distinctive_error in result.stderr, result.stderr
+        # pg_restore must never run once createdb has already failed.
+        assert not _exec_calls(args_log, "pg_restore")
+
+
+class TestNetworkIsolation:
+    def test_container_launched_with_network_none(self, tmp_path: Path) -> None:
+        """The restore container holds a fully-restored, decrypted dump
+        (including access_tokens — token hashes, tenant_id, scopes across
+        every tenant) and is pulled from a third-party image not
+        independently audited beyond its manifest. Nothing in this script
+        needs container-initiated network access (every interaction is
+        `docker exec`/`docker cp` from the host), so the container must be
+        launched with `--network none` to close any exfiltration path."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(tmp_path, fake, _dump_file(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+        run_argv = _run_call_argv(args_log)
+        assert "--network" in run_argv, run_argv
+        assert _flag_value(run_argv, "--network") == "none", run_argv
 
 
 class TestMissingDump:

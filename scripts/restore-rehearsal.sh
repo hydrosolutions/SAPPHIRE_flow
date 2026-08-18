@@ -66,9 +66,18 @@ psql_exec() {
         -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
-# --- launch: ephemeral container, no named volume. -------------------------
+# --- launch: ephemeral container, no named volume, no network. The image
+# was re-pinned (see docs/standards/security.md "Image pinning" caveat) to a
+# third-party vendor not independently audited beyond confirming a genuine
+# multi-arch manifest — and this container's whole job is to hold a
+# fully-restored, decrypted dump, including access_tokens (token hashes,
+# tenant_id, scopes) across every tenant. --network none closes any
+# container-initiated exfiltration path regardless of image trust: nothing
+# needs it, since every interaction below is `docker exec`/`docker cp` from
+# the host. -------------------------------------------------------------
 MAY_EXIST=1
-"${DOCKER}" run -d --name "${CONTAINER}" -e POSTGRES_PASSWORD=rehearsal \
+"${DOCKER}" run -d --network none --name "${CONTAINER}" \
+    -e POSTGRES_PASSWORD=rehearsal \
     "${IMAGE}" >/dev/null || fail "docker run failed"
 
 # --- wait for the FINAL server, not the temp init server. The official
@@ -90,9 +99,14 @@ done
 "${DOCKER}" cp "${DUMP_PATH}" "${CONTAINER}:/tmp/restore.dump" >/dev/null 2>&1 \
     || fail "docker cp failed"
 
-# --- createdb: a FRESH database, never the image's pre-populated default. --
-"${DOCKER}" exec "${CONTAINER}" createdb -U postgres "${DB_NAME}" >/dev/null 2>&1 \
-    || fail "createdb '${DB_NAME}' failed"
+# --- createdb: a FRESH database, never the image's pre-populated default.
+# Stderr is captured (not discarded) for the same reason as pg_restore's
+# below: a swallowed diagnostic hides the real failure reason. -------------
+createdb_err="$("${DOCKER}" exec "${CONTAINER}" createdb -U postgres "${DB_NAME}" 2>&1 1>/dev/null)"
+createdb_status=$?
+if [[ "${createdb_status}" -ne 0 ]]; then
+    fail "createdb '${DB_NAME}' failed (exit ${createdb_status}): $(printf '%s' "${createdb_err}" | head -n 20)"
+fi
 
 # --- restore into that fresh database. --no-owner --no-acl because pg_dump
 # does NOT back up cluster roles, but the dump is full of OWNER TO / ACL

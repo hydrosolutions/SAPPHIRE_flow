@@ -570,6 +570,13 @@ Postgres container has been running that image under emulation. `restore-rehears
 emulation trade-off) is **out of scope for T5** — the rehearsal script and the running database container are
 different decisions with different blast radii — and is left as a follow-up.
 
+Because that vendor swap moves the container off the already-vetted `postgis/postgis` trust boundary while it
+holds a fully-restored, decrypted dump (including `access_tokens` — token hashes, tenant_id, scopes across every
+tenant), `restore-rehearsal.sh` runs the container with **`docker run --network none`**. Nothing needs
+container-initiated network access — every interaction is `docker exec` / `docker cp` from the host — so this
+closes the exfiltration path regardless of how much the third-party image is trusted, independent of the digest
+pin above.
+
 The locally-built `sapphire-flow:${VERSION}` image used by the `worker`, `api`, and `init` services is **not** digest-pinned — it is built in this repo, not pulled.
 
 Dependabot's Docker-related ecosystems raise digest-update PRs under review.
