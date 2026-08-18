@@ -3210,7 +3210,19 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > class CandidateAwareForecastSource(Protocol):
 >     def fetch_requirement(
 >         self, track: ForcingTrackKey, stations: list[StationWeatherSource], nominal_cycle: UtcDatetime,
->     ) -> CandidateFetchResult: ...   # fetch EXACTLY nominal_cycle; NO adapter-side walk-back
+>     ) -> RawFetchOutcome: ...   # fetch EXACTLY nominal_cycle; NO adapter-side walk-back.
+>       # D31-candidate-ownership (Plan 151 T1 spec edit, owner-ratified 2026-08-11): the
+>       # ADAPTER classifies TRANSPORT only (fetched / absent-at-cycle) and never judges
+>       # completeness — the threshold is a services/-side ResolvedTrackRequest.fetch_horizons
+>       # the adapter cannot see. Returns the raw fetch outcome below, NOT
+>       # CandidateFetchResult; services/ constructs the immutable CandidateFetchResult after
+>       # applying the per-station completeness predicate (D8). A transient transport
+>       # failure or an auth/config error is RAISED, never returned as a status.
+>     def expected_member_ids(self, track: ForcingTrackKey) -> frozenset[int]: ...
+>       # The source's raw member identity is source-DERIVED, never a literal (Ruling 1):
+>       # ECMWF-IFS is fc member 0 + 50 pf = 51; a 21-member ICON-CH2-EPS source would
+>       # derive 21. Exact-member-set completeness (D8) is checked against THIS, never a
+>       # hardcoded constant.
 >
 > FeatureName = NewType("FeatureName", str)
 >
@@ -3226,7 +3238,10 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > class InputFrameHorizon: steps: FutureSteps
 > @dataclass(frozen=True, kw_only=True, slots=True)
 > class OutputHorizon:     steps: FutureSteps
->
+> # D23-output-horizon-deferred: OutputHorizon is NOT created by Plan 151 Phase 3 — it
+> # has no consumer there (its consumer is the write-side output-horizon follow-on,
+> # Plan 148's deferred write-side work). Declared here for completeness of the locked
+> # shape; a zero-caller dataclass would be dead code if built early.
 > # --- Phase 3 refinement (2026-08): dedup KEY vs per-assignment horizon CARRIER ---
 > # ForcingTrackKey is the HASHABLE dedup key: exactly the axes at which ONE recap
 > # fetch operates and below which requirements are genuinely equivalent. It carries
@@ -3240,10 +3255,13 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > # FULL series (recap_gateway.py:899-911) — SAP3 SLICES to a horizon post-fetch.
 > #
 > # Granularity (grounded in recap fetch + FI InputRequirement):
-> #  - ONE ensemble_mode per track. exact-51 completeness (all {0..50}) applies to
-> #    EVERY feature on an ENSEMBLE track, so a SINGLE-mode feature (fc only) cannot
-> #    ride it; a mixed-mode requirement SPLITS into per-mode ForcingRequired. FI
-> #    carries ensemble_mode per future_known variable (forecast_interface.py:474).
+> #  - ONE ensemble_mode per track. exact-member-set completeness (source-derived, see
+> #    expected_member_ids below — never a literal 51) applies to EVERY feature on an
+> #    ENSEMBLE track, so a SINGLE-mode feature (fc only) cannot ride it; a mixed-mode
+> #    requirement is REJECTED at construction, raising UnsupportedModelRequirementError
+> #    (D4 as corrected 2026-08-18; D22 — exactly ONE forcing track per assignment, so
+> #    per-mode splitting is a follow-on, not this contract). FI carries ensemble_mode
+> #    per future_known variable (forecast_interface.py:474).
 > #  - ONE spatial_representation per track (distinct extraction/HRU); FI declares one
 > #    spatial per dynamic spec and v1 rejects multi-spatial (forecast_interface.py:488).
 > #  - ONE concrete time_step (FI `req.dynamic` is keyed by time_step, :519,:1096).
@@ -3253,7 +3271,8 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > #    tracks is a DEFERRED optimization, NOT this contract — see residual note below.
 > @dataclass(frozen=True, kw_only=True, slots=True)
 > class ForcingTrackKey:                  # HASHABLE dedup key — NO horizon values
->     nwp_source: NwpSource                # existing NewType/enum
+>     nwp_source: str                      # the repo's existing str (types/station.py:106); no
+>                                           # NwpSource type exists in the repo (D12)
 >     ensemble_mode: EnsembleMode          # existing enum — exactly ONE mode per track
 >     time_step: timedelta                 # hashable; the resolved operational step
 >     spatial_representation: SpatialRepresentation  # existing enum — exactly ONE per track
@@ -3307,7 +3326,8 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 >     provenance: NwpCycleSource
 > @dataclass(frozen=True, kw_only=True, slots=True)
 > class StationTrackUnavailable:
->     reason: StationUnavailableReason     # enum: NO_DATA_AT_CYCLE | EXTRACTION_EMPTY | NOT_SUBSCRIBED
+>     reason: StationUnavailableReason     # enum: NO_DATA_AT_CYCLE | EXTRACTION_EMPTY | NOT_SUBSCRIBED |
+>                                           # INCOMPLETE_AT_CYCLE | MISSING_POLYGON_COLUMN (D8, D27 additive)
 > StationTrackOutcome = StationTrackAvailable | StationTrackUnavailable
 >
 > @dataclass(frozen=True, kw_only=True, slots=True)
@@ -3328,6 +3348,29 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 >     status: CandidateFetchStatus         # completeness predicate validates the RAW result BEFORE any persist
 >     cycle: UtcDatetime
 >     raw: GriddedForecast | dict[StationId, WeatherForecastResult] | None
+> # CandidateFetchResult is constructed SERVICES-side only (D31) — never returned by
+> # fetch_requirement. The adapter's own return type is the raw fetch outcome below.
+>
+> class RawFetchStatus(Enum):              # the ADAPTER's transport-only classification
+>     FETCHED = auto()                     # >=1 station committed rows this cycle
+>     ABSENT_AT_CYCLE = auto()             # walk-back-eligible absence (total loss after
+>                                           # per-HRU containment, OR well-formed-empty)
+>
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class RawFetchOutcome:                   # fetch_requirement's return type (D31)
+>     status: RawFetchStatus
+>     cycle: UtcDatetime
+>     stations: Mapping[StationId, WeatherForecastResult]
+>     missing_polygon_column: frozenset[StationId] = frozenset()   # D27: explicitly
+>       # excluded stations, never silently dropped — services/ later attributes
+>       # StationTrackUnavailable(MISSING_POLYGON_COLUMN) to each.
+>     absent_detail: str | None = None     # diagnostic text for ABSENT_AT_CYCLE only
+>
+> # Completeness gate precision (D10-completeness-pre-extract): for a pre-extracted
+> # (station-keyed dict, not GriddedForecast) candidate the gate has no single global
+> # member axis, so it is evaluated per (station, feature, member, horizon) — a
+> # candidate-wide member-id union is NOT the predicate. See design D8 for the full
+> # per-station verdict + candidate-verdict-from-per-station-verdicts rule.
 >
 > # AssignmentFailureCause — FORWARD FI-BOUNDARY GROUPING (target). The three COARSE buckets the concrete
 > # assignment-level enum (below, landed by Plan 150) rolls up into once the FI-adapter follow-on stops flattening

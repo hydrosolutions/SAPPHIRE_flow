@@ -13,10 +13,12 @@ import structlog
 from sapphire_flow.exceptions import AdapterError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    EnsembleMode,
     SpatialRepresentation,
     WeatherSourceRole,
     WeatherSourceStatus,
 )
+from sapphire_flow.types.forcing_track import RawFetchOutcome, RawFetchStatus
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.weather import (
     BasinAverageForecast,
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.forcing_track import ForcingTrackKey
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.station import (
         GatewayPolygonBindingRow,
@@ -494,8 +497,12 @@ def _iter_long_rows(
     df: pd.DataFrame,
     refs_by_polygon: dict[GatewayPolygonName, GatewayPolygonRef],
     convert: Callable[[float], float] | None,
+    *,
+    raise_on_missing: bool = True,
 ) -> tuple[
-    list[tuple[GatewayPolygonRef, UtcDatetime, float, object | None]], object | None
+    list[tuple[GatewayPolygonRef, UtcDatetime, float, object | None]],
+    object | None,
+    list[GatewayPolygonRef],
 ]:
     """Reshape one wide, one-variable Gateway frame to typed long rows.
 
@@ -507,17 +514,20 @@ def _iter_long_rows(
     so a multi-day reanalysis window can carry different runs across rows. The scalar
     ``source_run`` returned alongside is only a representative (first non-null) used for
     the forecast ``cycle_time`` — never as a per-row version.
+
+    ``raise_on_missing`` (Plan 151 T4 / D27): every resolved polygon in this HRU is
+    expected to have a column in the response. The DEFAULT (``True``, every existing
+    caller — ``fetch_forecasts``/``fetch_snow_forecast``) fails loud batch-wide on a
+    corrupt/incomplete response, unchanged. ``fetch_requirement`` passes ``False`` so a
+    missing column becomes an EXPLICIT per-station unavailability instead (the
+    ``missing`` list returned below) — the row-building loop already naturally omits a
+    missing polygon's rows (it only iterates columns that ARE present), so relaxing the
+    raise requires no other change here.
     """
     numeric, source_run = _split_provenance(df)
-    # Every resolved polygon in this HRU must have a column in the response. A
-    # missing column would otherwise silently drop that station from the batch
-    # (the demux only iterates columns that are present, and fetch_forecasts only
-    # returns stations that accumulated rows). Fail loud on a corrupt/incomplete
-    # response naming the affected stations rather than shipping a silently-partial
-    # batch as SUCCESS.
     present = {GatewayPolygonName(str(c)) for c in numeric.columns}
     missing = [ref for name, ref in refs_by_polygon.items() if name not in present]
-    if missing:
+    if missing and raise_on_missing:
         ids = ", ".join(str(ref.station_id) for ref in missing)
         polys = ", ".join(str(ref.polygon_name) for ref in missing)
         raise AdapterError(
@@ -541,7 +551,7 @@ def _iter_long_rows(
             if convert is not None:
                 value = convert(value)
             rows.append((ref, valid_time, value, row_run))
-    return rows, source_run
+    return rows, source_run, missing
 
 
 def _prefilter(
@@ -859,7 +869,7 @@ class RecapGatewayForecastAdapter:
                         continue
                     discarded_variable = variable.canonical
                     rows_before = sum(len(rows) for rows in hru_acc.values())
-                    hru_source_run = self._accumulate_member(
+                    hru_source_run, _missing = self._accumulate_member(
                         hru_acc,
                         refs_by_polygon,
                         variable=variable,
@@ -884,7 +894,7 @@ class RecapGatewayForecastAdapter:
                         # together in that window), so this costs ~1 wasted
                         # call/cycle, not 50.
                         try:
-                            hru_source_run = self._accumulate_member(
+                            hru_source_run, _missing = self._accumulate_member(
                                 hru_acc,
                                 refs_by_polygon,
                                 variable=variable,
@@ -1001,6 +1011,184 @@ class RecapGatewayForecastAdapter:
         # well-formed but empty. Not a failure; return {} exactly as today.
         return {}
 
+    def expected_member_ids(self, track: ForcingTrackKey) -> frozenset[int]:
+        """The source's raw member identity (Ruling 1) -- SOURCE-DERIVED,
+        never a literal. ECMWF-IFS is fc member 0 + pf members 1..50 = 51 for
+        an ENSEMBLE track; a SINGLE-mode track has no pf axis at all."""
+        if track.ensemble_mode is EnsembleMode.SINGLE:
+            return frozenset({_FC_MEMBER_ID})
+        return frozenset(range(_FC_MEMBER_ID, _PF_MEMBER_MAX + 1))
+
+    def fetch_requirement(
+        self,
+        track: ForcingTrackKey,
+        stations: list[StationWeatherSource],
+        nominal_cycle: UtcDatetime,
+    ) -> RawFetchOutcome:
+        """Plan 151 T4 (D6, D7, D31): a PURE single-cycle fetch for exactly
+        ``track.features`` at exactly ``nominal_cycle`` -- NO adapter-side
+        walk-back (that is a `services/`-side policy, D7). Mirrors
+        `fetch_forecasts`'s per-HRU containment shape (D7/Plan 154), with two
+        differences: (1) `_resolve_effective_cycle`'s walk-back probe is never
+        called; (2) completeness is NEVER judged here (D31) -- the return is
+        a raw transport classification only, `services/` constructs the
+        `CandidateFetchResult` after applying the per-station completeness
+        predicate.
+
+        A malformed partial-control payload (Plan 154's control-coverage
+        guard) is candidate-FATAL and propagates UNCONTAINED, exactly as
+        `fetch_forecasts`. A duplicate-polygon misconfiguration
+        (`_group_by_hru`) raises `RecapConfigurationError` with ZERO Gateway
+        calls, before this method's own containment logic runs. A missing
+        polygon column becomes an EXPLICIT per-station unavailability (D27)
+        instead of the batch-wide raise `fetch_forecasts` performs.
+        """
+        in_scope = _prefilter(
+            stations, nwp_source=self.NWP_SOURCE, role=WeatherSourceRole.FORECAST
+        )
+        if not in_scope:
+            return RawFetchOutcome(
+                status=RawFetchStatus.ABSENT_AT_CYCLE, cycle=nominal_cycle, stations={}
+            )
+        resolved, skipped = _resolve_all(self._resolver, in_scope)
+        _require_some_resolved(in_scope, resolved, skipped)
+        # Config-error check (no Gateway call) BEFORE any fetch -- D27.
+        by_hru = _group_by_hru(resolved)
+
+        variables = [v for v in _ifs_variables() if v.canonical in track.features]
+        station_ref = {ref.station_id: ref for ref in resolved}
+        acc: dict[StationId, list[dict[str, object]]] = {}
+        missing_polygon_column: set[StationId] = set()
+        hru_discarded = False
+        hru_discarded_count = 0
+        last_discarded_error: RecapDataUnavailableError | None = None
+
+        for hru_name, refs_by_polygon in by_hru.items():
+            hru_acc: dict[StationId, list[dict[str, object]]] = {}
+            discarded_variable: str | None = None
+            control_coverage: dict[str, bool] = {}
+            hru_missing_polygon: set[StationId] = set()
+            try:
+                for variable in variables:
+                    ifs_name = variable.ifs_name
+                    if ifs_name is None:
+                        continue
+                    discarded_variable = variable.canonical
+                    rows_before = sum(len(rows) for rows in hru_acc.values())
+                    _prior, missing = self._accumulate_member(
+                        hru_acc,
+                        refs_by_polygon,
+                        variable=variable,
+                        ifs_name=ifs_name,
+                        hru_name=hru_name,
+                        cycle_time=nominal_cycle,
+                        ifs_type="fc",
+                        member=None,
+                        member_id=_FC_MEMBER_ID,
+                        prior=None,
+                        raise_on_missing=False,
+                    )
+                    hru_missing_polygon.update(ref.station_id for ref in missing)
+                    rows_after = sum(len(rows) for rows in hru_acc.values())
+                    control_coverage[variable.canonical] = rows_after > rows_before
+
+                    if track.ensemble_mode is EnsembleMode.ENSEMBLE:
+                        for member in range(_PF_MEMBER_MIN, _PF_MEMBER_MAX + 1):
+                            try:
+                                _prior, missing = self._accumulate_member(
+                                    hru_acc,
+                                    refs_by_polygon,
+                                    variable=variable,
+                                    ifs_name=ifs_name,
+                                    hru_name=hru_name,
+                                    cycle_time=nominal_cycle,
+                                    ifs_type="pf",
+                                    member=str(member),
+                                    member_id=_pf_member_id(member),
+                                    prior=None,
+                                    raise_on_missing=False,
+                                )
+                                hru_missing_polygon.update(
+                                    ref.station_id for ref in missing
+                                )
+                            except RecapDataUnavailableError:
+                                log.warning(
+                                    "recap.pf_unavailable_control_only",
+                                    hru_name=hru_name,
+                                    variable=variable.canonical,
+                                    member=member,
+                                )
+                                break
+
+                covered = {v for v, has_rows in control_coverage.items() if has_rows}
+                if hru_acc and len(covered) < len(control_coverage):
+                    empty = sorted(set(control_coverage) - covered)
+                    raise AdapterError(
+                        f"Recap Gateway HRU {hru_name} returned control rows for "
+                        f"{sorted(covered)} but a well-formed EMPTY response for "
+                        f"{empty} in the same cycle {nominal_cycle.isoformat()} "
+                        "-- partial-variable forcing is never shipped (Plan 154 D2)"
+                    )
+            except RecapDataUnavailableError as exc:
+                hru_discarded = True
+                hru_discarded_count += 1
+                last_discarded_error = exc
+                log.warning(
+                    "recap.hru_unavailable_contained",
+                    hru_name=hru_name,
+                    variable=discarded_variable,
+                    ifs_type="fc",
+                )
+                continue
+
+            if hru_missing_polygon:
+                log.warning(
+                    "recap.missing_polygon_column",
+                    hru_name=hru_name,
+                    station_ids=sorted(str(sid) for sid in hru_missing_polygon),
+                )
+            missing_polygon_column.update(hru_missing_polygon)
+            for station_id, rows in hru_acc.items():
+                if station_id in hru_missing_polygon:
+                    continue
+                acc.setdefault(station_id, []).extend(rows)
+
+        if acc:
+            return RawFetchOutcome(
+                status=RawFetchStatus.FETCHED,
+                cycle=nominal_cycle,
+                stations={
+                    station_id: _build_forecast_result(
+                        station_ref[station_id], rows, nominal_cycle, self.NWP_SOURCE
+                    )
+                    for station_id, rows in acc.items()
+                },
+                missing_polygon_column=frozenset(missing_polygon_column),
+            )
+        if hru_discarded:
+            hru_empty_count = len(by_hru) - hru_discarded_count
+            assert last_discarded_error is not None
+            log.warning(
+                "recap.fetch_requirement_absent_at_cycle",
+                cycle=nominal_cycle.isoformat(),
+                hru_discarded_count=hru_discarded_count,
+                hru_empty_count=hru_empty_count,
+            )
+            return RawFetchOutcome(
+                status=RawFetchStatus.ABSENT_AT_CYCLE,
+                cycle=nominal_cycle,
+                stations={},
+                missing_polygon_column=frozenset(missing_polygon_column),
+                absent_detail=str(last_discarded_error),
+            )
+        # Every response was well-formed but empty -- not a failure.
+        return RawFetchOutcome(
+            status=RawFetchStatus.ABSENT_AT_CYCLE,
+            cycle=nominal_cycle,
+            stations={},
+            missing_polygon_column=frozenset(missing_polygon_column),
+        )
+
     def _accumulate_member(
         self,
         acc: dict[StationId, list[dict[str, object]]],
@@ -1014,7 +1202,8 @@ class RecapGatewayForecastAdapter:
         member: str | None,
         member_id: int,
         prior: object | None,
-    ) -> object | None:
+        raise_on_missing: bool = True,
+    ) -> tuple[object | None, list[GatewayPolygonRef]]:
         # run_hour is mandatory: the client's _iso_date strips run_date to a bare
         # date and defaults run_hour=0, so a 06/12/18Z cycle would silently fetch
         # the 00Z run unless we pass the cycle hour explicitly (Plan 081: run_hour
@@ -1032,7 +1221,9 @@ class RecapGatewayForecastAdapter:
             "pd.DataFrame",
             _guarded_fetch(self._client.ecmwf.ifs_forecast, **call_kwargs),
         )
-        rows, source_run = _iter_long_rows(df, refs_by_polygon, variable.convert)
+        rows, source_run, missing = _iter_long_rows(
+            df, refs_by_polygon, variable.convert, raise_on_missing=raise_on_missing
+        )
         for ref, valid_time, value, _row_run in rows:
             acc.setdefault(ref.station_id, []).append(
                 {
@@ -1043,7 +1234,7 @@ class RecapGatewayForecastAdapter:
                     "value": value,
                 }
             )
-        return prior if prior is not None else source_run
+        return (prior if prior is not None else source_run), missing
 
     def fetch_snow_forecast(
         self,
@@ -1154,7 +1345,7 @@ class RecapGatewayForecastAdapter:
             "pd.DataFrame",
             _guarded_snow_fetch(self._client.snow.forecast, **call_kwargs),
         )
-        rows, _ = _iter_long_rows(df, refs_by_polygon, variable.convert)
+        rows, _, _missing = _iter_long_rows(df, refs_by_polygon, variable.convert)
         for ref, valid_time, value, _row_run in rows:
             acc.setdefault(ref.station_id, []).append(
                 {
@@ -1258,7 +1449,7 @@ class RecapGatewayReanalysisAdapter:
         # `_split_provenance`/`_iter_long_rows` would otherwise discard
         # without ever inspecting per-row values.
         df = _drop_forecast_fill_rows(df)
-        rows, _ = _iter_long_rows(df, refs_by_polygon, variable.convert)
+        rows, _, _missing = _iter_long_rows(df, refs_by_polygon, variable.convert)
         # Two boundary guards on the reshaped rows:
         #  - version is the row's OWN source_run (per-row provenance), not a single
         #    collapsed value shared across a multi-day window.
@@ -1410,7 +1601,7 @@ class RecapGatewayReanalysisAdapter:
         # verbatim so a row destined for HistoricalForcingStore has identical
         # provenance mechanics on both call paths.
         df = _drop_forecast_fill_rows(df)
-        rows, _ = _iter_long_rows(df, refs_by_polygon, variable.convert)
+        rows, _, _missing = _iter_long_rows(df, refs_by_polygon, variable.convert)
         return [
             RawHistoricalForcing(
                 station_id=ref.station_id,

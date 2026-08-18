@@ -452,7 +452,8 @@ class TestDataFrameParsing:
         # Only station A is resolved; B's column is present but must be ignored,
         # proving the demux keys on resolved polygon_name, not column-text parsing.
         refs = {GatewayPolygonName(_POLY_A): _ref(_SID_A, _POLY_A)}
-        rows, _ = _iter_long_rows(df, refs, None)
+        rows, _, missing = _iter_long_rows(df, refs, None)
+        assert missing == []
         assert {r[0].station_id for r in rows} == {_SID_A}
         assert {r[2] for r in rows} == {1.0}
         assert all(not isinstance(r[1], pd.Timestamp) for r in rows)
@@ -461,7 +462,7 @@ class TestDataFrameParsing:
     def test_wide_to_long_applies_conversion_once(self) -> None:
         df = _wide_df([_POLY_A], value=1.0)
         refs = {GatewayPolygonName(_POLY_A): _ref(_SID_A, _POLY_A)}
-        rows, _ = _iter_long_rows(df, refs, _metres_to_mm)
+        rows, _, _missing = _iter_long_rows(df, refs, _metres_to_mm)
         assert {r[2] for r in rows} == {1000.0}
 
     def test_missing_expected_polygon_column_raises(self) -> None:
@@ -474,6 +475,21 @@ class TestDataFrameParsing:
         }
         with pytest.raises(AdapterError, match=_POLY_B):
             _iter_long_rows(df, refs, None)
+
+    def test_missing_expected_polygon_column_not_raised_when_raise_on_missing_false(
+        self,
+    ) -> None:
+        # Plan 151 T4 (D27): fetch_requirement's per-station containment needs
+        # this NOT to raise -- the missing station is reported via the
+        # returned `missing` list instead, while A's rows still come back.
+        df = _wide_df([_POLY_A], value=1.0)
+        refs = {
+            GatewayPolygonName(_POLY_A): _ref(_SID_A, _POLY_A),
+            GatewayPolygonName(_POLY_B): _ref(_SID_B, _POLY_B),
+        }
+        rows, _, missing = _iter_long_rows(df, refs, None, raise_on_missing=False)
+        assert {r[0].station_id for r in rows} == {_SID_A}
+        assert {ref.station_id for ref in missing} == {_SID_B}
 
     def test_hru_batch_single_fetch_per_variable(self) -> None:
         # Two stations share one HRU under distinct polygons: exactly one fetch per
@@ -2449,3 +2465,218 @@ class TestHruContainment:
         assert contained[0]["hru_name"] == "hru_a"
         assert contained[0]["variable"] == "precipitation"
         assert contained[0]["ifs_type"] == "fc"
+
+
+# --- Plan 151 T4 (D6, D7, D31): CandidateAwareForecastSource.fetch_requirement
+# + expected_member_ids. ---
+
+
+def _track(
+    *,
+    features: frozenset[str] = frozenset({"precipitation"}),
+    ensemble_mode: object | None = None,
+) -> object:
+    from sapphire_flow.types.enums import EnsembleMode
+    from sapphire_flow.types.forcing_track import FeatureName, ForcingTrackKey
+
+    return ForcingTrackKey(
+        nwp_source="ifs_ecmwf",
+        ensemble_mode=ensemble_mode
+        if ensemble_mode is not None
+        else EnsembleMode.ENSEMBLE,
+        time_step=timedelta(hours=6),
+        spatial_representation=SpatialRepresentation.BASIN_AVERAGE,
+        features=frozenset(FeatureName(f) for f in features),
+    )
+
+
+class TestCandidateAwareForecastSourceConformance:
+    def test_forecast_adapter_satisfies_candidate_aware_protocol(self) -> None:
+        from sapphire_flow.protocols.adapters import CandidateAwareForecastSource
+
+        adapter = _forecast_adapter(_GoodEcmwf(), _GoodResolver())
+        assert isinstance(adapter, CandidateAwareForecastSource)
+
+    def test_legacy_only_fake_does_not_satisfy_candidate_aware_protocol(self) -> None:
+        from sapphire_flow.protocols.adapters import CandidateAwareForecastSource
+
+        class _LegacyOnly:
+            def fetch_forecasts(
+                self, station_configs: object, cycle_time: object
+            ) -> object:
+                return {}
+
+        assert not isinstance(_LegacyOnly(), CandidateAwareForecastSource)
+
+
+class TestExpectedMemberIds:
+    def test_ensemble_mode_derives_51_members(self) -> None:
+        adapter = _forecast_adapter(_GoodEcmwf(), _GoodResolver())
+        from sapphire_flow.types.enums import EnsembleMode
+
+        assert adapter.expected_member_ids(
+            _track(ensemble_mode=EnsembleMode.ENSEMBLE)
+        ) == frozenset(range(51))
+
+    def test_single_mode_derives_one_member(self) -> None:
+        adapter = _forecast_adapter(_GoodEcmwf(), _GoodResolver())
+        from sapphire_flow.types.enums import EnsembleMode
+
+        assert adapter.expected_member_ids(
+            _track(ensemble_mode=EnsembleMode.SINGLE)
+        ) == frozenset({0})
+
+
+class TestFetchRequirementNoWalkBack:
+    def test_requests_exactly_nominal_cycle_no_walk_back_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fails if the implementation reuses resolve_latest_cycle: this
+        # monkeypatch makes ANY call to it raise, so a genuine call surfaces
+        # as a test failure rather than silently succeeding.
+        from sapphire_flow.adapters import recap_gateway
+
+        def _boom(*args: object, **kwargs: object) -> object:
+            raise AssertionError("fetch_requirement must not walk back")
+
+        monkeypatch.setattr(recap_gateway, "resolve_latest_cycle", _boom)
+
+        ecmwf = _ForecastEcmwf(_wide_df([_POLY_A], value=1.0))
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        outcome = adapter.fetch_requirement(
+            _track(ensemble_mode=fi_ensemble_mode_single()),
+            [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            _CYCLE,
+        )
+
+        assert outcome.cycle == _CYCLE
+        assert {kwargs["run_date"] for kwargs in ecmwf.calls} == {_CYCLE}
+
+
+def fi_ensemble_mode_single() -> object:
+    from sapphire_flow.types.enums import EnsembleMode
+
+    return EnsembleMode.SINGLE
+
+
+class TestFetchRequirementHruContainment:
+    def test_discarded_hru_does_not_drop_healthy_hru(self) -> None:
+        # Same acceptance shape as TestHruContainment, but asserted against
+        # fetch_requirement (not fetch_forecasts): as first written this
+        # already passes against `fetch_forecasts`, so this locks the NEW
+        # method specifically.
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp")}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        outcome = adapter.fetch_requirement(
+            _track(),
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert set(outcome.stations.keys()) == {_SID_B}
+        from sapphire_flow.types.forcing_track import RawFetchStatus
+
+        assert outcome.status is RawFetchStatus.FETCHED
+
+
+class TestFetchRequirementMissingPolygonColumn:
+    def test_missing_polygon_column_is_per_station_not_batch_wide(self) -> None:
+        # Today (fetch_forecasts) this raises batch-wide. fetch_requirement
+        # must instead drop ONLY the affected station and keep its sibling.
+        ecmwf = _ForecastEcmwf(_wide_df([_POLY_A], value=1.0))
+        resolver = _MapResolver(
+            {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_B)}
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        outcome = adapter.fetch_requirement(
+            _track(ensemble_mode=fi_ensemble_mode_single()),
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert set(outcome.stations.keys()) == {_SID_A}
+        assert outcome.missing_polygon_column == frozenset({_SID_B})
+
+
+class TestFetchRequirementDuplicatePolygon:
+    def test_duplicate_polygon_raises_config_error_zero_gateway_calls(self) -> None:
+        ecmwf = _ForecastEcmwf(_wide_df([_POLY_A], value=1.0))
+        resolver = _MapResolver(
+            {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_A)}
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        with pytest.raises(RecapConfigurationError) as excinfo:
+            adapter.fetch_requirement(
+                _track(),
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+        msg = str(excinfo.value)
+        assert str(_SID_A) in msg
+        assert str(_SID_B) in msg
+        assert ecmwf.calls == []
+
+
+class TestFetchRequirementMalformedPartialControl:
+    def test_malformed_partial_control_payload_raises_uncontained(self) -> None:
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A, _POLY_B]},
+            empty_control_variables=frozenset({(_HRU, "tp")}),
+        )
+        resolver = _MapResolver(
+            {_SID_A: _ref(_SID_A, _POLY_A), _SID_B: _ref(_SID_B, _POLY_B, hru=_HRU)}
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        with pytest.raises(AdapterError, match="partial-variable forcing"):
+            adapter.fetch_requirement(
+                _track(features=frozenset({"precipitation", "temperature"})),
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+
+class TestFetchRequirementAuthUncontained:
+    def test_auth_failure_propagates_uncontained(self) -> None:
+        ecmwf = _AuthFailEcmwf(
+            auth_fail_hru="hru_a", polygons_by_hru={"hru_a": [_POLY_A]}
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru="hru_a")})
+        )
+
+        with pytest.raises(RecapAuthError):
+            adapter.fetch_requirement(
+                _track(),
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )

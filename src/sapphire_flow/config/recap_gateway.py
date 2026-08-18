@@ -25,6 +25,14 @@ DEFAULT_RECAP_API_KEY_SECRET_PATH = Path("/run/secrets/sapphire_dg_api_key")
 
 _ENV_VAR = "RECAP_API_KEY"  # noqa: S105 - env var NAME, not a secret value
 
+# Plan 151 T4 (D24-cadence-source): the walk-back candidate cadence is a
+# CONFIGURATION value, never a third Protocol member and never read off the
+# adapter's own private `_IFS_CADENCE_HOURS` (that constant is not a
+# contract — D24's earlier "the adapter already carries the constant it
+# needs" phrasing was withdrawn as self-contradictory). This default matches
+# IFS's real publication cadence but is declared independently here.
+DEFAULT_CYCLE_CADENCE_HOURS = 6.0
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RecapGatewayConfig:
@@ -54,6 +62,17 @@ class RecapGatewayConfig:
     # Optional in TOML (defaults to `DEFAULT_MAX_CYCLE_AGE_HOURS`) so existing
     # `[adapters.recap_gateway]` sections keep working unchanged.
     max_cycle_age_hours: float = DEFAULT_MAX_CYCLE_AGE_HOURS
+    # Plan 151 T4 (D24): the per-track walk-back CANDIDATE cadence — how far
+    # apart successive walk-back candidates are spaced. T4 adds and validates
+    # this field ONLY; T5 defines the services/ resolver parameter that
+    # consumes it and T8 threads it on both construction branches.
+    cycle_cadence_hours: float = DEFAULT_CYCLE_CADENCE_HOURS
+
+    def __post_init__(self) -> None:
+        if self.cycle_cadence_hours <= 0:
+            raise ConfigurationError(
+                f"cycle_cadence_hours must be > 0, got {self.cycle_cadence_hours}"
+            )
 
 
 def load_recap_api_key(*, secret_path: Path | None = None) -> str:
@@ -144,6 +163,14 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig:
         "float",
         section.get("max_cycle_age_hours", DEFAULT_MAX_CYCLE_AGE_HOURS),
     )
+    raw_cadence = section.get("cycle_cadence_hours", DEFAULT_CYCLE_CADENCE_HOURS)
+    try:
+        cycle_cadence_hours = float(cast("str | float", raw_cadence))
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(
+            "[adapters.recap_gateway] cycle_cadence_hours must be numeric, "
+            f"got {raw_cadence!r}"
+        ) from exc
 
     return RecapGatewayConfig(
         base_url=cast("str", section["base_url"]),
@@ -153,4 +180,5 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig:
         hru_metadata_source=cast("str", section["hru_metadata_source"]),
         max_retries=cast("int", section["max_retries"]),
         max_cycle_age_hours=max_cycle_age_hours,
+        cycle_cadence_hours=cycle_cadence_hours,
     )
