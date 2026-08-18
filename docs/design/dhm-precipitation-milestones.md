@@ -821,8 +821,28 @@ as Plan 171's own constraint 3 requires.
 | **OD-7** | How do we get long hourly gauge series? | **From project partners — do NOT scrape the public DHM rainfall portal.** The portal is real-time only; starting collection now yields **a couple of months before delivery**, and every use we have (diurnal climatology, seasonality) needs **long** series. A few months of self-collected data is not worth the ingest machinery it would require. **Ask partners for the archive instead** |
 | **OD-8** | Lightning data | **Pursue, via partners.** Hourly, real-time, global, and **independent of precipitation retrieval** — it indicates *when* convection occurs without undercatch or orographic-retrieval error, which is exactly the disputed quantity. Best value-per-effort of the timing sources. It gives **no amounts**, which is fine: amounts are not the problem |
 | **OD-9** | Weather radar | **Not available** (owner, 2026-08-18). Nepal has one C-band dual-pol radar at **Surkhet (2019, western)**, with Palpa and Udaipur planned; Surkhet's ~200 km range does not usefully cover our central/eastern basins. **Not on the critical path. Do not design around it** |
-| **OD-10** | Do we build convection-permitting downscaling ourselves? | **NO.** DHM has **several parallel projects improving their own weather forecasts**, and may couple their downscaled NWP to this system in future. Duplicating that is wasted effort in someone else's lane. ⇒ **What we owe instead is a forcing interface that can accept an externally produced downscaled product later** — the investment goes into the *seam*, not into the model |
+| **OD-10** 📌 **TODO** | Do we build convection-permitting downscaling ourselves? | **NO.** DHM has **several parallel projects improving their own weather forecasts**, and may couple their downscaled NWP to this system in future. Duplicating that is wasted effort in someone else's lane. ⇒ **What we owe instead is a forcing interface that can accept an externally produced downscaled product later** — the investment goes into the *seam*, not into the model |
 | **OD-11** | How much P work is warranted at all? | **Only what is necessary to get P right for operational runoff forecasting** (owner, 2026-08-18). See the scope test below — this is a real constraint, not a platitude, and it currently excludes most diurnal work from the delivery path |
+
+### 📌 TODO — OD-10's forcing seam review (owner-noted 2026-08-18, NOT scheduled)
+
+**The one item here that is answerable NOW, with no new data.** OD-10 says we will not build
+convection-permitting downscaling ourselves, and will instead accept an externally produced downscaled
+product from DHM if their parallel projects deliver one. That promise is only worth anything if the
+**forcing seam can actually take it without redesign**.
+
+**Scope (~half a day, architectural review — no new research):** can `WeatherForecastResult` accept an
+external downscaled product as-is? `BasinAverageForecast` and `ElevationBandForecast`
+(`types/weather.py:62`) already exist, so the seam may largely be there already — the review is to find
+out, not to build. Questions: what would a DHM-supplied product look like as a `WeatherForecastResult`;
+does the adapter boundary assume ECMWF/ICON-shaped input anywhere; and what would have to change if the
+answer is "a new variant".
+
+**Why it is worth doing independently of the precipitation research:** it de-risks the *cheapest
+possible* fix for the diurnal phase problem — someone else solving it physically — and it is the kind of
+seam that is painful to retrofit once models are trained against a fixed forcing shape.
+
+**Not scheduled.** Recorded so it is not lost; owner to slot it.
 
 ### ✅ RESOLVED 2026-08-18 — v1 IS SUB-DAILY (3-hourly), so DIURNAL PHASE IS ON THE CRITICAL PATH
 
