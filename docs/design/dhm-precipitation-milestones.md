@@ -842,7 +842,34 @@ answer is "a new variant".
 possible* fix for the diurnal phase problem — someone else solving it physically — and it is the kind of
 seam that is painful to retrofit once models are trained against a fixed forcing shape.
 
-**Not scheduled.** Recorded so it is not lost; owner to slot it.
+### ✅ REVIEW DONE 2026-08-18 — the seam is NOT currently keepable. Five findings, all verified.
+
+An agent reviewed it and a parallel sweep corroborated; **I re-read every cited site myself** before
+recording. *(Caveat: only the sweep addendum was returned to me — its ranked change list was not, so
+what follows is what I verified, not a complete remediation plan.)*
+
+| # | Finding | Verified |
+|---|---|---|
+| 1 | **No adapter registry exists at all** — `adapters/__init__.py` is **0 bytes**. Adding a source is a build, not an extension | `wc -c` = 0 |
+| 2 | **No shared canonicalisation layer.** Variable renaming, unit conversion and **precipitation de-accumulation** are adapter-PRIVATE if-chains (`adapters/meteoswiss_nwp.py:157-177`). `types/forcing_schema.py` declares the canonical units but has **ZERO consumers** | grep: no consumers |
+| 3 | **`ForcingResolution` has only `DAILY`** (`types/forcing_schema.py:25-26`) — the one place the forcing contract is written down **cannot express the 3-hourly product v1 promises** | read |
+| 4 | **A provider assumption lives in `types/`, not an adapter**: `HORIZON_CEILING_FLOORS` pins 5 steps because "5 = MeteoSwiss ICON-CH2-EPS's 120 h" — the comment itself says *"This 5 is a PROVIDER assumption, not a modelling judgement"* | `types/ids.py:63-72` |
+| 5 | **The grid extractor OVERWRITES the CRS instead of reading it**: `.rio.write_crs("EPSG:4326")` (`exact_extract_grid_extractor.py:98`). A projected or rotated-pole grid is **silently mis-georeferenced**, surfacing later as "polygon(s) outside grid extent". No regridding exists anywhere in the repo | read |
+
+### the highest-risk item is #2, and it is the one that fails SILENTLY
+
+A DHM adapter must reimplement the accumulation/unit contract **with nothing enforcing it**. A
+**rate-vs-accumulation mismatch** would not raise — it would produce plausible, wrong forcing, and the
+models are trained against a fixed forcing shape, so it would be baked in.
+**This track has already lost two days to exactly that class of bug**: ERA5-Land's accumulation
+convention was stated wrongly in Plan 171's first draft and only real data settled it. IMERG, when it
+comes, is a **rate (mm/hr)** product — precisely the mismatch waiting to happen.
+=> **Smallest change that most reduces risk: give `forcing_schema` a real consumer** — make the
+canonical unit/accumulation contract something an adapter must satisfy rather than something it may
+ignore — **before a second forecast source exists**. #5 is the same failure mode (assume rather than
+assert) and should be fixed with it: read the file's CRS and reproject, never overwrite.
+
+**Still not scheduled.** Recorded so the next person does not rediscover it.
 
 ### ✅ RESOLVED 2026-08-18 — v1 IS SUB-DAILY (3-hourly), so DIURNAL PHASE IS ON THE CRITICAL PATH
 
