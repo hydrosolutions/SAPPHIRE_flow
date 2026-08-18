@@ -21,9 +21,22 @@ grep -cE "def (train|predict|serialize_artifact|deserialize_artifact|hindcast)" 
 ```
 
 `AquacastShim` exposes only `artifact_scope` and `input_requirement`. **Zero of the five FI methods
-are proxied.** Discovery works because `adapt_if_fi` needs only the requirement; the first real
-`predict` would raise `AttributeError`. So rewriting declarations alone would produce a model that
-advertises correct inputs and still cannot run.
+are proxied.**
+
+**And the consequence is worse than "predict would raise" — corrected after review.** `adapt_if_fi`
+wraps an object only when `isinstance(obj, ForecastModel)` (`adapters/forecast_interface.py:167`),
+and that runtime-checkable Protocol **requires `train`, `predict`, `serialize_artifact` and
+`deserialize_artifact`**. The shim satisfies none, so it is returned **unwrapped**:
+`discover_models` registers the **raw shim**, with no adapter and therefore **no
+`data_requirements`** — the attribute every downstream caller reads.
+
+So T1 is not tidying-up for completeness. **Proxying the five methods is the precondition for the
+model being adapted at all**, and only an adapted model has the requirement projection the rest of
+SAP3 consumes.
+
+*(This also qualifies a claim made when Plan 159 T1 merged: `discover_models()` does return
+`cmal_pool_pt`, but membership alone was a weaker result than it sounded — the registered object is
+not the adapter.)*
 
 ## The two boundaries, and why declaration alone is not enough
 
@@ -100,21 +113,27 @@ Owner's suggestion: at model onboarding, check that the data a model needs is ac
 the stations registered to it. **Recorded here as a future plan candidate, deliberately not a task
 in 181** — it is a distinct capability, not part of the shim boundary.
 
-**What already exists**, checked before writing this: `services/model_onboarding.py::validate_compatibility`
-(`:159`) already compares a model's declared requirements against each station and reports
-`missing_target_parameters`, `missing_past_dynamic`, `missing_future_dynamic`,
+**What already exists** — corrected after review, because the first draft cited the wrong function
+and overstated the gap. The live path is
+`services/model_onboarding.py::validate_compatibility_for_unit` (`:207`), reached from
+`flows/onboard_model.py:285`. **`validate_compatibility` (`:159`) is dead code** — it calls
+`model_id_from_model()`, which always raises, so it cannot return. Citing it would have sent the
+next reader to a function that never runs.
+
+It reports `missing_target_parameters`, `missing_past_dynamic`, `missing_future_dynamic`,
 `missing_static_features`, `time_step_compatible`, `fi_unit_mismatches` and
 `station_codes_resolvable` (`types/model_onboarding.py:18-27`).
 
-**What it does NOT check — the actual gap.** It validates *declared capability*: that a station
-advertises the parameter, and that its basin carries the static's KEY. It does not validate that the
-**data is present and deep enough** — that the station has `lookback` steps of gap-free history, or
-that the statics resolve to finite VALUES rather than merely existing as keys.
+**Static VALUES are already checked for a Caravan model**, contrary to the first draft:
+`_resolve_declared_value` applies `_is_finite_numeric` (`services/caravan_statics.py:255`), so
+infinities, strings and bools are rejected before compatibility — not merely keys counted.
 
-That distinction is exactly what bit Plan 155: a station can pass compatibility and still be
-unforecastable. Plan 155 T3 (gap-free 210-day depth) and the `operational_inputs` lookback guard
-address the runtime half; an onboarding-time check would surface it **before** a model is registered
-rather than at the first cycle.
+**The real remaining gap is temporal depth.** Nothing checks that a station has `lookback` steps of
+gap-free history. That is what bit Plan 155: a station passes compatibility and is still
+unforecastable. Note also that **there is no enforcing runtime guard today** —
+`services/operational_inputs.py:445` logs `short_lookback` and *continues*; making it an explicit
+failure is still future work in Plan 155 T3. So today a short station is caught by neither
+onboarding nor the cycle.
 
 **Worth its own plan.** Sizing note for whoever writes it: the expensive part is not the check, it is
 deciding what onboarding should DO with a partial answer — refuse the model, register it with the
