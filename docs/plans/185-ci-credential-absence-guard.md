@@ -117,11 +117,22 @@ worse, not better — hence D4.
   `previous_filename` so a rename-away-from-`uv.lock` still counts as a touch.
   *(Was: `gh pr diff --name-only`. A diff's name-only listing carries only the
   post-rename path — a rename-away is invisible to it — and GitHub silently truncates
-  a PR diff past 300 changed files, so a large dependency-bump PR could pass
-  undetected. The paginated pull-request-files endpoint has neither limit.)*
+  a PR diff past 300 changed files.)*
   **Capture the command's success before testing its output**, so an API failure fails
-  closed rather than reading as "no lock change". Three things are pinned here, not
-  left to implementation:
+  closed rather than reading as "no lock change".
+
+  *(Amended second fixer round — independent review found `--paginate` does NOT lift
+  the pull-request-files endpoint's own hard 3000-file response cap ("The paginated
+  pull-request-files endpoint has neither limit" above was wrong on that point): a PR
+  with more changed files than that could have `uv.lock` sit outside the returned
+  pages and read as "no change" despite the command exiting 0. Fixed by reading the
+  PR's own `changed_files` count first —
+  `gh api "repos/.../pulls/<number>" --jq '.changed_files'` — and failing closed,
+  exactly like an API failure, both when that lookup itself fails and when the count
+  exceeds 3000. Only once the count is confirmed within the cap does the paginated
+  `/files` listing get trusted.)*
+
+  Three things are pinned here, not left to implementation:
   ```yaml
   # on the job — specifying ANY permission zeroes the unspecified ones, so
   # `contents: read` must be restated or checkout breaks. The unit job declares
@@ -218,3 +229,23 @@ tests, the new test file's undocumented deviation from "NOT any new file", and t
 fail-step's `if:` needing exact-string (not substring) assertions. All six resolved in
 `ci.yml`, the test file, and this doc (D6 amendments + proportionality note above);
 none disputed.
+
+**Second post-implementation fixer round** (independent Codex diff review): two
+majors, one minor. Major 1 — `--paginate` does not lift the pull-request-files
+endpoint's own hard 3000-file cap, so a PR past that size could have `uv.lock` fall
+outside the returned pages and silently read as "no change"; fixed by reading the
+PR's `changed_files` count first and failing closed (as an API failure would) both
+when that lookup fails and when the count exceeds 3000 (D6 amendment above). Major 2
+— no test locked the detect step's grep-match→`true`/no-match→`false` branch
+mapping itself (only the outer API-failure fail-closed path was pinned); added a
+test that isolates the inner `if`/`else` fragment and asserts each branch's exact
+assignment — proven to fail (RED) against a mutant with the assignments swapped
+before being accepted. Minor — two `ci.yml` comments were stale: the `unit`-job
+private-clone comment still said the job "does not install the aquacast extra by
+default" though the credentialed path now does unconditionally, and the Plan 185
+comment block read as if `AQUACAST_TOKEN_PRESENT` were unconditionally false on every
+Dependabot-attributed run, when GitHub substitutes a same-named Dependabot-store
+secret in for a withheld Actions-store one — which is exactly why mirroring
+`AQUACAST_TOKEN` into the Dependabot store fixed the original outage (see "Why this
+exists" above). Both comments corrected to describe the actual conditional behavior.
+All three resolved in `ci.yml` and the test file; none disputed.

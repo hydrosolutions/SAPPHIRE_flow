@@ -96,18 +96,23 @@ jobs:
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
           # aquacast (Plan 159) is only reachable when the secret is set. Guarded so
           # the rewrite is never written with an EMPTY token: an empty credential
-          # turns a would-be 404 into a confusing auth failure, and CI does not
-          # install the `aquacast` extra by default anyway.
+          # turns a would-be 404 into a confusing auth failure. The `unit` job DOES
+          # install the `aquacast` extra by default whenever the token reaches this
+          # run — see the AQUACAST_TOKEN_PRESENT-gated install steps below.
           if [ -n "${AQUACAST_TOKEN}" ]; then
             git config --global url."https://x-access-token:${AQUACAST_TOKEN}@github.com/hydrosolutions/aquacast.git".insteadOf "https://github.com/hydrosolutions/aquacast.git"
           fi
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
           AQUACAST_TOKEN: ${{ secrets.AQUACAST_TOKEN }}
-      # Plan 185 — GitHub structurally withholds Actions secrets from runs it
-      # attributes to Dependabot, so AQUACAST_TOKEN_PRESENT is false on every
-      # such run even though the secret exists (mirrored into the Dependabot
-      # store too, see docs/standards/cicd.md). That attribution is keyed on
+      # Plan 185 — GitHub withholds the Actions-store copy of a secret from
+      # runs it attributes to Dependabot; a same-named secret in the
+      # separate Dependabot store is substituted in instead (see
+      # docs/standards/cicd.md). AQUACAST_TOKEN is mirrored into both stores,
+      # so AQUACAST_TOKEN_PRESENT is normally true even on those runs — this
+      # guard exists for when it ISN'T: a new private dependency's secret not
+      # yet mirrored into the Dependabot store, or either copy deleted or
+      # misconfigured. That attribution is keyed on
       # `github.actor` — the identity that triggered THIS run — not on the
       # PR's author: a maintainer can push a further commit onto a
       # Dependabot-opened branch, and that push (and the `pull_request`
@@ -130,7 +135,21 @@ jobs:
           github.actor == 'dependabot[bot]'
         env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          if gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/pr-files.txt"; then
+          # `--paginate` does not lift the pull-request-files endpoint's own
+          # hard 3000-file cap: past that many changed files the response is
+          # silently incomplete no matter how many pages are fetched, so a
+          # uv.lock touch outside the returned set would read as "no change".
+          # Read the PR's own changed_files count first and fail closed (as
+          # if uv.lock changed) rather than trust a listing that might be cut
+          # short.
+          count=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.changed_files') || count=""
+          if [ -z "$count" ]; then
+            echo "::error::Could not read this PR's changed-file count via gh; failing closed (treating as if uv.lock changed)."
+            echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+          elif [ "$count" -gt 3000 ]; then
+            echo "::error::This PR touches $count files, past the pull-request-files API's 3000-file hard cap; the file listing could be incomplete. Failing closed (treating as if uv.lock changed)."
+            echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
+          elif gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/pr-files.txt"; then
             if grep -qxF 'uv.lock' "$RUNNER_TEMP/pr-files.txt"; then
               echo "UV_LOCK_CHANGED=true" >> "$GITHUB_ENV"
             else

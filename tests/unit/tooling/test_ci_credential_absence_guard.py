@@ -183,12 +183,70 @@ class TestLockChangeDetection:
     def test_detect_step_fails_closed_on_gh_failure(self) -> None:
         step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
         run = step["run"]
-        # the success/failure branch of the `gh api` command must be tested
-        # BEFORE its output is trusted (an `if gh ...; then` guard), and the
-        # else branch must set UV_LOCK_CHANGED=true (fail closed).
-        assert run.strip().startswith("if gh api")
-        else_clause = run.split("else", 1)[1]
-        assert "UV_LOCK_CHANGED=true" in else_clause
+        # the success/failure branch of the paginated `gh api .../files` call
+        # must be tested BEFORE its output is trusted (an `elif gh ...; then`
+        # guard), and the final else branch must set UV_LOCK_CHANGED=true
+        # (fail closed).
+        assert "elif gh api --paginate" in run
+        final_else = run.rsplit("\nelse\n", 1)[1]
+        assert "UV_LOCK_CHANGED=true" in final_else
+
+    def test_detect_step_reads_changed_files_count_before_paginating(self) -> None:
+        # The pull-request-files endpoint has a hard 3000-file cap that
+        # `--paginate` cannot lift; the count must be read (and checked)
+        # BEFORE the possibly-incomplete paginated listing is trusted.
+        step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
+        run = step["run"]
+        assert "count=$(gh api" in run
+        assert ".changed_files" in run
+        count_idx = run.index(".changed_files")
+        paginate_call_idx = run.index("gh api --paginate")
+        assert count_idx < paginate_call_idx
+
+    def test_detect_step_fails_closed_when_count_lookup_fails(self) -> None:
+        step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
+        run = step["run"]
+        assert '|| count=""' in run
+        assert 'if [ -z "$count" ]; then' in run
+        count_fail_branch = run.split('if [ -z "$count" ]; then', 1)[1].split(
+            "elif", 1
+        )[0]
+        assert "UV_LOCK_CHANGED=true" in count_fail_branch
+
+    def test_detect_step_fails_closed_when_changed_files_exceeds_3000_cap(
+        self,
+    ) -> None:
+        # `--paginate` does not remove the endpoint's own hard 3000-file
+        # maximum: a PR that touches more files than that could have
+        # uv.lock outside the returned page set, so the guard must not
+        # trust the listing past that cap.
+        step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
+        run = step["run"]
+        assert 'elif [ "$count" -gt 3000 ]; then' in run
+        cap_branch = run.split('elif [ "$count" -gt 3000 ]; then', 1)[1].split(
+            "elif gh api --paginate", 1
+        )[0]
+        assert "UV_LOCK_CHANGED=true" in cap_branch
+
+    def test_detect_step_grep_match_maps_to_true_no_match_maps_to_false(
+        self,
+    ) -> None:
+        # Locks the branch-to-value mapping itself: grep finding `uv.lock`
+        # must set true, the no-match branch must set false. Flipping either
+        # assignment must fail this test.
+        step = _step("Detect uv.lock change (Dependabot degraded-coverage guard)")
+        run = step["run"]
+        grep_idx = run.index("if grep -qxF 'uv.lock'")
+        inner = run[grep_idx:]
+        then_idx = inner.index("then")
+        else_idx = inner.index("\n  else\n")
+        fi_idx = inner.index("\n  fi\n")
+        then_branch = inner[then_idx:else_idx]
+        else_branch = inner[else_idx:fi_idx]
+        assert "UV_LOCK_CHANGED=true" in then_branch
+        assert "UV_LOCK_CHANGED=false" not in then_branch
+        assert "UV_LOCK_CHANGED=false" in else_branch
+        assert "UV_LOCK_CHANGED=true" not in else_branch
 
     def test_detect_step_never_runs_on_push(self) -> None:
         # push events have no github.event.pull_request.number; the detect
