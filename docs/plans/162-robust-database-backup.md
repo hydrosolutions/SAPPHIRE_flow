@@ -92,6 +92,20 @@ equality across `createdb`/`pg_restore`/content queries, not just "some createdb
 `--no-owner`/`--no-acl` argv tokens, stderr surfacing for both `createdb` and `pg_restore`, and `--network none`
 — proven red against the buggy/absent behaviour and green against the fix.
 
+**Second fixer round (2026-08-18, same branch), an independent Codex pass over that diff found three more
+gaps, all fixed:** (1) **blocker** — the post-restore sequence-collision check queried
+`access_tokens_id_seq`, but migration 0047 gives `access_tokens.id` a UUID primary key, so that sequence
+never exists; the real query would have failed after every genuinely successful restore, including the
+verified 1.1 GB mac-mini run above. Retargeted to `audit_log_id_seq`/`audit_log` (migration 0045's real
+BIGINT `autoincrement=True` column). (2) **major** — the fresh-database locking test treated "the last
+`createdb` argv token" as the database name, which a broken invocation like
+`createdb rehearsal --maintenance-db template1` (creates/restores into `template1`) would still have
+satisfied; `createdb` now calls with an explicit `--` end-of-options marker, and the test asserts the
+database name is the sole positional token after it. (3) **minor** — the `--network none` test checked
+token membership only, not position, so `docker run IMAGE --network none` (which Docker parses as the
+container's *command*, not a `run` option) would have passed; the test now also asserts `--network none`
+precedes the image argument. All three proven red against the pre-fix script and green after.
+
 ## Status
 
 > **Status vocabulary note (2026-08-18):** this briefly read `PARTIAL`, which is **not** a recognised status

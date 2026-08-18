@@ -38,6 +38,24 @@ running #180's merged script against a live mac-mini dump (see the plan's
       fully-restored, decrypted dump (including access_tokens across every
       tenant) and nothing in the script needs container-initiated network
       access.
+
+Locked 2026-08-18, second round (independent review of the (f)-(j) fixer
+commit found three further gaps):
+  (k) the sequence-collision plausibility check targets `audit_log_id_seq` /
+      `audit_log`, NOT `access_tokens_id_seq` — migration 0047 gives
+      `access_tokens.id` a UUID primary key (no sequence exists at all), so
+      the earlier version of this check would fail after every genuinely
+      successful restore. `audit_log.id` (migration 0045) is a real BIGINT
+      `autoincrement=True` column with a genuine Postgres-backed sequence.
+  (l) the createdb call uses a `--` end-of-options marker, and the test
+      asserts the database name is the sole positional token after it —
+      not merely "the last token in argv", which a broken invocation like
+      `createdb rehearsal --maintenance-db template1` (creates/restores
+      into `template1`, not `rehearsal`) would otherwise still satisfy.
+  (m) the `--network none` check now also asserts POSITION, not just
+      membership: both tokens must appear before the image argument in the
+      `docker run` invocation, since Docker treats anything after the image
+      as the container's command rather than a `run` option.
 """
 
 from __future__ import annotations
@@ -62,7 +80,7 @@ def _write_fake_docker(
     pg_restore_exit: int = 0,
     pg_restore_stderr: str = "",
     access_tokens_count: str = "3",
-    access_tokens_max_id: str = "5",
+    audit_log_max_id: str = "5",
     seq_last_value: str = "5",
     seq_is_called: str = "t",
 ) -> Path:
@@ -120,12 +138,12 @@ def _write_fake_docker(
                 echo "abcd1234ef56"
                 exit 0
                 ;;
-              *"access_tokens_id_seq"*)
+              *"audit_log_id_seq"*)
                 echo "{seq_last_value}|{seq_is_called}"
                 exit 0
                 ;;
-              *"coalesce(max(id), 0) FROM access_tokens"*)
-                echo "{access_tokens_max_id}"
+              *"coalesce(max(id), 0) FROM audit_log"*)
+                echo "{audit_log_max_id}"
                 exit 0
                 ;;
               *)
@@ -202,7 +220,11 @@ def _flag_value(argv: list[str], flag: str) -> str:
 
 
 def _run_script(
-    tmp_path: Path, docker_cmd: Path, dump_path: Path
+    tmp_path: Path,
+    docker_cmd: Path,
+    dump_path: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -210,6 +232,7 @@ def _run_script(
         "RESTORE_CONTAINER_NAME": "test-restore-rehearsal",
         "RESTORE_WAIT_ATTEMPTS": "2",
         "RESTORE_WAIT_INTERVAL": "0",
+        **(extra_env or {}),
     }
     return subprocess.run(
         ["bash", str(_SCRIPT), str(dump_path)],
@@ -300,7 +323,7 @@ class TestSequenceCollisionRisk:
         fake = _write_fake_docker(
             bin_dir,
             args_log,
-            access_tokens_max_id="5",
+            audit_log_max_id="5",
             seq_last_value="5",
             seq_is_called="f",
         )
@@ -309,7 +332,7 @@ class TestSequenceCollisionRisk:
         assert result.returncode != 0
         assert "PASS" not in result.stdout
         assert "is_called" in result.stderr
-        assert "access_tokens_id_seq" in result.stderr
+        assert "audit_log_id_seq" in result.stderr
         assert len(_rm_calls(args_log)) == 1, (
             "teardown must still happen when the sequence check fails"
         )
@@ -327,7 +350,7 @@ class TestSequenceCollisionRisk:
         fake = _write_fake_docker(
             bin_dir,
             args_log,
-            access_tokens_max_id="5",
+            audit_log_max_id="5",
             seq_last_value="1",
             seq_is_called="f",
         )
@@ -362,7 +385,23 @@ class TestRestoresIntoFreshDatabase:
 
         createdb_argv = _last_exec_argv(args_log, "createdb")
         assert createdb_argv[0] == "createdb"
-        created_db = createdb_argv[-1]
+        # The database name must be unambiguously the sole positional
+        # argument after a `--` end-of-options marker — NOT merely "the
+        # last token" (a broken invocation like
+        # `createdb rehearsal --maintenance-db template1` would put
+        # 'template1' last while actually creating/restoring into
+        # 'template1', and every earlier assertion here would still pass).
+        assert "--" in createdb_argv, (
+            f"createdb call must use '--' to unambiguously separate "
+            f"options from the database name: {createdb_argv}"
+        )
+        sep_index = createdb_argv.index("--")
+        positional = createdb_argv[sep_index + 1 :]
+        assert len(positional) == 1, (
+            f"expected exactly one positional argument (the database "
+            f"name) after '--', got {positional}: {createdb_argv}"
+        )
+        created_db = positional[0]
         assert created_db != "postgres", (
             f"created database must not be 'postgres': {createdb_argv}"
         )
@@ -379,8 +418,8 @@ class TestRestoresIntoFreshDatabase:
         content_query_substrings = [
             "count(*) FROM access_tokens",
             "version_num FROM alembic_version",
-            "access_tokens_id_seq",
-            "coalesce(max(id), 0) FROM access_tokens",
+            "audit_log_id_seq",
+            "coalesce(max(id), 0) FROM audit_log",
         ]
         for substring in content_query_substrings:
             psql_argv = _last_exec_argv(args_log, substring)
@@ -488,6 +527,45 @@ class TestNetworkIsolation:
         run_argv = _run_call_argv(args_log)
         assert "--network" in run_argv, run_argv
         assert _flag_value(run_argv, "--network") == "none", run_argv
+
+    def test_network_none_precedes_the_image_argument(self, tmp_path: Path) -> None:
+        """Membership alone is not enough: `docker run IMAGE --network none`
+        would also satisfy a plain "is '--network none' present" check, but
+        Docker treats anything after the image as the container's COMMAND,
+        not a `run` option — so that invocation would silently run the
+        image's entrypoint with `--network` and `none` as its args, giving
+        the container a real network. `--network none` must appear BEFORE
+        the image token, and the image must be the run invocation's final
+        positional argument (this script passes no container command)."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        sentinel_image = "test-registry.example/sentinel-postgis:pinned"
+        fake = _write_fake_docker(bin_dir, args_log)
+        result = _run_script(
+            tmp_path,
+            fake,
+            _dump_file(tmp_path),
+            extra_env={"RESTORE_IMAGE": sentinel_image},
+        )
+
+        assert result.returncode == 0, result.stderr
+        run_argv = _run_call_argv(args_log)
+        assert run_argv[-1] == sentinel_image, (
+            f"expected the image to be the final positional argument of "
+            f"`docker run`: {run_argv}"
+        )
+        network_idx = run_argv.index("--network")
+        image_idx = len(run_argv) - 1
+        assert network_idx < image_idx, (
+            f"--network must appear before the image argument, else "
+            f"Docker treats it as the container's command: {run_argv}"
+        )
+        assert run_argv[network_idx + 1] == "none", run_argv
+        assert network_idx + 1 < image_idx, (
+            f"'none' (the --network value) must also precede the image "
+            f"argument: {run_argv}"
+        )
 
 
 class TestMissingDump:

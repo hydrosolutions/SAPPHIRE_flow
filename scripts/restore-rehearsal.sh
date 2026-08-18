@@ -103,9 +103,12 @@ done
     || fail "docker cp failed"
 
 # --- createdb: a FRESH database, never the image's pre-populated default.
+# `--` unambiguously ends option parsing so DB_NAME can never be swallowed
+# as an option value or an option can never masquerade as the db name —
+# the same defence-in-depth reasoning as pg_restore's explicit -d below.
 # Stderr is captured (not discarded) for the same reason as pg_restore's
 # below: a swallowed diagnostic hides the real failure reason. -------------
-createdb_err="$("${DOCKER}" exec "${CONTAINER}" createdb -U postgres "${DB_NAME}" 2>&1 1>/dev/null)"
+createdb_err="$("${DOCKER}" exec "${CONTAINER}" createdb -U postgres -- "${DB_NAME}" 2>&1 1>/dev/null)"
 createdb_status=$?
 if [[ "${createdb_status}" -ne 0 ]]; then
     fail "createdb '${DB_NAME}' failed (exit ${createdb_status}): $(printf '%s' "${createdb_err}" | head -n 20)"
@@ -125,7 +128,15 @@ if [[ "${pg_restore_status}" -ne 0 ]]; then
 fi
 
 # --- content assertions: pg_restore exit 0 alone proves nothing. -----------
-CHECKS_DONE="access_tokens row count, alembic_version, access_tokens_id_seq"
+# The sequence check below deliberately targets audit_log, NOT
+# access_tokens: migration 0047 gives access_tokens.id a UUID primary key
+# (no sequence at all), so `access_tokens_id_seq` never exists — that
+# earlier version of this check would fail after every genuinely
+# successful restore. audit_log.id (migration 0045) is a real BIGINT
+# `autoincrement=True` column, which Postgres backs with a genuine
+# `audit_log_id_seq` — the sequence-collision plausibility check needs a
+# real serial column, and this is the only one in scope for this rehearsal.
+CHECKS_DONE="access_tokens row count, alembic_version, audit_log_id_seq"
 
 count="$(psql_exec "SELECT count(*) FROM access_tokens" "${DB_NAME}")" \
     || fail "access_tokens query failed (table missing from restore?)"
@@ -136,14 +147,14 @@ version="$(psql_exec "SELECT version_num FROM alembic_version" "${DB_NAME}")" \
     || fail "alembic_version query failed"
 [[ -n "${version}" ]] || fail "alembic_version is empty"
 
-seq="$(psql_exec "SELECT last_value || '|' || is_called FROM access_tokens_id_seq" "${DB_NAME}")" \
-    || fail "access_tokens_id_seq query failed"
+seq="$(psql_exec "SELECT last_value || '|' || is_called FROM audit_log_id_seq" "${DB_NAME}")" \
+    || fail "audit_log_id_seq query failed"
 last_value="${seq%%|*}"
 is_called="${seq##*|}"
-max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM access_tokens" "${DB_NAME}")" \
-    || fail "access_tokens max(id) query failed"
+max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM audit_log" "${DB_NAME}")" \
+    || fail "audit_log max(id) query failed"
 if [[ "${is_called}" == "f" && "${last_value}" == "${max_id}" ]]; then
-    fail "access_tokens_id_seq: last_value == MAX(id) with is_called=false — next nextval() collides with an existing row"
+    fail "audit_log_id_seq: last_value == MAX(id) with is_called=false — next nextval() collides with an existing row"
 fi
 
 # Plausibility only — the restore container cannot reach production
