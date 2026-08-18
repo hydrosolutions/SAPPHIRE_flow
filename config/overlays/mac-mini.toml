@@ -8,9 +8,9 @@ enable_observation_alerts = true
 archive_base_path = "/data/bafu_forecasts"
 
 # Plan 136 BAFU LINDAS observation archive collector. Setting this path
-# ENABLES the hourly-at-:37 collect-bafu-observations flow (gated: unset =
-# no-op; Plan 175 D4 moved this off :05 — it collided with the */5
-# ingest-observations cron against LINDAS's 3-request burst ceiling).
+# ENABLES the collect-bafu-observations flow (gated: unset = no-op). Plan 176
+# D1: polls ~18-20x/hour (over-polling a measured 10-minute publish grid,
+# not the old hourly-at-:37 assumption) on the `ingest` work pool (D5).
 # Quarantined, host-persistent named volume (docker-compose.yml
 # `bafu_observation_archive`); evaluation-only, forward-only, keyed on
 # (gauge_code, lindas_kind) — not an onboarded station. Discard with

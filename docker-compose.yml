@@ -184,6 +184,12 @@ services:
     networks: [backend]
     volumes:
       - ./config.toml:/app/config.toml:ro
+      # Plan 176 D5/T1: the collect-bafu-observations deployment now routes
+      # here (INGEST_POOL, cli/register_deployments.py) — it needs write
+      # access to the same quarantined archive volume prefect-worker
+      # mounts above, or the collector fails at WRITE time (after a
+      # successful fetch), which reads as a collector bug, not a deploy bug.
+      - bafu_observation_archive:/data/bafu_observations:rw
     logging:
       driver: json-file
       options:
@@ -380,11 +386,14 @@ services:
       # Plan 146 D2: recap-Gateway snow-reanalysis ingest — a distinct time
       # from ingest-weather-history so the two never contend for the DB.
       SCHEDULE_INGEST_SNOW_REANALYSIS: ${SCHEDULE_INGEST_SNOW_REANALYSIS:-0 5 * * *}
-      # Plan 175 D4/T4: NOT `5 * * * *` — that minute is also hit by every
-      # `*/5` ingest tick, which collided every hour against LINDAS's 3-
-      # request burst ceiling. `37` is clear of every `*/5` boundary and of
-      # the `0 * * * *` forecast collector.
-      SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-37 * * * *}
+      # Plan 176 D1: LINDAS publishes on a 10-minute grid, not hourly (the
+      # old `37 * * * *` assumption is falsified — see
+      # docs/plans/176-lindas-archive-completeness.md § Evidence).
+      # Over-polls at ~2.5x the grid (max cyclic gap <=4 min, min gap
+      # >=3 min, no minute divisible by 5 — properties asserted by
+      # tests/unit/cli/test_register_deployments.py, mirrored by
+      # cli/register_deployments.py's Python fallback — MUST stay in sync).
+      SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-1,4,7,11,14,17,21,24,27,31,34,37,41,44,47,51,54,57 * * * *}
     depends_on:
       postgres:
         condition: service_healthy

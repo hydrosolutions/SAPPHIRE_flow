@@ -2,7 +2,7 @@
 
 > This document extends `docs/architecture-context.md`. It adds Prefect 3 implementation detail for the 12 data flows (plus Flow 5w) and maintenance tasks. For foundational decisions, see: flow definitions and step sequencing (architecture-context.md § Data flows), Prefect naming conventions (conventions.md § Prefect flows and tasks), retry patterns (conventions.md § Error handling at adapter boundaries), work pool topology and resource limits (cicd.md § Prefect work pool separation), and container layout (cicd.md § Docker Compose service topology). This document does not redefine the tech stack, flow step logic, or data model.
 >
-> **v0 simplifications**: See [`docs/v0-scope.md`](../v0-scope.md) § A6 (single work pool), § A4 (simplified onboarding), § A7 (simplified artifact lifecycle), § D4 (minimize Prefect overhead). v0 runs **two** pools — the general `default` pool plus a dedicated `ingest` pool served by `prefect-worker-ingest` for obs-feed isolation (Plan 098); only `ingest-observations` routes to `ingest`, everything else stays on `default`. The three-pool ops/training/hindcast topology described below applies to v1.
+> **v0 simplifications**: See [`docs/v0-scope.md`](../v0-scope.md) § A6 (single work pool), § A4 (simplified onboarding), § A7 (simplified artifact lifecycle), § D4 (minimize Prefect overhead). v0 runs **two** pools — the general `default` pool plus a dedicated `ingest` pool served by `prefect-worker-ingest` for obs-feed isolation (Plan 098); **`ingest-observations` and `collect-bafu-observations`** (Plan 176) route to `ingest`, everything else stays on `default`. The three-pool ops/training/hindcast topology described below applies to v1.
 
 ## Why Prefect 3
 
@@ -34,21 +34,32 @@ All cron schedules are deployment-configurable — set as `CronSchedule` paramet
 
 ### LINDAS-caller schedule separation (Plan 175 D4/D6)
 
-**Different work pools do NOT serialise contention against the same external
-endpoint.** `ingest-observations` (`ingest` pool) and `collect-bafu-observations`
-(`default` pool) both call `lindas.admin.ch`; a per-flow `concurrency_limit`
-only bounds concurrent runs of *that* deployment, never two different
+**A shared work pool does NOT serialise contention against the same external
+endpoint either.** `ingest-observations` and `collect-bafu-observations` both
+call `lindas.admin.ch` and, since Plan 176, both run on the `ingest` pool — but
+the worker is `--type process`, so each flow run is a separate subprocess with
+its own in-process rate limiter. Same pool, same worker, still no shared budget.
+(Before Plan 176 they sat on *different* pools, which was no better.) A per-flow
+`concurrency_limit` only bounds concurrent runs of *that* deployment, never two different
 deployments hitting the same upstream host at the same wall-clock minute.
-Two separate worker processes on two separate pools start their runs
-independently — LINDAS sees both as unrelated clients regardless of pool
-topology. The mechanism that actually removed the two flows' hourly collision
-was moving `collect-bafu-observations` off `5 * * * *` (which the ingest
-flow's `*/5 * * * *` also hits every hour) onto `37 * * * *` — a schedule
-fact, not a work-pool fact.
+Separate worker *processes* start their runs independently — LINDAS sees them as
+unrelated clients whether they sit on the same pool or different ones (they were
+on different pools under Plan 098, and share the `ingest` pool since Plan 176;
+neither arrangement shares a rate-limit budget, because `--type process` gives
+each run its own subprocess). The mechanism that actually removed the two flows'
+hourly collision was moving `collect-bafu-observations` off `5 * * * *` (which
+the ingest flow's `*/5 * * * *` also hits every hour) — first onto `37 * * * *`
+(Plan 175), now onto Plan 176 D1's denser property-defined list. **A schedule
+fact, not a work-pool fact** — which is why the D1 rule is expressed as
+"no minute divisible by 5" rather than as a pool assignment.
 
 **Rule for any future LINDAS-calling schedule**: the cron minute must not be
 divisible by 5 (`ingest-observations`'s tick) and must not collide with
-`collect-bafu-forecasts`'s `0 * * * *`. See
+`collect-bafu-forecasts`'s `0 * * * *`. The BAFU observation collector's own
+schedule is defined by **properties, not a literal** (Plan 176 D1: max cyclic
+inter-poll gap ≤4 min, min ≥3 min, every minute non-divisible by 5) — quote the
+properties, not the minute list, which supersedes Plan 175's single `37 * * * *`
+tick and is asserted by test rather than pinned in prose. See
 `docs/decisions/bafu-lindas-rate-limit.md` for the measured rate-limit
 contract this rule protects (burst 3, ~1 slot refill per 3–4 s, no
 `Retry-After`).
@@ -57,7 +68,7 @@ contract this rule protects (burst 3, ~1 slot refill per 3–4 s, no
 `cli/register_deployments.py` reads `os.environ.get("SCHEDULE_...", "<default>")`
 — a Python-level fallback used only when nothing sets the environment
 variable. But `docker-compose.yml`'s `init` service ALWAYS sets it (e.g.
-`SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-37 * * * *}`),
+`SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-<default>}`),
 so on the mini the compose file's own `:-<default>` fallback is the value
 that actually reaches `register_deployments.py` — the Python default is only
 exercised by a non-compose invocation (e.g. a bare `python -m
@@ -66,6 +77,45 @@ change to the Python default, without the matching `docker-compose.yml`
 edit, is a deployment no-op** — `tests/unit/test_compose_schedule_default.py`
 locks both LINDAS-relevant schedules (`SCHEDULE_INGEST_OBSERVATIONS`,
 `SCHEDULE_COLLECT_BAFU_OBSERVATIONS`) against exactly this trap.
+
+*(The literal `collect-bafu-observations` cron value above was `37 * * * *`
+under Plan 175; Plan 176 D1 replaced it with a denser over-poll schedule —
+see below. The trap this section documents is unchanged; only the example
+value moved.)*
+
+### A cron INTERVAL is not a poll-INTERVAL guarantee on a shared pool (Plan 176 D5/T0)
+
+A `CronSchedule` controls when a run is *scheduled*; it says nothing about
+when that run actually *starts executing*. On a work pool shared with
+CPU-pegging or long-running flows, a worker's poll loop can be starved long
+enough that a scheduled run sits queued well past its nominal tick — Plan
+098 measured **25–60 min** of pickup lateness on the `default` pool during
+forecast-cycle windows, which is why `ingest-observations` was moved to a
+dedicated `ingest` pool in the first place. **Two distinct mechanisms can
+cause this** (Plan 098's own analysis, reused by Plan 176 T0):
+
+- **(a) worker-side poll-cycle starvation** — the `ProcessWorker` poll loop
+  is a single async event loop; if it is busy *managing* a CPU-pegging
+  subprocess, it skips its own poll ticks. A dedicated worker (its own event
+  loop) resolves this outright.
+- **(b) server-side dequeue latency** — a global Prefect-server-side
+  slowdown. A dedicated *pool* helps only incidentally; it does **not** help
+  if the slowness is a server-wide throttle, not a worker-side one.
+
+**Consequence for anything relying on a cadence, not just a schedule
+string**: a flow whose CORRECTNESS depends on not missing a poll window
+(Plan 176's LINDAS archive collector, over-polling a 10-minute publish grid
+that serves no history) cannot rely on the cron string alone — pickup
+latency must be *measured*, not assumed, and re-measured whenever the load
+profile on a shared pool changes materially (Plan 176 T0 measured ≤3 s
+pickup latency on `default` in 2026-08-18's control-only-cycle regime, a
+result explicitly recorded as a **dated measurement, not a settled
+property** — a return to heavier NWP-bearing cycles could plausibly bring
+mechanism (a) back). Where a flow cannot tolerate that uncertainty, prefer
+a dedicated pool (cheap insurance) AND build a content-derived completeness
+check that can detect a miss after the fact — a schedule can promise intent,
+never delivery. See `docs/plans/176-lindas-archive-completeness.md` § T0
+measurement and § T8 (the completeness audit) for the worked example.
 
 ## Task granularity
 
@@ -91,7 +141,7 @@ Flow 1 parallelizes forecast execution across stations. Two mechanisms are avail
 - `task.map()` — for homogeneous work over a collection (e.g. running the same forecast task for each station/model pair).
 - `task.submit()` + gather — for heterogeneous parallel work where tasks differ by inputs or type.
 
-`task.map()` with `unmapped()` store/connection arguments requires an in-process task runner (`ThreadPoolTaskRunner`; note: `ConcurrentTaskRunner` is a backwards-compatibility alias for the same class in Prefect 3.6+). Stores hold SQLAlchemy connections that are not pickle-serializable — distributed or subprocess runners would fail. The `default` pool retains in-process `task.map` fan-out for Flow 1. **Plan 098 note**: the `ingest` pool is a separate worker process (`prefect-worker-ingest`), not in-process with `default`; it serves only the observation-ingest flow, which does no `task.map` fan-out. **→ BENCHMARK (plan 013)**: Default `max_workers` is unbounded (`sys.maxsize`). At ~1000-station fan-out via `task.map()`, this spawns ~1000 concurrent OS threads. Cap via `ThreadPoolTaskRunner(max_workers=N)` or `PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS` env var. Benchmark thread count limits, memory footprint, and connection pool pressure before deploying at >500 stations.
+`task.map()` with `unmapped()` store/connection arguments requires an in-process task runner (`ThreadPoolTaskRunner`; note: `ConcurrentTaskRunner` is a backwards-compatibility alias for the same class in Prefect 3.6+). Stores hold SQLAlchemy connections that are not pickle-serializable — distributed or subprocess runners would fail. The `default` pool retains in-process `task.map` fan-out for Flow 1. **Plan 098 note**: the `ingest` pool is a separate worker process (`prefect-worker-ingest`), not in-process with `default`; it serves the observation-ingest flow and (Plan 176) the BAFU observation collector, neither of which does `task.map` fan-out. **→ BENCHMARK (plan 013)**: Default `max_workers` is unbounded (`sys.maxsize`). At ~1000-station fan-out via `task.map()`, this spawns ~1000 concurrent OS threads. Cap via `ThreadPoolTaskRunner(max_workers=N)` or `PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS` env var. Benchmark thread count limits, memory footprint, and connection pool pressure before deploying at >500 stations.
 
 Illustrative sketch for Flow 1 (not implementation):
 
@@ -164,7 +214,7 @@ Four composition patterns are used across the 12 flows (plus Flow 5w):
 
 **1. Direct subflow call** — a `@flow` calls another `@flow` in-process. Prefect tracks the parent–child relationship in the UI. Used for Flows 6/9 calling Flow 7 (hindcast) and Flows 8/10 (skill) as part of the training pipeline.
 
-> **v1-only** (v0-scope.md §A6): Cross-pool submission requires the three-pool topology. **Plan 098 note**: v0 now runs two pools (`default` + `ingest`), but the `ingest` pool serves only `ingest-observations` (no sub-flow composition), so sub-flows still run in-process on the `default` pool.
+> **v1-only** (v0-scope.md §A6): Cross-pool submission requires the three-pool topology. **Plan 098 note**: v0 now runs two pools (`default` + `ingest`), but the `ingest` pool serves only `ingest-observations` and `collect-bafu-observations` (Plan 176; neither composes sub-flows), so sub-flows still run in-process on the `default` pool.
 
 **2. Cross-pool submission** — a parent flow submits work to a different work pool via `run_deployment()`. The parent does not block; it polls or waits for the child deployment's run to complete. Used when the training pool (`training`) needs to dispatch hindcast and skill work to the `hindcast` pool after T.3 completes.
 

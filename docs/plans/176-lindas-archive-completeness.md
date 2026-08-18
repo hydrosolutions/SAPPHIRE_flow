@@ -293,6 +293,12 @@ Keying on `max()` while reasoning from the mode was an internal inconsistency re
 behaves. `max()` remains correct for the **freshness** gate (D4), which asks "is any part of the network
 fresh?" — a different question from "which slot is this snapshot".
 
+**Tie-break: earliest timestamp among equally-represented modal candidates.** Not observed in the 7
+samples above (the network advances atomically), but the mode is not guaranteed unique, so `_modal_cycle_at`
+picks the earliest tied slot — the more conservative reading, consistent with D2's "archived exactly once,
+at first sighting" property. Both `flows/collect_bafu_observations.py` and the T8 audit's `_observed_slot`
+apply this same rule.
+
 **Consequence: the flow must FETCH BEFORE it can dedup**, deliberately reversing Plan 136's pre-fetch
 short-circuit. Cheap at ~0.1 s / 234 KB per request. The old short-circuit must be **removed**, not left
 in place, or it will dedup on the clock before the data is ever seen.

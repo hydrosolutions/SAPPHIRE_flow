@@ -57,16 +57,21 @@ def _build_specs() -> list[DeploymentSpec]:
     # rhythm; a run is ~70s and dedups on issued_at, so hourly never overlaps
     # and re-fetches are cheap no-ops. Retune via the env var without a redeploy.
     cron_bafu_forecast = os.environ.get("SCHEDULE_COLLECT_BAFU_FORECASTS", "0 * * * *")
-    # Plan 136 BAFU LINDAS observation archive collector. Plan 175 D4/T4:
-    # NOT `5 * * * *` — every `*/5` ingest tick lands on minute 5 too,
-    # colliding against LINDAS's measured 3-request burst ceiling every
-    # hour (see docs/decisions/bafu-lindas-rate-limit.md). `37` is clear of
-    # every `*/5` boundary and of the `0 * * * *` forecast collector.
-    # NOTE for Plan 176: the "hourly refresh" cadence claim this comment
-    # used to justify `:05` is itself falsified — LINDAS actually publishes
-    # on a 10-minute grid — so do not re-derive a cadence from this comment.
+    # Plan 136 BAFU LINDAS observation archive collector. Plan 176 D1:
+    # LINDAS actually publishes on a 10-minute grid (the "hourly refresh"
+    # claim that justified the old `37 * * * *` was measured and falsified
+    # — see docs/plans/176-lindas-archive-completeness.md § Evidence).
+    # Over-poll at roughly 2.5x the grid rather than match it exactly — a
+    # poll rate equal to the grid rate loses a slot whenever publish jitter
+    # puts two slots between two polls (D1's "why not simply poll every 10
+    # minutes" note). LOCKED PROPERTIES (not this literal string — a test
+    # asserts them): max CYCLIC inter-poll gap <=4 min (incl. the
+    # `:59 -> :01` wrap), min gap >=3 min, every minute non-divisible by 5
+    # (never shares a minute with ingest-observations' `*/5` tick or the
+    # BAFU-forecast collector's `0 * * * *` tick).
     cron_bafu_observation = os.environ.get(
-        "SCHEDULE_COLLECT_BAFU_OBSERVATIONS", "37 * * * *"
+        "SCHEDULE_COLLECT_BAFU_OBSERVATIONS",
+        "1,4,7,11,14,17,21,24,27,31,34,37,41,44,47,51,54,57 * * * *",
     )
 
     return [
@@ -153,6 +158,13 @@ def _build_specs() -> list[DeploymentSpec]:
             deployment_name="collect-bafu-observations",
             cron=cron_bafu_observation,
             concurrency_limit=1,
+            # Plan 176 D5/T1: routed onto the nearly-idle `ingest` pool
+            # (its own dedicated worker/event loop) rather than `default` —
+            # insurance against the worker-side poll-cycle starvation Plan
+            # 098 measured (25-60 min) during forecast-cycle windows on the
+            # shared pool. See docs/plans/176-lindas-archive-completeness.md
+            # § Execution isolation.
+            work_pool_name=INGEST_POOL,
         ),
         # Plan 157 T3: manually-triggered — no cron; runs on the `default`
         # pool like every other non-ingest deployment. NOTE for whoever
