@@ -57,12 +57,29 @@ s3://sloth-dynamic/v1/era5/   ERA5-Land DAILY aggregates, ONE zarr per variable,
                               zarr v3, inline consolidated metadata,
                               0.1° global (1801×3600), LAND-ONLY so ocean is NaN, CF-1.11
 
-canonical name         unit    store variable                     native  transform
+AQUAIRE name           unit    store variable                     native  transform
 precipitation          mm/day  total_precipitation_sum            m       × 1000
 mean_temperature       degC    temperature_2m_mean                K       − 273.15
 solar_net_radiation    W/m²    surface_net_solar_radiation_sum    J/m²    ÷ 86400
 thermal_net_radiation  W/m²    surface_net_thermal_radiation_sum  J/m²    ÷ 86400
 ```
+
+### ⛔ These are AQUAIRE's names, not SAP3's — do not write them to the store
+
+That column says "canonical" in `aquaire`'s source. It means canonical **to aquacast**. SAP3's
+canonical vocabulary is `{"precipitation", "temperature"}` — `mean_temperature` is not a SAP3
+parameter, and the codebase already says so: `models/aquacast/_shim.py:97` carries
+`AQUACAST_TO_CANONICAL_NAME = {"mean_temperature": "temperature"}`, and every MeteoSwiss row is
+written `parameter="temperature"` (`adapters/meteoswiss_open_data_reanalysis.py:211`).
+
+**Writing `parameter="mean_temperature"` would fail SILENTLY.** `fetch_forcing` returns nothing for
+an unmatched parameter filter rather than raising, so a training or hindcast run scoped to
+`cmal_pool_PT` would get precipitation back and **zero temperature rows, with no error** — and T2's
+own goal of being "queryable and comparable alongside MeteoSwiss" would quietly not hold.
+
+**T1/T2 must write `parameter="temperature"`, reusing `AQUACAST_TO_CANONICAL_NAME` as the single
+source of truth** rather than re-deriving it. Acceptance must query the written rows with the same
+parameter string the hybrid reader actually requests.
 
 **Three traps `aquaire` documents, each of which produces plausible-looking wrong numbers:**
 
@@ -96,9 +113,20 @@ NWP, so the spatial representation matches what the rest of the system expects. 
 `historical_forcing` under a distinct source, **alongside** the MeteoSwiss rows so both lineages
 stay queryable and comparable.
 
+**Scale: use the existing chunked backfill, not a direct extractor call.**
+`ExactExtractGridExtractor.extract()` accumulates every row for every `valid_time` in memory before
+returning, and is used today only for a single NWP cycle or a 60-day rolling window — never a 40-year
+span. `services/reanalysis_backfill.py` (Plan 115b2) exists precisely for this: work units of
+`(product, year, station-batch)`, each chunk persisted before the next so the full series is never
+held in memory, with gap-detection for idempotent resume. Follow that pattern — roughly
+40 yr × 296 basins × 2 params ≈ **8.6 M rows** is not a one-shot call.
+
 **The land-only grid is the trap here:** ocean cells are NaN, so a coastal or partially-masked
 catchment can silently average over fewer cells than it should. Assert the contributing-cell count,
-not just that a number came back.
+not just that a number came back. **Name the mechanism:** the shared extractor hardcodes
+`ops=["mean"]` (`exact_extract_grid_extractor.py:123`) and returns no count, so this needs either a
+new `ops` entry — shown not to change NWP's output shape, since the extractor is shared — or a
+standalone land-mask coverage check T2 owns. Decide which; do not assume the count is available.
 
 ### T3 — validate against Caravan's published indices
 Even reading the same store, **our catchment-averaging is still ours** — cell weighting, boundary
@@ -124,7 +152,7 @@ without touching call sites — the injectability `v0-scope.md` §I2 already req
 | # | Question | Recommendation |
 |---|---|---|
 | **D1** | Agreement tolerance for T3? | **RESOLVED (owner, 2026-08-18): 5 %, relative, per basin.** Deliberately tight — the point is to detect an averaging discrepancy, and a loose bound would pass a systematically biased extraction. **The owner expects this number may be revised**, so record the observed distribution (not just pass/fail) when T3 runs, or a later revision has nothing to reason about. |
-| **D2** | Two forcings or four? | **Ingest all four.** The store has them, the sub-daily artifact may need them, and re-running the extraction later costs more than storing two extra columns now. |
+| **D2** | Two forcings or four? | **Two — defer radiation.** This reverses an earlier recommendation to ingest all four, on a better argument: T3 validates against Caravan indices derived from precipitation and temperature ONLY, so radiation would ship **unvalidated** — exactly what this plan exists to prevent. `cmal_pool_PT` does not consume it, and a follow-on re-derives the mapping from `aquaire` when the sub-daily artifact needs it. |
 | **D3** | Daily store only, or sub-daily too? | Daily first. `aquaire` has a separate `sources/subdaily.py`; treat sub-daily as a follow-on once the daily path is validated. |
 
 ## Workload
