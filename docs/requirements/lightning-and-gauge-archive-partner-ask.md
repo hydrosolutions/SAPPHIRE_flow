@@ -43,6 +43,40 @@ the LIS/OTD gridded diurnal climatology, which trades currency for sample size.
 **No geostationary alternative covers Nepal well:** GOES-GLM is Americas-only; MTG-LI sits at 0° so
 Nepal is at its extreme limb; FY-4 LMI (~105 °E) would see Nepal but is not openly accessible.
 
+### ✅ FEASIBILITY MEASURED 2026-08-18 — access works; the SCIENCE case is weaker than the access case
+
+Probed with the owner's Earthdata login (`~/.netrc`, `urs.earthdata.nasa.gov`). **Everything technical
+works.** The limits are scientific.
+
+| Check | Result |
+|---|---|
+| Earthdata credentials | ✅ work — CMR search and GHRC download both authenticate |
+| ISS-LIS **netCDF** granules | ✅ readable with our existing stack (`h5py` — netCDF4 is HDF5 underneath). Flat layout; flashes are `lightning_flash_lat` / `_lon` / `_TAI93_time` |
+| ⛔ LIS/OTD **climatology** (`.hdf`) | **DOWNLOADED (672 MB) BUT UNREADABLE.** Magic `0e031301` = **HDF4**, not HDF5. `h5py` cannot open it, and our GDAL/`rasterio` build has no HDF4 driver. Would need `pyhdf` + the HDF4 C library — a **system** dependency, not just a wheel |
+| Granule volume | **3,554 granules per JJAS season** matching our box (~1,777 netCDF), ~2.4 MB each ⇒ **~4 GB/season, ~17 GB for 2020–2023**. Granules are per-ORBIT, so a spatial filter matches the orbit but you still download the whole file |
+| **Flash density (measured)** | 5 granules → **748 flashes globally → 6 in 26–31 N / 80–89 E (0.80 %)** |
+
+**Extrapolated yield: ~2,100 flashes per JJAS season in-box, ~8,500 for 2020–2023.**
+
+### ⚠️ The honest verdict: adequate for the FOOTHILLS, probably too sparse for GROUP A
+
+- Across **24 hour-bins** alone: ~350 flashes/bin — **workable**.
+- Across **24 hours × elevation bands** — which is the entire point — it falls to **tens per bin**, and
+  the distribution is heavily weighted to the Terai.
+- **Compounding physical problem: lightning is a proxy for CONVECTIVE precipitation, and high-altitude
+  Himalayan precipitation is largely SNOW, which produces very little lightning.** The method is
+  therefore weakest **exactly where Group A's unresolved anomaly sits** (2,860–3,700 m).
+
+⇒ **Lightning can validate the documented FOOTHILL phase error** (Hunt et al.: foothills peak ~0300 IST
+while ERA5 puts it mid-afternoon) — which is a real and useful result, since that is the error M-A7's
+correction must fix. **It cannot settle the high-altitude question.** M-A10's co-located gauge pair
+remains the instrument for that.
+
+**Cost/benefit before committing:** ~17 GB of transfer yields a few hundred KB of in-box flashes — a
+~0.005 % yield — because the granules are per-orbit and cannot be server-side subsetted through the
+plain download route. **Worth it for the foothill validation; not worth it if the high-altitude band was
+the motivation.** Owner call.
+
 ### What this changes
 
 **M-D4 stops being blocked on a partner.** It becomes a small acquisition we can run ourselves — same
