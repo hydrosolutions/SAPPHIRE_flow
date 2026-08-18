@@ -48,10 +48,13 @@ Salerno et al. 2025), which is what makes it an adjudicator rather than another 
 **H0 (physical):** the signal is real orographic behaviour that the Pyramid instrument should broadly
 reproduce.
 
-**Preliminary evidence for H1, already computed (orchestrator, 2026-08-18, from the Level-1 files):**
-Pyramid Lukla's JJAS profile peaks at **22–00 NPT** with its minimum at **07–10** (normalised 0.29/0.28
-at 07–08). Our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT** — inside Pyramid's minimum, 1.4 km away.
-**Near anti-phase.** This plan makes that comparison rigorous, mask-consistent, and reportable.
+**~~Preliminary evidence for H1~~ — WITHDRAWN 2026-08-18 by this plan's own first real run.** The
+evidence that motivated H1 was: Pyramid Lukla's JJAS profile peaks at **22–00 NPT** with its minimum at
+**07–10**, while our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT** — inside Pyramid's minimum, 1.4 km away,
+near anti-phase. **The DHM half of that comparison was wrong.** It was computed on UNMASKED data, where
+6 sentinel values of −9999999 at 02–03 UTC drive the grand mean negative and invert the normalisation.
+Masked, DHM Lukla peaks at **16 UTC ≡ 21 NPT** — 2 h from Pyramid, i.e. agreement. The Pyramid half
+(22–00 NPT) stands. See the M-A10 first-run record in `docs/design/dhm-precipitation-milestones.md`.
 
 ## ⛔ CORRECTED after slim review 2026-08-18 — the test as first written could NOT identify H1
 

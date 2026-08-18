@@ -426,12 +426,16 @@ adequacy gate below). Both profiles reported **in NPT** (Pyramid's own timebase)
 UTC→NPT conversion and the Pyramid README's unstated period convention together declared as an
 **alignment uncertainty of ±1.75h** — no phase claim is made finer than that.
 
-**The hypothesis it exists to settle:** our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT**, which sits inside
-Pyramid Lukla's diurnal **minimum** (normalised 0.29/0.28 at 07–08, peaks at 22–00 NPT) — near
-anti-phase from 1.4 km away. Combined with Group A's 0.01 mm resolution and sub-0.1 mm noise floor, the
-hypothesis (**H1**) is that **the Group A high-altitude diurnal signal is noise-floor contamination, not
-physics** (**H0**). Confirming H1 would retire a finding the vision has carried as UNRESOLVED since
-2026-08-13.
+**The hypothesis it exists to settle** *(and its OUTCOME — see the first-run record at the end of this
+milestone)*: our DHM Lukla appeared to peak at **02 UTC ≡ 07:45 NPT**, inside Pyramid Lukla's diurnal
+**minimum** (normalised 0.29/0.28 at 07–08, peaks at 22–00 NPT) — near anti-phase from 1.4 km away.
+Combined with Group A's 0.01 mm resolution and sub-0.1 mm noise floor, the hypothesis (**H1**) was that
+**the Group A high-altitude diurnal signal is noise-floor contamination, not physics** (**H0**).
+
+**OUTCOME 2026-08-18: the premise itself was false.** The 02 UTC figure was a sentinel artefact of
+normalising unmasked data; masked, Lukla peaks 21 NPT and AGREES with Pyramid. H1 is not supported —
+the peak is immovable across the ablation ladder — and the finding the vision carried as UNRESOLVED
+since 2026-08-13 is retired for Lukla, though it stands at Olangchunggola for a different reason.
 
 **⚠️ The test as first written could not identify H1 — corrected before implementation (Plan 182).** A
 negative control (a threshold ladder applied to Pyramid) was found to be **vacuous**: every positive
@@ -535,16 +539,53 @@ design rests on. (Caveat measured at the same time: 0.2 mm is the floor and domi
 positive JJAS hours are quantised at 0.24 mm — a different bucket/logger era — so positives are NOT all
 multiples of 0.2.)
 
-**Residual risk, still unresolved:** `coloc_run.py`'s `main()` wires the real production DHM ingest+mask pipeline
-(`loader`, `views`, `normalise`, `observations`, `qc_mask` — the same call sequence `pipeline.py` already
-uses in production) and the real `pyramid_loader`, but this wiring has NOT been executed end-to-end
-against real data (`DHM_PRECIP_XLSX` unset in every workspace to date). `run_coloc_adjudication()`
-itself — the tested core — IS exercised end-to-end against synthetic fixtures
-(`tests/unit/scripts/test_dhm_precip_coloc_run.py`), including both pairs, both windows, and the exact
-two-station synthesis. Running the real wiring once both data sources are available, and re-verifying
-`pyramid_loader.py`'s schema assumptions against the real files, is the tracked follow-on before this
-milestone's Exit deliverables (a real H1 verdict, filed as an M-A7 correction if supported) can actually
-be produced.
+**✅ FIRST REAL RUN 2026-08-18 — the wiring executed end-to-end and the milestone has its verdict.**
+`coloc_run.py`'s `main()` ran against the real DHM workbook and the real Pyramid Lvl1 files (both pairs,
+both windows); the report is written to `data/dhm_precip/coloc_ma10/coloc_adjudication.md` (untracked,
+per M-D1). This closes the previously tracked residual risk that the production wiring — `loader`,
+`views`, `normalise`, `observations`, `qc_mask`, `pyramid_loader` — had never been executed against real
+data. Two dtype defects surfaced only at that seam and were fixed: the mask frame's timestamp was
+hard-coded to `datetime[μs]` while the pinned workbook yields `datetime[ms]` (the anti-join raised
+`SchemaError` and the report was never written), and `stats_coloc.py` needed the same reconciliation for
+Pyramid's `read_csv`-derived timestamps. Both had been invisible to the synthetic-fixture tests.
+
+**Synthesis: INDETERMINATE.** Both pairs stop at D9's FIRST gate — D5 adequacy
+(`adequacy_bootstrap_spread_too_wide`): 13.00 h circular spread at Lukla, 3.00 h at Syangboche, against
+the pre-declared 2.0 h threshold. The gate is not overridden here.
+
+| pair | DHM ladder 0.0 / 0.1 / 0.2 mm (NPT) | Pyramid peak | D5 spread |
+|---|---|---|---|
+| DHM Lukla vs AWS3 Lukla | 22 / 22 / 22 | 23 | 13.00 h |
+| Syangboche vs AWS5 Namche | 1 / 1 / 23 | 23 | 3.00 h |
+
+**H1 is NOT supported by the evidence, though the verdict is formally INDETERMINATE.** The peak is
+nocturnal at EVERY ablation rung — it does not move when the noise floor is stripped, which is the
+signature H1 predicted — and at both pairs it lands within 0–2 h of an independent instrument 1.4 /
+1.9 km away. Syangboche's profile is unambiguous (normalised 2.20 / 2.14 / 2.21 at 23–01, trough 0.17 at
+hour 11). What stops the gate is **inter-annual variability, not a contradiction**: Lukla's five season
+peaks are 23, 10, 22, 17, 21 NPT — three nocturnal, two dissenting (2022, 2024) — and 13.00 h is simply
+the arc spanning all five; its central 90 % arc is 6.0 h, modal hour 21. Syangboche's five are 22, 21,
+00, 00, 22, a 3 h arc, all nocturnal.
+
+**⭐ The Lukla 02 UTC anomaly is RESOLVED — a QC artefact, not physics and not the noise floor.** It is
+**6 sentinel values of −9999999** at 02 UTC (5) and 03 UTC (1) in JJAS, combined with normalising an
+UNMASKED profile: those sentinels drive the grand mean to **−2,499,750 mm**, so the normalisation FLIPS
+SIGN and the most-contaminated hour reports as the largest positive "peak" (+20 normalised at 02 UTC)
+while real rain at 16 UTC (+472 mm) reports as −0.00. Under the M-A3 mask Lukla peaks at **16 UTC ≡
+21 NPT**. The anomaly was an artefact of computing a normalised profile on unmasked data — precisely
+what M-A3's mask exists to prevent, and a demonstration of its value.
+
+**Olangchunggola's 03 UTC peak is NOT explained by this and REMAINS OPEN.** It carries **zero** JJAS
+sentinels (Lukla is the only station in the workbook that does), and its peak is immovable across the
+ablation ladder (03 UTC ≡ 08 NPT at all of 0.0 / 0.1 / 0.2 mm) — neither a sentinel artefact nor
+noise-floor contamination. It has no co-located Pyramid station, so M-A10 cannot adjudicate it.
+
+**⚠️ OPEN — the D5 threshold may be miscalibrated for a 5-season record.** The 2.0 h bar is applied to
+`circular_range_hours`, the smallest arc containing EVERY one of 1000 bootstrap draws. The statistic is
+sound and does NOT drift with resample count (it saturates by n=100), but on integer peak hours a 2.0 h
+arc demands that essentially every monsoon season agree to within one hour. Syangboche — five seasons
+spanning a 3 h nocturnal arc, an obviously well-determined peak — fails it. Whether the bar should move,
+and to what, is a plan-level decision recorded in Plan 182, NOT retuned post hoc here.
 
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**
@@ -831,10 +872,14 @@ Phase 1 commits to no correction design.
 
 ## Known weaknesses carried forward
 
-- **The high-altitude diurnal signal is unresolved.** Above ~2,500 m our Group A stations match
-  neither the literature (Norris: unimodal, ~1500 LT above 3 km) nor our own hill band —
-  Olangchunggola peaks 03 UTC, Lukla 02 UTC. Both are the most noise-contaminated stations in the
-  sample (54–55 % wet-hour fractions). This is the band that matters most for Dudh Koshi.
+- **The high-altitude diurnal signal is unresolved AT OLANGCHUNGGOLA ONLY** *(narrowed by M-A10,
+  2026-08-18)*. Above ~2,500 m our Group A stations matched neither the literature (Norris: unimodal,
+  ~1500 LT above 3 km) nor our own hill band. **Lukla is now resolved** — its 02 UTC peak was 6
+  sentinel values of −9999999 normalised over unmasked data; masked it peaks 21 NPT, agreeing with
+  co-located Pyramid AWS3. **Olangchunggola's 03 UTC ≡ 08 NPT peak stands**: zero sentinels, and
+  immovable across the 0.0/0.1/0.2 mm ablation ladder, so it is neither an artefact nor the noise
+  floor. It has no co-located reference gauge, so M-A10 cannot adjudicate it. This is the band that
+  matters most for Dudh Koshi.
 - **Duplication of the students' QC and characterisation is DELIBERATE, not a cost to minimise**
   (owner 2026-08-12). Two independent passes over the same file are expected to teach each side
   something; findings flow both ways during the work, not only at M-A9. Where our fit-for-purpose
