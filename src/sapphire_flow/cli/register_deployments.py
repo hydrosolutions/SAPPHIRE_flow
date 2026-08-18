@@ -57,11 +57,16 @@ def _build_specs() -> list[DeploymentSpec]:
     # rhythm; a run is ~70s and dedups on issued_at, so hourly never overlaps
     # and re-fetches are cheap no-ops. Retune via the env var without a redeploy.
     cron_bafu_forecast = os.environ.get("SCHEDULE_COLLECT_BAFU_FORECASTS", "0 * * * *")
-    # Plan 136 BAFU LINDAS observation archive collector. The live probe
-    # (2026-07-21) established LINDAS effectively refreshes hourly on the top
-    # of the hour — hourly-at-:05 catches each fresh value with minimal lag.
+    # Plan 136 BAFU LINDAS observation archive collector. Plan 175 D4/T4:
+    # NOT `5 * * * *` — every `*/5` ingest tick lands on minute 5 too,
+    # colliding against LINDAS's measured 3-request burst ceiling every
+    # hour (see docs/decisions/bafu-lindas-rate-limit.md). `37` is clear of
+    # every `*/5` boundary and of the `0 * * * *` forecast collector.
+    # NOTE for Plan 176: the "hourly refresh" cadence claim this comment
+    # used to justify `:05` is itself falsified — LINDAS actually publishes
+    # on a 10-minute grid — so do not re-derive a cadence from this comment.
     cron_bafu_observation = os.environ.get(
-        "SCHEDULE_COLLECT_BAFU_OBSERVATIONS", "5 * * * *"
+        "SCHEDULE_COLLECT_BAFU_OBSERVATIONS", "37 * * * *"
     )
 
     return [

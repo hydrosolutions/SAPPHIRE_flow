@@ -9,7 +9,7 @@ import pytest
 
 from sapphire_flow.adapters.replay.station import ReplayStationAdapter
 from sapphire_flow.exceptions import AdapterError, ConfigurationError
-from sapphire_flow.protocols.adapters import StationDataSource
+from sapphire_flow.protocols.adapters import BatchStationDataSource, StationDataSource
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import GeoCoord
 from sapphire_flow.types.enums import (
@@ -304,3 +304,89 @@ class TestReplayStationAdapter:
             lambda: _utc(2024, 1, 1),
         )
         assert isinstance(adapter, StationDataSource)
+
+
+class TestReplayStationAdapterBatch:
+    """Minor fix (Plan 175 round 2): `ingest_observations_flow` calls
+    `fetch_observations_batch` exclusively (T3) — a `StationDataSource` that
+    only implements the base Protocol's `fetch_observations` used to raise
+    `AttributeError` if handed to that flow as `adapter=`. This adapter now
+    also satisfies `BatchStationDataSource`."""
+
+    def test_protocol_conformance(self, tmp_path: Path) -> None:
+        fixture = tmp_path / "obs.parquet"
+        _write_fixture(fixture, [])
+
+        adapter = ReplayStationAdapter(fixture, lambda: _utc(2024, 1, 1))
+
+        assert isinstance(adapter, BatchStationDataSource)
+
+    def test_groups_observations_by_station_with_clean_outcomes(
+        self, tmp_path: Path
+    ) -> None:
+        sid_a = StationId(uuid.uuid4())
+        sid_b = StationId(uuid.uuid4())
+        cfg_a = _make_station_config("2004", station_id=sid_a)
+        cfg_b = _make_station_config("2009", station_id=sid_b)
+        fixture = tmp_path / "obs.parquet"
+
+        t1 = datetime(2024, 3, 1, 0, 0, tzinfo=UTC)
+        _write_fixture(
+            fixture,
+            [
+                _row("2004", t1, value=1.0),
+                _row("2009", t1, value=2.0),
+                _row("2009", t1, value=3.0, param="water_level"),
+            ],
+        )
+
+        adapter = ReplayStationAdapter(fixture, lambda: _utc(2024, 6, 1))
+        result = adapter.fetch_observations_batch(
+            [cfg_a, cfg_b], {sid_a: _utc(2024, 1, 1), sid_b: _utc(2024, 1, 1)}
+        )
+
+        assert len(result.outcomes) == 2
+        by_station = {o.station_id: o for o in result.outcomes}
+        assert len(by_station[sid_a].observations) == 1
+        assert len(by_station[sid_b].observations) == 2
+        assert by_station[sid_a].failure_cause is None
+        assert by_station[sid_b].failure_cause is None
+        # Flattening the batch result must match `fetch_observations` exactly
+        # — this is a regrouping of the same underlying fetch, not a second
+        # implementation.
+        assert sorted(o.value for o in result.observations) == [1.0, 2.0, 3.0]
+
+    def test_a_station_with_no_matching_rows_gets_a_clean_empty_outcome(
+        self, tmp_path: Path
+    ) -> None:
+        sid = StationId(uuid.uuid4())
+        cfg = _make_station_config("2004", station_id=sid)
+        fixture = tmp_path / "obs.parquet"
+        _write_fixture(fixture, [])
+
+        adapter = ReplayStationAdapter(fixture, lambda: _utc(2024, 6, 1))
+        result = adapter.fetch_observations_batch([cfg], {sid: _utc(2024, 1, 1)})
+
+        assert len(result.outcomes) == 1
+        outcome = result.outcomes[0]
+        assert outcome.observations == ()
+        assert outcome.failure_cause is None
+
+    def test_a_fixture_wide_parse_failure_becomes_a_typed_outcome_per_station(
+        self, tmp_path: Path
+    ) -> None:
+        sid = StationId(uuid.uuid4())
+        cfg = _make_station_config("2004", station_id=sid)
+        fixture = tmp_path / "obs.parquet"
+
+        t1 = datetime(2024, 3, 1, 0, 0, tzinfo=UTC)
+        _write_fixture(fixture, [_row("2004", t1, source="bogus_source")])
+
+        adapter = ReplayStationAdapter(fixture, lambda: _utc(2024, 6, 1))
+        result = adapter.fetch_observations_batch([cfg], {sid: _utc(2024, 1, 1)})
+
+        assert len(result.outcomes) == 1
+        outcome = result.outcomes[0]
+        assert outcome.observations == ()
+        assert outcome.failure_cause is not None
+        assert outcome.failure_cause.value == "malformed_response"

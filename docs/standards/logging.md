@@ -320,6 +320,28 @@ The dedicated `ingest-recap-reanalysis` flow (`flows/ingest_recap_reanalysis.py`
 
 Deliberate divergence from `ingest_weather_history` (which classifies `no_horizon_advance` as `CRITICAL`): 146 uses `WARNING` because JSNOW's ~7-day reanalysis lag makes a no-advance window far more often normal lag than a true outage.
 
+### LINDAS rate-limit events (Plan 175, `adapters/lindas_rate_limiter.py`)
+
+The shared limiter every LINDAS caller routes through emits distinguishable
+events so the mini's logs separate "endpoint busy" (self-resolving — a 429)
+from "endpoint broken" (needs attention — a 5xx or transport failure) from
+"giving up" (exhaustion):
+
+| Event | Level | Notes |
+|---|---|---|
+| `lindas.throttled` | WARNING | A 429 specifically is about to be retried — "endpoint busy", matching the plan's own definition ("429 seen, retrying"). Kwargs: `attempt`, `status` (always `429`), `delay_s` (the computed backoff, already clamped per D7). Expected to appear routinely near the LINDAS-caller cron boundaries — this alone is NOT an incident. |
+| `lindas.retrying` | WARNING | A 5xx or a transport failure (not a 429) is about to be retried — "endpoint/network trouble", deliberately distinct from `lindas.throttled` so an operator can tell rate limiting apart from an actual endpoint fault. Kwargs: `attempt`, `status` (`None` for a transport failure), `delay_s`. |
+| `lindas.exhausted` | WARNING | The call gave up: either the attempt cap or the wall-clock deadline was hit first (see `bound` kwarg: `"attempts"` or `"deadline"`). Kwargs: `attempts`, `last_status`, `bound`, and (deadline bound only) `elapsed_s`. This is what a caller (`BafuObservationAdapter`, `HydroScraperAdapter`) turns into its own error/outcome shape — see `observation.fetch_failed` below and `bafu_observation`'s `AdapterError`. |
+
+`HydroScraperAdapter._fetch_one` reuses the pre-existing `observation.fetch_failed`
+event name for every per-station failure path (rate-limit exhaustion, a
+non-2xx status, a malformed response, or a rejected `site_code`) — now
+additionally carrying a `failure_cause` kwarg (`FetchOutcomeCause.value`; see
+`docs/spec/types-and-protocols.md` § `FetchOutcomeCause`). `ingest_observations_flow`'s
+best-effort `OBSERVATION_INGEST_FETCH` health-record write reuses the generic
+`pipeline.health_record_write_failed` pattern (Plan 136 precedent) if the store
+itself is unreachable — that write failure never fails the ingest run.
+
 ### BAFU forecast station skip / schema-drift events (Plan 160, evaluation-only route-C collector)
 
 `BafuForecastAdapter.fetch_station_inventory` (`adapters/bafu_forecast.py`) validates each of the ~54 GeoJSON features **individually** (Plan 160 D3) — a single feature that fails schema validation (most commonly an icon value BAFU has not documented yet) is skipped and counted, not fatal to the whole inventory. This is the class fix behind the 2026-08-12 outage, where BAFU's undocumented `river_missing` icon aborted collection for all 54 stations on one bad value.

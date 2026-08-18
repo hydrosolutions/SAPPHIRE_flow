@@ -36,6 +36,9 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 - **Alerting / alert-state** — ensemble/observation threshold checking, the
   danger-level model, the Alert lifecycle (raise / acknowledge / resolve), dedup /
   auto-resolve semantics, and the (unimplemented) notification boundary.
+- **LINDAS / BAFU observation ingest** — the shared rate limiter, the two LINDAS
+  caller adapters, per-station fetch-failure reporting, and the two LINDAS-caller
+  cron schedules.
 
 ---
 
@@ -794,3 +797,151 @@ Use this map when a task touches alert **evaluation, state, or delivery** — en
 **Context packet reminder:**
 
 When this map applies, the context packet should name: which touch trigger applies (evaluation, state, or delivery); which upstream inputs (eligibility partition, config flags, danger-level defs) were inspected; which downstream consumers (acknowledge route, API/dashboard readers, pipeline monitoring) are affected or explicitly not; which contracts are at risk and which are aspirational vs real; and which focused tests will prove the change.
+
+---
+
+### Touchpoint map: LINDAS / BAFU observation ingest
+
+Use this map when a task touches anything that calls `lindas.admin.ch` — the shared
+rate limiter, either LINDAS-caller adapter, the operational ingest's per-station
+fetch-failure reporting, or either LINDAS-caller cron schedule. See
+`docs/decisions/bafu-lindas-rate-limit.md` (Plan 175) for the measured rate-limit
+contract this subsystem exists to respect, and `docs/decisions/bafu-lindas-monday-window.md`
+for the separate Monday-publish transient this subsystem must not be confused with.
+
+**Common touch triggers:**
+
+- the shared limiter (`adapters/lindas_rate_limiter.py` — `TokenBucketLindasLimiter`,
+  `LindasLimiterConfig`, the `LindasRateLimiter` Protocol)
+- either LINDAS-caller adapter (`adapters/bafu_observation.py`,
+  `adapters/hydro_scraper.py`)
+- `HydroScraperAdapter.fetch_observations_batch` / `StationFetchOutcome` /
+  `FetchOutcomeCause` — the ingest flow's per-station failure reporting
+- `ingest_observations_flow`'s `PipelineCheckType.OBSERVATION_INGEST_FETCH` health
+  record
+- either LINDAS-caller cron schedule (`SCHEDULE_INGEST_OBSERVATIONS`,
+  `SCHEDULE_COLLECT_BAFU_OBSERVATIONS`) in `docker-compose.yml` or
+  `cli/register_deployments.py`
+- `tools/record_fixtures.py`'s BAFU path, `tests/integration/live/test_lindas_live_schema.py`
+
+**Upstream inputs to inspect:**
+
+- the measured rate-limit contract (burst 3, ~1 slot refill per 3-4 s, no
+  `Retry-After`) — do not re-derive it from a fresh probe without updating
+  `bafu-lindas-rate-limit.md`
+- `config.toml` / overlay `[adapters.river_stations].endpoint` and
+  `[adapters.bafu_observation].archive_base_path` (the Plan 136 collector's
+  quarantine gate — unrelated to this subsystem's limiter, but shares the
+  endpoint)
+- the onboarded station roster feeding `ingest_observations_flow` (station count is
+  what makes D5's scaling ceiling bite)
+
+**Core implementation touchpoints:**
+
+- `TokenBucketLindasLimiter.call` — pacing (token-bucket acquire, once per HTTP
+  attempt, including retries — round 2) + bounded 429/5xx/transport retry (attempt
+  cap AND wall-clock deadline, independently). `send` runs on the calling
+  thread; the deadline gates when a new attempt or retry sleep may START, and
+  each attempt is bounded by the HTTP client's own phase timeouts
+- `BafuObservationAdapter._post_with_retries` / `HydroScraperAdapter._fetch_one` —
+  both translate `LindasRateLimitExhausted` into their own error shape
+  (`AdapterError` for the collector; `StationFetchOutcome.failure_cause` for ingest)
+- `protocols/adapters.py`'s `BatchStationDataSource` — narrow capability Protocol
+  for `fetch_observations_batch`; `HydroScraperAdapter` and `ReplayStationAdapter`
+  both satisfy it (round 2 — `ingest_observations_flow`'s `adapter=` parameter is
+  typed against this, not the concrete `HydroScraperAdapter`)
+- `ingest_observations_flow` — fetch → `_append_fetch_health_record` (BEFORE
+  store/QC) → store → QC → result union of fetch + QC failures
+- the two cron defaults, each living in TWO places (compose init env + the Python
+  fallback) — see the Prefect/Docker/deployment map for the general pattern
+
+**Downstream consumers to inspect when behavior changes:**
+
+- the watchdog (`ops/watchdog.py`) if `BAFU_OBSERVATION_FRESHNESS` semantics change
+  (it queries that check type directly; `OBSERVATION_INGEST_FETCH` has **no** probe
+  wired yet — Plan 175 § Residual forks #1)
+- `/api/v1/health/detail` and the dashboard health page, the only current visibility
+  for `OBSERVATION_INGEST_FETCH`
+- `tools/record_fixtures.py` constructs `HydroScraperAdapter`/`BafuObservationAdapter`
+  directly and gets the default limiter by construction; changing the default
+  limiter config changes its behavior too. The live LINDAS schema test
+  (`test_lindas_live_schema.py`) instead shares ONE `TokenBucketLindasLimiter`
+  instance (a module-scoped fixture) across every adapter it builds (round 2) — a
+  fresh-per-class limiter let one test's real upstream consumption go unseen by
+  the next, producing a predictable 429 the zero-429 assertion could not survive
+
+**Contracts that must not change silently:**
+
+- **All in-process production LINDAS callers go through the shared limiter.** The
+  verified caller set (Plan 175 D6): `adapters/bafu_observation.py`,
+  `adapters/hydro_scraper.py` (**every** public method, including
+  `verify_gauge_reachable` — fixer-round hardening closed a gap where that probe
+  POSTed directly), `tools/record_fixtures.py` (constructs `HydroScraperAdapter`
+  and calls `fetch_observations`), and
+  `tests/integration/live/test_lindas_live_schema.py`. A new LINDAS caller that
+  builds its own `httpx.Client` POST instead of going through one of these two
+  adapters silently re-opens the collision this subsystem exists to close.
+- **Pacing is process-local, not cluster-wide.** A token bucket inside one process
+  cannot enforce a shared budget across two different Prefect work-pool processes —
+  cross-process safety rests on schedule separation (the two cron minutes), not on
+  the limiter. Do not treat the limiter as a substitute for schedule separation.
+- **`Retry-After` is untrusted input.** Any change to the limiter's parsing must keep
+  the clamp (`LINDAS_MAX_DELAY_S`), the floor (`LINDAS_RETRY_FLOOR_S` — a
+  `Retry-After` value BELOW the floor is clamped UP, not honoured verbatim), and the
+  total wall-clock deadline (`LINDAS_TOTAL_DEADLINE_S`) — both delay bounds
+  independent of the attempt-count bound. This includes a numeric value large
+  enough to overflow `float()` or exceed CPython's int-string-conversion digit
+  limit (round 2) — both must clamp to `LINDAS_MAX_DELAY_S`, never raise past
+  `_parse_retry_after`.
+- **The 120 s deadline covers bucket wait too, and bounds when work STARTS.**
+  `TokenBucketLindasLimiter.call` starts its clock BEFORE token acquisition, not
+  after, and re-checks the remaining budget before every attempt. The guarantee
+  is: **no new attempt and no retry sleep starts past the deadline.** It does
+  NOT abort an in-flight request — each attempt is bounded by the HTTP client's
+  own configured connect/read/write/pool timeouts. An earlier version ran `send`
+  on a daemon thread joined with a hard timeout to get a stricter bound; that
+  bounded the caller's wait but abandoned the thread and its live request, so
+  repeated timeouts leaked both while reporting the call exhausted. The thread
+  was removed in favour of the weaker, honest bound.
+- **The fetch health record is written IMMEDIATELY after fetch reconciliation, before
+  store/QC.** Moving it later would let a downstream storage/QC failure suppress the
+  one signal this subsystem exists to guarantee.
+- **`StationDataSource.fetch_observations` keeps its locked list-only shape.** The
+  typed per-station outcome (`fetch_observations_batch`, captured by the narrow
+  `BatchStationDataSource` Protocol) is an ADDITION any `StationDataSource`
+  implementation may also offer — `HydroScraperAdapter` and (round 2)
+  `ReplayStationAdapter` both do — not a `StationDataSource` Protocol change;
+  widening that Protocol itself was the explicit rejected alternative (see
+  `docs/spec/types-and-protocols.md` § StationDataSource).
+- **The per-station fan-out does not scale past a handful of stations (D5,
+  deferred).** `docs/v0-scope.md`'s ~1000-station target is NOT met by this
+  subsystem's polling model — see `bafu-lindas-rate-limit.md` for the arithmetic.
+  Do not treat a passing test suite as evidence this scales.
+- **A cron default lives in TWO places; the compose fallback is the one that
+  deploys.** See the Prefect/Docker/deployment map's general version of this
+  contract; `tests/unit/test_compose_schedule_default.py` locks both
+  LINDAS-relevant schedules.
+
+**Suggested verification:**
+
+- limiter unit tests with a fake clock + recording sleeper (never real time, never
+  the network) — retry-after clamp, total-deadline abort, bucket-pacing, exhaustion
+- exhaustion test asserting the EXACT HTTP attempt count (a success-path retry test
+  cannot detect a retained/duplicated outer retry loop)
+- a real-adapter-over-`httpx.MockTransport` regression test for the incident itself
+  (transient 429 → 200 → OK heartbeat, not CRITICAL)
+- `stations_failed` / `OBSERVATION_INGEST_FETCH` detail-key tests: mixed
+  success/failure, all-failure (must not read as success), and a storage failure
+  AFTER fetch (the health record must still have persisted)
+- the compose + registration cron-schedule lock tests (non-divisible-by-5, disjoint
+  from the other LINDAS/BAFU crons)
+- full Task Exit Gate for implementation PRs
+
+**Context packet reminder:**
+
+When this map applies, the context packet should name: which LINDAS caller(s) are
+touched; whether the change affects pacing, retry, or schedule separation (or more
+than one); which downstream consumers (watchdog, health API, fixture recorder, live
+test) are affected or explicitly not; which contracts are at risk (especially the
+process-local-pacing and D5-scaling-ceiling caveats); and which focused tests will
+prove the change.

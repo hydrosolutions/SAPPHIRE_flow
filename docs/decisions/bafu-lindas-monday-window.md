@@ -3,6 +3,10 @@
 **Date**: 2026-05-11
 **Status**: Active observation; not yet escalated to BAFU support
 **Owners**: Bea (orchestrator), Hydrologist (review)
+**Cross-reference**: `docs/decisions/bafu-lindas-rate-limit.md` (Plan 175) —
+a rate-limit 429 burst is a **separate** failure mode from the Monday
+transient described here and must not be re-triaged as schema drift; the
+BAFU VoID descriptor stays intact during a 429 burst.
 
 ## Context
 

@@ -6,7 +6,7 @@
 
 ## Guiding principles
 
-- v0 = Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM, 1-2 users. Architecture supports scaling to ~1000 stations across deployments.
+- v0 = Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM, 1-2 users. Architecture supports scaling to ~1000 stations across deployments. **Caveat (Plan 175 D5, `docs/decisions/bafu-lindas-rate-limit.md`):** the operational ingest's per-station LINDAS polling does NOT scale to that ceiling — LINDAS's measured burst limit is 3 requests, so one-request-per-station-per-poll is structurally impossible past a handful of stations. The known way out (not built) is a whole-graph-query-plus-local-filter path, the same approach the quarantined Plan 136 archive collector already uses.
 - As fast as possible: aggressive performance optimization on the forecast cycle
 - Research-friendly: easy to add models, run experiments, export data. v0 includes multi-parameter forecasting experiments — river stations forecast discharge, lake stations (33 in CAMELS-CH) forecast water_level. This validates the multi-target pipeline (§A13) before Nepal v1 deployment, which requires both discharge and water_level stage.
 - Professional enough for hydromet handover (clean types, documented APIs, reproducible results)

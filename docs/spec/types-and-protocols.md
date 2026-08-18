@@ -228,6 +228,36 @@ class PipelineCheckType(Enum):
         # feed; this path still archives and does not re-raise). WARNING (a
         # future fresh-fraction-below-threshold degradation signal) is
         # reserved but not emitted in this first cut.
+    OBSERVATION_INGEST_FETCH = "observation_ingest_fetch"
+        # Plan 175 D8/T3 — ingest_observations_flow's per-station FETCH
+        # outcome, written IMMEDIATELY after fetch reconciliation (before
+        # store/QC) so a later storage/QC failure can never suppress this
+        # signal. Deliberately distinct from BAFU_OBSERVATION_FRESHNESS (the
+        # quarantined Plan 136 archive collector's own heartbeat, which the
+        # watchdog queries) and from OBSERVATION_FRESHNESS (per-station
+        # staleness) — reusing either would contaminate a check the watchdog
+        # already reads. Locked `detail` keys: `stations_polled`,
+        # `stations_fetch_failed`, `failure_counts_by_cause` (a dict keyed by
+        # `FetchOutcomeCause.value`), `failed_station_ids` (sorted str list).
+        # OK when nothing failed; CRITICAL when every polled station failed;
+        # WARNING otherwise (an absolute-count rule, not a percentage — see
+        # Plan 175 § Residual forks #2 for why a percentage threshold is
+        # noise at a handful of stations). No watchdog probe wired yet
+        # (Plan 175 § Residual forks #1) — visible today only via
+        # `/api/v1/health/detail` and the dashboard.
+
+class FetchOutcomeCause(Enum):
+    # Plan 175 D9 — sapphire_flow.types.enums. The per-station LINDAS fetch
+    # failure taxonomy `HydroScraperAdapter.fetch_observations_batch` (see
+    # `StationDataSource` below) reports on `StationFetchOutcome.
+    # failure_cause`. `NO_DATA` and `MALFORMED_RESPONSE` are deliberately
+    # split: the pre-Plan-175 `_parse_bindings` collapsed a bad timestamp and
+    # a legitimately-empty response into the same `[]`.
+    RATE_LIMITED = "rate_limited"       # 429 after the shared limiter's retry budget was exhausted
+    HTTP_STATUS_ERROR = "http_status_error"  # any other non-2xx, carries the status code in failure_detail
+    TRANSPORT_ERROR = "transport_error"  # httpx.HTTPError after retry exhaustion, no response at all
+    MALFORMED_RESPONSE = "malformed_response"  # unparseable measurementTime, or a rejected site_code
+    NO_DATA = "no_data"                 # well-formed response with no usable bindings
 
 class NotificationChannel(Enum):
     EMAIL = "email"
@@ -3378,6 +3408,63 @@ class StationDataSource(Protocol):
 ```
 
 `RawObservation` and `Observation` are defined in the Entity types section above.
+
+**Plan 175 T3 — `fetch_observations_batch` / `BatchStationDataSource` (NOT part of
+this Protocol).** `fetch_observations` stays exactly as above — the locked shape
+every `StationDataSource` caller (the recorder, every test fake) depends on.
+`ingest_observations_flow` calls `fetch_observations_batch` EXCLUSIVELY (T3), so
+any adapter constructed as its `adapter=` argument must offer it — this is a
+narrow ADDITIONAL capability, not a `StationDataSource` requirement, captured by
+its own Protocol so a type checker can verify it instead of relying on an
+`AttributeError` at runtime:
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationFetchOutcome:
+    station_id: StationId
+    observations: tuple[RawObservation, ...]
+    failure_cause: FetchOutcomeCause | None   # None = clean poll (possibly zero obs)
+    failure_detail: str | None                # None iff failure_cause is None
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HydroScraperBatchResult:
+    outcomes: tuple[StationFetchOutcome, ...]
+    # .observations -> flat list[RawObservation] (what fetch_observations() returns)
+    # .failed -> tuple[StationFetchOutcome, ...] where failure_cause is not None
+
+class BatchStationDataSource(Protocol):
+    def fetch_observations_batch(
+        self,
+        station_configs: list[StationConfig],
+        since: dict[StationId, UtcDatetime],
+    ) -> HydroScraperBatchResult: ...
+
+class HydroScraperAdapter:
+    def fetch_observations_batch(...) -> HydroScraperBatchResult: ...
+        # fetch_observations() delegates to this and returns .observations —
+        # both go through the SAME shared LindasRateLimiter (D6), so no
+        # caller of either method escapes pacing.
+
+class ReplayStationAdapter:
+    def fetch_observations_batch(...) -> HydroScraperBatchResult: ...
+        # Plan 175 round 2: a thin per-station regrouping of the results
+        # fetch_observations() already computes — NOT a second parse/filter
+        # implementation. Added because `ingest_observations_flow` calling
+        # this method exclusively meant a `StationDataSource` that only
+        # implemented the base Protocol (this adapter, pre-round-2) raised
+        # `AttributeError` if ever handed to the flow as `adapter=`.
+```
+
+`FetchOutcomeCause` is defined above alongside `PipelineCheckType`. Widening the
+`StationDataSource` Protocol itself to carry this shape was the explicit
+alternative and was rejected — it would force every `StationDataSource`
+implementation to grow this method (or a default/`NotImplementedError` stub)
+whether or not it is ever used as `ingest_observations_flow`'s adapter, entangling
+the base fetch contract with one flow's typed per-station accounting.
+`BatchStationDataSource` gives that flow's parameter an honest type without that
+cost — `HydroScraperAdapter` and `ReplayStationAdapter` both satisfy it; a
+`StationDataSource` implementation that does not is a caller bug if handed to
+`ingest_observations_flow`, not a Protocol violation.
 
 #### WeatherReanalysisSource
 

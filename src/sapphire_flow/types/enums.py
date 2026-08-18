@@ -185,6 +185,12 @@ class PipelineCheckType(Enum):
     # kept distinct from WEATHER_HISTORY_INGEST (MeteoSwiss) so an operator
     # filtering one feed's health never conflates it with the other's.
     RECAP_SNOW_REANALYSIS_INGEST = "recap_snow_reanalysis_ingest"
+    # Plan 175 D8/T3: the operational ingest's per-station FETCH outcome —
+    # deliberately distinct from BAFU_OBSERVATION_FRESHNESS (the quarantined
+    # Plan 136 archive collector's own heartbeat, watched by the watchdog)
+    # and from OBSERVATION_FRESHNESS (per-station staleness). Reusing either
+    # would contaminate a check the watchdog already queries.
+    OBSERVATION_INGEST_FETCH = "observation_ingest_fetch"
 
 
 class NotificationChannel(Enum):
@@ -205,6 +211,19 @@ class ObservationSource(Enum):
     RATING_CURVE_DERIVED = "rating_curve_derived"
     COMPONENT_DERIVED = "component_derived"
     MANUAL_IMPORT = "manual_import"
+
+
+class FetchOutcomeCause(Enum):
+    """Plan 175 D9 — the per-station LINDAS fetch failure taxonomy. `NO_DATA`
+    and `MALFORMED_RESPONSE` are deliberately split: pre-Plan-175 code could
+    not tell a legitimately-empty poll from a bad timestamp, since both
+    collapsed to the same empty `list[RawObservation]`."""
+
+    RATE_LIMITED = "rate_limited"
+    HTTP_STATUS_ERROR = "http_status_error"
+    TRANSPORT_ERROR = "transport_error"
+    MALFORMED_RESPONSE = "malformed_response"
+    NO_DATA = "no_data"
 
 
 class GaugingStatus(Enum):

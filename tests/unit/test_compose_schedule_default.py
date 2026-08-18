@@ -32,3 +32,22 @@ class TestComposeScheduleDefault:
             env["SCHEDULE_INGEST_OBSERVATIONS"]
             == "${SCHEDULE_INGEST_OBSERVATIONS:-*/5 * * * *}"
         )
+
+
+class TestComposeBafuObservationScheduleDefault:
+    """Plan 175 T4 — the SAME class of no-op the sibling test above guards
+    against: ``docker-compose.yml``'s init-container env fallback is the
+    ONE that actually deploys (``cli/register_deployments.py``'s Python
+    default is a fallback for a non-compose run only). A code-only cron
+    change here would leave the mini alerting at `:05` forever.
+
+    MUST FAIL while the compose fallback is ``5 * * * *`` (Plan 175 D4:
+    that minute collides with every ``*/5`` ingest-observations tick)."""
+
+    def test_compose_bafu_observation_fallback_is_thirty_seven(self) -> None:
+        compose = yaml.safe_load((_repo_root() / "docker-compose.yml").read_text())
+        env = compose["services"]["init"]["environment"]
+        assert (
+            env["SCHEDULE_COLLECT_BAFU_OBSERVATIONS"]
+            == "${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-37 * * * *}"
+        )

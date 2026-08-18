@@ -8,7 +8,7 @@ from sapphire_flow.types.enums import QcStatus
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcFlag
-    from sapphire_flow.types.enums import ObservationSource
+    from sapphire_flow.types.enums import FetchOutcomeCause, ObservationSource
     from sapphire_flow.types.ids import (
         ObservationId,
         ObservationVersionId,
@@ -69,3 +69,47 @@ class ArchivedObservationValue:
     rating_curve_id: RatingCurveId  # curve that produced the archived value
     superseded_at: UtcDatetime
     superseded_by_curve_id: RatingCurveId  # curve that replaced it
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationFetchOutcome:
+    """Plan 175 T3/D9 — one station's result from
+    ``HydroScraperAdapter.fetch_observations_batch``. ``failure_cause is
+    None`` means the station polled cleanly (which may still mean zero
+    observations, if nothing new was published)."""
+
+    station_id: StationId
+    observations: tuple[RawObservation, ...]
+    failure_cause: FetchOutcomeCause | None
+    failure_detail: str | None
+
+    def __post_init__(self) -> None:
+        if (self.failure_cause is None) != (self.failure_detail is None):
+            raise ValueError(
+                "failure_cause and failure_detail must both be set or both "
+                f"be None, got failure_cause={self.failure_cause!r} "
+                f"failure_detail={self.failure_detail!r}"
+            )
+        if self.failure_cause is not None and self.observations:
+            raise ValueError(
+                "a failed StationFetchOutcome must not carry observations "
+                f"(station_id={self.station_id!r}, cause={self.failure_cause!r})"
+            )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HydroScraperBatchResult:
+    """Plan 175 T3 — the typed batch result the ingest flow consumes instead
+    of the plain-list ``StationDataSource.fetch_observations`` façade, so a
+    mass-429 run can report which stations failed and why (D8/D9) instead of
+    silently returning whatever partial data it scraped."""
+
+    outcomes: tuple[StationFetchOutcome, ...]
+
+    @property
+    def observations(self) -> list[RawObservation]:
+        return [obs for outcome in self.outcomes for obs in outcome.observations]
+
+    @property
+    def failed(self) -> tuple[StationFetchOutcome, ...]:
+        return tuple(o for o in self.outcomes if o.failure_cause is not None)
