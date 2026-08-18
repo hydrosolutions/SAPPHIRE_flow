@@ -67,7 +67,9 @@ Concretely, for this plan:
   and it would make the plan bigger for a *reason*.
 - **The quarantine boundary (D2) is the one design risk worth real scrutiny.** Plan 136 kept the
   evaluation-only archive honest by giving it a separate adapter; D2 downgrades that to a separate
-  mapper over shared query/parse code. That is a weaker structural guarantee. Say so if you think it is
+  mapper over a shared **query builder and key helper only** — grouping, validation, parsing and mapping
+  all stay adapter-local. That is still a weaker structural guarantee than a separate adapter. Say so if
+  you think it is
   too weak — that is a correctness argument, not scope creep.
 - An honest **"this is proportionate, no blockers"** is a valid and expected outcome.
 
@@ -126,7 +128,9 @@ This is what keeps the plan small: there is no per-station time-window semantics
 
 ## Goal
 
-Observation ingest costs **one LINDAS request per run, independent of station count**, with per-station
+Observation ingest costs **one logical batch fetch per run, independent of station count** — with retry
+attempts constant in station count too, since the limiter still spends `max_retries + 1` on a persistent
+429 (that is the retry contract, not a violation of this goal). Per-station
 outcomes and health reporting unchanged from Plan 175.
 
 ## Non-goals
