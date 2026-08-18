@@ -157,6 +157,59 @@ class DhmPrecipParams:
     passes). Measured worst case at the 7-day threshold is 0.830 (Lete) — this
     is a safeguard against a pathological case, not a filter expected to fire."""
 
+    # --- Plan 182 (M-A10) — co-located gauge-vs-gauge adjudication ---
+    coloc_threshold_ladder_mm: tuple[float, ...] = (0.0, 0.1, 0.2)
+    """D7 — the threshold ladder: 'all values' (0.0, a no-op zero-floor),
+    then 0.1 mm, then 0.2 mm (matched to Pyramid's native resolution).
+    Values are ZEROED, never dropped (D7.2) — a common scalar shift cannot
+    move the peak on its own, so a moved peak implicates the specific
+    zeroed hours, not the shift itself."""
+    coloc_matched_resolution_threshold_mm: float = 0.2
+    """D7.1 — the ONLY threshold at which DHM and Pyramid can represent the
+    same events; Pyramid cannot record anything below this by construction
+    (LSI-Lastem tipping buckets, verified empirically 2026-08-18: 0.00% of
+    7,133+9,280 positive JJAS values fall below it)."""
+    coloc_dhm_utc_to_npt_hour_offset: int = 6
+    """D2 — Pyramid is NPT (UTC+5:45); DHM is UTC. Converting a DHM UTC hour
+    bin to its NPT hour-of-day label rounds the 5h45m offset to the nearest
+    whole hour (round-half-up: +6). This rounding (up to 15 min) plus the
+    Pyramid README's unstated period convention (up to 1h) together make up
+    D2's declared ±1.75h alignment uncertainty — well below the 4h/2h D9
+    decision boundaries (see `coloc_threshold_coherence_holds`)."""
+    coloc_alignment_uncertainty_hours: float = 1.75
+    """D2 — the declared total alignment uncertainty (45 min NPT-rounding +
+    up to 1h unstated Pyramid period convention). Never a claimed phase
+    result finer than this."""
+    coloc_min_season_years_for_adequacy: int = 5
+    """D5 — fewer season-years cannot on its own establish adequacy for a
+    phase verdict, regardless of how narrow the bootstrap spread looks
+    (round 2: 3 seasons all peaking at the same hour would otherwise
+    produce a false zero-spread 'adequate' reading)."""
+    coloc_stationarity_max_circular_diff_hours: float = 4.0
+    """D9 gate 0 — disjoint-period (pre-2020 vs 2020+) peak-hour circular
+    difference above this fails the adequacy gate."""
+    coloc_matched_resolution_max_circular_diff_hours: float = 4.0
+    """D9 gate 1 — DHM@matched-resolution vs Pyramid peak-hour circular
+    difference above this is INDETERMINATE (sub-threshold counts are not
+    the explanation for the discrepancy)."""
+    coloc_ablation_supported_min_hours: float = 4.0
+    """D9 gate 2 — circular ablation movement at or above this supports H1
+    (given gates 0-1 passed)."""
+    coloc_ablation_refuted_max_hours: float = 2.0
+    """D9 gate 2 — circular ablation movement strictly below this refutes
+    H1. Between this and `coloc_ablation_supported_min_hours` is
+    INDETERMINATE (ambiguous)."""
+    coloc_bootstrap_resamples: int = 1000
+    """D5 — number of season-year resamples for the circular bootstrap peak
+    spread."""
+    coloc_bootstrap_adequate_max_spread_hours: float = 2.0
+    """D5 — if the circular bootstrap spread on the peak hour exceeds this
+    on the overlap window, only the full record may support a verdict."""
+    coloc_full_record_split_year: int = 2020
+    """D5 — the disjoint-period stationarity check splits the full record
+    at this calendar year (pre-2020 vs 2020+, matching the overlap
+    window's start)."""
+
     # --- Plan 174 (M-A5) D8/2d — station-set cardinality tripwire ---
     expected_station_count: int = 26
     """The number of usable DHM stations the ERA5-Land point extraction
@@ -213,6 +266,73 @@ class DhmPrecipParams:
             raise ValueError(
                 "mam_months + jjas_months + on_months + djf_months must "
                 f"partition 1..12 exactly, got {sorted(season_months)}"
+            )
+        # --- Plan 182 (M-A10) ---
+        if self.coloc_min_season_years_for_adequacy < 1:
+            raise ValueError("coloc_min_season_years_for_adequacy must be >= 1")
+        if self.coloc_bootstrap_resamples < 1:
+            raise ValueError("coloc_bootstrap_resamples must be >= 1")
+        ladder = self.coloc_threshold_ladder_mm
+        if list(ladder) != sorted(ladder):
+            raise ValueError("coloc_threshold_ladder_mm must be strictly ascending")
+        if self.coloc_matched_resolution_threshold_mm not in ladder:
+            raise ValueError(
+                "coloc_matched_resolution_threshold_mm must be a member of "
+                "coloc_threshold_ladder_mm"
+            )
+        if not (
+            self.coloc_ablation_refuted_max_hours
+            < self.coloc_ablation_supported_min_hours
+        ):
+            raise ValueError(
+                "coloc_ablation_refuted_max_hours must be < "
+                "coloc_ablation_supported_min_hours"
+            )
+        # D9 "Threshold coherence": D2's alignment uncertainty and D5's
+        # bootstrap adequacy rule must both sit strictly below the 4h
+        # decision boundaries, and the 2h refute-boundary must sit at or
+        # above both — no gate decision may turn on a difference smaller
+        # than the measurement uncertainty that produced it.
+        if not (
+            self.coloc_alignment_uncertainty_hours
+            < self.coloc_ablation_supported_min_hours
+        ):
+            raise ValueError(
+                "coloc_alignment_uncertainty_hours must be < "
+                "coloc_ablation_supported_min_hours (D9 threshold coherence)"
+            )
+        if not (
+            self.coloc_alignment_uncertainty_hours
+            < self.coloc_stationarity_max_circular_diff_hours
+        ):
+            raise ValueError(
+                "coloc_alignment_uncertainty_hours must be < "
+                "coloc_stationarity_max_circular_diff_hours (D9 threshold coherence)"
+            )
+        if not (
+            self.coloc_alignment_uncertainty_hours
+            < self.coloc_matched_resolution_max_circular_diff_hours
+        ):
+            raise ValueError(
+                "coloc_alignment_uncertainty_hours must be < "
+                "coloc_matched_resolution_max_circular_diff_hours "
+                "(D9 threshold coherence)"
+            )
+        if not (
+            self.coloc_ablation_refuted_max_hours
+            >= self.coloc_alignment_uncertainty_hours
+        ):
+            raise ValueError(
+                "coloc_ablation_refuted_max_hours must be >= "
+                "coloc_alignment_uncertainty_hours (D9 threshold coherence)"
+            )
+        if not (
+            self.coloc_ablation_refuted_max_hours
+            >= self.coloc_bootstrap_adequate_max_spread_hours
+        ):
+            raise ValueError(
+                "coloc_ablation_refuted_max_hours must be >= "
+                "coloc_bootstrap_adequate_max_spread_hours (D9 threshold coherence)"
             )
 
 

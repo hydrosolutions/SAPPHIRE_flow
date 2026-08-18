@@ -417,15 +417,41 @@ with two stations effectively co-located with two of our four problem high-altit
 *model field* and M-A7 characterises *our* timing — neither can answer "is our gauge wrong?", because
 no satellite or reanalysis product can adjudicate a gauge. This can.
 
-**Scope:** JJAS 2020–2023 (the overlap window), the two co-located pairs, **DHM vs Pyramid vs
-ERA5-Land**, reporting the **normalised diurnal profile** and **wet-hour fraction** on hours retained by
-the M-A3 mask, with the retained-hour count carried alongside every statistic (Rule 1).
+**Scope — REVISED by Plan 182 (three slim Codex review rounds, 2026-08-18): gauge-vs-gauge only, NOT a
+three-way comparison.** ERA5-Land dropped out of this milestone's scope entirely (it belongs to M-A6);
+the two co-located pairs, **DHM vs Pyramid only**, over **two windows reported separately** — the JJAS
+overlap (2020–2023; Lukla's is only 2021–2023) and each station's full JJAS record (the climatological
+comparison, primary — the overlap is too thin, 3 season-years at Lukla, to stand alone; see the D5
+adequacy gate below). Both profiles reported **in NPT** (Pyramid's own timebase), with the DHM-side
+UTC→NPT conversion and the Pyramid README's unstated period convention together declared as an
+**alignment uncertainty of ±1.75h** — no phase claim is made finer than that.
 
 **The hypothesis it exists to settle:** our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT**, which sits inside
 Pyramid Lukla's diurnal **minimum** (normalised 0.29/0.28 at 07–08, peaks at 22–00 NPT) — near
 anti-phase from 1.4 km away. Combined with Group A's 0.01 mm resolution and sub-0.1 mm noise floor, the
-hypothesis is that **the Group A high-altitude diurnal signal is noise-floor contamination, not
-physics.** Confirming it would retire a finding the vision has carried as UNRESOLVED since 2026-08-13.
+hypothesis (**H1**) is that **the Group A high-altitude diurnal signal is noise-floor contamination, not
+physics** (**H0**). Confirming H1 would retire a finding the vision has carried as UNRESOLVED since
+2026-08-13.
+
+**⚠️ The test as first written could not identify H1 — corrected before implementation (Plan 182).** A
+negative control (a threshold ladder applied to Pyramid) was found to be **vacuous**: every positive
+Pyramid JJAS value is an exact multiple of 0.2 mm (LSI-Lastem tipping-bucket resolution), so a threshold
+ladder is a structural no-op on Pyramid and could never have detected anything — removed. In its place:
+**(1)** a **matched-resolution comparison**, DHM thresholded at ≥0.2 mm against Pyramid at its native
+resolution (the only apples-to-apples phase comparison available, since Pyramid cannot represent
+anything finer); **(2)** a **DHM-only threshold-ladder ablation** (all values / ≥0.1 mm / ≥0.2 mm,
+**zeroing, never dropping**, so a common scalar shift can never move the peak on its own — only a
+genuinely hour-concentrated contribution can); **(3)** the two read together under **D9's ordered
+verdict gates** (adequacy → matched-resolution agreement → ablation movement), evaluated **per station,
+then synthesised** — disagreement between Lukla and Syangboche is **INDETERMINATE for the group,
+reported as the finding, never averaged**. INDETERMINATE is a permitted, publishable outcome that
+**blocks** the M-A7 correction rather than licensing it.
+
+**Wet-hour fraction is reported ONLY on the common-retained-timestamp population** (D3): masking one
+side only (M-A3 on DHM, a physical range check on Pyramid) preferentially removes DRY hours and
+manufactures exactly the kind of gap this milestone exists to detect, so the two series are paired
+hour-by-hour and compared over their intersection, with each side's own retention reported separately
+so the pairing loss stays visible.
 
 **⛔ NOT a correction source, and this is binding.** Pyramid's gauges are **explicitly unheated** — the
 paper names that as its main weakness — so they undercatch snow in the same direction as DHM's.
@@ -433,15 +459,39 @@ Correcting toward them would substitute one undercatching gauge for another *whi
 authoritative*; and fitting model forcing downward toward either gauge network injects a **dry bias into
 a flood-forecasting system**. **Referee on SHAPE and TIMING only, where undercatch largely cancels;
 never on magnitude.** The paper's "≤20 % snow underestimate" is inherited from Salerno et al. (2015),
-not re-measured — it is not a transfer function. Vision D6/D9 stand, reinforced.
+not re-measured — it is not a transfer function. Vision D6/D9 stand, reinforced. **A genuine
+micro-climatic or wind-driven catch-efficiency difference between the two networks remains a live
+alternative this test cannot exclude** (normalisation cancels only hour-independent undercatch, and
+mountain wind is strongly diurnal) — the verdict is adjudicated against H1 AND this alternative, never
+against H0 alone.
 
-**Exit:** the two co-located pairs' normalised diurnal profiles and wet-hour fractions, mask-consistent
-and retained-count-carrying; an explicit verdict on the noise-floor hypothesis; and — if confirmed — the
-consequent correction to the vision's Group A diurnal claims. **No magnitude comparison is reported.**
+**Exit:** the D7 threshold ladder (the primary result) with the peak hour at each rung; normalised JJAS
+diurnal profiles for both pairs, both windows, `n` beside each; the paired wet-hour fraction; a circular
+bootstrap spread on the peak hour by monsoon season (D5, with a small-sample rule — fewer than 5
+season-years cannot on its own establish adequacy, however narrow the spread); per-station verdicts and
+a synthesis under D9's pre-declared circular thresholds; a stated verdict on H1 phrased no finer than
+±2h; and, if H1 is supported, an explicit list of affected vision/M-A1 claims filed as a correction for
+M-A7 to apply. **No magnitude comparison anywhere in the output.**
 
 **Data handling:** CC BY 4.0 permits redistribution *with attribution*, but **M-D1's bar on third-party
 data in this public repo stands regardless** — the files live in `data/` alongside the DHM workbook,
 never committed. Attribution is required on any published result.
+
+**Library CODE COMPLETE 2026-08-18 (Plan 182):** the analysis library —
+`scripts/dhm_precip/circular.py` (circular hour arithmetic, including D9's "toward" as a
+circular-distance reduction, never a signed direction), `scripts/dhm_precip/coloc_verdict.py` (the D9
+ordered-gate verdict rule, per-station + synthesis), `scripts/dhm_precip/stats_coloc.py` (D7.2 zeroing
+ablation, normalised profile, D3 common-retained-timestamp pairing and paired wet-hour fraction),
+`scripts/dhm_precip/coloc_bootstrap.py` (D5 circular bootstrap + small-sample adequacy rule),
+`scripts/dhm_precip/coloc_pairs.py` (the two-pair registry) and `scripts/dhm_precip/pyramid_loader.py`
+(Lvl1 CSV loader), composed by `scripts/dhm_precip/coloc_adjudication.py`. **Residual risk, unresolved
+at implementation time:** `data/dhm_precip/pyramid/` is gitignored and the real Zenodo files were not
+present in this workspace, so `pyramid_loader.py`'s column-name assumptions (`TIMESTAMP`, `RR`) are
+undocumented-but-typed guesses, not verified against a real file — a mismatch raises loudly
+(`PyramidSchemaMismatchError`) rather than silently misreading, and is a one-line fix once the real
+schema is confirmed. No CLI/report-writer analogous to M-A1's `run.py` exists yet — building one against
+the real files, and re-verifying `pyramid_loader.py`'s schema assumptions against them, is the follow-on
+before this milestone's Exit deliverables can actually be produced.
 
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**
