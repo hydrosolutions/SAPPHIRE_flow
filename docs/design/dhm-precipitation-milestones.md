@@ -379,10 +379,7 @@ can compute. It belongs here, not in M-A5, because it needs the M-A3 mask (M-A5'
 gauge/mask coupling) and both stations' measurement error confounds it — Khumaltar alone swings 294 mm
 (2023) to 1,504 mm (2024), an undocumented-cause but disqualifying-for-a-"clean-bound" 5x inter-annual
 change. Compute it on timestamps **retained by the M-A3 mask for both stations simultaneously**,
-report the common-retained-hour count and each station's exposure alongside every statistic, and state
-the implication only in its conditional form: *if both gauges are unbiased over the retained sample,
-half the observed pair discrepancy is a lower bound on the within-cell representativeness contribution
-at ~4.3 km separation.* **n = 1 pair, one valley, one separation — never a network-wide estimate.**
+report the common-retained-hour count and each station's exposure alongside every statistic, and **⛔ CORRECTED 2026-08-18 — report it DESCRIPTIVELY; the lower-bound claim is WITHDRAWN.** "If both gauges are unbiased, half the discrepancy is a lower bound on the within-cell contribution" does NOT follow: two gauges with unbiased errors still differ over a finite sample by noise alone, so this would report a positive bound where the true spatial contribution is zero. The triangle-inequality argument needs effectively ERROR-FREE aggregates, not merely unbiased ones. **n = 1 pair, one valley, one separation — never a network-wide estimate.**
 
 **Exit:** error characterisation; every result signed per D6 (a post-QC gauge total is a *lower
 bound*), carrying the selection caveat, its named estimand, and the retained fraction it rests on;
