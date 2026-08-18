@@ -110,9 +110,12 @@ station, and enforces **no** exact ensemble membership.
      for the **selected** branch, in both the NaN-tolerance gate and `InputSeries` construction.
    - *Consumption-side (runner) collapse.* Even with per-feature fetch and per-assignment assembly, `_run_single_model`
      re-derives its forcing decisions from the globally collapsed `ModelDataRequirements`: coverage from the single
-     `forecast_horizon_steps` (`services/run_station_forecast.py:173-188`), fan-out from the global mode (`:250-252`),
-     and the whole `future_dynamic_features` set to `fan_out_ensemble` (`:295`). Phase 3 therefore carries the per-feature
-     contract into the runner (D10).
+     `forecast_horizon_steps` (`services/run_station_forecast.py:173-188`), fan-out mode (`:250-252`), and the whole
+     `future_dynamic_features` set to `fan_out_ensemble` (`:295`). The **horizon** axis is the one that actually bites:
+     `assess_future_coverage` takes ONE `required_steps: int` and demands EVERY required feature reach it
+     (`services/nwp_coverage.py:75-81,128-150`), so "precip 2 steps + temp 10 steps" is rejected
+     `INSUFFICIENT_COVERAGE` (`run_station_forecast.py:199`) even after T3/T6 fix the first two collapses. Phase 3
+     therefore carries the per-feature contract into the runner — stated as a rule in **D10a** and built in **T7**.
 
 2. **One assembly / one shared cycle per station.** `assemble_station_operational_inputs`
    (`services/operational_inputs.py:385`) reads NWP for one `cycle_time` (`:494`) and produces one frame for every
@@ -157,7 +160,8 @@ regardless, since removing the superset path leaves MeteoSwiss with no assembly 
   **per station** (against the track's `fetch_horizons` max) **before** any persist, committing only the complete
   stations, then persisting, reading back, and mapping per-station availability.
 - **Per-assignment assembly** from the track's available records, with the FI per-variable, per-time-step slice.
-- The **runner consumption seam** via a discriminated input, plus a per-feature forcing contract on `ReadyContext`.
+- The **runner consumption seam** via a discriminated input, plus a per-feature forcing contract on `ReadyContext`
+  that the runner actually consumes for coverage, ensemble dispatch, and fan-out (D10a).
 - **Fail-loud cross-cycle combination** as a preflight before any per-station write.
 - **CONTROL-only stays green** via `isinstance` dispatch; homogeneous control output is pinned by golden tests.
 
@@ -282,7 +286,8 @@ chain** — it never darkens the station.
     containment survives Plan 154 intact (`recap_gateway.py:886-906`).
     Phase A is therefore re-scoped to exclude stations served by the per-track path, while still covering group-member
     stations, so an unvalidated partial candidate can never land in Postgres for a migrated station.
-- **D8 — Completeness is a PER-STATION predicate; the candidate verdict is derived from it.** Two gates that must not
+- **D8 (completeness) — Completeness is a PER-STATION predicate; the candidate verdict is derived from it** (distinct
+  from the ledger's `D8-group`, which is a routing decision). Two gates that must not
   be conflated, plus the rule that reconciles them.
   1. **Raw completeness — evaluated per `(station, feature, member, horizon)`.** For the pre-extracted recap path the
      candidate is already a `dict[StationId, WeatherForecastResult]` accumulated per HRU
@@ -346,10 +351,50 @@ chain** — it never darkens the station.
   `ModelRunContext` plus the assignment's own `ForecastProvenance`, and writes each `OperationalForecast`'s cycle
   fields from **that** provenance rather than the shared runner arguments (`run_station_forecast.py:145-146,:400-401`).
   A pre-run defensive assert re-checks the expected member set over the assembled frame.
-  - **The runner's horizon read now goes through a seam.** Plan 159 T0d interposed `resolve_required_steps(...)`
-    (`services/horizon_semantics.py`) at `run_station_forecast.py:177-182`, between the requirement declaration and
-    `assess_future_coverage` (`:183-188`). The runner still re-derives from the collapsed `ModelDataRequirements`, but
-    the per-feature contract must route **through** that seam, not around it by reading the requirement directly.
+  - **D10a — on the `ReadyContext` route the runner's forcing reads come from the CONTRACT, not
+    `ModelDataRequirements`** (reviewer major-fix, 2026-08-18; the Problem section promised this and neither D10 nor T7
+    previously said it, so T8's own heterogeneous golden would have failed with no task assigned to fix it).
+    - **Horizon — the axis that actually diverges.** `assess_future_coverage` takes ONE `required_steps: int` and
+      requires **every** required feature to reach it (`services/nwp_coverage.py:75-81,128-150`), and `RequiredSteps`
+      carries a single `steps: int` with no per-feature dimension (`services/horizon_semantics.py:51`). A heterogeneous
+      assignment — T6's own "precip 2 steps + temp 10 steps" red-first — would assemble correctly and then be rejected
+      `INSUFFICIENT_COVERAGE` (`run_station_forecast.py:183-188,:199`) on the short feature, silently defeating the two
+      collapses T3/T6 just fixed.
+    - **Mechanism — the Plan 159 seam is called ONCE PER ASSIGNMENT, unchanged; the per-feature split happens AFTER it.**
+      `resolve_required_steps` is **not** per-feature: it takes `(model, model_id, declared_steps, *, opt_in)`
+      (`horizon_semantics.py:119-125`) and delegates to `_model_declared_floor(model)` (`:74-117`), whose signature takes
+      **only the model** — it walks the model's entire `input_requirement.dynamic` tree (spatial → spec → `future_known`
+      source → variable) and returns ONE scalar, "The binding floor across variables is the LARGEST" (`:114-115`). Calling
+      it per feature would reuse that same model-wide floor every time, varying only `declared_steps`. **So:** call it
+      **once per assignment**, exactly as today (`run_station_forecast.py:177-182`), for the resolved ceiling; then call
+      `assess_future_coverage` **per feature** with `required_features=frozenset({f})` and `required_steps=min(ceiling,
+      the contract's horizon for f)`. That fixes the "precip 2 / temp 10" collapse with **no signature change** to
+      `horizon_semantics.py` or `nwp_coverage.py` — neither joins the touched set — and without claiming per-feature
+      precision the seam cannot provide.
+    - **Accepted cost (parallel to the member-set cost below): per-feature `AT_MOST` floors are NOT expressible through
+      this seam.** Every feature shares the model-wide **maximum** floor, so `min(max floor, f's horizon)` ≠ `min(f's own
+      floor, f's horizon)` whenever another variable's floor dominates. **Unreachable today** on two independent counts:
+      the FI pin is **v0.1.19** (`pyproject.toml:104`), which has no `horizon_semantics` field at all — so
+      `_model_declared_floor` returns `None` for every model (`:103-106`) and the `nwp_regression` family eligible for
+      this route cannot declare `AT_MOST`; and the only in-repo ceiling declaration is the **model-keyed** opt-in
+      `HORIZON_CEILING_FLOORS` (`types/ids.py:69-71`), inherently model-wide, whose one entry `cmal_pool_pt` is
+      `ArtifactScope.GROUP` (`models/aquacast/_shim.py:566`) and excluded from this route by D8-group / D30. **A live trap
+      for the next model onboarded here, though:** an FI bump to ≥ v0.1.20 with divergent per-variable `min_future_steps`
+      would silently give a short feature a floor it never declared, and T2's D4 sweep does **not** reject divergent
+      floors — hence T7's guard.
+    - **Mode and feature set do NOT diverge today — recorded, not assumed.** Post-Plan-156 at most one time-step branch
+      may carry `future_known` (`adapters/forecast_interface.py:487-497`), and both `future_dynamic_features` and the
+      OR-ed `ensemble_mode` accumulate **only** from `spec.future_known` (`:512-515`, mode built `:579-581`) — so both
+      already equal the SELECTED branch's values, and neither is a live collapse (a non-FI model declares them directly,
+      `types/model.py:271,275,277`, and D2 broadcasts its scalar). They are nevertheless read from the contract on this
+      route: it is one substitution at each of two call sites (`:250-252`, `:291-295`) and it removes the coupling that
+      would silently reintroduce the divergence the moment **D32-multibranch-delivery** relaxes the
+      single-deliverable-branch assert. T7 pins this as a **no-behaviour-delta equality**, not a behaviour change.
+    - **Cost (recorded, not hidden):** called per feature, `assess_future_coverage`'s cross-feature "identical member
+      set across features" check (`nwp_coverage.py:116-126`) no longer fires on this route. Not a loss of strength:
+      T5's per-station exact-`expected_member_ids` gate (D8) is strictly stronger and runs **before** persist, and the
+      pre-run defensive member-set assert above re-checks the assembled frame. The **legacy route keeps the single
+      scalar call verbatim** — that is what the T7 legacy red-first pins.
   - **Legacy vs per-track dispatch needs an explicit discriminant.** A legacy NWP context must not be forced to choose
     between carrying a per-feature contract it never built and skipping coverage entirely. The runner-boundary type
     discriminates the two routes explicitly rather than inferring the route from an empty contract.
@@ -503,7 +548,21 @@ burning fixer rounds reformatting alembic migrations.
   - **In scope:** resolve the two pre-run arms in `run_all_station_forecasts` before `_run_single_model`; the
     discriminated `AssignmentRunInput` with an explicit legacy-vs-per-track discriminant; migrate `_run_single_model`
     to receive its context and write provenance from it; the pre-run defensive member-set assert; keep the fallback
-    chain and the Plan 150 backstop intact.
+    chain and the Plan 150 backstop intact. **Plus D10a — the runner's three forcing reads.** On the `ReadyContext`
+    route, derive them from the context's per-feature contract instead of `model.data_requirements`: coverage
+    evaluated **per feature** at `assess_future_coverage` with `required_steps=min(ceiling, contract horizon for f)`,
+    the ceiling from the single per-assignment `resolve_required_steps` call (replacing the scalar coverage call at
+    `run_station_forecast.py:173-188`), ENSEMBLE dispatch (`:250-252`), and `fan_out_ensemble(..., future_features=…)`
+    (`:291-295`). Without this the flagship heterogeneous station returns `AssignmentFailure(INSUFFICIENT_COVERAGE)`
+    and T8's heterogeneous golden fails with no task owning the fix. The legacy route keeps the scalar call unchanged;
+    `nwp_coverage.py` is **called differently, not modified**, and `horizon_semantics.py` exactly as today.
+  - **Guard on the seam's model-wide floor (D10a's accepted cost).** A per-track-eligible model whose variables declare
+    divergent `horizon_semantics=AT_MOST` floors would silently receive another variable's floor, so T7 adds a
+    route-time precondition check beside the pre-run member-set assert: on the `ReadyContext` route divergent floors
+    **raise**, failing that assignment through the Plan 150 backstop so the chain advances — no new
+    `AssignmentFailureCause` member. **Route-time, not T2's construction-time sweep**, because per-track eligibility
+    (adapter `isinstance` dispatch + the D30 overlap exclusion) is invisible to T2's repo-wide sweep, which would then
+    also reject GROUP-only models that never take this route.
   - **Transitional API:** the seam changes the input shape of `_run_single_model` **and** `run_all_station_forecasts`,
     so T7 must keep every current caller green — including the integration caller
     (`tests/integration/test_e2e_pipeline.py:653`) — either by retaining a behaviour-preserving entry point or by
@@ -512,7 +571,17 @@ burning fixer rounds reformatting alembic migrations.
     missing track returns the higher-priority success and records `MISSING_CONTEXT`, **asserting the model registry,
     artifact store, model-state store, and QC were not accessed** for the failing arm; an unavailable-track assignment
     records `TRACK_UNAVAILABLE` and advances the chain; a resolved-but-partial context trips the pre-run assert as an
-    assignment-local failure; a **legacy ENSEMBLE caller** still performs coverage and fan-out unchanged.
+    assignment-local failure; a **legacy ENSEMBLE caller** still performs coverage and fan-out unchanged (the scalar
+    `assess_future_coverage` call, byte-for-byte). **D10a:** a heterogeneous `ReadyContext` — precip contracted at 2
+    steps, temp at 10, frame assembled to match — reaches `predict` instead of returning
+    `AssignmentFailure(INSUFFICIENT_COVERAGE)`; this **fails today**, because the scalar `required_steps=10` makes
+    `min(counts)=2` inadequate (`nwp_coverage.py:144-150`). Paired with the opposite case so the gate is proven
+    *tightened, not deleted*: a `ReadyContext` whose frame is genuinely short on **one** feature relative to **that
+    feature's** contracted horizon still fails `INSUFFICIENT_COVERAGE`. **The guard:** a per-track-eligible model whose
+    variables declare `AT_MOST` with **differing** `min_future_steps` fails loudly (chain advances) instead of silently
+    applying the model-wide max floor to every feature, while uniform — or absent — floors resolve unchanged. And an
+    equality assertion that the contract's mode and feature set match `model.data_requirements`' for a single-branch
+    model, pinning D10a's mode/feature-set substitution as a no-behaviour-delta.
 
 - **T8 — Flow wiring + golden tests + fail-loud combination (D11, D12, D13).**
   - **In scope:** wire `flows/run_forecast_cycle.py` to project and dedup tracks, resolve each track sequentially,
@@ -552,7 +621,9 @@ burning fixer rounds reformatting alembic migrations.
     blast-radius file.
   - **Red-first / golden:** a homogeneous single-track control station produces **byte-identical** output to
     pre-Phase-3 `main`, and this golden **fails** if the homogeneous case is mis-routed; a heterogeneous control
-    station produces per-assignment outputs; two combinable assignments on different cycles fail loud with **zero**
+    station produces per-assignment outputs (this one is only reachable because of **D10a** — with the runner
+    still reading the scalar `forecast_horizon_steps` it would fail `INSUFFICIENT_COVERAGE` inside
+    `_run_single_model`); two combinable assignments on different cycles fail loud with **zero**
     forecast/state writes while same-cycle combination is unchanged; a **trackless combinable model** (null cycle)
     combines with an NWP model without failing, and an all-trackless station combines normally; a **group-only feature**
     is still fetched via the re-scoped Phase A and the group forecast succeeds at its shared readback cycle regardless
@@ -628,7 +699,8 @@ a design fork; each changes a ratified decision's **observable consequence**, so
 - **D5-combine** — fail-loud, as a preflight before any per-station write.
 - **D6-adapter-scope** — migrate `recap_gateway` only.
 - **D7-walkback** — bounded solely by the existing `max_cycle_age_hours`.
-- **D8-group** — group stays on the legacy superset path in Phase 3.
+- **D8-group** (routing; unrelated to Design D8, which is the completeness predicate) — group stays on the legacy
+  superset path in Phase 3.
 - **D9-records-type** — `StationTrackAvailable.records` is the station-keyed `WeatherForecastRecord` list from readback
   at the track's single `resolved_cycle` (singular by D5/D26 — no per-assignment readback source).
 - **D10-completeness-pre-extract** — for the pre-extracted recap path the gate boundary is **before persist**; the
@@ -742,6 +814,8 @@ a design fork; each changes a ratified decision's **observable consequence**, so
   transient transport errors so a retry can fire; that requires a real consumer, so T8 sets `retries=` on the
   candidate-fetch task from `RecapGatewayConfig.max_retries` (`config/recap_gateway.py:51`, parsed but consumed nowhere
   today; `flows/run_forecast_cycle.py:1009-1015` sets no `retries=`). Without it a single transient terminates the track.
+- **D33-runner-forcing-contract** — the runner's three forcing reads come from the context contract on the per-track
+  route; see Design D10a, in scope at T7.
 - **D31-candidate-ownership — SPEC EDIT, folded into T1** (reviewer blocker-fix). The spec pins
   `fetch_requirement(...) -> CandidateFetchResult` (`docs/spec/types-and-protocols.md:3210-3213`) whose `status` is
   the **completeness** taxonomy (`:3318-3324`), but the adapter cannot judge completeness — the threshold is a `services/`-side
