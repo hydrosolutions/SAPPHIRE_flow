@@ -4,7 +4,7 @@ created: 2026-08-18
 revised: 2026-08-18
 plan: 185
 title: CI credential-absence guard — a withheld secret must degrade loudly, not fail red
-scope: Guard the `unit` job's private-extra install so a STRUCTURALLY absent credential (Dependabot, fork PR) degrades with a visible warning, while an absent credential on a run that should have had it — or on a PR that changes `uv.lock` — still fails. Two tasks: one `ci.yml` change, one paragraph in `docs/standards/cicd.md`. Explicitly NOT fork-PR support, NOT other secrets, NOT any new file.
+scope: Guard the `unit` job's private-extra install so a STRUCTURALLY absent credential (a Dependabot PR) degrades with a visible warning, while an absent credential on a run that should have had it — or on a PR that changes `uv.lock` — still fails. Two tasks: one `ci.yml` change, one paragraph in `docs/standards/cicd.md`. Explicitly NOT fork-PR support, NOT other secrets, NOT any new file.
 depends_on: []
 blocks: []
 ---
@@ -42,7 +42,7 @@ see only the Dependabot secret store.
 
 The outage is fixed — `AQUACAST_TOKEN` was mirrored into the Dependabot store, matching
 `RECAP_DG_CLIENT_TOKEN`. **This plan is about durability**: the same shape recurs for
-fork PRs, for a rotated-and-not-yet-mirrored token, and for the next private dependency
+fork PRs and for the next private dependency
 — and each time it presents as a broken build rather than a missing credential.
 
 **The trap in the obvious fix:** simply skipping the extra when the token is missing
@@ -83,8 +83,8 @@ worse, not better — hence D4.
   grep -Fq '1 passed' "$RUNNER_TEMP/aquacast-shim.txt"
   ```
   **Exit status alone is not sufficient** — verified locally: without the extra that
-  node reports `no tests collected` and exits non-zero-but-not-failed, and a skip never
-  prints `1 passed`. Because exactly one node is requested, no other test can satisfy
+  exact node reports a collector error plus `1 skipped` and exits non-zero. It never
+  prints `1 passed`, which is the signal being asserted on. Because exactly one node is requested, no other test can satisfy
   it. No JUnit parser, no new test file.
 - **D5 — scope is `AQUACAST_TOKEN` only.** `RECAP_DG_CLIENT_TOKEN` gates a
   *non-optional* dependency: without it no job syncs at all, so there is nothing to
@@ -95,9 +95,23 @@ worse, not better — hence D4.
   ```
   matched on an exact `uv.lock` line. **Capture the command's success before testing
   its output**, so an API failure fails closed rather than reading as "no lock change".
-  Two implementation checks: the step needs `GH_TOKEN`, and the `unit` job declares no
-  `permissions:` block today (only `build-image-and-scan` does, `ci.yml:232`) — confirm
-  the default token can read PRs, or add `pull-requests: read`.
+  Three things are pinned here, not left to implementation:
+  ```yaml
+  # on the job — specifying ANY permission zeroes the unspecified ones, so
+  # `contents: read` must be restated or checkout breaks. The unit job declares
+  # no permissions block today (only build-image-and-scan does, ci.yml:232).
+  permissions: { contents: read, pull-requests: read }
+  # on the step
+  if: >-
+    env.AQUACAST_TOKEN_PRESENT != 'true' &&
+    github.event_name == 'pull_request' &&
+    github.event.pull_request.user.login == 'dependabot[bot]'
+  env: { GH_TOKEN: "${{ github.token }}" }
+  ```
+  **The event guard is load-bearing.** CI also runs on `push` (`ci.yml:4-5`), where
+  `github.event.pull_request.number` is empty; `gh` treats an empty selector as *no*
+  selector and falls back to guessing a PR from the current branch. On `push` the token
+  is present anyway (case 1), so the lock test must never be consulted there.
   *Rejected:* a Dependabot **branch-name prefix** proxy — it misclassifies `uv`-group
   PRs that do not touch the lock. *Rejected:* `fetch-depth: 0` — correct but
   disproportionate; every checkout is depth-1 today (`ci.yml:74`).
@@ -122,9 +136,9 @@ worse, not better — hence D4.
 
 Four observable outcomes:
 
-1. A Dependabot PR that does not touch `uv.lock` is **green**, with a visible warning
-   that aquacast coverage was skipped.
-2. A PR that touches `uv.lock` without a reachable token **fails** with the D1-case-3
+1. A Dependabot PR **with the token absent** that does not touch `uv.lock` is
+   **green**, with a visible warning that aquacast coverage was skipped.
+2. A PR that touches `uv.lock` without an exposed token **fails** with the D1-case-3
    message — not a git auth error, and not a silent skip.
 3. A credentialed run **proves** the shim test passed (D4), and fails if it skipped.
 4. `docs/standards/cicd.md` states the both-stores requirement.
