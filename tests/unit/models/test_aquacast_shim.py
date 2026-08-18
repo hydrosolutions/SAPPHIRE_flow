@@ -5,6 +5,18 @@ fabricated entry point: Plan 157 shipped a shim test that monkeypatched
 `importlib.metadata.entry_points` with an invented class, which was green whether or not
 the real package existed and had to be deleted. The whole point of Plan 159 D17 —
 keeping the shim in this repo — is that these can be real.
+
+Plan 181's T1/T2/T3 behavior tests (FI-surface delegation, declaration rewrite, data
+translation) moved to `test_aquacast_shim_translation.py`, which needs NO extra: the
+translation functions are pure functions of `forecast_interface` types, and only
+`AquacastShim.__init__` actually touches `aquacast`. Splitting them out means CI's
+required `unit` job (`uv sync --frozen`, no `aquacast` extra) actually RUNS that
+behavior suite instead of silently skipping the whole module (Plan 181 fixer finding).
+
+What stays HERE is only what genuinely needs the real, installed package: construction
+against the real vendored config, real `discover_models` registration, and the one
+guard check that specifically proves the real config's own (daily) time step does not
+trip the D1 relabel guard.
 """
 
 from __future__ import annotations
@@ -74,3 +86,16 @@ class TestRealDiscovery:
         from sapphire_flow.services.model_registry import discover_models
 
         assert "cmal_pool_pt" in discover_models()
+
+
+class TestRealConfigPrecipitationGuard:
+    """Plan 181 D1: the fabricated non-daily-step guard test lives in
+    `test_aquacast_shim_translation.py` (no extra needed). This is the complementary
+    real-package check: the ACTUAL vendored `cmal_pool_PT` config is daily-only, so
+    binding it for real must never trip that guard.
+    """
+
+    def test_the_real_daily_config_does_not_trigger_the_guard(self) -> None:
+        from sapphire_flow.models.aquacast import CmalPoolPT
+
+        assert CmalPoolPT().input_requirement is not None
