@@ -227,6 +227,22 @@ class TestBafuObservationCadenceProperties:
         minutes = _cron_minute_set(by_name["collect-bafu-observations"].cron)
         assert min(_cyclic_gaps(minutes)) >= 3
 
+    def test_runs_every_hour_of_every_day(self) -> None:
+        # The gap/divisibility assertions above read ONLY the minute field, so
+        # a cron restricted to (say) hour 00 would satisfy every one of them
+        # while silently dropping 23 hours of slots a day. Pin the rest of the
+        # expression too.
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        cron = by_name["collect-bafu-observations"].cron
+        assert cron is not None
+        fields = cron.split()
+        assert len(fields) == 5, f"expected a 5-field cron, got {cron!r}"
+        assert fields[1:] == ["*", "*", "*", "*"], (
+            f"collector cron must run every hour of every day, got {cron!r} — "
+            "a restricted hour/day field loses whole days of 10-minute slots "
+            "while still passing the minute-only gap assertions"
+        )
+
     def test_every_scheduled_minute_is_non_divisible_by_five(self) -> None:
         by_name = {s.deployment_name: s for s in _build_specs()}
         minutes = _cron_minute_set(by_name["collect-bafu-observations"].cron)

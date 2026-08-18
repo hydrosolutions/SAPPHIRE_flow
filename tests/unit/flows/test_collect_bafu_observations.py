@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003
 
@@ -138,6 +139,50 @@ class TestQuarantineGate:
             clock=_ClockSpy(datetime(2026, 7, 21, 10, 5, tzinfo=UTC)),
         )
         assert result == module._EMPTY_RESULT  # type: ignore[attr-defined]
+
+
+class TestModalTieBreakPicksTheOLDERSlot:
+    """A 50/50 tie between two slots must resolve to the **older** one.
+
+    At a real slot transition the network briefly splits: half the gauges have
+    advanced, half have not. If the tie resolved to the NEWER slot, the
+    collector would claim that slot's path while holding only half its data —
+    and the later, complete response (whose modal is unambiguously that same
+    newer slot) would find the path present and **dedup-skip permanently**.
+    Resolving to the older slot means the half-advanced response lands under
+    the slot it mostly represents, and the newer slot stays unclaimed until a
+    response actually represents it.
+
+    `min(...)` is what implements this; a `max(...)` mutant passes every other
+    modal test in this file, which is why this one exists.
+    """
+
+    def test_equal_counts_resolve_to_the_older_slot(self) -> None:
+        module = _import_flow_module()
+        older = ensure_utc(datetime(2026, 7, 21, 15, 30, tzinfo=UTC))
+        newer = ensure_utc(datetime(2026, 7, 21, 15, 40, tzinfo=UTC))
+        # Exactly two gauges on each side — a true 50/50 split.
+        rows = [
+            _row("2135", measurement_time=older),
+            _row("2200", measurement_time=older),
+            _row("2300", measurement_time=newer),
+            _row("2400", measurement_time=newer),
+        ]
+
+        assert module._modal_cycle_at(rows) == older  # noqa: SLF001
+
+    def test_the_newer_slot_stays_claimable_after_a_tie(self) -> None:
+        # The point of picking the older slot: the newer one must still be
+        # reachable once a response genuinely represents it.
+        module = _import_flow_module()
+        newer = ensure_utc(datetime(2026, 7, 21, 15, 40, tzinfo=UTC))
+        complete = [
+            _row("2135", measurement_time=newer),
+            _row("2200", measurement_time=newer),
+            _row("2300", measurement_time=newer),
+        ]
+
+        assert module._modal_cycle_at(complete) == newer  # noqa: SLF001
 
 
 class TestCycleAtIsDataDerived:
@@ -532,6 +577,52 @@ class TestMultiGaugeArchive:
         df = pl.read_parquet(parquet_files[0])
         assert set(df["gauge_code"].to_list()) == {"2135", "2200", "3001"}
         assert "cycle_at" in df.columns
+
+
+class TestGzipStreamClosesBeforeRename:
+    """D6 locks *ordering*, not just the final bytes: the gzip stream must be
+    CLOSED before `os.replace` publishes the temp file.
+
+    Checking the decompressed bytes after the flow returns cannot see this — by
+    then Python has closed the file either way. A mutant that renames from
+    inside the still-open gzip context would publish a truncated member and
+    still pass a bytes-only assertion, because the buffer flushes on scope
+    exit a moment later. In production that window is where a crash leaves an
+    unreadable snapshot occupying a slot the collector believes is archived.
+
+    So assert the invariant at the moment it matters: when `os.replace` is
+    called, the source file must already be a complete, decompressible gzip
+    member.
+    """
+
+    def test_temp_file_is_a_complete_gzip_member_when_rename_fires(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        raw_payload = {"results": {"bindings": [{"fake": "payload"}]}}
+
+        real_replace = os.replace
+        checked: list[str] = []
+
+        def spy_replace(src, dst):  # type: ignore[no-untyped-def]
+            if str(dst).endswith(".json.gz"):
+                # Read the SOURCE as it stands at rename time — not after.
+                with gzip.open(src, "rb") as gz:
+                    payload = gz.read()
+                assert payload, "gzip temp file was empty at rename time"
+                checked.append(str(dst))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(module.os, "replace", spy_replace)
+
+        module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter([_row("2135")], raw_payload=raw_payload),
+            clock=_ClockSpy(datetime(2026, 7, 21, 10, 5, tzinfo=UTC)),
+        )
+
+        assert checked, "no .json.gz rename was observed — test did not exercise D6"
 
 
 class TestRawArchival:

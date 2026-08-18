@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003
 
+import polars as pl
 import pytest
 
 from sapphire_flow.flows import collect_bafu_observations as flow_module
@@ -51,6 +52,32 @@ def _import_audit_module() -> object:
             "sapphire_flow.cli.bafu_observation_audit does not exist yet "
             f"(T8 not implemented): {exc}"
         )
+
+
+class TestObservedSlotTieBreakPicksTheOLDERSlot:
+    """The audit's slot re-derivation must mirror the collector's tie-break
+    exactly — earliest timestamp among equally-represented candidates.
+
+    If the two ever disagreed, the audit would report slots as missing that
+    the collector had in fact archived (or vice versa), which is worse than no
+    audit: it would manufacture phantom gaps in the very report used to decide
+    whether the archive is complete. A `max(...)` mutant here passes the
+    audit's other tests.
+    """
+
+    def test_equal_counts_resolve_to_the_older_slot(self) -> None:
+        module = _import_audit_module()
+        older = datetime(2026, 7, 21, 15, 30, tzinfo=UTC)
+        newer = datetime(2026, 7, 21, 15, 40, tzinfo=UTC)
+        frame = pl.DataFrame(
+            {
+                "gauge_code": ["2135", "2200", "2300", "2400"],
+                "lindas_kind": ["river"] * 4,
+                "measurement_time": [older, older, newer, newer],
+            }
+        )
+
+        assert module._observed_slot(frame) == ensure_utc(older)  # noqa: SLF001
 
 
 class TestAuditReportsPresentAndMissingSlots:

@@ -39,9 +39,17 @@ workflow's 10-minute timeout budget — this carries its OWN `live_lindas_lag`
 marker, not `live_lindas`, and this test's own default duration (45 min)
 exceeds that job's budget. Run manually::
 
-    LINDAS_LAG_DURATION_S=2700 uv run pytest -m live_lindas_lag -v -s
+    RUN_LINDAS_LAG_MEASUREMENT=1 LINDAS_LAG_DURATION_S=2700 \
+        uv run pytest tests/integration/live/test_lindas_publish_lag.py -v -s
 
 or wire to a dedicated longer-running schedule.
+
+**The marker is NOT what excludes this test.** `integration-nightly.yml`
+selects `tests/integration/live` by PATH with `--override-ini "addopts="`,
+explicitly so it runs every test in this directory whatever marker it carries.
+The binding exclusion is therefore the `RUN_LINDAS_LAG_MEASUREMENT=1` env gate
+below; without it this file would add ~45 min of live polling against an
+external government API to every nightly run, indefinitely.
 """
 
 from __future__ import annotations
@@ -66,7 +74,28 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-pytestmark = pytest.mark.live
+# Markers alone do NOT keep this test out of CI. `integration-nightly.yml` runs
+# `pytest tests/integration/live --override-ini "addopts="`, deliberately
+# path-based so it sweeps in EVERY test under this directory "regardless of
+# which live* marker it carries" — with `--timeout=3600`, comfortably longer
+# than this test's 45-min default, so it would run to completion rather than
+# being killed. Without the opt-in gate below, merging this file would silently
+# start ~45 min of live polling against a government API every single night.
+#
+# So the real exclusion is this env gate; the markers are secondary.
+_OPT_IN_ENV = "RUN_LINDAS_LAG_MEASUREMENT"
+
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        os.environ.get(_OPT_IN_ENV) != "1",
+        reason=(
+            f"extended live measurement — set {_OPT_IN_ENV}=1 to run. "
+            "Gated by env, not marker, because the nightly job's path-based "
+            "selection overrides marker exclusion."
+        ),
+    ),
+]
 
 _ENDPOINT = "https://lindas.admin.ch/query"
 _LIVE_TIMEOUT_S = 30
