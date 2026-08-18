@@ -58,9 +58,21 @@ a degenerate single requirement).
 run by *assignment*.** Per-assignment fetch is too granular (repeated 51-member downloads); per-station is too
 coarse.
 
-- **`ForcingTrackKey` = (nwp source, ensemble mode, time_step, per-feature horizons, spatial representation).**
-  Project every active assignment to a track; **deduplicate identical tracks across assignments/stations**;
-  resolve + fetch **once per track**. This is the fetch/resolution unit.
+- **`ForcingTrackKey` (dedup key) = (nwp source, ensemble mode, time_step, spatial representation, feature SET)
+  — NO horizon values (Phase 3 refinement, 2026-08).** The key is the *hashable* dedup key: exactly the axes at
+  which ONE recap fetch operates and below which requirements are genuinely equivalent. Carrying per-feature
+  horizon *values* in the key was broken two ways — it (1) **defeated dedup** (a 5-day and a 10-day model with the
+  same feature set got different keys → the 51-member fetch ran twice) and (2) made the key **unhashable** (a
+  `Mapping` field on a frozen/slots dataclass). Horizon is not even a recap fetch axis: one `ifs_forecast(...)`
+  call is keyed by (variable, run_date, hru, fc|pf, member) and returns the FULL series
+  (`recap_gateway.py:899-911`); SAP3 slices post-fetch. Per-feature horizons move to a **carrier** beside the key
+  (`ForcingRequired` / `ResolvedTrackRequest`, below). Project every active assignment to a `ForcingRequired`
+  (key + its own per-feature horizons); a **deterministic reducer groups by key** into one `ResolvedTrackRequest`
+  per key whose `fetch_horizons` is the **per-feature MAX** across the group; resolve + fetch **once per track** to
+  that max. This is the fetch/resolution unit. Granularity is one mode / one spatial / one time_step per track
+  (exact-51 completeness forbids a SINGLE-mode feature on an ENSEMBLE track; FI declares one spatial per dynamic
+  spec and v1 rejects multi-spatial — `forecast_interface.py:474,488`); feature-set UNION across sub/superset
+  tracks is a **deferred** optimization (moot under the v0/v1 `{tp, t_2m}` allowlist).
 - **A track resolves to ONE cycle; per-station availability varies (round-3 fix).** The track's walk-back picks
   a **single** `resolved_cycle` for the whole track — matching Recap, which resolves one cycle globally by
   probing one HRU (`recap_gateway.py:673`). At that cycle, availability is **per-station**: Recap accepts partial
@@ -86,8 +98,10 @@ Components:
    `forecast_horizon_steps`, `types/model.py:262`) as the fetch requirement. Three distinct, typed horizons with
    explicit ownership:
    - **`FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`** — the fetch-acceptance contract; owned by the
-     track projection, derived per-feature at the FI boundary. A cycle is accepted iff every feature has ≥ its
-     own steps.
+     track projection, derived per-feature at the FI boundary. It rides a **carrier beside the dedup key**, never
+     inside it (Phase 3 refinement): each `ForcingRequired` carries its assignment's own map; the reducer folds
+     them into `ResolvedTrackRequest.fetch_horizons` = the per-feature **MAX** across all assignments sharing the
+     key. A cycle is accepted iff every feature reaches its `fetch_horizons` (MAX) steps.
    - **`InputFrameHorizon`** (a distinct `FutureSteps`-valued type) — the rectangular assembled-frame horizon
      (= max of the feature horizons), owned by assembly; the FI boundary then **slices each variable to its own
      `future_steps`** before the per-variable NaN gate (`forecast_interface.py:705,717`), so a short-horizon
@@ -139,7 +153,8 @@ an assignment whose track/cycle is unavailable **advances to the next assignment
 station dark. Equivalent assignments deduplicate onto one track, so this adds no extra fetches.
 
 **Compatibility is a golden-test invariant, not a safety claim (round-2 fix).** CONTROL assignments can differ
-in source/features/time_step/horizon/spatial — the exact `ForcingTrackKey` fields — and today heterogeneous time
+in source/features/time_step/spatial — the exact `ForcingTrackKey` fields (or, at equal keys, in per-feature
+horizon — the carrier) — and today heterogeneous time
 steps merely collapse onto the first assignment (`run_forecast_cycle.py:1787,1838`) while requirements are
 unioned/maxed (`operational_inputs.py:303,319`). So the invariant is: a **homogeneous** control station (all
 assignments share a track) produces exactly one track and today's behaviour; a **heterogeneous** control station
@@ -182,9 +197,16 @@ in `docs/architecture-context.md`. Definitions here are design-level — signatu
     cannot enforce `> 0`, leaving invalid states representable — contrary to parse-don't-validate).
     `FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`, `InputFrameHorizon`, `OutputHorizon` are
     **distinct** `FutureSteps`-valued types, not interchangeable ints.
-  - `ForcingTrackKey` — `(NwpSource, EnsembleMode, time_step: timedelta, FeatureFetchHorizons,
-    SpatialRepresentation)`; reuses the existing `EnsembleMode`/spatial enums + `StationId`/`ModelId`/`GroupId`
-    NewTypes.
+  - `ForcingTrackKey` — the **hashable dedup key**, `(NwpSource, EnsembleMode, time_step: timedelta,
+    SpatialRepresentation, features: frozenset[FeatureName])`; reuses the existing `EnsembleMode`/spatial enums +
+    `StationId`/`ModelId`/`GroupId` NewTypes. **NO horizon values** (a `Mapping` field is unhashable and defeats
+    dedup; horizon is not a recap fetch axis). Per-feature horizons ride two carriers:
+    `ForcingRequired(key, assignment_horizons: FeatureFetchHorizons, assignment)` — the per-assignment projection —
+    and `ResolvedTrackRequest(key, fetch_horizons: FeatureFetchHorizons, assignments)` — the dedup result whose
+    `fetch_horizons` is the per-feature MAX across the group and whose `assignments` retains each assignment's own
+    horizons for post-fetch slicing. A pure deterministic reducer `resolve_tracks(list[ForcingRequired]) ->
+    list[ResolvedTrackRequest]` groups by key, takes the per-feature max, and keeps the group. Completeness is
+    checked against `fetch_horizons` (the max); assembly slices each assignment's own (≤ max) horizons.
   - `StationTrackOutcome` — an **explicit discriminated variant**, not a nullable payload:
     `StationTrackAvailable(cycle: UtcDatetime, records, provenance)` | `StationTrackUnavailable(reason)`.
   - `CandidateFetchResult` — **candidate-local ownership**, not deep immutability (its payload is a

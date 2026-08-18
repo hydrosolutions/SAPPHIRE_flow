@@ -3227,13 +3227,77 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > @dataclass(frozen=True, kw_only=True, slots=True)
 > class OutputHorizon:     steps: FutureSteps
 >
+> # --- Phase 3 refinement (2026-08): dedup KEY vs per-assignment horizon CARRIER ---
+> # ForcingTrackKey is the HASHABLE dedup key: exactly the axes at which ONE recap
+> # fetch operates and below which requirements are genuinely equivalent. It carries
+> # NO horizon VALUES. Two reasons the old `feature_horizons: FeatureFetchHorizons`
+> # field was wrong: (1) it DEFEATED dedup — a 5-day and a 10-day model needing the
+> # same feature set at the same source/mode/time_step/spatial got DIFFERENT keys, so
+> # the expensive 51-member fetch ran twice; (2) a `Mapping` field makes a
+> # frozen/slots dataclass UNHASHABLE, so it could not be a dedup key at all. Horizon
+> # is not even a recap fetch axis: one `ecmwf.ifs_forecast(...)` call is keyed by
+> # (variable, run_date+run_hour, hru_code, ifs_type=fc|pf, member) and returns the
+> # FULL series (recap_gateway.py:899-911) — SAP3 SLICES to a horizon post-fetch.
+> #
+> # Granularity (grounded in recap fetch + FI InputRequirement):
+> #  - ONE ensemble_mode per track. exact-51 completeness (all {0..50}) applies to
+> #    EVERY feature on an ENSEMBLE track, so a SINGLE-mode feature (fc only) cannot
+> #    ride it; a mixed-mode requirement SPLITS into per-mode ForcingRequired. FI
+> #    carries ensemble_mode per future_known variable (forecast_interface.py:474).
+> #  - ONE spatial_representation per track (distinct extraction/HRU); FI declares one
+> #    spatial per dynamic spec and v1 rejects multi-spatial (forecast_interface.py:488).
+> #  - ONE concrete time_step (FI `req.dynamic` is keyed by time_step, :519,:1096).
+> #  - feature SET as a frozenset (hashable). Requirements dedup iff their feature sets
+> #    are EQUAL. (In v0/v1 the NWP allowlist is {tp, t_2m}, so feature sets are
+> #    homogeneous and this dedups every real case.) Sub/superset feature UNION across
+> #    tracks is a DEFERRED optimization, NOT this contract — see residual note below.
 > @dataclass(frozen=True, kw_only=True, slots=True)
-> class ForcingTrackKey:
+> class ForcingTrackKey:                  # HASHABLE dedup key — NO horizon values
 >     nwp_source: NwpSource                # existing NewType/enum
->     ensemble_mode: EnsembleMode          # existing enum
->     time_step: timedelta
->     feature_horizons: FeatureFetchHorizons
->     spatial_representation: SpatialRepresentation  # existing enum
+>     ensemble_mode: EnsembleMode          # existing enum — exactly ONE mode per track
+>     time_step: timedelta                 # hashable; the resolved operational step
+>     spatial_representation: SpatialRepresentation  # existing enum — exactly ONE per track
+>     features: frozenset[FeatureName]     # hashable feature SET — NO per-feature horizons
+>
+> # ForcingRequired — the per-assignment PROJECTION (before dedup): the track an
+> # assignment needs + its OWN per-feature fetch horizons. Invariant:
+> # set(assignment_horizons) == key.features.
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class ForcingRequired:
+>     key: ForcingTrackKey
+>     assignment_horizons: FeatureFetchHorizons   # THIS assignment's per-feature horizons
+>     assignment: object                   # (station_id|group_id, model_id) key; concrete in build plan
+>
+> # ResolvedTrackRequest — the dedup RESULT (exactly one per distinct key).
+> # fetch_horizons = per-feature MAX FutureSteps across all assignments sharing the
+> # key (the cycle is fetched + completeness-checked at this MAX); `assignments`
+> # retains each assignment's ORIGINAL horizons for later per-assignment slicing (≤ max).
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class ResolvedTrackRequest:
+>     key: ForcingTrackKey
+>     fetch_horizons: FeatureFetchHorizons          # per-feature MAX across assignments
+>     assignments: tuple[ForcingRequired, ...]       # retained, each with its own horizons
+>
+> # Reducer contract — pure, deterministic (services/), the projection→fetch bridge:
+> #   resolve_tracks(required: list[ForcingRequired]) -> list[ResolvedTrackRequest]
+> #   Group `required` by `key`. Per group emit ONE ResolvedTrackRequest whose
+> #   fetch_horizons[f] = max(a.assignment_horizons[f] for a in group) for every
+> #   f in key.features, and whose `assignments` is the group (retaining each
+> #   assignment's own horizons). Deterministic output order (sorted by key). Every
+> #   group member satisfies set(assignment_horizons) == key.features (asserted).
+> #
+> # Completeness gate keys off ResolvedTrackRequest.fetch_horizons (the MAX): the RAW
+> # candidate is accepted iff, for every f in key.features, the series reaches
+> # fetch_horizons[f] AND (ENSEMBLE) carries member_ids == {0..50} at that horizon —
+> # so "5-day + 10-day dedup onto one 10-day track" is completeness-checked at 10-day.
+> # Per-assignment assembly then slices each assignment's own (≤ max) horizons out of
+> # the fetched-at-max frame.
+> #
+> # RESIDUAL (human confirm): feature-set UNION dedup (fetch {tp,t_2m} once to serve a
+> # {tp}-only assignment) is intentionally NOT here — it would drop `features` from the
+> # equality axis and require the completeness gate + per-assignment slicer to handle
+> # superset frames. Moot under the v0/v1 {tp,t_2m} allowlist; revisit if heterogeneous
+> # feature sets appear.
 >
 > # StationTrackOutcome — discriminated union (NOT a nullable payload)
 > @dataclass(frozen=True, kw_only=True, slots=True)
