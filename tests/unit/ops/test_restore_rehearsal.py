@@ -104,6 +104,24 @@ fixer commit found four further gaps, all fixed here):
       once and uses its real index.
 All four proven red against the pre-fix (n)/(o)-round script/tests and
 green after.
+
+Locked 2026-08-18, fifth round (a further independent review of the (p)-(s)
+fixer commit found one more gap, fixed here):
+  (t) the (s) fix ("appears exactly once" + "is the final positional
+      token" + "--network none precedes it") still does not prove the
+      sentinel is Docker's actual image argument: all three of those
+      conditions are also satisfied by a decoy invocation like
+      `docker run -d decoy-image --network none --name X -e Y SENTINEL`,
+      where Docker actually treats the FIRST positional token
+      (`decoy-image`) as the image and parses everything from `--network`
+      onward as that container's COMMAND — i.e. no network isolation at
+      all — while SENTINEL still passes every (s)-round check. The test
+      now pins the complete expected `docker run` argv (the real
+      invocation the script issues, with the image swapped for the
+      sentinel), which rules out any decoy positional token anywhere
+      before the image. Proven red via a deliberately constructed decoy
+      invocation (not against the real script, which has never emitted
+      one) and green against the real script/tests.
 """
 
 from __future__ import annotations
@@ -678,6 +696,7 @@ class TestNetworkIsolation:
         bin_dir.mkdir()
         args_log = tmp_path / "docker-args.log"
         sentinel_image = "test-registry.example/sentinel-postgis:pinned"
+        container_name = "test-restore-rehearsal"
         fake = _write_fake_docker(bin_dir, args_log)
         result = _run_script(
             tmp_path,
@@ -714,6 +733,35 @@ class TestNetworkIsolation:
         assert network_idx + 1 < image_idx, (
             f"'none' (the --network value) must also precede the image "
             f"argument: {run_argv}"
+        )
+        # Even all of the above does not prove the sentinel is Docker's
+        # ACTUAL image argument: "last token" + "exactly one occurrence" +
+        # "--network none precedes it" are all still satisfied by
+        # `docker run -d decoy-image --network none --name X -e Y SENTINEL`
+        # — Docker parses the FIRST positional token after the options as
+        # the image (here, `decoy-image`), and everything from `--network`
+        # onward becomes that container's COMMAND, i.e. no isolation at
+        # all, while every assertion above still holds since SENTINEL is
+        # still the sole, final, --network-preceded token. Pinning the
+        # complete expected argv is the only check that also rules out an
+        # earlier decoy positional; this is the exact real invocation the
+        # script issues (see scripts/restore-rehearsal.sh's `docker run`
+        # call) with only the image swapped for the sentinel.
+        expected_argv = [
+            "run",
+            "-d",
+            "--network",
+            "none",
+            "--name",
+            container_name,
+            "-e",
+            "POSTGRES_PASSWORD=rehearsal",
+            sentinel_image,
+        ]
+        assert run_argv == expected_argv, (
+            f"expected the exact `docker run` argv (no decoy positional "
+            f"token anywhere before the image): got {run_argv}, expected "
+            f"{expected_argv}"
         )
 
 

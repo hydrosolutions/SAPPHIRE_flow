@@ -164,6 +164,21 @@ from a *manual* run of the restore procedure (`createdb` + `--no-owner --no-acl`
 automated run of this specific script revision — the two are the same procedure but not the same
 artifact-under-test, which is why the automated run is still owed.
 
+**Fifth fixer round (2026-08-18, same branch), a further independent review found one more test-rigor gap
+(no script-logic change — `scripts/restore-rehearsal.sh` is byte-identical to the fourth round):** the
+`--network none` position test's checks ("sentinel appears exactly once", "sentinel is the final positional
+token", "`--network none` precedes it") are all still satisfied by a decoy invocation such as `docker run -d
+decoy-image --network none --name X -e Y SENTINEL` — Docker's real grammar takes the *first* positional token
+after the options as the image (`decoy-image` here), so everything from `--network` onward becomes that
+container's COMMAND, i.e. no isolation at all, while the sentinel still passes every one of the prior checks.
+The test now pins the complete expected `docker run` argv — the exact invocation the script issues, with only
+the image swapped for the sentinel — which rules out any decoy positional token anywhere before the image.
+Proven red via a deliberately constructed decoy argv (the real script has never emitted one) and green
+against the real script's actual argv shape. This confirms — again — that this fixer round re-verified: it
+re-ran the ssh connectivity probe to the mac-mini from this sandbox (`ssh -o ConnectTimeout=6 -o BatchMode=yes
+sapphire@192.168.1.136` — connection timed out), so the live acceptance run above remains genuinely
+un-performable from here and stays the open item gating merge.
+
 **Minor, accepted as-is:** commit `d6cf850` on this branch predates its version bump (the message
 self-discloses this as an interrupted-session checkpoint); the immediately following commit brought the
 version current, so branch HEAD is not out of sync, but the individual checkpoint commit does not itself
@@ -180,7 +195,12 @@ this environment); squash before merge if the team wants every individual commit
 unencrypted (FileVault off), containing `access_tokens` and `tenant_id`.
 
 **READY** (2026-08-15) — **build scope is PHASE A only** (T1-T4 + the backup component; see "Phase A — BUILD
-NOW"). Phase B/C specs are retained below but explicitly **not** in this build.
+NOW"). Phase B/C specs are retained below as specs, mostly **not yet started, with one exception: T5** (the
+restore rehearsal) **is under active build/fix right now**, five fixer rounds deep on branch
+`fix/plan-162-t5-restore-path` — see the "VERIFIED RESTORE PROCEDURE" section above. A reader who jumps
+straight to this Status block should not conclude T5 is merely a retained, un-started spec:
+`scripts/restore-rehearsal.sh` exists, is under test, and is gated on one outstanding item — the live
+acceptance run of the current script revision against the real mac-mini artifact — before that branch merges.
 Reviewed three times: two full rounds on the whole plan plus a focused pass on the narrowed Phase A scope; the
 last round's blockers were coherence, not design. Operational reliability (category **A**). **Backups are
 live-broken**: the last successful
