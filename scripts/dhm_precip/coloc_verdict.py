@@ -50,6 +50,7 @@ class IndeterminateReason(StrEnum):
     ADEQUACY_BOOTSTRAP_SPREAD_TOO_WIDE = "adequacy_bootstrap_spread_too_wide"
     MATCHED_RESOLUTION_DISAGREEMENT = "matched_resolution_disagreement"
     ABLATION_AMBIGUOUS = "ablation_ambiguous"
+    ABLATION_MOVED_AWAY = "ablation_moved_away"
     STATION_DISAGREEMENT = "station_disagreement"
 
 
@@ -179,8 +180,22 @@ def evaluate_station_verdict(
         after=inputs.dhm_peak_matched_resolution_hour,
         target=inputs.pyramid_peak_hour,
     )
+    verdict: Verdict
+    reason: IndeterminateReason | None
     if movement >= params.coloc_ablation_supported_min_hours:
-        verdict, reason = Verdict.H1_SUPPORTED, None
+        # D9 — "'Toward' is defined as a REDUCTION IN CIRCULAR DISTANCE to
+        # the Pyramid peak". A large movement that does NOT reduce the
+        # distance to the independent instrument is not evidence that the
+        # sub-threshold counts carried a spurious phase: H1 is about the
+        # ablation bringing DHM INTO agreement, so movement away (or
+        # equidistant) is INDETERMINATE, never "supported".
+        if toward:
+            verdict, reason = Verdict.H1_SUPPORTED, None
+        else:
+            verdict, reason = (
+                Verdict.INDETERMINATE,
+                IndeterminateReason.ABLATION_MOVED_AWAY,
+            )
     elif movement < params.coloc_ablation_refuted_max_hours:
         verdict, reason = Verdict.H1_REFUTED, None
     else:

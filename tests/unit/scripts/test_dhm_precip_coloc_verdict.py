@@ -216,6 +216,31 @@ class TestAblationGate:
         assert result.reason == IndeterminateReason.ABLATION_AMBIGUOUS
         assert result.gate_stopped_at == "ablation"
 
+    def test_large_movement_away_from_pyramid_is_indeterminate(self) -> None:
+        """D9: '"Toward" is defined as a REDUCTION IN CIRCULAR DISTANCE to
+        the Pyramid peak'. Counterexample the pre-fix code got wrong: the
+        all-values DHM peak ALREADY coincides with Pyramid (2 == 2) and the
+        ablation moves it to 6 — exactly 4h of movement, which satisfies
+        gate 2's 'supported' threshold, and exactly 4h of matched-resolution
+        disagreement, which passes gate 1 (`> 4.0` is false). The ablation
+        moved the peak AWAY (circular distance 0h -> 4h), so the
+        sub-threshold counts cannot be what carried a spurious phase: H1
+        is NOT supported by this evidence."""
+        assert evaluate_station_verdict is not None, (
+            "evaluate_station_verdict not implemented yet"
+        )
+        inputs = _inputs(
+            dhm_peak_all_hour=2.0,
+            dhm_peak_matched_resolution_hour=6.0,
+            pyramid_peak_hour=2.0,
+        )
+        result = evaluate_station_verdict(inputs, DEFAULT_PARAMS)
+        assert result.moved_toward_pyramid is False
+        assert result.ablation_movement_hours == 4.0
+        assert result.verdict == Verdict.INDETERMINATE
+        assert result.reason == IndeterminateReason.ABLATION_MOVED_AWAY
+        assert result.gate_stopped_at == "ablation"
+
 
 class TestSynthesis:
     """D9's synthesis is defined over EXACTLY the two registered co-located
