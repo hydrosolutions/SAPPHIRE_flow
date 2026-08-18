@@ -11,6 +11,32 @@ supersedes: []
 
 # Plan 162 — Robust database backup
 
+## 📌 Owner context 2026-08-18 — the off-box destination is DEPLOYMENT-DEPENDENT
+
+Recorded from the owner, and it changes Phase B's shape:
+
+- **DHM (on-prem):** backups go to a **different drive on the same network** — i.e. a second local disk or a
+  network mount.
+- **AWS:** **S3**, or **Cloudflare R2**.
+- **Staging (this mini):** same-disk today, and that is tolerable *because it is staging* — the work still has
+  to be correct here so it is proven before DHM.
+
+**Consequence 1 — D4 is not a single choice, it is a CONFIGURABLE SINK.** Do not hardcode a destination. Two
+shapes cover every case above: a **filesystem path** (second drive / network mount) and an **S3-compatible
+endpoint** (S3, R2). Same validated artifact, same publish step, different sink.
+
+**⚠️ Consequence 2 — this REVIVES T6 (mount validation), which Phase A cut.** It was cut because
+`/Volumes/sapphire-backup` is a plain directory on the boot disk, so there was no mount to lose. With a real
+drive or network mount that reverses into the classic failure: **the volume unmounts and backups write into the
+mount POINT on the boot disk** — correct filenames, fresh timestamps, monitor green, and every copy sitting on
+the disk you were trying to escape. Mount validity must be checked **before** artifact freshness (the ordering
+already specified), and it becomes load-bearing exactly when a real destination exists.
+
+**Consequence 3 — sequencing.** Off-box replication is now primarily **deployment-readiness work for DHM/AWS**
+rather than an urgent staging fix. It should land before the DHM deployment, not necessarily before anything
+else. Encryption (D5) keeps its own justification independent of destination: dumps carry `access_tokens` and
+`tenant_id`, and an artifact that is safe at rest is safe on any of these sinks.
+
 ## Status
 **PARTIAL — Phase A merged 2026-08-16 as PR #161 (`a9239b6a`). NOT yet deployed.**
 ⛔ **Phase B is a hard gate before any customer release**: dumps still sit on the same device as the database,
