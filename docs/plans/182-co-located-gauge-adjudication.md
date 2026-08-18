@@ -209,6 +209,39 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   licensing it** — the asymmetry is deliberate: an unproven artefact must not silently reshape
   operational timing.
 
+- **D11 — ⛔ CORRECTED 2026-08-18: THE FULL RECORD IS THE ADJUDICATED COMPARISON. The overlap is
+  corroboration.** *(Implementation review found the plan structurally unable to produce a verdict.)*
+
+  **The contradiction I introduced:** D9's ordered gates say *"the first gate that fires decides; no
+  later gate can overturn it"*, and gate 0 returns INDETERMINATE on <5 season-years. But the real
+  overlap windows are **Lukla 2021–2023 (3 seasons)** and **Syangboche 2020–2023 (4)**, so gate 0 fires
+  **unconditionally for both stations** and the runner can **never** return anything but INDETERMINATE.
+  D5's own fallback — *"rest the verdict on the full record"* — was made unreachable by D9's
+  no-overturn rule. **My round-3 fix broke my round-2 fix.**
+
+  **Resolution, and it is what D5 already said:** D5 states the **climatological comparison is the
+  PRIMARY one**. So:
+  - **The verdict is adjudicated on the FULL RECORD** — DHM's full JJAS (2020–2025, **6 season-years**)
+    against Pyramid's full JJAS (Lukla 2005–2023, Namche 2002–2023). **Both sides clear the 5-season
+    threshold comfortably**, so a decisive verdict is reachable in production.
+  - **The overlap window is computed and reported as CORROBORATION**, carrying its own small-sample
+    caveat. It does **not** gate the verdict; a disagreement between overlap and full record is itself
+    reportable.
+  - **Gate 0 now applies to the FULL-RECORD comparison.** Only if *that* fails adequacy or stationarity
+    is the outcome INDETERMINATE.
+
+  **⚠️ The test that would have caught this:** every decisive-verdict test fed a synthetic 5-year
+  window, bypassing the real `COLOCATED_PAIRS` bounds. **A test must drive the pipeline through the REAL
+  registry bounds and prove a decisive verdict is reachable.** A suite that cannot fail on "the
+  deliverable is unreachable" is not testing the deliverable.
+
+- **D12 — Stationarity is checked on PYRAMID, not DHM.** D5 said "compare disjoint periods (pre-2020 vs
+  2020+)" without naming the network, and the implementation applied it to DHM — which **has no pre-2020
+  data at all** (it starts 2020), so the check was vacuous and a genuine Pyramid phase shift would pass
+  unnoticed, licensing an invalid non-contemporaneous comparison.
+  ⇒ **The pre-2020 vs 2020+ split is PYRAMID's** (1994/2002/2005–2023). A DHM 2020–2022 vs 2023–2025
+  split may be reported as *additional* evidence but **never as a substitute**.
+
 ## Exit
 
 - **The D7 threshold ladder — the primary result**: the DHM normalised profile at *all values*,
