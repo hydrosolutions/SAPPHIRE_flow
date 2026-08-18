@@ -16,6 +16,26 @@ supersedes: []
 **DRAFT** (2026-08-18). Resolves **Plan 175 D5**, deferred there by owner decision and documented in
 `docs/decisions/bafu-lindas-rate-limit.md` rather than fixed.
 
+**`/plan` ESCALATED (stalled, 3 rounds, 3 blockers + 3 majors residual); this is the reconstruction.**
+Unlike the Plan 175 run, the loop did **not** invent machinery — the section structure came back
+unchanged and every finding was a correction, with the headline blocker asking the plan to share *less*
+code. The anti-over-engineering brief below appears to have worked. But it stalled with the findings
+**unresolved** while the doc grew 218 → 411 lines, so the plan was rebuilt from the pre-review baseline
+with each finding verified against the code first, per `feedback_plan_workflow_over_expands`.
+
+Folded after verification: the grouping code is **not** error-neutral, so D2 now shares strictly less
+(**blocker**); "exactly one transport request" contradicted the retained retry contract (**blocker**);
+mixed-batch outcome precedence was undefined (**major**); the test matrix let a broadcast-failure mutant
+through (**major**); two documents assert an incrementality that was never implemented (**major**);
+`_QUERY_LIMIT` is read directly by a collector test (**minor**); `~1000 stations` is an architectural
+ceiling, not the v0 target — v0 is ~170 (**minor**); tasks lacked the per-task verification commands
+`docs/workflow.md:22` requires (**minor**).
+
+**One finding was rejected as unsubstantiated:** that `tests/fixtures/reference/README.md` describes the
+per-station fan-out and would contradict this plan. Its LINDAS section says LINDAS is real-time only,
+which *agrees* with D3; no one-subject-per-request claim exists there. The cited line numbers pointed at
+unrelated text. Not folded.
+
 The three load-bearing facts below were **measured on 2026-08-18**, not assumed. This plan is small
 because those measurements removed most of the complexity it looked like it would need.
 
@@ -67,7 +87,7 @@ At D1's pacing, N stations cost roughly `N x 4 s`:
 | 10 | ~40 s | fine |
 | 60 | ~4 min | at the edge |
 | **169** (`config.toml`'s basin list) | **~11 min** | **overlapping runs, permanently behind** |
-| ~1000 (`docs/v0-scope.md` target) | ~67 min | structurally impossible |
+| ~1000 (`docs/v0-scope.md:9` *architectural ceiling* across deployments, not the v0 target) | ~67 min | structurally impossible |
 
 **This is armed, not theoretical.** The gap between 169 configured basins and 2 polled stations closes
 the moment someone runs onboarding against the committed config — an ordinary action, not a project.
@@ -125,14 +145,32 @@ by `(gauge_code, lindas_kind)`, then map each onboarded `StationConfig` to its e
 from the graph yields the same `NO_DATA` outcome it does today; a station present but missing a
 parameter behaves exactly as the per-station path does (evidence 1).
 
-**D2 — share the QUERY and PARSE, not the adapter.** Plan 136 DC-2 forbids `BafuObservationAdapter`
-constructing `RawObservation`/`StationId`, and that boundary is load-bearing: it is what keeps the
-evaluation-only archive from silently becoming an operational input. **Locked:** extract the SPARQL text
-and the subject-grouping parse into a shared module returning gauge-keyed rows, then keep **two thin
-mappers** — the collector's to `BafuObservationRow` (quarantined, gauge-keyed) and ingest's to
-`RawObservation` (station-keyed, requires the `StationConfig` mapping). Neither adapter imports the
-other. The quarantine boundary moves from "separate adapter" to "separate mapper", and the plan should
-say so explicitly rather than let it erode by accident.
+**D2 — share the QUERY, not the parse. The grouping code is NOT error-neutral** (folded blocker; an
+earlier draft of this decision was wrong and said the opposite).
+
+Plan 136 DC-2 forbids `BafuObservationAdapter` constructing `RawObservation`/`StationId`, and that
+boundary is load-bearing: it is what keeps the evaluation-only archive from silently becoming an
+operational input.
+
+The first draft proposed sharing the "group triples by subject" loop, calling it a pure
+`setdefault`/`append`. **It is not.** `adapters/bafu_observation.py:203-209` builds a pydantic
+`_SparqlTriple` inside that loop, dereferencing `raw["subject"]["value"]` and friends; a malformed
+binding therefore *raises during grouping* and is converted to a collector-wide `AdapterError`
+(`:166`). Reusing it operationally would make **one bad binding anywhere fail every station** —
+destroying exactly the subject-local isolation D4 requires.
+
+**Locked, deliberately sharing less than the first draft:**
+- **Shared:** the SPARQL query text/constants and a **non-raising** subject-URI → `(gauge_code,
+  lindas_kind)` key helper that returns `None` rather than raising on an unrecognised subject.
+- **NOT shared:** grouping, validation and failure policy. The collector keeps its current validated
+  `_SparqlTriple` grouping and its fail-the-whole-fetch semantics (correct for an archive snapshot).
+  Ingest groups raw bindings by *usable subject only*, then validates predicate/object fields inside
+  the extraction loop for each **requested** subject — so a malformed binding for a gauge we do not
+  poll is simply never looked at.
+
+The quarantine boundary thus moves from "separate adapter" to "separate parse + separate mapper", which
+is a weaker structural guarantee than Plan 136 had. Stated plainly so a reviewer can weigh it rather
+than discover it.
 
 **D3 — `fetch_observations` keeps its Protocol signature**, `since` included. It is `StationDataSource`
 (`protocols/adapters.py:66-72`, authoritative spec `docs/spec/types-and-protocols.md`), implemented by
@@ -140,12 +178,26 @@ the replay adapter, the fakes and `tools/record_fixtures.py`. `since` stays acce
 as today — narrowing the Protocol is a separate change with a much wider blast radius, and this plan
 does not need it.
 
-**D4 — per-station outcomes survive unchanged.** Plan 175's `StationFetchOutcome` taxonomy
-(`RATE_LIMITED`, `HTTP_STATUS_ERROR`, `TRANSPORT_ERROR`, `MALFORMED_RESPONSE`, `NO_DATA`) and the
-`OBSERVATION_INGEST_FETCH` health record are the contract, not an implementation detail. With one
-request, transport/HTTP causes become **whole-batch** rather than per-station — that is a real semantic
-change and must be stated: a 429 now fails *every* station at once instead of some. `NO_DATA` and
-`MALFORMED_RESPONSE` stay genuinely per-station.
+**D4 — per-station outcomes survive, and the precedence order is defined** (folded major — the first
+draft left mixed batches ambiguous).
+
+Plan 175's `StationFetchOutcome` taxonomy (`RATE_LIMITED`, `HTTP_STATUS_ERROR`, `TRANSPORT_ERROR`,
+`MALFORMED_RESPONSE`, `NO_DATA`) and the `OBSERVATION_INGEST_FETCH` health record are the contract, not
+an implementation detail. **Locked precedence, evaluated in this order:**
+
+1. **Weather configs are skipped entirely** — no outcome, no request. Today's behaviour
+   (`hydro_scraper.py:105`), locked by an existing no-request test.
+2. **A code failing the injection guard gets a config-local `MALFORMED_RESPONSE`** before any request
+   (`hydro_scraper.py:126`), exactly as now.
+3. **Only the remaining valid river/lake configs enter the index** and are eligible for whole-response
+   faults.
+4. **If no eligible config remains, make NO request at all.**
+
+**What genuinely changes:** transport/HTTP causes become **whole-batch**. A 429 or 503 now fails every
+*eligible* station at once rather than some — a real change in kind, worth stating rather than
+discovering. `NO_DATA` and `MALFORMED_RESPONSE` stay strictly **subject-local**: a nonnumeric value or
+unparseable timestamp for one gauge must not touch another. Exactly one outcome per eligible config,
+always.
 
 ## Open questions for the owner
 
@@ -159,35 +211,73 @@ change and must be stated: a 429 now fails *every* station at once instead of so
 
 ## Tasks
 
-### T1 — extract the shared query/parse layer (D2)
+### T1 — extract the shared query layer (D2)
 
-Move the SPARQL text and subject-grouping parse into a shared module returning gauge-keyed rows. The
-collector's existing behaviour must be **byte-identical afterwards** — its unit tests are the guard, and
-they should pass untouched.
+**Scope.** Move the SPARQL query text/constants and add a **non-raising** subject-URI → `(gauge_code,
+lindas_kind)` key helper into a shared module. Grouping, validation and failure policy stay where they
+are — see D2. `_QUERY_LIMIT` must remain importable from `adapters/bafu_observation.py` (re-export if
+moved): `tests/unit/adapters/test_bafu_observation.py:212` reads it directly, and the exit gate below
+requires the collector's tests to pass untouched.
+
+**Verification.** `uv run pytest tests/unit/adapters/test_bafu_observation.py tests/unit/flows/test_collect_bafu_observations.py -q`
 
 ### T2 — whole-graph batch fetch in `HydroScraperAdapter` (D1, D4)
 
-Replace the per-station loop in `fetch_observations_batch` with one fetch + local filter. Build the
-`(gauge_code, lindas_kind) -> StationConfig` index from the passed configs. Preserve the D4 taxonomy,
-mapping whole-batch failures to every requested station.
+**Scope.** Replace the per-station loop in `fetch_observations_batch` with one fetch plus a local
+filter, building the `(gauge_code, lindas_kind) → StationConfig` index from the passed configs. Apply
+D4's precedence exactly. Out of scope: `fetch_observations`' signature (D3), the QC path, the store.
 
-**Tests:** one request for N stations (assert the transport was called exactly once, for N > 3 — this is
-the whole point and must be locked); a station absent from the graph yields `NO_DATA`; a station missing
-one parameter matches today's behaviour; a 429 marks all stations `RATE_LIMITED`; existing
-`test_hydro_scraper.py` expectations reconciled deliberately, not broken.
+**The request-count invariant, stated correctly** (folded blocker — the first draft said "exactly one
+transport request", which contradicts the retained limiter): the guarantee is **one logical batch fetch
+per run**, and **retry attempts constant in station count**. Persistent 429 still costs
+`max_retries + 1` HTTP attempts (`hydro_scraper.py:79`, `lindas_rate_limiter.py:263`) — that is the
+retry contract working, not a violation. Lock the invariant with `max_retries=0` for the count test, and
+separately assert the real retry path still makes `max_retries + 1` attempts.
 
-### T3 — docs
+**Tests — the matrix, not one example per cause** (folded major: a mutant that broadcasts a
+subject-local failure to every station, or emits a single outcome on 503, passes a thinner suite):
+- **Flat in station count:** N > 3 stations ⇒ exactly one logical fetch (`max_retries=0`). This is the
+  entire point of the plan and must be locked.
+- **Whole-batch causes, multi-station:** parameterised over 403, exhausted 503, and transport
+  exhaustion — every eligible station gets the same cause, and the count of outcomes equals the count of
+  eligible configs.
+- **Subject-local causes, multi-subject:** a malformed binding and a nonnumeric value for gauge A leave
+  gauge B **successful**. This is the isolation D4 promises and the mutant most likely to survive.
+- **`NO_DATA` shapes:** a subject absent from the graph; a subject present with `measurementTime` only.
+- **Tolerated:** an onboarded subject carrying an unrecognised predicate alongside a valid parameter
+  still succeeds.
+- **Precedence (D4):** a mixed batch of weather + invalid-code + valid configs under a 429 — weather
+  gets no outcome, the invalid code keeps `MALFORMED_RESPONSE`, valid ones get `RATE_LIMITED`; and an
+  all-weather / all-invalid batch makes **zero** requests.
 
-`docs/decisions/bafu-lindas-rate-limit.md` records D5 as **resolved**, with the ceiling table above and
-the date. `docs/v0-scope.md` drops the pointer that per-station polling caps the station count.
-`docs/touchpoint-maps.md` gains the shared query/parse layer and the two-mapper quarantine boundary.
+**Verification.** `uv run pytest tests/unit/adapters/test_hydro_scraper.py tests/integration/adapters/test_hydro_scraper.py tests/unit/flows/test_ingest_observations_fetch_health.py -q`
+
+### T3 — docs, including two that currently assert the opposite
+
+**Scope.** Beyond the obvious updates, these actively contradict the implementation and were missed by
+the first draft:
+- **`docs/design/v0-flow2-observation-pipeline.md`** — states ingest is *incremental*: "only fetch since
+  last-seen timestamp per station" and "Pass `since` timestamps to the SPARQL query (or filter
+  client-side)". That incrementality was **never implemented** (D3's measurement), and is doubly wrong
+  after this plan. Correct the whole LINDAS section rather than the two lines.
+- **`tests/integration/live/test_lindas_live_schema.py:171,294`** — comments reasoning about "7 real
+  requests" of rate-limit budget. That test calls `HydroScraperAdapter.fetch_observations` (`:190,196`),
+  so after this plan it spends **one**. A pleasant side effect worth recording, and wrong if left.
+- `docs/decisions/bafu-lindas-rate-limit.md` records D5 **resolved**, with the ceiling table and date.
+- `docs/v0-scope.md:9` — its Plan 175 D5 caveat (per-station polling does not scale) can now point at
+  the resolution instead of the gap.
+- `docs/touchpoint-maps.md` — the shared query layer and the two-parse/two-mapper quarantine boundary.
+
+**Verification.** `uv run pytest tests/integration/live/test_lindas_live_schema.py -q --collect-only` (the
+comments are prose, but the file must still import and collect) plus `uv run ruff format --check docs` is
+not applicable — review the doc diff by eye against D2/D3/D4.
 
 ### T4 — re-measure the ceiling
 
-Re-run the arithmetic that motivated this plan and record the result: one request per run means the
-ingest cost is now flat in station count. Verify on the mini by onboarding into a scratch config (not
-the live station set) or by asserting the request count in tests — **do not** onboard 169 basins to the
-live deployment as a test.
+**Scope.** Record that ingest cost is now flat in station count, using the test from T2 rather than a
+live experiment. **Do not** onboard 169 basins to the live deployment to prove it.
+
+**Verification.** `uv run pytest tests/unit/adapters/test_hydro_scraper.py -k "flat_in_station_count" -q`
 
 ```json
 {
@@ -209,6 +299,9 @@ live deployment as a test.
 
 ## Notes
 
+- The review's most useful finding inverted one of mine: I asserted the grouping code was pure and
+  shareable, having read the call site rather than the loop body. It builds a pydantic model per binding
+  and raises. Checking the four lines would have cost less than the round did.
 - This plan is short because three measurements collapsed it. Had `since` been meaningful, or had the
   whole-graph query returned less than the per-station one, it would have been a much larger piece of
   work. Both were checked rather than assumed — the per-station/whole-graph comparison above took one
