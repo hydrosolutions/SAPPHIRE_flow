@@ -186,6 +186,16 @@ def _standardize_dims(ds: xr.Dataset) -> xr.Dataset:
     return ds.rename(renames) if renames else ds
 
 
+def _grid_step(coords: np.ndarray) -> float | None:
+    """Median spacing of a coordinate axis, or ``None`` for a degenerate
+    (<2-point) axis. Grid-agnostic — works for the real store's 0.1 deg. axis
+    and any synthetic test grid alike."""
+    unique = np.unique(coords)
+    if unique.size < 2:
+        return None
+    return float(np.median(np.diff(unique)))
+
+
 def _assert_land_coverage(
     grid: xr.Dataset,
     parameter: str,
@@ -193,7 +203,8 @@ def _assert_land_coverage(
     basins: dict[StationId, Basin],
     min_land_fraction: float,
 ) -> None:
-    """Standalone land-mask coverage check (Plan 183 T2).
+    """Standalone land-mask coverage check (Plan 183 T2; corrected in the
+    fixer round — see M2/M3 below).
 
     The land-only grid is the trap: ocean cells are NaN, so a coastal or
     partially-masked catchment can silently average over fewer cells than it
@@ -201,30 +212,73 @@ def _assert_land_coverage(
     returns no contributing-cell count — modifying the SHARED extractor was
     rejected here (it is also used for NWP extraction, and any ``ops``
     change would need to be shown not to alter that output shape, which is
-    outside this plan's scope). This checks coverage independently:
-    cell-center-in-polygon over the first time slice (the land/ocean NaN
-    mask is time-invariant), not a re-derivation of exactextract's own
-    coverage-weighted algorithm.
+    outside this plan's scope). This checks coverage independently, over the
+    first time slice (the land/ocean NaN mask is time-invariant).
+
+    **M2 fix:** coverage is measured over INTERSECTING grid cells (each
+    cell's footprint — half a grid-step wide/tall around its centre), not
+    cell-CENTRE containment. ``ExactExtractGridExtractor`` runs
+    ``exact_extract(..., ops=["mean"])`` (coverage-weighted over intersecting
+    cells,`exact_extract_grid_extractor.py:121-134`) and only reports
+    out-of-extent when EVERY value is NaN — a basin smaller than one grid
+    cell (~11 km at ERA5-Land's 0.1 deg., the ordinary small-Swiss-catchment
+    case) still intersects at least one cell and gets a real, coverage-
+    weighted, non-NaN mean with zero land verification. The earlier
+    centre-containment check had NO cell centre to find inside such a basin,
+    so it silently skipped exactly the basins most at risk — the opposite of
+    what "the extractor itself raises ExtractionError for this case" (the
+    old comment) actually does.
+
+    **M3 fix:** cropped to each basin's bounding box (+ one grid-step
+    margin), never the full grid — ``read_variable`` only slices by
+    ``valid_time``, so an unsliced 1801x3600 global ERA5-Land grid rebuilt
+    per basin, per (year, station-batch, parameter) chunk was O(10^11)
+    point-in-polygon predicates before extraction even began. Cropping first
+    bounds the per-basin cost by the basin's own extent, not the globe's.
     """
     first_time = grid["valid_time"].values[0]
-    da0 = grid[parameter].sel(valid_time=first_time)
-    lon = da0["longitude"].values
-    lat = da0["latitude"].values
-    lon_grid, lat_grid = np.meshgrid(lon, lat)
-    values = da0.values
+    da0 = grid[parameter].sel(valid_time=first_time).transpose("latitude", "longitude")
+    lon_all = da0["longitude"].values
+    lat_all = da0["latitude"].values
+    values_all = da0.values
+
+    lon_step = _grid_step(lon_all)
+    lat_step = _grid_step(lat_all)
 
     low_coverage: list[str] = []
     for cfg in configs:
         basin = basins.get(cfg.station_id)
-        if basin is None:
+        if basin is None or lon_step is None or lat_step is None:
             continue
-        inside = shapely.contains_xy(basin.geometry, lon_grid, lat_grid)
-        total = int(inside.sum())
+        geom = basin.geometry
+        minx, miny, maxx, maxy = geom.bounds
+        lon_idx = np.nonzero(
+            (lon_all >= minx - lon_step) & (lon_all <= maxx + lon_step)
+        )[0]
+        lat_idx = np.nonzero(
+            (lat_all >= miny - lat_step) & (lat_all <= maxy + lat_step)
+        )[0]
+        if lon_idx.size == 0 or lat_idx.size == 0:
+            # No cells anywhere near the basin at all: out-of-extent
+            # entirely — the extractor itself raises ExtractionError for
+            # this case, not this check's job.
+            continue
+
+        lon_sub = lon_all[lon_idx]
+        lat_sub = lat_all[lat_idx]
+        lon_grid, lat_grid = np.meshgrid(lon_sub, lat_sub)
+        cells = shapely.box(
+            lon_grid - lon_step / 2,
+            lat_grid - lat_step / 2,
+            lon_grid + lon_step / 2,
+            lat_grid + lat_step / 2,
+        )
+        intersects = shapely.intersects(geom, cells)
+        total = int(intersects.sum())
         if total == 0:
-            # Out-of-extent entirely: the extractor itself raises
-            # ExtractionError for this case — not this check's job.
             continue
-        land = int(np.sum(inside & ~np.isnan(values)))
+        cropped_values = values_all[np.ix_(lat_idx, lon_idx)]
+        land = int(np.sum(intersects & ~np.isnan(cropped_values)))
         fraction = land / total
         if fraction < min_land_fraction:
             low_coverage.append(

@@ -25,6 +25,22 @@ Tolerance (D1, owner 2026-08-18) is set BEFORE the comparison: 5% relative,
 per basin — deliberately tight, and expected to be revised once real numbers
 are seen, so ``compare_climate_indices`` always records the observed
 ``relative_diff`` (not just pass/fail).
+
+**Coverage is data, never silently narrowed (fixer round, 2026-08-18).**
+``validate_era5_land_against_caravan`` used to ``continue`` past a station
+missing a basin, Caravan attributes, or overlapping precipitation/temperature
+records with no record of having done so — a fleet where most basins were
+skipped, or a basin compared on two days out of the nominal 14,610-day
+window and one index out of four, returned the exact same all-``agreements``
+shape as a full 40-year, four-index, 296-basin pass. It now returns a
+:class:`CaravanValidationResult` carrying every skip (station, reason), the
+expected/compared day count and coverage fraction per basin, and an explicit
+:attr:`CaravanValidationResult.is_full_parity_pass` that is ``True`` only when
+there were no skips, every basin met ``min_coverage_fraction`` of the
+requested window, every basin compared all four :data:`INDEX_ORDER` indices,
+and every comparison was within tolerance. An empty or partially-skipped
+result can never evaluate as a pass — a caller checking only "did this
+return agreements" can no longer mistake a narrow comparison for a broad one.
 """
 
 from __future__ import annotations
@@ -46,6 +62,11 @@ if TYPE_CHECKING:
 # D1: deliberately tight — the point is to detect an averaging discrepancy,
 # and a loose bound would pass a systematically biased extraction.
 DEFAULT_RELATIVE_TOLERANCE: Final[float] = 0.05
+
+# Fixer round (B1): a basin whose compared days fall short of this fraction of
+# the requested window is still reported (agreements + coverage are data),
+# but cannot count toward CaravanValidationResult.is_full_parity_pass.
+DEFAULT_MIN_COVERAGE_FRACTION: Final[float] = 0.9
 
 # Caravan's published training window (Plan 183 T3).
 CARAVAN_WINDOW_START: Final[date] = date(1981, 1, 1)
@@ -190,6 +211,65 @@ def _caravan_reference(basin_attributes: dict[str, object]) -> dict[str, float]:
     return reference
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ValidationSkip:
+    """A station T3 could not compare at all, and WHY — never silent."""
+
+    station_id: StationId
+    reason: str
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BasinCoverage:
+    """How much of the requested window a compared basin actually covered —
+    the fact a caller needs to tell "2 days out of 14,610" apart from a real
+    40-year comparison."""
+
+    station_id: StationId
+    expected_days: int
+    compared_days: int
+    coverage_fraction: float
+    indices_compared: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CaravanValidationResult:
+    """Everything T3 produced: agreements are data, not a verdict — read
+    ``is_full_parity_pass`` (or the coverage/skip lists) for the verdict."""
+
+    agreements: list[ClimateIndexAgreement]
+    skips: list[ValidationSkip]
+    coverage: list[BasinCoverage]
+    min_coverage_fraction: float
+
+    @property
+    def basins_below_coverage_floor(self) -> list[BasinCoverage]:
+        return [
+            c for c in self.coverage if c.coverage_fraction < self.min_coverage_fraction
+        ]
+
+    @property
+    def basins_missing_indices(self) -> list[BasinCoverage]:
+        return [c for c in self.coverage if len(c.indices_compared) < len(INDEX_ORDER)]
+
+    @property
+    def is_full_parity_pass(self) -> bool:
+        """``True`` only when EVERY station was compared (no skips), every
+        compared basin met ``min_coverage_fraction`` of the requested window,
+        every compared basin covered all four :data:`INDEX_ORDER` indices, and
+        every agreement was within tolerance. An empty result (no basins
+        compared at all) or a result with any skip NEVER counts as a pass —
+        the whole point is that a caller cannot mistake a narrow comparison
+        for a broad one just because ``agreements`` looks all-green."""
+        return (
+            bool(self.coverage)
+            and not self.skips
+            and not self.basins_below_coverage_floor
+            and not self.basins_missing_indices
+            and all(a.within_tolerance for a in self.agreements)
+        )
+
+
 def validate_era5_land_against_caravan(
     *,
     forcing_store: HistoricalForcingStore,
@@ -199,27 +279,55 @@ def validate_era5_land_against_caravan(
     window_start: date = CARAVAN_WINDOW_START,
     window_end: date = CARAVAN_WINDOW_END,
     tolerance: float = DEFAULT_RELATIVE_TOLERANCE,
-) -> list[ClimateIndexAgreement]:
+    min_coverage_fraction: float = DEFAULT_MIN_COVERAGE_FRACTION,
+) -> CaravanValidationResult:
     """Recompute the four Caravan climate indices from OUR extraction over
-    Caravan's own window and compare per basin. Stations without a basin, a
-    basin without imported Caravan attributes, or without both
-    precipitation and temperature coverage over the window are skipped
-    (not an error — a partial fleet during backfill is expected)."""
+    Caravan's own window and compare per basin.
+
+    Stations without a basin, a basin without imported Caravan attributes, or
+    without overlapping precipitation/temperature coverage over the window
+    are NOT silently dropped — each is recorded in
+    ``CaravanValidationResult.skips`` with a reason (a partial fleet during
+    backfill is expected; being unable to see WHICH stations and WHY is not).
+    Every basin that WAS compared gets a ``BasinCoverage`` entry recording how
+    many of the expected window's days it actually covered, and how many of
+    the four reference indices were present to compare — so a narrow
+    comparison (few days, few indices) is visible as data, not indistinguishable
+    from a full one.
+    """
     start = ensure_utc(datetime.combine(window_start, datetime.min.time(), tzinfo=UTC))
     end = ensure_utc(
         datetime.combine(window_end, datetime.min.time(), tzinfo=UTC)
         + timedelta(days=1)
     )
+    expected_days = (window_end - window_start).days + 1
 
-    results: list[ClimateIndexAgreement] = []
+    agreements: list[ClimateIndexAgreement] = []
+    skips: list[ValidationSkip] = []
+    coverage: list[BasinCoverage] = []
+
     for station in stations:
         if station.basin_id is None:
+            skips.append(ValidationSkip(station_id=station.id, reason="no_basin_id"))
             continue
         basin = basin_store.fetch_basin(station.basin_id)
-        if basin is None or basin.attributes is None:
+        if basin is None:
+            skips.append(
+                ValidationSkip(station_id=station.id, reason="basin_not_found")
+            )
+            continue
+        if basin.attributes is None:
+            skips.append(
+                ValidationSkip(station_id=station.id, reason="no_basin_attributes")
+            )
             continue
         reference = _caravan_reference(basin.attributes)
         if not reference:
+            skips.append(
+                ValidationSkip(
+                    station_id=station.id, reason="no_caravan_reference_indices"
+                )
+            )
             continue
 
         precip_records = forcing_store.fetch_forcing(
@@ -237,24 +345,44 @@ def validate_era5_land_against_caravan(
             parameters=["temperature"],
         )
         if not precip_records or not temp_records:
+            skips.append(
+                ValidationSkip(station_id=station.id, reason="missing_forcing_coverage")
+            )
             continue
 
         precip_by_day = {r.valid_time.date(): r.value for r in precip_records}
         temp_by_day = {r.valid_time.date(): r.value for r in temp_records}
         common_days = sorted(set(precip_by_day) & set(temp_by_day))
         if not common_days:
+            skips.append(
+                ValidationSkip(station_id=station.id, reason="no_overlapping_days")
+            )
             continue
 
         precip_series = [precip_by_day[d] for d in common_days]
         temp_series = [temp_by_day[d] for d in common_days]
         computed = compute_climate_indices(precip_series, temp_series)
 
-        results.extend(
-            compare_climate_indices(
+        basin_agreements = compare_climate_indices(
+            station_id=station.id,
+            computed=computed,
+            reference=reference,
+            tolerance=tolerance,
+        )
+        agreements.extend(basin_agreements)
+        coverage.append(
+            BasinCoverage(
                 station_id=station.id,
-                computed=computed,
-                reference=reference,
-                tolerance=tolerance,
+                expected_days=expected_days,
+                compared_days=len(common_days),
+                coverage_fraction=len(common_days) / expected_days,
+                indices_compared=tuple(a.index_name for a in basin_agreements),
             )
         )
-    return results
+
+    return CaravanValidationResult(
+        agreements=agreements,
+        skips=skips,
+        coverage=coverage,
+        min_coverage_fraction=min_coverage_fraction,
+    )

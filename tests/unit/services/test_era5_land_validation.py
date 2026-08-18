@@ -170,6 +170,9 @@ class TestValidateEra5LandAgainstCaravan:
     def test_end_to_end_agreement_from_stored_forcing_and_basin_attributes(
         self,
     ) -> None:
+        """A window and reference that FULLY cover what was requested (2/2
+        days, the only reference index caravan: carries) is a genuine full
+        parity pass — not narrowed, just small by construction."""
         mod = _import_module()
         basin = Basin(
             id=BasinId(uuid4()),
@@ -221,7 +224,7 @@ class TestValidateEra5LandAgainstCaravan:
             ]
         )
 
-        results = mod.validate_era5_land_against_caravan(
+        result = mod.validate_era5_land_against_caravan(
             forcing_store=forcing_store,
             basin_store=basin_store,
             stations=[station],
@@ -229,10 +232,21 @@ class TestValidateEra5LandAgainstCaravan:
             window_end=datetime(1981, 1, 2).date(),
         )
 
-        assert len(results) == 1
-        assert results[0].index_name == "p_mean"
-        assert results[0].computed == pytest.approx(5.0)
-        assert results[0].within_tolerance is True
+        assert len(result.agreements) == 1
+        assert result.agreements[0].index_name == "p_mean"
+        assert result.agreements[0].computed == pytest.approx(5.0)
+        assert result.agreements[0].within_tolerance is True
+        assert result.skips == []
+        assert len(result.coverage) == 1
+        assert result.coverage[0].expected_days == 2
+        assert result.coverage[0].compared_days == 2
+        assert result.coverage[0].coverage_fraction == pytest.approx(1.0)
+        assert result.coverage[0].indices_compared == ("p_mean",)
+        # Only p_mean was ever a Caravan reference on this basin (the other
+        # three indices are simply absent) -> cannot count as a FULL parity
+        # pass (all four indices), even though what WAS compared matched.
+        assert result.is_full_parity_pass is False
+        assert result.basins_missing_indices == result.coverage
 
     def test_station_without_basin_attributes_is_skipped(self) -> None:
         mod = _import_module()
@@ -252,10 +266,141 @@ class TestValidateEra5LandAgainstCaravan:
         basin_store.store_basin(basin)
         forcing_store = FakeHistoricalForcingStore()
 
-        results = mod.validate_era5_land_against_caravan(
+        result = mod.validate_era5_land_against_caravan(
             forcing_store=forcing_store,
             basin_store=basin_store,
             stations=[station],
         )
 
-        assert results == []
+        assert result.agreements == []
+        assert result.coverage == []
+        assert len(result.skips) == 1
+        assert result.skips[0].station_id == station.id
+        assert result.skips[0].reason == "no_basin_attributes"
+        assert result.is_full_parity_pass is False
+
+    def test_empty_fleet_never_reports_a_pass(self) -> None:
+        """B1: an empty result (nothing compared at all) must never evaluate
+        as success — the failure mode this whole result type exists to
+        prevent."""
+        mod = _import_module()
+        forcing_store = FakeHistoricalForcingStore()
+        basin_store = FakeBasinStore()
+
+        result = mod.validate_era5_land_against_caravan(
+            forcing_store=forcing_store, basin_store=basin_store, stations=[]
+        )
+
+        assert result.agreements == []
+        assert result.skips == []
+        assert result.coverage == []
+        assert result.is_full_parity_pass is False
+
+    def test_narrow_comparison_is_visible_as_data_not_indistinguishable_pass(
+        self,
+    ) -> None:
+        """B1's exact scenario: a basin compared on 2 days out of a nominal
+        40-year (14,610-day) window, on 1 index out of 4. The agreements list
+        alone looks all-green; ``is_full_parity_pass`` must say otherwise, and
+        the shortfall must be readable from ``coverage``."""
+        mod = _import_module()
+        basin = Basin(
+            id=BasinId(uuid4()),
+            code="test-basin",
+            name="Test basin",
+            geometry=box(6.0, 46.0, 10.0, 48.0),
+            area_km2=100.0,
+            attributes={"caravan:p_mean": 5.0},
+            band_geometries=None,
+            created_at=_EPOCH,
+            network="bafu",
+        )
+        station = make_station_config(basin_id=basin.id)
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(basin)
+
+        forcing_store = FakeHistoricalForcingStore()
+        # Only the first two days of a nominal 1981-2020 window are stored.
+        forcing_store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=station.id,
+                    source=ForcingSource.ERA5_LAND.value,
+                    parameter="precipitation",
+                    valid_time=datetime(1981, 1, 1, tzinfo=UTC),
+                    value=4.0,
+                ),
+                make_raw_historical_forcing(
+                    station_id=station.id,
+                    source=ForcingSource.ERA5_LAND.value,
+                    parameter="precipitation",
+                    valid_time=datetime(1981, 1, 2, tzinfo=UTC),
+                    value=6.0,
+                ),
+                make_raw_historical_forcing(
+                    station_id=station.id,
+                    source=ForcingSource.ERA5_LAND.value,
+                    parameter="temperature",
+                    valid_time=datetime(1981, 1, 1, tzinfo=UTC),
+                    value=5.0,
+                ),
+                make_raw_historical_forcing(
+                    station_id=station.id,
+                    source=ForcingSource.ERA5_LAND.value,
+                    parameter="temperature",
+                    valid_time=datetime(1981, 1, 2, tzinfo=UTC),
+                    value=5.0,
+                ),
+            ]
+        )
+
+        # The full Caravan window (1981-2020) — the fleet's stored data covers
+        # only the first two of its 14,610 days.
+        result = mod.validate_era5_land_against_caravan(
+            forcing_store=forcing_store,
+            basin_store=basin_store,
+            stations=[station],
+        )
+
+        assert len(result.agreements) == 1  # still "all-green" on its face
+        assert result.agreements[0].within_tolerance is True
+        assert result.skips == []
+        assert len(result.coverage) == 1
+        assert result.coverage[0].expected_days == 14610
+        assert result.coverage[0].compared_days == 2
+        assert result.coverage[0].coverage_fraction == pytest.approx(2 / 14610)
+        # The one thing a caller must not be able to miss:
+        assert result.is_full_parity_pass is False
+        assert result.basins_below_coverage_floor == result.coverage
+        assert result.basins_missing_indices == result.coverage
+
+    def test_missing_forcing_records_reason(self) -> None:
+        mod = _import_module()
+        basin = Basin(
+            id=BasinId(uuid4()),
+            code="test-basin",
+            name="Test basin",
+            geometry=box(6.0, 46.0, 10.0, 48.0),
+            area_km2=100.0,
+            attributes={"caravan:p_mean": 5.0},
+            band_geometries=None,
+            created_at=_EPOCH,
+            network="bafu",
+        )
+        station = make_station_config(basin_id=basin.id)
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(basin)
+        forcing_store = FakeHistoricalForcingStore()
+
+        result = mod.validate_era5_land_against_caravan(
+            forcing_store=forcing_store,
+            basin_store=basin_store,
+            stations=[station],
+            window_start=datetime(1981, 1, 1).date(),
+            window_end=datetime(1981, 1, 2).date(),
+        )
+
+        assert result.agreements == []
+        assert result.coverage == []
+        assert len(result.skips) == 1
+        assert result.skips[0].reason == "missing_forcing_coverage"

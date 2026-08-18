@@ -272,6 +272,92 @@ class TestRunEra5LandBackfillChunkedResumable:
         assert len(stored) == 1
         assert stored[0].parameter == "precipitation"
 
+    def test_rerun_after_interruption_resumes_without_refetching_or_duplicating(
+        self,
+    ) -> None:
+        """Minor (fixer round): a single run that only fetches the missing
+        station does not demonstrate RESUME — it never proves a genuinely
+        interrupted run (adapter dies mid-chunk, having written nothing for
+        the missing station) recovers cleanly on a second call, without
+        re-fetching already-covered chunks or duplicating rows."""
+        mod = _import_module()
+        covered_id = StationId(uuid4())
+        missing_id = StationId(uuid4())
+        configs = [_binding(covered_id), _binding(missing_id)]
+        boundary = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
+
+        forcing_store = FakeHistoricalForcingStore()
+        for param in ("precipitation", "temperature"):
+            forcing_store.store_forcing(
+                [
+                    make_raw_historical_forcing(
+                        station_id=covered_id,
+                        source=ForcingSource.ERA5_LAND.value,
+                        parameter=param,
+                        valid_time=datetime(2020, 1, 1, tzinfo=UTC),
+                    )
+                ]
+            )
+
+        new_precip_row = make_raw_historical_forcing(
+            station_id=missing_id,
+            source=ForcingSource.ERA5_LAND.value,
+            parameter="precipitation",
+            valid_time=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        new_temp_row = make_raw_historical_forcing(
+            station_id=missing_id,
+            source=ForcingSource.ERA5_LAND.value,
+            parameter="temperature",
+            valid_time=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        window_start = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
+        window_end = ensure_utc(datetime(2020, 1, 2, tzinfo=UTC))
+        precip_call = ((missing_id,), window_start, window_end, ("precipitation",))
+        temp_call = ((missing_id,), window_start, window_end, ("temperature",))
+
+        # First run: simulates an interruption — the adapter successfully
+        # returns the precipitation row, but crashes (returns nothing, as if
+        # never reached) for temperature.
+        interrupted_adapter = _FakeAdapter(
+            boundary=boundary,
+            rows_by_call={precip_call: [new_precip_row], temp_call: []},
+        )
+        first_result = mod.run_era5_land_backfill(
+            adapter=interrupted_adapter,
+            forcing_store=forcing_store,
+            station_configs=configs,
+            start=datetime(2020, 1, 1).date(),
+        )
+        assert sorted(interrupted_adapter.fetch_calls) == sorted(
+            [precip_call, temp_call]
+        )
+        assert first_result.rows_written == 1
+
+        # Second run against a FRESH adapter (simulating the operator
+        # re-invoking the script): precipitation is now covered and must NOT
+        # be re-fetched; only the still-missing temperature chunk is.
+        resumed_adapter = _FakeAdapter(
+            boundary=boundary,
+            rows_by_call={temp_call: [new_temp_row]},
+        )
+        second_result = mod.run_era5_land_backfill(
+            adapter=resumed_adapter,
+            forcing_store=forcing_store,
+            station_configs=configs,
+            start=datetime(2020, 1, 1).date(),
+        )
+
+        assert resumed_adapter.fetch_calls == [temp_call]
+        assert second_result.rows_written == 1
+
+        stored = forcing_store.fetch_forcing(
+            missing_id, ForcingSource.ERA5_LAND.value, window_start, window_end
+        )
+        # No duplicates: exactly one precipitation + one temperature row for
+        # the previously-missing station, matching a single uninterrupted run.
+        assert sorted(r.parameter for r in stored) == ["precipitation", "temperature"]
+
     def test_spans_multiple_years_as_separate_chunks(self) -> None:
         mod = _import_module()
         sid = StationId(uuid4())

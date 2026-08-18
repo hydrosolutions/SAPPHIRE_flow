@@ -366,6 +366,97 @@ class TestLandCoverageCheck:
                 ["precipitation"],
             )
 
+    def test_raises_for_sub_cell_basin_with_no_contained_cell_centre(self) -> None:
+        """M2 regression: a basin SMALLER than one grid cell — the ordinary
+        Swiss-catchment case at ERA5-Land's ~11 km resolution — contains no
+        cell CENTRE at all, so a centre-containment check would silently
+        skip it (``total == 0``). Straddling one land and one ocean cell,
+        ``exact_extract`` itself returns a PLAUSIBLE, non-NaN, land-only mean
+        (it excludes the NaN cell from its coverage-weighted average rather
+        than propagating NaN) — so the extractor's own out-of-extent guard
+        does NOT catch this case either; only an intersecting-cells coverage
+        check does."""
+        era5_land_adapter_cls = _import_adapter()
+        sid = StationId(uuid.uuid4())
+        # A 4x4 grid, 1 degree spacing, well clear of the raster edges. The
+        # two eastern columns (lon=7,8) are NaN (ocean); the two western
+        # columns (lon=5,6) are land.
+        values = np.full((1, 4, 4), 0.004, dtype=np.float64)
+        values[:, :, 2:] = np.nan
+        ds = xr.Dataset(
+            {
+                "total_precipitation_sum": xr.DataArray(
+                    values,
+                    dims=["time", "latitude", "longitude"],
+                    coords={
+                        "time": [datetime(2026, 4, 1)],
+                        "latitude": [45.0, 46.0, 47.0, 48.0],
+                        "longitude": [5.0, 6.0, 7.0, 8.0],
+                    },
+                )
+            }
+        )
+        # Straddles the land/ocean boundary at lon=6.5, contained in neither
+        # cell's centre (6.0 nor 7.0) and containing no grid point at all —
+        # exactextract will still return a real land-only mean for it.
+        basin = _make_basin(sid, geom=box(6.3, 46.2, 6.9, 46.8))
+        config = _make_config(sid)
+        adapter = era5_land_adapter_cls(
+            extractor=ExactExtractGridExtractor(),
+            basins={sid: basin},
+            clock=lambda: _EPOCH,
+            open_store=lambda path: ds,
+            min_land_fraction=0.9,
+        )
+
+        with pytest.raises(ExtractionError, match="land-mask coverage"):
+            adapter.fetch_reanalysis(
+                [config],
+                ensure_utc(datetime(2026, 4, 1, tzinfo=UTC)),
+                ensure_utc(datetime(2026, 4, 4, tzinfo=UTC)),
+                ["precipitation"],
+            )
+
+    def test_sub_cell_basin_fully_inside_a_land_cell_passes(self) -> None:
+        """Same sub-cell shape, but positioned entirely inside the LAND
+        cell — no cell centre inside it either, but coverage should read
+        100% land, not skip the check."""
+        era5_land_adapter_cls = _import_adapter()
+        sid = StationId(uuid.uuid4())
+        values = np.array([[[0.004, np.nan], [0.004, np.nan]]], dtype=np.float64)
+        ds = xr.Dataset(
+            {
+                "total_precipitation_sum": xr.DataArray(
+                    values,
+                    dims=["time", "latitude", "longitude"],
+                    coords={
+                        "time": [datetime(2026, 4, 1)],
+                        "latitude": [46.0, 47.0],
+                        "longitude": [6.0, 7.0],
+                    },
+                )
+            }
+        )
+        # Entirely inside the land cell [5.5,6.5]x[45.5,46.5].
+        basin = _make_basin(sid, geom=box(6.1, 45.6, 6.4, 45.9))
+        config = _make_config(sid)
+        adapter = era5_land_adapter_cls(
+            extractor=ExactExtractGridExtractor(),
+            basins={sid: basin},
+            clock=lambda: _EPOCH,
+            open_store=lambda path: ds,
+            min_land_fraction=0.9,
+        )
+
+        rows = adapter.fetch_reanalysis(
+            [config],
+            ensure_utc(datetime(2026, 4, 1, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 4, 4, tzinfo=UTC)),
+            ["precipitation"],
+        )
+
+        assert rows
+
     def test_passes_when_basin_fully_land(self) -> None:
         era5_land_adapter_cls = _import_adapter()
         sid = StationId(uuid.uuid4())
