@@ -157,9 +157,14 @@ BACKUP_STALE_THRESHOLD = timedelta(hours=26)
 # The BAFU collector runs hourly (Plan 111) — no heartbeat in 3h means it has
 # stopped, not merely running slow.
 BAFU_STALE_THRESHOLD = timedelta(hours=3)
-# The BAFU LINDAS observation collector also runs hourly (Plan 136, live
-# probe 2026-07-21) — stale after ~3h (three missed hourly cycles).
-BAFU_OBS_STALE_THRESHOLD = timedelta(hours=3)
+# The BAFU LINDAS observation collector over-polls a 10-minute publish grid
+# at roughly 2.5x (Plan 176 D1, max cyclic gap <=4 min) — stale after ~15
+# min (~3 missed polls), NOT the old hourly-cadence "~3h" (Plan 176 D4: that
+# value was derived from the falsified hourly-cadence assumption, and was
+# only ever coincidentally equal to the flow-side measurement-age
+# threshold, which is a different quantity — see
+# flows/collect_bafu_observations.py's _STALE_MEASUREMENT_THRESHOLD).
+BAFU_OBS_STALE_THRESHOLD = timedelta(minutes=15)
 # The forecast cycle runs every 6h by default (SCHEDULE_FORECAST_CYCLE,
 # cli/register_deployments.py) — stale after ~18h (three missed cycles),
 # matching the "3x the run interval" ratio used for the two BAFU checks
@@ -823,16 +828,28 @@ def _format_bafu_recovery_alert(*, hostname: str, now: datetime) -> str:
     )
 
 
+def _format_minutes_aware_duration(threshold: timedelta) -> str:
+    """Render a threshold as whole hours when it divides evenly, otherwise
+    whole minutes. Plan 176 D4: BAFU_OBS_STALE_THRESHOLD became sub-hour
+    (15m) — `int(seconds // 3600)` alone silently renders ANY sub-hour
+    threshold as "0h", lying about the alert's own trigger condition."""
+    total_seconds = int(threshold.total_seconds())
+    if total_seconds % 3600 == 0:
+        return f"{total_seconds // 3600}h"
+    return f"{total_seconds // 60}m"
+
+
 def _format_bafu_obs_stale_alert(
     *, hostname: str, now: datetime, result: BafuFreshnessResult
 ) -> str:
     last_str = (
         result.checked_at.isoformat() if result.checked_at else "no heartbeat found"
     )
-    hours = int(BAFU_OBS_STALE_THRESHOLD.total_seconds() // 3600)
+    threshold_str = _format_minutes_aware_duration(BAFU_OBS_STALE_THRESHOLD)
     return (
         f"[SAPPHIRE staging] BAFU observation collector STALE — host: {hostname}, "
-        f"time: {now.isoformat()}, last_heartbeat: {last_str}, threshold: {hours}h"
+        f"time: {now.isoformat()}, last_heartbeat: {last_str}, "
+        f"threshold: {threshold_str}"
     )
 
 

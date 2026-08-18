@@ -48,10 +48,13 @@ Salerno et al. 2025), which is what makes it an adjudicator rather than another 
 **H0 (physical):** the signal is real orographic behaviour that the Pyramid instrument should broadly
 reproduce.
 
-**Preliminary evidence for H1, already computed (orchestrator, 2026-08-18, from the Level-1 files):**
-Pyramid Lukla's JJAS profile peaks at **22–00 NPT** with its minimum at **07–10** (normalised 0.29/0.28
-at 07–08). Our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT** — inside Pyramid's minimum, 1.4 km away.
-**Near anti-phase.** This plan makes that comparison rigorous, mask-consistent, and reportable.
+**~~Preliminary evidence for H1~~ — WITHDRAWN 2026-08-18 by this plan's own first real run.** The
+evidence that motivated H1 was: Pyramid Lukla's JJAS profile peaks at **22–00 NPT** with its minimum at
+**07–10**, while our DHM Lukla peaks at **02 UTC ≡ 07:45 NPT** — inside Pyramid's minimum, 1.4 km away,
+near anti-phase. **The DHM half of that comparison was wrong.** It was computed on UNMASKED data, where
+6 sentinel values of −9999999 at 02–03 UTC drive the grand mean negative and invert the normalisation.
+Masked, DHM Lukla peaks at **16 UTC ≡ 21 NPT** — 2 h from Pyramid, i.e. agreement. The Pyramid half
+(22–00 NPT) stands. See the M-A10 first-run record in `docs/design/dhm-precipitation-milestones.md`.
 
 ## ⛔ CORRECTED after slim review 2026-08-18 — the test as first written could NOT identify H1
 
@@ -71,8 +74,17 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   | smallest value | **exactly 0.2000** | **exactly 0.2000** |
   | commonest values | 0.2, 0.4, 0.6, 0.8, 1.0 | 0.2, 0.4, 0.6, 0.8, 1.0 |
 
-  **Every Pyramid value is a multiple of 0.2 mm** (LSI-Lastem tipping buckets, 0.2 mm resolution). So a
-  threshold ladder is a **no-op on Pyramid by construction**: all rungs identical, control movement
+  **No Pyramid value falls below 0.2 mm** (LSI-Lastem tipping buckets). So a
+  ⚠️ **CORRECTED 2026-08-18 — an earlier revision said "every Pyramid value is a MULTIPLE of 0.2 mm".
+  That is false and was never needed.** Measured on the real files: **4.2 % of positive JJAS values are
+  not multiples of 0.2** (301/7,133 AWS3; 386/9,280 AWS5), forming a clean **0.24-family** (0.24, 0.48,
+  0.72, 0.96) plus outliers — almost certainly a different bucket size or logger era, so Pyramid's
+  effective resolution is **not uniform across the record**.
+  **D7's argument is unaffected**, because it rests only on the **FLOOR**: the smallest positive JJAS
+  value is exactly 0.2 and nothing is below it, so every ladder rung is identical on Pyramid regardless
+  of what the values are multiples of. *(The floor is a JJAS fact — AWS5 has a 0.15 mm positive reading
+  outside JJAS. This analysis is JJAS-only.)*
+    threshold ladder is a **no-op on Pyramid by construction**: all rungs identical, control movement
   necessarily 0 h, and D9's "control moved < 2 h" clause **satisfied automatically**. The control
   licensed everything and could never have detected anything. **Removed.**
 
@@ -205,9 +217,60 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   rule are both **strictly below** the 4 h decision boundary, and the 2 h refute-boundary sits at or
   above both. No decision turns on a difference smaller than the measurement uncertainty.
 
-  **INDETERMINATE is a permitted, publishable outcome. It BLOCKS the M-A7 correction rather than
-  licensing it** — the asymmetry is deliberate: an unproven artefact must not silently reshape
-  operational timing.
+  **⛔ D5 THRESHOLD RE-EXAMINED POST-RUN 2026-08-18 — DELIBERATELY NOT CHANGED.** The first real run
+  returned INDETERMINATE at BOTH pairs on this gate alone (Lukla 13.00 h, Syangboche 3.00 h against the
+  2 h bar), raising the obvious question of whether the bar is miscalibrated for a 5-season record. **It
+  is not, and the reason is structural.** `params.py`'s D9 coherence validator enforces
+  `coloc_ablation_refuted_max_hours >= coloc_bootstrap_adequate_max_spread_hours`, and that invariant is
+  correct: an ablation movement cannot be declared "small enough to refute H1" if the peak-hour
+  uncertainty exceeds the movement threshold itself. The bootstrap bar is therefore **capped by** the 2 h
+  refute boundary, which is in turn pinned above D2's 1.75 h alignment floor and below the 4 h support
+  boundary. **2 h is already the largest admissible value — derived from the lattice, not chosen.** Both
+  3 h and 4 h are rejected outright by the validator.
+
+  Two escapes were considered and **rejected as post-hoc tuning**: raising the whole lattice (support
+  4→6, refute 2→4) loosens REFUTATION specifically, biasing toward the very conclusion the run is
+  trending toward; and 3 h would clear Syangboche only by landing exactly on its observed 3.00 h, and
+  only because the comparison is a strict `>`. **The binding limitation is the DHM record length, not the
+  threshold**: the bootstrap resamples DHM season-years and DHM has exactly 5 complete JJAS seasons
+  (2020–2025), so Lukla cannot clear any coherent bar until that record lengthens. The root cause is D2's
+  ±1.75 h alignment uncertainty against an integer-hour peak, which leaves the lattice almost no room by
+  construction — the one genuine lever is **pinning down Pyramid's unstated period convention** (the ±1 h
+  component of D2), which is a question for the Pyramid authors, not a parameter change. Recorded here so
+  a later reader does not "fix" this gate.
+
+  **INDETERMINATE is a permitted, publishable outcome.- **D11 — ⛔ CORRECTED 2026-08-18: THE FULL RECORD IS THE ADJUDICATED COMPARISON. The overlap is
+  corroboration.** *(Implementation review found the plan structurally unable to produce a verdict.)*
+
+  **The contradiction I introduced:** D9's ordered gates say *"the first gate that fires decides; no
+  later gate can overturn it"*, and gate 0 returns INDETERMINATE on <5 season-years. But the real
+  overlap windows are **Lukla 2021–2023 (3 seasons)** and **Syangboche 2020–2023 (4)**, so gate 0 fires
+  **unconditionally for both stations** and the runner can **never** return anything but INDETERMINATE.
+  D5's own fallback — *"rest the verdict on the full record"* — was made unreachable by D9's
+  no-overturn rule. **My round-3 fix broke my round-2 fix.**
+
+  **Resolution, and it is what D5 already said:** D5 states the **climatological comparison is the
+  PRIMARY one**. So:
+  - **The verdict is adjudicated on the FULL RECORD** — DHM's full JJAS (2020–2025, **6 season-years**)
+    against Pyramid's full JJAS (Lukla 2005–2023, Namche 2002–2023). **Both sides clear the 5-season
+    threshold comfortably**, so a decisive verdict is reachable in production.
+  - **The overlap window is computed and reported as CORROBORATION**, carrying its own small-sample
+    caveat. It does **not** gate the verdict; a disagreement between overlap and full record is itself
+    reportable.
+  - **Gate 0 now applies to the FULL-RECORD comparison.** Only if *that* fails adequacy or stationarity
+    is the outcome INDETERMINATE.
+
+  **⚠️ The test that would have caught this:** every decisive-verdict test fed a synthetic 5-year
+  window, bypassing the real `COLOCATED_PAIRS` bounds. **A test must drive the pipeline through the REAL
+  registry bounds and prove a decisive verdict is reachable.** A suite that cannot fail on "the
+  deliverable is unreachable" is not testing the deliverable.
+
+- **D12 — Stationarity is checked on PYRAMID, not DHM.** D5 said "compare disjoint periods (pre-2020 vs
+  2020+)" without naming the network, and the implementation applied it to DHM — which **has no pre-2020
+  data at all** (it starts 2020), so the check was vacuous and a genuine Pyramid phase shift would pass
+  unnoticed, licensing an invalid non-contemporaneous comparison.
+  ⇒ **The pre-2020 vs 2020+ split is PYRAMID's** (1994/2002/2005–2023). A DHM 2020–2022 vs 2023–2025
+  split may be reported as *additional* evidence but **never as a substitute**.
 
 ## Exit
 
@@ -243,3 +306,99 @@ no co-located partner.
 **Lvl1 files only.** `AWS3_Z2660_Lvl1.csv` (Lukla), `AWS5_Z3570_Lvl1.csv` (Namche). Note `AWS0` and
 `AWS1` are two instruments at the same 5,035 m site, and `AWS4`/`AWSSC`/`CNG_SNP` carry no usable `RR`
 for this work.
+
+## Fixer round 2026-08-18 — post-commit diff review (4 blockers + 5 majors resolved)
+
+An independent Codex diff-review pass over the committed implementation (`4d71186`) found the library
+did not actually implement several of the design decisions above, despite being marked CODE COMPLETE.
+All resolved in place; **test-soundness proved for every correctness fix** (each locking test confirmed
+RED against the pre-fix commit via `git stash`, then restored):
+
+- **D2 UTC->NPT reconciliation was dead configuration (blocker).** `coloc_dhm_utc_to_npt_hour_offset`
+  was declared in `params.py` but never applied — DHM's UTC hour-of-day and Pyramid's NPT hour-of-day
+  were compared as if on the same clock, in both the D3 pairing join and every D9 gate. Fixed:
+  `stats_coloc.dhm_utc_to_npt` shifts every DHM timestamp by the declared offset AND re-applies the
+  JJAS filter on the shifted timestamp (a UTC-JJAS hour can cross a month boundary once shifted into
+  NPT), applied once in `coloc_adjudication.adjudicate_station` before anything else touches DHM data.
+- **D5's disjoint-period stationarity split was structurally broken (blocker).** The real DHM source
+  record spans 2020-01-01 -> 2025-12-31 in its entirety (`docs/design/dhm-precipitation-vision.md:20`)
+  — a `pre-2020` partition against a `2020` split year is ALWAYS empty, so `peak_hour` raised
+  `NoProfileRowsError` before any real adjudication completed; the integration test hid this by
+  fabricating a 2019 DHM year that cannot exist in the real record. Fixed: the default split moved to
+  2023 (splitting the real 2020-2025 span into two non-empty halves); `StationVerdictInputs` gained
+  `disjoint_period_data_sufficient`, and gate 0 maps insufficient data to `INDETERMINATE`
+  (`ADEQUACY_INSUFFICIENT_DISJOINT_DATA`) rather than crashing, for any station whose own record still
+  doesn't straddle the split.
+- **The D5 bootstrap peak-hour spread was computed but never gated on (blocker).** A five-season sample
+  with a wide (e.g. 12h) circular peak-hour spread could still receive `H1_SUPPORTED`/`H1_REFUTED`.
+  Fixed: `StationVerdictInputs` gained `bootstrap_spread_hours`; gate 0 now rejects a spread above
+  `coloc_bootstrap_adequate_max_spread_hours` (`ADEQUACY_BOOTSTRAP_SPREAD_TOO_WIDE`) before the
+  matched-resolution gate ever runs.
+- **D9's phase peaks were computed independently per side, before D3 pairing (major).** The threshold
+  ladder and the Pyramid peak were each computed from that side's OWN retained population, then paired
+  ONLY for the wet-hour fraction — contrary to D3's own fix, letting hour-dependent missingness
+  manufacture a phase difference the gates would then "see". Fixed: `adjudicate_station` pairs FIRST
+  (`common_retained_frame`), then derives the ladder and the Pyramid peak from the SAME paired
+  population; the standalone full-record profile remains separate (D5b's climatological check).
+- **`synthesize_verdict` accepted a duplicated or unregistered station (major).** One station's verdict
+  supplied twice (or a single station, or a station outside `coloc_pairs.COLOCATED_PAIRS`) could
+  synthesize a decisive Group A verdict without the second required station's evidence. Fixed:
+  `synthesize_verdict` now requires EXACTLY the two registered stations, each exactly once
+  (`DuplicateStationVerdictError`, `UnregisteredStationVerdictError`).
+- **The Pyramid loader had no D4 physical-range boundary (major).** Timestamps were not type-validated,
+  NaN/infinite/out-of-range precipitation survived into `retained`, and duplicate timestamps were
+  unchecked. Fixed: `load_pyramid_lvl1_csv` now returns a `PyramidLoadResult` (retained frame + `n_raw`/
+  `n_nonfinite`/`n_out_of_range`/`n_retained`), validates the timestamp dtype and uniqueness, and
+  excludes non-finite/out-of-range `value_mm` using the SAME D4 bounds DHM's own mask uses.
+- **The library could not produce the plan's Exit deliverables (blocker) — no runner existed.** Fixed:
+  `scripts/dhm_precip/coloc_run.py` composes both pairs, both windows, full profile tables (not just
+  peak-hour scalars), the exact two-station synthesis, and a Markdown report writer. Its
+  loader-agnostic core (`run_coloc_adjudication`) is exercised end-to-end against synthetic fixtures;
+  `main()` wires the real production DHM ingest+mask pipeline and the real Pyramid loader, but — honest
+  residual risk — has not been run against real data, since neither the pinned DHM workbook nor the
+  real Pyramid Lvl1 CSVs have been present in any workspace to date. See
+  `docs/design/dhm-precipitation-milestones.md`'s M-A10 entry for the up-to-date status.
+- **Minors also resolved:** an all-zero/non-finite grand mean now raises `NonPositiveGrandMeanError`
+  instead of silently dividing by zero (`stats_coloc.normalised_diurnal_profile`); the threshold ladder
+  validation now rejects duplicate rungs and requires the first rung to be exactly `0.0`
+  (`params.py`).
+
+## Fixer round 2 — 2026-08-18 — the deliverable was UNREACHABLE (3 blockers + 4 majors)
+
+A second post-commit diff review found that the implementation could not produce a verdict at all
+against real data. All resolved in place; the plan's D11/D12 above were written for this round and are
+what the code now implements.
+
+- **BLOCKER — the deliverable was unreachable.** Gate 0's <5-season rule was evaluated on the OVERLAP
+  window (Lukla 3 seasons, Syangboche 4), so both stations always returned INDETERMINATE. Fixed per
+  **D11**: `coloc_adjudication.adjudicate_station` now computes a `WindowEvidence` per window and
+  adjudicates the **FULL RECORD** (unpaired, climatological); the **overlap is corroboration** (D3-paired,
+  the only window with a wet-hour fraction) and never gates. Their matched-resolution peak difference is
+  reported, not treated as an error. `coloc_pairs.ColocatedPair` gained the real full-record bounds
+  (`dhm_start_year`/`dhm_end_year` = 2020-2025; `pyramid_start_year`/`pyramid_end_year` = Lukla
+  2005-2023, Namche 2002-2023) and validates that the overlap lies inside their common span.
+- **BLOCKER — stationarity was checked on the wrong network.** Fixed per **D12**: the gating split is
+  `coloc_pyramid_stationarity_split_year = 2020` on the PYRAMID record; `coloc_full_record_split_year`
+  was renamed `coloc_dhm_stationarity_split_year` and demoted to additional evidence.
+- **BLOCKER — the runner could not produce the Exit deliverables.** `_write_report` now writes the full
+  normalised-profile tables for both networks in both windows (hourly `n`, no mm magnitudes per D1),
+  per-window retention for each side, D2's ±1.75h alignment uncertainty and the ±2h precision limit,
+  D8's micro-climate/wind alternative, D7.3's drizzle confound, Pyramid's CC BY 4.0 attribution, and the
+  affected-claims list filed for M-A7 when H1 is supported. Locked by an artefact-level test that reads
+  the written Markdown.
+- **MAJOR — `moved_toward_pyramid` was computed then ignored.** With all-values peak = Pyramid peak = 2
+  and matched peak = 6, a 4h movement AWAY fired H1_SUPPORTED. Gate 2 now requires D9's toward-condition
+  (a reduction in circular distance); a large non-toward movement is INDETERMINATE
+  (`ABLATION_MOVED_AWAY`).
+- **MAJOR — the bootstrap resampled an unpaired population.** It now resamples exactly the population
+  each window's peaks were computed from.
+- **MAJOR — insufficient-signal states crashed.** An all-zero rung, an empty population or an unpairable
+  window is now a typed `WindowUnavailable`, mapped by gate 0 to `ADEQUACY_INSUFFICIENT_SIGNAL` /
+  `ADEQUACY_INSUFFICIENT_COMMON_DATA`.
+- **MAJOR — Pyramid retention was not window-scoped.** The runner builds explicit Pyramid JJAS windows
+  before pairing, so each window reports its own retained-hour count.
+
+**Tests replaced, with justification:** every decisive-verdict test in
+`test_dhm_precip_coloc_run.py` and `test_dhm_precip_coloc_adjudication.py` fed a synthetic 2020-2024
+frame for BOTH windows, bypassing `COLOCATED_PAIRS` — D11's "the test that would have caught this".
+They are rewritten to drive the REAL registry bounds and to assert a decisive verdict is reachable.

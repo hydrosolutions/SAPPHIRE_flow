@@ -235,6 +235,27 @@ None of this changes the measured contract table above or the architecture
 (still process-local, D6). See `lindas_rate_limiter.py`'s module docstring
 for the authoritative up-to-date behavior.
 
+## Addendum — cadence, publish-lag and storage evidence (Plan 176, 2026-08-18)
+
+Plan 176 (archive completeness, split out of this plan — see § Context above)
+carries the cadence/lag/storage measurements that motivate its own D1/D2/D6.
+Recorded here per that plan's cross-reference note.
+
+| Measurement | Result |
+|---|---|
+| Publish grid | **10-minutely**, not hourly — Plan 136's `cadence = hourly` finding is falsified (bulk `measurement_time` advances exactly 10 min/slot across four snapshots 6 min apart; the earlier single probe caught the bulk sitting on `:00`, which is true only for ~15 min after each hour) |
+| Publish lag (clean samples only) | ≤14.1 min, ≤15.0 min; one clean publish gap of 10.8 min → jitter ≈ 1 min |
+| Raw SPARQL JSON snapshot | 234.0 KB plain, **5.6 KB gzipped (41.8×)** |
+| Storage @ hourly (old) | 2.15 GB/yr plain, 0.10 GB/yr gzipped |
+| Storage @ 10-min (new) | 12.87 GB/yr plain, **0.58 GB/yr gzipped** |
+
+Consequences for THIS decision record's contract table: the collector now
+over-polls at ~18-20 requests/hour (Plan 176 D1) instead of ~1/hour — still
+comfortably inside the measured ~45 req/min capacity this plan established,
+and D2 keeps archive writes tracking the grid (~6/hour), not the poll rate.
+See `docs/plans/176-lindas-archive-completeness.md` for the full evidence
+and the D1–D7 decisions built on it.
+
 ## Escalation
 
 The 429 ceiling is undocumented by BAFU. If it is ever observed to have

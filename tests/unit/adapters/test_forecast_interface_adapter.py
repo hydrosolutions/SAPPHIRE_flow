@@ -612,3 +612,185 @@ def test_adapter_init_raises_when_fi_version_check_fails(
         fi_boundary.ForecastInterfaceAdapter(
             FakeFIForecastModel(_multi_product_requirement())
         )
+
+
+# --- Plan 151 T2 (D3, D4): per-time-step accessors + construction-time
+# conformance sweep. ---
+
+
+def test_future_feature_horizons_exposes_per_feature_not_collapsed_scalar() -> None:
+    # Fails today: no such accessor exists, and the only projection SAP3
+    # performs (`data_requirements.forecast_horizon_steps`) is the MAX-
+    # collapsed scalar (8, from wind) -- this accessor must expose BOTH
+    # precip_forecast=5 and wind=8 distinctly.
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(_multi_product_requirement())
+    )
+
+    horizons = adapter.future_feature_horizons(timedelta(hours=1))
+
+    assert horizons == {
+        "precip_forecast": fi_boundary.FutureSteps(value=5),
+        "wind": fi_boundary.FutureSteps(value=8),
+    }
+    assert adapter.data_requirements.forecast_horizon_steps == 8  # unchanged
+
+
+def test_future_feature_modes_exposes_per_feature_mode() -> None:
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(_multi_product_requirement())
+    )
+
+    modes = adapter.future_feature_modes(timedelta(hours=1))
+
+    assert modes == {
+        "precip_forecast": fi_boundary.EnsembleMode.SINGLE,
+        "wind": fi_boundary.EnsembleMode.SINGLE,
+    }
+
+
+def test_two_branches_expose_features_separately_no_cross_step_inheritance() -> None:
+    # `_multi_product_requirement()`: 1h is future-forced (precip_forecast,
+    # wind); 24h is past-only. Per D32-multibranch-delivery this shape is
+    # CONSTRUCT-ONLY -- but the accessor itself must still expose each
+    # branch's OWN features without leaking the sibling branch's.
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(_multi_product_requirement())
+    )
+
+    assert set(adapter.future_feature_horizons(timedelta(hours=1))) == {
+        "precip_forecast",
+        "wind",
+    }
+    # The past-only 24h branch does NOT inherit the 1h branch's features.
+    assert adapter.future_feature_horizons(timedelta(hours=24)) == {}
+
+
+def test_past_only_branch_exposes_empty_future_horizons_and_mode_does_not_raise() -> (
+    None
+):
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(_multi_product_requirement())
+    )
+
+    assert adapter.future_feature_horizons(timedelta(hours=24)) == {}
+    assert adapter.future_feature_modes(timedelta(hours=24)) == {}
+
+
+def test_undeclared_time_step_returns_empty_mapping_not_raise() -> None:
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(_multi_product_requirement())
+    )
+
+    assert adapter.future_feature_horizons(timedelta(hours=6)) == {}
+    assert adapter.future_feature_modes(timedelta(hours=6)) == {}
+
+
+def _multi_future_known_product_requirement() -> fi_boundary.InputRequirement:
+    spec = fi_boundary.DynamicInputSpec(
+        future_known={
+            "nwp": {
+                "precip_forecast": _future(
+                    future_steps=5, max_nan=0, unit=fi_boundary.Unit.MM
+                ),
+            },
+            "aquacast": {
+                "snow_forecast": _future(
+                    future_steps=5, max_nan=0, unit=fi_boundary.Unit.MM
+                ),
+            },
+        },
+    )
+    return fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            timedelta(hours=1): fi_boundary.SpatialInputSpec(
+                data={fi_boundary.FISpatialRepresentation.POINT: spec}
+            ),
+        },
+    )
+
+
+def test_multi_product_future_known_branch_raises_unsupported_requirement() -> None:
+    # Fails today: `_project_requirements` unions every future_known product
+    # unconditionally -- no guard rejects two non-empty products in one
+    # branch. Phase 3 supports exactly ONE forcing track per assignment
+    # (D22), so this must raise at construction, not be silently unioned.
+    with pytest.raises(
+        UnsupportedModelRequirementError,
+        match="non-empty future_known products",
+    ):
+        fi_boundary.ForecastInterfaceAdapter(
+            FakeFIForecastModel(_multi_future_known_product_requirement())
+        )
+
+
+def _mixed_mode_requirement() -> fi_boundary.InputRequirement:
+    spec = fi_boundary.DynamicInputSpec(
+        future_known={
+            "nwp": {
+                "precip_forecast": fi_boundary.FutureKnownVariable(
+                    future_steps=5,
+                    max_nan=0,
+                    unit=fi_boundary.Unit.MM,
+                    ensemble_mode=fi_boundary.FIEnsembleMode.SINGLE,
+                ),
+                "wind": fi_boundary.FutureKnownVariable(
+                    future_steps=8,
+                    max_nan=0,
+                    unit=fi_boundary.Unit.M_PER_S,
+                    ensemble_mode=fi_boundary.FIEnsembleMode.ENSEMBLE,
+                ),
+            },
+        },
+    )
+    return fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            timedelta(hours=1): fi_boundary.SpatialInputSpec(
+                data={fi_boundary.FISpatialRepresentation.POINT: spec}
+            ),
+        },
+    )
+
+
+def test_mixed_ensemble_mode_within_one_product_raises_unsupported_requirement() -> (
+    None
+):
+    # Fails today: `any_ensemble_future` silently OR-collapses mixed modes
+    # into a single scalar ensemble_mode -- Phase 3 requires exactly ONE
+    # ensemble_mode per track (D4).
+    with pytest.raises(
+        UnsupportedModelRequirementError,
+        match="mixes ensemble_mode values",
+    ):
+        fi_boundary.ForecastInterfaceAdapter(
+            FakeFIForecastModel(_mixed_mode_requirement())
+        )
+
+
+def test_multi_spatial_guard_still_raises_unsupported_requirement_type() -> None:
+    # REGRESSION gate, EXPECTED to stay GREEN (T2 broke nothing): the
+    # pre-existing multi-spatial guard already raises
+    # UnsupportedModelRequirementError (forecast_interface.py:537) and is
+    # covered by test_multi_spatial_input_raises_unsupported_requirement
+    # above -- this just pins that T2's new per-branch guard runs BEFORE
+    # spatial_reps is even fully collected, without changing that outcome.
+    dynamic_spec = _dynamic_spec()
+    requirement = fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            timedelta(hours=1): fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: dynamic_spec,
+                    fi_boundary.FISpatialRepresentation.GRIDDED: dynamic_spec,
+                }
+            )
+        },
+    )
+
+    with pytest.raises(
+        UnsupportedModelRequirementError,
+        match="multi-spatial input not supported in v1",
+    ):
+        fi_boundary.ForecastInterfaceAdapter(FakeFIForecastModel(requirement))

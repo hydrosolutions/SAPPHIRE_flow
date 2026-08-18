@@ -56,13 +56,15 @@ from sapphire_flow.types.enums import (
     EnsembleMode,
     SpatialRepresentation,
 )
+from sapphire_flow.types.forcing_track import FeatureName, FutureSteps
 from sapphire_flow.types.model import ModelDataRequirements
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
     from datetime import datetime, timedelta
 
+    from sapphire_flow.types.forcing_track import FeatureFetchHorizons
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import (
         GroupModelInputs,
@@ -484,6 +486,84 @@ class ForecastInterfaceAdapter:
             )
         )
 
+    def _assert_single_future_known_product(self, spec: DynamicInputSpec) -> None:
+        # Plan 151 T2 (D4): Phase 3's per-track contract supports exactly ONE
+        # non-empty future_known product per branch, with ONE ensemble_mode.
+        # past_known products are NOT counted (D4 review fix) —
+        # SeasonalPrecipRunoffRegression's second past_known product must
+        # keep constructing. Same exception class as the sibling guards
+        # above/below: discover_models() SKIPS this entry point rather than
+        # darkening the whole registry (D21).
+        future_products = [
+            product for product, variables in spec.future_known.items() if variables
+        ]
+        if len(future_products) > 1:
+            names = ", ".join(sorted(future_products))
+            raise UnsupportedModelRequirementError(
+                "ForecastInterface InputRequirement declares "
+                f"{len(future_products)} non-empty future_known products in one "
+                f"branch ({names}); Phase 3 supports exactly ONE forcing track "
+                "per assignment (multi-product/mixed-mode requirements are a "
+                "follow-on, D22)."
+            )
+        if not future_products:
+            return
+        modes = {
+            variable.ensemble_mode
+            for variable in spec.future_known[future_products[0]].values()
+        }
+        if len(modes) > 1:
+            mode_names = ", ".join(sorted(mode.value for mode in modes))
+            raise UnsupportedModelRequirementError(
+                "ForecastInterface InputRequirement future_known product "
+                f"{future_products[0]!r} mixes ensemble_mode values "
+                f"({mode_names}) within one branch; Phase 3 supports exactly "
+                "ONE ensemble_mode per forcing track (D4)."
+            )
+
+    def future_feature_horizons(self, time_step: timedelta) -> FeatureFetchHorizons:
+        """Per-time-step, per-feature future horizons for the branch at
+        ``time_step`` (Plan 151 D3) — WITHOUT the cross-branch/cross-variable
+        max collapse `_project_requirements` performs. Looks up the branch
+        selected by `time_step` directly (not necessarily the model's single
+        deliverable branch, D32) so a caller can query ANY declared branch.
+        Returns an EMPTY mapping — never raises — for a branch with no
+        `future_known` (including a past-only branch or an undeclared
+        `time_step`)."""
+        return {
+            FeatureName(name): FutureSteps(value=variable.future_steps)
+            for _, variables in self._future_known_for_time_step(time_step)
+            for name, variable in variables.items()
+        }
+
+    def future_feature_modes(
+        self, time_step: timedelta
+    ) -> Mapping[FeatureName, EnsembleMode]:
+        """Per-time-step, per-feature ensemble mode for the branch at
+        ``time_step`` (Plan 151 D3) — companion to `future_feature_horizons`.
+        Empty mapping for a past-only/undeclared branch; never raises."""
+        return {
+            FeatureName(name): (
+                EnsembleMode.ENSEMBLE
+                if variable.ensemble_mode is FIEnsembleMode.ENSEMBLE
+                else EnsembleMode.SINGLE
+            )
+            for _, variables in self._future_known_for_time_step(time_step)
+            for name, variable in variables.items()
+        }
+
+    def _future_known_for_time_step(
+        self, time_step: timedelta
+    ) -> list[tuple[str, dict[str, FutureKnownVariable]]]:
+        branch = self._model.input_requirement.dynamic.get(time_step)
+        if branch is None:
+            return []
+        return [
+            (product, variables)
+            for _, spec in branch.data.items()
+            for product, variables in spec.future_known.items()
+        ]
+
     def _project_requirements(self, req: InputRequirement) -> ModelDataRequirements:
         future_forced_time_steps = self._future_forced_time_steps(req)
         if len(future_forced_time_steps) > 1:
@@ -504,6 +584,7 @@ class ForecastInterfaceAdapter:
 
         for fi_rep, spec in self._iter_dynamic_specs(req):
             spatial_reps.add(fi_rep)
+            self._assert_single_future_known_product(spec)
 
             for variables in spec.past_known.values():
                 past_variables.extend(variables.items())
