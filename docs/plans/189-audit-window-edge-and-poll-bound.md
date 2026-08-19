@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-19
 plan: 189
 title: Two small follow-ons from Plan 176's first night — audit window edge, and D1's poll bound
@@ -13,7 +13,7 @@ supersedes: []
 
 ## Status
 
-**DRAFT** (2026-08-19). Both items come from **measurements**, not review opinion: Plan 176's first
+**READY** (owner flip 2026-08-19). Both items come from **measurements**, not review opinion: Plan 176's first
 overnight run (`docs/decisions/bafu-lindas-rate-limit.md` § First overnight run) and Plan 176 T7's
 extended lag measurement. Deliberately two small tasks in one plan because both are single-parameter
 corrections to the same subsystem, each with an obvious test; splitting them would cost more ceremony
