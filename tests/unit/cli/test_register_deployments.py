@@ -210,22 +210,38 @@ def _cyclic_gaps(minutes: set[int]) -> list[int]:
 
 
 class TestBafuObservationCadenceProperties:
-    """Plan 176 D1 — the schedule is locked as PROPERTIES, not a literal
-    cron string: max cyclic gap <=4 min (a ~2.7x margin on the only clean
-    10.8 min publish gap observed), min gap >=3 min (so a clustered list
-    cannot interact badly with Plan 175's 120s total retry deadline), and
+    """Plan 176 D1, tightened by Plan 189 T2 — the schedule is locked as
+    PROPERTIES, not a literal cron string: max cyclic gap <=3 min (a 2.33x
+    margin on Plan 176 T7's measured 7.0 min minimum publish gap — the
+    original 4 min bound was only a 1.75x margin against that same
+    measurement, below D1's own "tighten if under ~8 min" pre-commitment),
+    min gap >=2 min (RELAXED from D1's original >=3 — `max<=3` AND `min>=3`
+    together are arithmetically incompatible with "no minute divisible by
+    5", see docs/plans/189-audit-window-edge-and-poll-bound.md § T2), and
     every minute non-divisible by 5 (never shares a minute with
     ingest-observations' `*/5` tick)."""
 
-    def test_max_cyclic_gap_is_at_most_four_minutes(self) -> None:
+    def test_max_cyclic_gap_is_at_most_three_minutes(self) -> None:
         by_name = {s.deployment_name: s for s in _build_specs()}
         minutes = _cron_minute_set(by_name["collect-bafu-observations"].cron)
-        assert max(_cyclic_gaps(minutes)) <= 4
+        assert max(_cyclic_gaps(minutes)) <= 3
 
-    def test_min_gap_is_at_least_three_minutes(self) -> None:
+    def test_min_gap_is_at_least_two_minutes(self) -> None:
         by_name = {s.deployment_name: s for s in _build_specs()}
         minutes = _cron_minute_set(by_name["collect-bafu-observations"].cron)
-        assert min(_cyclic_gaps(minutes)) >= 3
+        assert min(_cyclic_gaps(minutes)) >= 2
+
+    def test_cron_is_accepted_by_prefects_cron_schedule(self) -> None:
+        """A property test over the minute FIELD ALONE would miss a
+        malformed full cron string (bad field count, invalid day/month
+        syntax) — parse the whole thing through Prefect's own validator,
+        the way the reviewer checked the proposed list (Plan 189 T2)."""
+        from prefect.client.schemas.schedules import CronSchedule
+
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        cron = by_name["collect-bafu-observations"].cron
+        assert cron is not None
+        CronSchedule(cron=cron)  # raises on an invalid expression
 
     def test_runs_every_hour_of_every_day(self) -> None:
         # The gap/divisibility assertions above read ONLY the minute field, so
