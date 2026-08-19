@@ -87,7 +87,7 @@ implementation own the mechanism.
 **Citations** were carried from the reviewed drafts and spot-verified against the worktree; the confirming review pass
 re-verifies them before READY.
 
-## Build scope for THIS run — T8 (2026-08-19)
+## Build scope for THIS run — T8a ONLY (2026-08-19)
 
 **T1–T7 ARE MERGED.** T1–T4 landed as **PR #182** (squash `707237e` on `main`); T5–T7 landed as **PR #192** (squash
 `351bac3` on `main`). Everything merged so far is **dormant**: `flows/run_forecast_cycle.py` contains **zero**
@@ -95,9 +95,25 @@ references to `resolve_candidate`, `commit_track`, `assemble_assignment_inputs` 
 `run_all_station_forecasts_per_track` — only tests call them. The `isinstance` dispatch that would route a station to
 the per-track path **does not exist yet**.
 
-**This run builds T8, and T8 is SPLIT into T8a (dormant) and T8b (activation).** The split re-scopes only what T8
-already owned — **no new scope is added**. See the two task entries below and **D36-t8ab-split** under *Open items →
-Requires owner re-ratification*: the split is **proposed, awaiting owner ratification**, exactly like D35.
+**This run builds T8a ONLY. It does NOT build T8b.** The T8a/T8b split was **OWNER-RATIFIED 2026-08-19**
+(**D36-t8ab-split**); it re-scopes only what T8 already owned — **no new scope is added**. T8b follows in a separate
+PR off the merged T8a base.
+
+**Nothing outside T8a may be built, wired, or "prepared" in this run.** Specifically **DO NOT**: add the `isinstance`
+dispatch; call any T5–T7 entry point (`resolve_candidate`, `commit_track`, `assemble_assignment_inputs`,
+`run_all_station_forecasts_per_track`) from `flows/run_forecast_cycle.py`; re-scope Phase A; or author any flow-level
+golden. Those are T8b.
+
+**T8a's defining property is DORMANCY, and it is a gate, not an aspiration.** Every helper T8a adds must have **zero
+production call sites** from the flow at the end of this run. The exit gate asserts it: `grep -rnE
+"resolve_candidate|commit_track|assemble_assignment_inputs|run_all_station_forecasts_per_track" src/sapphire_flow/flows/`
+must return **zero hits**, exactly as it does today. A helper that is wired in "just to prove it works" has failed
+this task. Dead-code lints must **not** be silenced to accommodate the new helpers.
+
+**Why dormancy is the whole point here:** T8b is the first task in this plan that changes production behaviour, and
+its flow-level goldens are the only protection for the live control-only route. Writing those goldens in the same
+diff that activates the dispatch would let an accidental re-baseline pass unnoticed. T8a therefore lands the
+machinery, reviewable in isolation; T8b lands the switch.
 
 **The safety property for THIS run is unlike every previous run's, and must be stated plainly.** T1–T7 were safe
 because they were unreachable — no production call site existed. **T8b is the first task in this entire plan that
@@ -1130,8 +1146,8 @@ a design fork; each changes a ratified decision's **observable consequence**, so
   this repo's own `docs/workflow.md` § Multi-Model Review mandates for non-trivial changes.
 - **D36-t8ab-split** (new, 2026-08-19; raised by an independent Codex review of the T8 task specification, which
   returned **NO — not ready to build** with one blocker, four majors and two minors, all now folded into T8a/T8b).
-  **AWAITING OWNER RATIFICATION — proposed, not decided**, and recorded here for the same reason D35 is: a scope
-  change to a READY plan is the owner's to confirm. *Proposal:* split T8 at the **dormant-helper / activation seam** —
+  **OWNER-RATIFIED 2026-08-19 — SPLIT ACCEPTED.** T8a and T8b build as two separate tasks, two `implement` passes,
+  two PRs. *Ratified proposal:* split T8 at the **dormant-helper / activation seam** —
   **T8a** builds the `ForcingResolutionPolicy` carrier and its three construction paths, the `retries=` wiring, the
   freshness-on-fatal-exit helper, the cross-cycle preflight and the D30 discovery helper, each with direct tests and
   **zero production call sites** from the flow; **T8b** lands the `isinstance` dispatch, the Phase-A / D30 re-scoping,
@@ -1140,8 +1156,8 @@ a design fork; each changes a ratified decision's **observable consequence**, so
   accidental re-baseline hard to detect — a golden written and "confirmed" in the same diff that changes the
   behaviour it pins proves very little. The seam is the one that made T5–T7 (and T1–T4 before them) independently
   verifiable: dormant first, activation second. *Cost:* two `implement` passes instead of one for T8. *Plan author's
-  recommendation: **split**.* If the owner rejects the split, T8a/T8b build as one task with the identical scope and
-  criteria — the per-item content below is unchanged either way.
+  recommendation: **split**.* — accepted. **THIS RUN BUILDS T8a ONLY**; T8b follows in a separate PR off the merged
+  T8a base.
 
 **Resolved (owner-ratified 2026-08-10 unless noted):**
 - **D1-types-location** — new `types/forcing_track.py`; `ModelRunContext` stays service-local (Plan 148).
