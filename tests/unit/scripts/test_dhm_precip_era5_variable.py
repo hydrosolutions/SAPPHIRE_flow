@@ -1,0 +1,128 @@
+"""ERA5-Land multi-variable safety (2026-08-19).
+
+Plan 184 D14 needs `2m_temperature` alongside `total_precipitation`. Before
+this change the pipeline was single-variable in three places that would each
+have destroyed data SILENTLY:
+
+* the raw path was `era5_land_tp_raw_{window_id}.nc` — no variable — so a
+  temperature fetch overwrote the precipitation archive under a filename
+  claiming to be precipitation;
+* the manifest's acquisition-wide immutability guard checked `dataset`, which
+  is identical for both variables, so it never fired; and
+* the transform stage would have deaccumulated an INSTANTANEOUS field against
+  ERA5-Land's 01 UTC reset and multiplied Kelvin by the m->mm factor.
+
+The resume guard made the first one worse rather than safer: a different
+variable yields a different request identity, so the window reads as stale and
+is re-downloaded straight over the existing file.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
+
+from scripts.dhm_precip.acquire_era5 import _exit_code_for, build_parser, run
+from scripts.dhm_precip.era5_errors import Era5StageNotApplicableError, Era5StorageError
+from scripts.dhm_precip.era5_manifest import raw_artifact_path
+from scripts.dhm_precip.era5_request import (
+    DEFAULT_REQUEST_SPEC,
+    Era5Accumulation,
+    Era5RequestSpec,
+    accumulation_of,
+    build_request_payload,
+    parse_window_arg,
+    variable_code,
+)
+
+if TYPE_CHECKING:
+    import argparse
+
+
+class TestVariableRegistry:
+    def test_precipitation_is_accumulated_and_temperature_is_not(self) -> None:
+        assert accumulation_of("total_precipitation") is Era5Accumulation.ACCUMULATED
+        assert accumulation_of("2m_temperature") is Era5Accumulation.INSTANTANEOUS
+
+    def test_an_unknown_variable_is_rejected_at_spec_construction(self) -> None:
+        with pytest.raises(ValueError, match="unknown ERA5-Land variable"):
+            Era5RequestSpec(variable="sea_surface_temperature")
+
+    def test_the_payload_carries_the_requested_variable(self) -> None:
+        spec = Era5RequestSpec(variable="2m_temperature")
+        payload = build_request_payload(parse_window_arg("2021-10"), spec)
+        assert payload["variable"] == ["2m_temperature"]
+
+
+class TestRawPathIsKeyedByVariable:
+    """The clobber that motivated this change."""
+
+    def test_temperature_and_precipitation_do_not_share_a_raw_path(self) -> None:
+        root = Path("/tmp/root")
+        tp = raw_artifact_path(
+            "2020-01", root, variable_code=variable_code("total_precipitation")
+        )
+        t2m = raw_artifact_path(
+            "2020-01", root, variable_code=variable_code("2m_temperature")
+        )
+        assert tp != t2m
+        assert "t2m" in t2m.name
+
+    def test_the_existing_precipitation_path_is_unchanged(self) -> None:
+        """Every artefact already on disk must keep its current path — this
+        change must not orphan the 74 acquired precipitation windows."""
+        root = Path("/tmp/root")
+        assert raw_artifact_path("2020-01", root).name == "era5_land_tp_raw_2020-01.nc"
+
+
+class TestTransformRefusesAnInstantaneousVariable:
+    def _args(self, **over: object) -> argparse.Namespace:
+        args = build_parser().parse_args(
+            ["--provenance", "/nonexistent.json", "--stage", "transform"]
+        )
+        for k, v in over.items():
+            setattr(args, k, v)
+        return args
+
+    @pytest.mark.parametrize("stage", ["transform", "all"])
+    def test_temperature_cannot_reach_the_deaccumulator(self, stage: str) -> None:
+        args = self._args(stage=stage, variable="2m_temperature")
+        with pytest.raises(Era5StageNotApplicableError, match="INSTANTANEOUS"):
+            run(args)
+
+    def test_the_refusal_precedes_reading_the_provenance_file(self) -> None:
+        """The guard must cost nothing: --provenance points at a file that does
+        not exist, so if the guard fired AFTER provenance loading this would
+        raise a storage error instead."""
+        args = self._args(stage="transform", variable="2m_temperature")
+        with pytest.raises(Era5StageNotApplicableError):
+            run(args)
+
+    def test_precipitation_is_not_refused(self) -> None:
+        """The guard must not block the variable the pipeline was built for —
+        this fails past the guard, on the absent provenance file."""
+        args = self._args(stage="transform", variable="total_precipitation")
+        with pytest.raises((Era5StorageError, OSError)):
+            run(args)
+
+
+class TestExitCodes:
+    def test_stage_not_applicable_maps_to_7(self) -> None:
+        assert _exit_code_for(Era5StageNotApplicableError("x")) == 7
+
+    def test_storage_still_maps_to_5(self) -> None:
+        assert _exit_code_for(Era5StorageError("x")) == 5
+
+
+class TestCliDefaultsAreUnchanged:
+    def test_variable_defaults_to_precipitation(self) -> None:
+        args = build_parser().parse_args(["--provenance", "p.json"])
+        assert args.variable == DEFAULT_REQUEST_SPEC.variable == "total_precipitation"
+
+    def test_an_unknown_variable_is_rejected_by_argparse(self) -> None:
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(
+                ["--provenance", "p.json", "--variable", "not_a_variable"]
+            )

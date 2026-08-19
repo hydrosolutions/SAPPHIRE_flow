@@ -19,6 +19,7 @@ import calendar
 import re
 from dataclasses import dataclass
 from datetime import date
+from enum import Enum, auto
 from typing import TYPE_CHECKING, cast
 
 from scripts.dhm_precip.era5_errors import NonExpressibleWindowError
@@ -28,6 +29,57 @@ if TYPE_CHECKING:
 
 DATASET_ID = "reanalysis-era5-land"
 DEFAULT_VARIABLE = "total_precipitation"
+
+
+class Era5Accumulation(Enum):
+    """Whether a CDS variable is an ACCUMULATOR (reset at 01 UTC, so the
+    deaccumulation in `era5_deaccumulate.py` applies) or an INSTANTANEOUS
+    field (where deaccumulating would emit hour-to-hour DIFFERENCES dressed
+    as values — plausible-looking numbers that are entirely wrong).
+
+    This is an enum, not a bool, because it names a domain state and the set
+    is open: ERA5-Land has accumulators, instantaneous fields and fluxes."""
+
+    ACCUMULATED = auto()
+    INSTANTANEOUS = auto()
+
+
+ERA5_VARIABLES: dict[str, Era5Accumulation] = {
+    "total_precipitation": Era5Accumulation.ACCUMULATED,
+    "2m_temperature": Era5Accumulation.INSTANTANEOUS,
+}
+"""The variables this pipeline knows how to handle. An unknown variable is
+rejected at spec construction (parse, don't validate) rather than being sent
+to CDS and failing after a network round-trip."""
+
+ERA5_VARIABLE_CODES: dict[str, str] = {
+    "total_precipitation": "tp",
+    "2m_temperature": "t2m",
+}
+"""Short code used in on-disk filenames. Without this, every variable's raw
+window would be written to `era5_land_tp_raw_<window>.nc` — so a temperature
+fetch would OVERWRITE the precipitation archive under a filename claiming to
+be precipitation."""
+
+
+def accumulation_of(variable: str) -> Era5Accumulation:
+    try:
+        return ERA5_VARIABLES[variable]
+    except KeyError:
+        raise ValueError(
+            f"unknown ERA5-Land variable {variable!r}; known: {sorted(ERA5_VARIABLES)}"
+        ) from None
+
+
+def variable_code(variable: str) -> str:
+    try:
+        return ERA5_VARIABLE_CODES[variable]
+    except KeyError:
+        raise ValueError(
+            f"no filename code for ERA5-Land variable {variable!r}; known: "
+            f"{sorted(ERA5_VARIABLE_CODES)}"
+        ) from None
+
 
 # D2: CDS `area` is north/west/south/east. Study box: 26-31 N, 80-89 E.
 StudyArea = tuple[int, int, int, int]
@@ -174,6 +226,9 @@ class Era5RequestSpec:
     retry_backoff_base_seconds: float = 2.0
 
     def __post_init__(self) -> None:
+        # Parse, don't validate: an unknown variable can never reach CDS.
+        accumulation_of(self.variable)
+        variable_code(self.variable)
         north, west, south, east = self.area
         if not (south < north):
             raise ValueError(f"area north/south out of order: {self.area}")

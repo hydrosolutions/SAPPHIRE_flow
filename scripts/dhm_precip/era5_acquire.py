@@ -51,6 +51,7 @@ from scripts.dhm_precip.era5_request import (
     Era5RequestSpec,
     build_request_payload,
     expected_grid_shape,
+    variable_code,
 )
 
 if TYPE_CHECKING:
@@ -428,13 +429,16 @@ def acquire_window(
 ) -> RawWindowRecord:
     payload = build_request_payload(window, spec)
     identity = raw_request_identity(spec.dataset, payload)
-    final_path = raw_artifact_path(window.window_id, data_root)
+    final_path = raw_artifact_path(
+        window.window_id, data_root, variable_code=variable_code(spec.variable)
+    )
     manifest_path = manifest_path_for(data_root)
 
     manifest = read_manifest(manifest_path)
     if manifest is None:
         manifest = Era5ProvenanceManifest(
             dataset=spec.dataset,
+            variable=spec.variable,
             client_package_version=client_package_version,
             operator_provenance=provenance,
         )
@@ -449,6 +453,22 @@ def acquire_window(
             f"{manifest.dataset!r}, but this request is for "
             f"{spec.dataset!r}; acquisition-wide fields are immutable — "
             f"start a new data root rather than mixing products"
+        )
+    elif manifest.variable != spec.variable:
+        # The SAME immutability rule as `dataset`, and the more dangerous of
+        # the two: both variables live in the same CDS dataset, so the check
+        # above passes. Raw paths and `raw_windows` are keyed by `window_id`,
+        # so acquiring a second variable here would overwrite the existing
+        # archive AND replace its provenance records — silently, because the
+        # resume guard sees a different request identity, concludes the window
+        # is stale, and re-downloads over it.
+        raise Era5StorageError(
+            f"manifest at {manifest_path} records variable "
+            f"{manifest.variable!r}, but this request is for "
+            f"{spec.variable!r}; acquisition-wide fields are immutable and "
+            f"raw windows are keyed by window_id alone — use a separate "
+            f"--data-root for {spec.variable!r} rather than overwriting the "
+            f"{manifest.variable!r} archive"
         )
 
     if raw_window_is_current(
