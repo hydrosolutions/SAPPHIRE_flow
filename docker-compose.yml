@@ -389,11 +389,13 @@ services:
       # Plan 176 D1: LINDAS publishes on a 10-minute grid, not hourly (the
       # old `37 * * * *` assumption is falsified — see
       # docs/plans/176-lindas-archive-completeness.md § Evidence).
-      # Over-polls at ~2.5x the grid (max cyclic gap <=4 min, min gap
-      # >=3 min, no minute divisible by 5 — properties asserted by
+      # Plan 189 T2: tightened after a live 45-min run measured a 7.0 min
+      # minimum publish gap (docs/plans/189-audit-window-edge-and-poll-
+      # bound.md § T2). Max cyclic gap <=3 min, min gap >=2 min, no minute
+      # divisible by 5 — properties asserted by
       # tests/unit/cli/test_register_deployments.py, mirrored by
-      # cli/register_deployments.py's Python fallback — MUST stay in sync).
-      SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-1,4,7,11,14,17,21,24,27,31,34,37,41,44,47,51,54,57 * * * *}
+      # cli/register_deployments.py's Python fallback — MUST stay in sync.
+      SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-1,3,6,8,11,13,16,18,21,23,26,28,31,33,36,38,41,43,46,48,51,53,56,58 * * * *}
     depends_on:
       postgres:
         condition: service_healthy

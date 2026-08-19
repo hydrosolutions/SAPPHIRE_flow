@@ -56,13 +56,21 @@ fact, not a work-pool fact** — which is why the D1 rule is expressed as
 **Rule for any future LINDAS-calling schedule**: the cron minute must not be
 divisible by 5 (`ingest-observations`'s tick) and must not collide with
 `collect-bafu-forecasts`'s `0 * * * *`. The BAFU observation collector's own
-schedule is defined by **properties, not a literal** (Plan 176 D1: max cyclic
-inter-poll gap ≤4 min, min ≥3 min, every minute non-divisible by 5) — quote the
-properties, not the minute list, which supersedes Plan 175's single `37 * * * *`
-tick and is asserted by test rather than pinned in prose. See
-`docs/decisions/bafu-lindas-rate-limit.md` for the measured rate-limit
-contract this rule protects (burst 3, ~1 slot refill per 3–4 s, no
-`Retry-After`).
+schedule is defined by **properties, not a literal** (Plan 176 D1, tightened
+by Plan 189 T2 after a live 45-min run measured a 7.0 min minimum publish
+gap: max cyclic inter-poll gap ≤3 min, min ≥2 min, every minute
+non-divisible by 5) — quote the properties, not the minute list, which
+supersedes Plan 175's single `37 * * * *` tick and is asserted by test
+rather than pinned in prose. The min-gap bound was relaxed from D1's
+original ≥3 to ≥2 because `max≤3` AND `min≥3` together force every gap to
+exactly 3 min (a single residue class mod 3), and every such class contains
+4 multiples of 5 — arithmetically incompatible with "no minute divisible by
+5" (see `docs/plans/189-audit-window-edge-and-poll-bound.md` § T2 for the
+full argument and the accepted residual: at a 2-minute minimum the gap can
+equal Plan 175's 120s total retry deadline under sustained upstream
+failure). See `docs/decisions/bafu-lindas-rate-limit.md` for the measured
+rate-limit contract this rule protects (burst 3, ~1 slot refill per 3–4 s,
+no `Retry-After`).
 
 **A cron default lives in TWO places, and only one of them deploys.**
 `cli/register_deployments.py` reads `os.environ.get("SCHEDULE_...", "<default>")`
