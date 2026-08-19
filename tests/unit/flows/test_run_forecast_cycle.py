@@ -15,6 +15,12 @@ import pytest
 import sqlalchemy.exc as sa_exc
 import xarray as xr
 
+from sapphire_flow.adapters.recap_gateway import (
+    RecapAuthError,
+    RecapConfigurationError,
+    RecapPayloadIntegrityError,
+    RecapTransientError,
+)
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import (
     AdapterError,
@@ -1257,6 +1263,42 @@ cycle_cadence_hours = 3.0
         )
 
         assert result is not None
+
+    def test_flow_boundary_rejects_a_value_that_is_not_a_forcing_resolution_policy(
+        self,
+    ) -> None:
+        """Locks T8a review finding 4 (minor): the public flow parameter must
+        be typed as the CONCRETE `ForcingResolutionPolicy | None` -- not
+        `object | None`, which Prefect's pydantic-backed parameter
+        validation accepts unconditionally, letting a malformed value cross
+        the flow boundary and fail only later, deep inside T8b, when a
+        policy attribute is accessed. With the concrete annotation, Prefect
+        rejects a structurally wrong value at the boundary itself."""
+        import prefect.exceptions
+
+        class _PlainAdapter:
+            def fetch_forecasts(self, *args: object, **kwargs: object) -> object:
+                raise AssertionError("dispatch test must not actually fetch")
+
+        with pytest.raises(prefect.exceptions.ParameterTypeError):
+            run_forecast_cycle_flow(
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                weather_forecast_store=FakeWeatherForecastStore(),
+                forecast_store=FakeForecastStore(),
+                model_state_store=FakeModelStateStore(),
+                artifact_store=FakeModelArtifactStore(),
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                adapter=_PlainAdapter(),
+                forcing_resolution_policy=object(),  # type: ignore[arg-type]
+                models={},
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
 
 
 class _RaisingAdapter:
@@ -8026,12 +8068,23 @@ def _forcing_track_key() -> ForcingTrackKey:
     )
 
 
-class _RetryCountingCandidateSource:
-    """Fails `fail_times` calls with a plain exception, then succeeds --
-    Prefect's default `retries=` policy retries on ANY exception."""
+def _default_transient_exc(call_number: int) -> BaseException:
+    return RecapTransientError(f"transient failure #{call_number}")
 
-    def __init__(self, fail_times: int) -> None:
+
+class _RetryCountingCandidateSource:
+    """Fails `fail_times` calls with ``exc_factory(call_number)``, then
+    succeeds. Defaults to `RecapTransientError` -- the ONLY exception D31
+    marks retryable at this task; `retry_condition_fn` must not retry
+    anything else (review fold-in, major)."""
+
+    def __init__(
+        self,
+        fail_times: int,
+        exc_factory: Callable[[int], BaseException] = _default_transient_exc,
+    ) -> None:
         self.fail_times = fail_times
+        self.exc_factory = exc_factory
         self.calls = 0
 
     def fetch_requirement(
@@ -8042,7 +8095,7 @@ class _RetryCountingCandidateSource:
     ) -> RawFetchOutcome:
         self.calls += 1
         if self.calls <= self.fail_times:
-            raise RuntimeError(f"transient failure #{self.calls}")
+            raise self.exc_factory(self.calls)
         return RawFetchOutcome(
             status=RawFetchStatus.FETCHED, cycle=nominal_cycle, stations={}
         )
@@ -8052,9 +8105,13 @@ class _RetryCountingCandidateSource:
 
 
 class TestFetchForcingCandidateTaskRetries:
-    """Plan 151 T8a red-first (D28): retries= is a RUNTIME value taken from
+    """Plan 151 T8a red-first (D28) + review fold-in (major, D31):
+    retries= is a RUNTIME value taken from
     ``ForcingResolutionPolicy.max_retries`` via ``.with_options(retries=...)``
-    — defined only, T8b installs the caller."""
+    — defined only, T8b installs the caller. ``retry_condition_fn`` scopes
+    retries to `RecapTransientError` ONLY; every other typed Recap
+    exception and any unanticipated bug must propagate on the FIRST
+    failure, never retried, regardless of the configured `retries=` budget."""
 
     def test_resolves_at_exact_configured_retry_count(self) -> None:
         fetch_forcing_candidate_task = _flow_attr("fetch_forcing_candidate_task")
@@ -8073,8 +8130,44 @@ class TestFetchForcingCandidateTaskRetries:
         source = _RetryCountingCandidateSource(fail_times=2)
         task_under_retries = fetch_forcing_candidate_task.with_options(retries=1)
 
-        with pytest.raises(RuntimeError, match="transient failure"):
+        with pytest.raises(RecapTransientError, match="transient failure"):
             task_under_retries(source, _forcing_track_key(), [], _NOW)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "make_exc",
+        [
+            lambda: RecapAuthError("unauthorized", status_code=401),
+            lambda: RecapConfigurationError("bad hru", field="hru_code"),
+            lambda: RecapPayloadIntegrityError("corrupt payload"),
+            lambda: RuntimeError("unanticipated bug"),
+        ],
+        ids=[
+            "RecapAuthError",
+            "RecapConfigurationError",
+            "RecapPayloadIntegrityError",
+            "unexpected-exception",
+        ],
+    )
+    def test_fatal_and_unexpected_exceptions_are_never_retried(
+        self, make_exc: Callable[[], BaseException]
+    ) -> None:
+        """Locks T8a review finding 2 (major): a `retry_condition_fn`-less
+        task retries on ANY exception once `retries=` is configured. Even
+        with a generous retry budget, a fatal typed Recap exception (or an
+        unanticipated bug) must fail on the FIRST call -- D31's typed
+        taxonomy reserves retry for `RecapTransientError` alone."""
+        fetch_forcing_candidate_task = _flow_attr("fetch_forcing_candidate_task")
+
+        exc = make_exc()
+        source = _RetryCountingCandidateSource(
+            fail_times=1, exc_factory=lambda _call_number: exc
+        )
+        task_with_retries = fetch_forcing_candidate_task.with_options(retries=3)
+
+        with pytest.raises(type(exc)):
+            task_with_retries(source, _forcing_track_key(), [], _NOW)  # type: ignore[arg-type]
+
+        assert source.calls == 1
 
 
 class TestEmitFreshnessOnFatalExit:

@@ -94,10 +94,10 @@ def _station_complete(
     """D8.1: per-station raw completeness. For every feature in the track,
     this station's series must reach ``fetch_horizons[f]`` steps (counted in
     the track's ``time_step`` units, after the SAME daily-bucket reduction
-    assembly applies) and — for an ENSEMBLE track — carry EXACTLY
-    ``expected_member_ids`` at that horizon, ALL AT THE SAME retained
-    valid_times. A SINGLE-mode track has no member axis; the single run's
-    own count is the bar.
+    assembly applies) and carry EXACTLY ``expected_member_ids`` at that
+    horizon — for an ENSEMBLE track, ALL AT THE SAME retained valid_times;
+    for a SINGLE-mode track, the single source-derived run identity (Recap:
+    ``{0}``, review fold-in — major).
 
     The ENSEMBLE check is against the retained-TIMESTAMP SET, not a bare
     count (review fold-in — blocker): member 0 covering days 1-2 and member
@@ -107,6 +107,12 @@ def _station_complete(
     DROP member 1 entirely from the assembled frame. Requiring every
     expected member to share the identical earliest-``horizon.value``
     valid_time set is what a genuinely complete ensemble candidate means.
+
+    The SINGLE check is against ``expected_member_ids`` too (review fold-in
+    — major): counting the max over EVERY member_id present would accept a
+    candidate whose only qualifying series sits under a stray member (e.g.
+    7) or a run this source never declared as its SINGLE identity, silently
+    delivering the wrong run's data downstream.
     """
     for feature, horizon in track_request.fetch_horizons.items():
         feature_records = [r for r in records if r.parameter == feature]
@@ -116,9 +122,14 @@ def _station_complete(
             issue_time=issue_time,
         )
         if track_request.key.ensemble_mode is EnsembleMode.SINGLE:
-            if not times_by_key or max(len(t) for t in times_by_key.values()) < (
-                horizon.value
-            ):
+            single_run_times = {
+                member_id: times
+                for (_, member_id), times in times_by_key.items()
+                if member_id in expected_member_ids
+            }
+            if not single_run_times or max(
+                len(t) for t in single_run_times.values()
+            ) < (horizon.value):
                 return False
             continue
 

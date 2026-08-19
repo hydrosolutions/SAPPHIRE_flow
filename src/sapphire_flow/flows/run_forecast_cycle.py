@@ -30,6 +30,7 @@ from sapphire_flow.adapters.recap_gateway import (
     RecapAuthError,
     RecapConfigurationError,
     RecapDataUnavailableError,
+    RecapTransientError,
 )
 from sapphire_flow.config.recap_gateway import DEFAULT_CYCLE_CADENCE_HOURS
 from sapphire_flow.exceptions import (
@@ -67,6 +68,9 @@ from sapphire_flow.types.ids import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+
+    from prefect.client.schemas.objects import State, TaskRun
+    from prefect.tasks import Task
 
     from sapphire_flow.adapters.recap_gateway import (
         GatewayPolygonBindingStoreLike,
@@ -1625,11 +1629,29 @@ def _fetch_obs_timestamps_task(
 # ---------------------------------------------------------------------------
 
 
+def _retry_only_recap_transient_error(
+    task: Task[..., object], task_run: TaskRun, state: State[object]
+) -> bool:
+    """Plan 151 T8a review fold-in (major, D31): with no ``retry_condition_fn``,
+    Prefect retries on ANY exception once ``retries`` is configured — including
+    fatal typed errors (``RecapAuthError``, ``RecapConfigurationError``,
+    ``RecapPayloadIntegrityError``) and unanticipated bugs, contradicting D31's
+    typed taxonomy where only ``RecapTransientError`` (raised once the
+    source's OWN retry budget is exhausted) is worth another candidate-fetch
+    attempt. Every other exception is candidate/track-FATAL and must
+    propagate on the FIRST failure — the T5 walk-back resolver (services/,
+    not named here per this module's T8a naming note above) is what walks
+    back to an older candidate, not a task-level retry.
+    """
+    return isinstance(state.data, RecapTransientError)
+
+
 @task(
     name="fetch-forcing-candidate",
     persist_result=False,
     log_prints=False,
     cache_policy=NO_CACHE,
+    retry_condition_fn=_retry_only_recap_transient_error,
 )
 def fetch_forcing_candidate_task(
     source: CandidateAwareForecastSource,
@@ -1809,7 +1831,15 @@ def run_forecast_cycle_flow(
     # None, the named default policy constant applies. When supplied, it
     # wins on every construction path (including 1 and 2). Unused in this
     # run (T8a is dormant) — T8b threads it into the resolver.
-    forcing_resolution_policy: object | None = None,
+    #
+    # Typed as the CONCRETE `ForcingResolutionPolicy | None` (review
+    # fold-in, minor) -- unlike the store/adapter/model params above, which
+    # stay `object` because they are Protocol-typed injection points Prefect
+    # cannot validate. `ForcingResolutionPolicy` is a plain frozen dataclass
+    # with no such constraint, so the flow boundary itself now rejects a
+    # malformed value instead of admitting it as an unchecked `object` and
+    # failing later, deep inside T8b, when a policy attribute is accessed.
+    forcing_resolution_policy: ForcingResolutionPolicy | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
 
@@ -1837,9 +1867,6 @@ def run_forecast_cycle_flow(
         grid_extractor = cast("GridExtractor | None", grid_extractor)
         gateway_polygon_store = cast(
             "GatewayPolygonBindingStoreLike | None", gateway_polygon_store
-        )
-        forcing_resolution_policy = cast(
-            "ForcingResolutionPolicy | None", forcing_resolution_policy
         )
 
         if clock is None:

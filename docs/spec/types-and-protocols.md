@@ -3322,10 +3322,13 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > #
 > # Completeness gate keys off ResolvedTrackRequest.fetch_horizons (the MAX): the RAW
 > # candidate is accepted iff, for every f in key.features, the series reaches
-> # fetch_horizons[f] AND (ENSEMBLE) carries member_ids == source.expected_member_ids(key)
-> # at that horizon (source-derived, NEVER a literal {0..50} — see
-> # expected_member_ids above) — so "5-day + 10-day dedup onto one 10-day track" is
-> # completeness-checked at 10-day.
+> # fetch_horizons[f] AND carries member_ids == source.expected_member_ids(key) at that
+> # horizon (source-derived, NEVER a literal {0..50} or a bare "any member present" —
+> # see expected_member_ids above) — so "5-day + 10-day dedup onto one 10-day track" is
+> # completeness-checked at 10-day. Applies to BOTH modes: ENSEMBLE checks the full
+> # expected set (Plan 151 T5 review fold-in); SINGLE checks its own one-element
+> # identity (Plan 151 T8a review fold-in) — a stray/foreign member_id the source
+> # never declared must not count toward either mode's completeness.
 > # Per-assignment assembly then slices each assignment's own (≤ max) horizons out of
 > # the fetched-at-max frame.
 > #
