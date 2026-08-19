@@ -9,8 +9,9 @@ import polars as pl
 import pytest
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
-from sapphire_flow.exceptions import ModelOutputError
+from sapphire_flow.exceptions import ConfigurationError, ModelOutputError
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import ForcingRoute
 from sapphire_flow.types.ids import StationGroupId, StationId
 from sapphire_flow.types.model import (
     GroupModelInputs,
@@ -525,3 +526,451 @@ class TestNanGateIsTemporalityAwareAcrossCollidingNames:
 
         assert set(ensembles) == {"discharge"}
         assert model.predict_inputs is not None
+
+
+def _two_horizon_requirement() -> fi_boundary.InputRequirement:
+    """Plan 151 T6 (D9): one future_known PRODUCT with two variables at
+    DIFFERENT `future_steps` — the flagship "precip 2 steps + temp 10 steps"
+    shape. Single branch, single product — legal under D4 (which restricts
+    PRODUCT/mode count per branch, never per-variable horizon divergence
+    within one product) — so this reaches `predict()` directly, no
+    construct-only caveat needed.
+    """
+    return fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            _STEP: fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: (
+                        fi_boundary.DynamicInputSpec(
+                            past_known={
+                                "obs": {
+                                    "discharge": _past(
+                                        fi_boundary.Unit.M3_PER_S, max_nan=2
+                                    ),
+                                }
+                            },
+                            future_known={
+                                "nwp": {
+                                    "precip": fi_boundary.FutureKnownVariable(
+                                        future_steps=2,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.MM,
+                                    ),
+                                    "temp": fi_boundary.FutureKnownVariable(
+                                        future_steps=10,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.DEG_C,
+                                    ),
+                                }
+                            },
+                        )
+                    )
+                }
+            )
+        },
+    )
+
+
+def _two_horizon_station_input_data() -> StationInputData:
+    # 10 future hourly buckets, fully populated (no nulls) for BOTH
+    # features -- the raw track fetch reaches temp's 10-step need, so precip
+    # (which only declares 2) genuinely has 10 REAL values available too.
+    # Without the per-variable slice, precip would receive all 10 -- more
+    # than it ever declared, not fewer, so this is NOT a NaN-tolerance
+    # failure; it is an over-delivery the model never asked for.
+    timestamps = _timestamps(*range(3, 13))
+    return StationInputData(
+        past_targets=_time_frame(
+            {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+        ),
+        past_dynamic=_time_frame({"timestamp": _timestamps(0, 1, 2)}),
+        future_dynamic=_time_frame(
+            {
+                "timestamp": timestamps,
+                "precip": [float(i) for i in range(10)],
+                "temp": [float(i) for i in range(10)],
+            }
+        ),
+        static=None,
+    )
+
+
+def _future_known_series(
+    model_inputs: fi_boundary.ModelInputs, name: str
+) -> pl.DataFrame:
+    station = model_inputs.stations[fi_boundary._STATION_SCOPE_KEY]
+    dynamic = station.dynamic[_STEP].data[fi_boundary.FISpatialRepresentation.POINT]
+    return dynamic.future_known["nwp"][name].data
+
+
+def test_predict_slices_each_future_known_variable_to_its_own_horizon() -> None:
+    """Fails today: `_future_known_inputs` hands every future_known variable
+    the WHOLE `future_dynamic` frame regardless of its own declared
+    `future_steps` — precip (future_steps=2) would receive all 10 rows
+    instead of the earliest 2, silently over-delivering data the model never
+    declared (Plan 151 D9)."""
+    data = _two_horizon_station_input_data()
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_two_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=10,
+        time_step=_STEP,
+        # Plan 151 D10: the D9 slice is a PER-TRACK-route behaviour; the
+        # legacy superset route keeps its over-delivered frame (see
+        # `TestForcingRouteGatesTheFutureStepsSlice` below).
+        forcing_route=ForcingRoute.PER_TRACK,
+    )
+
+    adapter.predict(object(), inputs, random.Random(123))
+
+    assert model.predict_inputs is not None
+    precip = _future_known_series(model.predict_inputs, "precip")
+    temp = _future_known_series(model.predict_inputs, "temp")
+    assert precip.height == 2
+    assert precip["precip"].to_list() == [0.0, 1.0]
+    assert temp.height == 10
+
+
+def _two_horizon_station_input_data_with_precip(
+    precip_values: list[float],
+) -> StationInputData:
+    timestamps = _timestamps(*range(3, 13))
+    return StationInputData(
+        past_targets=_time_frame(
+            {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+        ),
+        past_dynamic=_time_frame({"timestamp": _timestamps(0, 1, 2)}),
+        future_dynamic=_time_frame(
+            {
+                "timestamp": timestamps,
+                "precip": precip_values,
+                "temp": [float(i) for i in range(10)],
+            }
+        ),
+        static=None,
+    )
+
+
+def test_nan_gate_slices_future_known_variable_to_its_own_horizon_before_counting() -> (
+    None
+):
+    """Review fold-in (minor — T8 finding 8): locks the NaN-GATE side of the
+    D9 slice specifically, not just the InputSeries data the test above
+    covers -- removing the gate-side slice in
+    `_variables_over_nan_tolerance` would leave every OTHER added test
+    green. precip declares max_nan=0/future_steps=2; its first 2 raw values
+    are clean but every value AFTER its own horizon is NaN. Without the
+    NaN-gate-side slice, the gate counts NaNs over the WHOLE 10-row frame
+    and raises, even though the model never declared (or would ever
+    receive) those trailing rows."""
+    precip_values = [0.0, 1.0, *([float("nan")] * 8)]
+    data = _two_horizon_station_input_data_with_precip(precip_values)
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_two_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=10,
+        time_step=_STEP,
+        # Plan 151 D10: the D9 slice is a PER-TRACK-route behaviour; the
+        # legacy superset route keeps its over-delivered frame (see
+        # `TestForcingRouteGatesTheFutureStepsSlice` below).
+        forcing_route=ForcingRoute.PER_TRACK,
+    )
+
+    # Must NOT raise -- the trailing NaNs sit outside precip's own horizon.
+    adapter.predict(object(), inputs, random.Random(123))
+
+
+def test_nan_gate_still_fails_on_nan_inside_own_horizon() -> None:
+    """Paired negative case: a NaN INSIDE precip's own declared 2-step
+    horizon must still fail `max_nan=0` -- proving the slice narrows the
+    counted WINDOW, not the tolerance itself."""
+    precip_values = [0.0, float("nan"), *([1.0] * 8)]
+    data = _two_horizon_station_input_data_with_precip(precip_values)
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_two_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=10,
+        time_step=_STEP,
+        # Plan 151 D10: the D9 slice is a PER-TRACK-route behaviour; the
+        # legacy superset route keeps its over-delivered frame (see
+        # `TestForcingRouteGatesTheFutureStepsSlice` below).
+        forcing_route=ForcingRoute.PER_TRACK,
+    )
+
+    with pytest.raises(ModelOutputError, match="max_nan"):
+        adapter.predict(object(), inputs, random.Random(123))
+
+
+def _short_horizon_requirement() -> fi_boundary.InputRequirement:
+    """A station-scope model declaring a SINGLE future_known feature at
+    `future_steps=2` — the shorter-horizon half of a co-assigned pair. The
+    legacy superset assembler sizes ONE frame per station to the MAX horizon
+    across co-assigned models (`services/operational_inputs.py:495`), so this
+    model is handed a LONGER frame than it declared.
+    """
+    return fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            _STEP: fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: (
+                        fi_boundary.DynamicInputSpec(
+                            past_known={
+                                "obs": {
+                                    "discharge": _past(
+                                        fi_boundary.Unit.M3_PER_S, max_nan=0
+                                    ),
+                                }
+                            },
+                            future_known={
+                                "nwp": {
+                                    "precip": fi_boundary.FutureKnownVariable(
+                                        future_steps=2,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.MM,
+                                    ),
+                                }
+                            },
+                        )
+                    )
+                }
+            )
+        },
+    )
+
+
+def _over_delivered_station_input_data(
+    precip_values: list[float] | None = None,
+) -> StationInputData:
+    # 5 future buckets for a model that declared 2 — the superset MAX from a
+    # co-assigned longer-horizon model.
+    values = [0.0, 1.0, 2.0, 3.0, 4.0] if precip_values is None else precip_values
+    return StationInputData(
+        past_targets=_time_frame(
+            {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+        ),
+        past_dynamic=_time_frame({"timestamp": _timestamps(0, 1, 2)}),
+        future_dynamic=_time_frame(
+            {"timestamp": _timestamps(3, 4, 5, 6, 7), "precip": values}
+        ),
+        static=None,
+    )
+
+
+def _predict_over_delivered(
+    *,
+    forcing_route: ForcingRoute,
+    precip_values: list[float] | None = None,
+    time_step: timedelta = _STEP,
+    data: StationInputData | None = None,
+) -> RecordingFIForecastModel:
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_short_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data
+        if data is not None
+        else _over_delivered_station_input_data(precip_values),
+        issue_time=_ISSUE,
+        forecast_horizon_steps=5,
+        time_step=time_step,
+        forcing_route=forcing_route,
+    )
+    adapter.predict(object(), inputs, random.Random(123))
+    return model
+
+
+class TestForcingRouteGatesTheFutureStepsSlice:
+    """Plan 151 D10: `StationModelInputs.forcing_route` is the EXPLICIT
+    legacy-vs-per-track discriminant that decides whether D9's per-variable
+    `future_steps` slice applies at the FI boundary. Wiring the slice
+    unconditionally into the shared `predict()` route silently truncates the
+    LEGACY superset route, whose over-delivery is contractual
+    (`models/nwp_regression.py`: "Over-delivery (more than `_HORIZON`
+    aligned steps) is tolerated and forecast in full").
+    """
+
+    def test_legacy_route_delivers_the_whole_over_delivered_frame(self) -> None:
+        model = _predict_over_delivered(
+            forcing_route=ForcingRoute.LEGACY_SUPERSET,
+        )
+
+        assert model.predict_inputs is not None
+        precip = _future_known_series(model.predict_inputs, "precip")
+        assert precip.height == 5
+        assert precip["precip"].to_list() == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+    def test_per_track_route_slices_to_the_models_own_declared_steps(self) -> None:
+        model = _predict_over_delivered(forcing_route=ForcingRoute.PER_TRACK)
+
+        assert model.predict_inputs is not None
+        precip = _future_known_series(model.predict_inputs, "precip")
+        assert precip.height == 2
+        assert precip["precip"].to_list() == [0.0, 1.0]
+
+    def test_legacy_route_nan_gate_counts_the_whole_over_delivered_frame(self) -> None:
+        # Gate-side mirror: on the legacy route a NaN BEYOND the declared
+        # `future_steps` is still counted (pre-Plan-151 behaviour), because
+        # the whole over-delivered frame is what gets DELIVERED there — the
+        # gate covers exactly what the model receives. (What the model then
+        # does with a NaN is its own business: `NwpRegression` returns
+        # `ModelFailure` for delivered NaNs, `models/nwp_regression.py:372`;
+        # over-delivered rows are forecast in full only when usable.)
+        with pytest.raises(ModelOutputError, match="future_known.precip"):
+            _predict_over_delivered(
+                forcing_route=ForcingRoute.LEGACY_SUPERSET,
+                precip_values=[0.0, 1.0, float("nan"), 3.0, 4.0],
+            )
+
+
+# The requirement above declares exactly one time step (`_STEP`, 1h). A legacy
+# caller carrying any OTHER `time_step` is a misconfiguration -- but pre-T6 the
+# NaN gate never looked at `time_step` at all, so the FIRST error such a caller
+# saw was the input error (missing column / max_nan), raised from the gate.
+_MISMATCHED_STEP = timedelta(hours=6)
+
+
+class TestLegacyRouteNanGateNeverResolvesTimeStep:
+    """Plan 151 D10 + the pre-T6 byte-for-byte guarantee: on
+    `ForcingRoute.LEGACY_SUPERSET` the gate must use the FLATTENED tolerance
+    helpers and must NOT resolve `time_step` (`_dynamic_spec_for_time_step`).
+
+    Resolving it makes a mismatched legacy `time_step` raise
+    ConfigurationError("does not declare time_step") BEFORE the pre-T6
+    missing-column / max_nan error -- an error-path divergence on the
+    deployed control-only route. The route, not the presence of `time_step`,
+    is the discriminant.
+    """
+
+    def test_legacy_route_raises_the_nan_error_not_the_time_step_error(self) -> None:
+        with pytest.raises(ModelOutputError, match="max_nan"):
+            _predict_over_delivered(
+                forcing_route=ForcingRoute.LEGACY_SUPERSET,
+                precip_values=[0.0, 1.0, float("nan"), 3.0, 4.0],
+                time_step=_MISMATCHED_STEP,
+            )
+
+    def test_legacy_route_raises_the_missing_column_error_not_the_time_step_error(
+        self,
+    ) -> None:
+        data = StationInputData(
+            past_targets=_time_frame(
+                {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+            ),
+            past_dynamic=_time_frame({"timestamp": _timestamps(0, 1, 2)}),
+            # `precip` absent entirely -- the pre-T6 first failure.
+            future_dynamic=_time_frame({"timestamp": _timestamps(3, 4, 5, 6, 7)}),
+            static=None,
+        )
+
+        with pytest.raises(
+            ConfigurationError,
+            match="missing ForecastInterface future_known input 'precip'",
+        ):
+            _predict_over_delivered(
+                forcing_route=ForcingRoute.LEGACY_SUPERSET,
+                time_step=_MISMATCHED_STEP,
+                data=data,
+            )
+
+    def test_per_track_route_still_resolves_and_rejects_a_mismatched_time_step(
+        self,
+    ) -> None:
+        # Contrast case: the per-track route DOES derive its tolerances from
+        # the selected branch, so an undeclared `time_step` is a genuine
+        # configuration error there.
+        with pytest.raises(ConfigurationError, match="does not declare time_step"):
+            _predict_over_delivered(
+                forcing_route=ForcingRoute.PER_TRACK,
+                precip_values=[0.0, 1.0, float("nan"), 3.0, 4.0],
+                time_step=_MISMATCHED_STEP,
+            )
+
+
+class TestPerTrackRouteWithoutATimeStepFailsLoudly:
+    """Plan 151 D10 fixer round 3: `ForcingRoute.PER_TRACK` is the EXPLICIT
+    discriminant, and nothing may silently override it.
+
+    `_variables_over_nan_tolerance` accepts `time_step: timedelta | None`, so
+    a type-correct call carrying `PER_TRACK` with no `time_step` is
+    representable. Gating the per-track arm on `... and time_step is not
+    None` made such a call fall through to the FLATTENED legacy branch — an
+    invalid, untested fallback selected silently, inverting the repo's
+    fail-loud principle. `StationModelInputs.time_step` is statically
+    non-optional (`types/model.py:66`) but carries no runtime validation, so
+    the type system alone does not close this.
+
+    Not flow-reachable today (`services/track_assembly.py:140,:197` always
+    build a real `timedelta`); this locks the boundary so it stays that way.
+    """
+
+    def _adapter(self) -> fi_boundary.ForecastInterfaceAdapter:
+        return fi_boundary.ForecastInterfaceAdapter(
+            RecordingFIForecastModel(
+                _success_result({"station": {"discharge": _success_variable()}}),
+                requirement=_short_horizon_requirement(),
+            ),
+            station_code_resolver=lambda station_id: _CODES[station_id],
+        )
+
+    def test_per_track_route_without_a_time_step_raises_configuration_error(
+        self,
+    ) -> None:
+        data = _over_delivered_station_input_data()
+
+        with pytest.raises(ConfigurationError, match="without a time_step"):
+            self._adapter()._variables_over_nan_tolerance(
+                past_targets=data.past_targets,
+                past_dynamic=data.past_dynamic,
+                future_dynamic=data.future_dynamic,
+                time_step=None,
+                forcing_route=ForcingRoute.PER_TRACK,
+            )
+
+    def test_legacy_route_without_a_time_step_still_uses_the_flattened_maps(
+        self,
+    ) -> None:
+        # Contrast case proving the raise is scoped to PER_TRACK: the legacy
+        # (and GROUP) call sites pass NO `time_step` by design and must keep
+        # returning the flattened result.
+        data = _over_delivered_station_input_data()
+
+        assert (
+            self._adapter()._variables_over_nan_tolerance(
+                past_targets=data.past_targets,
+                past_dynamic=data.past_dynamic,
+                future_dynamic=data.future_dynamic,
+                forcing_route=ForcingRoute.LEGACY_SUPERSET,
+            )
+            == {}
+        )

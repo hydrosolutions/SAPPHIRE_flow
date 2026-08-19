@@ -48,7 +48,14 @@ behaviour, D34, the pyright/ruff baselines, and that **no ForecastInterface anti
 **FIRST SLICE LANDED 2026-08-18 — T1–T4 merged via PR #182 (squash `707237e` on `main`).** Types, FI accessors +
 conformance sweep, the projector/`resolve_tracks()` reducer, and the `CandidateAwareForecastSource` contract with the
 recap adapter's `fetch_requirement` / `expected_member_ids` and `RecapGatewayConfig.cycle_cadence_hours` are now on
-`main`. **This document now drives the SECOND and FINAL slice — T5–T8** (see *Build scope for THIS run*).
+`main`. **This document now drives the SECOND slice — T5–T7, with T8 SPLIT OUT** (see *Build scope for THIS run*).
+
+**SECOND SLICE COMMITTED 2026-08-18/19 (local, hold-at-PR) — T5–T7 only, `3481179` + fixer round `52a7c73`.**
+Track resolution, per-assignment assembly, and the runner seam are implemented and locked but **dormant**: nothing in
+`flows/run_forecast_cycle.py` calls any of the new T5–T7 entry points yet. **T8 (flow wiring, golden tests, docs) is
+NOT part of this commit** and is now recorded as a separately-scheduled follow-on build pass — a post-hoc scope split
+from what this document originally called an inseparable T5–T8 slice; see **D35** under *Open items → Requires owner
+re-ratification* for the reasoning and the open question the owner still needs to confirm.
 
 Phase 3 of the forecast-cycle redesign (`docs/design/forecast-cycle-redesign.md`, build-sequence item 3).
 This is the **one atomic phase** the redesign refuses to split: a per-`(track,station)` cycle has no coherent consumer
@@ -76,21 +83,28 @@ implementation own the mechanism.
 **Citations** were carried from the reviewed drafts and spot-verified against the worktree; the confirming review pass
 re-verifies them before READY.
 
-## Build scope for THIS run — T5–T8 (2026-08-18, second and final slice)
+## Build scope for THIS run — T5–T7 committed; T8 split out (2026-08-18, corrected 2026-08-19)
 
-**This run implements T5, T6, T7 and T8.** T1–T4 are **DONE and MERGED** — PR **#182**, squash **`707237e`** on
-`main`: `types/forcing_track.py` (the D1 domain types, the two additive `AssignmentFailureCause` members and the two
-new `StationUnavailableReason` members, plus T1's spec edits), the FI **per-time-step pre-collapse accessors** and the
-construction-time **conformance sweep**, `services/track_projection.py` (the pure projector **and** `resolve_tracks()`),
-and **`CandidateAwareForecastSource`** with `fetch_requirement` / `expected_member_ids` on the recap adapter together
-with `RecapGatewayConfig.cycle_cadence_hours`. **Do not rebuild, re-derive, re-litigate or "improve" any of it —
-consume it.** T1–T4's task entries below are retained as the specification the merged slice was built to, not as work.
+**CORRECTED 2026-08-19 (post-implementation-review fixer round; see D35 under *Open items → Requires owner
+re-ratification*).** This section originally read "This run implements T5, T6, T7 and T8" and argued the T5–T8 slice
+was inseparable. **What actually landed in this run is T5–T7 only** (`3481179`, fixer round `52a7c73`) —
+`services/track_resolution.py`, `services/track_assembly.py`, the `services/run_station_forecast.py` seam, and the FI
+accessor / NaN-gate changes. **T8 (flow wiring in `flows/run_forecast_cycle.py`, golden tests, docs) was NOT built in
+this run** and has zero call sites for any T5–T7 entry point today; the T5–T7 code stays dormant behind the existing
+`isinstance` dispatch until T8 lands (see the Fixer round's dormancy analysis, below). T8 remains fully specified as
+its own task in this plan and is now explicitly scoped as **a separately-scheduled follow-on build pass** — run as its
+own `implement` pass against the existing T8 task text, per the Fixer round's recommendation — not folded into this
+commit. **D35 records this split for owner re-ratification**, since the paragraph immediately below argued the
+opposite (inseparability) and that argument was overridden inside a fixer round rather than through a re-reviewed
+scope change to the READY plan.
 
-**This slice is the atomic core.** The T1–T4 cut was possible only because those tasks were dormant — types with no
-consumer, a reducer with no caller, an adapter capability nothing could invoke. **T5–T8 is genuinely inseparable:** a
-resolved cycle has no consumer until assignment-local assembly exists (T6), which has no consumer until the runner seam
-(T7), which is not reachable until flow wiring (T8) — and **T8 cannot activate any proper subset** of T5–T7. Expect
-**~3,000–4,000 lines**, with **T8 (~1,000–1,600)** dominating.
+**Original rationale for combining T5–T8 in one run (superseded in observable scope by the split above; retained for
+provenance — the argument was not wrong, it was outweighed post-hoc by dormancy: see D35).** The T1–T4 cut was
+possible only because those tasks were dormant — types with no consumer, a reducer with no caller, an adapter
+capability nothing could invoke. T5–T8 was argued to be genuinely inseparable: a resolved cycle has no consumer until
+assignment-local assembly exists (T6), which has no consumer until the runner seam (T7), which is not reachable until
+flow wiring (T8) — and T8 cannot activate any proper subset of T5–T7. Expect **~1,000–1,600 lines** for the remaining
+T8 slice on its own follow-on pass.
 
 **The safety property for THIS run is DIFFERENT and WEAKER than the first slice's, and must be stated honestly.** In
 the first slice everything but T2's sweep was dormant, so "the tree stays green" rested largely on unreachability. Here
@@ -111,7 +125,8 @@ elsewhere in this document):
   its red-first criterion are **removed**, not deferred. The per-feature `AT_MOST` limitation stays recorded as an
   **accepted cost in D10a**, with the revisit trigger below.
 
-**Exit gate for this run:** the per-task gate below applied to T5–T8, plus the whole-repo gate — `uv run pytest -q` at
+**Exit gate for this run:** the per-task gate below applied to **T5–T7** (T8's own per-task gate belongs to its
+follow-on pass, per the D35 split), plus the whole-repo gate — `uv run pytest -q` at
 **`passed >= 4284`** with **no baseline test regressing**; `pyright` **≤ 432** over `src/` via
 `tools/pyright_ratchet.py`; and `uv run ruff check` with **no new findings** beyond the **12 pre-existing `E501`s** in
 `alembic/versions/0037_calculated_station_formulas.py` (4) and
@@ -566,7 +581,7 @@ the 12 pre-existing ones already on `main`.
 
 **Measured baseline (2026-08-18, `main` `c81041e`, before any Phase 3 work):** `uv run pytest -q` = **4181 passed,
 15 skipped, 11 deselected** — the RECORD of what was measured **before T1–T4**. It is **NOT this run's floor**: PR #182
-(`707237e`) added T1–T4's own tests, so the floor for the T5–T8 run is the re-measured post-merge count: **4284 passed
+(`707237e`) added T1–T4's own tests, so the floor for the T5–T7 run (T8 split out, see D35) is the re-measured post-merge count: **4284 passed
 / 15 skipped / 15 deselected**, measured 2026-08-18 against `707237e`; `uv run pyright` over
 `src/` = **exactly 432**, i.e. precisely AT the ratchet, not above it
 (bare `uv run pyright` also reports 432 — zero is *not* the gate); `uv run ruff check` **exits 1** with 12 pre-existing
@@ -861,8 +876,9 @@ holds only for **T5–T8**: a resolved cycle has no consumer until assignment-lo
 proper subset. **T1–T4 is a separable capability/preparation slice** — types, FI accessors, the pure projector/reducer,
 and the source contract — that ships no behaviour change on its own. Estimated diff is dominated by **T4 (~700–1,100
 lines)** and **T8 (~1,000–1,600)**, with T5–T7 the next cluster. **Consequence for PR strategy only:** the **T1–T4 / T5–T8
-boundary is the single cleanest cut** — and the build **WAS** split there: T1–T4 merged as PR #182 (`707237e`); T5–T8
-is this run. The phase graph, the task list and the plan's structure are unchanged by that split.
+boundary is the single cleanest cut** — and the build **WAS** split there: T1–T4 merged as PR #182 (`707237e`); T5–T7
+landed in this run, with T8 further split out post-hoc (D35) rather than landing with T5–T7 as this section originally
+assumed. The phase graph, the task list and the plan's structure are unchanged by either split.
 
 ## Non-goals
 - Removing the legacy station-superset path (Phase 4).
@@ -917,6 +933,29 @@ a design fork; each changes a ratified decision's **observable consequence**, so
   scope on T2 and a **widened** FI boundary surface, funded for a code path that is currently **doubly** unreachable.
   *Plan author's recommendation: **(a)**.* Option (b) funds a boundary accessor for a path no model can reach today —
   precisely the gold-plating this document's reconstruction exists to avoid.
+- **D35-t8-scope-split** (new, 2026-08-19; raised by an independent post-implementation review pass, collides with the
+  *Build scope for THIS run* header's own "T5–T8 is genuinely inseparable" claim). *Old:* this document's own
+  "Build scope for THIS run" section stated unconditionally that the run implements T5, T6, T7 **and** T8 together,
+  and that T8 cannot activate any proper subset of T5–T7. *New fact:* the commit that actually landed
+  (`3481179` + fixer round `52a7c73`) implements **only** T5–T7; `flows/run_forecast_cycle.py` has zero references to
+  any new T5–T7 entry point, so the committed code is dormant behind the existing `isinstance` dispatch exactly as the
+  inseparability argument predicted it would need to be for a T1–T4-style dormant cut — the difference is this cut
+  was decided **inside a fixer round**, after the fact, rather than through a re-reviewed scope change to the READY
+  plan before implementation started. *Consequence — two options, and **this plan does not decide**:*
+  **(a)** **Ratify the split.** Accept T5–T7 as this run's actual, final scope; keep T8 in this plan document as a
+  fully-specified follow-on task, to be built in its own `implement` pass (the Fixer round's recommendation, given
+  T8's own risk profile — D11 preflight semantics, D26 freshness heartbeat, D30 group/per-track overlap, D28 retries,
+  and five documentation files — is materially different from a fixer patch). *Cost:* Plan 151 as a whole spans two
+  separate implementation passes instead of one, and the original "atomic, T8-cannot-activate-a-subset" framing this
+  document argued for T5–T8 no longer describes what was actually built.
+  **(b)** **Reject the split.** Hold this commit un-merged until a fresh, combined T5–T8 pass lands together, as the
+  original *Build scope for THIS run* section intended. *Cost:* T8's ~1,000–1,600 lines (preflight, freshness,
+  overlap, retries, docs) get built and reviewed under the same time pressure that produced the two blockers and six
+  majors the fixer round already had to resolve in T5–T7 alone, with no intervening independent review checkpoint.
+  *Plan author's recommendation: **(a)**.* The T5–T7 code is dormant and the golden tests keep control-only forecasting
+  green regardless of which option is chosen (see *Build scope for THIS run*); splitting lets T8 get its own
+  red-first/independent-Codex-review loop instead of inheriting a fixer round's time pressure, which is the workflow
+  this repo's own `docs/workflow.md` § Multi-Model Review mandates for non-trivial changes.
 
 **Resolved (owner-ratified 2026-08-10 unless noted):**
 - **D1-types-location** — new `types/forcing_track.py`; `ModelRunContext` stays service-local (Plan 148).
@@ -1059,3 +1098,116 @@ a design fork; each changes a ratified decision's **observable consequence**, so
 **Verified (2026-08-18, no longer an assumption):** `AssignmentFailureCause` (`services/run_station_forecast.py:72`,
 8 members) is consumed by **no** exhaustive `match` in the repo — the only nearby `match` is on the `AssignmentOutcome`
 union (`:497-502`), and every `src/` use is a construction site. The two additive members need **no** new match arms.
+
+## Fixer round (post-implementation review fold-in, 2026-08-18)
+An independent Codex pass over the committed T5–T7 diff (`3481179`) plus a Claude design pass raised two blockers,
+six majors, and two minors. All findings against T5–T7 (the committed slice) are resolved below; the one finding
+about T8 is recorded as **explicitly deferred**, not resolved, for the reason stated.
+
+- **Blocker — T8 (flow wiring, golden tests, docs) is absent.** Correct as reported: `flows/run_forecast_cycle.py`
+  has zero references to `resolve_candidate`/`commit_track`/`assemble_assignment_inputs`/
+  `run_all_station_forecasts_per_track` — only tests call T5–T7. **NOT resolved in this fixer round, by design.**
+  T8 is its own phase in the plan's dependency graph (`depends_on: ["T7"]`), separately estimated at ~1,000–1,600
+  diff lines (dominant among all eight tasks), and its own task text specifies a materially different risk profile
+  than a fixer patch is suited for: precise cross-cycle preflight semantics (D11), a fail-loud freshness heartbeat
+  that must honour Plan 116's existing contract (D26) at every new fatal exit, a group/per-track overlap rule
+  (D30-overlap-deferral) with a demonstrated history of getting the direction wrong during design review, configured
+  retries threaded from `RecapGatewayConfig.max_retries` (D28), and five documentation files. Building this from a
+  review-findings list — without the red-first/independent-Codex-review loop this repo's own workflow mandates for
+  non-trivial changes (`docs/workflow.md` § Multi-Model Review; `CLAUDE.md` "Multi-model review is mandatory for all
+  non-trivial plans and patches") — risks exactly the kind of silent contract violation (D26/D30) the plan spent
+  substantial review effort pinning down precisely. **Recommendation:** run T8 as its own `implement` pass against
+  this plan's existing T8 task text (already fully specified, phase-gated, with its own red-first criteria and exit
+  gate) rather than folding it into a fixer round on top of T5–T7.
+- **Blocker — all-members-at-horizon not enforced (staggered valid_times).** `_station_complete` compared per-member
+  step *counts*, so member 0 covering days 1–2 and member 1 covering days 3–4 each individually satisfied a two-step
+  requirement while sharing no common valid_time — `_filter_and_cap_daily_records`'s downstream earliest-N-times cap
+  would then silently retain one member's days and drop the other member entirely. **Fix:** `reduced_daily_step_times`
+  (renamed from `reduced_daily_step_counts`, which is now a thin wrapper) returns the actual valid_time *set* per
+  `(parameter, member_id)`; `_station_complete`'s ENSEMBLE branch now requires every expected member's earliest
+  `horizon.value` valid_times to be the *identical* set, not just of adequate count. The runner's defensive
+  `_assert_consistent_member_set` also gained an `expected_member_ids` parameter (threaded through
+  `ForcingContract.expected_member_ids` ← `assemble_assignment_inputs(expected_member_ids=...)`) so a single-feature
+  or uniformly-partial-across-features model is checked against the source's ground-truth member set, not merely
+  against itself. Locked by `test_staggered_member_valid_times_rejects_candidate_and_walks_back`
+  (`tests/unit/services/test_track_resolution.py`) and
+  `test_single_feature_partial_ensemble_checked_against_expected_member_ids`
+  (`tests/unit/services/test_run_station_forecast_per_track.py`); both proven RED against the pre-fix code.
+- **Major — typed `RecapTransientError` was not classified TRANSIENT.** `resolve_candidate` let a
+  `RecapTransientError` (raised only once the source's own retry budget is exhausted) propagate uncaught instead of
+  walking back like an `ABSENT_AT_CYCLE` candidate. **Fix:** `resolve_candidate` now catches `RecapTransientError`
+  specifically, logs `nwp.candidate_rejected` with `reason="transient_error"`, and continues to the next older
+  candidate; every other exception still propagates uncaught (D31). Locked by
+  `test_transient_error_walks_back_to_older_complete_candidate` (RED against pre-fix), paired with
+  `test_fatal_auth_error_still_propagates_uncaught` (a regression guard — passes before and after; proves the
+  carve-out did not widen to swallow fatal errors).
+- **Major — `RawFetchOutcome.missing_polygon_column` was discarded (D27).** A station the adapter explicitly excluded
+  for a missing HRU polygon column fell through to the generic `NO_DATA_AT_CYCLE`, losing the diagnostic D27 was
+  written to preserve. **Fix:** `AcceptedCandidate` gained a `missing_polygon_column: frozenset[StationId]` field,
+  populated in `resolve_candidate` from the accepted outcome; `commit_track`'s per-station fallback checks it before
+  defaulting to `NO_DATA_AT_CYCLE`. Locked by `test_missing_polygon_column_station_gets_specific_reason`; proven RED
+  against the pre-fix code.
+- **Major — `commit_track` could "resurrect" unrelated pre-existing rows.** Readback was keyed only on
+  `(station_id, nwp_source, cycle_time)`, so a station absent from *this* candidate's results but with old rows
+  already in the store for the same key (a different track, or a legacy write) would be misclassified
+  `StationTrackAvailable`. **Fix:** readback is now attempted only for stations in
+  `accepted.complete_station_records`; every other in-scope station is classified from `incomplete_at_cycle` /
+  `missing_polygon_column` / the generic fallback without touching the store. `commit_track` also gained a
+  `track_features` parameter so readback is filtered to this track's own features. Locked by
+  `test_commit_track_does_not_resurrect_unrelated_preexisting_rows`; proven RED against the pre-fix code.
+- **Major — one scalar horizon capped every feature.** `build_future_dynamic_frame` /
+  `_filter_and_cap_daily_records` applied one `forecast_horizon_steps` to every parameter, so a precip=2/temp=10
+  assignment retained 10 values for both. **Fix:** both functions accept an optional `feature_horizons: dict[str,
+  int]` that caps each parameter to its own horizon independently (`None`, the default and every legacy caller,
+  preserves the old scalar behaviour byte-for-byte); `assemble_assignment_inputs` now derives and passes it. Locked
+  by `test_per_feature_horizon_caps_each_column_independently` (precip retains 2 non-null values, temp retains 10 on
+  the same 10-row frame); proven RED against the pre-fix code.
+- **Major — warm-up state was loaded twice.** `assemble_assignment_inputs` (T6) built a full `ModelRunContext`
+  including a `load_warm_up_state` call, which `_run_single_model` (T7) then discarded and reloaded from scratch —
+  doubling the store read and moving the first read's failure mode outside the assignment-local
+  `WARM_UP_LOAD_FAILED` path. **Fix:** `ReadyContext` now carries loose `inputs` / `observation_staleness_hours` /
+  `nwp_age_hours` fields instead of a prebuilt `ModelRunContext`; `assemble_assignment_inputs` no longer loads
+  warm-up state at all — `_run_single_model`'s existing assignment-local load is the sole owner. Locked by
+  `test_assembly_and_runner_share_exactly_one_warm_up_load` (asserts `state_store.accessed_model_ids == [_MODEL_HIGH]`
+  over the full T6→T7 pipeline); proven RED against the pre-fix code (the pre-fix pipeline reads state twice).
+- **Minor — the NaN-gate slice lacked its own lock.** T6's red-first criterion asserts the past-/future-known
+  tolerance-map slice at *both* the `InputSeries`-construction site and the NaN-gate site independently, but only
+  the construction-site test existed; the gate-side slice (already correct, landed under T2) had no test that would
+  fail if it regressed. **Fix (test-only — no code defect):** two new tests in
+  `tests/unit/adapters/test_forecast_interface_adapter_nan_gate.py` — trailing NaNs outside a two-step feature's
+  declared horizon must not trip `max_nan=0`, paired with a NaN inside the declared horizon that still must.
+- **Minor — `_forecast_result_to_records` didn't document which legacy conversion site it mirrors.** **Fix:** a
+  docstring on the function now names the pre-extracted-dict site (`flows/run_forecast_cycle.py:1356`) it matches,
+  not the gridded/extracted site (`:1275`).
+
+**Test soundness:** every correctness-fix locking test above was confirmed to fail against the pre-fix code by
+reverting the `src/` half of the fix (`git apply -R` on the isolated production-code patch, keeping the new tests),
+running the affected tests (8 of 9 new/changed locking tests failed as expected; the ninth,
+`test_fatal_auth_error_still_propagates_uncaught`, is a regression-guard pair that is correctly green both before and
+after), then restoring the fix and re-confirming full green.
+
+**Exit gate:** `uv run pytest -q` full suite green, `uv run pyright src/` at 404 (ratchet ceiling 432, no new
+findings), `uv run ruff check .` clean beyond the 12 pre-existing alembic `E501`s.
+
+## Second fixer round (doc-only, 2026-08-19)
+An independent Codex pass over the committed diff (including the first fixer round's own addendum, `52a7c73`) raised
+one major: the *Build scope for THIS run* header (originally lines 79–93) stated unconditionally that "This run
+implements T5, T6, T7 and T8" and that T8 "cannot activate any proper subset" of T5–T7, while the Fixer round section
+appended 60+ lines later self-disclosed that T8 was "NOT resolved in this fixer round, by design." A reader who stops
+at the header is told all four tasks land together; only the addendum reveals the actual T5–T7-only scope. The split
+itself was correct and well-reasoned (T5–T7 is dormant behind the existing `isinstance` dispatch, so control-only
+forecasting stays green regardless), but it was decided unilaterally inside a post-hoc fixer-round note rather than
+through a re-confirmed scope change to the READY plan.
+
+- **Major — scope-statement / actual-diff mismatch.** **Fix (doc-only — no code defect):** the *Build scope for THIS
+  run* header now states the actual committed scope (T5–T7; T8 split out) instead of the original T5–T8 claim; the
+  original inseparability argument is retained for provenance but marked superseded in observable scope; the *Status*
+  section's "SECOND SLICE LANDED" line and the *Exit gate for this run* line were corrected to match; and a new
+  **D35-t8-scope-split** entry was added under *Open items → Requires owner re-ratification* so the human owner has an
+  explicit point to confirm the split before a fresh `implement` pass targets T8, per this repo's own multi-model
+  review convention (`docs/workflow.md` § Multi-Model Review). No `src/` or `tests/` files changed — this finding was
+  entirely a plan-document consistency defect, not a code defect, so no locking test applies.
+
+**Exit gate:** unchanged from the first fixer round (no code touched); re-confirmed `uv run pytest -q` full suite
+green, `uv run pyright src/` at ratchet ceiling, `uv run ruff check .` clean beyond the 12 pre-existing alembic
+`E501`s.

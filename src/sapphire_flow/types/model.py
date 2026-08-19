@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl  # noqa: TC002
 
-from sapphire_flow.types.enums import EnsembleMode
+from sapphire_flow.types.enums import EnsembleMode, ForcingRoute
 
 # Runtime import (not TYPE_CHECKING-only): StoredArtifact subclasses
 # `tuple[ArtifactId, str]` below, and a class's base-list is evaluated at
@@ -70,6 +70,12 @@ class StationModelInputs:
     issue_time: UtcDatetime
     forecast_horizon_steps: int
     time_step: timedelta
+    # Plan 151 D10: the EXPLICIT legacy-vs-per-track discriminant, set by
+    # whichever assembler built these inputs. The FI boundary reads it to
+    # decide whether D9's per-variable ``future_steps`` slice applies; the
+    # legacy superset route must stay byte-for-byte unchanged, so it is the
+    # default and every incumbent construction site keeps it.
+    forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
