@@ -1446,17 +1446,29 @@ majors, and one minor — all against T8a's own committed code, not a T5–T7 re
   `RecapAuthError`/`RecapConfigurationError`/`RecapPayloadIntegrityError`/a plain `RuntimeError`, asserting exactly
   one call each even with a generous `retries=3` budget); proven RED against the pre-fix code (all four raised the
   wrong exception type after a spurious retry instead of failing on the first call).
-- **Major — `_station_complete`'s SINGLE branch ignored member identity.** It took the max row-count over EVERY
-  `member_id` present in the reduced series, so a stray/foreign member (e.g. a mis-tagged member 7, or a second run
-  mixed into the same candidate) could satisfy completeness even though the source's OWN declared SINGLE identity
-  (`expected_member_ids` — `{0}` for Recap) never appeared, or appeared short. **Fix:** the SINGLE branch now filters
-  to `member_id in expected_member_ids` before taking the max, exactly mirroring how the ENSEMBLE branch already
-  treats `expected_member_ids` as authoritative. The test fixtures' `_forecast` helper default changed from
-  `member_ids=[None]` to `member_ids=[0]` (Recap's source-derived SINGLE identity) so every existing SINGLE-mode test
-  — which already passed `expected_member_ids=frozenset({0})` — continues to mean what it always claimed to mean.
-  Locked by `test_single_mode_wrong_member_rejects_candidate_and_walks_back` and
-  `test_single_mode_ignores_a_longer_foreign_member_sharing_the_same_candidate`
-  (`tests/unit/services/test_track_resolution.py`); both proven RED against the pre-fix code.
+- **Major — `_station_complete`'s SINGLE branch did not enforce the EXACT source-derived member set.** It originally
+  took the max row-count over EVERY `member_id` present, so a stray/foreign member (e.g. a mis-tagged member 7, or a
+  second run mixed into the same candidate) could satisfy completeness even though the source's OWN declared SINGLE
+  identity (`expected_member_ids` — `{0}` for Recap) never appeared, or appeared short. A first fix FILTERED to
+  `member_id in expected_member_ids` before taking the max; a follow-up review showed filtering is not the contract —
+  the spec (`docs/spec/types-and-protocols.md`, "carries member_ids == source.expected_member_ids") requires
+  EQUALITY. Under filtering a candidate carrying a COMPLETE member 0 **beside** a COMPLETE foreign member 9 was
+  ACCEPTED, both runs were persisted, SINGLE assembly silently dropped the foreign run
+  (`operational_inputs._pivot_nwp_records`), and — the candidate having been accepted — walk-back to a clean older
+  candidate never happened. **Fix:** the mode branch is gone; ONE gate now serves both modes — the present (non-null)
+  member set must EQUAL `expected_member_ids`, then each expected member's series must reach the horizon at the same
+  retained valid_times (degenerate for a one-element SINGLE identity). Rejection is walk-back-eligible, exactly like
+  a short series. `resolve_candidate` additionally rejects an EMPTY `expected_member_ids` with a `ValueError` (a
+  source declaring no member identity is fatal config, not a candidate outcome). The test fixtures' `_forecast`
+  helper default changed from `member_ids=[None]` to `member_ids=[0]` (Recap's source-derived SINGLE identity) so
+  every existing SINGLE-mode test — which already passed `expected_member_ids=frozenset({0})` — continues to mean
+  what it always claimed to mean. Locked by `test_single_mode_wrong_member_rejects_candidate_and_walks_back`,
+  `test_single_mode_rejects_a_candidate_carrying_a_complete_foreign_member`,
+  `test_single_mode_short_member_with_a_longer_foreign_member_rejected` and
+  `test_foreign_member_candidate_walks_back_and_never_persists` (the last asserting against the STORE that no row of
+  the rejected candidate was persisted) — `tests/unit/services/test_track_resolution.py`; the two both-complete cases
+  proven RED against the filtering implementation (the fresh foreign-member candidate was accepted at
+  `2026-01-10T06:00` instead of walking back to `2026-01-10T00:00`).
 - **Minor — the public flow parameter was typed `object | None` instead of `ForcingResolutionPolicy | None`.**
   Every other `run_forecast_cycle_flow` parameter is deliberately `object`-typed because it is a Protocol-typed
   injection point Prefect's pydantic-backed parameter validation cannot usefully check; `ForcingResolutionPolicy` is

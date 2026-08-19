@@ -28,7 +28,6 @@ from sapphire_flow.preprocessing.converters import (
 )
 from sapphire_flow.services.operational_inputs import reduced_daily_step_times
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import EnsembleMode
 from sapphire_flow.types.forcing_track import (
     RawFetchStatus,
     StationTrackAvailable,
@@ -95,24 +94,30 @@ def _station_complete(
     this station's series must reach ``fetch_horizons[f]`` steps (counted in
     the track's ``time_step`` units, after the SAME daily-bucket reduction
     assembly applies) and carry EXACTLY ``expected_member_ids`` at that
-    horizon — for an ENSEMBLE track, ALL AT THE SAME retained valid_times;
-    for a SINGLE-mode track, the single source-derived run identity (Recap:
-    ``{0}``, review fold-in — major).
+    horizon, all at the SAME retained valid_times.
 
-    The ENSEMBLE check is against the retained-TIMESTAMP SET, not a bare
+    ONE gate serves both modes (review fold-in — major): the present
+    member set must EQUAL ``expected_member_ids``, never merely contain it.
+    ENSEMBLE checks the full source-derived set; SINGLE checks its own
+    one-element identity (Recap: ``{0}``), for which the shared-valid_time
+    requirement is degenerate. FILTERING foreign members out before
+    judging — instead of requiring equality — accepts a candidate carrying
+    a complete member 0 BESIDE a complete foreign member 9: both runs are
+    then persisted, downstream SINGLE assembly silently drops the foreign
+    one (``operational_inputs._pivot_nwp_records``), the exact-identity
+    contract (``docs/spec/types-and-protocols.md``) is violated, and — the
+    candidate having been ACCEPTED — walk-back to a clean older candidate
+    never happens. A foreign member present makes the candidate incomplete
+    and therefore walk-back-eligible, exactly like a short series.
+
+    The horizon check is against the retained-TIMESTAMP SET, not a bare
     count (review fold-in — blocker): member 0 covering days 1-2 and member
     1 covering days 3-4 each individually satisfy a two-step COUNT, but
     ``_filter_and_cap_daily_records``'s downstream earliest-N-times cap
     would then retain only days 1-2 (the union's earliest two) and silently
     DROP member 1 entirely from the assembled frame. Requiring every
     expected member to share the identical earliest-``horizon.value``
-    valid_time set is what a genuinely complete ensemble candidate means.
-
-    The SINGLE check is against ``expected_member_ids`` too (review fold-in
-    — major): counting the max over EVERY member_id present would accept a
-    candidate whose only qualifying series sits under a stray member (e.g.
-    7) or a run this source never declared as its SINGLE identity, silently
-    delivering the wrong run's data downstream.
+    valid_time set is what a genuinely complete candidate means.
     """
     for feature, horizon in track_request.fetch_horizons.items():
         feature_records = [r for r in records if r.parameter == feature]
@@ -121,21 +126,10 @@ def _station_complete(
             time_step=track_request.key.time_step,
             issue_time=issue_time,
         )
-        if track_request.key.ensemble_mode is EnsembleMode.SINGLE:
-            single_run_times = {
-                member_id: times
-                for (_, member_id), times in times_by_key.items()
-                if member_id in expected_member_ids
-            }
-            if not single_run_times or max(
-                len(t) for t in single_run_times.values()
-            ) < (horizon.value):
-                return False
-            continue
-
-        # An ENSEMBLE track's member axis is never `None` (that is the
-        # SINGLE-mode absence-of-a-member-axis case, handled above) --
-        # filtering it out here keeps the comparison against
+        # A fetched track's member axis is never `None` -- `member_id=None`
+        # belongs to the separate deterministic snow channel
+        # (`SnowForecastSource`), which never flows through
+        # `fetch_requirement`. Dropping it here keeps the comparison against
         # `expected_member_ids: frozenset[int]` type-honest rather than
         # comparing against a `set[int | None]` that can never equal it.
         member_times = {
@@ -210,6 +204,14 @@ def resolve_candidate(
         raise ValueError(
             "cycle_cadence_hours and max_cycle_age_hours must both be > 0, got "
             f"{cycle_cadence_hours!r}, {max_cycle_age_hours!r}"
+        )
+    if not expected_member_ids:
+        # A source that declares NO member identity cannot express the
+        # exact-set completeness contract -- fatal config, never a
+        # walk-back-eligible candidate outcome.
+        raise ValueError(
+            "expected_member_ids must be non-empty (source-derived member "
+            f"identity) for track {sorted(track_request.key.features)}"
         )
     candidate_cycle = _floor_to_cadence(nominal_now, cycle_cadence_hours)
     nominal_candidate = candidate_cycle
