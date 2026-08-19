@@ -333,6 +333,39 @@ Three distinct concepts live under "image tagging" in this repo. They are not in
 - Operators set the `${VERSION}` env var (via `.env` or compose overrides) when deploying a new build, then run the upgrade procedure above.
 - This is the only image reference in the stack that moves on a normal deploy cadence.
 
+### Git version tags are BEST-EFFORT and gappy — do not treat them as a release ledger
+
+`git tag v0.1.x` on `main` after merge (CLAUDE.md § Version Bumping) is a convenience, not an inventory.
+Two things make the tag series legitimately incomplete, and both are expected rather than bugs:
+
+- **Versions claimed by a branch may never reach `main`.** Each branch computes its next patch from its
+  own `pyproject.toml`, so two branches routinely claim the same number; whichever merges second gets
+  re-bumped, and the number it originally claimed is simply skipped. `0.1.768` and `0.1.770` are examples
+  — both were claimed, neither exists on `main`.
+- **Tagging is manual and often skipped.** Several merges land without anyone tagging.
+
+Consequences worth knowing before you go looking for a missing tag:
+
+- **A gap in the tag series does not mean a lost release.** The authoritative version of any commit is
+  the `version` field in its own `pyproject.toml`; read that, not the nearest tag.
+- **`bump-my-version` compares against the last *tagged* version** and will print
+  `Specified version (0.1.77x) does not match last tagged version (0.1.76y)`. That is **noise**, not a
+  failure — the bump still applies. The thing that genuinely breaks the tool is `[tool.bumpversion]
+  current_version` drifting from the real `version`; see below.
+- **A tag may point at a commit carrying a different version.** `v0.1.768` points at the Plan 186 merge,
+  which actually carries `0.1.769`: the branch's final version was 768, but the merge resolved the
+  version conflict toward `main`'s higher number. Left in place deliberately — nothing keys on tags, and
+  moving a published tag is more disruptive than the inaccuracy it fixes.
+
+**If you need a real release ledger**, derive it from `main`'s history rather than from tags:
+
+```
+for c in $(git log --reverse --format=%H <since>..origin/main); do
+  printf "%s %s\n" "$(git log -1 --format=%h $c)" \
+    "$(git show $c:pyproject.toml | grep -m1 '^version')"
+done
+```
+
 ### Third-party image references — digest pins, not version tags
 
 Third-party images are pinned by **manifest-list digest** (`image:tag@sha256:...`) rather than by a floating tag. The full list and policy live in `security.md` § Supply chain → Image pinning; the operational shape is:
