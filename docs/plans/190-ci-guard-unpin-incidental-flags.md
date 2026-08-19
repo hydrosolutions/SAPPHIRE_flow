@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: MOSTLY-SUPERSEDED — T1 and T4 landed on main via a parallel session; only T2 remains
 created: 2026-08-19
 revised: 2026-08-19
 reviewed: independent Codex pass 2026-08-19 — AGREE-WITH-CHANGES on T4 (its corrections adopted verbatim)
@@ -7,14 +7,38 @@ plan: 190
 title: Unpin the CI unit-step guard from flags it does not care about
 scope: Fix the guard assertion that has held main red across four merges, and remove the recurrence. Explicitly NOT redesigning the Plan 185 guard, NOT touching the credential-absence logic, NOT changing what CI runs.
 depends_on: []
-blocks: [every merge to main]
+blocks: []  # was: every merge to main — no longer true, T1+T4 are in
 source: observed CI failure on d532a130, 4ae7cf82, e74e3e1c (2026-08-18/19)
 ---
 
 # Plan 190 — unpin the CI unit-step guard from flags it does not care about
 
 ## Status
-**DRAFT.** Not for implementation until the owner confirms.
+**MOSTLY SUPERSEDED (2026-08-19).** A parallel session implemented T1 and T4 on `main` while this plan sat
+in DRAFT. **Do not re-implement them** — this doc is retained for the reasoning and the Codex review, not as
+a work list. Verified against `main` @ `fb8070cf`:
+
+| Task | State | Evidence on main |
+|---|---|---|
+| **T1** unpin the guard | ✅ **landed** | `test_ci_credential_absence_guard.py` now asserts intent (`uv run pytest`, `tests/unit/`, `--cov=src/sapphire_flow`) **and** carries `test_last_step_is_not_narrowed_to_a_subset` (rejects `-k`, `-m`, subset paths) — the property-based shape T1 argued for |
+| **T2** back-pointer in ci.yml | ❌ **NOT done** | grep for `test_ci_credential_absence_guard` in `.github/workflows/ci.yml` returns nothing. **The only outstanding work in this plan.** |
+| **T3** leave the `:301` pin | ✅ decision stands | unchanged; no action was required |
+| **T4** apt step deadline | ✅ **landed** | `timeout-minutes: 5` + `Acquire::Retries=3` + `Acquire::http::Timeout=30` (plus an explicit `https::Timeout` and `set -euo pipefail`) in `ci.yml` (both jobs) and `integration-nightly.yml` — all three occurrences |
+
+**T4 did what it promised and did NOT fix the cause.** It converts a 25-minute unattributed cancellation into
+a ~5-minute failure naming the step — confirmed live on `main` `fb8070cf` (step 4 failed at 5m12s) and on the
+Plan 162 branch (both `unit` and `integration`). But the stall continues: package fetches from
+`azure.archive.ubuntu.com` creep rather than hang (4m40s between two packages in one run), so no transport
+timeout trips and the retries never fire. **This vindicates the precision Codex insisted on** — the evidence
+only ever showed the step ceasing observable *progress*, never that a socket had hung. Remaining apt failures
+are runner→mirror throughput, which no apt flag fixes; the durable options are caching those five packages or
+baking them into an image. **Out of scope here** — recorded so the next person does not add more flags.
+
+**Process note, earned twice today.** This plan sat DRAFT while another session shipped the same work, and
+separately that session merged `main` into `fix/rehearsal-is-called-rendering` while this one did the same
+locally (identical trees; the push was rejected as non-fast-forward). Both losses were duplicated effort, not
+damage. T2 — one comment naming the guard from the workflow it constrains — is precisely the cheap signal
+whose absence causes this class of collision.
 
 **Urgency:** `main` is red and has been across four consecutive merges. Every PR branched from `main`
 inherits the failure, so no one can get a clean CI signal on their own work — including the restore-
