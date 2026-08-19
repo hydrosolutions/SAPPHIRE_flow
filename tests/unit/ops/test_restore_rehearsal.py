@@ -210,7 +210,16 @@ def _write_fake_docker(
                 exit 0
                 ;;
               *"pipeline_health_id_seq"*)
-                echo "{seq_last_value}|{seq_is_called}"
+                # Emulates the real query's output shape: next|last|0-or-1.
+                # NOT `last|t`. Postgres renders a boolean as `t` only when
+                # psql displays a boolean COLUMN; `||` casts to text and
+                # yields `true`. Fakes that echoed `t` are why the live run
+                # was the first thing to catch that mismatch.
+                if [ "{seq_is_called}" = "t" ]; then
+                  echo "$(({seq_last_value} + 1))|{seq_last_value}|1"
+                else
+                  echo "{seq_last_value}|{seq_last_value}|0"
+                fi
                 exit 0
                 ;;
               *"coalesce(max(id), 0) FROM pipeline_health"*)
@@ -381,6 +390,46 @@ class TestEmptyAccessTokens:
         assert "zero rows" in result.stderr
         assert len(_rm_calls(args_log)) == 1, (
             "teardown must still happen when a content assertion fails mid-way"
+        )
+
+
+class TestSequenceValueIsComputedInSql:
+    """Regression guard for the defect the live mac-mini run caught, which
+    every fake had hidden: Postgres renders a boolean as `t` only when psql
+    DISPLAYS a boolean column. `||` casts to text and yields `true`, so a
+    bash comparison against "t" never matched, next_val was computed as
+    last_value instead of last_value + 1, and a healthy sequence
+    (last_value == max_id, the normal state after the setval every good dump
+    restores) was reported as a collision -- a false positive on EVERY good
+    backup.
+
+    These assertions read the script itself rather than running it, because
+    no fake can prove this: a fake decides its own output format, which is
+    precisely the thing that was wrong."""
+
+    def _script(self) -> str:
+        return (
+            Path(__file__).resolve().parents[3] / "scripts" / "restore-rehearsal.sh"
+        ).read_text()
+
+    def test_next_value_is_computed_by_sql_not_bash(self) -> None:
+        script = self._script()
+        assert (
+            "CASE WHEN is_called THEN last_value + 1 ELSE last_value END" in script
+        ), (
+            "the next sequence value must be computed in SQL, where is_called "
+            "is a real boolean, not re-derived in bash from a rendered string"
+        )
+
+    def test_is_called_is_cast_to_int_not_compared_as_text(self) -> None:
+        script = self._script()
+        assert "is_called::int" in script, (
+            "is_called must be emitted as an integer; its TEXT rendering "
+            "differs between psql display (t) and cast (true)"
+        )
+        assert '"${is_called}" == "t"' not in script, (
+            'comparing the rendered boolean against "t" is the exact bug '
+            'the live run caught -- the real query yields "true"'
         )
 
 

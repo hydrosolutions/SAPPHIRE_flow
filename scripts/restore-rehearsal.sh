@@ -159,25 +159,41 @@ seq_regclass="$(psql_exec "SELECT to_regclass('pipeline_health_id_seq')" "${DB_N
     || fail "pipeline_health_id_seq existence check query failed"
 [[ -n "${seq_regclass}" ]] || fail "pipeline_health_id_seq does not exist (to_regclass returned null) — cannot run the sequence-collision check"
 
-seq="$(psql_exec "SELECT last_value || '|' || is_called FROM pipeline_health_id_seq" "${DB_NAME}")" \
+# SQL computes the next value, and every field is emitted as an INTEGER.
+#
+# This is deliberate. An earlier revision selected `last_value || '|' ||
+# is_called` and branched in bash on `is_called == "t"` — which is wrong
+# against a real database, and the live run on the mac-mini proved it:
+# Postgres renders a boolean as `t` only when psql DISPLAYS a boolean
+# column; casting it to text (which `||` does implicitly) yields `true`.
+# Verified on the production database:
+#
+#     SELECT true          ->  t        (psql display form)
+#     SELECT true::text    ->  true     (what `||` actually produces)
+#     the script's query   ->  1362|true
+#
+# So the bash comparison never matched, next_val was computed as last_value
+# instead of last_value + 1, and a perfectly healthy sequence (last_value ==
+# max_id after the `setval(max, true)` every good dump restores) was
+# reported as a collision. That is a FALSE POSITIVE on every healthy
+# backup — a rehearsal that always fails is worse than no rehearsal.
+#
+# The unit-test fakes emitted `t`/`f`, copying psql's display form rather
+# than what the real query returns, so the suite stayed green throughout.
+# Emitting integers removes the rendering question from the shell entirely:
+# there is no display-vs-cast ambiguity for `1` and `0`.
+#
+# next_val semantics: when is_called is true, nextval() already handed out
+# last_value, so the next call emits last_value + 1; when false, the next
+# call emits last_value verbatim.
+seq="$(psql_exec "SELECT (CASE WHEN is_called THEN last_value + 1 ELSE last_value END) || '|' || last_value || '|' || is_called::int FROM pipeline_health_id_seq" "${DB_NAME}")" \
     || fail "pipeline_health_id_seq query failed"
-last_value="${seq%%|*}"
-is_called="${seq##*|}"
+IFS='|' read -r next_val last_value is_called_int <<< "${seq}"
+[[ "${next_val}" =~ ^[0-9]+$ && "${last_value}" =~ ^[0-9]+$ && "${is_called_int}" =~ ^[01]$ ]] \
+    || fail "pipeline_health_id_seq returned an unparseable row: '${seq}' (expected next|last|0-or-1)"
 max_id="$(psql_exec "SELECT coalesce(max(id), 0) FROM pipeline_health" "${DB_NAME}")" \
     || fail "pipeline_health max(id) query failed"
-# The value the NEXT nextval() call on this sequence will emit: last_value
-# itself when is_called=false (nextval() has never been called against this
-# restored state, so the first call returns last_value verbatim), or
-# last_value+1 when is_called=true (nextval() already handed out
-# last_value, so the next call advances past it). An earlier round of this
-# check only handled the is_called=false branch, silently missing a real
-# collision: a restored is_called=true sequence whose last_value+1 still
-# equals an existing row's id.
-if [[ "${is_called}" == "t" ]]; then
-    next_val=$((last_value + 1))
-else
-    next_val="${last_value}"
-fi
+[[ "${max_id}" =~ ^[0-9]+$ ]] || fail "pipeline_health max(id) unreadable: '${max_id}'"
 # `-le`, not `-eq`. A sequence that was never advanced is the single most
 # common real restore defect, and an equality-only predicate exempts it
 # entirely: with the sequence at 1 and rows up to 5, next_val=1 != 5 passes,
@@ -187,7 +203,7 @@ fi
 # unaffected: a healthy dump restores `setval(max_id, true)` -> next_val =
 # max_id + 1, and an empty table has max_id = 0 (coalesce) < next_val = 1.
 if [[ "${next_val}" -le "${max_id}" ]]; then
-    fail "pipeline_health_id_seq: next nextval() (${next_val}) is at or below MAX(pipeline_health.id) == ${max_id} — the next insert would collide on the primary key (last_value=${last_value}, is_called=${is_called})"
+    fail "pipeline_health_id_seq: next nextval() (${next_val}) is at or below MAX(pipeline_health.id) == ${max_id} — the next insert would collide on the primary key (last_value=${last_value}, is_called=${is_called_int})"
 fi
 
 # Plausibility only — the restore container cannot reach production
