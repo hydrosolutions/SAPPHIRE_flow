@@ -72,10 +72,34 @@ risk."* 7.0 < 8.0, and the test emitted its own `bafu_lindas_lag.gap_under_margi
 **Not urgent, and say so.** 4 min < 7 min, so no slot can currently slip between polls — the guarantee
 holds; the headroom shrank. This is a margin restoration, not an incident.
 
-**Fix.** Max cyclic inter-poll gap **≤3 min** (2.33× on 7.0), minimum still **≥3 min**, every minute
-still non-divisible by 5. A satisfying list:
-`1,3,6,8,11,13,16,18,21,23,26,28,31,33,36,38,41,43,46,48,51,53,56,58` — 24 runs/hour, cyclic gaps 2–3 min
-including the `:58 → :01` wrap.
+**Fix.** Max cyclic inter-poll gap **≤3 min** (2.33× on 7.0), every minute still non-divisible by 5, and
+the minimum gap relaxed from ≥3 to **≥2 min**. A satisfying list:
+`1,3,6,8,11,13,16,18,21,23,26,28,31,33,36,38,41,43,46,48,51,53,56,58` — 24 runs/hour, gaps alternating
+2 and 3 min, wrap `:58 → :01` = 3 min, no minute divisible by 5, and Prefect parses it.
+
+**Why the minimum gap must be relaxed — it is not a preference** (folded review finding; the first draft
+kept `≥3` and proposed a list that violated it, which the reviewer caught arithmetically). Requiring
+`max ≤ 3` *and* `min ≥ 3` forces **every** gap to be exactly 3, i.e. a single residue class mod 3 — and
+every such class contains exactly four multiples of 5:
+
+```
+minutes ≡ 0 (mod 3) -> multiples of 5:  0, 15, 30, 45
+minutes ≡ 1 (mod 3) -> multiples of 5: 10, 25, 40, 55
+minutes ≡ 2 (mod 3) -> multiples of 5:  5, 20, 35, 50
+```
+
+So `max ≤ 3` + `min ≥ 3` + "no minute divisible by 5" (D4, which keeps the collector off
+`ingest-observations`' `*/5` tick) is **arithmetically impossible**. One of the three must yield, and it
+is the minimum: D4 protects against a measured rate-limit collision, while the maximum is the whole point
+of this task. **Do not "restore" `≥3` — it cannot be satisfied.**
+
+**What the ≥3 guard was for, and the residual.** Plan 176 D1 locked it "so a valid-but-clustered list
+cannot interact badly with Plan 175's 120 s total retry deadline". At a 2-minute minimum the gap now
+*equals* that deadline: under sustained upstream failure a run exhausting its full retry budget finishes
+exactly as the next is scheduled. Accepted, because (a) a healthy run takes ~0.1 s, so this arises only
+when LINDAS is already failing, (b) the deployment's `concurrency_limit=1` serialises rather than
+overlaps them, and (c) a feed failing that long trips the D4 freshness alert regardless. Stated rather
+than left for someone to rediscover.
 
 Cost is requests only: still one per run, ~24/hour against a measured ~45/min capacity, and D2's
 data-derived key means storage tracks the grid (~144 slots/day), not the poll rate.
@@ -94,8 +118,10 @@ kind), D2's keying, the pool assignment.
 **Verification.** `uv run pytest tests/unit/cli/test_register_deployments.py tests/unit/test_compose_schedule_default.py -q`
 
 **Tests.** The existing property assertions (cyclic max gap, min gap, non-divisibility, every-hour) with
-the max-gap bound tightened to 3; compose and Python defaults still identical. Proven RED against the
-current 4-minute list.
+the max-gap bound tightened to **3** and the min-gap bound relaxed to **2**; compose and Python defaults
+still identical. Proven RED against the current 4-minute list. Add an assertion that the schedule is
+accepted by Prefect's `CronSchedule` — the reviewer validated the proposed list that way, and a property
+test that never parses the string would miss a malformed one.
 
 ```json
 {
