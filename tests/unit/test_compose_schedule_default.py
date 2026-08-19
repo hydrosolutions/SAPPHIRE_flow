@@ -35,16 +35,16 @@ class TestComposeScheduleDefault:
 
 
 class TestComposeBafuObservationScheduleDefault:
-    """Plan 176 T2 (D1) — the SAME class of no-op the sibling test above
-    guards against: ``docker-compose.yml``'s init-container env fallback is
-    the ONE that actually deploys (``cli/register_deployments.py``'s Python
-    default is a fallback for a non-compose run only). A code-only cron
-    change here would leave the mini polling once an hour forever, discarding
-    ~83% of LINDAS's published slots.
+    """Plan 176 T2 (D1), tightened by Plan 189 T2 — the SAME class of no-op
+    the sibling test above guards against: ``docker-compose.yml``'s
+    init-container env fallback is the ONE that actually deploys
+    (``cli/register_deployments.py``'s Python default is a fallback for a
+    non-compose run only). A code-only cron change here would leave the
+    mini on the old, looser cadence forever.
 
-    MUST FAIL while the compose fallback is the old ``37 * * * *`` (Plan 175
-    D4): that single-minute-per-hour cadence cannot satisfy D1's max-4-min
-    cyclic-gap property against a 10-minute publish grid."""
+    MUST FAIL while the compose fallback is Plan 176's ``max<=4/min>=3``
+    list: Plan 189 T2 tightened the bound to ``max<=3/min>=2`` after Plan
+    176 T7's 45-min live run measured a 7.0 min minimum publish gap."""
 
     def test_compose_bafu_observation_fallback_satisfies_d1_properties(self) -> None:
         from sapphire_flow.cli.register_deployments import (
@@ -69,8 +69,9 @@ class TestComposeBafuObservationScheduleDefault:
         by_name = {s.deployment_name: s for s in _register_deployments_build_specs()}
         assert compose_cron == by_name["collect-bafu-observations"].cron
 
-        # ... and that shared value must itself satisfy D1's properties.
+        # ... and that shared value must itself satisfy Plan 189 T2's
+        # tightened properties.
         minutes = _cron_minute_set(compose_cron)
-        assert max(_cyclic_gaps(minutes)) <= 4
-        assert min(_cyclic_gaps(minutes)) >= 3
+        assert max(_cyclic_gaps(minutes)) <= 3
+        assert min(_cyclic_gaps(minutes)) >= 2
         assert all(m % 5 != 0 for m in minutes)

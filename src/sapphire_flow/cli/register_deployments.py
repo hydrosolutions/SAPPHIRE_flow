@@ -64,14 +64,29 @@ def _build_specs() -> list[DeploymentSpec]:
     # Over-poll at roughly 2.5x the grid rather than match it exactly — a
     # poll rate equal to the grid rate loses a slot whenever publish jitter
     # puts two slots between two polls (D1's "why not simply poll every 10
-    # minutes" note). LOCKED PROPERTIES (not this literal string — a test
-    # asserts them): max CYCLIC inter-poll gap <=4 min (incl. the
-    # `:59 -> :01` wrap), min gap >=3 min, every minute non-divisible by 5
-    # (never shares a minute with ingest-observations' `*/5` tick or the
-    # BAFU-forecast collector's `0 * * * *` tick).
+    # minutes" note).
+    #
+    # Plan 189 T2: tightened after Plan 176 T7's 45-min live run measured a
+    # 7.0 min MINIMUM publish gap (D1's original bound was sized on a single
+    # 10.8 min sample — a 2.7x margin that was really 1.75x). LOCKED
+    # PROPERTIES (not this literal string — a test asserts them): max
+    # CYCLIC inter-poll gap <=3 min (incl. the `:58 -> :01` wrap; 2.33x
+    # margin on the measured 7.0 min minimum), min gap >=2 min, every
+    # minute non-divisible by 5 (never shares a minute with
+    # ingest-observations' `*/5` tick or the BAFU-forecast collector's
+    # `0 * * * *` tick). The min gap was RELAXED from D1's original >=3 —
+    # `max<=3` AND `min>=3` together force every gap to exactly 3 (a single
+    # residue class mod 3), and every mod-3 residue class contains 4
+    # multiples of 5, which is arithmetically incompatible with "no minute
+    # divisible by 5". At a 2 min minimum the gap can equal Plan 175's
+    # 120s total retry deadline under sustained upstream failure; accepted
+    # because a healthy run takes ~0.1s, concurrency_limit=1 serialises
+    # rather than overlaps runs, and a feed failing that long trips the D4
+    # freshness alert regardless (see docs/plans/189-audit-window-edge-and-
+    # poll-bound.md § T2).
     cron_bafu_observation = os.environ.get(
         "SCHEDULE_COLLECT_BAFU_OBSERVATIONS",
-        "1,4,7,11,14,17,21,24,27,31,34,37,41,44,47,51,54,57 * * * *",
+        "1,3,6,8,11,13,16,18,21,23,26,28,31,33,36,38,41,43,46,48,51,53,56,58 * * * *",
     )
 
     return [
