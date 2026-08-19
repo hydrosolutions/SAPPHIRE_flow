@@ -2,6 +2,7 @@
 status: DRAFT
 created: 2026-08-19
 revised: 2026-08-19
+reviewed: independent Codex pass 2026-08-19 — AGREE-WITH-CHANGES on T4 (its corrections adopted verbatim)
 plan: 190
 title: Unpin the CI unit-step guard from flags it does not care about
 scope: Fix the guard assertion that has held main red across four merges, and remove the recurrence. Explicitly NOT redesigning the Plan 185 guard, NOT touching the credential-absence logic, NOT changing what CI runs.
@@ -81,11 +82,72 @@ into a pre-edit signal.
 test — and it carries no verbosity/parallelism knobs to drift. Loosening it would weaken a guard that is
 not currently broken. Recorded here so the decision is deliberate rather than an omission.
 
+## T4 — a stalled apt fetch must fail fast, not eat the whole job budget
+
+*Distinct concern from T1–T3, folded in because it edits the same files in the same review context.*
+
+**Observed (run 32223476140, PR #189).** The `unit` job was cancelled at 25m15s. Per-step timings show it
+never reached pytest:
+
+```
+ 4. Install system deps for cfgrib / rioxarray / exactextract: cancelled  06:27:28 -> 06:52:34
+ 5..11 (incl. "Run uv run pytest tests/unit/ ..."):                       SKIPPED
+```
+
+The step's log ends at `06:28:06  Get:5 https://archive.ubuntu.com/ubuntu noble-security InRelease`, then
+24m28s of silence, then `##[error]The operation was canceled` — the job-level `timeout-minutes: 25`
+(`ci.yml:88`) firing. Contemporaneous `main` runs at 06:12/06:22/06:32 completed the same step normally, so
+the cause was transient and environmental, not the PR's code.
+
+**Precision (Codex, 2026-08-19).** The log proves the step *stopped making observable progress*. It does
+**not** prove the fetch itself hung rather than APT processing or the runner's network becoming unhealthy.
+The 25-minute alignment with the cap is what makes the timeout the compelling explanation — PR concurrency
+(`ci.yml:23`) can also cancel a run, but not with that timing.
+
+**Why it is worth fixing even though the cause was transient.** The failure presents as *"CI cancelled after
+25 minutes"*, which reads as a slow or hanging test suite — it sent this session investigating its own new
+tests first. A step-level deadline converts a 25-minute mystery into a fast, correctly-attributed failure.
+
+**The change — apply this exact step body to ALL THREE occurrences** (`ci.yml:100` in `unit`, `ci.yml:323` in
+`integration`, and `.github/workflows/integration-nightly.yml:42`):
+
+```yaml
+- name: Install system deps for cfgrib / rioxarray / exactextract
+  timeout-minutes: 5
+  run: |
+    sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+    sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+      install -y --no-install-recommends \
+      libeccodes0 libexpat1 libgeos-c1v5
+```
+
+**`Acquire::http::Timeout=30` is load-bearing, not decoration.** This session's first proposal was retries
+alone, which is wrong: *retries retry downloads that FAIL; they cannot retry a request that never fails.*
+A stalled socket needs a transport timeout. HTTPS inherits the HTTP setting unless separately overridden, so
+one option covers both. The step-level `timeout-minutes: 5` is the backstop for everything the transport
+timeout does not cover; the job-level 25 remains the outer limit and whichever deadline arrives first wins.
+
+**Do NOT "simplify" this by deleting the apt step** — checked, and it is required:
+- unit tests parse real GRIB through cfgrib (`tests/unit/adapters/test_meteoswiss_nwp_real.py:54`);
+- they execute the real exactextract path (`tests/unit/preprocessing/test_exact_extract_grid_extractor.py:100`);
+- decisively, the locked `eccodes` package does **not** pull `eccodeslib` — it lists only the thin bindings
+  and `findlibs` (`uv.lock:1181`) — so `libeccodes0` must come from apt.
+
+`libexpat1` and `libgeos-c1v5` *may* be redundant for current x86_64 manylinux wheels, but proving that needs
+a clean-runner experiment and would not remove the `apt-get update` that ecCodes still requires. **Out of
+scope** — recorded so it is a deliberate deferral.
+
+**Acceptance:** the three steps carry the deadline and both apt options; a normal run is unaffected. Not
+test-locked — this is workflow configuration whose failure mode is a real network stall, which a unit test
+cannot reproduce honestly. Deliberate: a test asserting the YAML string would be the very brittleness T1
+exists to remove.
+
 ## Non-goals
 
 - No change to what CI actually runs. `-n auto` stays; this plan does not relitigate #185.
 - No redesign of the Plan 185 credential-absence guard.
 - No sweep of other guard files. Two pins were examined; only one is misscoped.
+- T4 adds no caching, mirror rewriting, or package removal. Codex assessed those and found none warranted.
 
 ## Open question for the owner
 
