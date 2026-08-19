@@ -377,11 +377,28 @@ class TestStepOrdering:
 
 
 class TestFinalUnitTestStepUnchanged:
+    """Plan 185's guard: its credential-detection steps must not disturb the
+    final step that actually runs the full unit suite.
+
+    The exact-string pin below broke on `main` without either side being
+    wrong. PR #185 (`fd96b56`) parallelised the suite — adding `-n auto`,
+    dropping `-v` — while PR #187 (`d532a13`) added this assertion pinning the
+    pre-parallelisation string. Each was green on its own branch; the clash is
+    semantic, so no merge conflict warned anyone, and `main` went red on merge.
+
+    The string is updated here to the current, intended command. Note the
+    residual brittleness: any future legitimate CI tuning of this step breaks
+    this assertion again. Left as an exact pin deliberately — it is Plan 185's
+    guard and the strength of an exact match is the point — but if it breaks a
+    second time, assert the INTENT (runs `tests/unit/`, collects coverage)
+    rather than the literal flags.
+    """
+
     def test_last_step_still_runs_the_full_unit_suite(self) -> None:
         last = _unit_job()["steps"][-1]
         assert last.get("run") == (
-            "uv run pytest tests/unit/ --cov=src/sapphire_flow "
-            "--cov-report=term-missing -v"
+            "uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow "
+            "--cov-report=term-missing"
         )
 
 
