@@ -62,14 +62,11 @@ provide.
 
 **If the review's conclusion is "this plan is adequately scoped and ready", say exactly that and stop.**
 
-## ⚠️ ONE DECISION IS STILL OPEN AT READY
+## ✅ THE OPEN DECISION IS RESOLVED (grill-me, owner, 2026-08-19)
 
-**D4's shoulder-season scope is the owner's call and is NOT yet made.** Everything else is decided.
-The carve-out withholding quantitative magnitudes at high altitude is scoped to calendar **DJF**, but
-the snow-undercatch mechanism it guards against is not calendar-bound: at the six stations ≥2,400 m,
-MAM and ON freezing levels are frequently at or below station height. **Decide before the monthly
-magnitude table is published** — either extend the qualitative-only treatment to MAM/ON at those six,
-or state in the Exit that those months are not screened. See D4.
+D4's shoulder-season fork is closed, and the resolution **removes a rule rather than adding one**: the
+calendar carve-out is deleted outright and replaced by a measured diagnostic (D4 below, plus D13/D14).
+All decisions are now made.
 
 ## Decisions
 
@@ -83,19 +80,33 @@ or state in the Exit that those months are not screened. See D4.
 - **D3 — Never headline an hourly matched pair.** One gauge vs one 0.1° cell (~110 km²) is dominated by
   representativeness error at that scale. Aggregate, and state the scale beside every number.
 
-- **D4 — Warm season quantitative; cold-season high-altitude qualitative only.** A winter "bias" at
-  3,700 m measures the gauge, not the model (vision D6). **⛔ The "50–100 %" snow-undercatch figure an
-  earlier draft attributed to vision D6 is WITHDRAWN — D6 constrains the SIGN only and states we know
-  neither gauge type nor wind speed. Cite primary literature or give no number.**
+- **D4 — ⛔ THE CALENDAR CARVE-OUT IS DELETED. Every magnitude estimand carries a measured
+  sub-freezing mass fraction instead.** *(Owner, grill-me 2026-08-19 — this REPLACES "warm season
+  quantitative; cold-season high-altitude qualitative only".)*
 
-  **⚠️ OPEN — owner's call, do not leave implicit.** The carve-out is scoped to calendar DJF but the
-  mechanism is not. At the six stations ≥2,400 m (Syangboche 3,700, Humde 3,401, Olangchunggola 3,119,
-  Lukla 2,860, Ghorepani 2,742, Lete 2,490) freezing levels in **MAM and ON** are frequently at or below
-  station height, so shoulder-month snow undercatch is physically plausible — and would enter the
-  MONTHLY magnitude estimands with no flag, since D6's caveat governs sign rather than usability.
-  Either extend the qualitative-only treatment to MAM/ON at those six, or say in the Exit that those
-  months are **not screened** for undercatch, so the "quantitative" label there is asserted rather than
-  verified.
+  The old rule withheld high-altitude magnitudes in calendar DJF. The mechanism it guarded against —
+  snow undercatch — is **elevation- and temperature-driven, not calendar-driven**, so the rule was
+  wrong in both directions: it withheld genuinely-quantitative DJF hours at 2,490 m and passed
+  genuinely-snow MAM/ON hours at 3,700 m.
+
+  **Replacement:** beside every magnitude estimand, in the SAME cell as its retained-hour `n`, report
+  the **fraction of that period's precipitation MASS falling at air temperature < 1.5 °C**. Mass-
+  weighted, not hour-weighted — the concern is undercaught amount, and a month with 5 % of wet hours
+  but 40 % of its mass sub-freezing is badly contaminated in a way an hour-count hides. Report the
+  fraction at **0 °C and 2 °C as a sensitivity**, since the rain/snow transition is genuinely fuzzy and
+  the choice of 1.5 °C must not be invisible.
+
+  **The fraction ANNOTATES; it never gates and never adjusts.** No threshold is set anywhere (vision D8
+  — no pre-registered thresholds). A reader seeing "+38 mm, sub-freezing mass fraction 0.61" knows the
+  figure is dominated by a phase the gauge cannot catch. **⚠️ Residual risk, named not solved:** this is
+  the second decision in a row choosing annotation over withholding (see D13), and caveats get stripped
+  when numbers are quoted downstream. Mitigation is placement — `n` and the mass fraction live in the
+  same cell as the value, so stripping them takes deliberate effort — plus an Exit rule that no
+  magnitude may be quoted without both.
+
+  **⛔ The "50–100 %" snow-undercatch figure an earlier draft attributed to vision D6 is WITHDRAWN** —
+  D6 constrains the SIGN only and states we know neither gauge type nor wind speed. Cite primary
+  literature or give no number.
 
 - **D5 — Representativeness is characterised, not decomposed.** One point vs one cell cannot separate
   grid error from model error. Use M-A5's operator-sensitivity envelope, the elevation mismatch, and
@@ -157,12 +168,38 @@ or state in the Exit that those months are not screened. See D4.
   scale-validity objection one tier up — a well-defined number that reads as perfect agreement and is
   analytically vacuous. Report categorical skill where wet/dry is informative, and nowhere else.
 
-## Exit
+- **D13 — A partially-masked period is reported as what it literally is; no scaling, no completeness
+  bar.** *(Owner, grill-me 2026-08-19.)* The M-A3 mask removes hours **non-randomly** (sentinels,
+  stuck-high blocks, false-zero runs to 52 days), so aggregates rest on very different retention.
+  **Never scale to a full period** — dividing by retained fraction assumes the removed hours resemble
+  the kept ones, which is precisely the MNAR error Rule 1 exists to forbid. **Set no completeness
+  threshold** either (vision D8), and note the gross cases are already handled upstream: D11 consumes
+  Plan 173's M-A6 exclusion list. Below that line every aggregate is a **conditional sum over the hours
+  retained in common**, self-describing at any retention, with its `n` attached. Where cross-station or
+  elevation-stratified summaries are produced, **stratify BY retention rather than filter ON it**, so a
+  retention-driven pattern is visible instead of hidden.
 
-Error characterisation across the 26 stations: the D1 estimands at stated scales, season- and
-elevation-stratified, each signed per D6 with its common-retained-hour count; the D5 representativeness
-characterisation; the D8 within-cell figure with limits attached. **No correction is designed or
-recommended** — that is M-A9's decision node.
+- **D14 — Snow phase is measured with ERA5-Land 2m temperature, lapse-corrected at the STANDARD rate,
+  and checked against Pyramid.** *(Owner, grill-me 2026-08-19.)* Plan 171 fetched
+  `total_precipitation` ONLY, which is why D4 originally reached for a calendar proxy. **This adds an
+  ERA5-Land `2m_temperature` acquisition as a prerequisite** (same box, same window, 171's machinery
+  and its monthly-window cost rule — see the milestones note).
+
+  ERA5-Land is the right source for temperature specifically: per D7 it elevation-corrects temperature,
+  humidity and pressure — but NOT precipitation. **The trap is that its orography sits 750–1,300 m
+  ABOVE our high stations** (Syangboche 3,700 vs 4,447; Humde 3,401 vs 4,700), so at ~6.5 °C/km the raw
+  cell runs 5–8 °C too cold and would systematically over-call snow. Correct from model orography down
+  to station elevation.
+
+  **Use the standard 6.5 °C/km — do NOT fit the rate to Pyramid.** Pyramid `AT` (six stations,
+  2,660–5,600 m) is the *independent check* on the correction, and a rate derived from Lukla and Namche
+  could not then be validated at Lukla and Namche. That is this track's own rule from M-A5: **a
+  validator does not re-derive the computation.** Seasonal variation is expected — Himalayan valleys
+  invert in winter, exactly when the flag matters most — but any seasonal rate must come from
+  **literature, chosen a priori**, never fitted to the validation data. **If the check fails, widen the
+  reported uncertainty on the mass-fraction column; do not refit.**
+
+## Exit
 
 ## Non-goals
 

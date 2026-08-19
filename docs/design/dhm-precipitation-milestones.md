@@ -385,6 +385,14 @@ report the common-retained-hour count and each station's exposure alongside ever
 bound*), carrying the selection caveat, its named estimand, and the retained fraction it rests on;
 plus the within-cell observed gauge variability figure above, with its honest limits attached.
 
+
+**⚠️ NEW PREREQUISITE 2026-08-19 — ERA5-Land `2m_temperature`.** Plan 184 D4/D14 replace the calendar
+snow carve-out with a measured sub-freezing mass fraction, which needs temperature. Plan 171 acquired
+**`total_precipitation` only** (`171:121`). Fetch `2m_temperature` over the same box and window, reusing
+171's machinery and its monthly-window cost rule (the 8,760-field annual request is rejected 403; 744
+fields/month is fine). This is an acquisition against 171's contract, deliberately NOT folded into 184 —
+184 is a comparison, not an acquisition plan.
+
 ### M-A7 · Temporal characterisation
 **Depends: M-A2, M-A3.** Parallel to M-A5/M-A6.
 
@@ -601,6 +609,45 @@ high-altitude subset, so no effect may be attributed to one rather than the othe
 
 **Exit:** elevation relationships with the confound bounded, or a statement that the sample cannot
 separate them.
+
+
+**⭐ NEWLY ENABLED 2026-08-19 (grill-me) — a rain-phase precipitation gradient from the PYRAMID TRANSECT.**
+The owner wants a precipitation lapse rate for elevation-band forcing correction. **ERA5-Land structurally
+cannot supply one**: per Plan 184 D7 its `total_precipitation` is interpolated from ERA5 and never sees the
+0.1° orography, so any gradient fitted to it is the parent field smeared onto a finer grid, not a physical
+elevation response. It must come from gauges or from a convection-permitting product (OD-10).
+
+**The transect is real and VERIFIED on disk 2026-08-19** — the Zenodo filenames encode elevation:
+
+| station | elev (m) | RR hours | wet hours |
+|---|---:|---:|---:|
+| AWS3 Lukla | 2,660 | 88,794 | 10,355 |
+| AWS5 Namche | 3,570 | 111,061 | 11,958 |
+| AWS2 Pheriche | 4,260 | 165,680 | 14,418 |
+| AWS0 | 5,035 | 40,351 | 5,067 |
+| AWS1 | 5,035 | 184,690 | 14,663 |
+| AWS4 | 5,600 | 72,880 | 3,400 |
+
+**Precipitation stops at 5,600 m**: `AWSSC_Z7986` (South Col) and `CNG_SNP_Z5700` carry **no RR column** at
+all — T/RH/wind/pressure only. All six RR stations DO carry `AT`, so the D4/D14 temperature screening is
+available at every one.
+
+**⛔ Reconciling this with M-A10's binding rule.** M-A10 states Pyramid is "NOT a correction source …
+referee on SHAPE and TIMING only, where undercatch largely cancels; never on magnitude." A lapse rate IS a
+magnitude claim, and Pyramid's gauges are **unheated**, so undercatch GROWS with elevation — fit a gradient
+up this transect raw and you measure the undercatch profile. **The rain-only screening is what makes it
+legitimate**, because it is the condition under which "undercatch largely cancels" is actually true.
+⇒ **Scope: a JJAS rain-phase gradient, bounded at the rain line, never extrapolated above it.** The
+snow-dominated high basins — where flood interest sits — remain out of reach by this route.
+
+**The noise floor is now MEASURED, not assumed.** AWS0 and AWS1 sit at the SAME elevation (5,035 m), giving
+a direct estimate of siting/exposure scatter. On 12,819 common hours (2000–2004): wet-hour COUNT ratio
+**1.01** (they agree almost exactly on *when*), accumulated AMOUNT ratio **1.31**, and rain-only
+(both AT ≥ 1.5 °C) **1.18**. Two readings: the screening removes ~40 % of the same-elevation discrepancy —
+empirical support for D4/D14 — and **any vertical gradient must exceed ~18 % to be distinguishable from
+siting alone.** Khumbu precipitation declines far more than that over 2,660→5,600 m, so a gradient should
+be resolvable. Caveats: n=1 pair, and the common window is older than the rest of the record.
+*(An earlier note claiming a 1.6× same-elevation disagreement was a RECORD-LENGTH artefact — corrected.)*
 
 ### M-A9 · Synthesis, corroboration, Phase-2 decision
 **Depends: M-A6, M-A7, M-A8.**
