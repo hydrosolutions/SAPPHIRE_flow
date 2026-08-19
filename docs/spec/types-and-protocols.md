@@ -1430,6 +1430,21 @@ class StationModelInputs:
     issue_time: UtcDatetime
     forecast_horizon_steps: int
     time_step: timedelta
+    forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET  # Plan 151 D10 discriminant
+```
+
+`forcing_route` is the **explicit** legacy-vs-per-track discriminant (Plan 151 D10) — set by
+whichever assembler built the payload, never inferred from an absent contract:
+
+- `LEGACY_SUPERSET` (default) — `services/operational_inputs.py`. ONE frame per station sized to
+  the **MAX** horizon across the station's co-assigned models, so a shorter-horizon model is
+  over-delivered **by design**; `adapters/forecast_interface.py` therefore delivers (and NaN-gates)
+  the whole frame, preserving `models/nwp_regression.py`'s "over-delivery ... is tolerated and
+  forecast in full" contract.
+- `PER_TRACK` — `services/track_assembly.py`. Per-assignment, per-feature contracted frames; the
+  FI boundary applies D9's per-variable `future_steps` slice.
+
+```python
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class GroupModelInputs:

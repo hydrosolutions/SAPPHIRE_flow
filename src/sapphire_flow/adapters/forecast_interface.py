@@ -54,6 +54,7 @@ from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     ArtifactScope,
     EnsembleMode,
+    ForcingRoute,
     SpatialRepresentation,
 )
 from sapphire_flow.types.forcing_track import FeatureName, FutureSteps
@@ -754,12 +755,58 @@ class ForecastInterfaceAdapter:
 
         return tolerances
 
+    def _past_known_nan_tolerances_for_spec(
+        self, spec: DynamicInputSpec
+    ) -> dict[str, int]:
+        """Plan 151 T6 (D9): the SELECTED branch's own tolerances — no
+        flattening across every declared branch. Companion to
+        `_past_known_nan_tolerances`, which stays the GROUP path's
+        unmigrated (D8-group) flattened form."""
+        tolerances: dict[str, int] = {}
+        for variables in spec.past_known.values():
+            for name, variable in variables.items():
+                self._record_conflict_checked(
+                    values=tolerances,
+                    name=name,
+                    value=variable.max_nan,
+                    label="max_nan",
+                )
+        return tolerances
+
+    def _future_known_nan_tolerances_for_spec(
+        self, spec: DynamicInputSpec
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        """Companion to `_past_known_nan_tolerances_for_spec` (D9). Also
+        returns each variable's OWN declared ``future_steps`` — the NaN gate
+        slices to it (D9: "a short-horizon feature is not counted NaN for
+        lacking long-horizon steps") exactly as `_future_known_inputs` slices
+        for `InputSeries` construction."""
+        tolerances: dict[str, int] = {}
+        future_steps: dict[str, int] = {}
+        for variables in spec.future_known.values():
+            for name, variable in variables.items():
+                self._record_conflict_checked(
+                    values=tolerances,
+                    name=name,
+                    value=variable.max_nan,
+                    label="max_nan",
+                )
+                self._record_conflict_checked(
+                    values=future_steps,
+                    name=name,
+                    value=variable.future_steps,
+                    label="future_steps",
+                )
+        return tolerances, future_steps
+
     def _variables_over_nan_tolerance(
         self,
         *,
         past_targets: pl.DataFrame,
         past_dynamic: pl.DataFrame,
         future_dynamic: pl.DataFrame,
+        time_step: timedelta | None = None,
+        forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET,
     ) -> dict[str, int]:
         # Gated independently per temporality (past_known vs future_known) and
         # checked against ONLY that temporality's frame(s). A model may declare
@@ -771,9 +818,60 @@ class ForecastInterfaceAdapter:
         # the NaN gate for whichever temporality is checked second. Reporting
         # keys are prefixed with the temporality so a name collision across
         # past/future stays distinguishable in the raised/logged detail.
+        #
+        # Plan 151 T6 (D9) + D10: ``forcing_route`` — NOT the presence of
+        # ``time_step`` — is the discriminant here ("explicit discriminant,
+        # never inference"). Only PER_TRACK inputs take the per-spec path,
+        # where both tolerance maps derive from THAT ONE `DynamicInputSpec`
+        # and each future_known variable's own declared ``future_steps``
+        # bounds the count.
+        #
+        # LEGACY_SUPERSET keeps the pre-T6 FLATTENED tolerance maps and never
+        # resolves ``time_step`` *in this gate* — that route is byte-for-byte
+        # unchanged, error paths included. (Later input conversion still
+        # calls `_dynamic_spec_for_time_step` for BOTH routes, exactly as
+        # pre-T6 did: `_station_inputs_from_frames`.) Resolving it here would
+        # let `_dynamic_spec_for_time_step`'s ConfigurationError pre-empt the
+        # pre-T6 missing-column / max_nan error whenever a legacy caller
+        # carries a ``time_step`` the requirement does not declare. The GROUP
+        # path (predict_batch, D8-group — out of Phase 3 scope) reaches here
+        # with the LEGACY default and ``time_step is None``, so it lands on
+        # the same flattened branch it always did.
+        future_steps_by_name: dict[str, int] = {}
+        if forcing_route is ForcingRoute.PER_TRACK:
+            # The route is the ONLY discriminant: a missing ``time_step`` must
+            # never demote a PER_TRACK input onto the flattened legacy branch,
+            # which would silently apply tolerances this input never selected.
+            # ``StationModelInputs.time_step`` is statically non-optional
+            # (`types/model.py`) but unvalidated at runtime, and this helper's
+            # own signature admits ``None`` — so fail loudly here, at the
+            # boundary, BEFORE `predict()` runs. This is a SAP3-side
+            # configuration fault, not an anticipated model failure, so it
+            # raises (matching `_dynamic_spec_for_time_step`) rather than
+            # returning ModelFailure.
+            if time_step is None:
+                declared = ", ".join(
+                    str(step) for step in self._model.input_requirement.dynamic
+                )
+                raise ConfigurationError(
+                    "ForecastInterface NaN gate reached on the "
+                    f"{ForcingRoute.PER_TRACK.value!r} forcing route without a "
+                    "time_step; per-track inputs must carry the resolved "
+                    "time_step that selects the DynamicInputSpec "
+                    f"(declared time steps: {declared})"
+                )
+            _, spec = self._dynamic_spec_for_time_step(time_step)
+            past_tolerances = self._past_known_nan_tolerances_for_spec(spec)
+            future_tolerances, future_steps_by_name = (
+                self._future_known_nan_tolerances_for_spec(spec)
+            )
+        else:
+            past_tolerances = self._past_known_nan_tolerances()
+            future_tolerances = self._future_known_nan_tolerances()
+
         over_tolerance: dict[str, int] = {}
 
-        for name, tolerance in self._past_known_nan_tolerances().items():
+        for name, tolerance in past_tolerances.items():
             frame = self._frame_with_column(
                 name=name,
                 frames=(
@@ -786,12 +884,22 @@ class ForecastInterfaceAdapter:
             if missing_count > tolerance:
                 over_tolerance[f"past_known.{name}"] = missing_count
 
-        for name, tolerance in self._future_known_nan_tolerances().items():
+        for name, tolerance in future_tolerances.items():
             frame = self._frame_with_column(
                 name=name,
                 frames=(("future_dynamic", future_dynamic),),
                 temporality="future_known",
             )
+            # Plan 151 T6 (D9): slice to THIS variable's own declared
+            # `future_steps` before counting — a short-horizon feature must
+            # not be evaluated over the whole (possibly longer, D5/D26)
+            # frame a sibling feature/assignment needed. `future_steps_by_name`
+            # is empty on every non-PER_TRACK route (D10), so the LEGACY
+            # superset route and the GROUP path are byte-for-byte unchanged.
+            if name in future_steps_by_name:
+                frame = self._slice_to_future_steps(
+                    frame=frame, future_steps=future_steps_by_name[name]
+                )
             missing_count = self._missing_value_count(frame=frame, name=name)
             if missing_count > tolerance:
                 over_tolerance[f"future_known.{name}"] = missing_count
@@ -850,6 +958,8 @@ class ForecastInterfaceAdapter:
             past_targets=inputs.data.past_targets,
             past_dynamic=inputs.data.past_dynamic,
             future_dynamic=inputs.data.future_dynamic,
+            time_step=inputs.time_step,
+            forcing_route=inputs.forcing_route,
         )
         if over_tolerance:
             raise ModelOutputError(
@@ -1025,9 +1135,27 @@ class ForecastInterfaceAdapter:
         self,
         data: StationModelInputs,
     ) -> ModelInputs:
+        # Plan 151 T6 (D9) + D10: the per-variable future_steps slice applies
+        # on the single-station, single-cycle `predict()` route AND ONLY when
+        # `forcing_route` says these inputs came from the per-track assembler.
+        # Both `train()` (a multi-sample window, `.head(future_steps)` would
+        # truncate the whole training set to its first N rows) and
+        # `predict_batch` (GROUP, explicitly out of Phase 3 scope, D8-group)
+        # keep the UNSLICED frame — this is the one place a `future_dynamic`
+        # frame genuinely represents "one cycle's worth of future rows".
+        #
+        # The LEGACY superset route (`services/operational_inputs.py`) also
+        # keeps the UNSLICED frame: `build_superset_requirements` sizes ONE
+        # frame to the MAX horizon across the station's co-assigned models
+        # (`services/operational_inputs.py:495`), so a shorter-horizon model
+        # is routinely over-delivered BY DESIGN and forecasts the full frame
+        # (`models/nwp_regression.py`: "Over-delivery ... is tolerated and
+        # forecast in full"). Slicing there would silently shorten that
+        # model's horizon.
         station_inputs = self._station_inputs_from_station_data(
             data=data.data,
             time_step=data.time_step,
+            forcing_route=data.forcing_route,
         )
         return ModelInputs(stations={_STATION_SCOPE_KEY: station_inputs})
 
@@ -1066,6 +1194,7 @@ class ForecastInterfaceAdapter:
         *,
         data: StationInputData | StationTrainingData,
         time_step: timedelta,
+        forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET,
     ) -> StationInputs:
         return self._station_inputs_from_frames(
             past_targets=data.past_targets,
@@ -1073,6 +1202,7 @@ class ForecastInterfaceAdapter:
             future_dynamic=data.future_dynamic,
             static=data.static,
             time_step=time_step,
+            forcing_route=forcing_route,
         )
 
     def _assert_single_deliverable_dynamic_branch(self) -> None:
@@ -1109,6 +1239,7 @@ class ForecastInterfaceAdapter:
         future_dynamic: pl.DataFrame,
         static: pl.DataFrame | None,
         time_step: timedelta,
+        forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET,
     ) -> StationInputs:
         self._assert_single_deliverable_dynamic_branch()
         rep, spec = self._dynamic_spec_for_time_step(time_step)
@@ -1121,6 +1252,7 @@ class ForecastInterfaceAdapter:
             future_known=self._future_known_inputs(
                 spec=spec,
                 future_dynamic=future_dynamic,
+                forcing_route=forcing_route,
             ),
         )
         return StationInputs(
@@ -1158,18 +1290,27 @@ class ForecastInterfaceAdapter:
         *,
         spec: DynamicInputSpec,
         future_dynamic: pl.DataFrame,
+        forcing_route: ForcingRoute = ForcingRoute.LEGACY_SUPERSET,
     ) -> dict[str, dict[str, InputSeries]]:
+        def _series_frame(name: str, variable: FutureKnownVariable) -> pl.DataFrame:
+            frame = self._frame_with_column(
+                name=name,
+                frames=(("future_dynamic", future_dynamic),),
+                temporality="future_known",
+            )
+            if forcing_route is ForcingRoute.PER_TRACK:
+                frame = self._slice_to_future_steps(
+                    frame=frame, future_steps=variable.future_steps
+                )
+            return frame
+
         return {
             product: product_inputs
             for product, variables in spec.future_known.items()
             if (
                 product_inputs := {
                     name: self._input_series_from_frame(
-                        frame=self._frame_with_column(
-                            name=name,
-                            frames=(("future_dynamic", future_dynamic),),
-                            temporality="future_known",
-                        ),
+                        frame=_series_frame(name, variable),
                         name=name,
                         unit=variable.unit,
                     )
@@ -1177,6 +1318,25 @@ class ForecastInterfaceAdapter:
                 }
             )
         }
+
+    def _slice_to_future_steps(
+        self, *, frame: pl.DataFrame, future_steps: int
+    ) -> pl.DataFrame:
+        """Plan 151 T6 (D9): the earliest ``future_steps`` rows by
+        ``timestamp`` — this variable's OWN declared horizon, never the
+        frame's full length. A per-assignment frame may be assembled longer
+        than one variable needs (its own `InputFrameHorizon` is the MAX
+        across the assignment's own features, D9), and the underlying track
+        may be fetched longer still to satisfy a sibling assignment sharing
+        the track (D5/D26) — this is the slice that keeps a short-horizon
+        feature from receiving (and being NaN-checked against) more rows
+        than it ever declared.
+
+        Reached ONLY from ``ForcingRoute.PER_TRACK`` inputs (D10); the legacy
+        superset route never calls it."""
+        if "timestamp" not in frame.columns:
+            return frame
+        return frame.sort("timestamp").head(future_steps)
 
     def _past_input_series(
         self,

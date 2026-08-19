@@ -276,3 +276,57 @@ and the D1–D7 decisions built on it.
 The 429 ceiling is undocumented by BAFU. If it is ever observed to have
 moved, the escalation contact is on file:
 `abfragezentrale@bafu.admin.ch` (per `bafu-lindas-monday-window.md`).
+
+## First overnight run under Plan 176's 10-minute cadence (2026-08-18 → 19)
+
+**Result: 52 of 54 slots captured, 165 `OK` heartbeats, zero CRITICAL, zero alerts.** Raw companions are
+`.json.gz` at ~5.76 KB (was 234 KB plain); the archive grew ~2 MB overnight rather than ~12 MB. Under the
+old hourly cadence the same window would have captured **9 of 54**.
+
+Two slots were reported missing. Only one is real, and the distinction matters.
+
+### `05:50` — an artefact of the AUDIT, not a gap
+
+The audit window ended `06:00`, but LINDAS publishes a slot ~14–17 min after its timestamp, so `05:50`
+could not physically have been archived before `06:05`. It was present on LINDAS at check time.
+
+**`_expected_slots` counts every grid slot in `[start, end)` regardless of whether it could yet have been
+published**, so the trailing one or two slots of any window always read as missing. That erodes trust in
+the number precisely when someone is using it to decide whether the archive is healthy. Fixed in
+Plan 189 T1.
+
+### `23:20` — real, and it is the first live test of D2's modal keying
+
+The initial hypothesis — that BAFU never published `23:20` — was **wrong**, and the stored heartbeats
+disproved it:
+
+```
+newest_measurement_time   polls   first seen
+2026-08-18T23:00:00Z        3     23:17:00
+2026-08-18T23:10:00Z        3     23:27:01
+2026-08-18T23:20:00Z        2     23:36:59   <- we DID observe this slot
+2026-08-18T23:30:00Z        4     23:44:00
+2026-08-18T23:40:00Z        3     23:57:01
+```
+
+Two polls saw `max(measurement_time) == 23:20`. But `cycle_at` is the **modal** timestamp (D2), and the
+archive went `23:10 → 23:30`: the *bulk* of the network never sat at `23:20`. Only a minority of gauges
+reached it before the network advanced two slots at once.
+
+The cause is visible in the same window: **3 of 164 responses returned 34 rows instead of 495** — the
+lake-only shape of a BAFU republish transient (`bafu-lindas-monday-window.md`). After that republish the
+bulk skipped a slot.
+
+**This cuts against the reviewer's argument for modal over `max`, and is worth stating honestly.** That
+change was adopted as "a robustness fix, NOT an observed failure" — guarding a *leading-gauge* scenario
+never seen in 7 samples. What has now been observed is the opposite trade: **modal is conservative and
+will decline a slot during a partial republish.** A `max` key would have archived `23:20`.
+
+**The decision stands, on the merits rather than by default.** Under `max`, that file would have been
+named `23:20` while containing mostly `23:10` data — a snapshot that misrepresents what it holds. Modal
+declined to claim a network state the network never reached, which is arguably the correct answer: there
+was no complete `23:20` snapshot to take. **Cost: one slot in 54, from an upstream anomaly.**
+
+**Not a polling-rate problem.** Faster polling cannot capture a state that never existed, so Plan 189 T2's
+poll-bound tightening (driven separately by T7's measured 7.0 min minimum publish gap) does **not**
+address this and should not be justified by it.

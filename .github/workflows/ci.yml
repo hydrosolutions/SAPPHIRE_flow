@@ -98,10 +98,24 @@ jobs:
           version: "0.11.7"
           python-version: "3.12"
       - name: Install system deps for cfgrib / rioxarray / exactextract
+        # A stalled acquisition here used to consume the whole 25-minute job
+        # budget and surface as a test failure: on 2026-08-19 this step hung
+        # three times (unit 07:29, 07:42, 08:06) while the SAME step on the
+        # SAME commit finished in 55s on the integration runner. apt's own
+        # transport knobs bound it — Timeout covers stalled reads as well as
+        # connects, Retries rides out the transient — so nothing is ever
+        # killed mid-dpkg and no lock can be left behind. timeout-minutes is
+        # the non-network backstop.
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libeccodes0 libexpat1 libgeos-c1v5
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+            update
+          sudo apt-get -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+            install -y --no-install-recommends \
+              libeccodes0 libexpat1 libgeos-c1v5
       - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
@@ -321,10 +335,24 @@ jobs:
           version: "0.11.7"
           python-version: "3.12"
       - name: Install system deps for cfgrib / rioxarray / exactextract
+        # A stalled acquisition here used to consume the whole 25-minute job
+        # budget and surface as a test failure: on 2026-08-19 this step hung
+        # three times (unit 07:29, 07:42, 08:06) while the SAME step on the
+        # SAME commit finished in 55s on the integration runner. apt's own
+        # transport knobs bound it — Timeout covers stalled reads as well as
+        # connects, Retries rides out the transient — so nothing is ever
+        # killed mid-dpkg and no lock can be left behind. timeout-minutes is
+        # the non-network backstop.
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libeccodes0 libexpat1 libgeos-c1v5
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+            update
+          sudo apt-get -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+            install -y --no-install-recommends \
+              libeccodes0 libexpat1 libgeos-c1v5
       - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"

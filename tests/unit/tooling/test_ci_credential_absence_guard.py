@@ -27,6 +27,7 @@ predicate would misclassify that human-triggered run as degrade-eligible.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -377,12 +378,32 @@ class TestStepOrdering:
 
 
 class TestFinalUnitTestStepUnchanged:
+    """The credential-absence steps must not narrow or replace the final
+    full-suite run.
+
+    Asserted by COMPONENT, not by exact string. The original exact-equality
+    assertion collided with PR #185 (which added `-n auto` and dropped `-v`)
+    and turned `main` red — a guard that breaks on any incidental flag change
+    is testing the command's spelling, not its contract. What actually matters
+    is that the last step still runs pytest over the WHOLE `tests/unit/` tree
+    with coverage over `src/sapphire_flow`; runner flags (parallelism,
+    verbosity, reporting) are free to change.
+    """
+
     def test_last_step_still_runs_the_full_unit_suite(self) -> None:
-        last = _unit_job()["steps"][-1]
-        assert last.get("run") == (
-            "uv run pytest tests/unit/ --cov=src/sapphire_flow "
-            "--cov-report=term-missing -v"
-        )
+        run = _unit_job()["steps"][-1].get("run", "")
+        assert "uv run pytest" in run
+        assert "tests/unit/" in run
+        assert "--cov=src/sapphire_flow" in run
+
+    def test_last_step_is_not_narrowed_to_a_subset(self) -> None:
+        """`tests/unit/` must be the whole tree — not `tests/unit/foo/` and
+        not a `-k`/`-m` selection that would silently skip the credential
+        path this guard exists to protect."""
+        run = _unit_job()["steps"][-1].get("run", "")
+        assert not re.search(r"tests/unit/\S", run)
+        assert " -k " not in run
+        assert " -m " not in run
 
 
 class TestCicdMdDocumentsBothSecretStores:

@@ -82,6 +82,26 @@ class EnsembleMode(Enum):
     ENSEMBLE = "ensemble"
 
 
+class ForcingRoute(Enum):
+    """Plan 151 D10: which assembler built a ``StationModelInputs``, carried
+    explicitly on the boundary type rather than inferred from absent data.
+
+    ``LEGACY_SUPERSET`` (the default) is ``services/operational_inputs.py``'s
+    superset assembly: ONE frame per station built to the MAX horizon across
+    the station's co-assigned models, so a shorter-horizon model is routinely
+    handed MORE future rows than it declared. Over-delivery is part of that
+    route's contract (``models/nwp_regression.py``: "Over-delivery ... is
+    tolerated and forecast in full") and must not be truncated.
+
+    ``PER_TRACK`` is ``services/track_assembly.py``'s per-assignment
+    assembly, where the frame is contracted per feature and D9's
+    per-variable ``future_steps`` slice applies at the FI boundary.
+    """
+
+    LEGACY_SUPERSET = "legacy_superset"
+    PER_TRACK = "per_track"
+
+
 class ThresholdSource(Enum):
     AUTHORITY = "authority"
     INFERRED = "inferred"
