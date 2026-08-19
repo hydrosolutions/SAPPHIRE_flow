@@ -61,18 +61,24 @@ required_static_names, extractor_version=None, source_dataset_version=None)`.
 | # | Decision |
 |---|---|
 | **D1** | **Derive the manifest live, cross-check against one pinned literal.** T0a's rule: `discharge` in both `forecast_targets` and `measured_parameters`, scoped to `network == "bafu"` (the importer hardcodes the `("bafu", code)` join — `store/caravan_import.py:157`), `StationKind.RIVER` (`types/enums.py:144-147`) and the `sapphire` tenant, minus **2446 Gampelen-Zihlbrücke** (owner-dropped: the regulated Zihlkanal outflow). **Review finding, kept: the check is SET IDENTITY, not cardinality** — `len(...) == 148` also passes a fleet that loses one station and gains another. The pinned side is a single `SWISS_CARAVAN_MANIFEST_CODES` constant in the CLI module, reviewed once against Plan 155's published table when the PR lands. *Not* re-derived at runtime, and *not* re-derived again in a test: a second derivation pipeline is not an independent reference. |
-| **D2** | **Read required statics from the DISCOVERED ADAPTER.** **Review finding, kept and important:** `ModelDataRequirements.static_features` (`types/model.py:272`) is populated only by `discover_models()` (`services/model_registry.py:92-128`); the DB row is a bare `ModelRecord` with no requirements field (`types/model.py:259-264`). So "read from the registered model" means the runtime adapter, never the `models` table — the first draft implied otherwise. Discovery **swallows an entry-point import failure and continues** (`model_registry.py:122-127`), so a missing aquacast extra appears as an absent dict key, not an error. The CLI therefore does an explicit named preflight (`if model_id not in discover_models(): raise ConfigurationError(...)`) naming the id and the aquacast requirement — never a bare lookup. |
+| **D2** | **Read required statics from the DISCOVERED ADAPTER.** The model object constructs its own `ModelDataRequirements.static_features` (`adapters/forecast_interface.py:450-455`, `models/linear_regression_daily.py:52-63`); `discover_models()` (`services/model_registry.py:101-127`) instantiates and adapts it. Either way the values exist only at runtime — the DB `ModelRecord` has **no requirements field** (`types/model.py:258-264`), so "read from the registered model" means the adapter, never the `models` table. The first draft implied otherwise. Discovery **swallows an entry-point import failure and omits the model from the returned dict** (`model_registry.py:122-127`), so a missing aquacast extra makes the model simply absent. The CLI does an explicit named preflight (`if model_id not in discover_models(): raise ConfigurationError(...)`) naming the id and the aquacast requirement. **Correction (review, 2026-08-19): this preflight buys a clear message, NOT safety.** The earlier draft claimed a missing extra would yield an empty static set that "passes the gate silently"; that is false — `run_operational_caravan_import` rejects an empty `required_static_names` before any read or write (`store/caravan_import.py:279-294`, locked by `tests/integration/store/test_caravan_import.py:772-797`). The failure mode is a `KeyError` or a loud `ConfigurationError`, never a silent empty-set import. The preflight is worth its three lines for the operator-facing message; it is not load-bearing. |
 | **D3** | **`--dry-run` runs the full gate and rolls back**, implemented by raising a private sentinel from *inside* `with engine.begin():` so the rollback is structural, not a flag the code must remember to honour. |
-| **D4** | **Import now, and add the one missing recovery primitive** (T3). Provenance is not persisted, so the version string writes no durable record; the real constraint is `merge_namespaced_attributes` (`basin_store.py:147`) — identical replay is a no-op, a *changed* value raises per key. **Review finding, ACCEPTED against the first draft:** `basin_store.py` has exactly three write paths (`store_basin:62`, `merge_namespaced_attributes:147`, `update_basin_from_package:250`) and **none deletes or replaces a `caravan:` key**, so a corrected parquet would have meant hand-written SQL against production. The draft called a helper "untested-until-needed code" — backwards: a helper ships *with* a test, while a runbook recipe is untested by construction and is the one path meant to be executed live, under pressure, against production. |
+| **D4** | **Import now, and add the one missing recovery primitive** (T3). Provenance is not persisted, so the version string writes no durable record; the real constraint is `merge_namespaced_attributes` (`basin_store.py:147`) — identical replay is a no-op, a *changed* value raises per key. **Corrected twice.** The first draft said a corrected parquet means hand-written SQL; a second review then showed the absolute claim behind that was also wrong — `update_basin_from_package` (`basin_store.py:330-379`) replaces the whole `attributes` value, so it *can* remove a `caravan:` key. But it is the **package-correction branch**: it needs a basin package, replaces geometry and area wholesale, and always flags incumbent artifacts. Reaching for it to fix one changed static is a sledgehammer that invalidates trained models as a side effect. So the targeted helper is still the right answer, for a better reason than the one first given. The draft also called a helper "untested-until-needed code" — backwards: a helper ships *with* a test, while a runbook recipe is untested by construction and is the one path meant to run live, under pressure, against production. |
 
 ## Tasks
 
 ### T1 — the operator CLI
-`scripts/import_caravan_attributes.py`, mirroring `scripts/backfill_meteoswiss_history.py`: build the
-engine, run migrations, open a real transaction, construct `PgStationStore`/`PgBasinStore`, derive the
-manifest (D1) and required statics (D2), call the entrypoint, print
-matched/unmatched/`stations_without_basin`/coverage-gap counts, exit non-zero on the gate.
+`scripts/import_caravan_attributes.py`, structured like `scripts/backfill_meteoswiss_history.py` but
+**not copying its connection**: that script runs on AUTOCOMMIT (`:137-149`), which
+`require_real_transaction` rejects outright. Use `with engine.begin():`. Construct
+`PgStationStore`/`PgBasinStore`, derive the manifest (D1) and required statics (D2), call the
+entrypoint, print matched/unmatched/`stations_without_basin`, exit non-zero on the gate.
 `--dry-run` and `--parquet <path>`.
+
+**Two cuts taken from review, deliberately:** no Alembic run (the deployment's `init` service already
+migrates — `docker-compose.yml:353-361` — and this plan adds no schema), and no coverage-gap count
+(success proves it is zero, and a failure raises before returning a result that carries no coverage
+field).
 
 **Acceptance** — against a fixture parquet and a seeded fleet:
 - a clean run reports every manifest station matched and exits 0;
@@ -84,10 +90,14 @@ matched/unmatched/`stations_without_basin`/coverage-gap counts, exit non-zero on
 - with the model absent from `discover_models()`, the CLI fails naming the model id, rather than
   raising `KeyError` or proceeding with an empty static set.
 
-### T2 — rename the provenance placeholder
+### T2 — rename the provenance placeholder (cosmetic, owner-requested)
 `types/caravan_attributes.py`: `source_dataset_version` default `"unconfirmed@delivered-2026-08-13"`
 → `"initial@delivered-2026-08-13"` (owner). "Unconfirmed" reads as a defect awaiting correction; this
 is simply the first delivery. Update the docstring and any assertion that pins the old string.
+
+Review correctly notes this is **cosmetic** — the provenance object is returned, never persisted, so
+no stored record changes. Kept because the owner asked for it and it is one string plus its
+assertions; not kept because it buys safety.
 
 ### T3 — the recovery primitive (D4)
 `replace_namespaced_attributes` on `PgBasinStore` — same hardcoded `caravan:` prefix guard and
@@ -96,7 +106,10 @@ already-present key instead of refusing. ~15 lines.
 
 **Acceptance:** replaces a changed `caravan:` value; **refuses a non-prefixed key** (the guard is
 hardcoded, not a parameter — a caller must not be able to reach `area`); and concurrent callers
-serialise on the row lock rather than last-write-wins.
+serialise on the row lock rather than last-write-wins — **asserted inside a real transaction**.
+Review finding: `SELECT ... FOR UPDATE` is a no-op under AUTOCOMMIT, so an unqualified concurrency
+test would pass against code that does not actually lock. The existing merge relies on its caller's
+`require_real_transaction` guard (`store/_helpers.py:35-49`); this helper inherits that contract.
 
 ### T4 — run it on the mini
 The Swiss fleet is onboarded there (owner-confirmed); the dev box has 2 stations and cannot exercise
@@ -105,6 +118,17 @@ does not carry (`WITH_AQUACAST=0` by default). **Use the existing build arg** �
 `docker build --build-arg WITH_AQUACAST=1` (`Dockerfile:32-44`) — for a one-off image. No new Compose
 service: `profiles:` has **zero precedent** in this repo, and inventing throwaway infra that must
 later be "deleted or repointed" is the kind of scope this plan exists to avoid.
+
+**Preconditions the review found missing — the one-off image alone is NOT enough**
+(`Dockerfile:41-54,130-138`, `docker/entrypoint.sh:10-23`, `docker-compose.yml:18-43`):
+
+- the build needs **both** private-repo secrets (recap-dg-client and aquacast), not just the aquacast one;
+- the image **does not copy `scripts/`**, so the CLI must be bind-mounted — as must the parquet;
+- the container needs the DB password/URL and attachment to the internal Compose network.
+
+`docker compose run --rm` against an existing service supplies the network and DB env; the two mounts
+and the image tag are the only additions. Settle this concretely before T4 runs — an operator
+discovering it mid-run is how a 20-minute task becomes an evening.
 
 Stage the parquet, dry-run, read the printed diff, then run for real.
 
