@@ -22,6 +22,13 @@ schedule, no alert. Run it before/after a change to get a before/after
 completeness number; wiring it to a schedule would be new monitoring
 infrastructure, out of scope here (see the plan's § Goal).
 
+**Trailing-edge exclusion (Plan 189 T1).** LINDAS publishes a slot 14-17
+min after its own timestamp, so a window ending recently has one or two
+trailing grid slots that could not yet have been archived. Those are
+excluded from `expected`/`missing` and reported separately as
+`skipped_too_recent_slots` — otherwise every live-window audit reports
+phantom gaps at its own tail, training the reader to discount real ones.
+
 Run via:
     python -m sapphire_flow.cli.bafu_observation_audit \\
         --base-path /data/bafu_observations \\
@@ -38,6 +45,9 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
+from sapphire_flow.flows.collect_bafu_observations import (
+    _STALE_MEASUREMENT_THRESHOLD,  # pyright: ignore[reportPrivateUsage]
+)
 from sapphire_flow.types.datetime import ensure_utc
 
 if TYPE_CHECKING:
@@ -51,22 +61,44 @@ log = structlog.get_logger(__name__)
 # publishes on this grid.
 _GRID_MINUTES = 10
 
+# Plan 189 T1: LINDAS publishes a slot 14-17 min after its own timestamp
+# (Plan 176's first overnight run). A slot younger than this horizon
+# (relative to "now") could not yet have been archived and must not be
+# counted as "expected" — reusing collect_bafu_observations.py's
+# _STALE_MEASUREMENT_THRESHOLD rather than introducing a second, silently
+# -diverging constant derived from the same measured lag.
+_PUBLISH_LAG_HORIZON = _STALE_MEASUREMENT_THRESHOLD
+
 
 def _truncate_to_grid(ts: UtcDatetime) -> UtcDatetime:
     minute = (ts.minute // _GRID_MINUTES) * _GRID_MINUTES
     return ensure_utc(ts.replace(minute=minute, second=0, microsecond=0))
 
 
-def _expected_slots(start: UtcDatetime, end: UtcDatetime) -> list[UtcDatetime]:
-    """Every grid slot in the HALF-OPEN window ``[start, end)``."""
-    slots: list[UtcDatetime] = []
+def _expected_slots(
+    start: UtcDatetime, end: UtcDatetime, *, now: UtcDatetime
+) -> tuple[list[UtcDatetime], list[UtcDatetime]]:
+    """Every grid slot in the HALF-OPEN window ``[start, end)``, split into
+    ``(expected, skipped_too_recent)``.
+
+    A slot is excluded from ``expected`` (and reported in
+    ``skipped_too_recent`` instead) when it is younger than
+    ``_PUBLISH_LAG_HORIZON`` relative to ``now`` — LINDAS cannot yet have
+    published it, so counting it as "expected" manufactures a phantom gap
+    at the trailing edge of every window. A slot exactly at the horizon
+    (age == ``_PUBLISH_LAG_HORIZON``) is NOT "younger than" it, so it stays
+    expected."""
+    publishable_cutoff = ensure_utc(now - _PUBLISH_LAG_HORIZON)
+    all_slots: list[UtcDatetime] = []
     cur = _truncate_to_grid(start)
     if cur < start:
         cur = ensure_utc(cur + timedelta(minutes=_GRID_MINUTES))
     while cur < end:
-        slots.append(cur)
+        all_slots.append(cur)
         cur = ensure_utc(cur + timedelta(minutes=_GRID_MINUTES))
-    return slots
+    expected = [s for s in all_slots if s <= publishable_cutoff]
+    skipped_too_recent = [s for s in all_slots if s > publishable_cutoff]
+    return expected, skipped_too_recent
 
 
 def _observed_slot(frame: pl.DataFrame) -> UtcDatetime | None:
@@ -97,6 +129,7 @@ class CompletenessReport:
     expected_slots: int
     present_slots: tuple[UtcDatetime, ...]
     missing_slots: tuple[UtcDatetime, ...]
+    skipped_too_recent_slots: tuple[UtcDatetime, ...] = ()
 
     @property
     def present_count(self) -> int:
@@ -106,19 +139,30 @@ class CompletenessReport:
     def missing_count(self) -> int:
         return len(self.missing_slots)
 
+    @property
+    def skipped_too_recent_count(self) -> int:
+        return len(self.skipped_too_recent_slots)
+
 
 def audit_completeness(
-    base_path: Path, *, start: UtcDatetime, end: UtcDatetime
+    base_path: Path, *, start: UtcDatetime, end: UtcDatetime, now: UtcDatetime
 ) -> CompletenessReport:
     """Walk every parsed parquet snapshot under ``base_path`` and report
-    which grid slots in ``[start, end)`` are present vs missing."""
+    which grid slots in ``[start, end)`` are present vs missing.
+
+    ``now`` is the wall-clock instant the audit is run at (injected — see
+    CLAUDE.md's dependency-injection rule; the CLI boundary in ``main()``
+    is the only place that reads the real clock). Slots younger than
+    ``_PUBLISH_LAG_HORIZON`` relative to ``now`` cannot yet have been
+    published and are excluded from ``expected``/`missing` — reported
+    separately as ``skipped_too_recent_slots`` (Plan 189 T1)."""
     if end <= start:
         raise ValueError(
             f"audit window end ({end.isoformat()}) must be after start "
             f"({start.isoformat()}) — a zero-width or reversed range has no "
             "expected slots and would report a false-success (0 missing)"
         )
-    expected = _expected_slots(start, end)
+    expected, skipped_too_recent = _expected_slots(start, end, now=now)
     observed: set[UtcDatetime] = set()
     for parquet_path in sorted((base_path / "parsed").glob("**/*.parquet")):
         frame = pl.read_parquet(parquet_path)
@@ -134,6 +178,7 @@ def audit_completeness(
         expected_slots=len(expected),
         present_slots=present,
         missing_slots=missing,
+        skipped_too_recent_slots=tuple(skipped_too_recent),
     )
 
 
@@ -164,7 +209,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from sapphire_flow.logging import configure_cli_logging
 
@@ -172,9 +217,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     start = ensure_utc(datetime.fromisoformat(args.start.replace("Z", "+00:00")))
     end = ensure_utc(datetime.fromisoformat(args.end.replace("Z", "+00:00")))
+    now = ensure_utc(datetime.now(UTC))
 
     try:
-        report = audit_completeness(args.base_path, start=start, end=end)
+        report = audit_completeness(args.base_path, start=start, end=end, now=now)
     except ValueError as exc:
         # A swapped/equal --start/--end is a CLI usage error, not a
         # completeness result — must not fall through to `0 missing` == exit 0.
@@ -187,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_slots=report.expected_slots,
         present_slots=report.present_count,
         missing_slots=report.missing_count,
+        skipped_too_recent_slots=report.skipped_too_recent_count,
     )
     for slot in report.missing_slots:
         log.warning("bafu_observation_audit.missing_slot", slot=slot.isoformat())
