@@ -214,3 +214,62 @@ def test_resolved_track_request_and_candidate_fetch_result_construct() -> None:
         station_outcomes={},
     )
     assert tfr.station_outcomes == {}
+
+
+class TestForcingResolutionPolicy:
+    """Plan 151 T8a red-first (D7, D28): the flow-level policy carrier.
+
+    Guards the import (rather than importing the symbol directly at module
+    scope) so a not-yet-implemented type fails as a genuine assertion, never
+    a collection-time ImportError.
+    """
+
+    def _policy_cls(self) -> type:
+        from sapphire_flow.types import forcing_track
+
+        policy_cls = getattr(forcing_track, "ForcingResolutionPolicy", None)
+        assert policy_cls is not None, (
+            "ForcingResolutionPolicy not yet implemented in types/forcing_track.py"
+        )
+        return policy_cls
+
+    def test_constructs_with_all_three_fields(self) -> None:
+        policy_cls = self._policy_cls()
+        policy = policy_cls(
+            cycle_cadence_hours=6.0, max_cycle_age_hours=18.0, max_retries=3
+        )
+        assert policy.cycle_cadence_hours == 6.0
+        assert policy.max_cycle_age_hours == 18.0
+        assert policy.max_retries == 3
+
+    def test_non_positive_cadence_raises(self) -> None:
+        policy_cls = self._policy_cls()
+        with pytest.raises(ValueError, match="cycle_cadence_hours"):
+            policy_cls(cycle_cadence_hours=0, max_cycle_age_hours=18.0, max_retries=3)
+
+    def test_non_positive_max_cycle_age_raises(self) -> None:
+        policy_cls = self._policy_cls()
+        with pytest.raises(ValueError, match="max_cycle_age_hours"):
+            policy_cls(cycle_cadence_hours=6.0, max_cycle_age_hours=0, max_retries=3)
+
+    def test_negative_max_retries_raises(self) -> None:
+        policy_cls = self._policy_cls()
+        with pytest.raises(ValueError, match="max_retries"):
+            policy_cls(
+                cycle_cadence_hours=6.0, max_cycle_age_hours=18.0, max_retries=-1
+            )
+
+    def test_zero_max_retries_is_valid(self) -> None:
+        policy_cls = self._policy_cls()
+        policy = policy_cls(
+            cycle_cadence_hours=6.0, max_cycle_age_hours=18.0, max_retries=0
+        )
+        assert policy.max_retries == 0
+
+    def test_is_frozen(self) -> None:
+        policy_cls = self._policy_cls()
+        policy = policy_cls(
+            cycle_cadence_hours=6.0, max_cycle_age_hours=18.0, max_retries=3
+        )
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            policy.max_retries = 5  # type: ignore[misc]

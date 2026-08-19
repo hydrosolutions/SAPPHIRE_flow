@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import polars as pl
@@ -24,12 +24,14 @@ from sapphire_flow.adapters.meteoswiss_nwp import (
     DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
 )
 from sapphire_flow.adapters.recap_gateway import (
+    DEFAULT_MAX_CYCLE_AGE_HOURS,
     SNOW_CANONICAL_PARAMETERS,
     GatewayResolutionError,
     RecapAuthError,
     RecapConfigurationError,
     RecapDataUnavailableError,
 )
+from sapphire_flow.config.recap_gateway import DEFAULT_CYCLE_CADENCE_HOURS
 from sapphire_flow.exceptions import (
     ConfigurationError,
     DiskHardLimitError,
@@ -37,7 +39,10 @@ from sapphire_flow.exceptions import (
     NoCycleAvailableError,
     StoreError,
 )
-from sapphire_flow.protocols.adapters import SnowForecastSource
+from sapphire_flow.protocols.adapters import (
+    CandidateAwareForecastSource,
+    SnowForecastSource,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AlertEligibility,
@@ -52,6 +57,7 @@ from sapphire_flow.types.enums import (
     WeatherSourceRole,
     WeatherSourceStatus,
 )
+from sapphire_flow.types.forcing_track import ForcingResolutionPolicy
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
     FALLBACK_MODEL_IDS,
@@ -60,7 +66,7 @@ from sapphire_flow.types.ids import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     from sapphire_flow.adapters.recap_gateway import (
         GatewayPolygonBindingStoreLike,
@@ -85,10 +91,12 @@ if TYPE_CHECKING:
         StationStore,
         WeatherForecastStore,
     )
+    from sapphire_flow.services.run_station_forecast import StationForecastResult
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import ForecastQcRuleSet
     from sapphire_flow.types.ensemble import ForecastEnsemble
+    from sapphire_flow.types.forcing_track import ForcingTrackKey, RawFetchOutcome
     from sapphire_flow.types.forecast import OperationalForecast
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.rating_curve import RatingCurve
@@ -136,6 +144,27 @@ _ICON_NWP_SOURCE = "icon_ch2_eps"
 _IFS_NWP_SOURCE = "ifs_ecmwf"
 _NWP_CADENCE_HOURS = 6.0
 _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS = 5.0
+
+# Plan 151 T8a (D28, ruling 4): the ONE named default for
+# ForcingResolutionPolicy.max_retries. `max_retries` has NO config default
+# (config/recap_gateway.py's RecapGatewayConfig.max_retries is a required
+# TOML field with no `= ...` fallback), so a policy built without a parsed
+# RecapGatewayConfig (construction paths 2 with config_path=None, and 3 with
+# no explicit policy injected) has nowhere else to source it from.
+_DEFAULT_FORCING_RESOLUTION_MAX_RETRIES = 3
+
+# The ONE named, module-level, explicitly-documented default policy constant
+# (D7): built from the same DEFAULT_CYCLE_CADENCE_HOURS / DEFAULT_MAX_CYCLE_AGE_HOURS
+# the config layer defaults to, plus the named retries default above. Used by
+# both construction path 2 (injected client, config_path=None) and
+# construction path 3 (directly injected candidate-aware adapter, no
+# forcing_resolution_policy supplied) — never a set of silent per-field
+# fallbacks scattered at use sites.
+_DEFAULT_FORCING_RESOLUTION_POLICY = ForcingResolutionPolicy(
+    cycle_cadence_hours=DEFAULT_CYCLE_CADENCE_HOURS,
+    max_cycle_age_hours=DEFAULT_MAX_CYCLE_AGE_HOURS,
+    max_retries=_DEFAULT_FORCING_RESOLUTION_MAX_RETRIES,
+)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -422,12 +451,35 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
     )
 
 
+def _default_injected_adapter_forcing_policy(
+    forcing_resolution_policy: ForcingResolutionPolicy | None,
+) -> ForcingResolutionPolicy | None:
+    """Plan 151 T8a (D7, construction path 3): default-fill ONLY when the
+    caller injected an adapter directly AND supplied no explicit policy.
+    Called with the caller's ORIGINAL ``forcing_resolution_policy`` value —
+    reads NOTHING off the adapter itself (D7); the adapter's identity (has
+    the flow received one at all?) is decided by the caller, not this
+    function, which is why it takes no ``adapter`` parameter. Explicit
+    policies always win (D7 ruling 4) — this only fills the ``None`` case.
+    """
+    if forcing_resolution_policy is not None:
+        return forcing_resolution_policy
+    log.info(
+        "nwp.forcing_resolution_policy_default_used",
+        construction_path="injected_adapter",
+        cycle_cadence_hours=_DEFAULT_FORCING_RESOLUTION_POLICY.cycle_cadence_hours,
+        max_cycle_age_hours=_DEFAULT_FORCING_RESOLUTION_POLICY.max_cycle_age_hours,
+        max_retries=_DEFAULT_FORCING_RESOLUTION_POLICY.max_retries,
+    )
+    return _DEFAULT_FORCING_RESOLUTION_POLICY
+
+
 def _build_recap_forecast_adapter(
     *,
     config_path: str | None,
     gateway_polygon_store: GatewayPolygonBindingStoreLike | None,
     recap_client: object | None,
-) -> object:
+) -> tuple[object, ForcingResolutionPolicy]:
     """Plan 082 Task 2D Flow-1 dispatch: build the Nepal v1 Recap adapter.
 
     Config validity (a valid ``[adapters.recap_gateway]`` section) was
@@ -435,6 +487,16 @@ def _build_recap_forecast_adapter(
     2C) — this only wires the already-validated pieces together. Extracted
     from ``run_forecast_cycle_flow`` so the dispatch decision is unit-testable
     without running the full flow.
+
+    Plan 151 T8a: returns a frozen ``(adapter, ForcingResolutionPolicy)``
+    pair — the single caller unpacks both. Construction path 1 (real
+    client): the policy is built from the SAME parsed ``RecapGatewayConfig``
+    the adapter itself is built from. Construction path 2 (injected
+    client): when ``config_path`` is set, the policy is config-derived
+    exactly as path 1; when ``config_path`` is ``None`` (as the existing
+    injected-client unit test drives it), the ONE named default policy
+    constant applies, logged at construction (D7 — never a silent per-field
+    fallback).
     """
     from sapphire_flow.adapters.recap_gateway import (
         RecapGatewayForecastAdapter,
@@ -467,15 +529,38 @@ def _build_recap_forecast_adapter(
             api_key=load_recap_api_key(), config=recap_gateway_config
         )
         recap_client = RecapClient(client_config)
-        return RecapGatewayForecastAdapter(
+        adapter: object = RecapGatewayForecastAdapter(
             client=cast("RecapClientLike", recap_client),
             resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
             max_cycle_age_hours=recap_gateway_config.max_cycle_age_hours,
         )
-    return RecapGatewayForecastAdapter(
+        policy = ForcingResolutionPolicy(
+            cycle_cadence_hours=recap_gateway_config.cycle_cadence_hours,
+            max_cycle_age_hours=recap_gateway_config.max_cycle_age_hours,
+            max_retries=recap_gateway_config.max_retries,
+        )
+        return adapter, policy
+
+    adapter = RecapGatewayForecastAdapter(
         client=cast("RecapClientLike", recap_client),
         resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
     )
+    if config_path is not None:
+        recap_gateway_config = load_recap_gateway_config(Path(config_path))
+        policy = ForcingResolutionPolicy(
+            cycle_cadence_hours=recap_gateway_config.cycle_cadence_hours,
+            max_cycle_age_hours=recap_gateway_config.max_cycle_age_hours,
+            max_retries=recap_gateway_config.max_retries,
+        )
+        return adapter, policy
+    log.info(
+        "nwp.forcing_resolution_policy_default_used",
+        construction_path="injected_client",
+        cycle_cadence_hours=_DEFAULT_FORCING_RESOLUTION_POLICY.cycle_cadence_hours,
+        max_cycle_age_hours=_DEFAULT_FORCING_RESOLUTION_POLICY.max_cycle_age_hours,
+        max_retries=_DEFAULT_FORCING_RESOLUTION_POLICY.max_retries,
+    )
+    return adapter, _DEFAULT_FORCING_RESOLUTION_POLICY
 
 
 def _load_grid_extractor_choice() -> Literal["mesh", "exactextract"]:
@@ -1524,6 +1609,144 @@ def _fetch_obs_timestamps_task(
 
 
 # ---------------------------------------------------------------------------
+# Plan 151 T8a — forcing-resolution policy carrier + DORMANT helpers
+# (D11, D28, D30). NONE of these have a production call site from the cycle
+# body in this run — see "Build scope for THIS run" in
+# docs/plans/151-forecast-redesign-phase3-track-resolution-assembly.md. T8b
+# installs them. Named WITHOUT a leading underscore, unlike this module's
+# wired-in helpers (`_fetch_nwp_task`, `_build_recap_forecast_adapter`) —
+# mirroring T5-T7's public dormant services-layer track-resolution entry
+# points so `reportUnusedFunction` (which targets unreferenced
+# module-PRIVATE symbols) does not fire on a helper that is genuinely
+# dormant by design, without silencing the dead-code lint itself. NOTE: the
+# T8a exit gate greps this module for the T5-T7 entry-point NAMES
+# themselves (not just call sites) — do not spell them out literally in
+# this file's comments/docstrings even when referring to them.
+# ---------------------------------------------------------------------------
+
+
+@task(
+    name="fetch-forcing-candidate",
+    persist_result=False,
+    log_prints=False,
+    cache_policy=NO_CACHE,
+)
+def fetch_forcing_candidate_task(
+    source: CandidateAwareForecastSource,
+    track: ForcingTrackKey,
+    stations: list[StationWeatherSource],
+    candidate_cycle: UtcDatetime,
+) -> RawFetchOutcome:
+    """Plan 151 T8a (D28): the retrying wrapper around ONE candidate-cycle
+    fetch. ``retries=`` is deliberately NOT a static decorator argument here
+    — ``ForcingResolutionPolicy.max_retries`` is a runtime value sourced from
+    config or an injected policy, so the caller configures it per-call via
+    ``fetch_forcing_candidate_task.with_options(retries=policy.max_retries)``.
+    Defined only — T8a adds no caller; T8b binds this (via a closure
+    matching the services-layer per-track walk-back resolver's
+    ``fetch_candidate: Callable[[UtcDatetime], RawFetchOutcome]`` parameter)
+    and calls it once per walk-back candidate.
+    """
+    return source.fetch_requirement(track, stations, candidate_cycle)
+
+
+def emit_freshness_on_fatal_exit(
+    pipeline_health_store: object | None,
+    *,
+    cycle_time_param: str | None,
+    resolved_cycle_time: UtcDatetime,
+    forecasts_stored: int,
+    checked_at: UtcDatetime,
+    exc: BaseException,
+) -> NoReturn:
+    """Plan 151 T8a (Plan 116 contract): a fatal auth/config, payload-
+    integrity or store failure raised during per-track resolution would
+    otherwise escape past all four existing ``_emit_forecast_freshness_record``
+    call sites (normal completion and the three pre-existing fatal exits) and
+    emit NO ``FORECAST_FRESHNESS`` record at all — the exact inverse of Plan
+    116's contract (a dark cycle that also silences its own heartbeat).
+    Emits exactly ONE forced-CRITICAL record carrying ``forecasts_stored`` as
+    it stood at the fatal exit, then re-raises ``exc`` UNCHANGED (type,
+    message and ``__cause__`` preserved — ``raise exc`` adds only a new
+    traceback frame, never touching ``__cause__``/args/type). Helper only —
+    T8b installs this at every new fatal per-track-resolution exit.
+    """
+    _emit_forecast_freshness_record(
+        pipeline_health_store,
+        cycle_time_param=cycle_time_param,
+        resolved_cycle_time=resolved_cycle_time,
+        forecasts_stored=forecasts_stored,
+        checked_at=checked_at,
+        force_critical=True,
+    )
+    raise exc
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CrossCycleMismatch:
+    """Plan 151 T8a (D11): >= 2 distinct non-null forcing cycles were found
+    across a station's combinable results — combination must not proceed."""
+
+    cycles: frozenset[UtcDatetime]
+
+
+def resolve_combined_forcing_cycle(
+    combinable_results: Mapping[ModelId, StationForecastResult],
+) -> UtcDatetime | CrossCycleMismatch | None:
+    """Plan 151 T8a (D11): the cross-cycle combination preflight — a PURE
+    function, no store I/O. Equality is compared ONLY across non-null
+    forcing cycles read from each result's own forecasts' provenance
+    (``types/forecast.py:78-83``,
+    ``OperationalForecast.provenance.nwp_cycle_reference_time``). A trackless
+    combinable model (e.g. ``LinearRegressionDaily`` — only explicit fallback
+    IDs are excluded from ``combinable_results``,
+    ``run_station_forecast.py:111-115``) contributes NO cycle and is
+    therefore neutral: every forecast it produced carries
+    ``nwp_cycle_reference_time=None``. Returns the single non-null cycle
+    (including when every OTHER result was trackless), ``None`` when every
+    result was trackless/all-null, or a ``CrossCycleMismatch`` naming every
+    distinct cycle found. Helper only — T8b installs this at the TOP of the
+    per-station persist block, before the per-forecast store call and the
+    state store — NOT at the combination point, where a mismatch would leave
+    partial writes already committed.
+    """
+    cycles: set[UtcDatetime] = set()
+    for result in combinable_results.values():
+        for fc in result.forecasts:
+            cycle = fc.provenance.nwp_cycle_reference_time
+            if cycle is not None:
+                cycles.add(cycle)
+    if len(cycles) > 1:
+        return CrossCycleMismatch(cycles=frozenset(cycles))
+    return next(iter(cycles), None)
+
+
+def per_track_eligible_stations(
+    adapter: object,
+    station_ids: Iterable[StationId],
+    group_store: StationGroupStore | None,
+) -> frozenset[StationId]:
+    """Plan 151 T8a (D30): the per-track-eligible station set — a
+    candidate-aware adapter AND NOT a member of any station group. Pure /
+    read-only: queries ``group_store.fetch_groups_for_station`` per candidate
+    station, never mutates. ``adapter`` not satisfying
+    ``CandidateAwareForecastSource`` (legacy MeteoSwiss/replay) yields the
+    empty set — there is no per-track path to be eligible for. Helper only —
+    T8b applies this BOTH to gate the ``isinstance`` dispatch AND to re-scope
+    Phase A so it no longer submits these stations to the legacy
+    ``_fetch_nwp_task`` (D7's "Phase A must not persist partial candidates
+    for migrated stations").
+    """
+    if not isinstance(adapter, CandidateAwareForecastSource):
+        return frozenset()
+    if group_store is None:
+        return frozenset(station_ids)
+    return frozenset(
+        sid for sid in station_ids if not group_store.fetch_groups_for_station(sid)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Flow
 # ---------------------------------------------------------------------------
 
@@ -1580,6 +1803,13 @@ def run_forecast_cycle_flow(
     # it, and the production bootstrap does not inject it) forecast curve-binding
     # is a pure no-op. A v1 caller passes a RatingCurveStore to enable binding.
     rating_curve_store: object | None = None,
+    # Plan 151 T8a (D7, construction path 3): the resolver-facing policy for
+    # a DIRECTLY injected candidate-aware adapter, which never reaches
+    # _build_recap_forecast_adapter. When an adapter is injected and this is
+    # None, the named default policy constant applies. When supplied, it
+    # wins on every construction path (including 1 and 2). Unused in this
+    # run (T8a is dormant) — T8b threads it into the resolver.
+    forcing_resolution_policy: object | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
 
@@ -1607,6 +1837,9 @@ def run_forecast_cycle_flow(
         grid_extractor = cast("GridExtractor | None", grid_extractor)
         gateway_polygon_store = cast(
             "GatewayPolygonBindingStoreLike | None", gateway_polygon_store
+        )
+        forcing_resolution_policy = cast(
+            "ForcingResolutionPolicy | None", forcing_resolution_policy
         )
 
         if clock is None:
@@ -1657,6 +1890,16 @@ def run_forecast_cycle_flow(
         # gated on `adapter is None` so an injected adapter bypasses it.
         grid_extractor_choice = _load_grid_extractor_choice()
         nwp_enabled = adapter is not None
+        # Plan 151 T8a (D7, construction path 3): `adapter is not None` here
+        # means the CALLER injected an adapter directly — the ONLY path that
+        # never reaches `_build_recap_forecast_adapter`. `nwp_enabled` is
+        # evaluated on the ORIGINAL caller-supplied `adapter` value (the `if
+        # adapter is None:` branch below has not run yet), so this check
+        # cannot be confused with paths 1/2 rebuilding `adapter` later.
+        if nwp_enabled:
+            forcing_resolution_policy = _default_injected_adapter_forcing_policy(
+                forcing_resolution_policy
+            )
         expected_delivery_offset_hours = _load_expected_delivery_offset_hours()
         # Plan 082 Task 2G: which forecast_source the grid-staleness check
         # queries `weather_forecasts` for. Defaults to the MeteoSwiss ICON
@@ -1688,11 +1931,18 @@ def run_forecast_cycle_flow(
                 weather_forecast_config.enabled
                 and weather_forecast_config.type == "recap_gateway"
             ):
-                adapter = _build_recap_forecast_adapter(
-                    config_path=config_path_for_adapter,
-                    gateway_polygon_store=gateway_polygon_store,
-                    recap_client=recap_client,
+                adapter, _built_forcing_resolution_policy = (
+                    _build_recap_forecast_adapter(
+                        config_path=config_path_for_adapter,
+                        gateway_polygon_store=gateway_polygon_store,
+                        recap_client=recap_client,
+                    )
                 )
+                # D7 ruling 4: an explicit caller-supplied policy (path 3's
+                # parameter) wins on EVERY path, including this one — so a
+                # test can pin an exact policy without touching config.
+                if forcing_resolution_policy is None:
+                    forcing_resolution_policy = _built_forcing_resolution_policy
             elif weather_forecast_config.enabled:
                 import httpx
 
