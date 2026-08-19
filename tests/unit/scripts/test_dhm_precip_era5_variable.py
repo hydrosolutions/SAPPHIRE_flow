@@ -19,6 +19,8 @@ is re-downloaded straight over the existing file.
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,7 +35,13 @@ from scripts.dhm_precip.era5_errors import (
     Era5StorageError,
     Era5ValidationError,
 )
-from scripts.dhm_precip.era5_manifest import raw_artifact_path
+from scripts.dhm_precip.era5_manifest import (
+    Era5ProvenanceManifest,
+    OperatorProvenance,
+    raw_artifact_path,
+    read_manifest,
+    write_manifest_atomic,
+)
 from scripts.dhm_precip.era5_request import (
     DEFAULT_REQUEST_SPEC,
     Era5Accumulation,
@@ -203,3 +211,55 @@ class TestRawValidationIsVariableAware:
                 window=parse_window_arg(self.WINDOW),
                 spec=Era5RequestSpec(variable="2m_temperature"),
             )
+
+
+class TestTheVariableSurvivesTheDISK:
+    """The guard is only as good as its persistence, and this is where it first
+    failed: the domain dataclass carried `variable`, but the pydantic boundary
+    model did not, so the field was written, dropped on serialisation, and read
+    back as the default. The acquisition-wide guard then rejected the very data
+    root it had just created — a false positive that halted a legitimate fetch.
+
+    Testing the guard's LOGIC did not catch this. Only a round-trip does.
+    """
+
+    def _manifest(self, variable: str) -> Era5ProvenanceManifest:
+        return Era5ProvenanceManifest(
+            dataset="reanalysis-era5-land",
+            variable=variable,
+            client_package_version="1.2.3",
+            operator_provenance=OperatorProvenance(
+                cds_portal_url="https://cds.climate.copernicus.eu",
+                dataset_landing_page_url="https://cds.climate.copernicus.eu/x",
+                licence_name="Licence to use Copernicus Products",
+                licence_version="1.2",
+                licence_accepted_at=datetime(2026, 8, 19, tzinfo=UTC),
+            ),
+        )
+
+    def test_temperature_round_trips_through_the_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest("2m_temperature"), path)
+        loaded = read_manifest(path)
+        assert loaded is not None
+        assert loaded.variable == "2m_temperature"
+
+    def test_the_variable_is_actually_serialised(self, tmp_path: Path) -> None:
+        """Read-back alone could pass on a default; assert the key is on disk."""
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest("2m_temperature"), path)
+        assert json.loads(path.read_text())["variable"] == "2m_temperature"
+
+    def test_a_manifest_without_the_field_reads_as_precipitation(
+        self, tmp_path: Path
+    ) -> None:
+        """Back-compat: every manifest written before the field existed IS
+        precipitation, and must keep loading rather than raising."""
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest("total_precipitation"), path)
+        raw = json.loads(path.read_text())
+        del raw["variable"]
+        path.write_text(json.dumps(raw))
+        loaded = read_manifest(path)
+        assert loaded is not None
+        assert loaded.variable == "total_precipitation"

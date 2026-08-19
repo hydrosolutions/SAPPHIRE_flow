@@ -416,6 +416,12 @@ class _AccumulationDiagnosticRecordModel(BaseModel):
 
 class _Era5ProvenanceManifestModel(BaseModel):
     dataset: str
+    variable: str = DEFAULT_VARIABLE
+    """Defaulted so a manifest written before this field existed still parses —
+    every such manifest is precipitation. WITHOUT this field on the boundary
+    model the domain field never round-trips: it is written, dropped on
+    serialisation, and read back as the default, so the acquisition-wide
+    variable guard rejects the very data root it just created."""
     client_package_version: str
     operator_provenance: _OperatorProvenanceModel
     raw_windows: dict[str, _RawWindowRecordModel] = {}
@@ -426,6 +432,7 @@ class _Era5ProvenanceManifestModel(BaseModel):
 def _to_model(manifest: Era5ProvenanceManifest) -> _Era5ProvenanceManifestModel:
     return _Era5ProvenanceManifestModel(
         dataset=manifest.dataset,
+        variable=manifest.variable,
         client_package_version=manifest.client_package_version,
         operator_provenance=_OperatorProvenanceModel(
             **asdict(manifest.operator_provenance)
@@ -448,6 +455,7 @@ def _to_model(manifest: Era5ProvenanceManifest) -> _Era5ProvenanceManifestModel:
 def _to_domain(model: _Era5ProvenanceManifestModel) -> Era5ProvenanceManifest:
     return Era5ProvenanceManifest(
         dataset=model.dataset,
+        variable=model.variable,
         client_package_version=model.client_package_version,
         operator_provenance=OperatorProvenance(
             **model.operator_provenance.model_dump()
