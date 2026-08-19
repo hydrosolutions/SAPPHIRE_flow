@@ -25,6 +25,7 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleSet
 from sapphire_flow.types.enums import (
     EnsembleMode,
+    ForcingRoute,
     ModelAssignmentStatus,
     NwpCycleSource,
 )
@@ -112,6 +113,11 @@ def _ready_context(
         issue_time=_NOW,
         forecast_horizon_steps=horizon_steps,
         time_step=_STEP,
+        # Plan 151 D10: these stand in for `assemble_assignment_inputs`
+        # output, which is PER_TRACK. Leaving it at the LEGACY_SUPERSET
+        # default let this whole suite exercise the WRONG discriminant at
+        # the FI boundary while staying green.
+        forcing_route=ForcingRoute.PER_TRACK,
     )
     provenance = ForecastProvenance(
         nwp_cycle_source=NwpCycleSource.PRIMARY, nwp_cycle_reference_time=_NOW
@@ -225,6 +231,84 @@ def test_assembly_and_runner_share_exactly_one_warm_up_load() -> None:
 
     assert _MODEL_HIGH in result.results, result.failed_models
     assert state_store.accessed_model_ids == [_MODEL_HIGH]
+
+
+class _RouteRecordingModel(FakeStationForecastModel):
+    """Records the `forcing_route` the runner actually hands to `predict`."""
+
+    def __init__(self) -> None:
+        self.seen_routes: list[ForcingRoute] = []
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> object:
+        self.seen_routes.append(inputs.forcing_route)
+        return super().predict(artifact, inputs, rng, prior_state)  # type: ignore[arg-type]
+
+
+def test_production_assembly_per_track_route_survives_to_predict() -> None:
+    """Plan 151 D10: the discriminant is only worth anything if the value
+    PRODUCTION assembly sets survives the whole way to the model boundary.
+    `assemble_assignment_inputs` must stamp `PER_TRACK`, and
+    `run_all_station_forecasts_per_track` must hand that same
+    `StationModelInputs` to `predict` untouched -- no re-wrap that drops back
+    to the `LEGACY_SUPERSET` default."""
+    from sapphire_flow.types.forcing_track import AssignmentKey, NoForcingRequired
+    from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
+    from tests.fakes.fake_stores import (
+        FakeBasinStore,
+        FakeObservationStore,
+        FakeStationStore,
+    )
+
+    artifact_store = FakeModelArtifactStore()
+    _seed_artifact(artifact_store, _MODEL_HIGH)
+    model = _RouteRecordingModel()
+
+    obs_store = FakeObservationStore()
+    station_store = FakeStationStore()
+    station_store.store_station(make_station_config(station_id=_STATION_ID))
+
+    projection = NoForcingRequired(assignment=AssignmentKey((_STATION_ID, _MODEL_HIGH)))
+    ready = assemble_assignment_inputs(
+        station_id=_STATION_ID,
+        model_id=_MODEL_HIGH,
+        model=model,  # type: ignore[arg-type]
+        projection=projection,
+        track_outcome=None,
+        issue_time=_NOW,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=FakeBasinStore(),  # type: ignore[arg-type]
+        forcing_source=FakeWeatherReanalysisSource(),  # type: ignore[arg-type]
+        clock=_clock,  # type: ignore[arg-type]
+    )
+    assert isinstance(ready, ReadyContext)
+    assert ready.inputs.forcing_route is ForcingRoute.PER_TRACK
+
+    result = run_all_station_forecasts_per_track(
+        station_id=_STATION_ID,
+        run_inputs={_MODEL_HIGH: ready},
+        assignments=[_assignment(_MODEL_HIGH, priority=1)],
+        models={_MODEL_HIGH: model},  # type: ignore[dict-item]
+        artifact_store=artifact_store,
+        qc_checker=ForecastOutputQualityChecker(),
+        qc_rules=_empty_qc_rules(),
+        qc_overrides=[],
+        baselines=[],
+        config=_config(),
+        clock=_clock,  # type: ignore[arg-type]
+        id_gen=_id_gen,  # type: ignore[arg-type]
+        rng=_RNG,
+        model_state_store=FakeModelStateStore(),
+    )
+
+    assert _MODEL_HIGH in result.results, result.failed_models
+    assert model.seen_routes == [ForcingRoute.PER_TRACK]
 
 
 def test_missing_context_advances_chain_without_touching_registry_or_stores() -> None:

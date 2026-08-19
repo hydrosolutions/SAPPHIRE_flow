@@ -11,7 +11,12 @@ from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import EnsembleMode, QcStatus, WarmUpSource
+from sapphire_flow.types.enums import (
+    EnsembleMode,
+    ForcingRoute,
+    QcStatus,
+    WarmUpSource,
+)
 from sapphire_flow.types.model import (
     ModelDataRequirements,
     StationInputData,
@@ -720,6 +725,14 @@ def assemble_station_operational_inputs(
         issue_time=issue_time,
         forecast_horizon_steps=forecast_horizon_steps,
         time_step=time_step,
+        # Plan 151 D10: stated explicitly (it is also the default) — this is
+        # the LEGACY superset assembler. `build_superset_requirements` sizes
+        # ONE frame to the MAX horizon across the station's co-assigned
+        # models, so a shorter-horizon model is over-delivered BY DESIGN and
+        # the FI boundary must NOT truncate it to that model's own
+        # `future_steps` (`models/nwp_regression.py`: over-delivery "is
+        # tolerated and forecast in full").
+        forcing_route=ForcingRoute.LEGACY_SUPERSET,
     )
     metadata = OperationalInputMetadata(
         warm_up_source=warm_up_source,

@@ -14,6 +14,7 @@ from sapphire_flow.services.track_assembly import (
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleMode,
+    ForcingRoute,
     NwpCycleSource,
     SpatialRepresentation,
 )
@@ -152,6 +153,10 @@ def test_assembles_frame_at_assignment_own_max_horizon_not_model_scalar() -> Non
     )
 
     assert isinstance(result, ReadyContext)
+    # Plan 151 D10: per-track assembly stamps the explicit discriminant the
+    # FI boundary reads to decide whether D9's per-variable `future_steps`
+    # slice applies.
+    assert result.inputs.forcing_route is ForcingRoute.PER_TRACK
     frame = result.inputs.data.future_dynamic
     assert frame.height == 2, "must cap to the assignment's own 2-step horizon"
     assert result.contract == ForcingContract(

@@ -31,7 +31,12 @@ from sapphire_flow.services.operational_inputs import (
 )
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import EnsembleMode, NwpCycleSource, QcStatus
+from sapphire_flow.types.enums import (
+    EnsembleMode,
+    ForcingRoute,
+    NwpCycleSource,
+    QcStatus,
+)
 from sapphire_flow.types.forcing_track import (
     AssignmentKey,
     ForcingRequired,
@@ -324,6 +329,13 @@ def assemble_assignment_inputs(
         issue_time=issue_time,
         forecast_horizon_steps=forecast_horizon_steps,
         time_step=time_step,
+        # Plan 151 D10: the explicit per-track discriminant. Set HERE and
+        # nowhere else — it is what tells the FI boundary that D9's
+        # per-variable ``future_steps`` slice applies to these inputs.
+        # ``contract is None`` (a ``NoForcingRequired`` assignment) does NOT
+        # demote the route: the route is which assembler built the inputs,
+        # never an inference from an absent contract.
+        forcing_route=ForcingRoute.PER_TRACK,
     )
     provenance = ForecastProvenance(
         nwp_cycle_source=cycle_source,

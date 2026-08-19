@@ -15,7 +15,11 @@ from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
 )
-from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    ForcingRoute,
+    SpatialRepresentation,
+)
 
 _DEFAULT_SCOPE = fi_boundary.FIArtifactScope.STATION
 
@@ -809,7 +813,11 @@ def test_nan_tolerance_scoped_to_selected_branch_not_flattened() -> None:
     rejects it outright), so the scoping behaviour is asserted directly on
     the private `_variables_over_nan_tolerance` seam — the only route left
     to exercise it, and the same seam `predict()` itself calls internally
-    with `time_step=inputs.time_step` (forecast_interface.py:894-899).
+    with `time_step=inputs.time_step` AND `forcing_route=inputs.forcing_route`.
+
+    Plan 151 D10: the SCOPED path is selected by `ForcingRoute.PER_TRACK`,
+    not by the mere presence of a `time_step` — the LEGACY superset route
+    keeps the pre-T6 flattened maps (and never resolves `time_step`).
 
     Fails today (pre-T6): with no `time_step` parameter at all, the gate
     always flattens across every branch, so `soil_moisture` is checked (and
@@ -840,13 +848,14 @@ def test_nan_tolerance_scoped_to_selected_branch_not_flattened() -> None:
         past_dynamic=past_dynamic,
         future_dynamic=future_dynamic,
         time_step=timedelta(hours=1),
+        forcing_route=ForcingRoute.PER_TRACK,
     )
     assert "past_known.soil_moisture" not in scoped
 
-    # Sanity check the fixture is meaningful: the OLD flattened form (no
-    # time_step, still exercised by predict_batch's GROUP call site,
-    # D8-group) DOES flag it — proving this is a real scoping difference,
-    # not a vacuous assertion.
+    # Sanity check the fixture is meaningful: the flattened form (the
+    # LEGACY_SUPERSET default — predict_batch's GROUP call site, D8-group,
+    # and the legacy station route) DOES flag it — proving this is a real
+    # scoping difference, not a vacuous assertion.
     flattened = adapter._variables_over_nan_tolerance(
         past_targets=pl.DataFrame(),
         past_dynamic=past_dynamic,
