@@ -56,10 +56,20 @@ ERA5_VARIABLE_CODES: dict[str, str] = {
     "total_precipitation": "tp",
     "2m_temperature": "t2m",
 }
-"""Short code used in on-disk filenames. Without this, every variable's raw
-window would be written to `era5_land_tp_raw_<window>.nc` — so a temperature
-fetch would OVERWRITE the precipitation archive under a filename claiming to
-be precipitation."""
+"""Short code used in on-disk filenames AND as the netCDF data-variable name
+CDS returns for that variable (ERA5-Land uses the same short names). Without
+this, every variable's raw window would be written to
+`era5_land_tp_raw_<window>.nc` — so a temperature fetch would OVERWRITE the
+precipitation archive under a filename claiming to be precipitation."""
+
+ERA5_VARIABLE_UNITS: dict[str, frozenset[str]] = {
+    "total_precipitation": frozenset({"m", "metres", "meters"}),
+    "2m_temperature": frozenset({"k", "kelvin"}),
+}
+"""Accepted `units` attribute on the raw netCDF variable, lower-cased. Checked
+because a units change is exactly the silent corruption the raw validation
+exists to catch — the transform's m->mm factor is meaningless if the source is
+not in metres."""
 
 
 def accumulation_of(variable: str) -> Era5Accumulation:
@@ -68,6 +78,16 @@ def accumulation_of(variable: str) -> Era5Accumulation:
     except KeyError:
         raise ValueError(
             f"unknown ERA5-Land variable {variable!r}; known: {sorted(ERA5_VARIABLES)}"
+        ) from None
+
+
+def expected_units(variable: str) -> frozenset[str]:
+    try:
+        return ERA5_VARIABLE_UNITS[variable]
+    except KeyError:
+        raise ValueError(
+            f"no expected units for ERA5-Land variable {variable!r}; known: "
+            f"{sorted(ERA5_VARIABLE_UNITS)}"
         ) from None
 
 
@@ -229,6 +249,7 @@ class Era5RequestSpec:
         # Parse, don't validate: an unknown variable can never reach CDS.
         accumulation_of(self.variable)
         variable_code(self.variable)
+        expected_units(self.variable)
         north, west, south, east = self.area
         if not (south < north):
             raise ValueError(f"area north/south out of order: {self.area}")

@@ -51,6 +51,7 @@ from scripts.dhm_precip.era5_request import (
     Era5RequestSpec,
     build_request_payload,
     expected_grid_shape,
+    expected_units,
     variable_code,
 )
 
@@ -351,13 +352,24 @@ def _validate_raw_artifact(
 def _validate_variable(
     ds: xr.Dataset, *, window: AcquisitionWindow, spec: Era5RequestSpec
 ) -> None:
-    if "tp" not in ds:
+    # The netCDF short name and its units are BOTH variable-specific: CDS
+    # returns 'tp' in metres for total_precipitation and 't2m' in kelvin for
+    # 2m_temperature. Hard-coding either would reject a perfectly good file
+    # for the wrong variable (which is how this was found — the download
+    # succeeded and validation rejected it), or, worse, accept a file whose
+    # units the transform then misinterprets.
+    name = variable_code(spec.variable)
+    if name not in ds:
         raise Era5ValidationError(
-            f"expected variable 'tp' absent; got {list(ds.data_vars)}"
+            f"expected variable {name!r} absent; got {list(ds.data_vars)}"
         )
-    units = str(ds["tp"].attrs.get("units", "")).strip().lower()
-    if units not in ("m", "metres", "meters"):
-        raise Era5ValidationError(f"'tp' units attribute {units!r} is not metres")
+    units = str(ds[name].attrs.get("units", "")).strip().lower()
+    accepted = expected_units(spec.variable)
+    if units not in accepted:
+        raise Era5ValidationError(
+            f"{name!r} units attribute {units!r} is not one of "
+            f"{sorted(accepted)} for variable {spec.variable!r}"
+        )
     for coord in ("valid_time", "latitude", "longitude"):
         if coord not in ds.coords and coord not in ds.dims:
             raise Era5ValidationError(f"missing coordinate {coord!r}")

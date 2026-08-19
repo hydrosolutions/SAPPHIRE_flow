@@ -22,10 +22,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pytest
+import xarray as xr
 
 from scripts.dhm_precip.acquire_era5 import _exit_code_for, build_parser, run
-from scripts.dhm_precip.era5_errors import Era5StageNotApplicableError, Era5StorageError
+from scripts.dhm_precip.era5_acquire import _validate_variable
+from scripts.dhm_precip.era5_errors import (
+    Era5StageNotApplicableError,
+    Era5StorageError,
+    Era5ValidationError,
+)
 from scripts.dhm_precip.era5_manifest import raw_artifact_path
 from scripts.dhm_precip.era5_request import (
     DEFAULT_REQUEST_SPEC,
@@ -33,6 +40,8 @@ from scripts.dhm_precip.era5_request import (
     Era5RequestSpec,
     accumulation_of,
     build_request_payload,
+    expected_grid_shape,
+    expected_units,
     parse_window_arg,
     variable_code,
 )
@@ -125,4 +134,72 @@ class TestCliDefaultsAreUnchanged:
         with pytest.raises(SystemExit):
             build_parser().parse_args(
                 ["--provenance", "p.json", "--variable", "not_a_variable"]
+            )
+
+
+class TestRawValidationIsVariableAware:
+    """The fourth single-variable assumption, found by the real fetch: the raw
+    schema check pinned BOTH the netCDF data-variable name ('tp') and its units
+    (metres). The temperature download succeeded and was then rejected with
+    "expected variable 'tp' absent; got ['t2m']".
+    """
+
+    WINDOW = "2021-10-01"  # a whole DAY: 24 hourly stamps
+
+    def _dataset(self, name: str, units: str) -> xr.Dataset:
+        n_lat, n_lon = expected_grid_shape(DEFAULT_REQUEST_SPEC.area)
+        north, west, south, east = DEFAULT_REQUEST_SPEC.area
+        stamps = np.array(
+            [np.datetime64(f"2021-10-01T{h:02d}", "ns") for h in range(24)]
+        )
+        return xr.Dataset(
+            {
+                name: (
+                    ("valid_time", "latitude", "longitude"),
+                    np.zeros((stamps.size, n_lat, n_lon), dtype="float32"),
+                    {"units": units},
+                )
+            },
+            coords={
+                "valid_time": stamps,
+                "latitude": np.linspace(north, south, n_lat),
+                "longitude": np.linspace(west, east, n_lon),
+            },
+        )
+
+    def test_expected_units_differ_by_variable(self) -> None:
+        assert "m" in expected_units("total_precipitation")
+        assert "k" in expected_units("2m_temperature")
+        assert "m" not in expected_units("2m_temperature")
+
+    def test_a_kelvin_t2m_file_validates(self) -> None:
+        spec = Era5RequestSpec(variable="2m_temperature")
+        _validate_variable(
+            self._dataset("t2m", "K"), window=parse_window_arg(self.WINDOW), spec=spec
+        )
+
+    def test_a_t2m_file_labelled_in_metres_is_rejected(self) -> None:
+        """Units are checked, not assumed — the transform's m->mm factor is
+        meaningless if the source is not what it claims to be."""
+        spec = Era5RequestSpec(variable="2m_temperature")
+        with pytest.raises(Era5ValidationError, match="units attribute"):
+            _validate_variable(
+                self._dataset("t2m", "m"),
+                window=parse_window_arg(self.WINDOW),
+                spec=spec,
+            )
+
+    def test_precipitation_validation_is_unchanged(self) -> None:
+        _validate_variable(
+            self._dataset("tp", "m"),
+            window=parse_window_arg(self.WINDOW),
+            spec=DEFAULT_REQUEST_SPEC,
+        )
+
+    def test_the_wrong_variable_for_the_spec_is_still_rejected(self) -> None:
+        with pytest.raises(Era5ValidationError, match="expected variable 't2m'"):
+            _validate_variable(
+                self._dataset("tp", "m"),
+                window=parse_window_arg(self.WINDOW),
+                spec=Era5RequestSpec(variable="2m_temperature"),
             )
