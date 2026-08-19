@@ -98,24 +98,41 @@ jobs:
           version: "0.11.7"
           python-version: "3.12"
       - name: Install system deps for cfgrib / rioxarray / exactextract
-        # A stalled acquisition here used to consume the whole 25-minute job
-        # budget and surface as a test failure: on 2026-08-19 this step hung
-        # three times (unit 07:29, 07:42, 08:06) while the SAME step on the
-        # SAME commit finished in 55s on the integration runner. apt's own
-        # transport knobs bound it — Timeout covers stalled reads as well as
-        # connects, Retries rides out the transient — so nothing is ever
-        # killed mid-dpkg and no lock can be left behind. timeout-minutes is
-        # the non-network backstop.
-        timeout-minutes: 5
+        # A stalled acquisition here used to eat the whole 25-minute job budget
+        # and surface as a test failure. Bounding it with apt's own transport
+        # knobs (Retries/Timeout) turned that into a fast, correctly-attributed
+        # failure — but did NOT make it pass: on 2026-08-19 the step stalled
+        # EIGHT times, in windows where the same command on a sibling runner
+        # finished in ~75s. Acquire::Retries retries inside ONE apt process,
+        # which keeps using the endpoint it already resolved; if that endpoint
+        # is the sick one, three retries just burn the budget against it three
+        # times. A FRESH apt-get process re-resolves DNS and can land somewhere
+        # healthy — so the retry has to be at process level.
+        #
+        # Only `update` is retried this way. It writes package lists and no
+        # dpkg state, so abandoning one is safe. `install` is NOT wrapped:
+        # killing it mid-unpack can leave pending configuration behind, and no
+        # lock file is ever deleted (locks are process-bound and released when
+        # the holder dies).
+        timeout-minutes: 8
         run: |
           set -euo pipefail
-          sudo apt-get -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
-            update
-          sudo apt-get -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
-            install -y --no-install-recommends \
-              libeccodes0 libexpat1 libgeos-c1v5
+          APT_OPTS=(-o Acquire::Retries=3
+                    -o Acquire::http::Timeout=30
+                    -o Acquire::https::Timeout=30)
+          for attempt in 1 2 3; do
+            if sudo timeout --kill-after=10 90 apt-get "${APT_OPTS[@]}" update; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::apt-get update stalled or failed on 3 separate attempts"
+              exit 1
+            fi
+            echo "::warning::apt-get update attempt $attempt stalled; retrying in a fresh process"
+            sleep 5
+          done
+          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends \
+            libeccodes0 libexpat1 libgeos-c1v5
       - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
@@ -335,24 +352,41 @@ jobs:
           version: "0.11.7"
           python-version: "3.12"
       - name: Install system deps for cfgrib / rioxarray / exactextract
-        # A stalled acquisition here used to consume the whole 25-minute job
-        # budget and surface as a test failure: on 2026-08-19 this step hung
-        # three times (unit 07:29, 07:42, 08:06) while the SAME step on the
-        # SAME commit finished in 55s on the integration runner. apt's own
-        # transport knobs bound it — Timeout covers stalled reads as well as
-        # connects, Retries rides out the transient — so nothing is ever
-        # killed mid-dpkg and no lock can be left behind. timeout-minutes is
-        # the non-network backstop.
-        timeout-minutes: 5
+        # A stalled acquisition here used to eat the whole 25-minute job budget
+        # and surface as a test failure. Bounding it with apt's own transport
+        # knobs (Retries/Timeout) turned that into a fast, correctly-attributed
+        # failure — but did NOT make it pass: on 2026-08-19 the step stalled
+        # EIGHT times, in windows where the same command on a sibling runner
+        # finished in ~75s. Acquire::Retries retries inside ONE apt process,
+        # which keeps using the endpoint it already resolved; if that endpoint
+        # is the sick one, three retries just burn the budget against it three
+        # times. A FRESH apt-get process re-resolves DNS and can land somewhere
+        # healthy — so the retry has to be at process level.
+        #
+        # Only `update` is retried this way. It writes package lists and no
+        # dpkg state, so abandoning one is safe. `install` is NOT wrapped:
+        # killing it mid-unpack can leave pending configuration behind, and no
+        # lock file is ever deleted (locks are process-bound and released when
+        # the holder dies).
+        timeout-minutes: 8
         run: |
           set -euo pipefail
-          sudo apt-get -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
-            update
-          sudo apt-get -o Acquire::Retries=3 \
-            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
-            install -y --no-install-recommends \
-              libeccodes0 libexpat1 libgeos-c1v5
+          APT_OPTS=(-o Acquire::Retries=3
+                    -o Acquire::http::Timeout=30
+                    -o Acquire::https::Timeout=30)
+          for attempt in 1 2 3; do
+            if sudo timeout --kill-after=10 90 apt-get "${APT_OPTS[@]}" update; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::apt-get update stalled or failed on 3 separate attempts"
+              exit 1
+            fi
+            echo "::warning::apt-get update attempt $attempt stalled; retrying in a fresh process"
+            sleep 5
+          done
+          sudo apt-get "${APT_OPTS[@]}" install -y --no-install-recommends \
+            libeccodes0 libexpat1 libgeos-c1v5
       - name: Configure git auth for the private clones
         run: |
           git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
