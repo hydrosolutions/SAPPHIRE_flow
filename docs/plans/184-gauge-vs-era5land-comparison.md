@@ -92,8 +92,18 @@ provide.
   grid error from model error. Use M-A5's operator-sensitivity envelope, the elevation mismatch, and
   neighbouring-cell variability — and label it a characterisation.
 
-- **D6 — Sign every result.** A post-QC gauge total is a **lower bound** on true precipitation. Each
-  figure carries that caveat, its estimand, and the retained fraction it rests on.
+- **D6 — Sign every result.** Each figure carries its estimand, the retained fraction it rests on, and
+  the undercatch caveat — stated as a property of **catch efficiency**, not of the observed total:
+  *for a correctly-functioning gauge, catch ≤ true precipitation.*
+
+  **⛔ CORRECTED 2026-08-19 (Codex review): do NOT assert that the observed post-QC total is a lower
+  bound.** Our QC is a **physical-impossibility gate, not an outlier filter** — Plan 173 D4 sets
+  `value_max = 200.0` mm/h deliberately "comfortably unreachable rather than discriminating"
+  (`173:108`), and no isolated-outlier check exists. A single spurious 150 mm/h reading therefore
+  passes QC and can push a station total **above** true precipitation, reversing the very sign this
+  decision exists to guarantee. The stuck-high check catches only *sustained* blocks (it caught this
+  sample's 72 mm/h × 4 days); an isolated spike is invisible to it. **The caveat is directional about
+  catch, never a bound on a reported number.**
 
 - **D7 — Elevation mismatch is a DESCRIPTIVE COVARIATE, not a causal explanation.** ERA5-Land's
   orography sits far above our high stations — Syangboche **3,700 m vs 4,447 m**, Humde **3,401 m vs
