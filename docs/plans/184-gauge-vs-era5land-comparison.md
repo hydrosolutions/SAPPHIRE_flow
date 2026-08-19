@@ -1,7 +1,7 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-18
-revised: 2026-08-18
+revised: 2026-08-19
 plan: 184
 title: M-A6 — gauge vs ERA5-Land comparison
 scope: Compare the QC-masked DHM gauge series against ERA5-Land extracted at the same 26 stations, scale- and season-stratified, reporting named estimands with their retained-hour counts. NOT IMERG (M-A5b), NOT the diurnal profile (M-A7), NOT the Pyramid adjudication (M-A10), NOT a correction design, NOT annualisation.
@@ -13,7 +13,7 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 184 — M-A6 gauge vs ERA5-Land
 
 ## Status
-**DRAFT.** All inputs exist on disk: six annual `hourly_mm` products (365/366 accumulation days per
+**READY** — owner flip 2026-08-19. All inputs exist on disk: six annual `hourly_mm` products (365/366 accumulation days per
 year, verified) and a published extraction bundle for 26 stations.
 
 **A `/plan` sweep on 2026-08-18 expanded this to 1,235 lines and stalled, its blockers landing in
@@ -61,6 +61,15 @@ provide.
    correctness, never on completeness of specification.
 
 **If the review's conclusion is "this plan is adequately scoped and ready", say exactly that and stop.**
+
+## ⚠️ ONE DECISION IS STILL OPEN AT READY
+
+**D4's shoulder-season scope is the owner's call and is NOT yet made.** Everything else is decided.
+The carve-out withholding quantitative magnitudes at high altitude is scoped to calendar **DJF**, but
+the snow-undercatch mechanism it guards against is not calendar-bound: at the six stations ≥2,400 m,
+MAM and ON freezing levels are frequently at or below station height. **Decide before the monthly
+magnitude table is published** — either extend the qualitative-only treatment to MAM/ON at those six,
+or state in the Exit that those months are not screened. See D4.
 
 ## Decisions
 
