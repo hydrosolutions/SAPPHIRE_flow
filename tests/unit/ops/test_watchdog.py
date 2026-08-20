@@ -25,7 +25,6 @@ from sapphire_flow.ops.watchdog import (
     HealthProbeResult,
     WatchdogConfig,
     WatchdogState,
-    backup_target_verified,
     default_slack_poster,
     newest_backup_mtime,
     probe_bafu_freshness,
@@ -36,6 +35,15 @@ from sapphire_flow.ops.watchdog import (
     run_once,
     should_alert_health,
 )
+
+try:
+    # Plan 194: guarded separately so an absent symbol fails
+    # TestBackupTargetVerified's assertions as genuine RED, not a
+    # collection-time ImportError that would mask every OTHER test in
+    # this file behind an unrelated error.
+    from sapphire_flow.ops.watchdog import backup_target_verified
+except ImportError:
+    backup_target_verified = None  # type: ignore[assignment]
 
 _NOW = datetime(2026, 4, 22, 12, 0, tzinfo=UTC)
 
@@ -394,10 +402,18 @@ class TestNewestBackupMtime:
 
 
 class TestBackupTargetVerified:
-    """The predicate `run_once`'s wrong-device check is built on. Today's
-    watchdog cannot detect the wrong-device state at all — before this
-    function existed, EVERY case here failed as an ImportError, the
-    genuine red-first starting point for Plan 194 T3."""
+    """The predicate `run_once`'s wrong-device check is built on. Before
+    this function existed, the guarded import above set it to None; the
+    autouse fixture below turns that into one genuine RED assertion per
+    test method (not a collection-time ImportError that would mask every
+    OTHER test in this file), the red-first starting point for Plan 194
+    T3."""
+
+    @pytest.fixture(autouse=True)
+    def _require_backup_target_verified(self) -> None:
+        assert backup_target_verified is not None, (
+            "backup_target_verified is not implemented yet (Plan 194)"
+        )
 
     def test_missing_backup_dir_is_not_verified(self, tmp_path: Path) -> None:
         assert backup_target_verified(tmp_path / "nope", data_dir=tmp_path) is False
