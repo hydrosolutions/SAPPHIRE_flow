@@ -57,20 +57,26 @@ BACKUP_DIR="/Volumes/sapphire-backup/pg_dumps"
 CAMELS_CH_DIR="${HOME}/camels-ch"
 
 # --- Backup target device verification (Plan 194 D1) ------------------------
-# Mirrors the identical pair of functions in scripts/launchd/start-sapphire.sh
+# Mirrors the identical trio of functions in scripts/launchd/start-sapphire.sh
 # — kept duplicated rather than factored into a shared sourced file: two
-# ~15-line copies are simpler to reason about than a new library file, and
+# ~25-line copies are simpler to reason about than a new library file, and
 # the plan's exit gates shellcheck exactly these two scripts (Plan 194).
 #
-# `backup_target_verified` returns success only if BOTH hold:
-#   1. The backup directory's device id differs from the device id of the
-#      path that actually holds the data (REPO_ROOT — never `/`; see
-#      Plan 194 D1 for why `/` is not a reliable split on this host).
-#   2. Its mount root (the backup directory's parent) is a REAL,
-#      currently-mounted volume per `mount` — not merely a directory that
-#      happens to report a different device id. Docker silently creates a
-#      missing bind-mount host path, which is how an absent disk becomes a
-#      healthy-looking plain directory.
+# `backup_target_verified` returns success only if ALL hold:
+#   1. The backup directory itself exists (a missing directory is invalid —
+#      see `_backup_mount_root_verified` below for the check that lets a
+#      caller decide whether it's SAFE to create it).
+#   2. Its mount root's (the backup directory's parent) device id differs
+#      from the device id of the path that actually holds the data
+#      (REPO_ROOT — never `/`; see Plan 194 D1 for why `/` is not a
+#      reliable split on this host). Checked on the mount root rather than
+#      the backup directory itself so a freshly initialised external
+#      volume — mounted, but with no pg_dumps/ subdirectory created yet —
+#      can still be told apart from an absent disk.
+#   3. That mount root is a REAL, currently-mounted volume per `mount` —
+#      not merely a directory that happens to report a different device
+#      id. Docker silently creates a missing bind-mount host path, which
+#      is how an absent disk becomes a healthy-looking plain directory.
 # The pre-existing sentinel file is a human-readable LABEL only — it is
 # never proof of anything (Plan 194 D1).
 _backup_target_device_id() {
@@ -84,20 +90,32 @@ _backup_target_device_id() {
     esac
 }
 
+# Verifies the MOUNT ROOT alone — deliberately does not require anything
+# inside it to exist yet, so a caller can use this to decide whether it is
+# safe to `mkdir -p` a not-yet-created backup subdirectory underneath a
+# volume that is genuinely mounted (as opposed to creating that directory
+# on the boot disk because the mount root itself is missing).
+_backup_mount_root_verified() {
+    local mount_root="$1"
+    local data_dir="$2"
+    local mount_dev data_dev
+
+    [ -d "${mount_root}" ] || return 1
+
+    mount_dev="$(_backup_target_device_id "${mount_root}")" || return 1
+    data_dev="$(_backup_target_device_id "${data_dir}")" || return 1
+    [ -n "${mount_dev}" ] && [ -n "${data_dev}" ] || return 1
+    [ "${mount_dev}" != "${data_dev}" ] || return 1
+
+    mount | grep -q " on ${mount_root} "
+}
+
 backup_target_verified() {
     local backup_dir="$1"
     local data_dir="$2"
-    local mount_root backup_dev data_dev
 
     [ -d "${backup_dir}" ] || return 1
-
-    mount_root="$(dirname "${backup_dir}")"
-    backup_dev="$(_backup_target_device_id "${backup_dir}")" || return 1
-    data_dev="$(_backup_target_device_id "${data_dir}")" || return 1
-    [ -n "${backup_dev}" ] && [ -n "${data_dev}" ] || return 1
-    [ "${backup_dev}" != "${data_dev}" ] || return 1
-
-    mount | grep -q " on ${mount_root} "
+    _backup_mount_root_verified "$(dirname "${backup_dir}")" "${data_dir}"
 }
 
 # Allow tests to `source` this script and call `backup_target_verified`
@@ -269,6 +287,17 @@ fi
 # --- Step 6: USB backup disk -------------------------------------------------
 FAILED_STEP="USB backup disk check"
 hdr "6. USB backup disk"
+# A freshly initialised external volume has no pg_dumps/ subdirectory until
+# something writes to it — create it now, but ONLY once the mount root
+# itself is confirmed to be a real, currently-mounted volume distinct from
+# ${REPO_ROOT}'s device. Never `mkdir -p` the full path unconditionally:
+# if the disk were absent, that would create the very "healthy-looking
+# plain directory on the boot disk" this whole check exists to reject.
+if _backup_mount_root_verified "$(dirname "${BACKUP_DIR}")" "${REPO_ROOT}" \
+        && [ ! -d "${BACKUP_DIR}" ]; then
+    log "creating ${BACKUP_DIR} on the verified backup volume"
+    run mkdir -p "${BACKUP_DIR}"
+fi
 if backup_target_verified "${BACKUP_DIR}" "${REPO_ROOT}"; then
     success "USB backup disk verified — ${BACKUP_DIR} is a real mounted volume, distinct from ${REPO_ROOT}'s device"
 else
