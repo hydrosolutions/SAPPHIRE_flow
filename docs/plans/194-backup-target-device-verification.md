@@ -26,6 +26,12 @@ keeping the findings that survived checking and discarding the apparatus the loo
 `backup_mount_root` config field + CLI flag duplicating `backup_dir.parent`, and a hand-typed
 `--allow-unverified-backup-volume` opt-out).
 
+**Hand review 2026-08-20 (post-READY), three corrections folded in:** D1 was restated over TWO paths
+— the reconstruction had dropped the root/child distinction, and a mount-ness test against
+`pg_dumps` rejects a healthy disk forever (measured, not argued); D3's marker file was dropped again
+as apparatus with no consumer; T2 regained the `set -e` note without which a failed check aborts the
+wrapper before `exec docker compose`. No new apparatus was added.
+
 **Do not re-run `/plan` on this plan expecting a different result — review it by hand.** This is the
 third plan in this repo to hit that (see 184 and 188). It is extracted rather than built in place because 162 is a large READY plan
 whose other tasks have shipped; editing that doc risks rewriting merged work.
@@ -84,11 +90,24 @@ wrong and are corrected here):
 | `docs/deployment/mac-mini-staging.md` | instructs `mkdir -p` + `touch` | **`:453-454`** (162 said `:396-410` — stale) |
 | `docker-compose.macmini.yml` | binds the path into the backup worker | the `prefect-worker-backup` volumes entry |
 
-- **D1 — One shared predicate, three call sites.** The backup directory's device id differs from the
-  device id of **the path that actually holds the data** (`/Users/sapphire`, i.e. `REPO_ROOT` —
-  **not `/`**) **and** the path is a real mount point of an attached volume (`mount` /
-  `diskutil info -plist`), not merely a directory. The existing sentinel file survives **only as a
-  label, never as the proof**.
+- **D1 — One shared predicate, TWO paths, three call sites.** The mount point and the dump
+  directory are different things and must not be conflated. `DEFAULT_BACKUP_DIR` is
+  `/Volumes/sapphire-backup/pg_dumps` (`src/sapphire_flow/ops/watchdog.py:102`) — a **child** of the
+  mount, and never itself a mount point. A mount-ness test applied to it rejects a healthy disk
+  forever, which for T1's fail-closed bootstrap means the disk could be attached and correct and
+  bootstrap would still refuse.
+  *(Measured 2026-08-20 against an attached volume: `ismount` is **True** for the volume root and
+  **False** for a `pg_dumps` child inside it — same device id for both.)*
+
+  So the predicate takes **root** = `backup_dir.parent` and **dir** = `backup_dir`, and is true iff
+  all three hold:
+  1. **root** is a real mount point (`mount` / `os.path.ismount`);
+  2. **root**'s device id differs from that of **the path that actually holds the data**
+     (`/Users/sapphire`, i.e. `REPO_ROOT` — **not `/`**);
+  3. **dir** exists and reports the **same** device id as **root** — so a `pg_dumps` directory left
+     behind on the boot disk cannot pass merely because some volume is mounted nearby.
+
+  The existing sentinel file survives **only as a label, never as the proof**.
   **Accepted limitation, stated rather than implied:** `stat -f %d` yields a *volume* id, not a
   *physical disk* id. A second APFS volume added to the boot container and mounted at the backup path
   would satisfy the predicate while still sharing the boot disk's single point of hardware failure.
@@ -102,8 +121,15 @@ wrong and are corrected here):
 - **D2 — `bootstrap-mac-mini.sh` fails closed.** It is interactive, so blocking is safe.
 - **D3 — `start-sapphire.sh` checks, records, and PROCEEDS.** Deliberately not fail-closed: refusing to
   start the stack because a removable disk is absent trades a backup outage for a *forecasting* outage,
-  which is the mistake this plan exists to avoid. It writes a machine-readable marker beside the compose
-  files and continues.
+  which is the mistake this plan exists to avoid.
+  **No marker file.** Nothing in either plan ever reads one back — D4 gives the watchdog an
+  independent device check every tick — and a new on-disk artefact with no consumer is exactly the
+  apparatus Rule 4 forbids ("no new file format"). A durable, greppable sink already exists: launchd
+  routes this wrapper's stdout **and** stderr to `/Users/sapphire/Library/Logs/sapphire-flow.log`
+  (`scripts/launchd/ch.hydrosolutions.sapphire.plist:21-24`), so a single
+  `echo "WARN: backup volume not mounted — dumps would land on the boot disk" >&2` satisfies D3.
+  *Trade-off recorded:* the record is a log line, not machine-readable. If a consumer ever appears,
+  name it then and give it a file.
 - **D4 — The watchdog raises a DISTINCT condition** — "backup volume not mounted; dumps would land on
   the boot disk" — with its own message and its own incident/notification state. **Never folded into
   staleness**: a mounted-but-stale volume and an unmounted volume need different operator actions, and
@@ -154,8 +180,17 @@ Implement the D1 predicate as a shell function; replace the sentinel-only check 
 ### T2 — `start-sapphire.sh` checks, records, proceeds
 *In:* `scripts/launchd/start-sapphire.sh` (`:24-27`).
 ⚠️ Line 24 is `exec docker compose`, so the check MUST precede it — nothing after `exec` runs.
-Per D3: never fail closed here; write a machine-readable marker beside the compose files and continue.
-**Red-first:** a test asserting the marker is written on a failed check, and that the stack still starts.
+Per D3: never fail closed here; warn to the log launchd already captures, and continue.
+
+⚠️ **`set -e` safety is part of the spec** (`scripts/launchd/start-sapphire.sh:13`). The check must run
+as `if ! backup_volume_verified ...; then echo ... >&2; fi` — a command in an `if` condition is exempt
+from `set -e` — and the `.`-source of the helper must be guarded by `[ -r "$LIB" ]`. Get either wrong
+and a failed check (or a missing helper) aborts the wrapper *before* `exec docker compose` at `:24`,
+silently converting "record and proceed" into fail-closed: a forecasting outage, the exact mistake D3
+exists to prevent. Both properties are asserted by tests.
+
+**Red-first:** a test asserting the warning is emitted on a failed check, and that the stack still
+starts; plus one asserting it still starts when the helper file is unreadable.
 
 ### T3 — watchdog: a distinct, transition-latched condition
 *In:* `src/sapphire_flow/ops/watchdog.py` (`DEFAULT_BACKUP_DIR` at `:102`).
