@@ -746,6 +746,13 @@ add a label. The script therefore enumerates candidates itself:
   set caused by a daemon error would otherwise mean "nothing is in use".
 - Unprotected, unused references are removed by name, then `docker image prune -f`
   reclaims dangling layers.
+- **Untagged rows are never removed by name.** Docker emits `repo:<none>` for an
+  image that kept a repository but lost its tag (this host carries `caddy:<none>`
+  and `prefecthq/prefect:<none>`), and `docker rmi repo:<none>` targets a reference
+  that does not exist — it always fails, and would inflate the failure count into a
+  false non-zero exit. Those rows are left to the dangling prune. *Known limitation:*
+  under the containerd image store a non-`-a` prune may not reclaim them, so this is
+  not fully equivalent to `docker image prune -a` for that class.
 
 Removal failures are counted, logged per image, and surfaced: the script exits
 non-zero if any `rmi`, the dangling prune, or the build-cache prune failed, so a run

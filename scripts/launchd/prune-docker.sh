@@ -177,7 +177,15 @@ prune_unreferenced_images() {
 
     while IFS=' ' read -r img_id img; do
         [ -z "${img_id}" ] && continue
-        [ "${img}" = "<none>:<none>" ] && continue
+        # Any UNTAGGED row — `<none>:<none>` and the `repo:<none>` form Docker
+        # emits for an image that kept a repository but no tag (this host has
+        # `caddy:<none>` and `prefecthq/prefect:<none>`). Synthesising
+        # `docker rmi repo:<none>` from those fields targets a reference that
+        # does not exist: it always fails, and would inflate the failure count
+        # into a false non-zero exit. They are left to the dangling prune below.
+        case "${img}" in
+            *:"<none>") continue ;;
+        esac
         # here-string, not `printf | grep -q`: grep -q exits on first match and
         # SIGPIPEs the producer, which under `set -o pipefail` turns a HIT into
         # a false MISS — deleting an in-use image.

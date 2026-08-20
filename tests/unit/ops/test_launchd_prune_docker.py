@@ -211,7 +211,11 @@ def out(lines):
 if a[:1] == ["ps"]:
     if fx.get("ps_fails"):
         sys.exit(1)
-    flags = "".join(x[1:] for x in a[1:] if x.startswith("-"))
+    if fx.get("ps_aq_fails") and "-aq" in a:
+        sys.exit(1)
+    flags = "".join(
+        x[1:] for x in a[1:] if x.startswith("-") and not x.startswith("--")
+    )
     allc = fx["containers"]
     sel = allc if "a" in flags else [c for c in allc if c["running"]]
     if "q" in flags:
@@ -224,14 +228,27 @@ if a[:1] == ["ps"]:
 if a[:1] == ["inspect"]:
     if fx.get("inspect_fails"):
         sys.exit(1)
-    ids = [x for x in a[3:]]
+    if a[1:3] != ["-f", "{{.Image}}"]:
+        sys.exit(64)
+    ids = list(a[3:])
     by_cid = {c["cid"]: c for c in fx["containers"]}
     out([by_cid[i]["image_id"] for i in ids if i in by_cid])
     sys.exit(0)
 if a[:1] == ["images"]:
     if fx.get("images_fails"):
         sys.exit(1)
-    out([f"{i['id']} {i['ref']}" for i in fx["images"]])
+    if "--format" not in a:
+        sys.exit(64)
+    if a[a.index("--format") + 1] != "{{.ID}} {{.Repository}}:{{.Tag}}":
+        sys.exit(64)
+    trunc = "--no-trunc" not in a
+    rows = []
+    for i in fx["images"]:
+        iid = i["id"]
+        if trunc:
+            iid = iid.split(":", 1)[-1][:12]
+        rows.append(f"{iid} {i['ref']}")
+    out(rows)
     sys.exit(0)
 if a[:2] == ["system", "df"]:
     rec = fx.get("images_reclaimable", "9.0GB (86%)")
@@ -241,17 +258,26 @@ if a[:2] == ["system", "df"]:
 if a[:1] == ["rmi"]:
     open(RMI_LOG, "a").write(a[1] + "\\n")
     sys.exit(1 if a[1] in fx.get("rmi_fails", []) else 0)
-sys.exit(0)
+if a == ["image", "prune", "-f"]:
+    open(CALL_LOG, "a").write("image-prune\\n")
+    sys.exit(1 if fx.get("dangling_prune_fails") else 0)
+if a == ["builder", "prune", "-f"]:
+    open(CALL_LOG, "a").write("builder-prune\\n")
+    sys.exit(0)
+sys.exit(64)
 """
 
 
 def _write_py_fake_docker(bin_dir: Path, fixture: dict, rmi_log: Path) -> Path:
     fixture_path = bin_dir / "fixture.json"
     fixture_path.write_text(json.dumps(fixture))
-    body = (
-        f"FIXTURE = {str(fixture_path)!r}\nRMI_LOG = {str(rmi_log)!r}\n"
-        + _FAKE_DOCKER.split("\n", 1)[1]
+    call_log = rmi_log.parent / "calls.log"
+    header = (
+        f"FIXTURE = {str(fixture_path)!r}\n"
+        f"RMI_LOG = {str(rmi_log)!r}\n"
+        f"CALL_LOG = {str(call_log)!r}\n"
     )
+    body = header + _FAKE_DOCKER.split("\n", 1)[1]
     fake = bin_dir / "docker"
     fake.write_text("#!/usr/bin/env python3\n" + body)
     fake.chmod(0o755)
@@ -268,9 +294,9 @@ def _container(cid: str, name: str, image_id: str, ref: str, running: bool) -> d
     }
 
 
-_ID_LIVE = "sha256:aaa"
-_ID_OLD = "sha256:bbb"
-_ID_ANCHOR = "sha256:ccc"
+_ID_LIVE = "sha256:" + "a1" * 32
+_ID_OLD = "sha256:" + "b2" * 32
+_ID_ANCHOR = "sha256:" + "c3" * 32
 
 
 class TestPruneDockerRollbackProtection:
@@ -347,18 +373,20 @@ class TestPruneDockerRollbackProtection:
             _container(
                 "c3",
                 "sapphire_flow-postgres-1",
-                "sha256:ddd",
+                ("sha256:" + "d4" * 32),
                 "postgis/postgis:16-3.4@sha256:44126d",
                 True,
             )
         )
-        fx["images"].append({"id": "sha256:ddd", "ref": "postgis/postgis:16-3.4"})
+        fx["images"].append(
+            {"id": ("sha256:" + "d4" * 32), "ref": "postgis/postgis:16-3.4"}
+        )
         _, removed = self._run(tmp_path, fx)
         assert "postgis/postgis:16-3.4" not in removed, f"removed={removed}"
 
     def test_dangling_rows_are_skipped(self, tmp_path: Path) -> None:
         fx = self._base()
-        fx["images"].append({"id": "sha256:eee", "ref": "<none>:<none>"})
+        fx["images"].append({"id": ("sha256:" + "e5" * 32), "ref": "<none>:<none>"})
         _, removed = self._run(tmp_path, fx)
         assert "<none>:<none>" not in removed, f"removed={removed}"
 
@@ -399,6 +427,39 @@ class TestPruneDockerRollbackProtection:
     def test_repository_named_rollback_is_not_protected(self, tmp_path: Path) -> None:
         """Protection is a TAG match; a repo called rollback/* must still prune."""
         fx = self._base()
-        fx["images"].append({"id": "sha256:fff", "ref": "rollback/tool:1.0"})
+        fx["images"].append({"id": ("sha256:" + "f6" * 32), "ref": "rollback/tool:1.0"})
         _, removed = self._run(tmp_path, fx)
         assert "rollback/tool:1.0" in removed, f"removed={removed}"
+
+    def test_ps_aq_inventory_failure_prunes_nothing_and_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """Fails only the `ps -aq` inventory call, letting the stack-up guard
+        pass first — otherwise a fail-open there is invisible to the suite."""
+        result, removed = self._run(tmp_path, self._base(ps_aq_fails=True))
+        assert removed == [], f"pruned despite unusable inventory: {removed}"
+        assert result.returncode != 0
+        assert "could not list containers" in (result.stdout + result.stderr)
+
+    def test_dangling_prune_is_invoked(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        rmi_log = tmp_path / "rmi.log"
+        fake = _write_py_fake_docker(bin_dir, self._base(), rmi_log)
+        _run_prune_script(tmp_path, docker_cmd=fake)
+        calls = (bin_dir.parent / "calls.log").read_text().split()
+        assert "image-prune" in calls, f"dangling prune never ran: {calls}"
+
+    def test_dangling_prune_failure_reaches_exit_status(self, tmp_path: Path) -> None:
+        result, _ = self._run(tmp_path, self._base(dangling_prune_fails=True))
+        assert result.returncode != 0
+        assert "dangling-layer prune failed" in (result.stdout + result.stderr)
+
+    def test_untagged_repo_rows_are_never_sent_to_rmi(self, tmp_path: Path) -> None:
+        """Live host has `caddy:<none>`; `docker rmi caddy:<none>` targets a
+        reference that does not exist and always fails."""
+        fx = self._base()
+        fx["images"].append({"id": ("sha256:" + "07" * 32), "ref": "caddy:<none>"})
+        result, removed = self._run(tmp_path, fx)
+        assert "caddy:<none>" not in removed, f"removed={removed}"
+        assert result.returncode == 0, "untagged row must not cause a false failure"
