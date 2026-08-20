@@ -3,6 +3,7 @@ writer."""
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -445,6 +446,114 @@ class TestResumeChecks:
         assert not transform_year_is_current(
             manifest, year=2021, expected_identity="identity-b", final_path=final_path
         )
+
+
+class TestPackingIsOptional:
+    """Plan 191 T3 follow-up: `TransformYearRecord.packing` is
+    `PackingAccounting | None` (defaulted, mirroring how
+    `Era5ProvenanceManifest.variable` was defaulted in #194). A transform
+    that never computes packing correction / mass conservation (the
+    instantaneous K->degC path) must record `None`, not a zero-filled
+    `PackingAccounting` that reads as a measurement never taken.
+
+    Read-back alone proves nothing (#194's own lesson): every assertion
+    here reads the RAW JSON text on disk, not just the reconstructed
+    domain object.
+    """
+
+    def _record(self, *, packing: PackingAccounting | None) -> TransformYearRecord:
+        return TransformYearRecord(
+            product_year=2021,
+            transform_identity="identity-a",
+            sha256="a" * 64,
+            accumulation_convention="era5_land_01_00_accumulation_day_v1",
+            units_conversion="metres_to_mm_x1000",
+            packing=packing,
+            non_finite_cell_count=0,
+            dropped_boundary_stamp="2020-12[-1],2022-01[0]",
+            transformed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        )
+
+    def _manifest(self, record: TransformYearRecord) -> Era5ProvenanceManifest:
+        return with_transform_year(
+            Era5ProvenanceManifest(
+                dataset="reanalysis-era5-land",
+                client_package_version="1.2.3",
+                operator_provenance=_PROVENANCE,
+            ),
+            record,
+        )
+
+    def test_a_precipitation_style_record_serialises_packing_as_a_full_object(
+        self, tmp_path: Path
+    ) -> None:
+        packing = PackingAccounting(
+            packing_corrected_cells=3, max_correction_mm=0.5, mass_adjustment_mm=1.5
+        )
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(self._record(packing=packing)), path)
+
+        raw = json.loads(path.read_text())
+        raw_packing = raw["transformed_years"]["2021"]["packing"]
+        assert raw_packing == {
+            "packing_corrected_cells": 3,
+            "max_correction_mm": 0.5,
+            "mass_adjustment_mm": 1.5,
+        }
+
+        loaded = read_manifest(path)
+        assert loaded is not None
+        assert loaded.transformed_years["2021"].packing == packing
+
+    def test_an_instantaneous_style_record_serialises_packing_as_null_not_zeros(
+        self, tmp_path: Path
+    ) -> None:
+        """The concrete bug this guards against: `packing=None` reaching
+        disk as `{"packing_corrected_cells": 0, "max_correction_mm": 0.0,
+        "mass_adjustment_mm": 0.0}` — real-looking measurements for a
+        quantity that was never computed."""
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(self._record(packing=None)), path)
+
+        raw = json.loads(path.read_text())
+        raw_packing = raw["transformed_years"]["2021"]["packing"]
+        assert raw_packing is None
+        assert raw_packing != {
+            "packing_corrected_cells": 0,
+            "max_correction_mm": 0.0,
+            "mass_adjustment_mm": 0.0,
+        }
+
+        loaded = read_manifest(path)
+        assert loaded is not None
+        assert loaded.transformed_years["2021"].packing is None
+
+    def test_precipitation_manifest_shape_is_unaffected_by_the_optional_field(
+        self, tmp_path: Path
+    ) -> None:
+        """The precipitation record shape stays byte-identical: every field
+        it has ever populated (`packing` included) is still present and
+        non-null after `packing` became optional."""
+        packing = PackingAccounting(
+            packing_corrected_cells=0, max_correction_mm=0.0, mass_adjustment_mm=0.0
+        )
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(self._record(packing=packing)), path)
+
+        raw_record = json.loads(path.read_text())["transformed_years"]["2021"]
+        assert set(raw_record) == {
+            "product_year",
+            "transform_identity",
+            "sha256",
+            "accumulation_convention",
+            "units_conversion",
+            "packing",
+            "non_finite_cell_count",
+            "dropped_boundary_stamp",
+            "transformed_at",
+        }
+        assert raw_record["packing"] is not None
+        assert raw_record["dropped_boundary_stamp"] == "2020-12[-1],2022-01[0]"
 
 
 class TestOperatorProvenanceFile:

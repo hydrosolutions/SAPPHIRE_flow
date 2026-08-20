@@ -220,7 +220,13 @@ class TransformYearRecord:
     sha256: str
     accumulation_convention: str
     units_conversion: str
-    packing: PackingAccounting
+    packing: PackingAccounting | None = None
+    """Precipitation-only accounting (packing correction / mass conservation),
+    in millimetres. `None` for a transform that never computes it (e.g. the
+    instantaneous K->degC path, Plan 191) — recording zeros here would read
+    as a measurement that was never taken. Defaulted, mirroring how
+    `Era5ProvenanceManifest.variable` was defaulted in #194: existing
+    precipitation records, which always populate this, are unaffected."""
     non_finite_cell_count: int
     dropped_boundary_stamp: str | None
     transformed_at: datetime
@@ -418,7 +424,7 @@ class _TransformYearRecordModel(BaseModel):
     sha256: str
     accumulation_convention: str
     units_conversion: str
-    packing: _PackingAccountingModel
+    packing: _PackingAccountingModel | None = None
     non_finite_cell_count: int
     dropped_boundary_stamp: str | None
     transformed_at: datetime
@@ -491,7 +497,11 @@ def _to_domain(model: _Era5ProvenanceManifestModel) -> Era5ProvenanceManifest:
                 sha256=record.sha256,
                 accumulation_convention=record.accumulation_convention,
                 units_conversion=record.units_conversion,
-                packing=PackingAccounting(**record.packing.model_dump()),
+                packing=(
+                    None
+                    if record.packing is None
+                    else PackingAccounting(**record.packing.model_dump())
+                ),
                 non_finite_cell_count=record.non_finite_cell_count,
                 dropped_boundary_stamp=record.dropped_boundary_stamp,
                 transformed_at=record.transformed_at,

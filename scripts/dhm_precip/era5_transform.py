@@ -41,7 +41,6 @@ from scripts.dhm_precip.era5_instantaneous import (
 )
 from scripts.dhm_precip.era5_manifest import (
     OperatorProvenance,
-    PackingAccounting,
     TransformYearRecord,
     checksum_file,
     hourly_mm_dir,
@@ -654,9 +653,11 @@ def transform_year_instantaneous(
         sha256=sha256,
         accumulation_convention="instantaneous_no_accumulation",
         units_conversion=INSTANTANEOUS_UNITS_CONVERSION,
-        packing=PackingAccounting(
-            packing_corrected_cells=0, max_correction_mm=0.0, mass_adjustment_mm=0.0
-        ),
+        # `packing` is genuinely absent, not zero-filled: this transform
+        # never clamps and never conserves mass, so there is no packing
+        # correction or mass-adjustment quantity to report (see
+        # `TransformYearRecord.packing`'s docstring).
+        packing=None,
         non_finite_cell_count=schema_result.non_finite_cell_count,
         dropped_boundary_stamp=None,
         transformed_at=clock(),

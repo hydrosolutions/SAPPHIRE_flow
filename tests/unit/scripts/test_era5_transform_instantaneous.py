@@ -9,6 +9,7 @@ of `transform_year`, never `transform_year` itself.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -190,6 +191,26 @@ class TestHappyPath:
         assert manifest.transformed_years["2022"] == record
         assert record.dropped_boundary_stamp is None
         assert record.units_conversion == INSTANTANEOUS_UNITS_CONVERSION
+        assert record.packing is None
+
+    def test_packing_is_recorded_as_null_on_disk_not_zero_filled(
+        self, tmp_path: Path
+    ) -> None:
+        """The transform never clamps and never conserves mass, so
+        `packing` must read on disk as an explicit absence — not as
+        `{"packing_corrected_cells": 0, "max_correction_mm": 0.0,
+        "mass_adjustment_mm": 0.0}`, which would read as measurements that
+        were never taken."""
+        _seed_year(tmp_path, 2022)
+        transform_year_instantaneous(
+            2022,
+            data_root=tmp_path,
+            provenance=_PROVENANCE,
+            clock=lambda: datetime(2026, 8, 20, tzinfo=UTC),
+        )
+        raw = json.loads(manifest_path_for(tmp_path).read_text())
+        raw_packing = raw["transformed_years"]["2022"]["packing"]
+        assert raw_packing is None
 
 
 class TestD4NoBoundaryContext:
