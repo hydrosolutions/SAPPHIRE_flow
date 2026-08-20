@@ -25,6 +25,7 @@ from sapphire_flow.ops.watchdog import (
     HealthProbeResult,
     WatchdogConfig,
     WatchdogState,
+    backup_target_verified,
     default_slack_poster,
     newest_backup_mtime,
     probe_bafu_freshness,
@@ -389,6 +390,66 @@ class TestNewestBackupMtime:
         assert newest_backup_mtime(d) is None
 
 
+# ---------- backup_target_verified (Plan 194 D1) ------------------------------
+
+
+class TestBackupTargetVerified:
+    """The predicate `run_once`'s wrong-device check is built on. Today's
+    watchdog cannot detect the wrong-device state at all — before this
+    function existed, EVERY case here failed as an ImportError, the
+    genuine red-first starting point for Plan 194 T3."""
+
+    def test_missing_backup_dir_is_not_verified(self, tmp_path: Path) -> None:
+        assert backup_target_verified(tmp_path / "nope", data_dir=tmp_path) is False
+
+    def test_plain_directory_same_device_is_not_verified(self, tmp_path: Path) -> None:
+        """The exact mac-mini bug (2026-08-20): a bind-mount host path
+        Docker silently created is a plain directory on the SAME device as
+        the data it protects."""
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        assert backup_target_verified(backup_dir, data_dir=tmp_path) is False
+
+    def test_different_device_but_not_a_mount_point_is_not_verified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Defense-in-depth (Plan 194 D1): even if the device id happens to
+        differ, a parent directory `Path.is_mount()` disagrees with is not
+        proof of a real attached volume."""
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        def fake_device_id(path: Path) -> int | None:
+            return 99 if path == backup_dir else 1
+
+        monkeypatch.setattr("sapphire_flow.ops.watchdog._device_id", fake_device_id)
+        monkeypatch.setattr(Path, "is_mount", lambda self: False)
+
+        assert backup_target_verified(backup_dir, data_dir=data_dir) is False
+
+    def test_distinct_device_and_real_mount_point_is_verified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+
+        def fake_device_id(path: Path) -> int | None:
+            if path == backup_dir:
+                return 99
+            if path == data_dir:
+                return 1
+            return None
+
+        monkeypatch.setattr("sapphire_flow.ops.watchdog._device_id", fake_device_id)
+        monkeypatch.setattr(Path, "is_mount", lambda self: True)
+
+        assert backup_target_verified(backup_dir, data_dir=data_dir) is True
+
+
 # ---------- run_once: happy path ---------------------------------------------
 
 
@@ -406,6 +467,7 @@ class TestRunOnceHappyPath:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 0
@@ -430,6 +492,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 1
@@ -454,6 +517,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 2
@@ -474,6 +538,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 6
@@ -496,6 +561,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 0
@@ -517,6 +583,7 @@ class TestRunOnceHealth:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert len(slack.calls) == 1
@@ -543,6 +610,7 @@ class TestRunOnceBackup:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert len(slack.calls) == 1
@@ -566,6 +634,7 @@ class TestRunOnceBackup:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert len(slack.calls) == 1
@@ -610,6 +679,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_backup_stale_failures == 1
         assert len(slack1.calls) == 1
@@ -625,6 +695,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_backup_stale_failures == 2
         assert slack2.calls == []
@@ -644,6 +715,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_backup_stale_failures == 0
         assert len(slack3.calls) == 1
@@ -662,6 +734,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_backup_stale_failures == 1
         assert len(slack4.calls) == 1
@@ -700,6 +773,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         # A fresh dump lands (recovery) — the RECOVERY tick's delivery FAILS.
@@ -717,6 +791,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert len(failing_slack.calls) == 1
         assert state.backup_notification_pending == "recovered"
@@ -733,6 +808,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert len(retry_slack.calls) == 1
         assert "backup RECOVERED" in retry_slack.calls[0][1]
@@ -748,6 +824,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert quiet_slack.calls == []
 
@@ -775,6 +852,7 @@ class TestRunOnceBackupNotificationStateMachine:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                backup_device_verifier=lambda _: True,
             )
             total_calls += len(slack.calls)
 
@@ -814,6 +892,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert len(failing_slack.calls) == 1
         assert "backup STALE" in failing_slack.calls[0][1]
@@ -835,6 +914,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert len(retry_slack.calls) == 1
         assert "backup RECOVERED" in retry_slack.calls[0][1]
@@ -851,6 +931,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert quiet_slack.calls == []
 
@@ -882,6 +963,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         # A fresh dump lands (recovery) — delivery FAILS.
@@ -899,6 +981,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.backup_notification_pending == "recovered"
 
@@ -914,6 +997,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert len(retry_slack.calls) == 1
         assert "backup STALE" in retry_slack.calls[0][1]
@@ -936,6 +1020,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.backup_notification_pending is None
 
@@ -981,6 +1066,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         # Tick 2: a fresh dump lands (recovery) — delivery FAILS.
@@ -998,6 +1084,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert len(failing_slack.calls) == 1
         assert state.backup_notification_pending == "recovered"
@@ -1015,6 +1102,7 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert no_webhook_slack.calls == []
         assert state.backup_notification_pending == "recovered"
@@ -1031,10 +1119,150 @@ class TestRunOnceBackupNotificationStateMachine:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert len(retry_slack.calls) == 1
         assert "backup RECOVERED" in retry_slack.calls[0][1]
         assert state.backup_notification_pending is None
+
+
+# ---------- run_once: backup DEVICE verification (Plan 194 D1/D4/D6) ---------
+
+
+class TestRunOnceBackupDeviceVerification:
+    """A condition DISTINCT from staleness (D4): the backup dir can look
+    perfectly fresh while sitting on the same device as the data it
+    protects. D6: alerts on TRANSITION only, never every tick — before
+    this existed, `backup_device_verifier` was not even accepted by
+    `run_once`, so every case here fails red as a TypeError against the
+    pre-Plan-194 signature."""
+
+    def test_unverified_then_repeated_unverified_then_recovered(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)  # fresh: NOT stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: first unverified tick -> alerts.
+        slack1 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack1,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,
+        )
+        assert state.consecutive_backup_device_unverified_ticks == 1
+        assert len(slack1.calls) == 1
+        assert "backup volume NOT MOUNTED" in slack1.calls[0][1]
+
+        # Tick 2: still unverified -> hysteresis stays SILENT (never every
+        # tick — the mini's condition would otherwise fire ~288/day).
+        slack2 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack2,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,
+        )
+        assert state.consecutive_backup_device_unverified_ticks == 2
+        assert slack2.calls == []
+
+        # Tick 3: the volume is verified again -> a single recovery alert.
+        slack3 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack3,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+        )
+        assert state.consecutive_backup_device_unverified_ticks == 0
+        assert len(slack3.calls) == 1
+        assert "backup volume VERIFIED" in slack3.calls[0][1]
+
+    def test_device_alert_does_not_suppress_or_duplicate_staleness_alert(
+        self, tmp_path: Path
+    ) -> None:
+        """D4: the two conditions must never be folded together — a
+        SIMULTANEOUSLY unverified AND stale backup must alert on BOTH,
+        exactly once each, not have one swallow the other."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=30)  # stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,  # unverified too
+        )
+
+        messages = [msg for _, msg in slack.calls]
+        assert len(messages) == 2
+        assert any("backup volume NOT MOUNTED" in m for m in messages)
+        assert any("backup STALE" in m for m in messages)
+
+    def test_verified_and_fresh_backup_has_no_device_alert(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        slack = _SlackRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+        )
+
+        assert slack.calls == []
+
+    def test_device_check_receives_configured_backup_dir(self, tmp_path: Path) -> None:
+        """The injected verifier must be called with `config.backup_dir` —
+        not some other derived path — so a caller-supplied fake can assert
+        on it."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        received: list[Path] = []
+
+        def _spy_verifier(path: Path) -> bool:
+            received.append(path)
+            return True
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=_spy_verifier,
+        )
+
+        assert received == [backup_dir]
 
 
 # ---------- run_once: Slack absent => log-only -------------------------------
@@ -1055,6 +1283,7 @@ class TestRunOnceSlackBehaviour:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 1
@@ -1075,6 +1304,7 @@ class TestRunOnceSlackBehaviour:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert len(slack.calls) == 1
@@ -1355,6 +1585,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_failures == 0
@@ -1386,6 +1617,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_spy,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert captured["url"] == (
             "http://custom:9000/api/v1/health/detail"
@@ -1406,6 +1638,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_failures == 1
@@ -1427,6 +1660,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_not_found_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_failures == 1
@@ -1449,6 +1683,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_degraded_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_failures == 1
@@ -1471,6 +1706,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_bafu_failures == 1
         assert len(first_slack.calls) == 1
@@ -1484,6 +1720,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_bafu_failures == 2
         assert second_slack.calls == []  # hysteresis: 2nd failure stays silent
@@ -1503,6 +1740,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_failures == 0
@@ -1528,6 +1766,7 @@ class TestRunOnceBafuFreshness:
             bafu_probe=_bafu_stale_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 0
@@ -1569,6 +1808,7 @@ class TestBafuObsStaleThresholdValueAndBoundary:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_bafu_obs_failures == 0
         assert slack.calls == []
@@ -1595,6 +1835,7 @@ class TestBafuObsStaleThresholdValueAndBoundary:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_bafu_obs_failures == 1
         assert len(slack.calls) == 1
@@ -1616,6 +1857,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_obs_failures == 0
@@ -1646,6 +1888,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_spy,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert captured["url"] == (
             "http://custom:9000/api/v1/health/detail"
@@ -1666,6 +1909,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
             hostname="test-host",
         )
 
@@ -1702,6 +1946,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_not_found_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_obs_failures == 1
@@ -1724,6 +1969,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_degraded_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_obs_failures == 1
@@ -1746,6 +1992,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_bafu_obs_failures == 1
         assert len(first_slack.calls) == 1
@@ -1759,6 +2006,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_bafu_obs_failures == 2
         assert second_slack.calls == []  # hysteresis: 2nd failure stays silent
@@ -1778,6 +2026,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_bafu_obs_failures == 0
@@ -1804,6 +2053,7 @@ class TestRunOnceBafuObsFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_stale_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 0
@@ -1835,6 +2085,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 0
@@ -1863,6 +2114,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_spy,
+            backup_device_verifier=lambda _: True,
         )
         assert captured["url"] == (
             "http://custom:9000/api/v1/health/detail"
@@ -1883,6 +2135,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_stale_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 1
@@ -1924,6 +2177,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_fresh_checked_at_stale_cycle_time,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 1
@@ -1945,6 +2199,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_not_found_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 1
@@ -1971,6 +2226,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 1
@@ -2027,6 +2283,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=real_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 1
@@ -2081,6 +2338,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=real_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 1
@@ -2104,6 +2362,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_forecast_freshness_failures == 1
         assert len(first_slack.calls) == 1
@@ -2117,6 +2376,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.consecutive_forecast_freshness_failures == 2
         assert second_slack.calls == []  # hysteresis: 2nd failure stays silent
@@ -2136,6 +2396,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 0
@@ -2160,6 +2421,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_critical_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_health_failures == 0
@@ -2193,6 +2455,7 @@ class TestRunOnceForecastFreshness:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_degraded_cycle_but_ok_freshness,
+            backup_device_verifier=lambda _: True,
         )
 
         assert state.consecutive_forecast_freshness_failures == 0
@@ -2278,6 +2541,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         backup_calls = [c for c in slack.calls if "backup" in c[1]]
@@ -2309,6 +2573,7 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
 
         backup_calls = [c for c in slack.calls if "backup" in c[1]]
@@ -2336,8 +2601,34 @@ class TestWatchdogStateBackupNotificationBackwardCompat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
         )
         assert state.last_backup_alert_iso is None
+
+
+class TestWatchdogStateBackupDeviceBackwardCompat:
+    """Plan 194 — the new wrong-device hysteresis + pending-notification
+    fields. Brand new (no predecessor field to migrate from): absent keys
+    default cleanly to 0/None."""
+
+    def test_roundtrip_includes_new_fields(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        original = WatchdogState(
+            consecutive_backup_device_unverified_ticks=3,
+            backup_device_notification_pending="unverified",
+        )
+        original.dump(path)
+        loaded = WatchdogState.load(path)
+        assert loaded == original
+
+    def test_state_file_without_the_new_keys_defaults_to_zero(
+        self, tmp_path: Path
+    ) -> None:
+        p = tmp_path / "old_state.json"
+        p.write_text('{"consecutive_health_failures": 0}')
+        s = WatchdogState.load(p)
+        assert s.consecutive_backup_device_unverified_ticks == 0
+        assert s.backup_device_notification_pending is None
 
 
 class TestWatchdogStateBafuObsBackwardCompat:
@@ -2845,6 +3136,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
             deadman_poster=deadman,
         )
 
@@ -2862,6 +3154,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
             deadman_poster=deadman,
         )
 
@@ -2884,6 +3177,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
             deadman_poster=deadman,
         )
 
@@ -2904,6 +3198,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
             deadman_poster=_RaisingDeadmanPoster(),
         )
 
@@ -2925,6 +3220,7 @@ class TestRunOnceDeadmanHeartbeat:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                backup_device_verifier=lambda _: True,
                 deadman_poster=deadman,
             )
 
@@ -2966,6 +3262,7 @@ class TestRunOnceDeadmanHeartbeat:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
             deadman_poster=_poster,
         )
 
@@ -3003,6 +3300,7 @@ class TestRunOnceDeadmanHeartbeat:
                 bafu_probe=_bafu_ok_probe,
                 bafu_obs_probe=_bafu_obs_ok_probe,
                 forecast_freshness_probe=_forecast_freshness_ok_probe,
+                backup_device_verifier=lambda _: True,
                 deadman_poster=deadman,
             )
 
@@ -3040,6 +3338,7 @@ class TestSlackExceptionDuringBackupTransition:
             bafu_probe=_bafu_ok_probe,
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
             deadman_poster=deadman,
         )
 
@@ -3178,6 +3477,7 @@ class TestRaisingSlackPosterAcrossAllFiveAlertBranches:
             bafu_probe=bafu_probe,  # type: ignore[arg-type]
             bafu_obs_probe=bafu_obs_probe,  # type: ignore[arg-type]
             forecast_freshness_probe=forecast_freshness_probe,  # type: ignore[arg-type]
+            backup_device_verifier=lambda _: True,
             deadman_poster=deadman,
         )
 

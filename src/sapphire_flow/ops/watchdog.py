@@ -193,6 +193,13 @@ _HTTP_CALL_EXCEPTIONS = (httpx.HTTPError, httpx.InvalidURL, OSError, UnicodeErro
 
 
 BackupNotificationKind = Literal["stale", "recovered"]
+# Plan 194 D4: a condition DISTINCT from staleness — the backup dir looks
+# fresh (correct filename, current mtime) but sits on the same device as
+# the data it protects. "unverified"/"verified" mirror "stale"/"recovered"
+# above deliberately (same transition-latched shape, D6), but are a
+# separate Literal so the two conditions can never be confused for a value
+# meant for the other's format function.
+BackupDeviceNotificationKind = Literal["unverified", "verified"]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -223,6 +230,12 @@ class WatchdogState:
     # hysteresis policy only re-fires on prev_failures > 0, which the
     # recovery tick itself already reset to 0.
     backup_notification_pending: BackupNotificationKind | None = None
+    # Plan 194 D4/D6: hysteresis for the DISTINCT wrong-device condition,
+    # same shape as the two backup-staleness fields above but tracking a
+    # different failure mode (device, not freshness) — never folded
+    # together, so the two can never suppress or duplicate each other.
+    consecutive_backup_device_unverified_ticks: int = 0
+    backup_device_notification_pending: BackupDeviceNotificationKind | None = None
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -236,6 +249,12 @@ class WatchdogState:
         pending_raw = raw.get("backup_notification_pending")
         pending: BackupNotificationKind | None = (
             pending_raw if pending_raw in ("stale", "recovered") else None
+        )
+        device_pending_raw = raw.get("backup_device_notification_pending")
+        device_pending: BackupDeviceNotificationKind | None = (
+            device_pending_raw
+            if device_pending_raw in ("unverified", "verified")
+            else None
         )
         legacy_alert_iso = raw.get("last_backup_alert_iso")
         stale_failures_raw = raw.get("consecutive_backup_stale_failures")
@@ -272,6 +291,12 @@ class WatchdogState:
             consecutive_forecast_freshness_failures=int(
                 raw.get("consecutive_forecast_freshness_failures", 0)
             ),
+            # Backward compatible with state files written before Plan 194's
+            # wrong-device check: absent key defaults to 0/None.
+            consecutive_backup_device_unverified_ticks=int(
+                raw.get("consecutive_backup_device_unverified_ticks", 0)
+            ),
+            backup_device_notification_pending=device_pending,
         )
 
     def dump(self, path: Path) -> None:
@@ -284,6 +309,12 @@ class WatchdogState:
             "backup_notification_pending": self.backup_notification_pending,
             "consecutive_forecast_freshness_failures": (
                 self.consecutive_forecast_freshness_failures
+            ),
+            "consecutive_backup_device_unverified_ticks": (
+                self.consecutive_backup_device_unverified_ticks
+            ),
+            "backup_device_notification_pending": (
+                self.backup_device_notification_pending
             ),
         }
         path.write_text(json.dumps(payload, indent=2))
@@ -582,6 +613,50 @@ def probe_forecast_freshness(
                 )
 
 
+def _device_id(path: Path) -> int | None:
+    """Filesystem device id for `path`, or None if it cannot be stat'd."""
+    try:
+        return path.stat().st_dev
+    except OSError:
+        return None
+
+
+def backup_target_verified(backup_dir: Path, *, data_dir: Path) -> bool:
+    """Plan 194 D1: the backup target is verified only if BOTH hold — its
+    device id differs from `data_dir`'s (the path that actually holds the
+    data — never `/`; on the launchd host this is `Path.home()`, i.e.
+    `/Users/sapphire`), AND its mount root (`backup_dir.parent`) is a
+    REAL, currently-mounted volume, not merely a directory Docker
+    silently creates for a missing bind-mount host path.
+
+    Accepted limitation (Plan 194 D1): `st_dev` is a *volume* id, not a
+    *physical disk* id — a second APFS volume on the boot container's own
+    disk would satisfy this and still share its single point of hardware
+    failure. Detecting that needs `diskutil info -plist` parentage, more
+    apparatus than this guard is worth; it catches the failure actually
+    seen on the mini (no volume at all) and is honest about the one it
+    cannot.
+    """
+    if not backup_dir.is_dir():
+        return False
+    backup_dev = _device_id(backup_dir)
+    data_dev = _device_id(data_dir)
+    if backup_dev is None or data_dev is None or backup_dev == data_dev:
+        return False
+    return backup_dir.parent.is_mount()
+
+
+def default_backup_target_verifier(backup_dir: Path) -> bool:
+    """Default `backup_device_verifier` for `run_once` (Plan 194): wraps
+    `backup_target_verified` against the real filesystem, using
+    `Path.home()` as the data path — a pure derivation, matching
+    `DEFAULT_STATE_PATH`'s existing convention, so no new config field or
+    CLI flag is needed. Injected (like every other `run_once` probe) so
+    tests can stub the OS-level device/mount checks without a real
+    distinct device."""
+    return backup_target_verified(backup_dir, data_dir=Path.home())
+
+
 def newest_backup_mtime(backup_dir: Path) -> datetime | None:
     """Return the newest *evidence-backed* `sapphire_*.dump` mtime as a UTC
     datetime, or None if none exist (Plan 162 T4).
@@ -762,6 +837,27 @@ def _backup_notification_kind(
     return None
 
 
+def _backup_device_notification_kind(
+    *,
+    was_unverified: bool,
+    is_unverified: bool,
+    pending: BackupDeviceNotificationKind | None,
+) -> BackupDeviceNotificationKind | None:
+    """Same shape as `_backup_notification_kind`, for the DISTINCT
+    wrong-device condition (Plan 194 D4/D6): alert on TRANSITION only —
+    when the volume goes unverified, and again when it becomes verified —
+    never on every tick (the mini's condition would otherwise be TRUE
+    forever), and never resend a stale `pending` kind once the condition
+    has moved on (same reasoning as `_backup_notification_kind`)."""
+    if pending is not None:
+        return "unverified" if is_unverified else "verified"
+    if is_unverified and not was_unverified:
+        return "unverified"
+    if was_unverified and not is_unverified:
+        return "verified"
+    return None
+
+
 def _format_health_alert(
     *, hostname: str, now: datetime, probe: HealthProbeResult
 ) -> str:
@@ -795,6 +891,20 @@ def _format_backup_alert(*, newest: datetime | None, threshold: timedelta) -> st
 def _format_backup_recovery_alert(*, hostname: str, now: datetime) -> str:
     return (
         f"[SAPPHIRE staging] backup RECOVERED — host: {hostname}, "
+        f"time: {now.isoformat()}"
+    )
+
+
+def _format_backup_device_alert(*, backup_dir: Path) -> str:
+    return (
+        "[SAPPHIRE staging] backup volume NOT MOUNTED — dumps would land on "
+        f"the boot disk: {backup_dir}"
+    )
+
+
+def _format_backup_device_recovery_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        f"[SAPPHIRE staging] backup volume VERIFIED — host: {hostname}, "
         f"time: {now.isoformat()}"
     )
 
@@ -971,6 +1081,10 @@ def run_once(
         [str], ForecastFreshnessResult
     ] = probe_forecast_freshness,
     deadman_poster: DeadmanPoster = default_deadman_poster,
+    # Plan 194: the backup-target device predicate, injected like every
+    # other probe above so tests can stub the OS-level device/mount checks
+    # without a real distinct device.
+    backup_device_verifier: Callable[[Path], bool] = default_backup_target_verifier,
 ) -> WatchdogState:
     """Single watchdog tick. Returns the updated state (also persisted)."""
     now = clock()
@@ -1017,6 +1131,74 @@ def run_once(
             state,
             consecutive_health_failures=state.consecutive_health_failures + 1,
         )
+
+    # --- Backup target device verification (Plan 194 D1/D4) -----------------
+    # A condition DISTINCT from staleness (D4), evaluated BEFORE it: the
+    # backup directory can look perfectly fresh (correct filename, current
+    # mtime) while sitting on the SAME device as the data it protects —
+    # Docker silently creates a missing bind-mount host path, so an
+    # absent/unmounted external disk becomes a healthy-looking plain
+    # directory. D6: alerts on TRANSITION only (never every tick — on this
+    # host the condition is permanently true today), via the same
+    # pending-retry shape as the staleness block below.
+    device_verified = backup_device_verifier(config.backup_dir)
+    is_device_unverified = not device_verified
+    log.info(
+        "watchdog.backup_device_check_completed",
+        backup_dir=str(config.backup_dir),
+        verified=device_verified,
+    )
+
+    was_device_unverified = state.consecutive_backup_device_unverified_ticks > 0
+    device_pending = state.backup_device_notification_pending
+    device_notification_kind = _backup_device_notification_kind(
+        was_unverified=was_device_unverified,
+        is_unverified=is_device_unverified,
+        pending=device_pending,
+    )
+
+    if device_notification_kind is not None:
+        if device_notification_kind == "unverified":
+            device_message = _format_backup_device_alert(backup_dir=config.backup_dir)
+            log.warning(
+                "watchdog.backup_device_unverified_alert", message=device_message
+            )
+        else:
+            device_message = _format_backup_device_recovery_alert(
+                hostname=host, now=now
+            )
+            log.info("watchdog.backup_device_recovery_alert", message=device_message)
+
+        if webhook:
+            device_posted = _safe_slack_post(slack_poster, webhook, device_message)
+            log.info("watchdog.slack_post_attempted", posted=device_posted)
+            state = replace(
+                state,
+                backup_device_notification_pending=(
+                    None if device_posted else device_notification_kind
+                ),
+            )
+        elif device_pending is not None:
+            # Same delivery-loss reasoning as the staleness block below: a
+            # webhook merely absent/unreadable RIGHT NOW must not be
+            # treated as delivery of an already-pending notification.
+            log.info("watchdog.slack_skipped_pending_retry_deferred")
+            state = replace(
+                state, backup_device_notification_pending=device_notification_kind
+            )
+        else:
+            log.info("watchdog.slack_skipped_log_only")
+            state = replace(state, backup_device_notification_pending=None)
+
+    if is_device_unverified:
+        state = replace(
+            state,
+            consecutive_backup_device_unverified_ticks=(
+                state.consecutive_backup_device_unverified_ticks + 1
+            ),
+        )
+    else:
+        state = replace(state, consecutive_backup_device_unverified_ticks=0)
 
     # --- Backup staleness (Plan 162 T4) ---
     # Dedicated "alert once, then only on recovery" policy — NOT
