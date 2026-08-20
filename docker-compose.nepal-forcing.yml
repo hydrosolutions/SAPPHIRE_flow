@@ -1,0 +1,51 @@
+# Plan 192 Stage B (light shape) — a STANDING Postgres for the Nepal 12300
+# gateway-forcing feed, and nothing else.
+#
+#   docker compose -p sapphire-nepal -f docker-compose.nepal-forcing.yml up -d
+#
+# Deliberately NOT the base topology: no API, no caddy, no Prefect server or
+# worker, no ingest/backup worker, no deployment registration. The daily run is
+# a host-scheduled script that calls the adapter directly (see
+# scripts/nepal_forcing_run.py), so none of that machinery is needed — which
+# also removes the ports-concatenation trap, the backup cron and the
+# shared-image-tag risk that a full second stack would carry.
+#
+# Isolation: its own project name, so its volume and network are prefixed
+# `sapphire-nepal_` and cannot collide with the Swiss `sapphire_flow_*` stack.
+# No host ports are published — the runner reaches it on the project network.
+#
+# Spec: docs/plans/192-recap-second-stack-12300-operational-test.md
+# Runbook: docs/operations/nepal-forcing-runbook.md
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5  # postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: sapphire
+      POSTGRES_PASSWORD_FILE: /run/secrets/nepal_db_password
+      POSTGRES_DB: sapphire
+    volumes:
+      - nepal_pgdata:/var/lib/postgresql/data
+    secrets:
+      - nepal_db_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sapphire"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks: [nepal]
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+networks:
+  nepal:
+
+volumes:
+  nepal_pgdata:
+
+secrets:
+  nepal_db_password:
+    file: ./secrets/nepal_db_password

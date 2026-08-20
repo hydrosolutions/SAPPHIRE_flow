@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ch.hydrosolutions.sapphire-nepal-forcing</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/sapphire/SAPPHIRE_flow/scripts/launchd/run-nepal-forcing.sh</string>
+    </array>
+    <!-- 14:00 UTC = 16:00 CEST. Plan 192 O3: the 00Z ensemble is NOT complete
+         early — on 2026-08-20 `pf` was absent at 09:27 UTC and all 50 members
+         were present by 12:59 UTC. Running mid-afternoon local time gets the
+         full 51-member ensemble rather than `fc` alone. launchd uses LOCAL
+         time, so this drifts an hour at the DST boundary; that is acceptable
+         for a feed whose target is a same-day 00Z cycle with ~4 days of
+         retention behind it. Revisit once the probe measures publication. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>16</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>UserName</key>
+    <string>sapphire</string>
+    <key>StandardOutPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-nepal-forcing.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-nepal-forcing.launchd.log</string>
+</dict>
+</plist>
