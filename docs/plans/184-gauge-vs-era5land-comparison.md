@@ -201,6 +201,59 @@ All decisions are now made.
 
 ## Exit
 
+A single comparison bundle plus the short report that reads it. Nothing here is a new framework —
+the deliverable is numbers with their conditions attached.
+
+1. **Error characterisation, not a correction.** The three D1 estimands — matched-hour mean
+   difference, conditional accumulated difference, wet-hour conditional intensity bias — computed
+   per station and per elevation stratum, at the D3 scales, with the scale stated beside every
+   number. Categorical scores at DAILY and MONTHLY grain only (D12). No annualisation, no
+   unconditional totals, no "mm/year".
+
+2. **⛔ BINDING (D4 + D13): no magnitude may be quoted without BOTH its retained-hour `n` and its
+   sub-freezing mass fraction in the SAME cell.** A table row, figure caption or sentence carrying
+   a magnitude without both is a defect, not a formatting preference — the placement rule IS the
+   mitigation for choosing annotation over withholding. The mass fraction is reported at 1.5 °C
+   with 0 °C and 2 °C as a sensitivity.
+
+3. **Every result signed per D6.** Each figure carries its named estimand, the retained fraction it
+   rests on, and the undercatch caveat stated as a property of **catch efficiency** —
+   *for a correctly-functioning gauge, catch ≤ true precipitation* — and **never** as a bound on
+   the reported post-QC total (our QC is a physical-impossibility gate, not an outlier filter).
+
+4. **Retention is a stratum, never a filter (D13).** No aggregate is scaled to a full period and no
+   completeness threshold is set anywhere. Cross-station and elevation-stratified summaries are
+   stratified BY retention so a retention-driven pattern is visible rather than hidden. Every
+   aggregate is a conditional sum over commonly-retained hours, with its `n` attached.
+
+5. **Plan 173's M-A6 exclusion list is consumed, not re-derived (D11)**, applied before every
+   station, elevation and cross-station summary, and the report names which stations it removed and
+   why. **On the current delivery this list is empty** — worst JJAS retention is Lete 0.8296 and the
+   0.50 floor never binds — **which is a measured result, not a skipped step, and the report says so
+   explicitly.**
+
+6. **Representativeness is characterised, not decomposed (D5)** — operator-sensitivity envelope,
+   station-to-grid elevation mismatch (labelled datum-unreconciled per D7), and neighbouring-cell
+   variability, presented under that word.
+
+7. **The within-cell Kirtipur/Khumaltar figure (D8)**, computed on hours retained for both stations
+   simultaneously, reported with the common-retained-hour count, each station's own exposure, and
+   its limits attached: **descriptive only, no lower-bound claim, n = 1 pair, one valley, one
+   separation — never a network-wide estimate.**
+
+8. **The D14 lapse-correction is reported with its independent check.** The standard 6.5 °C/km
+   correction from model orography to station elevation, and the Pyramid `AT` check on it, are both
+   reported. If the check fails, the reported uncertainty on the mass-fraction column widens; the
+   rate is never refitted.
+
+9. **Regenerable.** Every number in the report comes out of the committed pipeline from the on-disk
+   inputs, in one command. The report states the ERA5-Land product identity and the
+   extraction-bundle identity it was computed against.
+
+**Explicitly NOT an exit condition:** any statement about whether ERA5-Land is fit to force a
+hydrological model (that is M-A8/M-DEC), and any correction, adjustment or downscaling design
+(D7, vision).
+
 ## Non-goals
 
 IMERG (M-A5b) · diurnal profile (M-A7) · Pyramid adjudication (M-A10) · elevation/regime structure

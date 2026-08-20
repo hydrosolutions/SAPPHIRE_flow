@@ -60,9 +60,16 @@ prediction error. This error is already in this project's record; it must not re
 
 ### Rule 3 — aggregation validity
 
-Daily/monthly aggregates are formed **only after** applying the common hourly mask, with a stated
-minimum retained-hour coverage per period. No rescaling of incomplete totals. The 0.2 mm threshold is
-applied after valid aggregation, never before. Contingency tables include only jointly valid periods.
+Daily/monthly aggregates are formed **only after** applying the common hourly mask. No rescaling of
+incomplete totals. The 0.2 mm threshold is applied after valid aggregation, never before. Contingency
+tables include only jointly valid periods.
+
+**⛔ AMENDED 2026-08-20 — the "stated minimum retained-hour coverage per period" clause is SUPERSEDED
+by Plan 184 D13** (owner, grill-me 2026-08-19). A coverage minimum is exactly the completeness
+threshold D13 forbids: the mask is MNAR, so filtering ON retention discards periods non-randomly and
+hides the very pattern the retention figure exists to expose. **Stratify BY retention instead, never
+filter ON it**, and attach each aggregate's `n` so it is self-describing at any retention. The rest of
+this rule stands unchanged — mask first, never rescale, threshold after aggregation.
 
 ---
 
@@ -381,9 +388,18 @@ gauge/mask coupling) and both stations' measurement error confounds it — Khuma
 change. Compute it on timestamps **retained by the M-A3 mask for both stations simultaneously**,
 report the common-retained-hour count and each station's exposure alongside every statistic, and **⛔ CORRECTED 2026-08-18 — report it DESCRIPTIVELY; the lower-bound claim is WITHDRAWN.** "If both gauges are unbiased, half the discrepancy is a lower bound on the within-cell contribution" does NOT follow: two gauges with unbiased errors still differ over a finite sample by noise alone, so this would report a positive bound where the true spatial contribution is zero. The triangle-inequality argument needs effectively ERROR-FREE aggregates, not merely unbiased ones. **n = 1 pair, one valley, one separation — never a network-wide estimate.**
 
-**Exit:** error characterisation; every result signed per D6 (a post-QC gauge total is a *lower
-bound*), carrying the selection caveat, its named estimand, and the retained fraction it rests on;
-plus the within-cell observed gauge variability figure above, with its honest limits attached.
+**Exit:** error characterisation; every result signed per D6 — the undercatch caveat stated as a
+property of **catch efficiency** (*for a correctly-functioning gauge, catch ≤ true precipitation*),
+carrying the selection caveat, its named estimand, and the retained fraction it rests on; plus the
+within-cell observed gauge variability figure above, with its honest limits attached.
+
+**⛔ CORRECTED 2026-08-20 — the parenthetical "a post-QC gauge total is a *lower bound*" is WITHDRAWN
+here too.** It was withdrawn in vision D6 and Plan 184 D6 on 2026-08-19 but survived in this line: our
+QC is a physical-impossibility gate, not an outlier filter (Plan 173 D4 sets `value_max = 200.0` mm/h
+to be unreachable rather than discriminating), so an isolated spurious value ≤200 mm/h passes and can
+push a total ABOVE truth. **The full Exit for this milestone is Plan 184's `## Exit`**, which binds the
+placement rule D4/D13 require: no magnitude is quoted without BOTH its retained-hour `n` and its
+sub-freezing mass fraction in the same cell.
 
 
 **⚠️ NEW PREREQUISITE 2026-08-19 — ERA5-Land `2m_temperature`.** Plan 184 D4/D14 replace the calendar
