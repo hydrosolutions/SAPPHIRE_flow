@@ -5,7 +5,6 @@ plan: 193
 title: M-A7 — temporal characterisation (intensity distributions and diurnal structure)
 scope: Per-station wet-hour intensity distributions and diurnal structure on the M-A3-masked gauge series, stratified by elevation band as well as per station, with bootstrap uncertainty and a Rule-2-compliant statement of what transfers between stations. NOT the ERA5 comparison (M-A6), NOT elevation/regime attribution (M-A8), NOT the Pyramid adjudication (M-A10), NOT a disaggregator design (Phase 2).
 depends_on: [172, 173]
-consumes: Plan 184 T1's gauge-only masked population (its named pre-pairing output) — NOT the whole of Plan 184
 blocks: [M-A8]
 source: docs/design/dhm-precipitation-milestones.md
 ---
@@ -66,15 +65,37 @@ dragging the denominator below zero — and M-A10's own production path masks fi
 - **D4 — Frequency statistics use the 0.2 mm/h harmonised floor; mass statistics use unthresholded
   values** (vision D5). Never mixed, and which is which is stated beside every number.
 
-- **D5 — Body and tail reported separately, each with bootstrap uncertainty.** The tail is **already
-  established as non-transferable** (−49 % to +241 %). M-A7 quantifies and reports that; it does not
-  re-litigate it.
+- **D5 — Body and tail reported separately, each with bootstrap uncertainty. M-A7 MEASURES tail
+  transferability; it inherits no number.** **⛔ Corrected 2026-08-20 (Codex round 2): an earlier
+  draft cited "−49 % to +241 %" as *already established*.** That figure is marked
+  `disposition = "withdrawn_unreproducible"` in `expectations.toml`, is `RAW_PROVISIONAL`, was computed
+  on **unmasked** data, and is **assigned to this very milestone** — vision `:47` bars such intensity
+  figures until M-A7 lands. Quoting it as settled would have prejudged the milestone whose job is to
+  establish it, and would repeat this track's most expensive error class (see the withdrawn r = 0.998).
+  A masked recomputation gives a materially different range, so **no figure is pre-registered here**
+  (vision D8): M-A7 computes the range, reports it with its bootstrap and adequacy labels, and that
+  becomes the first reproducible value.
 
 - **D5a — The elevation bands are NAMED HERE, once, chosen a priori from the cited literature.**
   `< 700 m` / `700–2,000 m` / `2,000–3,000 m` / `≥ 3,000 m`, giving **9 / 9 / 5 / 3** of the 26
   stations — no degenerate band. The edges follow the literature the milestone already cites (southern
   margin ~500–700 m; Lesser Himalaya ~2,000–2,200 m), are **declared, never fitted to our data**, and
-  every band product reports its station count. *(Added 2026-08-20 — Codex found that both this plan's
+  every band product reports its station count.
+
+  **⛔ The band ESTIMAND is defined here too, because edges alone do not determine the answer**
+  *(Codex round 2)*. A band profile is the **unweighted mean of its member stations' profiles**, not a
+  pooled exposure-weighted mean of their observations — under an MNAR mask a station with more
+  retained hours would otherwise dominate its band, making the band figure a function of retention
+  (the pattern Plan 184 D13 exists to keep visible). The pooled form is reported **as a sensitivity**,
+  because the two genuinely differ: measured, the `< 700 m` peak is **21 UTC pooled vs 23 UTC
+  station-equal**. Band adequacy (D9) uses the season-years **common to the band's stations**, not
+  their union — for `≥ 3,000 m` that is **n = 4 / inadequate**, where the union would have claimed
+  **n = 5 / adequate**. Take the conservative one and label it.
+
+  **Recorded limit:** `≥ 3,000 m` holds only **three** stations (4/5/5 JJAS season-years) and one of
+  them is **Olangchunggola**, whose 03 UTC peak is unexplained (D7). The band most relevant to the
+  snow question is the thinnest and contains the track's one open anomaly — say so wherever a
+  `≥ 3,000 m` band figure is reported. *(Added 2026-08-20 — Codex found that both this plan's
   Exit and the milestone's require per-band products while no task produced them and no parameter
   defined the edges, so different implementers would have produced different profiles.)*
 
@@ -96,6 +117,14 @@ dragging the denominator below zero — and M-A10's own production path masks fi
   retained wet hours. Report the other seasons where the retained sample carries them, each labelled
   with its own exposure — and **set no completeness threshold** (Plan 184 D13, vision D8): stratify by
   retention rather than filter on it.
+
+  **⛔ A DJF season-year is NOT a calendar year.** `params.year_attribution` is
+  `december_belongs_to_following_djf`, and `coloc_bootstrap.per_season_hourly_means` assigns
+  `timestamp.dt.year()` with a docstring saying that is valid precisely because *"JJAS never cross[es]
+  a year boundary … unlike DJF"*. Reusing it for DJF would mislabel D9's adequacy flag — measured:
+  **Lete would read 4/inadequate instead of 5/adequate, and Olangchunggola 5/adequate instead of
+  4/inadequate.** Any non-JJAS season uses `params.year_attribution`, never the calendar year.
+  *(Codex round 2, 2026-08-20.)*
 
 - **D9 — Bootstrap by resampling whole SEASON-YEARS, and carry the precedent's ADEQUACY FLAG.**
   Precipitation is strongly serially correlated, so hour-level resampling would break serial
@@ -128,6 +157,13 @@ dragging the denominator below zero — and M-A10's own production path masks fi
   (`dhm-precipitation-milestones.md:412`). Plan 184 T1 now names the gauge-only masked population as
   a separate output (184 `57c1514`); M-A7 depends on **that output**, not on the plan.
 
+  **⛔ Corrected again 2026-08-20 (Codex round 2): the gate must live in the EXECUTABLE GRAPH.** Round
+  1's fix moved it into a `consumes:` frontmatter key — invented here, with no scheduling semantics
+  (`check_readiness.py` reads only status/review fields), so phase-1 would have started
+  unconditionally while the real prerequisite sat in prose. The repo's actual convention puts
+  cross-plan gates **inside the JSON phase graph** (`152:1024` uses `"plan-155"`, `"plan-157"`), so
+  phase-1 now carries `"depends_on": ["plan-184-T1"]` at task granularity. The invented key is gone.
+
 ## Tasks
 
 Four tasks, three phases. `$ENV` abbreviates
@@ -149,16 +185,21 @@ Then `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
 floor for frequency statistics and unthresholded values for mass statistics (D4), body and tail
 reported separately with season-year bootstrap intervals carrying their adequacy designation
 (D5, D9). **Out:** the transferability claim (T3); any threshold applied to mass statistics.
-**Verify:** `uv run pytest tests/unit/scripts/test_ma7_intensity.py -q`, including a test that a mass
-statistic computed on thresholded values fails.
+**Verify:** `uv run pytest tests/unit/scripts/test_ma7_intensity.py -q`, including a test that asserts
+the **value** of a mass statistic equals the unthresholded computation and differs from the
+thresholded one — assert on the number, not on input provenance, for the same reason as T1 *(Codex
+round 2)*.
 
 ### T3 — transferability and elevation stratification (depends: T1, T2)
 **In:** the quantified statement of what transfers between stations, expressed as a divergence or a
 held-out prediction error (D3), reported **by elevation band and by reporting-resolution group side by
 side** with the attribution explicitly declined (D6). **Out:** any transferability headline expressed
 as a correlation; any attribution of an effect to elevation rather than resolution.
-**Verify:** `uv run pytest tests/unit/scripts/test_ma7_transfer.py -q`, including a test that a
-correlation offered as the transferability statistic is refused.
+**Verify:** `uv run pytest tests/unit/scripts/test_ma7_transfer.py -q`, including a test asserting the
+reported transferability field **is** a divergence or held-out prediction error and that its value
+changes when the underlying distributions do. *(A "refuse a correlation" test is not executable and
+would contradict D3, which permits profile-shape correlation as a secondary statistic — Codex
+round 2.)*
 
 ### T4 — report and Exit (depends: T1–T3)
 **In:** one runner writing the markdown report and tables to `--out` (M-A10 shape), every profile and
@@ -171,7 +212,7 @@ disaggregator design or Phase-2 recommendation.
 ```json
 {
   "phases": [
-    {"id": "phase-1", "tasks": ["T1", "T2"], "parallel": true},
+    {"id": "phase-1", "tasks": ["T1", "T2"], "parallel": true, "depends_on": ["plan-184-T1"]},
     {"id": "phase-2", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-1"]},
     {"id": "phase-3", "tasks": ["T4"], "parallel": false, "depends_on": ["phase-2"]}
   ]
