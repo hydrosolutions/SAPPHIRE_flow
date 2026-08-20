@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-20
 plan: 193
 title: M-A7 — temporal characterisation (intensity distributions and diurnal structure)
@@ -13,7 +13,13 @@ source: docs/design/dhm-precipitation-milestones.md
 
 ## Status
 
-**DRAFT** — awaiting owner confirmation before any subagent runs.
+**READY** — owner flip 2026-08-20, after three independent Codex rounds
+(BLOCK → BLOCK → APPROVE WITH CHANGES, nine findings, all folded; the final round found no new
+failures and judged the plan converging). **Do not run `/plan` on this document** — review it by hand,
+as Plan 184 records for the same reason.
+
+**Gated on `plan-184-T1`** (see the phase graph): T1 and T2 consume Plan 184 T1's gauge-only masked
+population, so they start when that output exists, not before.
 
 M-A7's dependencies (M-A2, M-A3) have been met since Plan 173 merged; it has simply never been
 planned. It runs **parallel to M-A6** and **M-A8 needs both**, so it is the other half of the
