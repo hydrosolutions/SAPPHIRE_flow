@@ -185,6 +185,13 @@ All decisions are now made.
   ERA5-Land `2m_temperature` acquisition as a prerequisite** (same box, same window, 171's machinery
   and its monthly-window cost rule — see the milestones note).
 
+  **✅ THE PREREQUISITE IS DELIVERED (Plan 191, 2026-08-20).** The cell-level series exists at
+  `data/dhm_precip/era5_land_t2m/era5_land/points/series_t2m_degc.nc` —
+  `temperature_degc(station=26, valid_time=52608)`, °C, UTC, zero non-finite. It is **uncorrected**:
+  applying the lapse rate and running the Pyramid check are THIS plan's work. Resolve the referenced
+  precipitation bundle by globbing `points/*-<identity>`, never by a run-numbered path. **Note
+  `pyramid_loader.py` parses `RR` only — the `AT` loader D14's check needs does not exist yet.**
+
   ERA5-Land is the right source for temperature specifically: per D7 it elevation-corrects temperature,
   humidity and pressure — but NOT precipitation. **The trap is that its orography sits 750–1,300 m
   ABOVE our high stations** (Syangboche 3,700 vs 4,447; Humde 3,401 vs 4,700), so at ~6.5 °C/km the raw

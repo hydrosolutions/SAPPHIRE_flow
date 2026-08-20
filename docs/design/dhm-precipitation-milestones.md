@@ -402,12 +402,38 @@ placement rule D4/D13 require: no magnitude is quoted without BOTH its retained-
 sub-freezing mass fraction in the same cell.
 
 
-**⚠️ NEW PREREQUISITE 2026-08-19 — ERA5-Land `2m_temperature`.** Plan 184 D4/D14 replace the calendar
-snow carve-out with a measured sub-freezing mass fraction, which needs temperature. Plan 171 acquired
-**`total_precipitation` only** (`171:121`). Fetch `2m_temperature` over the same box and window, reusing
-171's machinery and its monthly-window cost rule (the 8,760-field annual request is rejected 403; 744
-fields/month is fine). This is an acquisition against 171's contract, deliberately NOT folded into 184 —
-184 is a comparison, not an acquisition plan.
+**✅ PREREQUISITE DELIVERED 2026-08-20 — ERA5-Land `2m_temperature` (Plan 191).** Plan 184 D4/D14
+replace the calendar snow carve-out with a measured sub-freezing mass fraction, which needs temperature.
+Plan 171 acquired **`total_precipitation` only** (`171:121`), so this was raised as a prerequisite on
+2026-08-19 and is now complete. It stayed an acquisition/transform track against 171's and 174's
+contracts, deliberately NOT folded into 184 — 184 is a comparison, not an acquisition plan.
+
+**What exists now**, under its own data root `data/dhm_precip/era5_land_t2m/` (gitignored):
+
+| Artefact | Path | Shape |
+|---|---|---|
+| raw | `era5_land/raw/era5_land_t2m_raw_{window}.nc` | 74 monthly windows, Kelvin |
+| product | `era5_land/degc/era5_land_t2m_degc_{2020..2025}.nc` | `temperature` / `degC`, float32, exact calendar-year hourly axes (8784 leap / 8760), 0 non-finite |
+| point series | `era5_land/points/series_t2m_degc.nc` | `temperature_degc(station=26, valid_time=52608)`, UTC, 0 non-finite, −22.02 … +41.96 °C |
+| manifest | `era5_land/points/extraction_manifest.json` | identity `2ceb6a49…`, operator `NEAREST`, six source hashes, referenced precipitation-bundle identity |
+
+**Three properties Plan 184 D14 depends on, measured not assumed:**
+
+1. **The series is CELL-LEVEL and uncorrected.** No lapse correction is applied. D14's 6.5 °C/km
+   correction from model orography down to station elevation, and the Pyramid `AT` check on it, are
+   Plan 184's work — "if the check fails, widen the uncertainty" is an analysis behaviour, so a
+   pre-corrected product would have to carry the validation with it.
+2. **t2m and precipitation share the grid cell at all 26 stations** — verified, not assumed: identical
+   `grid_i`/`grid_j`/`grid_lat`/`grid_lon`, and the `latitude`/`longitude` axes of the tp and t2m
+   products are bit-identical (51 × 91). So the elevation mismatch already in M-A5's
+   `station_grid_elevation.csv` **is** D14's lapse input; orography is not re-run.
+3. **The reference is by IDENTITY, never by path.** `points/` bundle directories carry a run-number
+   prefix allocated per publish, so a path like `points/0006-<identity>` is a function of how many times
+   the gated suite has run, not of the data. Resolve by globbing `points/*-<identity>`.
+
+**⚠️ Still missing for D14: a Pyramid `AT` loader.** `pyramid_loader.py` parses `RR` only — `AT` appears
+in the module solely inside an error message. All six Pyramid RR stations (2,660–5,600 m) do carry `AT`,
+so the data is there and the code is not. That work sits inside Plan 184, not Plan 191.
 
 ### M-A7 · Temporal characterisation
 **Depends: M-A2, M-A3.** Parallel to M-A5/M-A6.
