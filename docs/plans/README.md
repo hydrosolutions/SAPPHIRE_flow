@@ -140,15 +140,14 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
   (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
   the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
-- **192** — Second mac-mini stack: operational recap forcing for 12300 — `DRAFT` — routes around the
-  deployment-wide `[adapters.weather_forecast].type` selector (one adapter per stack) by running a SECOND,
-  isolated Compose project with `type = "recap_gateway"`, so 12300 can be forced from the gateway without
-  touching the live Swiss/BAFU stack. Owns 139's W5+W8 deployment half only. Live re-probe 2026-08-20 found
-  same-day 00Z IFS (+14.75 d) and a 307-day complete `rof`/ERA5 training window — and that the mini's launchd
-  probe has produced **0 `ok=True` in 31 days** (stale wrapper, read-only `/app`). **Round-1 Codex review
-  folded (NEEDS_WORK → 2 blockers + 8 majors, all verified before folding): Compose `ports` CONCATENATE
-  (would have collided with the live Swiss caddy on 80/443 — needs `!override`), and Phase 2 was ordered
-  backwards (the importer holds the package when the station is absent).** Needs `/plan`.
+- **192** — Gateway forcing for 12300 on the mac-mini — `DRAFT` — the weather-forecast adapter selector is
+  deployment-wide (one adapter per stack), so 12300 cannot co-host with the Swiss/BAFU stations. **Two
+  independent Codex rounds folded.** Round 2 forced a restructure: **Stage A** is a throwaway proof
+  (disposable DB, seeded records, one manual 00Z fetch — no schedule, no code change); **Stage B**, the
+  standing daily stack, is built only if the owner wants a daily feed. Corrected a real identity error
+  (station code is `123`, `12300` is the Gateway HRU, polygon `g_123` — the loader derives
+  `g_<station_code>`). Live re-probe: same-day 00Z IFS (+14.75 d), ~4-day retention, and the mini's own
+  probe had produced **0 `ok=True` in 31 days**. Needs `/plan`.
 - **143** — DHM/v1 basin + gauge onboarding — `DRAFT` — GeoPackage → **N gauges** → forecast-ready
   (geometry via Plan 120 + station/rating + gateway binding + subscriptions). Owner-aligned 2026-07-23; needs
   `/plan`. Blocks 144.
