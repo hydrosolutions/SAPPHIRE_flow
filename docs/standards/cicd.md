@@ -717,13 +717,53 @@ from a Prefect worker would require mounting the Docker socket into the containe
 
 | File | Purpose |
 |------|---------|
-| `scripts/launchd/prune-docker.sh` | Main script: reads `docker system df --format '{{json .}}'`, parses Images and Build Cache reclaimable figures, runs `docker image prune -a -f` (≥ 1 GB reclaimable) and `docker builder prune -f` (≥ 1 GB reclaimable) independently |
+| `scripts/launchd/prune-docker.sh` | Main script: reads `docker system df --format '{{json .}}'`, parses Images and Build Cache reclaimable figures, then prunes images (≥ 1 GB reclaimable) and runs `docker builder prune -f` (≥ 1 GB reclaimable) independently. Image pruning enumerates candidates itself rather than calling `docker image prune -a -f`, so rollback anchors can be spared — see **Rollback-anchor protection** below |
 | `scripts/launchd/ch.hydrosolutions.sapphire-docker-prune.plist` | launchd agent — label `ch.hydrosolutions.sapphire-docker-prune`, weekly `StartCalendarInterval` (Sunday 04:00 local) |
 | `scripts/launchd/install-launchd.sh` | Updated to include the new plist in the `PLISTS=(...)` array (alongside `ch.hydrosolutions.sapphire.plist` and `ch.hydrosolutions.sapphire-watchdog.plist`) |
 
+### Rollback-anchor protection
+
+Images whose **tag** matches `PROTECT_RE` (default `^rollback($|-)`) are never
+pruned. Rollback anchors — e.g. `sapphire-flow:rollback-backup` — are unreferenced
+by design: no container runs them, so a blanket `docker image prune -a -f` deletes
+them, and reproducing a prior version then needs a rebuild at a commit that may no
+longer be checked out.
+
+This cannot be a docker-side filter: `docker image prune` accepts only `until=` and
+`label=`, neither of which matches a tag name, and tagging an existing image cannot
+add a label. The script therefore enumerates candidates itself:
+
+- **Use is keyed on the immutable image ID**, never on the reference a container was
+  created from. Those differ for digest-pinned images (this repo pins postgis by
+  `@sha256`), implicit `latest`, containers created by ID, and alternate tags on one
+  image. Comparing references would `rmi` a second tag of an in-use image, which
+  `prune -a` would have preserved. The in-use set is `docker ps -aq` piped through
+  `docker inspect -f '{{.Image}}'`, so exited containers still pin.
+- **The pattern is matched against the tag only**, so a repository named
+  `rollback/...` is not silently protected.
+- **Every inventory step fails closed.** If listing containers, resolving their image
+  IDs, or enumerating images fails, the prune is skipped entirely — an empty in-use
+  set caused by a daemon error would otherwise mean "nothing is in use".
+- Unprotected, unused references are removed by name, then `docker image prune -f`
+  reclaims dangling layers.
+- **Untagged rows are never removed by name.** Docker emits `repo:<none>` for an
+  image that kept a repository but lost its tag (this host carries `caddy:<none>`
+  and `prefecthq/prefect:<none>`), and `docker rmi repo:<none>` targets a reference
+  that does not exist — it always fails, and would inflate the failure count into a
+  false non-zero exit. Those rows are left to the dangling prune. *Known limitation:*
+  under the containerd image store a non-`-a` prune may not reclaim them, so this is
+  not fully equivalent to `docker image prune -a` for that class.
+
+Removal failures are counted, logged per image, and surfaced: the script exits
+non-zero if any `rmi`, the dangling prune, or the build-cache prune failed, so a run
+that reclaimed nothing cannot look like a clean weekly prune in launchd's records.
+
+Override with `PRUNE_PROTECT_RE` to widen or narrow the protected set; an invalid
+pattern aborts the prune rather than failing open.
+
 ### Stack-up guard
 
-`docker image prune -a -f` removes ALL images not referenced by a running container —
+Image pruning removes all unprotected images not referenced by a container —
 including the current `sapphire-flow:${VERSION}` tag if the stack is down. The script
 therefore checks that the stack is running before pruning:
 

@@ -254,15 +254,21 @@ def assert_station_within_grid(
         )
 
 
-def extract_nearest_series(ds: xr.Dataset, coord: StationCoordinate) -> ExtractedSeries:
+def extract_nearest_series(
+    ds: xr.Dataset, coord: StationCoordinate, *, variable: str = "precipitation"
+) -> ExtractedSeries:
     """D1 — THE operator. Bounds-checked first (D11.1), then a plain nearest
-    lookup on coordinates already proven in range."""
+    lookup on coordinates already proven in range.
+
+    Plan 191 T4 — `variable` names the data variable to read, defaulting to
+    `"precipitation"` so every existing precipitation caller is unaffected.
+    The only other read site on this primary path (`extract_bilinear_series`)
+    is D1a's sensitivity comparand and stays precipitation-only (out of
+    scope for T4)."""
     lat = ds["latitude"].values
     lon = ds["longitude"].values
     assert_station_within_grid(coord, lat=lat, lon=lon)
-    picked = ds["precipitation"].sel(
-        latitude=coord.lat, longitude=coord.lon, method="nearest"
-    )
+    picked = ds[variable].sel(latitude=coord.lat, longitude=coord.lon, method="nearest")
     values = np.asarray(picked.values, dtype=np.float64)
     # MAJOR (2026-08-17) — gate/count on non-finite, not merely NaN: an
     # isolated +inf/-inf value is not `np.isnan`, so a NaN-only count would

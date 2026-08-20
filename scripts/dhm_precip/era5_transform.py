@@ -34,6 +34,11 @@ from scripts.dhm_precip.era5_errors import (
     Era5SchemaValidationError,
     Era5StorageError,
 )
+from scripts.dhm_precip.era5_instantaneous import (
+    convert_kelvin_to_celsius,
+    instantaneous_identity,
+    validate_instantaneous_schema,
+)
 from scripts.dhm_precip.era5_manifest import (
     OperatorProvenance,
     TransformYearRecord,
@@ -41,6 +46,7 @@ from scripts.dhm_precip.era5_manifest import (
     hourly_mm_dir,
     manifest_path_for,
     product_artifact_path,
+    product_dir,
     publish_atomic,
     raw_artifact_path,
     read_manifest,
@@ -54,6 +60,7 @@ from scripts.dhm_precip.era5_request import (
     DEFAULT_REQUEST_SPEC,
     STUDY_YEARS,
     expected_grid_shape,
+    variable_code,
 )
 
 if TYPE_CHECKING:
@@ -94,6 +101,29 @@ _EXPECTED_COMPLEVEL = 4
 
 _OUTPUT_ENCODING_SPEC: dict[str, dict[str, object]] = {
     "precipitation": {
+        "dtype": OUTPUT_DTYPE,
+        "zlib": True,
+        "complevel": _EXPECTED_COMPLEVEL,
+        "chunksizes": _EXPECTED_CHUNKSIZES,
+        "_FillValue": _FILL_VALUE,
+    },
+    "valid_time": {"units": _TIME_ENCODING_UNITS, "dtype": _TIME_ENCODING_DTYPE},
+}
+
+# --- Plan 191 T3 — the instantaneous (K->degC) transform driver. D1: a
+# SEPARATE path from `transform_year` above, sharing only the storage
+# primitives (atomic publish, .prev rollback, manifest reconciliation) and
+# the grid-derived encoding constants (`_EXPECTED_CHUNKSIZES` etc. — those
+# describe the shared study-box grid, not accumulator behaviour). No
+# deaccumulation, no boundary context (D4), no packing/conservation
+# accounting.
+INSTANTANEOUS_TRANSFORM_VERSION = "1"
+INSTANTANEOUS_OUTPUT_SCHEMA_VERSION = "1"
+INSTANTANEOUS_OUTPUT_FORMAT = "netcdf4_h5netcdf"
+INSTANTANEOUS_UNITS_CONVERSION = "kelvin_to_celsius_subtract_273.15"
+
+_INSTANTANEOUS_OUTPUT_ENCODING_SPEC: dict[str, dict[str, object]] = {
+    "temperature": {
         "dtype": OUTPUT_DTYPE,
         "zlib": True,
         "complevel": _EXPECTED_COMPLEVEL,
@@ -207,17 +237,11 @@ def transform_year(
         *((window_id, "product month") for window_id in month_window_ids),
         (next_window_id, "next-month boundary context"),
     )
-    consumed_paths = {
-        window_id: raw_artifact_path(window_id, data_root) for window_id, _ in consumed
-    }
-    for window_id, label in consumed:
-        path = consumed_paths[window_id]
-        if not path.exists():
-            raise Era5MissingBoundaryContextError(
-                f"required raw artifact for {label} window {window_id!r} is "
-                f"missing: {path}"
-            )
 
+    # The manifest must be read BEFORE `consumed_paths` is built: the raw
+    # artifacts' variable code is recorded on the manifest (`manifest.variable`,
+    # set once at acquisition), not defaulted, so resolving the same paths
+    # `acquire_window` actually wrote requires knowing it first.
     manifest_path = manifest_path_for(data_root)
     manifest = read_manifest(manifest_path)
     if manifest is None:
@@ -232,6 +256,21 @@ def transform_year(
             f"--provenance does not match the acquisition manifest at "
             f"{manifest_path}: {provenance} != {manifest.operator_provenance}"
         )
+
+    consumed_variable_code = variable_code(manifest.variable)
+    consumed_paths = {
+        window_id: raw_artifact_path(
+            window_id, data_root, variable_code=consumed_variable_code
+        )
+        for window_id, _ in consumed
+    }
+    for window_id, label in consumed:
+        path = consumed_paths[window_id]
+        if not path.exists():
+            raise Era5MissingBoundaryContextError(
+                f"required raw artifact for {label} window {window_id!r} is "
+                f"missing: {path}"
+            )
 
     raw_sha256s: list[str] = []
     request_family: dict[str, object] | None = None
@@ -436,4 +475,204 @@ def transform_year(
         if backup_path.exists():
             backup_path.unlink()
     log.info("era5.transform.complete", year=year, sha256=sha256)
+    return record
+
+
+def transform_year_instantaneous(
+    year: int,
+    *,
+    data_root: Path,
+    provenance: OperatorProvenance,
+    clock: Callable[[], datetime],
+    transform_version: str = INSTANTANEOUS_TRANSFORM_VERSION,
+    output_schema_version: str = INSTANTANEOUS_OUTPUT_SCHEMA_VERSION,
+) -> TransformYearRecord:
+    """Plan 191 T3 — the instantaneous (t2m, K->degC) transform driver.
+
+    D1: a SEPARATE function from `transform_year` above — not a strategy
+    flag threaded through it. D4: reads ONLY the twelve monthly raw
+    artifacts of the product year, no previous/next-month boundary context
+    (there is no 01 UTC accumulation-day reset to close), so
+    `Era5MissingBoundaryContextError` never applies here. Reuses the same
+    atomic-publish / `.prev` rollback / manifest-update primitives as
+    `transform_year`.
+    """
+    if year not in STUDY_YEARS:
+        raise Era5StorageError(f"year {year} outside study range {STUDY_YEARS}")
+
+    month_window_ids = _product_year_window_ids(year)
+
+    manifest_path = manifest_path_for(data_root)
+    manifest = read_manifest(manifest_path)
+    if manifest is None:
+        raise Era5StorageError(f"no acquisition manifest found at {manifest_path}")
+    if manifest.operator_provenance != provenance:
+        raise Era5StorageError(
+            f"--provenance does not match the acquisition manifest at "
+            f"{manifest_path}: {provenance} != {manifest.operator_provenance}"
+        )
+
+    consumed_variable_code = variable_code(manifest.variable)
+    consumed_paths = {
+        window_id: raw_artifact_path(
+            window_id, data_root, variable_code=consumed_variable_code
+        )
+        for window_id in month_window_ids
+    }
+    for window_id in month_window_ids:
+        path = consumed_paths[window_id]
+        if not path.exists():
+            raise Era5StorageError(
+                f"required raw artifact for product month {window_id!r} is "
+                f"missing: {path}"
+            )
+
+    raw_sha256s: list[str] = []
+    request_family: dict[str, object] | None = None
+    request_family_label = ""
+    for window_id in month_window_ids:
+        path = consumed_paths[window_id]
+        record = manifest.raw_windows.get(window_id)
+        if record is None or checksum_file(path) != record.sha256:
+            raise Era5StorageError(
+                f"raw artifact for product month {window_id!r} has no valid "
+                "manifest entry (missing or checksum mismatch)"
+            )
+        if record.dataset != manifest.dataset:
+            raise Era5StorageError(
+                f"raw artifact for product month {window_id!r} was acquired "
+                f"under dataset {record.dataset!r}, but the manifest's "
+                f"dataset is {manifest.dataset!r} — refusing to mix datasets "
+                "within one transformed product"
+            )
+        family = {
+            key: record.request_payload.get(key)
+            for key in ("area", "variable", "data_format", "download_format")
+        }
+        if request_family is None:
+            request_family = family
+            request_family_label = window_id
+        elif family != request_family:
+            differing = sorted(k for k in family if family[k] != request_family.get(k))
+            raise Era5StorageError(
+                f"raw artifact for product month {window_id!r} was acquired "
+                f"with a different request family than {request_family_label} "
+                f"— {differing} differ. Refusing to build one product from "
+                "inconsistent extractions"
+            )
+        raw_sha256s.append(record.sha256)
+
+    identity = instantaneous_identity(
+        raw_sha256s=raw_sha256s,
+        units_conversion=INSTANTANEOUS_UNITS_CONVERSION,
+        output_schema_version=output_schema_version,
+        transform_version=transform_version,
+        output_format=INSTANTANEOUS_OUTPUT_FORMAT,
+        output_dtype=OUTPUT_DTYPE,
+        output_encoding=_INSTANTANEOUS_OUTPUT_ENCODING_SPEC,
+    )
+
+    product_path = product_artifact_path(
+        year,
+        data_root,
+        variable_code="t2m",
+        product_dir_name="degc",
+        unit_label="degc",
+    )
+    if transform_year_is_current(
+        manifest, year=year, expected_identity=identity, final_path=product_path
+    ):
+        log.info("era5.transform_instantaneous.skip_resume", year=year)
+        return manifest.transformed_years[str(year)]
+
+    # D4: exactly the twelve monthly artifacts — no prev/next boundary
+    # datasets in this concat, unlike `transform_year` above.
+    with ExitStack() as stack:
+        month_datasets = [
+            stack.enter_context(xr.open_dataset(consumed_paths[window_id]))
+            for window_id in month_window_ids
+        ]
+        combined = xr.concat(month_datasets, dim="valid_time").load()
+
+    converted = convert_kelvin_to_celsius(combined)
+    # The D7 required attrs for an instantaneous product (T2's judgment
+    # call): `period_ending_convention`/`accumulation_rule` describe
+    # accumulator semantics that do not exist here — `units_conversion` is
+    # their analogue, naming the transform actually applied.
+    converted.attrs.update(
+        {
+            "transform_version": transform_version,
+            "output_schema_version": output_schema_version,
+            "source_dataset": manifest.dataset,
+            "units_conversion": INSTANTANEOUS_UNITS_CONVERSION,
+        }
+    )
+
+    validate_instantaneous_schema(
+        converted, expected_year=year, expected_area=DEFAULT_REQUEST_SPEC.area
+    )
+
+    product_dir(data_root, "degc").mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_path_for(product_path)
+    tmp_path.unlink(missing_ok=True)
+
+    converted.to_netcdf(
+        tmp_path, engine="h5netcdf", encoding=_INSTANTANEOUS_OUTPUT_ENCODING_SPEC
+    )
+
+    backup_path = product_path.with_name(product_path.name + ".prev")
+    if backup_path.exists():
+        if not product_path.exists():
+            os.replace(backup_path, product_path)
+        else:
+            backup_path.unlink()
+    had_previous_product = product_path.exists()
+
+    try:
+        if had_previous_product:
+            os.replace(product_path, backup_path)
+        try:
+            with xr.open_dataset(tmp_path, engine="h5netcdf") as reopened:
+                loaded = reopened.load()
+                schema_result = validate_instantaneous_schema(
+                    loaded, expected_year=year, expected_area=DEFAULT_REQUEST_SPEC.area
+                )
+            sha256 = checksum_file(tmp_path)
+            publish_atomic(tmp_path, product_path)
+        except Exception:
+            if had_previous_product and not product_path.exists():
+                os.replace(backup_path, product_path)
+            raise
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+    record = TransformYearRecord(
+        product_year=year,
+        transform_identity=identity,
+        sha256=sha256,
+        accumulation_convention="instantaneous_no_accumulation",
+        units_conversion=INSTANTANEOUS_UNITS_CONVERSION,
+        # `packing` is genuinely absent, not zero-filled: this transform
+        # never clamps and never conserves mass, so there is no packing
+        # correction or mass-adjustment quantity to report (see
+        # `TransformYearRecord.packing`'s docstring).
+        packing=None,
+        non_finite_cell_count=schema_result.non_finite_cell_count,
+        dropped_boundary_stamp=None,
+        transformed_at=clock(),
+    )
+    updated_manifest = with_transform_year(manifest, record)
+    try:
+        write_manifest_atomic(updated_manifest, manifest_path)
+    except Exception:
+        if had_previous_product and backup_path.exists():
+            os.replace(backup_path, product_path)
+        else:
+            product_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if backup_path.exists():
+            backup_path.unlink()
+    log.info("era5.transform_instantaneous.complete", year=year, sha256=sha256)
     return record

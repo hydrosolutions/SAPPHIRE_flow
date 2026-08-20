@@ -79,7 +79,16 @@ window alone, so a t2m fetch would have overwritten 868 MB of precipitation unde
   extraction identity in `era5_extract_manifest.py` hashes `wet_threshold_mm_per_h`, `zero_policy`, an
   8-point quantile grid and `delta_statistics` — all precipitation semantics, all meaningless for
   temperature, and hashing them would violate D3 in the other direction. NEAREST remains THE operator
-  (`era5_extract.py:258`); that is not re-litigated.
+  (`era5_extract.py:258`); that is not re-litigated. **"Narrow" is about the PAYLOAD shape only, not
+  about publication.** *(Corrected 2026-08-20, review round 2.)* An earlier revision of this task
+  published t2m to a single fixed path (`era5_land/points/series_t2m_degc.nc`), swapped in place via a
+  `.points.prev` backup — a crash between the two renames left the canonical path briefly ABSENT, and
+  two concurrent publishers sharing one backup name could deadlock and strand both staging dirs. t2m
+  now publishes through the SAME `allocate_published_dir`/`prepare_staging_dir` primitives the
+  precipitation bundle uses (P1/P1a): a fresh, per-run-unique `<NNNN>-<identity>` directory under
+  `era5_land/points/`, so `os.replace` never faces a non-empty target and there is no backup to race
+  on. Discovery is therefore the SAME rule for both bundles — the highest `NNNN` whose manifest
+  validates (P2/P6) — never a fixed path and never a glob on `*-<identity>`.
 
 - **D6 — Elevations are reused, never re-derived.** Same 0.1° grid, same box ⇒ same nearest cell, so
   the published precipitation bundle's `station_grid_elevation.csv` already carries `station_elev_m`,
@@ -133,8 +142,12 @@ tests/unit/scripts/test_acquire_era5_cli.py`; then the **real run** producing si
 **Scope:** parameterise the data-variable name in `extract_nearest_series` (`era5_extract.py:263` is
 the only read site on the primary path), and publish a per-station hourly °C series with a small
 manifest recording the operator, the source product hashes, the coordinate-table hash, and the
-precipitation bundle identity whose elevation table it references (D6). **Out:** bilinear, sensitivity
-CSV, orography stage, any change to the published precipitation bundle.
+precipitation bundle identity whose elevation table it references (D6). Publication itself reuses
+`era5_extract_manifest`'s numbered-directory discipline (D5, corrected 2026-08-20): stage via
+`prepare_staging_dir`, publish via `allocate_published_dir` to a fresh `<NNNN>-<identity>` directory
+under `era5_land/points/`, discover via the highest `NNNN` whose manifest validates
+(`discover_t2m_bundle`) — never a fixed path, never a `.points.prev` backup. **Out:** bilinear,
+sensitivity CSV, orography stage, any change to the published precipitation bundle.
 **Verification:** new unit tests; a real run over the 26 stations asserting 52,608 hourly stamps and
 zero non-finite values; gated real-data suite green.
 

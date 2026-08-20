@@ -3,6 +3,7 @@ writer."""
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,7 @@ from scripts.dhm_precip.era5_manifest import (
     checksum_file,
     load_operator_provenance,
     passing_accumulation_diagnostic,
+    product_artifact_path,
     publish_atomic,
     raw_request_identity,
     raw_window_is_current,
@@ -31,6 +33,7 @@ from scripts.dhm_precip.era5_manifest import (
     with_transform_year,
     write_manifest_atomic,
 )
+from scripts.dhm_precip.era5_request import ERA5_VARIABLE_CODES, STUDY_YEARS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -445,6 +448,114 @@ class TestResumeChecks:
         )
 
 
+class TestPackingIsOptional:
+    """Plan 191 T3 follow-up: `TransformYearRecord.packing` is
+    `PackingAccounting | None` (defaulted, mirroring how
+    `Era5ProvenanceManifest.variable` was defaulted in #194). A transform
+    that never computes packing correction / mass conservation (the
+    instantaneous K->degC path) must record `None`, not a zero-filled
+    `PackingAccounting` that reads as a measurement never taken.
+
+    Read-back alone proves nothing (#194's own lesson): every assertion
+    here reads the RAW JSON text on disk, not just the reconstructed
+    domain object.
+    """
+
+    def _record(self, *, packing: PackingAccounting | None) -> TransformYearRecord:
+        return TransformYearRecord(
+            product_year=2021,
+            transform_identity="identity-a",
+            sha256="a" * 64,
+            accumulation_convention="era5_land_01_00_accumulation_day_v1",
+            units_conversion="metres_to_mm_x1000",
+            packing=packing,
+            non_finite_cell_count=0,
+            dropped_boundary_stamp="2020-12[-1],2022-01[0]",
+            transformed_at=datetime(2026, 8, 20, tzinfo=UTC),
+        )
+
+    def _manifest(self, record: TransformYearRecord) -> Era5ProvenanceManifest:
+        return with_transform_year(
+            Era5ProvenanceManifest(
+                dataset="reanalysis-era5-land",
+                client_package_version="1.2.3",
+                operator_provenance=_PROVENANCE,
+            ),
+            record,
+        )
+
+    def test_a_precipitation_style_record_serialises_packing_as_a_full_object(
+        self, tmp_path: Path
+    ) -> None:
+        packing = PackingAccounting(
+            packing_corrected_cells=3, max_correction_mm=0.5, mass_adjustment_mm=1.5
+        )
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(self._record(packing=packing)), path)
+
+        raw = json.loads(path.read_text())
+        raw_packing = raw["transformed_years"]["2021"]["packing"]
+        assert raw_packing == {
+            "packing_corrected_cells": 3,
+            "max_correction_mm": 0.5,
+            "mass_adjustment_mm": 1.5,
+        }
+
+        loaded = read_manifest(path)
+        assert loaded is not None
+        assert loaded.transformed_years["2021"].packing == packing
+
+    def test_an_instantaneous_style_record_serialises_packing_as_null_not_zeros(
+        self, tmp_path: Path
+    ) -> None:
+        """The concrete bug this guards against: `packing=None` reaching
+        disk as `{"packing_corrected_cells": 0, "max_correction_mm": 0.0,
+        "mass_adjustment_mm": 0.0}` — real-looking measurements for a
+        quantity that was never computed."""
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(self._record(packing=None)), path)
+
+        raw = json.loads(path.read_text())
+        raw_packing = raw["transformed_years"]["2021"]["packing"]
+        assert raw_packing is None
+        assert raw_packing != {
+            "packing_corrected_cells": 0,
+            "max_correction_mm": 0.0,
+            "mass_adjustment_mm": 0.0,
+        }
+
+        loaded = read_manifest(path)
+        assert loaded is not None
+        assert loaded.transformed_years["2021"].packing is None
+
+    def test_precipitation_manifest_shape_is_unaffected_by_the_optional_field(
+        self, tmp_path: Path
+    ) -> None:
+        """The precipitation record shape stays byte-identical: every field
+        it has ever populated (`packing` included) is still present and
+        non-null after `packing` became optional."""
+        packing = PackingAccounting(
+            packing_corrected_cells=0, max_correction_mm=0.0, mass_adjustment_mm=0.0
+        )
+        path = tmp_path / "manifest.json"
+        write_manifest_atomic(self._manifest(self._record(packing=packing)), path)
+
+        raw_record = json.loads(path.read_text())["transformed_years"]["2021"]
+        assert set(raw_record) == {
+            "product_year",
+            "transform_identity",
+            "sha256",
+            "accumulation_convention",
+            "units_conversion",
+            "packing",
+            "non_finite_cell_count",
+            "dropped_boundary_stamp",
+            "transformed_at",
+        }
+        assert raw_record["packing"] is not None
+        assert raw_record["dropped_boundary_stamp"] == "2020-12[-1],2022-01[0]"
+
+
 class TestOperatorProvenanceFile:
     def test_missing_file_raises_typed_error(self, tmp_path: Path) -> None:
         with pytest.raises(Era5StorageError, match="not found"):
@@ -619,3 +730,41 @@ class TestStorageErrorWrapping:
         monkeypatch.setattr(_Path, "read_text", _boom_read_text)
         with pytest.raises(Era5StorageError, match="failed to read"):
             load_operator_provenance(path)
+
+
+class TestProductArtifactPathIsVariableAware:
+    """Plan 191 D8 — the seam, not the decision. PR #194's fifth bug passed
+    18 tests that asserted a decision (an argument was passed) rather than
+    the seam (the resolved path actually differs on disk). These assert on
+    the resolved path STRING, pinned as literals."""
+
+    def test_existing_precipitation_products_resolve_byte_identically(
+        self, tmp_path: Path
+    ) -> None:
+        expected = {
+            2020: "era5_land/hourly_mm/era5_land_tp_mm_2020.nc",
+            2021: "era5_land/hourly_mm/era5_land_tp_mm_2021.nc",
+            2022: "era5_land/hourly_mm/era5_land_tp_mm_2022.nc",
+            2023: "era5_land/hourly_mm/era5_land_tp_mm_2023.nc",
+            2024: "era5_land/hourly_mm/era5_land_tp_mm_2024.nc",
+            2025: "era5_land/hourly_mm/era5_land_tp_mm_2025.nc",
+        }
+        assert tuple(sorted(expected)) == STUDY_YEARS
+        for year, suffix in expected.items():
+            resolved = product_artifact_path(year, tmp_path)
+            assert str(resolved) == str(tmp_path / suffix)
+
+    def test_t2m_product_resolves_to_a_distinct_degc_path(self, tmp_path: Path) -> None:
+        resolved = product_artifact_path(
+            2021,
+            tmp_path,
+            variable_code=ERA5_VARIABLE_CODES["2m_temperature"],
+            product_dir_name="degc",
+            unit_label="degc",
+        )
+        assert str(resolved) == str(
+            tmp_path / "era5_land/degc/era5_land_t2m_degc_2021.nc"
+        )
+        assert "t2m_degc" in resolved.name
+        assert "tp" not in resolved.name
+        assert "_mm_" not in resolved.name

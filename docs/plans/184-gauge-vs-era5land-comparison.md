@@ -213,6 +213,20 @@ All decisions are now made.
   ERA5-Land `2m_temperature` acquisition as a prerequisite** (same box, same window, 171's machinery
   and its monthly-window cost rule — see the milestones note).
 
+  **✅ THE PREREQUISITE IS DELIVERED (Plan 191, 2026-08-20).** The cell-level series exists under
+  `data/dhm_precip/era5_land_t2m/era5_land/points/<NNNN>-<identity>/series_t2m_degc.nc` —
+  `temperature_degc(station=26, valid_time=52608)`, °C, UTC, zero non-finite. **Corrected 2026-08-20
+  (review round 2):** t2m's own bundle publishes the same way as the precipitation bundle now — a
+  fresh, per-run-unique `<NNNN>-<identity>` directory, never the fixed path an earlier revision used
+  (that fixed-path scheme swapped in place via a `.points.prev` backup, which could leave the
+  canonical path briefly absent on a crash, or deadlock two concurrent publishers). It is
+  **uncorrected**: applying the lapse rate and running the Pyramid check are THIS plan's work. Resolve
+  BOTH the referenced precipitation bundle and t2m's own bundle by P2/P6's convention — the highest
+  `NNNN` whose manifest validates (`discover_t2m_bundle` for t2m) — never by a run-numbered path and
+  never by globbing `*-<identity>` (an identity is a label, not a lookup key, and may cover different
+  payloads). **Note `pyramid_loader.py` parses `RR` only — the `AT` loader D14's check needs does not
+  exist yet.**
+
   ERA5-Land is the right source for temperature specifically: per D7 it elevation-corrects temperature,
   humidity and pressure — but NOT precipitation. **The trap is that its orography sits 750–1,300 m
   ABOVE our high stations** (Syangboche 3,700 vs 4,447; Humde 3,401 vs 4,700), so at ~6.5 °C/km the raw
@@ -391,10 +405,14 @@ is *rendered* — that is T6's, which owns the renderer.
 **In:** one runner writing the markdown report plus its tables to `--out` (M-A10 shape), enforcing the
 binding placement rule — **no magnitude rendered without BOTH its subset `n` and its mass fraction in
 the same cell** — and signing every result per D6 with its estimand, retained fraction and the
-catch-efficiency caveat (Exit 3). Record **every** consumed identity: the **precipitation** bundle's,
-discovered by the highest valid `NNNN` (P2/P6), and **t2m's, read directly from its own fixed
-`era5_land/points/extraction_manifest.json`** — Plan 191 D5 deliberately gave t2m no `NNNN` bundle
-shape, so a highest-`NNNN` scan cannot find it. Headline numbers locked in
+catch-efficiency caveat (Exit 3). Record **every** consumed identity: the **precipitation** bundle's
+and **t2m's**, BOTH discovered by the highest valid `NNNN` whose manifest validates (P2/P6 —
+`_discover_precip_bundle`/`discover_t2m_bundle`). *(Corrected 2026-08-20, review round 2: an earlier
+revision of this note said t2m's manifest was read directly from its own fixed
+`era5_land/points/extraction_manifest.json`, because Plan 191 D5 originally gave t2m no `NNNN` bundle
+shape. That fixed-path scheme had two crash/concurrency defects and was replaced — t2m now publishes
+numbered bundles exactly like precipitation, so one discovery rule covers both.)* Headline numbers
+locked in
 `tests/integration/test_dhm_precip_reproduction.py`; results folded into
 `docs/design/dhm-precipitation-milestones.md`, this track's only durable record.
 **Out:** any fitness-to-force statement (M-A8/M-DEC) and any correction design.
