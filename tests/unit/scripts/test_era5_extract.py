@@ -271,6 +271,34 @@ class TestOperators:
         assert bool(np.all(~np.isfinite(result.values)))
 
 
+class TestVariableParameterisation:
+    """Plan 191 T4 — `extract_nearest_series` reads `ds[variable]`, defaulting
+    to `"precipitation"` so the existing precipitation callers (above) are
+    byte-for-byte unaffected. D8 seam test: prove the parameter is actually
+    THREADED THROUGH (a real different read site), not a name that merely
+    happens to coincide with the default."""
+
+    def test_default_variable_is_precipitation(self) -> None:
+        ds = _clean_ds()
+        default_result = extract_nearest_series(ds, _station(26.1, 85.1))
+        explicit_result = extract_nearest_series(
+            ds, _station(26.1, 85.1), variable="precipitation"
+        )
+        assert default_result.values[0] == pytest.approx(explicit_result.values[0])
+
+    def test_explicit_variable_reads_a_different_data_variable(self) -> None:
+        ds = _clean_ds().rename({"precipitation": "temperature"})
+        ds["temperature"].values[:] = 42.0
+        # The default ("precipitation") must fail on this dataset — proof
+        # the parameter genuinely selects the read site, not a fallback.
+        with pytest.raises(KeyError):
+            extract_nearest_series(ds, _station(26.1, 85.1))
+        result = extract_nearest_series(
+            ds, _station(26.1, 85.1), variable="temperature"
+        )
+        assert result.values[0] == pytest.approx(42.0)
+
+
 class TestStationSet:
     """D8 — thin-wrapper coverage only (M-13): the loader already proves
     duplicate/cardinality behaviour; this locks the NEW translation into
