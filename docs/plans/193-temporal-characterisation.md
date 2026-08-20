@@ -35,13 +35,10 @@ therefore **contaminated by the very defects M-A3 exists to remove** — sentine
 and false-zero runs all enter the mean. Every temporal statistic in this plan is computed on the
 **masked** series; reusing those functions as currently wired would publish contaminated numbers.
 
-**⛔ Correction 2026-08-20 (Codex): this is NOT the M-A10 artefact path, and an earlier draft of this
-plan said it was.** `diurnal_profiles` returns *unnormalised* hourly means (`stats_coherence.py:222`)
-and cannot invert a profile. The retired 02 UTC Lukla peak required division by a **negative grand
-mean** in `stats_coloc.normalised_diurnal_profile` (`stats_coloc.py:58`) — sentinels of −9999999
-dragging the denominator below zero — and M-A10's own production path masks first
-(`coloc_run.py:440`). The contamination claim above is true and sufficient on its own; the
-"exact path" claim was not, and overstating it would have misdirected the fix.
+**⛔ This is contamination, NOT the M-A10 artefact path — do not conflate them.** That artefact needed
+division by a **negative grand mean** in `stats_coloc.normalised_diurnal_profile` (`stats_coloc.py:58`);
+`diurnal_profiles` returns unnormalised means and cannot invert a profile, and M-A10's own path masks
+first (`coloc_run.py:440`). The contamination claim above stands on its own.
 
 ## Decisions
 
@@ -65,16 +62,12 @@ dragging the denominator below zero — and M-A10's own production path masks fi
 - **D4 — Frequency statistics use the 0.2 mm/h harmonised floor; mass statistics use unthresholded
   values** (vision D5). Never mixed, and which is which is stated beside every number.
 
-- **D5 — Body and tail reported separately, each with bootstrap uncertainty. M-A7 MEASURES tail
-  transferability; it inherits no number.** **⛔ Corrected 2026-08-20 (Codex round 2): an earlier
-  draft cited "−49 % to +241 %" as *already established*.** That figure is marked
-  `disposition = "withdrawn_unreproducible"` in `expectations.toml`, is `RAW_PROVISIONAL`, was computed
-  on **unmasked** data, and is **assigned to this very milestone** — vision `:47` bars such intensity
-  figures until M-A7 lands. Quoting it as settled would have prejudged the milestone whose job is to
-  establish it, and would repeat this track's most expensive error class (see the withdrawn r = 0.998).
-  A masked recomputation gives a materially different range, so **no figure is pre-registered here**
-  (vision D8): M-A7 computes the range, reports it with its bootstrap and adequacy labels, and that
-  becomes the first reproducible value.
+- **D5 — Body and tail reported separately with bootstrap uncertainty. M-A7 MEASURES tail
+  transferability; it inherits no number.** **⛔ Do NOT cite "−49 % to +241 %" as established** — it is
+  `disposition = "withdrawn_unreproducible"` and `RAW_PROVISIONAL` in `expectations.toml`, computed on
+  **unmasked** data, and assigned to *this* milestone (vision `:47` bars such figures until M-A7
+  lands); a masked recomputation differs materially. **No figure is pre-registered** (vision D8): M-A7
+  computes the range and that becomes the first reproducible value.
 
 - **D5a — The elevation bands are NAMED HERE, once, chosen a priori from the cited literature.**
   `< 700 m` / `700–2,000 m` / `2,000–3,000 m` / `≥ 3,000 m`, giving **9 / 9 / 5 / 3** of the 26
@@ -82,8 +75,7 @@ dragging the denominator below zero — and M-A10's own production path masks fi
   margin ~500–700 m; Lesser Himalaya ~2,000–2,200 m), are **declared, never fitted to our data**, and
   every band product reports its station count.
 
-  **⛔ The band ESTIMAND is defined here too, because edges alone do not determine the answer**
-  *(Codex round 2)*. A band profile is the **unweighted mean of its member stations' profiles**, not a
+  **⛔ The band ESTIMAND is defined here too, because edges alone do not determine the answer**. A band profile is the **unweighted mean of its member stations' profiles**, not a
   pooled exposure-weighted mean of their observations — under an MNAR mask a station with more
   retained hours would otherwise dominate its band, making the band figure a function of retention
   (the pattern Plan 184 D13 exists to keep visible). The pooled form is reported **as a sensitivity**,
@@ -92,10 +84,16 @@ dragging the denominator below zero — and M-A10's own production path masks fi
   their union — for `≥ 3,000 m` that is **n = 4 / inadequate**, where the union would have claimed
   **n = 5 / adequate**. Take the conservative one and label it.
 
+  **The same station-equal rule governs band DISTRIBUTIONS, not just profiles.** Each station
+  contributes **equal probability mass**, never equal observation count — station wet-hour counts span
+  **732–5,232**, so pooling would let the wettest-sampled station set the band's tail. Measured, the
+  `700–2,000 m` wet-hour q99.9 is **46.935 mm/h pooled vs 51.441 mm/h station-equal**. Pooled is
+  reported as the sensitivity, as for profiles.
+
   **Recorded limit:** `≥ 3,000 m` holds only **three** stations (4/5/5 JJAS season-years) and one of
   them is **Olangchunggola**, whose 03 UTC peak is unexplained (D7). The band most relevant to the
   snow question is the thinnest and contains the track's one open anomaly — say so wherever a
-  `≥ 3,000 m` band figure is reported. *(Added 2026-08-20 — Codex found that both this plan's
+  `≥ 3,000 m` band figure is reported. *(Note: both this plan's
   Exit and the milestone's require per-band products while no task produced them and no parameter
   defined the edges, so different implementers would have produced different profiles.)*
 
@@ -118,13 +116,11 @@ dragging the denominator below zero — and M-A10's own production path masks fi
   with its own exposure — and **set no completeness threshold** (Plan 184 D13, vision D8): stratify by
   retention rather than filter on it.
 
-  **⛔ A DJF season-year is NOT a calendar year.** `params.year_attribution` is
-  `december_belongs_to_following_djf`, and `coloc_bootstrap.per_season_hourly_means` assigns
-  `timestamp.dt.year()` with a docstring saying that is valid precisely because *"JJAS never cross[es]
-  a year boundary … unlike DJF"*. Reusing it for DJF would mislabel D9's adequacy flag — measured:
-  **Lete would read 4/inadequate instead of 5/adequate, and Olangchunggola 5/adequate instead of
-  4/inadequate.** Any non-JJAS season uses `params.year_attribution`, never the calendar year.
-  *(Codex round 2, 2026-08-20.)*
+  **⛔ A DJF season-year is NOT a calendar year.** DJF uses `params.year_attribution`
+  (`december_belongs_to_following_djf`), never `timestamp.dt.year()` —
+  `coloc_bootstrap.per_season_hourly_means` is JJAS-only by its own docstring. Reusing it for DJF
+  mislabels D9's adequacy flag: measured, **Lete reads 4/inadequate instead of 5/adequate, and
+  Olangchunggola 5/adequate instead of 4/inadequate.**
 
 - **D9 — Bootstrap by resampling whole SEASON-YEARS, and carry the precedent's ADEQUACY FLAG.**
   Precipitation is strongly serially correlated, so hour-level resampling would break serial
@@ -142,27 +138,18 @@ dragging the denominator below zero — and M-A10's own production path masks fi
   So: every interval carries its `n_season_years` and its adequacy designation, and an inadequate
   interval is labelled, never suppressed. **Do NOT filter stations on it** — that is exactly the
   filter-on-retention error Plan 184 D13 forbids; stratify and label instead.
-  *(Codex review 2026-08-20; counts reproduced independently.)*
 
 - **D10 — Consume Plan 184 T1's GAUGE-ONLY masked population; do not build a second one, and do not
   depend on the rest of Plan 184.** *(The one cross-plan coupling, deliberate and narrow.)* Two
   independent implementations of "the masked series" would drift invisibly — both looking right in
   isolation — so there is one definition feeding both milestones M-A8 joins.
 
-  **⛔ Corrected 2026-08-20 (Codex).** An earlier draft declared `depends_on: [184]` and spoke of
-  taking the paired frame's "gauge half". Both were wrong: the paired frame is restricted to
-  timestamps retained on **both** sides, so M-A7 — which is gauge-only — would have become
-  conditional on ERA5 availability; and depending on Plan 184 wholesale serialised M-A7 behind all of
-  M-A6, contradicting the milestone doc's explicit M-A6/M-A7 parallelism
-  (`dhm-precipitation-milestones.md:412`). Plan 184 T1 now names the gauge-only masked population as
-  a separate output (184 `57c1514`); M-A7 depends on **that output**, not on the plan.
-
-  **⛔ Corrected again 2026-08-20 (Codex round 2): the gate must live in the EXECUTABLE GRAPH.** Round
-  1's fix moved it into a `consumes:` frontmatter key — invented here, with no scheduling semantics
-  (`check_readiness.py` reads only status/review fields), so phase-1 would have started
-  unconditionally while the real prerequisite sat in prose. The repo's actual convention puts
-  cross-plan gates **inside the JSON phase graph** (`152:1024` uses `"plan-155"`, `"plan-157"`), so
-  phase-1 now carries `"depends_on": ["plan-184-T1"]` at task granularity. The invented key is gone.
+  **Two constraints, both learned the hard way.** (a) Consume 184 T1's **gauge-only** output, never the
+  paired frame's "gauge half" — the paired frame is restricted to timestamps retained on **both**
+  sides, which would make this gauge-only milestone conditional on ERA5. (b) The gate belongs in the
+  **JSON phase graph** (`"plan-184-T1"` on phase-1), the repo's convention for cross-plan gates
+  (`152:1024`), **not** in frontmatter: `depends_on: [184]` would serialise M-A7 behind all of M-A6,
+  contradicting the milestone doc's A6/A7 parallelism (`milestones:412`).
 
 ## Tasks
 
@@ -177,7 +164,7 @@ bootstrap with `n_season_years` and its adequacy designation; Olangchunggola's s
 **Verify:** `uv run pytest tests/unit/scripts/test_ma7_profiles.py -q`, including a **regression that
 rows removed by the M-A3 mask do not enter a computed profile** — assert on the output, not on input
 provenance: structurally identical Polars frames carry no masked/unmasked marker, so a "refuse
-unmasked input" test would need exactly the wrapper apparatus this plan forbids *(Codex 2026-08-20)*.
+unmasked input" test would need exactly the wrapper apparatus this plan forbids.
 Then `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
 
 ### T2 — wet-hour intensity distributions (depends: Plan 184 T1)
@@ -187,8 +174,7 @@ reported separately with season-year bootstrap intervals carrying their adequacy
 (D5, D9). **Out:** the transferability claim (T3); any threshold applied to mass statistics.
 **Verify:** `uv run pytest tests/unit/scripts/test_ma7_intensity.py -q`, including a test that asserts
 the **value** of a mass statistic equals the unthresholded computation and differs from the
-thresholded one — assert on the number, not on input provenance, for the same reason as T1 *(Codex
-round 2)*.
+thresholded one — assert on the number, not on input provenance, for the same reason as T1.
 
 ### T3 — transferability and elevation stratification (depends: T1, T2)
 **In:** the quantified statement of what transfers between stations, expressed as a divergence or a
@@ -198,8 +184,7 @@ as a correlation; any attribution of an effect to elevation rather than resoluti
 **Verify:** `uv run pytest tests/unit/scripts/test_ma7_transfer.py -q`, including a test asserting the
 reported transferability field **is** a divergence or held-out prediction error and that its value
 changes when the underlying distributions do. *(A "refuse a correlation" test is not executable and
-would contradict D3, which permits profile-shape correlation as a secondary statistic — Codex
-round 2.)*
+would contradict D3, which permits profile-shape correlation as a secondary statistic.)*
 
 ### T4 — report and Exit (depends: T1–T3)
 **In:** one runner writing the markdown report and tables to `--out` (M-A10 shape), every profile and
