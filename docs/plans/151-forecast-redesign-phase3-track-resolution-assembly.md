@@ -1413,3 +1413,73 @@ through a re-confirmed scope change to the READY plan.
 **Exit gate:** unchanged from the first fixer round (no code touched); re-confirmed `uv run pytest -q` full suite
 green, `uv run pyright src/` at ratchet ceiling, `uv run ruff check .` clean beyond the 12 pre-existing alembic
 `E501`s.
+
+## Third fixer round (T8a review fold-in, 2026-08-19)
+An independent Codex pass over the committed T8a diff (`5d921ee`) plus a Claude design pass raised one blocker, two
+majors, and one minor — all against T8a's own committed code, not a T5–T7 regression. All four are resolved below.
+
+- **Blocker — `_slice_to_future_steps` sliced the UNION frame's positions, not the variable's own timestamps.**
+  `future_dynamic` is a per-assignment frame that may carry several future_known variables pivoted onto one shared
+  `timestamp` axis; when two variables have DIFFERENT own timestamp sets (D9 permits this — e.g. a 2-day precip
+  variable sharing a track with a 10-day temp variable, at genuinely staggered valid_times, not just a shorter
+  prefix), the short variable's cells at every union timestamp it does not itself declare are structural nulls the
+  pivot introduced. `head(future_steps)` on the union's timestamp-sorted rows could therefore select one of those
+  structural nulls ahead of the variable's own later-but-real value, either falsely tripping `max_nan` or silently
+  delivering an incomplete series with the wrong values. **Fix:** `_slice_to_future_steps` takes a `name` parameter
+  and filters to that column's non-null rows *before* sorting/capping, applied identically at both call sites (the
+  `InputSeries`-construction site in `_future_known_inputs` and the NaN-gate site in
+  `_variables_over_nan_tolerance`) so the two stay consistent. A genuine in-window NaN (an IEEE float NaN, distinct
+  from a Polars null) still survives the filter and is still counted by the NaN gate — only structural absence is
+  removed. Locked by
+  `test_predict_slices_a_variable_to_its_own_timestamps_not_the_union_frame`
+  (`tests/unit/adapters/test_forecast_interface_adapter_nan_gate.py`), the first fixture in this test module to give
+  two future_known variables genuinely staggered (not just differently-truncated) timestamp sets; proven RED against
+  the pre-fix code (it raised `ModelOutputError` before reaching its own assertions).
+- **Major — `fetch_forcing_candidate_task` had no `retry_condition_fn`, so Prefect retried every exception.** Once
+  T8b sets `retries=` from `ForcingResolutionPolicy.max_retries`, Prefect's default behaviour retries on ANY raised
+  exception — including the fatal typed taxonomy D31 declares non-retryable (`RecapAuthError`,
+  `RecapConfigurationError`, `RecapPayloadIntegrityError`) and any unanticipated bug, burning the whole retry budget
+  on an error that will never succeed and delaying the walk-back that should have handled it instead. **Fix:** a new
+  `_retry_only_recap_transient_error` reads the failed state's carried exception (`state.data`) and returns
+  `isinstance(state.data, RecapTransientError)`, wired as the task's `retry_condition_fn`. Locked by
+  `TestFetchForcingCandidateTaskRetries.test_fatal_and_unexpected_exceptions_are_never_retried` (parametrized over
+  `RecapAuthError`/`RecapConfigurationError`/`RecapPayloadIntegrityError`/a plain `RuntimeError`, asserting exactly
+  one call each even with a generous `retries=3` budget); proven RED against the pre-fix code (all four raised the
+  wrong exception type after a spurious retry instead of failing on the first call).
+- **Major — `_station_complete`'s SINGLE branch did not enforce the EXACT source-derived member set.** It originally
+  took the max row-count over EVERY `member_id` present, so a stray/foreign member (e.g. a mis-tagged member 7, or a
+  second run mixed into the same candidate) could satisfy completeness even though the source's OWN declared SINGLE
+  identity (`expected_member_ids` — `{0}` for Recap) never appeared, or appeared short. A first fix FILTERED to
+  `member_id in expected_member_ids` before taking the max; a follow-up review showed filtering is not the contract —
+  the spec (`docs/spec/types-and-protocols.md`, "carries member_ids == source.expected_member_ids") requires
+  EQUALITY. Under filtering a candidate carrying a COMPLETE member 0 **beside** a COMPLETE foreign member 9 was
+  ACCEPTED, both runs were persisted, SINGLE assembly silently dropped the foreign run
+  (`operational_inputs._pivot_nwp_records`), and — the candidate having been accepted — walk-back to a clean older
+  candidate never happened. **Fix:** the mode branch is gone; ONE gate now serves both modes — the present (non-null)
+  member set must EQUAL `expected_member_ids`, then each expected member's series must reach the horizon at the same
+  retained valid_times (degenerate for a one-element SINGLE identity). Rejection is walk-back-eligible, exactly like
+  a short series. `resolve_candidate` additionally rejects an EMPTY `expected_member_ids` with a `ValueError` (a
+  source declaring no member identity is fatal config, not a candidate outcome). The test fixtures' `_forecast`
+  helper default changed from `member_ids=[None]` to `member_ids=[0]` (Recap's source-derived SINGLE identity) so
+  every existing SINGLE-mode test — which already passed `expected_member_ids=frozenset({0})` — continues to mean
+  what it always claimed to mean. Locked by `test_single_mode_wrong_member_rejects_candidate_and_walks_back`,
+  `test_single_mode_rejects_a_candidate_carrying_a_complete_foreign_member`,
+  `test_single_mode_short_member_with_a_longer_foreign_member_rejected` and
+  `test_foreign_member_candidate_walks_back_and_never_persists` (the last asserting against the STORE that no row of
+  the rejected candidate was persisted) — `tests/unit/services/test_track_resolution.py`; the two both-complete cases
+  proven RED against the filtering implementation (the fresh foreign-member candidate was accepted at
+  `2026-01-10T06:00` instead of walking back to `2026-01-10T00:00`).
+- **Minor — the public flow parameter was typed `object | None` instead of `ForcingResolutionPolicy | None`.**
+  Every other `run_forecast_cycle_flow` parameter is deliberately `object`-typed because it is a Protocol-typed
+  injection point Prefect's pydantic-backed parameter validation cannot usefully check; `ForcingResolutionPolicy` is
+  a plain frozen dataclass with no such constraint, so the loose annotation only meant a malformed value crossed the
+  flow boundary unchecked and failed later, inside T8b, when a policy attribute was first accessed. **Fix:** the
+  parameter is now typed `ForcingResolutionPolicy | None`, and the now-redundant internal `cast(...)` was removed.
+  Locked by
+  `TestForcingResolutionPolicyConstruction.test_flow_boundary_rejects_a_value_that_is_not_a_forcing_resolution_policy`,
+  which passes `object()` and asserts `prefect.exceptions.ParameterTypeError`; proven RED against the pre-fix code
+  (the flow accepted the malformed value and only failed downstream).
+
+**Exit gate:** `uv run pytest tests/unit -q` full suite green; `uv run ruff format`/`uv run ruff check .` clean
+beyond the same 12 pre-existing alembic `E501`s; `uv run pyright src/sapphire_flow/adapters/forecast_interface.py
+src/sapphire_flow/flows/run_forecast_cycle.py src/sapphire_flow/services/track_resolution.py` at 0 errors.

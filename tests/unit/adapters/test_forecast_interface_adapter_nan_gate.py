@@ -726,6 +726,76 @@ def test_nan_gate_still_fails_on_nan_inside_own_horizon() -> None:
         adapter.predict(object(), inputs, random.Random(123))
 
 
+def _staggered_two_horizon_station_input_data() -> StationInputData:
+    """Precip (future_steps=2) and temp (future_steps=10) each have their
+    OWN, non-overlapping timestamp set -- unlike every fixture above, where
+    both features share the identical 10-row timestamp grid and only differ
+    in which trailing rows are NaN. Pivoting these two feature-local grids
+    into ONE `future_dynamic` frame (a real union join, not a shared range)
+    produces STRUCTURAL nulls for precip at every timestamp only temp
+    declares: temp's own 10 timestamps are hours 3-12; precip's own 2 real
+    values sit at hours 4 and 5 (a SUBSET of temp's grid, chosen so the
+    union's row order does not already match precip's true order)."""
+    union_timestamps = _timestamps(*range(3, 13))
+    return StationInputData(
+        past_targets=_time_frame(
+            {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+        ),
+        past_dynamic=_time_frame({"timestamp": _timestamps(0, 1, 2)}),
+        future_dynamic=_time_frame(
+            {
+                "timestamp": union_timestamps,
+                "precip": [None, 5.0, 6.0, None, None, None, None, None, None, None],
+                "temp": [float(i) for i in range(10)],
+            }
+        ),
+        static=None,
+    )
+
+
+def test_predict_slices_a_variable_to_its_own_timestamps_not_the_union_frame() -> None:
+    """Locks T8 review finding 1 (blocker): `_slice_to_future_steps` must
+    take the first `future_steps` rows belonging to THIS variable, not the
+    first N rows of the `future_dynamic` UNION frame. temp's longer 10-step
+    horizon widens the union frame to hours 3-12; precip (future_steps=2,
+    max_nan=0) only has REAL values at hours 4 and 5 -- everywhere else in
+    the union it is a structural null the pivot created, never a value
+    precip itself declared. Taking `head(2)` of the union's timestamp-sorted
+    rows (pre-fix) picks hour 3 (structurally null for precip) and hour 4
+    (real) -- dropping the real hour-5 value and reporting a spurious
+    missing value that falsely trips `max_nan=0` before this test even
+    reaches the InputSeries assertions below."""
+    data = _staggered_two_horizon_station_input_data()
+    model = RecordingFIForecastModel(
+        _success_result({"station": {"discharge": _success_variable()}}),
+        requirement=_two_horizon_requirement(),
+    )
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        model, station_code_resolver=lambda station_id: _CODES[station_id]
+    )
+    inputs = StationModelInputs(
+        station_id=_SID_A,
+        data=data,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=10,
+        time_step=_STEP,
+        forcing_route=ForcingRoute.PER_TRACK,
+    )
+
+    # Must NOT raise: precip's own two declared values (hours 4 and 5) are
+    # both present, so max_nan=0 is satisfied once the slice is
+    # variable-local rather than union-frame-positional.
+    adapter.predict(object(), inputs, random.Random(123))
+
+    assert model.predict_inputs is not None
+    precip = _future_known_series(model.predict_inputs, "precip")
+    temp = _future_known_series(model.predict_inputs, "temp")
+    assert precip.height == 2
+    assert precip["precip"].to_list() == [5.0, 6.0]
+    assert precip["datetime"].to_list() == _timestamps(4, 5)
+    assert temp.height == 10
+
+
 def _short_horizon_requirement() -> fi_boundary.InputRequirement:
     """A station-scope model declaring a SINGLE future_known feature at
     `future_steps=2` — the shorter-horizon half of a co-assigned pair. The

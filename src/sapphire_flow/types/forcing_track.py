@@ -119,6 +119,39 @@ class ResolvedTrackRequest:
     assignments: tuple[ForcingRequired, ...]
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForcingResolutionPolicy:
+    """Plan 151 T8a: the flow-level carrier that supplies all THREE
+    resolver-facing policy values to the services layer as ONE object (D7 —
+    the adapter must never be the carrier of services-layer policy, so the
+    resolver must not read any of these off the adapter, private or
+    public).
+
+    ``cycle_cadence_hours`` is :func:`resolve_candidate`'s walk-back
+    candidate spacing (ruling 4 / D24); ``max_cycle_age_hours`` is its
+    walk-back bound; ``max_retries`` is the retry count the retrying
+    candidate-fetch task (D28) is configured with. Constructed on all three
+    flow-level paths (production config, injected client, injected
+    adapter) — see ``flows/run_forecast_cycle.py``.
+    """
+
+    cycle_cadence_hours: float
+    max_cycle_age_hours: float
+    max_retries: int
+
+    def __post_init__(self) -> None:
+        if self.cycle_cadence_hours <= 0:
+            raise ValueError(
+                f"cycle_cadence_hours must be > 0, got {self.cycle_cadence_hours!r}"
+            )
+        if self.max_cycle_age_hours <= 0:
+            raise ValueError(
+                f"max_cycle_age_hours must be > 0, got {self.max_cycle_age_hours!r}"
+            )
+        if self.max_retries < 0:
+            raise ValueError(f"max_retries must be >= 0, got {self.max_retries!r}")
+
+
 class StationUnavailableReason(Enum):
     NO_DATA_AT_CYCLE = auto()
     EXTRACTION_EMPTY = auto()

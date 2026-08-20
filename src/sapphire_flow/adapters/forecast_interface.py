@@ -898,7 +898,7 @@ class ForecastInterfaceAdapter:
             # superset route and the GROUP path are byte-for-byte unchanged.
             if name in future_steps_by_name:
                 frame = self._slice_to_future_steps(
-                    frame=frame, future_steps=future_steps_by_name[name]
+                    frame=frame, name=name, future_steps=future_steps_by_name[name]
                 )
             missing_count = self._missing_value_count(frame=frame, name=name)
             if missing_count > tolerance:
@@ -1300,7 +1300,7 @@ class ForecastInterfaceAdapter:
             )
             if forcing_route is ForcingRoute.PER_TRACK:
                 frame = self._slice_to_future_steps(
-                    frame=frame, future_steps=variable.future_steps
+                    frame=frame, name=name, future_steps=variable.future_steps
                 )
             return frame
 
@@ -1320,7 +1320,7 @@ class ForecastInterfaceAdapter:
         }
 
     def _slice_to_future_steps(
-        self, *, frame: pl.DataFrame, future_steps: int
+        self, *, frame: pl.DataFrame, name: str, future_steps: int
     ) -> pl.DataFrame:
         """Plan 151 T6 (D9): the earliest ``future_steps`` rows by
         ``timestamp`` — this variable's OWN declared horizon, never the
@@ -1332,11 +1332,30 @@ class ForecastInterfaceAdapter:
         feature from receiving (and being NaN-checked against) more rows
         than it ever declared.
 
+        ``frame`` is ``future_dynamic`` — a UNION frame potentially pivoted
+        across every future_known variable, each of which may carry its own
+        feature-local timestamp set (D9 permits this). A row absent from
+        THIS variable's own set is a STRUCTURAL null the pivot introduced,
+        never a value this variable declared and never one of its "earliest"
+        rows (review fold-in — blocker): filtering to ``name``'s non-null
+        rows BEFORE sorting/capping is what makes ``head(future_steps)``
+        select this variable's own earliest real values rather than the
+        union frame's earliest positions, which can interleave a sibling
+        variable's longer-horizon-only timestamps ahead of this variable's
+        genuine (but later-sorted-among-nulls) ones. A genuine in-window
+        NaN (a float NaN, not a polars null) still survives this filter and
+        is still counted by the NaN gate — only STRUCTURAL absence is
+        removed.
+
         Reached ONLY from ``ForcingRoute.PER_TRACK`` inputs (D10); the legacy
         superset route never calls it."""
         if "timestamp" not in frame.columns:
             return frame
-        return frame.sort("timestamp").head(future_steps)
+        return (
+            frame.filter(pl.col(name).is_not_null())
+            .sort("timestamp")
+            .head(future_steps)
+        )
 
     def _past_input_series(
         self,

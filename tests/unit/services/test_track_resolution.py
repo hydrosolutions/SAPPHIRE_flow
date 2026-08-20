@@ -80,7 +80,13 @@ def _forecast(
     feature_days: dict[str, int],
     member_ids: list[int | None] | None = None,
 ) -> BasinAverageForecast:
-    member_ids = [None] if member_ids is None else member_ids
+    # Default is the Recap SINGLE-mode source-derived identity (fc member
+    # 0, `_FC_MEMBER_ID` in `adapters/recap_gateway.py`) -- review fold-in
+    # (major): `_station_complete` validates the present member set for
+    # EQUALITY against `expected_member_ids` in both modes, so a fixture
+    # default of `None` would silently stop satisfying every SINGLE-mode
+    # test that passes `expected_member_ids=frozenset({0})`.
+    member_ids = [0] if member_ids is None else member_ids
     rows: list[dict[str, object]] = []
     for feature, n_days in feature_days.items():
         for day in range(1, n_days + 1):
@@ -235,6 +241,207 @@ def test_expected_member_ids_is_source_derived_21_and_51_with_no_validator_chang
             id_gen=_id_gen,
         )
         assert accepted is not None, f"member_count={member_count} should COMPLETE"
+
+
+def test_single_mode_wrong_member_rejects_candidate_and_walks_back() -> None:
+    """Locks T8 review finding 3 (major): the freshest candidate's only
+    ``precip`` records sit under member 7 -- a stray/foreign member this
+    SINGLE-mode source never declared as its identity
+    (``expected_member_ids == {0}``). Counting the max over EVERY member
+    present (pre-fix) would accept this candidate outright; the fix must
+    reject it and walk back to the older candidate carrying the correct
+    member-0 run."""
+    track_request = _track_request(feature_steps={"precip": 2})
+    fresh = _NOMINAL_NOW
+    older = ensure_utc(fresh - timedelta(hours=_CADENCE_HOURS))
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        if cycle == fresh:
+            forecast = _forecast(
+                _STATION_A, cycle, feature_days={"precip": 2}, member_ids=[7]
+            )
+        else:
+            forecast = _forecast(
+                _STATION_A, cycle, feature_days={"precip": 2}, member_ids=[0]
+            )
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED, cycle=cycle, stations={_STATION_A: forecast}
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=24.0,
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+
+    assert accepted is not None
+    assert accepted.resolved_cycle == older
+
+
+def _forecast_with_members(
+    station_id: StationId,
+    cycle: object,
+    *,
+    member_days: dict[int, int],
+) -> BasinAverageForecast:
+    """One candidate payload carrying a DIFFERENT series length per raw
+    member_id -- the shape needed to exercise a foreign run sharing a
+    candidate with the source's declared SINGLE-mode identity."""
+    rows: list[dict[str, object]] = []
+    for member_id, n_days in member_days.items():
+        for day in range(1, n_days + 1):
+            rows.append(
+                {
+                    "valid_time": ensure_utc(cycle + timedelta(days=day)),
+                    "parameter": "precip",
+                    "member_id": member_id,
+                    "value": 1.0,
+                }
+            )
+    return BasinAverageForecast(
+        nwp_source=_NWP_SOURCE, cycle_time=cycle, values=pl.DataFrame(rows)
+    )
+
+
+def test_single_mode_rejects_a_candidate_carrying_a_complete_foreign_member() -> None:
+    """The candidate carries a COMPLETE member-0 run (2 days, the source's
+    declared SINGLE identity) AND a COMPLETE foreign member-9 run. Judging
+    completeness by filtering foreign members OUT accepts this candidate --
+    and then persists BOTH runs, with assembly silently dropping member 9
+    downstream. The spec requires the actual member set to EQUAL
+    ``expected_member_ids`` (docs/spec/types-and-protocols.md), so a foreign
+    member present makes the candidate incomplete: with no older candidate
+    to walk back to, resolution must yield ``None``."""
+    track_request = _track_request(feature_steps={"precip": 2})
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED,
+            cycle=cycle,
+            stations={
+                _STATION_A: _forecast_with_members(
+                    _STATION_A, cycle, member_days={0: 2, 9: 2}
+                )
+            },
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=6.0,  # exactly one candidate -- no walk-back room
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+
+    assert accepted is None
+
+
+def test_single_mode_short_member_with_a_longer_foreign_member_rejected() -> None:
+    """Sibling of the above for the max-over-any-member bug specifically:
+    member 0 is SHORT (1 day, needs 2) while a foreign member 9 is long
+    enough. Completeness must never be read off member 9's count."""
+    track_request = _track_request(feature_steps={"precip": 2})
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED,
+            cycle=cycle,
+            stations={
+                _STATION_A: _forecast_with_members(
+                    _STATION_A, cycle, member_days={0: 1, 9: 2}
+                )
+            },
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=6.0,
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+
+    assert accepted is None
+
+
+def test_foreign_member_candidate_walks_back_and_never_persists() -> None:
+    """The FRESHEST candidate carries a complete member 0 AND a complete
+    foreign member 9; one cycle back carries member 0 alone. Resolution must
+    reject the fresh candidate (walk-back-eligible, not fatal), resolve to
+    the OLDER cycle, and -- the hard proof, asserted against the STORE --
+    leave no row of the rejected candidate in Postgres (D8.3). An
+    outcome-only assertion would pass even if the rejected candidate had
+    been persisted."""
+    track_request = _track_request(feature_steps={"precip": 2})
+    store = FakeWeatherForecastStore()
+    fresh = _NOMINAL_NOW
+    older = ensure_utc(fresh - timedelta(hours=_CADENCE_HOURS))
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        member_days = {0: 2, 9: 2} if cycle == fresh else {0: 2}
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED,
+            cycle=cycle,
+            stations={
+                _STATION_A: _forecast_with_members(
+                    _STATION_A, cycle, member_days=member_days
+                )
+            },
+        )
+
+    accepted = resolve_candidate(
+        track_request,
+        fetch_candidate=fetch_candidate,
+        expected_member_ids=frozenset({0}),
+        nominal_cycle_source=_always_primary,
+        nominal_now=_NOMINAL_NOW,
+        issue_time=_ISSUE,
+        cycle_cadence_hours=_CADENCE_HOURS,
+        max_cycle_age_hours=24.0,
+        clock=_clock,
+        id_gen=_id_gen,
+    )
+
+    assert accepted is not None
+    assert accepted.resolved_cycle == older
+
+    result = commit_track(
+        accepted,
+        in_scope_station_ids=frozenset({_STATION_A}),
+        weather_forecast_store=store,
+        nwp_source=_NWP_SOURCE,
+        track_features=frozenset({"precip"}),
+    )
+
+    assert isinstance(result.station_outcomes[_STATION_A], StationTrackAvailable)
+    assert (
+        store.fetch_weather_forecasts(
+            station_id=_STATION_A, nwp_source=_NWP_SOURCE, cycle_time=fresh
+        )
+        == []
+    )
+    persisted = store.fetch_weather_forecasts(
+        station_id=_STATION_A, nwp_source=_NWP_SOURCE, cycle_time=older
+    )
+    assert persisted
+    assert {r.member_id for r in persisted} == {0}
 
 
 def test_one_cycle_per_track_short_candidate_rejected_for_the_group_max() -> None:
@@ -508,6 +715,35 @@ def test_fatal_auth_error_still_propagates_uncaught() -> None:
             clock=_clock,
             id_gen=_id_gen,
         )
+
+
+def test_empty_expected_member_ids_is_fatal_and_never_fetches() -> None:
+    """A source declaring NO member identity cannot express the exact-set
+    completeness contract, so an empty set is fatal CONFIG -- never a
+    walk-back-eligible candidate outcome. Also asserts the failure happens
+    BEFORE any fetch: a misconfigured source must not burn a Gateway call
+    (and a walk-back would burn one per candidate) before failing."""
+    calls: list[object] = []
+
+    def fetch_candidate(cycle: object) -> RawFetchOutcome:
+        calls.append(cycle)
+        raise AssertionError("fetch_candidate must not be called")
+
+    with pytest.raises(ValueError, match="expected_member_ids must be non-empty"):
+        resolve_candidate(
+            _track_request(feature_steps={"precip": 2}),
+            fetch_candidate=fetch_candidate,
+            expected_member_ids=frozenset(),
+            nominal_cycle_source=_always_primary,
+            nominal_now=_NOMINAL_NOW,
+            issue_time=_ISSUE,
+            cycle_cadence_hours=_CADENCE_HOURS,
+            max_cycle_age_hours=24.0,
+            clock=_clock,
+            id_gen=_id_gen,
+        )
+
+    assert calls == []
 
 
 def test_missing_polygon_column_station_gets_specific_reason() -> None:

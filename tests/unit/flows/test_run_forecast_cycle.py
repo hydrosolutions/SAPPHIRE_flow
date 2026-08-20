@@ -15,6 +15,12 @@ import pytest
 import sqlalchemy.exc as sa_exc
 import xarray as xr
 
+from sapphire_flow.adapters.recap_gateway import (
+    RecapAuthError,
+    RecapConfigurationError,
+    RecapPayloadIntegrityError,
+    RecapTransientError,
+)
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import (
     AdapterError,
@@ -62,6 +68,12 @@ from sapphire_flow.types.enums import (
     ThresholdSource,
     WeatherSourceRole,
     WeatherSourceStatus,
+)
+from sapphire_flow.types.forcing_track import (
+    FeatureName,
+    ForcingTrackKey,
+    RawFetchOutcome,
+    RawFetchStatus,
 )
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import (
@@ -1034,7 +1046,7 @@ class TestRecapForecastDispatch:
             _build_recap_forecast_adapter,
         )
 
-        adapter = _build_recap_forecast_adapter(
+        adapter, _policy = _build_recap_forecast_adapter(
             config_path=None,
             gateway_polygon_store=_FakeGatewayPolygonBindingStore(),
             recap_client=_FakeRecapClient(),
@@ -1053,6 +1065,239 @@ class TestRecapForecastDispatch:
                 config_path=None,
                 gateway_polygon_store=None,
                 recap_client=_FakeRecapClient(),
+            )
+
+
+class TestForcingResolutionPolicyConstruction:
+    """Plan 151 T8a red-first (D7, construction paths 1/2): the frozen pair
+    ``_build_recap_forecast_adapter`` returns supplies ``ForcingResolutionPolicy``
+    on both the production and injected-client construction branches."""
+
+    def test_injected_client_config_path_none_yields_named_default(self) -> None:
+        # Path 2, config_path=None -- the same branch
+        # test_builds_recap_gateway_forecast_adapter_not_meteoswiss drives,
+        # now additionally proving it still constructs AND yields the ONE
+        # named default policy constant, field-by-field, plus the
+        # construction log event (D7 -- never a silent per-field fallback).
+        import structlog.testing
+
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _build_recap_forecast_adapter,
+        )
+
+        default_policy = _flow_attr("_DEFAULT_FORCING_RESOLUTION_POLICY")
+
+        with structlog.testing.capture_logs() as captured:
+            adapter, policy = _build_recap_forecast_adapter(
+                config_path=None,
+                gateway_polygon_store=_FakeGatewayPolygonBindingStore(),
+                recap_client=_FakeRecapClient(),
+            )
+
+        assert adapter is not None
+        assert policy == default_policy
+        assert policy.cycle_cadence_hours == default_policy.cycle_cadence_hours
+        assert policy.max_cycle_age_hours == default_policy.max_cycle_age_hours
+        assert policy.max_retries == default_policy.max_retries
+        assert any(
+            event.get("event") == "nwp.forcing_resolution_policy_default_used"
+            and event.get("construction_path") == "injected_client"
+            for event in captured
+        )
+
+    def test_injected_client_config_path_set_yields_config_derived_policy(
+        self, tmp_path: Path
+    ) -> None:
+        # Path 2, config_path SET -- today this branch loads no config at
+        # all; T8a changes that so a config-bearing injected-client caller
+        # gets the SAME config-derived policy as the production branch.
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _build_recap_forecast_adapter,
+        )
+
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+type = "recap_gateway"
+
+[adapters.recap_gateway]
+base_url = "https://recap.example.org"
+timeout_s = 300
+verify_tls = true
+staleness_threshold_hours = 6.0
+hru_metadata_source = "manual_gpkg_upload"
+max_retries = 5
+max_cycle_age_hours = 30.0
+cycle_cadence_hours = 12.0
+""",
+        )
+
+        adapter, policy = _build_recap_forecast_adapter(
+            config_path=str(config_path),
+            gateway_polygon_store=_FakeGatewayPolygonBindingStore(),
+            recap_client=_FakeRecapClient(),
+        )
+
+        assert adapter is not None
+        assert policy.cycle_cadence_hours == 12.0
+        assert policy.max_cycle_age_hours == 30.0
+        assert policy.max_retries == 5
+
+    def test_production_path_yields_config_derived_policy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Path 1, recap_client=None -- the real-client production branch.
+        # Non-default cadence/age/retries all round-trip into the policy
+        # from the SAME parsed RecapGatewayConfig the adapter is built from.
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _build_recap_forecast_adapter,
+        )
+
+        monkeypatch.setenv("RECAP_API_KEY", "test-key")
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+type = "recap_gateway"
+
+[adapters.recap_gateway]
+base_url = "https://recap.example.org"
+timeout_s = 300
+verify_tls = true
+staleness_threshold_hours = 6.0
+hru_metadata_source = "manual_gpkg_upload"
+max_retries = 7
+max_cycle_age_hours = 24.0
+cycle_cadence_hours = 3.0
+""",
+        )
+
+        adapter, policy = _build_recap_forecast_adapter(
+            config_path=str(config_path),
+            gateway_polygon_store=_FakeGatewayPolygonBindingStore(),
+            recap_client=None,
+        )
+
+        assert adapter is not None
+        assert policy.cycle_cadence_hours == 3.0
+        assert policy.max_cycle_age_hours == 24.0
+        assert policy.max_retries == 7
+
+    def test_injected_adapter_helper_defaults_when_none(self) -> None:
+        # Path 3 (D7): `_default_injected_adapter_forcing_policy` fills the
+        # None case with the named default constant and logs its use.
+        import structlog.testing
+
+        default_policy = _flow_attr("_DEFAULT_FORCING_RESOLUTION_POLICY")
+        default_injected_adapter_forcing_policy = _flow_attr(
+            "_default_injected_adapter_forcing_policy"
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            resolved = default_injected_adapter_forcing_policy(None)
+
+        assert resolved == default_policy
+        assert any(
+            event.get("event") == "nwp.forcing_resolution_policy_default_used"
+            and event.get("construction_path") == "injected_adapter"
+            for event in captured
+        )
+
+    def test_injected_adapter_helper_explicit_policy_wins(self) -> None:
+        # Path 3 (D7 ruling 4): an explicit policy wins outright -- the
+        # helper takes NO `adapter` parameter at all, so it structurally
+        # cannot read anything off one (the negative criterion holds by
+        # construction, not by a runtime trap).
+        default_injected_adapter_forcing_policy = _flow_attr(
+            "_default_injected_adapter_forcing_policy"
+        )
+        forcing_resolution_policy_cls = _forcing_track_type_attr(
+            "ForcingResolutionPolicy"
+        )
+
+        explicit_policy = forcing_resolution_policy_cls(
+            cycle_cadence_hours=1.0, max_cycle_age_hours=2.0, max_retries=9
+        )
+
+        assert (
+            default_injected_adapter_forcing_policy(explicit_policy) is explicit_policy
+        )
+
+    def test_injected_adapter_flow_level_accepts_new_parameter(self) -> None:
+        # End-to-end smoke test: the flow accepts an injected adapter AND an
+        # explicit forcing_resolution_policy without raising. The parameter
+        # is not yet threaded into any resolver call in this run (T8a is
+        # dormant), so there is no further downstream effect to assert.
+        forcing_resolution_policy_cls = _forcing_track_type_attr(
+            "ForcingResolutionPolicy"
+        )
+
+        class _PlainAdapter:
+            def fetch_forecasts(self, *args: object, **kwargs: object) -> object:
+                raise AssertionError("dispatch test must not actually fetch")
+
+        explicit_policy = forcing_resolution_policy_cls(
+            cycle_cadence_hours=1.0, max_cycle_age_hours=2.0, max_retries=9
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=FakeStationStore(),
+            obs_store=FakeObservationStore(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            forecast_store=FakeForecastStore(),
+            model_state_store=FakeModelStateStore(),
+            artifact_store=FakeModelArtifactStore(),
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=FakeBasinStore(),
+            forcing_store=FakeHistoricalForcingStore(),
+            adapter=_PlainAdapter(),
+            forcing_resolution_policy=explicit_policy,
+            models={},
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result is not None
+
+    def test_flow_boundary_rejects_a_value_that_is_not_a_forcing_resolution_policy(
+        self,
+    ) -> None:
+        """Locks T8a review finding 4 (minor): the public flow parameter must
+        be typed as the CONCRETE `ForcingResolutionPolicy | None` -- not
+        `object | None`, which Prefect's pydantic-backed parameter
+        validation accepts unconditionally, letting a malformed value cross
+        the flow boundary and fail only later, deep inside T8b, when a
+        policy attribute is accessed. With the concrete annotation, Prefect
+        rejects a structurally wrong value at the boundary itself."""
+        import prefect.exceptions
+
+        class _PlainAdapter:
+            def fetch_forecasts(self, *args: object, **kwargs: object) -> object:
+                raise AssertionError("dispatch test must not actually fetch")
+
+        with pytest.raises(prefect.exceptions.ParameterTypeError):
+            run_forecast_cycle_flow(
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                weather_forecast_store=FakeWeatherForecastStore(),
+                forecast_store=FakeForecastStore(),
+                model_state_store=FakeModelStateStore(),
+                artifact_store=FakeModelArtifactStore(),
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                adapter=_PlainAdapter(),
+                forcing_resolution_policy=object(),  # type: ignore[arg-type]
+                models={},
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
             )
 
 
@@ -7783,3 +8028,373 @@ class TestForecastCycleRatingCurveBinding:
         by_station = {f.station_id: f for f in forecast_store._forecasts.values()}
         assert by_station[sid_a].rating_curve_id == curve_a.id
         assert by_station[sid_b].rating_curve_id == curve_b.id
+
+
+# ---------------------------------------------------------------------------
+# Plan 151 T8a — DORMANT helper tests (D11, D28, D30). Each helper is
+# defined but has ZERO production call sites from the cycle body in this
+# run; tests here call the helper directly. T8b installs them.
+# ---------------------------------------------------------------------------
+
+
+def _flow_attr(name: str) -> object:
+    """Guarded lookup for a Plan 151 T8a symbol that may not exist yet --
+    fails as a genuine assertion (never a collection-time ImportError) so
+    red-first failures are meaningful before the symbol is implemented."""
+    import sapphire_flow.flows.run_forecast_cycle as _rfc_module
+
+    attr = getattr(_rfc_module, name, None)
+    assert attr is not None, (
+        f"{name} not yet implemented in flows/run_forecast_cycle.py"
+    )
+    return attr
+
+
+def _forcing_track_type_attr(name: str) -> object:
+    from sapphire_flow.types import forcing_track as _ft_module
+
+    attr = getattr(_ft_module, name, None)
+    assert attr is not None, f"{name} not yet implemented in types/forcing_track.py"
+    return attr
+
+
+def _forcing_track_key() -> ForcingTrackKey:
+    return ForcingTrackKey(
+        nwp_source="ifs_ecmwf",
+        ensemble_mode=EnsembleMode.SINGLE,
+        time_step=timedelta(hours=6),
+        spatial_representation=SpatialRepresentation.BASIN_AVERAGE,
+        features=frozenset({FeatureName("tp")}),
+    )
+
+
+def _default_transient_exc(call_number: int) -> BaseException:
+    return RecapTransientError(f"transient failure #{call_number}")
+
+
+class _RetryCountingCandidateSource:
+    """Fails `fail_times` calls with ``exc_factory(call_number)``, then
+    succeeds. Defaults to `RecapTransientError` -- the ONLY exception D31
+    marks retryable at this task; `retry_condition_fn` must not retry
+    anything else (review fold-in, major)."""
+
+    def __init__(
+        self,
+        fail_times: int,
+        exc_factory: Callable[[int], BaseException] = _default_transient_exc,
+    ) -> None:
+        self.fail_times = fail_times
+        self.exc_factory = exc_factory
+        self.calls = 0
+
+    def fetch_requirement(
+        self,
+        track: ForcingTrackKey,
+        stations: list[object],
+        nominal_cycle: UtcDatetime,
+    ) -> RawFetchOutcome:
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise self.exc_factory(self.calls)
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED, cycle=nominal_cycle, stations={}
+        )
+
+    def expected_member_ids(self, track: ForcingTrackKey) -> frozenset[int]:
+        return frozenset()
+
+
+class TestFetchForcingCandidateTaskRetries:
+    """Plan 151 T8a red-first (D28) + review fold-in (major, D31):
+    retries= is a RUNTIME value taken from
+    ``ForcingResolutionPolicy.max_retries`` via ``.with_options(retries=...)``
+    — defined only, T8b installs the caller. ``retry_condition_fn`` scopes
+    retries to `RecapTransientError` ONLY; every other typed Recap
+    exception and any unanticipated bug must propagate on the FIRST
+    failure, never retried, regardless of the configured `retries=` budget."""
+
+    def test_resolves_at_exact_configured_retry_count(self) -> None:
+        fetch_forcing_candidate_task = _flow_attr("fetch_forcing_candidate_task")
+
+        source = _RetryCountingCandidateSource(fail_times=2)
+        task_with_retries = fetch_forcing_candidate_task.with_options(retries=2)
+
+        outcome = task_with_retries(source, _forcing_track_key(), [], _NOW)  # type: ignore[arg-type]
+
+        assert outcome.status is RawFetchStatus.FETCHED
+        assert source.calls == 3
+
+    def test_fails_one_retry_short_of_the_configured_count(self) -> None:
+        fetch_forcing_candidate_task = _flow_attr("fetch_forcing_candidate_task")
+
+        source = _RetryCountingCandidateSource(fail_times=2)
+        task_under_retries = fetch_forcing_candidate_task.with_options(retries=1)
+
+        with pytest.raises(RecapTransientError, match="transient failure"):
+            task_under_retries(source, _forcing_track_key(), [], _NOW)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "make_exc",
+        [
+            lambda: RecapAuthError("unauthorized", status_code=401),
+            lambda: RecapConfigurationError("bad hru", field="hru_code"),
+            lambda: RecapPayloadIntegrityError("corrupt payload"),
+            lambda: RuntimeError("unanticipated bug"),
+        ],
+        ids=[
+            "RecapAuthError",
+            "RecapConfigurationError",
+            "RecapPayloadIntegrityError",
+            "unexpected-exception",
+        ],
+    )
+    def test_fatal_and_unexpected_exceptions_are_never_retried(
+        self, make_exc: Callable[[], BaseException]
+    ) -> None:
+        """Locks T8a review finding 2 (major): a `retry_condition_fn`-less
+        task retries on ANY exception once `retries=` is configured. Even
+        with a generous retry budget, a fatal typed Recap exception (or an
+        unanticipated bug) must fail on the FIRST call -- D31's typed
+        taxonomy reserves retry for `RecapTransientError` alone."""
+        fetch_forcing_candidate_task = _flow_attr("fetch_forcing_candidate_task")
+
+        exc = make_exc()
+        source = _RetryCountingCandidateSource(
+            fail_times=1, exc_factory=lambda _call_number: exc
+        )
+        task_with_retries = fetch_forcing_candidate_task.with_options(retries=3)
+
+        with pytest.raises(type(exc)):
+            task_with_retries(source, _forcing_track_key(), [], _NOW)  # type: ignore[arg-type]
+
+        assert source.calls == 1
+
+
+class TestEmitFreshnessOnFatalExit:
+    """Plan 151 T8a red-first (Plan 116 contract): direct tests only, T8b
+    installs this at every new fatal per-track-resolution exit."""
+
+    def test_emits_one_forced_critical_record_and_reraises_unchanged(self) -> None:
+        emit_freshness_on_fatal_exit = _flow_attr("emit_freshness_on_fatal_exit")
+
+        health_store = FakePipelineHealthStore()
+        cause = ValueError("root cause")
+        exc = RuntimeError("fatal store failure")
+        exc.__cause__ = cause
+
+        with pytest.raises(RuntimeError) as exc_info:
+            emit_freshness_on_fatal_exit(
+                health_store,
+                cycle_time_param=None,
+                resolved_cycle_time=_NOW,
+                forecasts_stored=3,
+                checked_at=_NOW,
+                exc=exc,
+            )
+
+        assert exc_info.value is exc
+        assert str(exc_info.value) == "fatal store failure"
+        assert exc_info.value.__cause__ is cause
+
+        records = health_store.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["forecasts_stored"] == 3
+        assert records[0].cycle_time == _NOW
+
+    def test_forced_critical_even_when_forecasts_already_stored(self) -> None:
+        # A mid-cycle fatal crash is never "OK" merely because some
+        # forecast(s) stored fine before the fatal one (Plan 116 fixer
+        # round, major 1 -- the same rule the existing GROUP-store call
+        # site already applies).
+        emit_freshness_on_fatal_exit = _flow_attr("emit_freshness_on_fatal_exit")
+
+        health_store = FakePipelineHealthStore()
+
+        with pytest.raises(RuntimeError):
+            emit_freshness_on_fatal_exit(
+                health_store,
+                cycle_time_param=None,
+                resolved_cycle_time=_NOW,
+                forecasts_stored=5,
+                checked_at=_NOW,
+                exc=RuntimeError("fatal"),
+            )
+
+        records = health_store.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS)
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+
+    def test_cycle_time_param_set_emits_nothing(self) -> None:
+        # Mirrors _emit_forecast_freshness_record's own backfill/replay
+        # exemption -- still re-raises.
+        emit_freshness_on_fatal_exit = _flow_attr("emit_freshness_on_fatal_exit")
+
+        health_store = FakePipelineHealthStore()
+
+        with pytest.raises(RuntimeError):
+            emit_freshness_on_fatal_exit(
+                health_store,
+                cycle_time_param="2026-01-01T00",
+                resolved_cycle_time=_NOW,
+                forecasts_stored=0,
+                checked_at=_NOW,
+                exc=RuntimeError("fatal"),
+            )
+
+        assert health_store.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS) == []
+
+
+class TestResolveCombinedForcingCycle:
+    """Plan 151 T8a red-first (D11): the cross-cycle combination preflight
+    -- a PURE helper, direct tests only, T8b installs it."""
+
+    @staticmethod
+    def _result(sid: StationId, *forecasts: OperationalForecast) -> object:
+        from sapphire_flow.services.run_station_forecast import StationForecastResult
+
+        return StationForecastResult(
+            station_id=sid,
+            model_id=_MODEL_ID,
+            artifact_id=ArtifactId(uuid4()),
+            forecasts=list(forecasts),
+            new_state=None,
+            ensembles={},
+        )
+
+    def test_two_distinct_non_null_cycles_report_mismatch(self) -> None:
+        from dataclasses import replace
+
+        cross_cycle_mismatch_cls = _flow_attr("CrossCycleMismatch")
+        resolve_combined_forcing_cycle = _flow_attr("resolve_combined_forcing_cycle")
+
+        sid = StationId(uuid4())
+        cycle_a = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        cycle_b = ensure_utc(datetime(2026, 1, 1, 6, tzinfo=UTC))
+        combinable = {
+            ModelId("model_a"): self._result(
+                sid, replace(_bare_forecast(sid), nwp_cycle_reference_time=cycle_a)
+            ),
+            ModelId("model_b"): self._result(
+                sid, replace(_bare_forecast(sid), nwp_cycle_reference_time=cycle_b)
+            ),
+        }
+
+        result = resolve_combined_forcing_cycle(combinable)  # type: ignore[arg-type]
+
+        assert isinstance(result, cross_cycle_mismatch_cls)
+        assert result.cycles == frozenset({cycle_a, cycle_b})
+
+    def test_one_non_null_plus_one_trackless_null_does_not_mismatch(self) -> None:
+        from dataclasses import replace
+
+        resolve_combined_forcing_cycle = _flow_attr("resolve_combined_forcing_cycle")
+
+        sid = StationId(uuid4())
+        cycle_a = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        combinable = {
+            ModelId("model_a"): self._result(
+                sid, replace(_bare_forecast(sid), nwp_cycle_reference_time=cycle_a)
+            ),
+            # LinearRegressionDaily-shaped: trackless, nwp_cycle_reference_time=None.
+            ModelId("model_b"): self._result(sid, _bare_forecast(sid)),
+        }
+
+        result = resolve_combined_forcing_cycle(combinable)  # type: ignore[arg-type]
+
+        assert result == cycle_a
+
+    def test_all_null_reports_no_cycle(self) -> None:
+        resolve_combined_forcing_cycle = _flow_attr("resolve_combined_forcing_cycle")
+
+        sid = StationId(uuid4())
+        combinable = {
+            ModelId("model_a"): self._result(sid, _bare_forecast(sid)),
+            ModelId("model_b"): self._result(sid, _bare_forecast(sid)),
+        }
+
+        result = resolve_combined_forcing_cycle(combinable)  # type: ignore[arg-type]
+
+        assert result is None
+
+
+class TestPerTrackEligibleStations:
+    """Plan 151 T8a red-first (D30): the group-overlap discovery helper --
+    a pure function, direct tests only, T8b applies it."""
+
+    class _FakeCandidateAwareAdapter:
+        def fetch_requirement(
+            self,
+            track: ForcingTrackKey,
+            stations: list[object],
+            nominal_cycle: UtcDatetime,
+        ) -> RawFetchOutcome:
+            raise AssertionError("eligibility test must not actually fetch")
+
+        def expected_member_ids(self, track: ForcingTrackKey) -> frozenset[int]:
+            return frozenset()
+
+    def test_grouped_station_excluded_ungrouped_sibling_included(self) -> None:
+        per_track_eligible_stations = _flow_attr("per_track_eligible_stations")
+
+        sid_grouped = StationId(uuid4())
+        sid_ungrouped = StationId(uuid4())
+        group_store = FakeStationGroupStore()
+        group_store.store_group(
+            StationGroup(
+                id=StationGroupId(uuid4()),
+                name="test-group",
+                station_ids=frozenset({sid_grouped}),
+                description=None,
+                created_at=_NOW,
+            )
+        )
+
+        eligible = per_track_eligible_stations(
+            self._FakeCandidateAwareAdapter(),
+            [sid_grouped, sid_ungrouped],
+            group_store,
+        )
+
+        assert eligible == frozenset({sid_ungrouped})
+
+    def test_legacy_adapter_yields_empty_set(self) -> None:
+        per_track_eligible_stations = _flow_attr("per_track_eligible_stations")
+
+        sid = StationId(uuid4())
+
+        eligible = per_track_eligible_stations(
+            FakeWeatherForecastSource(result={}), [sid], FakeStationGroupStore()
+        )
+
+        assert eligible == frozenset()
+
+    def test_no_group_store_all_candidate_aware_stations_eligible(self) -> None:
+        per_track_eligible_stations = _flow_attr("per_track_eligible_stations")
+
+        sid = StationId(uuid4())
+
+        eligible = per_track_eligible_stations(
+            self._FakeCandidateAwareAdapter(), [sid], None
+        )
+
+        assert eligible == frozenset({sid})
+
+
+class TestT8aDormancy:
+    """Plan 151 T8a's defining property: the exit gate itself. Every new
+    T5-T8a entry point must have ZERO production call sites from the flow's
+    cycle body."""
+
+    def test_no_per_track_entry_point_called_from_the_flow_body(self) -> None:
+        import re
+        from pathlib import Path as _Path
+
+        flow_source = _Path("src/sapphire_flow/flows/run_forecast_cycle.py").read_text()
+        pattern = re.compile(
+            r"resolve_candidate|commit_track|assemble_assignment_inputs|"
+            r"run_all_station_forecasts_per_track"
+        )
+        assert not pattern.search(flow_source), (
+            "T8a must add zero production call sites for the T5-T7 "
+            "per-track entry points"
+        )
