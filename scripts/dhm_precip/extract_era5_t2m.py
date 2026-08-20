@@ -15,10 +15,13 @@ never its run-numbered PATH: `publish_bundle`/`allocate_published_dir`
 allocate a fresh `<NNNN>-<identity>` directory on every gate-suite
 invocation (P1a — no adoption, no dedup), so the same identity can live
 under many different `NNNN` prefixes over time, and a path recorded today
-is not stable. A consumer resolves the directory by globbing
-`<precip_data_root>/era5_land/points/*-<referenced_precipitation_bundle_
-identity>` — exactly what `_discover_precip_bundle` below does to find it
-in the first place.
+is not stable.
+
+An identity is a LABEL, never a lookup key (`era5_extract_manifest` P3), and
+the same identity may legitimately cover DIFFERENT payloads, so a consumer
+must NOT resolve a bundle by globbing `*-<identity>`. Discovery is P2/P6's
+convention — the highest `NNNN` whose manifest validates — which is what
+`_discover_precip_bundle` below actually does.
 
 Usage:
     uv run python scripts/dhm_precip/extract_era5_t2m.py \

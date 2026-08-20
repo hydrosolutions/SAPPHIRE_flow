@@ -429,7 +429,10 @@ contracts, deliberately NOT folded into 184 — 184 is a comparison, not an acqu
    `station_grid_elevation.csv` **is** D14's lapse input; orography is not re-run.
 3. **The reference is by IDENTITY, never by path.** `points/` bundle directories carry a run-number
    prefix allocated per publish, so a path like `points/0006-<identity>` is a function of how many times
-   the gated suite has run, not of the data. Resolve by globbing `points/*-<identity>`.
+   the gated suite has run, not of the data. **But an identity is a LABEL, not a lookup key
+   (`era5_extract_manifest` P3), and the same identity may cover DIFFERENT payloads — so do not
+   resolve by globbing `*-<identity>` either.** Discovery is P2/P6's convention: the highest `NNNN`
+   whose manifest validates.
 
 **⚠️ Still missing for D14: a Pyramid `AT` loader.** `pyramid_loader.py` parses `RR` only — `AT` appears
 in the module solely inside an error message. All six Pyramid RR stations (2,660–5,600 m) do carry `AT`,

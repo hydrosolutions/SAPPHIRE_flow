@@ -189,7 +189,9 @@ All decisions are now made.
   `data/dhm_precip/era5_land_t2m/era5_land/points/series_t2m_degc.nc` —
   `temperature_degc(station=26, valid_time=52608)`, °C, UTC, zero non-finite. It is **uncorrected**:
   applying the lapse rate and running the Pyramid check are THIS plan's work. Resolve the referenced
-  precipitation bundle by globbing `points/*-<identity>`, never by a run-numbered path. **Note
+  precipitation bundle by P2/P6's convention — the highest `NNNN` whose manifest validates — never by
+  a run-numbered path and never by globbing `*-<identity>` (an identity is a label, not a lookup key,
+  and may cover different payloads). **Note
   `pyramid_loader.py` parses `RR` only — the `AT` loader D14's check needs does not exist yet.**
 
   ERA5-Land is the right source for temperature specifically: per D7 it elevation-corrects temperature,
