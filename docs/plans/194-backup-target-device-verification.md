@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-20
 plan: 194
 title: The backup target must be the device it claims to be (extracted from Plan 162 T6)
@@ -13,7 +13,7 @@ source: docs/plans/162-robust-database-backup.md § T6
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner flip 2026-08-20, with D6 ratified (see the resolved decision below).
 
 Extracted verbatim-in-substance from **Plan 162 T6**, which is fully specified there but was cut from
 Phase A and never built.
@@ -113,14 +113,16 @@ wrong and are corrected here):
   watchdog unit tests for the new condition, including that it neither suppresses nor duplicates the
   staleness alert.
 
-## ⚠️ OPEN DECISION FOR THE OWNER — the one thing today's evidence adds
+## ✅ RESOLVED — D6, ratified by the owner 2026-08-20: option (b), transition-latched
 
 **On the mini, D4's condition would be TRUE forever.** There is no external disk and the owner has
 accepted that, so a correct implementation alerts on every watchdog tick, indefinitely, on the one host
 we run. That is alarm fatigue by construction, and it would train the operator to ignore the exact
 condition the plan exists to surface.
 
-Options, for the owner to pick — **the reviewers should not invent a sixth**:
+**D6 (RATIFIED): the watchdog alerts on TRANSITION — when the condition appears, and again on
+recovery — never on every tick.** No new config surface; it uses state the watchdog already keeps.
+The alternatives, kept so the decision is not silently re-made:
 
 - **(a) Declare the expectation in config.** ⛔ **REFUTED — do not choose this. It cannot work.**
   The draft recommended it; a review round disproved it with citations, and I verified them.
@@ -137,6 +139,32 @@ Options, for the owner to pick — **the reviewers should not invent a sixth**:
 - **(c) Log-only on staging, alert on operational**, keyed off the config overlay. Fails for the same
   reason as (a): the host watchdog cannot read that overlay.
 - **(d) Accept the permanent alert** until the disk arrives.
+
+## Tasks
+
+Three tasks, one per call site. **T1 first** (it defines the predicate the others consume); T2 and T3
+are independent of each other and may run in parallel.
+
+### T1 — the shared predicate + `bootstrap-mac-mini.sh` fails closed
+*In:* `scripts/bootstrap-mac-mini.sh` (`:92` path, `:222-236` current sentinel check).
+Implement the D1 predicate as a shell function; replace the sentinel-only check with it, failing closed
+(the script is interactive, so blocking is safe). The sentinel stays as a label, never as proof.
+**Red-first:** a predicate test must fail for a plain directory before the predicate exists.
+
+### T2 — `start-sapphire.sh` checks, records, proceeds
+*In:* `scripts/launchd/start-sapphire.sh` (`:24-27`).
+⚠️ Line 24 is `exec docker compose`, so the check MUST precede it — nothing after `exec` runs.
+Per D3: never fail closed here; write a machine-readable marker beside the compose files and continue.
+**Red-first:** a test asserting the marker is written on a failed check, and that the stack still starts.
+
+### T3 — watchdog: a distinct, transition-latched condition
+*In:* `src/sapphire_flow/ops/watchdog.py` (`DEFAULT_BACKUP_DIR` at `:102`).
+Per D4 the condition is separate from staleness and evaluated **before** it; per D6 it fires on
+transition only. Derive the root from `backup_dir.parent` — **do not add a config field or CLI flag for
+it** (a review round proposed exactly that; it duplicates a value that is a pure function of an existing
+one, and the host watchdog takes CLI args only).
+**Red-first:** a test for the new condition must fail against current code, which cannot detect the
+wrong-device state at all; plus a test that it neither suppresses nor duplicates the staleness alert.
 
 ## Non-goals
 
