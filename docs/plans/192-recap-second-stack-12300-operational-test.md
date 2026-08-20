@@ -229,10 +229,17 @@ The measured gateway behaviour this plan depends on is in the **appendix**, not 
   — a legitimate goal, but a different one from "prove gateway forcing works daily", and nobody has
   stated it. **Recommendation: take the light design** unless the owner wants the rehearsal.
   Folded into O1 — answering "standing feed?" now also means answering "which shape?".
-- **D7 — What this can and cannot prove.** ERA5-Land ends ~7 days back and the `operational`/`gap_fill`
-  bridge is dead (appendix), so a model needing `past_known reanalysis/*` continuous to t₀ **cannot be
-  fed operationally today**. This plan proves the **future/forcing** channel only. Settle the past-forcing
-  question before anyone writes a model against it — it is a Plan 139 decision, not this plan's.
+- **D7 — What this can and cannot prove — CORRECTED 2026-08-20.** This plan proves the **future/forcing**
+  channel. On the past channel, an earlier draft asserted that ERA5-Land's ~7-day lag plus a dead
+  `operational`/`gap_fill` bridge made continuous past forcing to t₀ **impossible**, and treated that as
+  a hard constraint on Plan 139's model design. **That was wrong, and it was falsified within hours.**
+  At 09:27 UTC both stitched endpoints hard-failed (`No IFS dataset found for run_date 2026-08-14 and
+  run_hour 12`); at 13:18 UTC the same `ecmwf.operational` call returned a **continuous 348-row series,
+  2026-08-05 → 2026-09-03, `era5_land` 216 + `ifs` 132** — the Gateway had backfilled the missing
+  cycles. Retention is therefore **not** a simple sliding window, and the real property is
+  **intermittency**, not impossibility. A model needing past forcing to t₀ is *possible* but must
+  tolerate the bridge being unavailable at times — a **reliability requirement** for Plan 139 to design
+  against, not a veto. The 09:27 snapshot is kept here as history; do not re-derive the veto from it.
 
 ## Stage A — the cheap proof (do this first)
 
@@ -502,7 +509,7 @@ constraint: run it from a writable CWD.
 | Run retention ~4 days | 08-16…08-20 present; 08-15 and older `source_data_missing` |
 | `pf` lag is INTRA-DAY | 09:27 UTC: today's 00Z `pf` absent. 12:59 UTC: all 50 `pf` + `fc` present for that same 00Z cycle (51 members × 84 steps stored). Earlier "~1 day" reading was a time-of-day artefact. `member` is `'1'`..`'50'` |
 | ERA5-Land | edge `2026-08-13`; 2026-07-15→08-13 complete (720 rows, 30/30 days, 24 h each) |
-| `operational`/`gap_fill` dead | ERA5 ends 08-13, IFS retained from 08-16 → the gap is coverable by nothing; `subdaily_resolution=3` → HTTP 500 |
+| `operational`/`gap_fill` **intermittent, NOT dead** | 09:27 UTC hard-fail (ERA5 ended 08-13, IFS retained from 08-16 → gap uncoverable). 13:18 UTC **succeeded**: 348 rows, 08-05 → 09-03, `era5_land` 216 + `ifs` 132. The Gateway backfills. `subdaily_resolution=3` → HTTP 500 (still) |
 | Host headroom | Swiss stack ≈1.1 GB of a 7.65 GiB Docker VM; disk 25 % used, 2.7 TB free |
 
 Training-window and snow figures that justified Plan 139's target decision (307 complete days of `rof`
