@@ -414,8 +414,16 @@ contracts, deliberately NOT folded into 184 — 184 is a comparison, not an acqu
 |---|---|---|
 | raw | `era5_land/raw/era5_land_t2m_raw_{window}.nc` | 74 monthly windows, Kelvin |
 | product | `era5_land/degc/era5_land_t2m_degc_{2020..2025}.nc` | `temperature` / `degC`, float32, exact calendar-year hourly axes (8784 leap / 8760), 0 non-finite |
-| point series | `era5_land/points/series_t2m_degc.nc` | `temperature_degc(station=26, valid_time=52608)`, UTC, 0 non-finite, −22.02 … +41.96 °C |
-| manifest | `era5_land/points/extraction_manifest.json` | identity `2ceb6a49…`, operator `NEAREST`, six source hashes, referenced precipitation-bundle identity |
+| point series | `era5_land/points/<NNNN>-<identity>/series_t2m_degc.nc` | `temperature_degc(station=26, valid_time=52608)`, UTC, 0 non-finite, −22.02 … +41.96 °C |
+| manifest | `era5_land/points/<NNNN>-<identity>/extraction_manifest.json` | identity `2ceb6a49…`, operator `NEAREST`, six source hashes, referenced precipitation-bundle identity |
+
+**Corrected 2026-08-20 (review round 2):** the table above used to show a single fixed path
+(`era5_land/points/series_t2m_degc.nc`) — an earlier revision published t2m by swapping that one path
+in place via a `.points.prev` backup, which could leave the canonical path briefly absent on a crash
+between renames, or deadlock two concurrent publishers sharing the one backup name. t2m now publishes
+the same way the precipitation bundle does: a fresh, per-run-unique `<NNNN>-<identity>` directory
+(`allocate_published_dir`), discovered by the highest `NNNN` whose manifest validates
+(`discover_t2m_bundle`) — see property 3 below.
 
 **Three properties Plan 184 D14 depends on, measured not assumed:**
 
@@ -427,12 +435,14 @@ contracts, deliberately NOT folded into 184 — 184 is a comparison, not an acqu
    `grid_i`/`grid_j`/`grid_lat`/`grid_lon`, and the `latitude`/`longitude` axes of the tp and t2m
    products are bit-identical (51 × 91). So the elevation mismatch already in M-A5's
    `station_grid_elevation.csv` **is** D14's lapse input; orography is not re-run.
-3. **The reference is by IDENTITY, never by path.** `points/` bundle directories carry a run-number
-   prefix allocated per publish, so a path like `points/0006-<identity>` is a function of how many times
-   the gated suite has run, not of the data. **But an identity is a LABEL, not a lookup key
-   (`era5_extract_manifest` P3), and the same identity may cover DIFFERENT payloads — so do not
-   resolve by globbing `*-<identity>` either.** Discovery is P2/P6's convention: the highest `NNNN`
-   whose manifest validates.
+3. **The reference is by IDENTITY, never by path — for BOTH bundles.** `points/` bundle directories
+   carry a run-number prefix allocated per publish, so a path like `points/0006-<identity>` is a
+   function of how many times the gated suite has run, not of the data. That was always true of the
+   precipitation bundle t2m *references* (D6); as of 2026-08-20 it is also true of t2m's *own* bundle —
+   an earlier revision published t2m to one fixed path, corrected above. **An identity is a LABEL, not
+   a lookup key (`era5_extract_manifest` P3), and the same identity may cover DIFFERENT payloads — so
+   do not resolve by globbing `*-<identity>` either.** Discovery is P2/P6's convention for both:
+   the highest `NNNN` whose manifest validates (`_discover_precip_bundle` / `discover_t2m_bundle`).
 
 **⚠️ Still missing for D14: a Pyramid `AT` loader.** `pyramid_loader.py` parses `RR` only — `AT` appears
 in the module solely inside an error message. All six Pyramid RR stations (2,660–5,600 m) do carry `AT`,

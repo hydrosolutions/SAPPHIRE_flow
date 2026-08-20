@@ -23,6 +23,17 @@ must NOT resolve a bundle by globbing `*-<identity>`. Discovery is P2/P6's
 convention — the highest `NNNN` whose manifest validates — which is what
 `_discover_precip_bundle` below actually does.
 
+**t2m's OWN bundle publishes the same way** (finding 4, 2026-08-20): a
+single evolving `era5_land/points/` path swapped through a shared
+`.points.prev` backup left the canonical path briefly ABSENT on a crash
+between renames, and could deadlock two concurrent publishers racing on
+that one backup name. `run()` now stages via `era5_extract_manifest.
+prepare_staging_dir` and publishes via `allocate_published_dir` — a fresh,
+per-run-unique `<NNNN>-<identity>` directory under `t2m_points_dir` — so
+`os.replace` never faces a non-empty target and there is nothing to roll
+back. `discover_t2m_bundle` below applies the identical highest-valid-`NNNN`
+rule to t2m's own bundle.
+
 Usage:
     uv run python scripts/dhm_precip/extract_era5_t2m.py \
         --data-root data/dhm_precip/era5_land_t2m \
@@ -56,7 +67,6 @@ import math
 import os
 import shutil
 import sys
-import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -92,9 +102,11 @@ from scripts.dhm_precip.era5_extract import (  # noqa: E402
     load_expected_station_coordinates,
 )
 from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
+    allocate_published_dir,
     assert_payload_checksum_matches,
     manifest_filename,
     points_root,
+    prepare_staging_dir,
     read_extraction_manifest,
 )
 from scripts.dhm_precip.era5_instantaneous import (  # noqa: E402
@@ -172,7 +184,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def t2m_points_dir(data_root: Path) -> Path:
-    return data_root / "era5_land" / "points"
+    """The root under which numbered t2m bundles are published — the exact
+    same shape as `era5_extract_manifest.points_root` (`<data_root>/
+    era5_land/points`), reused directly rather than re-derived: t2m's
+    `data_root` differs from the precipitation `data_root`, but the layout
+    underneath it is identical, so the same allocation/staging primitives
+    apply to both (finding 4 fix, 2026-08-20)."""
+    return points_root(data_root)
 
 
 def _default_expected_stations() -> frozenset[Station]:
@@ -379,62 +397,111 @@ def _write_t2m_series_netcdf(
     )
 
 
-def _stage_t2m_bundle_dir(era5_land_dir: Path) -> Path:
-    """A fresh, per-invocation-unique staging directory — mirrors
-    `era5_extract_manifest.prepare_staging_dir`'s own token discipline, so
-    two concurrent runs never share (or race on) one staging path."""
-    era5_land_dir.mkdir(parents=True, exist_ok=True)
-    token = uuid.uuid4().hex[:16]
-    staging = era5_land_dir / f".points_staging-{token}"
-    staging.mkdir(parents=False, exist_ok=False)
-    return staging
+_T2M_SERIES_FILENAME = "series_t2m_degc.nc"
 
 
-def _publish_t2m_bundle(
-    era5_land_dir: Path, points_dir: Path, staged_dir: Path
-) -> None:
-    """Finding 1 — the series and its manifest are published as ONE pair,
-    never as two independent `publish_atomic` calls: the series used to
-    replace its final path BEFORE the manifest was written, so a manifest
-    failure left a new series beside a stale or absent manifest (a
-    published artefact whose own manifest described it falsely).
-
-    Follows the precipitation side's own precedent — stage first, validate,
-    then swap (`era5_extract_manifest.prepare_staging_dir`/`publish_bundle`)
-    — generalised from a fresh identity-numbered directory to a single
-    evolving `points_dir`, combined with the `.prev`-backup/rollback idiom
-    already used for a (product, manifest) pair in `era5_transform.py`
-    (`transform_year`/`transform_year_instantaneous`). Both artefacts are
-    fully written and staged OFF to the side first, invisible at their
-    final path; the swap is then at most two directory renames (the old
-    pair out to `.points.prev`, the staged pair in), so a reader only ever
-    observes the complete PREVIOUS pair, nothing, or the complete NEW pair
-    — never a new series beside a stale manifest. A failure during the
-    swap restores the previous pair rather than leaving a half-published
-    one."""
-    backup_dir = era5_land_dir / ".points.prev"
-    if backup_dir.exists():
-        # A prior crash died between the swap below and the backup cleanup
-        # in `finally` — self-heal before this run touches anything else.
-        if not points_dir.exists():
-            os.replace(backup_dir, points_dir)
-        else:
-            shutil.rmtree(backup_dir)
-    had_previous = points_dir.exists()
+def _read_t2m_manifest(path: Path) -> T2mExtractionManifest | None:
+    """The t2m-manifest counterpart of `era5_extract_manifest.
+    read_extraction_manifest` — that function is typed to the precipitation
+    `ExtractionManifest` dataclass (requires `orography_spec`,
+    `payload_sha256s`, etc.) and rejects a t2m manifest's narrower schema as
+    unreadable, so t2m needs its own reader over its own pydantic model."""
+    if not path.exists():
+        return None
     try:
-        if had_previous:
-            os.replace(points_dir, backup_dir)
-        os.replace(staged_dir, points_dir)
+        text = path.read_text()
     except OSError as exc:
-        if had_previous and not points_dir.exists() and backup_dir.exists():
-            os.replace(backup_dir, points_dir)
         raise Era5StorageError(
-            f"failed to publish t2m series/manifest pair from {staged_dir} "
-            f"to {points_dir}: {exc}"
+            f"failed to read t2m extraction manifest at {path}: {exc}"
         ) from exc
-    finally:
-        if backup_dir.exists() and points_dir.exists():
-            shutil.rmtree(backup_dir)
+    try:
+        return T2mExtractionManifest.model_validate_json(text)
+    except ValueError as exc:
+        raise Era5StorageError(
+            f"t2m extraction manifest at {path} is unreadable: {exc}"
+        ) from exc
+
+
+def discover_t2m_bundle(data_root: Path) -> tuple[Path, T2mExtractionManifest]:
+    """Finding 4 fix — t2m discovery becomes the SAME rule
+    `_discover_precip_bundle` already applies to the precipitation bundle
+    (P2/P6): the highest `NNNN` whose manifest validates. There is no
+    longer a fixed `era5_land/points/extraction_manifest.json` to read
+    directly — t2m bundles are now per-run-unique numbered directories,
+    exactly like the precipitation side, published by `_publish_t2m_bundle`
+    below via `allocate_published_dir`. "Validates" here means: the
+    manifest parses AND its own `extraction_identity` matches what it was
+    published under AND the series file it names is present — the same
+    shape of check `publish_bundle` applies before allocating a directory,
+    now also applied on the read side."""
+    root = t2m_points_dir(data_root)
+    if not root.exists():
+        raise ExtractionInputAbsentError(f"no t2m extraction points root at {root}")
+    candidates = sorted(
+        (p for p in root.iterdir() if p.is_dir() and p.name != ".staging"),
+        key=lambda p: p.name,
+    )
+    for candidate in reversed(candidates):
+        manifest = _read_t2m_manifest(candidate / manifest_filename())
+        if (
+            manifest is not None
+            and (candidate / _T2M_SERIES_FILENAME).exists()
+            and manifest.extraction_identity in candidate.name
+        ):
+            return candidate, manifest
+    raise ExtractionInputAbsentError(
+        "no published t2m extraction bundle with a readable manifest found "
+        f"under {root}"
+    )
+
+
+def _publish_t2m_bundle(staged_dir: Path, *, data_root: Path, identity: str) -> Path:
+    """Finding 4 fix — adopts the precipitation side's proven P1/P1a
+    discipline (`era5_extract_manifest.publish_bundle`) instead of the
+    fixed-path `.points.prev` backup dance this replaces. `_publish_t2m_
+    bundle` used to swap a single evolving `points_dir` via up to two
+    renames through a shared `.points.prev`: a crash between those renames
+    left the canonical path ABSENT, and two concurrent publishers could
+    deadlock on the one shared backup name (both `points -> .prev` renames
+    contend, the loser's restore clobbers the winner's replace).
+
+    The fix removes the possibility instead of adding a check:
+    `allocate_published_dir` reserves a fresh, per-run-unique
+    `<NNNN>-<identity>` directory via an atomic `.run-<NNNN>.reserve`
+    marker, then `mkdir(exist_ok=False)`s the target — so the single
+    `os.replace` below never faces a non-empty target, never needs a
+    backup, and two concurrent runs (same identity or not) each get their
+    own numbered directory and can never collide. Every previously
+    published bundle is left untouched; there is nothing to roll back."""
+    manifest = _read_t2m_manifest(staged_dir / manifest_filename())
+    if manifest is None:
+        raise ExtractionPostConditionError(
+            f"staged t2m bundle at {staged_dir} is missing a readable "
+            f"{manifest_filename()}"
+        )
+    if manifest.extraction_identity != identity:
+        raise ExtractionPostConditionError(
+            "staged t2m bundle's extraction_identity "
+            f"{manifest.extraction_identity!r} does not match the identity "
+            f"it is being published under {identity!r}"
+        )
+    if not (staged_dir / _T2M_SERIES_FILENAME).exists():
+        raise ExtractionPostConditionError(
+            f"staged t2m bundle at {staged_dir} is missing {_T2M_SERIES_FILENAME}"
+        )
+    final_dir = allocate_published_dir(data_root, identity=identity)
+    try:
+        os.replace(staged_dir, final_dir)
+    except OSError as exc:
+        raise Era5StorageError(
+            f"failed to publish t2m bundle from {staged_dir} to {final_dir}: {exc}"
+        ) from exc
+    log.info(
+        "era5_extract_t2m.cli.published_bundle",
+        identity=identity,
+        published_dir=str(final_dir),
+    )
+    return final_dir
 
 
 def _concat_series(parts: list[ExtractedSeries]) -> ExtractedSeries:
@@ -570,9 +637,6 @@ def run(
         output_dtype=T2M_OUTPUT_DTYPE,
     )
 
-    era5_land_dir = data_root / "era5_land"
-    points_dir = t2m_points_dir(data_root)
-
     manifest = T2mExtractionManifest(
         extraction_identity=identity,
         operator_id=str(ExtractionOperator.NEAREST),
@@ -587,21 +651,24 @@ def run(
     )
 
     # Finding 1: stage both artefacts off to the side, fully written, before
-    # either is ever visible at its final path — then swap the pair into
-    # place as one operation (`_publish_t2m_bundle`). A failure while
-    # staging never touches `points_dir` at all; a failure during the swap
-    # rolls back to the previous pair.
-    staged_dir = _stage_t2m_bundle_dir(era5_land_dir)
+    # either is ever visible at their final path. Finding 4: the final path
+    # is now a fresh, per-run-unique numbered directory allocated by
+    # `_publish_t2m_bundle` (via `allocate_published_dir`), never a single
+    # evolving `points_dir` swapped through a shared `.points.prev` backup —
+    # a failure while staging never touches the published root at all; a
+    # failure during publish leaves every previously published bundle
+    # untouched (there is nothing to roll back).
+    staged_dir = prepare_staging_dir(data_root, identity=identity)
     try:
-        _write_t2m_series_netcdf(staged_dir / "series_t2m_degc.nc", merged)
-        _write_t2m_manifest(manifest, staged_dir / "extraction_manifest.json")
+        _write_t2m_series_netcdf(staged_dir / _T2M_SERIES_FILENAME, merged)
+        _write_t2m_manifest(manifest, staged_dir / manifest_filename())
     except Exception:
         shutil.rmtree(staged_dir, ignore_errors=True)
         raise
-    _publish_t2m_bundle(era5_land_dir, points_dir, staged_dir)
+    final_dir = _publish_t2m_bundle(staged_dir, data_root=data_root, identity=identity)
 
-    series_path = points_dir / "series_t2m_degc.nc"
-    manifest_out_path = points_dir / "extraction_manifest.json"
+    series_path = final_dir / _T2M_SERIES_FILENAME
+    manifest_out_path = final_dir / manifest_filename()
 
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

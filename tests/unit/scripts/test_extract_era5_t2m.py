@@ -333,9 +333,8 @@ class TestDiscoverPrecipBundleReconcilesElevationChecksum:
             request_area=_AREA,
         )
         assert exit_code == 4
-        assert not (
-            extract_era5_t2m.t2m_points_dir(data_root) / "series_t2m_degc.nc"
-        ).exists()
+        with pytest.raises(ExtractionInputAbsentError):
+            extract_era5_t2m.discover_t2m_bundle(data_root)
 
 
 class TestExtractionIdentity:
@@ -418,12 +417,14 @@ class TestRealRunSeamArtifacts:
         )
         assert exit_code == 0
 
-        series_path = extract_era5_t2m.t2m_points_dir(data_root) / "series_t2m_degc.nc"
-        manifest_path = (
-            extract_era5_t2m.t2m_points_dir(data_root) / "extraction_manifest.json"
+        bundle_dir, _discovered_manifest = extract_era5_t2m.discover_t2m_bundle(
+            data_root
         )
+        series_path = bundle_dir / "series_t2m_degc.nc"
+        manifest_path = bundle_dir / "extraction_manifest.json"
         assert series_path.exists()
         assert manifest_path.exists()
+        assert re.fullmatch(r"0000-[0-9a-f]{64}", bundle_dir.name)
 
         # Seam: reopen the WRITTEN file — never trust the in-memory object.
         with xr.open_dataset(series_path, engine="h5netcdf") as reopened:
@@ -481,9 +482,10 @@ class TestRealRunSeamArtifacts:
         )
         assert exit_code == 0
 
-        manifest_path = (
-            extract_era5_t2m.t2m_points_dir(data_root) / "extraction_manifest.json"
+        bundle_dir, _discovered_manifest = extract_era5_t2m.discover_t2m_bundle(
+            data_root
         )
+        manifest_path = bundle_dir / "extraction_manifest.json"
         manifest_text = manifest_path.read_text()
 
         # No run-number-prefixed path fragment anywhere in the JSON text.
@@ -520,9 +522,8 @@ class TestRealRunSeamArtifacts:
             request_area=_AREA,
         )
         assert exit_code == 4
-        assert not (
-            extract_era5_t2m.t2m_points_dir(data_root) / "series_t2m_degc.nc"
-        ).exists()
+        with pytest.raises(ExtractionInputAbsentError):
+            extract_era5_t2m.discover_t2m_bundle(data_root)
 
     def test_missing_precip_bundle_exits_2(self, tmp_path: Path) -> None:
         data_root = _build_t2m_root(tmp_path)
@@ -568,15 +569,17 @@ class TestRealRunSeamArtifacts:
         assert exit_code == 4
 
 
-class TestAtomicPublishOfSeriesAndManifest:
-    """Finding 1 — the series and its manifest must publish as ONE pair.
-    Before the fix, `_write_t2m_series_netcdf` replaced the series' final
-    path BEFORE the manifest was written, so a manifest-write failure left
-    a NEW series beside a STALE or ABSENT manifest — a published artefact
-    its own manifest described falsely. These simulate that failure and
-    assert there is never a half-published pair: either the previous pair
-    survives byte-for-byte, or (with no previous pair) nothing at all is
-    published."""
+class TestNumberedPublishOfT2mBundle:
+    """Finding 4 — the t2m bundle now publishes to a per-run-unique numbered
+    directory (`era5_extract_manifest.allocate_published_dir`), never a
+    single evolving `points/` path swapped through a shared `.points.prev`
+    backup. The old scheme's two defects: a crash between the two renames
+    left the canonical `points` path ABSENT (recoverable only on a LATER
+    publish), and two concurrent publishers sharing one `.points.prev` name
+    could deadlock each other, stranding both staging dirs. The numbered
+    scheme removes both possibilities — `os.replace` never faces a
+    non-empty target, so there is no window and no shared name to collide
+    on."""
 
     def _run(self, tmp_path: Path, *, data_root: Path, precip_root: Path) -> int:
         coords_path = tmp_path / "station_coordinates.csv"
@@ -595,9 +598,11 @@ class TestAtomicPublishOfSeriesAndManifest:
             request_area=_AREA,
         )
 
-    def test_manifest_write_failure_with_no_previous_pair_publishes_nothing(
+    def test_manifest_write_failure_publishes_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A failure before the final `os.replace` — staging is never even
+        visible under the points root — must leave no bundle behind."""
         data_root = _build_t2m_root(tmp_path)
         precip_root = tmp_path / "precip"
         _build_precip_bundle(precip_root)
@@ -609,9 +614,10 @@ class TestAtomicPublishOfSeriesAndManifest:
 
         exit_code = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
         assert exit_code == 5
-        assert not extract_era5_t2m.t2m_points_dir(data_root).exists()
+        with pytest.raises(ExtractionInputAbsentError):
+            extract_era5_t2m.discover_t2m_bundle(data_root)
 
-    def test_manifest_write_failure_leaves_the_previous_pair_intact(
+    def test_manifest_write_failure_leaves_a_previously_published_bundle_byte_identical(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         data_root = _build_t2m_root(tmp_path)
@@ -620,9 +626,9 @@ class TestAtomicPublishOfSeriesAndManifest:
 
         first_exit = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
         assert first_exit == 0
-        points_dir = extract_era5_t2m.t2m_points_dir(data_root)
-        series_path = points_dir / "series_t2m_degc.nc"
-        manifest_path = points_dir / "extraction_manifest.json"
+        bundle_dir, _manifest = extract_era5_t2m.discover_t2m_bundle(data_root)
+        series_path = bundle_dir / "series_t2m_degc.nc"
+        manifest_path = bundle_dir / "extraction_manifest.json"
         original_series_sha256 = checksum_file(series_path)
         original_manifest_text = manifest_path.read_text()
 
@@ -634,51 +640,128 @@ class TestAtomicPublishOfSeriesAndManifest:
         second_exit = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
         assert second_exit == 5
 
-        # The PREVIOUS pair survives byte-for-byte — never a new series
-        # beside a stale/absent manifest — and no orphaned staging/backup
-        # directory is left behind either.
+        # The previously published bundle survives byte-for-byte, at the
+        # SAME numbered directory — the failed run never allocated a new
+        # one, because allocation only happens after staging succeeds.
+        rediscovered_dir, _manifest2 = extract_era5_t2m.discover_t2m_bundle(data_root)
+        assert rediscovered_dir == bundle_dir
         assert checksum_file(series_path) == original_series_sha256
         assert manifest_path.read_text() == original_manifest_text
-        stray = [
-            p.name for p in points_dir.parent.iterdir() if p.name.startswith(".points")
-        ]
-        assert stray == []
 
-
-class TestPublishT2mBundleSwapRollback:
-    """A focused test of `_publish_t2m_bundle`'s own rollback: a failure
-    DURING the swap itself (not merely before staging becomes visible) must
-    restore the previous pair, never leave `points_dir` half-replaced or
-    missing."""
-
-    def test_swap_failure_restores_the_previous_pair(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_two_publishes_same_identity_get_distinct_run_numbers_both_survive(
+        self, tmp_path: Path
     ) -> None:
-        era5_land_dir = tmp_path / "era5_land"
-        points_dir = era5_land_dir / "points"
-        points_dir.mkdir(parents=True)
-        (points_dir / "series_t2m_degc.nc").write_bytes(b"old-series")
-        (points_dir / "extraction_manifest.json").write_text('{"old": true}')
+        """The concurrency property the OLD `.points.prev` scheme lacked:
+        two publishes (here, two successive runs with byte-identical
+        inputs, so they resolve to the SAME `extraction_identity`) must
+        never interfere. Each gets its own numbered directory; the first
+        one published is left completely untouched by the second."""
+        data_root = _build_t2m_root(tmp_path)
+        precip_root = tmp_path / "precip"
+        _build_precip_bundle(precip_root)
 
-        staged_dir = era5_land_dir / ".points_staging-test"
-        staged_dir.mkdir()
-        (staged_dir / "series_t2m_degc.nc").write_bytes(b"new-series")
-        (staged_dir / "extraction_manifest.json").write_text('{"new": true}')
+        first_exit = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
+        assert first_exit == 0
+        first_dir, first_manifest = extract_era5_t2m.discover_t2m_bundle(data_root)
+        first_series_sha256 = checksum_file(first_dir / "series_t2m_degc.nc")
 
-        real_replace = extract_era5_t2m.os.replace
-        call_count = {"n": 0}
+        second_exit = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
+        assert second_exit == 0
+        second_dir, second_manifest = extract_era5_t2m.discover_t2m_bundle(data_root)
 
-        def _flaky_replace(src: object, dst: object) -> None:
-            call_count["n"] += 1
-            if call_count["n"] == 2:
-                raise OSError("simulated swap failure")
-            real_replace(src, dst)
+        assert first_manifest.extraction_identity == second_manifest.extraction_identity
+        assert first_dir != second_dir
+        assert first_dir.exists()
+        assert second_dir.exists()
+        assert (first_dir / "series_t2m_degc.nc").exists()
+        assert (second_dir / "series_t2m_degc.nc").exists()
+        # The first bundle was left completely untouched by the second
+        # publish — no in-place mutation, no shared backup name to race on.
+        assert checksum_file(first_dir / "series_t2m_degc.nc") == first_series_sha256
 
-        monkeypatch.setattr(extract_era5_t2m.os, "replace", _flaky_replace)
 
-        with pytest.raises(Era5StorageError):
-            extract_era5_t2m._publish_t2m_bundle(era5_land_dir, points_dir, staged_dir)
+def _write_fake_t2m_bundle(
+    points_root: Path,
+    *,
+    run_number: int,
+    identity: str = "t2m-identity-abc123",
+    write_manifest: bool = True,
+    write_series: bool = True,
+    manifest_extraction_identity: str | None = None,
+) -> Path:
+    """A minimal, hand-built t2m bundle directory for discovery tests —
+    deliberately bypassing `run()`/`_publish_t2m_bundle` so a discovery test
+    can construct an INVALID bundle (missing series, unreadable manifest,
+    mismatched identity) without a full CLI run."""
+    bundle_dir = points_root / f"{run_number:04d}-{identity}"
+    bundle_dir.mkdir(parents=True)
+    if write_series:
+        (bundle_dir / "series_t2m_degc.nc").write_bytes(b"fake-series")
+    if write_manifest:
+        manifest = extract_era5_t2m.T2mExtractionManifest(
+            extraction_identity=manifest_extraction_identity or identity,
+            operator_id=str(ExtractionOperator.NEAREST),
+            coordinate_table_sha256="0" * 64,
+            source_sha256s_by_year={"2020": "0" * 64},
+            referenced_precipitation_bundle_identity="precip-x",
+            station_count=2,
+            stamp_count=52608,
+            output_schema_version="1",
+            output_dtype="float32",
+            generated_at=_CLOCK(),
+        )
+        (bundle_dir / "extraction_manifest.json").write_text(
+            manifest.model_dump_json(indent=2)
+        )
+    return bundle_dir
 
-        assert (points_dir / "series_t2m_degc.nc").read_bytes() == b"old-series"
-        assert (points_dir / "extraction_manifest.json").read_text() == '{"old": true}'
-        assert not (era5_land_dir / ".points.prev").exists()
+
+class TestDiscoverT2mBundle:
+    """Finding 4 — t2m discovery is P2/P6's convention, exactly like the
+    precipitation side (`_discover_precip_bundle`): the highest `NNNN`
+    whose manifest validates, never a fixed path."""
+
+    def test_selects_the_highest_valid_run_number(self, tmp_path: Path) -> None:
+        points_root = extract_era5_t2m.t2m_points_dir(tmp_path)
+        _write_fake_t2m_bundle(points_root, run_number=0, identity="aaa")
+        expected_dir = _write_fake_t2m_bundle(points_root, run_number=1, identity="bbb")
+
+        discovered_dir, manifest = extract_era5_t2m.discover_t2m_bundle(tmp_path)
+        assert discovered_dir == expected_dir
+        assert manifest.extraction_identity == "bbb"
+
+    def test_skips_a_bundle_missing_its_series_file(self, tmp_path: Path) -> None:
+        points_root = extract_era5_t2m.t2m_points_dir(tmp_path)
+        expected_dir = _write_fake_t2m_bundle(points_root, run_number=0, identity="aaa")
+        _write_fake_t2m_bundle(
+            points_root, run_number=1, identity="bbb", write_series=False
+        )
+
+        discovered_dir, manifest = extract_era5_t2m.discover_t2m_bundle(tmp_path)
+        assert discovered_dir == expected_dir
+        assert manifest.extraction_identity == "aaa"
+
+    def test_skips_a_bundle_whose_manifest_identity_does_not_match_its_directory(
+        self, tmp_path: Path
+    ) -> None:
+        points_root = extract_era5_t2m.t2m_points_dir(tmp_path)
+        expected_dir = _write_fake_t2m_bundle(points_root, run_number=0, identity="aaa")
+        _write_fake_t2m_bundle(
+            points_root,
+            run_number=1,
+            identity="bbb",
+            manifest_extraction_identity="mismatched",
+        )
+
+        discovered_dir, manifest = extract_era5_t2m.discover_t2m_bundle(tmp_path)
+        assert discovered_dir == expected_dir
+        assert manifest.extraction_identity == "aaa"
+
+    def test_missing_points_root_raises_input_absent(self, tmp_path: Path) -> None:
+        with pytest.raises(ExtractionInputAbsentError):
+            extract_era5_t2m.discover_t2m_bundle(tmp_path)
+
+    def test_empty_points_root_raises_input_absent(self, tmp_path: Path) -> None:
+        extract_era5_t2m.t2m_points_dir(tmp_path).mkdir(parents=True)
+        with pytest.raises(ExtractionInputAbsentError):
+            extract_era5_t2m.discover_t2m_bundle(tmp_path)
