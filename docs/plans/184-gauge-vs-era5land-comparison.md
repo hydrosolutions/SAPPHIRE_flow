@@ -313,6 +313,104 @@ the deliverable is numbers with their conditions attached.
 hydrological model (that is M-A8/M-DEC), and any correction, adjustment or downscaling design
 (D7, vision).
 
+## Tasks
+
+Six tasks, four phases. **The shape follows M-A10's precedent** (`coloc_*.py` + `stats_coloc.py` + one
+runner writing a markdown report to `--out`) — that convention exists and is not re-invented. No new
+framework, no config surface, no new file format.
+
+Throughout, `$ENV` abbreviates
+`DHM_PRECIP_ERA5_ROOT=data/dhm_precip DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx`.
+
+### T1 — the paired, masked substrate
+**In:** a public, season-agnostic accessor returning each station's M-A3-masked gauge series paired
+hour-by-hour with the ERA5-Land nearest series on **commonly-retained timestamps only** (D2), and a
+**per-subset** common-retained-hour count — computed for whatever season/scale/period a caller asks
+for, **never a single series-level `n`**, since a JJAS-monthly statistic does not rest on the whole
+series' retention (Exit 1/4). Consume D11's list via `qc_mask.build_exclusion_list` and report what it
+removed (empty on this delivery — a measured result, not a skipped step). **Out:** any statistic; any
+re-derivation of the mask or the exclusion predicate.
+*The only masked-series code today is `coloc_run.py:422` — private, JJAS-only, bound to M-A10's
+two-station registry. This generalises it; it does not fork it.*
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_pairs.py -q` and
+`$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
+
+### T2 — Pyramid `AT` loader and the D14 lapse correction
+**In:** `AT` support in `pyramid_loader.py` sharing **only its file/timestamp parsing**; the standard
+6.5 °C/km correction from model orography to station elevation using M-A5's published
+`station_grid_elevation.csv` (D6 — reuse, never re-derive); and the check on the five-station
+2,660–5,600 m transect over **2020–2023**, with **hour-of-day exposure equalised** and the **±1.75 h
+stated, not resolved**. **Out:** fitting or tuning the rate (D14), and **routing `AT` through the
+precipitation retention path**.
+
+**⛔ `AT` MUST NOT pass through the `RR` range check.** `pyramid_loader.py:198` rejects
+`value_mm < qc_mask_range_check_value_min_mm` = **0.0** (`params.py:142`). `AT` is °C and largely
+sub-zero at altitude — measured on the real files: **AWS4 5,600 m 82.0 % sub-zero (min −24.79 °C)**,
+AWS1 5,035 m 60.1 %, AWS2 4,260 m 42.3 %, AWS5 3,570 m 20.6 %, AWS3 2,660 m 3.5 %. The deletion rate
+rises **monotonically with elevation — the very axis this check measures** — so reusing that path
+would flatten the measured lapse rate by deleting the cold high end. *(Codex review 2026-08-20.)*
+**Verify:** `uv run pytest tests/unit/scripts/test_pyramid_at.py -q`, including a test that a −24 °C
+reading is RETAINED; and `$ENV uv run python scripts/dhm_precip/ma6_lapse_check.py --out <dir>`
+
+### T3 — the estimands (depends: T1)
+**In:** D1's three — matched-hour mean difference, conditional accumulated difference, wet-hour
+conditional intensity bias — at the D3 scales with the scale named beside every number; plus D12's
+categorical scores at **daily and monthly grain only**, the 0.2 mm floor applied **after** valid
+aggregation (Rule 3), on jointly-valid periods, labelled conditional-on-retention (Rule 1). **Every
+statistic carries its OWN subset `n` from T1**, is emitted **per station AND per elevation stratum**
+(Exit 1), and cross-station summaries are **stratified BY retention, never filtered ON it** (D13,
+Exit 4). **Out:** annualisation, unconditional totals, any headline hourly matched pair (D3).
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_estimands.py -q`, including a test that a
+JJAS/DJF-grain categorical score is refused rather than computed (D12's vacuity trap), and one that a
+statistic emitted without its own subset `n` fails.
+
+### T4 — representativeness, characterised (depends: T1)
+**In:** the operator-sensitivity envelope read from the published bundle's `operator_sensitivity.csv`
+(D9's real schema — `sign_agreement_fraction` is legitimately null on `STATION` rows), the elevation
+mismatch as a covariate labelled **datum-unreconciled** (D7), neighbouring-cell variability, and the
+Kirtipur/Khumaltar within-cell pair on hours retained for **both** — reported descriptively with its
+`n` and each station's exposure. **Out:** any decomposition of representativeness from model error,
+and any lower-bound claim from the pair (D5, D8).
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_representativeness.py -q`
+
+### T5 — the sub-freezing mass fraction (depends: T2, T3)
+**In:** the mass-weighted fraction of each period's precipitation falling below 1.5 °C, computed
+alongside each magnitude and carrying that magnitude's subset `n`, with the **0 °C / 2 °C threshold
+sensitivity AND the 5.0–9.8 °C/km lapse sensitivity**. **Out:** gating, adjusting or correcting
+anything by it; ranking the two sensitivities against each other (D4); and any assertion about how it
+is *rendered* — that is T6's, which owns the renderer.
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_mass_fraction.py -q`
+
+### T6 — the report and Exit compliance (depends: T1–T5)
+**In:** one runner writing the markdown report plus its tables to `--out` (M-A10 shape), enforcing the
+binding placement rule — **no magnitude rendered without BOTH its subset `n` and its mass fraction in
+the same cell** — and signing every result per D6 with its estimand, retained fraction and the
+catch-efficiency caveat (Exit 3). Record **every** consumed identity: the **precipitation** bundle's,
+discovered by the highest valid `NNNN` (P2/P6), and **t2m's, read directly from its own fixed
+`era5_land/points/extraction_manifest.json`** — Plan 191 D5 deliberately gave t2m no `NNNN` bundle
+shape, so a highest-`NNNN` scan cannot find it. Headline numbers locked in
+`tests/integration/test_dhm_precip_reproduction.py`; results folded into
+`docs/design/dhm-precipitation-milestones.md`, this track's only durable record.
+**Out:** any fitness-to-force statement (M-A8/M-DEC) and any correction design.
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_report.py -q` (including a rendering test that a
+magnitude missing either companion is a hard failure), then end-to-end:
+`$ENV uv run python scripts/dhm_precip/ma6_run.py --out <dir>` followed by
+`$ENV uv run pytest tests/integration/test_dhm_precip_era5_extraction.py tests/integration/test_dhm_precip_reproduction.py -q`
+
+```json
+{
+  "phases": [
+    {"id": "phase-1", "tasks": ["T1", "T2"], "parallel": true},
+    {"id": "phase-2", "tasks": ["T3", "T4"], "parallel": true, "depends_on": ["phase-1"]},
+    {"id": "phase-3", "tasks": ["T5"], "parallel": false, "depends_on": ["phase-2"]},
+    {"id": "phase-4", "tasks": ["T6"], "parallel": false, "depends_on": ["phase-3"]}
+  ]
+}
+```
+
+*T2 is independent of the gauge side; T5 is the first required join. The graph conservatively lets
+T3/T4 wait on phase-1 as a whole — harmless, and not worth a finer graph.*
+
 ## Non-goals
 
 IMERG (M-A5b) · diurnal profile (M-A7) · Pyramid adjudication (M-A10) · elevation/regime structure
