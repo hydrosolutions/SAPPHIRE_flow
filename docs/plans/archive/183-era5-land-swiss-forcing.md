@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-18
 plan: 183
 title: ERA5-Land forcing from the sloth-dynamic store — the lineage aquacast was trained on
@@ -10,6 +10,8 @@ supersedes: []
 ---
 
 # Plan 183 — ERA5-Land forcing from the sloth-dynamic store
+
+**COMPLETE** — merged as PR #184 (`fb39b5e`), tagged `v0.1.763`. **T3's parity check has never run against real data**: it is blocked on the Plan 155 Caravan import, because the only basins available carry CAMELS-CH attributes, not Caravan's. See "Live store probe" below.
 
 **READY** (owner, 2026-08-18). D1 = 5 % relative per basin; D2 = two forcings, radiation deferred.
 Reviewed across three passes: one blocker (the `mean_temperature` vs `temperature` canonical-name

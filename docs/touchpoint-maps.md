@@ -20,14 +20,14 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 - **ForecastInterface / model execution** — model boundary, adapters, data
   requirements, operational input assembly + time-series preprocessing,
   ModelFailure / ModelOutputError.
-  ⚠️ **Adding a NEW NWP/forcing source? Read `docs/plans/183-forcing-canonicalisation-seam.md`
+  ⚠️ **Adding a NEW NWP/forcing source? Read `docs/plans/187-forcing-canonicalisation-seam.md`
   (DRAFT) first.** A 2026-08-18 review found there is **no shared canonicalisation layer**: variable
   renaming, unit conversion and precipitation **de-accumulation** are adapter-private if-chains, and
   `types/forcing_schema.py` declares the canonical contract with **zero consumers**. A
   rate-vs-accumulation mismatch therefore produces plausible **wrong** forcing rather than an error.
-  ⚠️ **Plan-number collision, both filed 2026-08-18**: `183-forcing-canonicalisation-seam.md`
-  (this DRAFT) is a DIFFERENT plan from `183-era5-land-swiss-forcing.md` (READY, implemented) — do
-  not conflate them. `Era5LandReanalysisAdapter` (Plan 183 era5-land) is exactly the "second adapter"
+  ⚠️ **Plan-number collision, RESOLVED 2026-08-18**: the canonicalisation-seam DRAFT was
+  renumbered to **187**; `183-era5-land-swiss-forcing.md` (COMPLETE, merged as PR #184) keeps 183 —
+  do not conflate them. `Era5LandReanalysisAdapter` (Plan 183 era5-land) is exactly the "second adapter"
   F1 warns about: it follows the SAME pre-existing adapter-private mapping-table pattern
   `meteoswiss_open_data_reanalysis.py` uses (not the not-yet-built seam), so it is consistent with
   today's convention but does not reduce F1's risk — worth the owner's attention before a THIRD

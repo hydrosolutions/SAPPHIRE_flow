@@ -2,7 +2,7 @@
 status: DRAFT
 created: 2026-08-18
 revised: 2026-08-18
-plan: 183
+plan: 187
 title: The forcing canonicalisation seam — make a second NWP source safe to add
 scope: Give the forcing contract a real consumer so unit and accumulation semantics are enforced rather than reimplemented per adapter; read the CRS instead of overwriting it; make ForcingResolution able to express sub-daily. Explicitly NOT building any downscaling (OD-10), NOT writing a DHM adapter, NOT changing existing adapter behaviour.
 depends_on: []
@@ -10,7 +10,7 @@ blocks: [OD-10, M-A5b]
 source: docs/design/dhm-precipitation-milestones.md
 ---
 
-# Plan 183 — the forcing canonicalisation seam
+# Plan 187 — the forcing canonicalisation seam
 
 ## Status
 **DRAFT.** Not for implementation until the owner confirms. **Not scheduled** — recorded because the

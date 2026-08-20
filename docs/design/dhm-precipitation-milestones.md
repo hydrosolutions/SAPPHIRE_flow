@@ -1135,9 +1135,9 @@ canonical unit/accumulation contract something an adapter must satisfy rather th
 ignore — **before a second forecast source exists**. #5 is the same failure mode (assume rather than
 assert) and should be fixed with it: read the file's CRS and reproject, never overwrite.
 
-**➡️ THESE FINDINGS NOW LIVE IN `docs/plans/183-forcing-canonicalisation-seam.md` (DRAFT).**
+**➡️ THESE FINDINGS NOW LIVE IN `docs/plans/187-forcing-canonicalisation-seam.md` (DRAFT).**
 They were first written here, which was the WRONG home — they are architecture defects, and nobody
-building an adapter would look in a precipitation research document. Plan 183 is authoritative;
+building an adapter would look in a precipitation research document. Plan 187 is authoritative;
 this section is the decision record that points at it. **Still not scheduled.**
 
 ### ✅ RESOLVED 2026-08-18 — v1 IS SUB-DAILY (3-hourly), so DIURNAL PHASE IS ON THE CRITICAL PATH
