@@ -767,6 +767,15 @@ build remains a fallback.
 Run `scripts/launchd/install-launchd.sh` once (or re-run after plist changes) to
 register all three launchd agents — the installer is idempotent.
 
+## Mac-mini deploy runbook
+
+The executable procedure for a mac-mini staging deploy — rollback anchor, the both-overlays
+requirement, `.env` VERSION, and the acceptance checks — lives in
+[`../operations/mac-mini-deploy-runbook.md`](../operations/mac-mini-deploy-runbook.md). It was
+written against the 2026-08-20 `0.1.758 -> 0.1.775` deploy and records the traps this host has
+actually hit, including that the running version must be read from INSIDE the container because
+`docker compose ps` reports the image tag, not the code.
+
 ## Host-level watchdog
 
 Independent of Docker and Prefect. A cron job on the host VM:
