@@ -72,6 +72,22 @@ same 00Z cycle** — that is what the 8568 rows are (2 params × 51 members × 8
 therefore **intra-day (hours behind `fc`), not a day**, and a same-day run late enough in the morning
 gets the whole ensemble. Corrected below; the "control-only" framing is weaker than the gateway requires.
 
+### ✅ Stage B BUILT (light shape) — PR #197, 2026-08-20
+
+Owner chose a standing unattended feed, light shape. Built, verified on the mini, **held at PR**:
+standing `sapphire-nepal` Postgres (up, migrated, seeded), `scripts/nepal_forcing_run.py` (one JSONL
+record per run, non-zero exit on `no_rows_stored` / `short_horizon` / `source_data_missing`), launchd
+wrapper + 16:00-local plist, runbook. Proven end to end — 8568 rows, 51 members, horizon 14.75 d,
+exit 0, idempotent across three runs. **Only the plist install remains, after merge.**
+
+Two bugs surfaced only by running it: `docker run --user app` breaks the entrypoint's own gosu drop
+(`docker exec` needs the flag, `docker run` must not have it), and `emit()` could not reopen
+`/dev/stderr` as non-root — now writes the inherited stream, regression-locked.
+
+**The recap probe install is FIXED** (repo plist installed, agent reloaded): it produced `ok=True`
+records for the first time in 31 days — and immediately earned its keep by catching the D7 correction
+below within one cycle.
+
 ### Round 3 — the `/plan` workflow (ESCALATED, then folded by hand)
 
 Ran the repo `/plan` loop (3 rounds, 16 agents, 1 Codex round failed). It **escalated: stalled — a
