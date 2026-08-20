@@ -7,18 +7,23 @@ BASH_SOURCE guard) and call `backup_target_verified` directly, rather than
 running the full interactive bootstrap flow (which requires Apple Silicon,
 Docker Desktop, uv, and a hardcoded repo path — none available off-host).
 
-Predicate under test (Plan 194 D1): a backup directory is verified only if
-its MOUNT ROOT's device id differs from the data directory's AND that mount
-root is a real, currently-mounted volume (`mount` output) — not merely a
-directory that happens to report a different device id. The device-id check
-is deliberately performed on the mount root (the backup directory's parent),
-not the backup directory itself, so a freshly initialised external volume —
-mounted, but with no `pg_dumps/` subdirectory created yet — can still be
-told apart from an absent disk (fixer round: this is what let Step 6 of
-bootstrap-mac-mini.sh reject a correctly-mounted-but-empty disk before the
-fix). Both checks are exercised here via a fake `stat`/`mount` pair placed
-first on PATH, so the test does not depend on any real distinct device
-being available in CI.
+Predicate under test (Plan 194 D1, fixer round): a backup directory is
+verified only if its OWN device id differs from the data directory's AND
+its mount root (the backup directory's parent) is a real, currently-mounted
+volume (`mount` output) — not merely a directory that happens to report a
+different device id. The device-id check is deliberately performed on the
+backup directory ITSELF, matching the Python predicate
+(`backup_target_verified` in `src/sapphire_flow/ops/watchdog.py`) — a
+parent-only check would let a nested bind-mount, or a backup directory that
+is itself a symlink onto the data device, satisfy verification while still
+landing dumps on the wrong device (`TestBackupTargetVerifiedChecksBackupDirNotParent`
+below reproduces both). `_backup_mount_root_verified` is a SEPARATE,
+narrower helper: it verifies only the mount root, deliberately tolerating a
+not-yet-created backup directory, so bootstrap Step 6 can decide whether
+it's safe to `mkdir -p` a `pg_dumps/` subdirectory onto a freshly attached
+but empty volume. All of this is exercised here via a fake `stat`/`mount`
+pair placed first on PATH, so the test does not depend on any real distinct
+device being available in CI.
 """
 
 from __future__ import annotations
@@ -36,28 +41,26 @@ _SCRIPT = (
 def _write_fake_bin(
     bin_dir: Path,
     *,
-    mount_root_path: str,
-    data_path: str,
-    mount_dev: str,
-    data_dev: str,
+    devices: dict[str, str],
     mount_output: str,
 ) -> None:
     """A fake `stat` (returns the device id for a known path, keyed off the
-    LAST argument regardless of which stat-flag dialect the caller used) and
-    a fake `mount` (prints canned output), both ahead of the real binaries
-    on PATH.
+    LAST argument regardless of which stat-flag dialect the caller used,
+    via the `devices` path->device-id mapping) and a fake `mount` (prints
+    canned output), both ahead of the real binaries on PATH.
 
-    `mount_root_path` is the path `backup_target_verified` actually stats
-    for a device id — the backup directory's PARENT, not the backup
-    directory itself (see module docstring).
+    Every path the script under test actually `stat`s must have an entry
+    in `devices` — an unlisted path exits 1, same as a real stat failure.
     """
+    cases = "\n".join(
+        f'            "{path}") echo "{dev}" ;;' for path, dev in devices.items()
+    )
     stat_stub = textwrap.dedent(
         f"""\
         #!/bin/bash
         path="${{@: -1}}"
         case "${{path}}" in
-            "{mount_root_path}") echo "{mount_dev}" ;;
-            "{data_path}") echo "{data_dev}" ;;
+{cases}
             *) exit 1 ;;
         esac
         """
@@ -132,10 +135,10 @@ class TestBackupTargetVerified:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
-            data_path=str(data_dir),
-            mount_dev="16777234",
-            data_dev="16777234",  # SAME device id — the mini's actual state
+            devices={
+                str(backup_dir): "16777234",
+                str(data_dir): "16777234",  # SAME device id — the mini's actual state
+            },
             mount_output=f"/dev/disk1 on {backup_dir.parent} (apfs, local)",
         )
 
@@ -154,10 +157,7 @@ class TestBackupTargetVerified:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
-            data_path=str(data_dir),
-            mount_dev="1",
-            data_dev="2",
+            devices={str(backup_dir): "1", str(data_dir): "2"},
             mount_output=f"/dev/disk1 on {backup_dir.parent} (apfs, local)",
         )
 
@@ -182,10 +182,7 @@ class TestBackupTargetVerified:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
-            data_path=str(data_dir),
-            mount_dev="1",
-            data_dev="2",
+            devices={str(backup_dir): "1", str(data_dir): "2"},
             mount_output="/dev/disk1 on /some/unrelated/path (apfs, local)",
         )
 
@@ -207,10 +204,7 @@ class TestBackupTargetVerified:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
-            data_path=str(data_dir),
-            mount_dev="99",
-            data_dev="1",
+            devices={str(backup_dir): "99", str(data_dir): "1"},
             mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
         )
 
@@ -220,6 +214,89 @@ class TestBackupTargetVerified:
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "VERIFIED"
+
+
+class TestBackupTargetVerifiedChecksBackupDirNotParent:
+    """Fixer round (independent Codex review of Plan 194): the predicate
+    must stat the backup directory ITSELF, not merely its parent — matching
+    the Python predicate (`backup_target_verified` in watchdog.py), which
+    checks `backup_dir` directly. Both cases here have a mount root that
+    genuinely differs from the data device (so a parent-only check would
+    say VERIFIED) while the backup directory itself — via a nested
+    bind-mount or a symlink — actually resolves onto the SAME device as the
+    data path. Both must be NOT_VERIFIED."""
+
+    def test_nested_bind_mount_onto_data_device_is_not_verified(
+        self, tmp_path: Path
+    ) -> None:
+        """The mount root (e.g. `/Volumes/sapphire-backup`) is a real,
+        distinct, mounted volume — but `pg_dumps/` underneath it is itself
+        a separate bind-mount back onto the boot disk (the same device the
+        data lives on). A parent-only check never notices this."""
+        mount_root = tmp_path / "sapphire-backup"
+        mount_root.mkdir()
+        backup_dir = mount_root / "pg_dumps"
+        backup_dir.mkdir()
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_fake_bin(
+            bin_dir,
+            devices={
+                str(mount_root): "99",  # the mount root: genuinely distinct
+                str(backup_dir): "1",  # but pg_dumps/ is bind-mounted onto...
+                str(data_dir): "1",  # ...the SAME device the data is on
+            },
+            mount_output=f"/dev/disk4s1 on {mount_root} (apfs, local)",
+        )
+
+        result = _run_predicate(
+            tmp_path, backup_dir=backup_dir, data_dir=data_dir, bin_dir=bin_dir
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "NOT_VERIFIED"
+
+    def test_symlinked_backup_dir_onto_data_device_is_not_verified(
+        self, tmp_path: Path
+    ) -> None:
+        """`pg_dumps` is a symlink whose parent directory sits on a
+        genuinely distinct, correctly-mounted volume, but the symlink
+        itself resolves onto the data device (`stat` follows symlinks, so
+        the real device id reported for the symlink path IS the target's
+        device — reproduced here by keying the fake stat's `devices` map
+        on the symlink's own path)."""
+        mount_root = tmp_path / "sapphire-backup"
+        mount_root.mkdir()
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        real_target = data_dir / "pg_dumps_on_boot_disk"
+        real_target.mkdir()
+        backup_dir = mount_root / "pg_dumps"
+        backup_dir.symlink_to(real_target)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_fake_bin(
+            bin_dir,
+            devices={
+                str(mount_root): "99",  # the mount root: genuinely distinct
+                # `stat` follows the symlink -> reports the TARGET's device,
+                # which is the data device (this is what the fixer-round
+                # bug missed by only ever stat'ing the parent):
+                str(backup_dir): "1",
+                str(data_dir): "1",
+            },
+            mount_output=f"/dev/disk4s1 on {mount_root} (apfs, local)",
+        )
+
+        result = _run_predicate(
+            tmp_path, backup_dir=backup_dir, data_dir=data_dir, bin_dir=bin_dir
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "NOT_VERIFIED"
+        assert backup_dir.is_dir()  # sanity: -d follows the symlink to a real dir
 
 
 class TestFreshlyMountedVolumeWithoutPgDumps:
@@ -246,10 +323,7 @@ class TestFreshlyMountedVolumeWithoutPgDumps:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(mount_root),
-            data_path=str(data_dir),
-            mount_dev="99",
-            data_dev="1",
+            devices={str(mount_root): "99", str(data_dir): "1"},
             mount_output=f"/dev/disk4s1 on {mount_root} (apfs, local)",
         )
 
@@ -277,10 +351,7 @@ class TestFreshlyMountedVolumeWithoutPgDumps:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(mount_root),
-            data_path=str(data_dir),
-            mount_dev="99",
-            data_dev="1",
+            devices={str(mount_root): "99", str(data_dir): "1"},
             mount_output=f"/dev/disk4s1 on {mount_root} (apfs, local)",
         )
 
@@ -309,10 +380,11 @@ class TestFreshlyMountedVolumeWithoutPgDumps:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(mount_root),
-            data_path=str(data_dir),
-            mount_dev="99",
-            data_dev="1",
+            devices={
+                str(mount_root): "99",
+                str(backup_dir): "99",  # a real subdir of mount_root: same device
+                str(data_dir): "1",
+            },
             mount_output=f"/dev/disk4s1 on {mount_root} (apfs, local)",
         )
 
@@ -360,10 +432,10 @@ class TestFreshlyMountedVolumeWithoutPgDumps:
         bin_dir.mkdir()
         _write_fake_bin(
             bin_dir,
-            mount_root_path=str(mount_root),
-            data_path=str(data_dir),
-            mount_dev="1",
-            data_dev="1",  # SAME device — not a distinct volume
+            devices={
+                str(mount_root): "1",
+                str(data_dir): "1",  # SAME device — not a distinct volume
+            },
             mount_output=f"/dev/disk1 on {mount_root} (apfs, local)",
         )
 

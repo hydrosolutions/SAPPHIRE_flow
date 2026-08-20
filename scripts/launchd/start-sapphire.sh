@@ -27,19 +27,20 @@ BACKUP_MARKER_PATH="${SAPPHIRE_BACKUP_MARKER_PATH:-${REPO_ROOT}/.backup-volume-u
 #
 # `backup_target_verified` returns success only if ALL hold:
 #   1. The backup directory itself exists (a missing directory is invalid —
-#      see `_backup_mount_root_verified` below for the check that lets a
-#      caller decide whether it's SAFE to create it).
-#   2. Its mount root's (the backup directory's parent) device id differs
-#      from the device id of the path that actually holds the data
-#      (REPO_ROOT — never `/`; see Plan 194 D1 for why `/` is not a
-#      reliable split on this host). Checked on the mount root rather than
-#      the backup directory itself so a freshly initialised external
-#      volume — mounted, but with no pg_dumps/ subdirectory created yet —
-#      can still be told apart from an absent disk.
-#   3. That mount root is a REAL, currently-mounted volume per `mount` —
-#      not merely a directory that happens to report a different device
-#      id. Docker silently creates a missing bind-mount host path, which
-#      is how an absent disk becomes a healthy-looking plain directory.
+#      see `_backup_mount_root_verified` below for the SEPARATE check that
+#      lets a caller decide whether it's SAFE to create it).
+#   2. The backup directory's OWN device id (fixer round: NOT its parent's
+#      — a nested bind-mount underneath a genuinely distinct mount root,
+#      e.g. `pg_dumps/` itself bind-mounted back onto the boot disk, would
+#      satisfy a parent-only check while still landing dumps on the wrong
+#      device) differs from the device id of the path that actually holds
+#      the data (REPO_ROOT — never `/`; see Plan 194 D1 for why `/` is not
+#      a reliable split on this host).
+#   3. Its mount root (the backup directory's parent) is a REAL,
+#      currently-mounted volume per `mount` — not merely a directory that
+#      happens to report a different device id. Docker silently creates a
+#      missing bind-mount host path, which is how an absent disk becomes a
+#      healthy-looking plain directory.
 _backup_target_device_id() {
     # BSD stat (macOS, the production host) uses `-f FORMAT`; GNU stat
     # (Linux, used only for off-host CI) uses `-c FORMAT` — confusingly,
@@ -55,7 +56,10 @@ _backup_target_device_id() {
 # inside it to exist yet, so a caller can use this to decide whether it is
 # safe to `mkdir -p` a not-yet-created backup subdirectory underneath a
 # volume that is genuinely mounted (as opposed to creating that directory
-# on the boot disk because the mount root itself is missing).
+# on the boot disk because the mount root itself is missing). This is
+# ONLY the pre-creation authorization check — `backup_target_verified`
+# below always re-checks the backup directory itself once it exists, and
+# is the one that actually decides whether the target is trustworthy.
 _backup_mount_root_verified() {
     local mount_root="$1"
     local data_dir="$2"
@@ -74,9 +78,17 @@ _backup_mount_root_verified() {
 backup_target_verified() {
     local backup_dir="$1"
     local data_dir="$2"
+    local mount_root backup_dev data_dev
 
     [ -d "${backup_dir}" ] || return 1
-    _backup_mount_root_verified "$(dirname "${backup_dir}")" "${data_dir}"
+    mount_root="$(dirname "${backup_dir}")"
+
+    backup_dev="$(_backup_target_device_id "${backup_dir}")" || return 1
+    data_dev="$(_backup_target_device_id "${data_dir}")" || return 1
+    [ -n "${backup_dev}" ] && [ -n "${data_dev}" ] || return 1
+    [ "${backup_dev}" != "${data_dev}" ] || return 1
+
+    mount | grep -q " on ${mount_root} "
 }
 
 # Allow tests to `source` this script and call `backup_target_verified`

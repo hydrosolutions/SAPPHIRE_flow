@@ -14,10 +14,10 @@ paths are env-overridable (SAPPHIRE_REPO_ROOT, SAPPHIRE_BACKUP_DIR,
 SAPPHIRE_BACKUP_MARKER_PATH), mirroring run-recap-probe.sh's convention.
 
 The device-id check `backup_target_verified` performs is on the backup
-directory's MOUNT ROOT (its parent), not the backup directory itself — see
+directory ITSELF (fixer round: not merely its parent — see
 tests/unit/scripts/test_bootstrap_backup_target_verified.py's module
-docstring for why (a freshly mounted, not-yet-initialised external volume
-must still be tellable apart from an absent disk).
+docstring for why a parent-only check is insufficient), plus a check that
+its parent (the mount root) is a real, currently-mounted volume.
 
 Fixer round (Codex review of Plan 194): the marker read/write in
 start-sapphire.sh must be BEST-EFFORT under `set -e` — a failure to
@@ -64,9 +64,9 @@ def _write_fake_docker(bin_dir: Path, *, compose_log: Path) -> None:
 def _write_fake_stat_mount(
     bin_dir: Path,
     *,
-    mount_root_path: str,
+    backup_path: str,
     data_path: str,
-    mount_dev: str,
+    backup_dev: str,
     data_dev: str,
     mount_output: str,
 ) -> None:
@@ -75,7 +75,7 @@ def _write_fake_stat_mount(
         #!/bin/bash
         path="${{@: -1}}"
         case "${{path}}" in
-            "{mount_root_path}") echo "{mount_dev}" ;;
+            "{backup_path}") echo "{backup_dev}" ;;
             "{data_path}") echo "{data_dev}" ;;
             *) exit 1 ;;
         esac
@@ -136,9 +136,9 @@ class TestStartSapphireBackupVerification:
         _write_fake_docker(bin_dir, compose_log=compose_log)
         _write_fake_stat_mount(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
+            backup_path=str(backup_dir),
             data_path=str(repo_root),
-            mount_dev="16777234",
+            backup_dev="16777234",
             data_dev="16777234",  # SAME device — the mini's actual bug
             mount_output=f"/dev/disk1 on {backup_dir.parent} (apfs, local)",
         )
@@ -175,9 +175,9 @@ class TestStartSapphireBackupVerification:
         _write_fake_docker(bin_dir, compose_log=compose_log)
         _write_fake_stat_mount(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
+            backup_path=str(backup_dir),
             data_path=str(repo_root),
-            mount_dev="99",
+            backup_dev="99",
             data_dev="1",
             mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
         )
@@ -213,9 +213,9 @@ class TestStartSapphireBackupVerification:
         _write_fake_docker(bin_dir, compose_log=compose_log)
         _write_fake_stat_mount(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
+            backup_path=str(backup_dir),
             data_path=str(repo_root),
-            mount_dev="99",
+            backup_dev="99",
             data_dev="1",
             mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
         )
@@ -258,9 +258,9 @@ class TestMarkerWriteIsBestEffort:
         _write_fake_docker(bin_dir, compose_log=compose_log)
         _write_fake_stat_mount(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
+            backup_path=str(backup_dir),
             data_path=str(repo_root),
-            mount_dev="16777234",
+            backup_dev="16777234",
             data_dev="16777234",  # SAME device — unverified
             mount_output=f"/dev/disk1 on {backup_dir.parent} (apfs, local)",
         )
@@ -300,9 +300,9 @@ class TestMarkerWriteIsBestEffort:
         _write_fake_docker(bin_dir, compose_log=compose_log)
         _write_fake_stat_mount(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
+            backup_path=str(backup_dir),
             data_path=str(repo_root),
-            mount_dev="99",
+            backup_dev="99",
             data_dev="1",  # distinct — verified
             mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
         )
@@ -340,9 +340,9 @@ class TestMarkerWriteIsBestEffort:
         _write_fake_docker(bin_dir, compose_log=compose_log)
         _write_fake_stat_mount(
             bin_dir,
-            mount_root_path=str(backup_dir.parent),
+            backup_path=str(backup_dir),
             data_path=str(repo_root),
-            mount_dev="16777234",
+            backup_dev="16777234",
             data_dev="16777234",  # SAME device — unverified
             mount_output=f"/dev/disk1 on {backup_dir.parent} (apfs, local)",
         )

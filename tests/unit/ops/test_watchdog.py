@@ -1281,6 +1281,139 @@ class TestRunOnceBackupDeviceVerification:
         assert received == [backup_dir]
 
 
+class TestRunOnceBackupDeviceNotificationStateMachine:
+    """Fixer round (review of Plan 194): `TestRunOnceBackupDeviceVerification`
+    above only locks the hysteresis/transition behaviour assuming every
+    Slack post SUCCEEDS. The device block shares its pending-retry shape
+    byte-for-byte with the staleness block's `_backup_notification_kind`
+    (see `_backup_device_notification_kind`), whose OWN delivery-failure
+    and condition-reversal-before-retry behaviour is locked by
+    `TestRunOnceBackupNotificationStateMachine` — but the device block had
+    no equivalent multi-tick lock of its own. Mirrors that class's
+    `test_failed_recovery_delivery_is_retried_until_it_succeeds` and
+    `test_failed_stale_delivery_followed_by_recovery_before_retry_reports_recovered`,
+    but for the DISTINCT wrong-device condition."""
+
+    def test_failed_unverified_delivery_is_retried_until_it_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        """A NOT MOUNTED alert lost to a failed Slack post must not be lost
+        forever."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)  # fresh: NOT stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: unverified, delivery FAILS.
+        failing_slack = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,
+        )
+        assert len(failing_slack.calls) == 1
+        assert "backup volume NOT MOUNTED" in failing_slack.calls[0][1]
+        assert state.backup_device_notification_pending == "unverified"
+        assert state.consecutive_backup_device_unverified_ticks == 1
+
+        # Tick 2: still unverified — no NEW hysteresis transition (already
+        # latched) — but the pending notification must be retried.
+        retry_slack = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,
+        )
+        assert len(retry_slack.calls) == 1
+        assert "backup volume NOT MOUNTED" in retry_slack.calls[0][1]
+        assert state.backup_device_notification_pending is None
+
+        # A further tick must NOT re-send — pending was cleared, and the
+        # condition has not transitioned again.
+        quiet_slack = _SlackRecorder(succeed=True)
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=quiet_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,
+        )
+        assert quiet_slack.calls == []
+
+    def test_failed_unverified_delivery_then_recovery_before_retry_reports_verified(
+        self, tmp_path: Path
+    ) -> None:
+        """Condition-reversal-before-retry: tick 1 goes unverified and
+        delivery FAILS (`pending == "unverified"`); tick 2 the volume is
+        VERIFIED again before the retry. The eventually-delivered message
+        must say VERIFIED — the CURRENT, true condition — never resend the
+        stale `pending == "unverified"` value (which would report "NOT
+        MOUNTED" for a volume that is, by tick 2, actually fine)."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: unverified, delivery FAILS.
+        failing_slack = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,
+        )
+        assert len(failing_slack.calls) == 1
+        assert "backup volume NOT MOUNTED" in failing_slack.calls[0][1]
+        assert state.backup_device_notification_pending == "unverified"
+
+        # Tick 2: verified again BEFORE the retry — the retry delivers and
+        # must report VERIFIED, not NOT MOUNTED.
+        retry_slack = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+        )
+        assert len(retry_slack.calls) == 1
+        assert "backup volume VERIFIED" in retry_slack.calls[0][1]
+        assert state.backup_device_notification_pending is None
+        assert state.consecutive_backup_device_unverified_ticks == 0
+
+        # Tick 3: must stay silent — nothing pending, nothing changed.
+        quiet_slack = _SlackRecorder(succeed=True)
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=quiet_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+        )
+        assert quiet_slack.calls == []
+
+
 # ---------- run_once: Slack absent => log-only -------------------------------
 
 
