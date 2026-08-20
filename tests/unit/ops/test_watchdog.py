@@ -1352,6 +1352,91 @@ class TestRunOnceBackupDeviceNotificationStateMachine:
         )
         assert quiet_slack.calls == []
 
+    def test_failed_verified_delivery_is_retried_until_it_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        """The gap this class's docstring CLAIMED to cover but did not.
+
+        It says it mirrors the staleness block's
+        `test_failed_recovery_delivery_is_retried_until_it_succeeds`, but the
+        two tests here only covered a failed UNVERIFIED (alert) delivery and a
+        condition reversal before retry. A recovery — the VERIFIED post after
+        the volume comes back — that is lost to a failed Slack call was never
+        locked, so an implementation that dropped it would still pass.
+
+        RED against a state machine without persistent pending state: the
+        retry tick sees a verified device with no transition, so nothing is
+        re-sent and the final assertion (exactly one successful VERIFIED post)
+        sees zero.
+        """
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)  # fresh: NOT stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: unverified, alert DELIVERED cleanly — establishes the incident.
+        opening = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=opening,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,
+        )
+        assert len(opening.calls) == 1
+        assert "backup volume NOT MOUNTED" in opening.calls[0][1]
+        assert state.backup_device_notification_pending is None
+
+        # Tick 2: the volume comes back — the RECOVERY delivery FAILS.
+        failing_recovery = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_recovery,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+        )
+        assert len(failing_recovery.calls) == 1
+        assert state.backup_device_notification_pending == "verified", (
+            "a lost recovery post must stay pending, or the operator is never "
+            "told the volume came back"
+        )
+
+        # Tick 3: still verified, no new transition — the pending recovery
+        # must be retried anyway.
+        retry = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+        )
+        assert len(retry.calls) == 1
+        assert state.backup_device_notification_pending is None
+
+        # Tick 4: quiet — pending cleared, condition unchanged.
+        quiet = _SlackRecorder(succeed=True)
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=quiet,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+        )
+        assert quiet.calls == []
+
     def test_failed_unverified_delivery_then_recovery_before_retry_reports_verified(
         self, tmp_path: Path
     ) -> None:

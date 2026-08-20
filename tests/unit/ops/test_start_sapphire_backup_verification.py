@@ -160,6 +160,56 @@ class TestStartSapphireBackupVerification:
         )
         assert "up -d" in compose_log.read_text()
 
+    def test_distinct_device_but_not_a_mount_point_is_unverified(
+        self, tmp_path: Path
+    ) -> None:
+        """The mount clause must do real work in THIS script's copy.
+
+        Every other unverified case here uses identical device ids, so the
+        `mount | grep` clause could be deleted from start-sapphire.sh and the
+        suite would stay green. This case gives the backup path a DIFFERENT
+        device id but reports no mount at its root — a plain directory on some
+        other filesystem — which only the mount clause can reject. The
+        predicate is duplicated verbatim in bootstrap-mac-mini.sh, so that
+        script's tests cannot protect this copy.
+        """
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        backup_dir = tmp_path / "backup"
+        backup_dir.mkdir()
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        marker_path = repo_root / ".backup-volume-unverified.json"
+        compose_log = tmp_path / "compose.log"
+
+        _write_fake_docker(bin_dir, compose_log=compose_log)
+        _write_fake_stat_mount(
+            bin_dir,
+            backup_path=str(backup_dir),
+            data_path=str(repo_root),
+            backup_dev="99",  # DIFFERENT device...
+            data_dev="1",
+            # ...but nothing is mounted at the backup dir's parent.
+            mount_output="/dev/disk3s5 on / (apfs, local, journaled)",
+        )
+
+        result = _run_start_sapphire(
+            tmp_path,
+            repo_root=repo_root,
+            backup_dir=backup_dir,
+            marker_path=marker_path,
+            bin_dir=bin_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert marker_path.exists(), (
+            "a differing device id is NOT sufficient — the path must also be a "
+            "real mount point, or the mount clause is dead code"
+        )
+        assert json.loads(marker_path.read_text())["verified"] is False
+        assert compose_log.exists(), "D3: the stack still starts"
+        assert "up -d" in compose_log.read_text()
+
     def test_verified_backup_writes_no_marker_and_starts_stack(
         self, tmp_path: Path
     ) -> None:
