@@ -474,7 +474,20 @@ def discover_t2m_bundle(data_root: Path) -> tuple[Path, T2mExtractionManifest]:
     A caller that reads a NAMED bundle directly (e.g. calling
     `assert_payload_checksum_matches` on a specific directory, bypassing
     this discovery loop) still gets a raised exception — the skip behaviour
-    is deliberately local to this loop, not a property of the predicate."""
+    is deliberately local to this loop, not a property of the predicate.
+
+    Finding (approval-gate review, 2026-08-20) — "no candidate survived"
+    is NOT one failure mode, it is two, and they must not share an exit
+    code. If the points root is empty or missing, or no candidate even
+    reaches the checksum check (no readable manifest, no series file, no
+    matching identity), the input genuinely never existed:
+    `ExtractionInputAbsentError`, exit 2. But if at least one candidate
+    reached `assert_payload_checksum_matches` and every such candidate
+    failed reconciliation, the input DID exist and IS corrupt — that is a
+    post-condition failure, exit 4, and the last candidate's own
+    `ExtractionPostConditionError` is re-raised as-is so the operator sees
+    which bundle failed and why, instead of being misdirected to hunt a
+    missing-input problem that does not exist."""
     root = t2m_points_dir(data_root)
     if not root.exists():
         raise ExtractionInputAbsentError(f"no t2m extraction points root at {root}")
@@ -482,6 +495,7 @@ def discover_t2m_bundle(data_root: Path) -> tuple[Path, T2mExtractionManifest]:
         (p for p in root.iterdir() if p.is_dir() and p.name != ".staging"),
         key=lambda p: p.name,
     )
+    last_checksum_error: ExtractionPostConditionError | None = None
     for candidate in reversed(candidates):
         manifest = _read_t2m_manifest(candidate / manifest_filename())
         if manifest is None:
@@ -492,13 +506,16 @@ def discover_t2m_bundle(data_root: Path) -> tuple[Path, T2mExtractionManifest]:
             continue
         try:
             assert_payload_checksum_matches(candidate, manifest, _T2M_SERIES_FILENAME)
-        except ExtractionPostConditionError:
+        except ExtractionPostConditionError as exc:
             log.warning(
                 "era5_extract_t2m.discover.payload_checksum_mismatch_skipped",
                 candidate=str(candidate),
             )
+            last_checksum_error = exc
             continue
         return candidate, manifest
+    if last_checksum_error is not None:
+        raise last_checksum_error
     raise ExtractionInputAbsentError(
         "no published t2m extraction bundle with a readable manifest found "
         f"under {root}"

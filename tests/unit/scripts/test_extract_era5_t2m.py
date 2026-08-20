@@ -784,9 +784,13 @@ class TestDiscoverT2mBundle:
             extract_era5_t2m.discover_t2m_bundle(tmp_path)
 
     def test_empty_points_root_raises_input_absent(self, tmp_path: Path) -> None:
+        """Genuinely-no-candidates branch (approval-gate review, 2026-08-20):
+        no directory means no input ever existed — exit 2, never the
+        post-condition exit 4 reserved for existing-but-corrupt bundles."""
         extract_era5_t2m.t2m_points_dir(tmp_path).mkdir(parents=True)
-        with pytest.raises(ExtractionInputAbsentError):
+        with pytest.raises(ExtractionInputAbsentError) as exc_info:
             extract_era5_t2m.discover_t2m_bundle(tmp_path)
+        assert extract_era5_t2m._exit_code_for(exc_info.value) == 2
 
 
 class TestDiscoverT2mBundleReconcilesPayloadChecksum:
@@ -845,7 +849,14 @@ class TestDiscoverT2mBundleReconcilesPayloadChecksum:
         assert discovered_dir == valid_dir
         assert manifest.extraction_identity == "aaa"
 
-    def test_all_candidates_corrupted_raises_input_absent(self, tmp_path: Path) -> None:
+    def test_all_candidates_corrupted_raises_post_condition_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Approval-gate review (2026-08-20) — candidates that DID exist but
+        ALL failed checksum reconciliation must not be misclassified as
+        input-absent (exit 2): the input existed and is corrupt, which is a
+        post-condition failure (exit 4). The underlying checksum-mismatch
+        error is re-raised as-is, not replaced with a new message."""
         points_root = extract_era5_t2m.t2m_points_dir(tmp_path)
         _write_fake_t2m_bundle(
             points_root,
@@ -854,8 +865,9 @@ class TestDiscoverT2mBundleReconcilesPayloadChecksum:
             corrupt_series_after_hashing=True,
         )
 
-        with pytest.raises(ExtractionInputAbsentError):
+        with pytest.raises(ExtractionPostConditionError, match="sha256") as exc_info:
             extract_era5_t2m.discover_t2m_bundle(tmp_path)
+        assert extract_era5_t2m._exit_code_for(exc_info.value) == 4
 
     def test_a_direct_read_of_a_named_corrupt_bundle_still_raises(
         self, tmp_path: Path
@@ -917,9 +929,11 @@ class TestDiscoverT2mBundleReconcilesPayloadChecksum:
         }
 
         # Corrupt the published series in place; discovery must now refuse
-        # this bundle (there is no older one to fall back to).
+        # this bundle (there is no older one to fall back to). It DID
+        # exist, so this is a post-condition failure (exit 4), not
+        # input-absent (exit 2).
         series_path.write_bytes(series_path.read_bytes() + b"-corrupted")
-        with pytest.raises(ExtractionInputAbsentError):
+        with pytest.raises(ExtractionPostConditionError, match="sha256"):
             extract_era5_t2m.discover_t2m_bundle(data_root)
 
 
