@@ -332,6 +332,12 @@ removed (empty on this delivery — a measured result, not a skipped step). **Ou
 re-derivation of the mask or the exclusion predicate.
 *The only masked-series code today is `coloc_run.py:422` — private, JJAS-only, bound to M-A10's
 two-station registry. This generalises it; it does not fork it.*
+
+**⛔ T1 exposes the GAUGE-ONLY masked population as a named output, before ERA5 pairing.** M-A7
+(Plan 193) is gauge-only and consumes exactly that; if the only public output were the paired frame,
+a gauge-only milestone would become conditional on ERA5 availability, and the alternative — a second
+implementation of "the masked series" — would drift invisibly, both versions looking right alone.
+Two named outputs, one definition. *(Codex review 2026-08-20.)*
 **Verify:** `uv run pytest tests/unit/scripts/test_ma6_pairs.py -q` and
 `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
 
