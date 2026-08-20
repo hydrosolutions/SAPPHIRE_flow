@@ -51,6 +51,8 @@ from scripts.dhm_precip.era5_request import (
     Era5RequestSpec,
     build_request_payload,
     expected_grid_shape,
+    expected_units,
+    variable_code,
 )
 
 if TYPE_CHECKING:
@@ -350,13 +352,24 @@ def _validate_raw_artifact(
 def _validate_variable(
     ds: xr.Dataset, *, window: AcquisitionWindow, spec: Era5RequestSpec
 ) -> None:
-    if "tp" not in ds:
+    # The netCDF short name and its units are BOTH variable-specific: CDS
+    # returns 'tp' in metres for total_precipitation and 't2m' in kelvin for
+    # 2m_temperature. Hard-coding either would reject a perfectly good file
+    # for the wrong variable (which is how this was found — the download
+    # succeeded and validation rejected it), or, worse, accept a file whose
+    # units the transform then misinterprets.
+    name = variable_code(spec.variable)
+    if name not in ds:
         raise Era5ValidationError(
-            f"expected variable 'tp' absent; got {list(ds.data_vars)}"
+            f"expected variable {name!r} absent; got {list(ds.data_vars)}"
         )
-    units = str(ds["tp"].attrs.get("units", "")).strip().lower()
-    if units not in ("m", "metres", "meters"):
-        raise Era5ValidationError(f"'tp' units attribute {units!r} is not metres")
+    units = str(ds[name].attrs.get("units", "")).strip().lower()
+    accepted = expected_units(spec.variable)
+    if units not in accepted:
+        raise Era5ValidationError(
+            f"{name!r} units attribute {units!r} is not one of "
+            f"{sorted(accepted)} for variable {spec.variable!r}"
+        )
     for coord in ("valid_time", "latitude", "longitude"):
         if coord not in ds.coords and coord not in ds.dims:
             raise Era5ValidationError(f"missing coordinate {coord!r}")
@@ -428,13 +441,16 @@ def acquire_window(
 ) -> RawWindowRecord:
     payload = build_request_payload(window, spec)
     identity = raw_request_identity(spec.dataset, payload)
-    final_path = raw_artifact_path(window.window_id, data_root)
+    final_path = raw_artifact_path(
+        window.window_id, data_root, variable_code=variable_code(spec.variable)
+    )
     manifest_path = manifest_path_for(data_root)
 
     manifest = read_manifest(manifest_path)
     if manifest is None:
         manifest = Era5ProvenanceManifest(
             dataset=spec.dataset,
+            variable=spec.variable,
             client_package_version=client_package_version,
             operator_provenance=provenance,
         )
@@ -449,6 +465,22 @@ def acquire_window(
             f"{manifest.dataset!r}, but this request is for "
             f"{spec.dataset!r}; acquisition-wide fields are immutable — "
             f"start a new data root rather than mixing products"
+        )
+    elif manifest.variable != spec.variable:
+        # The SAME immutability rule as `dataset`, and the more dangerous of
+        # the two: both variables live in the same CDS dataset, so the check
+        # above passes. Raw paths and `raw_windows` are keyed by `window_id`,
+        # so acquiring a second variable here would overwrite the existing
+        # archive AND replace its provenance records — silently, because the
+        # resume guard sees a different request identity, concludes the window
+        # is stale, and re-downloads over it.
+        raise Era5StorageError(
+            f"manifest at {manifest_path} records variable "
+            f"{manifest.variable!r}, but this request is for "
+            f"{spec.variable!r}; acquisition-wide fields are immutable and "
+            f"raw windows are keyed by window_id alone — use a separate "
+            f"--data-root for {spec.variable!r} rather than overwriting the "
+            f"{manifest.variable!r} archive"
         )
 
     if raw_window_is_current(

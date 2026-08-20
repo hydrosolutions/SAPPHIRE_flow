@@ -87,6 +87,13 @@ class Era5StorageError(Era5AcquisitionError):
     """Storage or manifest write/read failed. CLI exit code 5."""
 
 
+class Era5StageNotApplicableError(Era5AcquisitionError):
+    """The requested stage cannot be run for the requested variable — e.g.
+    transforming an INSTANTANEOUS field through the accumulator path, which
+    would deaccumulate it into hour-to-hour differences and multiply it by
+    the m->mm units factor. CLI exit code 7."""
+
+
 # --- Plan 174 (M-A5) D9 — point-extraction error hierarchy ---
 
 

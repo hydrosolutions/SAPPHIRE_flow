@@ -35,6 +35,9 @@ Exit codes:
        field-count ceiling). Distinct from 2: the credentials are fine.
        Re-slice the window to monthly granularity (D4, corrected
        2026-08-17).
+    7  the requested --stage is not applicable to the requested --variable
+       (e.g. transforming an INSTANTANEOUS field through the accumulator
+       path), or the --data-root already holds a different variable.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -47,6 +50,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -79,6 +83,7 @@ from scripts.dhm_precip.era5_errors import (  # noqa: E402
     Era5CredentialsError,
     Era5RequestFailedError,
     Era5RequestTooLargeError,
+    Era5StageNotApplicableError,
     Era5StorageError,
     Era5TransformFailedError,
     NonExpressibleWindowError,
@@ -98,7 +103,11 @@ from scripts.dhm_precip.era5_manifest import (  # noqa: E402
 from scripts.dhm_precip.era5_request import (  # noqa: E402
     ALL_ACQUISITION_WINDOWS,
     DEFAULT_REQUEST_SPEC,
+    DEFAULT_VARIABLE,
+    ERA5_VARIABLES,
     STUDY_YEARS,
+    Era5Accumulation,
+    accumulation_of,
     expand_for_acquisition,
     parse_window_arg,
 )
@@ -121,6 +130,7 @@ log = structlog.get_logger(__name__)
 # code, so it must precede it here.
 _EXIT_BY_ERROR: tuple[tuple[type[Era5AcquisitionError], int], ...] = (
     (Era5CredentialsError, 2),
+    (Era5StageNotApplicableError, 7),
     (Era5RequestTooLargeError, 6),
     (Era5RequestFailedError, 3),
     (Era5TransformFailedError, 4),
@@ -176,6 +186,17 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to the gitignored D15 operator-provenance JSON file.",
     )
+    parser.add_argument(
+        "--variable",
+        choices=sorted(ERA5_VARIABLES),
+        default=DEFAULT_VARIABLE,
+        help="CDS variable to acquire. NOTE: '--stage transform' (and "
+        "'all') accept ACCUMULATED variables only — the transform "
+        "deaccumulates against ERA5-Land's 01 UTC reset and converts m->mm, "
+        "both of which are meaningless for an instantaneous field. Acquire "
+        "an instantaneous variable with '--stage acquire' into its OWN "
+        "--data-root.",
+    )
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     return parser
 
@@ -218,6 +239,29 @@ def run(
     clock: Callable[[], datetime] | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> int:
+    # A variable this pipeline cannot transform must never reach the
+    # deaccumulator: it would emit hour-to-hour DIFFERENCES as values and
+    # multiply Kelvin by 1000 (`era5_transform.py`'s m->mm units_factor),
+    # producing plausible-looking numbers that are entirely wrong.
+    #
+    # This sits FIRST — ahead of even the provenance read. A test that pointed
+    # `--provenance` at a nonexistent file proved the guard was unreachable
+    # when it sat lower down: the storage error fired first, so an operator
+    # would learn their provenance path was wrong and never learn the far more
+    # important fact that the command could not have worked at all.
+    variable: str = getattr(args, "variable", DEFAULT_VARIABLE)
+    if args.stage in ("transform", "all") and (
+        accumulation_of(variable) is not Era5Accumulation.ACCUMULATED
+    ):
+        raise Era5StageNotApplicableError(
+            f"--stage {args.stage!r} cannot be run for variable "
+            f"{variable!r}: it is INSTANTANEOUS, and the transform stage "
+            "deaccumulates against ERA5-Land's 01 UTC accumulator reset and "
+            "applies an m->mm units factor. Use '--stage acquire' and "
+            "transform it through the instantaneous path instead."
+        )
+    spec = replace(DEFAULT_REQUEST_SPEC, variable=variable)
+
     data_root: Path = args.data_root
     provenance = load_operator_provenance(args.provenance)
 
@@ -260,7 +304,7 @@ def run(
         for window in expand_for_acquisition(windows):
             record = acquire_fn(
                 window,
-                spec=DEFAULT_REQUEST_SPEC,
+                spec=spec,
                 provenance=provenance,
                 client=resolved_client,
                 clock=resolved_clock,

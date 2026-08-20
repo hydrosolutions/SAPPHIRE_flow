@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from scripts.dhm_precip.era5_errors import Era5StorageError
+from scripts.dhm_precip.era5_request import DEFAULT_VARIABLE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -41,8 +42,14 @@ def manifest_path_for(data_root: Path) -> Path:
     return data_root / "era5_land" / _MANIFEST_FILENAME
 
 
-def raw_artifact_path(window_id: str, data_root: Path) -> Path:
-    return raw_dir(data_root) / f"era5_land_tp_raw_{window_id}.nc"
+def raw_artifact_path(
+    window_id: str, data_root: Path, *, variable_code: str = "tp"
+) -> Path:
+    """The raw window's on-disk path. `variable_code` is part of the FILENAME:
+    keyed on `window_id` alone, a second variable would overwrite the first
+    under a name claiming to be the first. Defaults to `tp` so every existing
+    precipitation artefact keeps its current path."""
+    return raw_dir(data_root) / f"era5_land_{variable_code}_raw_{window_id}.nc"
 
 
 def product_artifact_path(year: int, data_root: Path) -> Path:
@@ -224,6 +231,13 @@ class Era5ProvenanceManifest:
     dataset: str
     client_package_version: str
     operator_provenance: OperatorProvenance
+    variable: str = DEFAULT_VARIABLE
+    """The CDS variable this data root holds. ACQUISITION-WIDE and IMMUTABLE,
+    exactly like `dataset`: the raw paths and the manifest's `raw_windows` are
+    keyed by `window_id`, so acquiring a second variable into the same root
+    would overwrite both the files and their provenance records. Defaults to
+    `total_precipitation` so manifests written before this field existed load
+    unchanged — every one of them is precipitation."""
     raw_windows: dict[str, RawWindowRecord] = field(
         default_factory=dict[str, "RawWindowRecord"]
     )
@@ -402,6 +416,12 @@ class _AccumulationDiagnosticRecordModel(BaseModel):
 
 class _Era5ProvenanceManifestModel(BaseModel):
     dataset: str
+    variable: str = DEFAULT_VARIABLE
+    """Defaulted so a manifest written before this field existed still parses —
+    every such manifest is precipitation. WITHOUT this field on the boundary
+    model the domain field never round-trips: it is written, dropped on
+    serialisation, and read back as the default, so the acquisition-wide
+    variable guard rejects the very data root it just created."""
     client_package_version: str
     operator_provenance: _OperatorProvenanceModel
     raw_windows: dict[str, _RawWindowRecordModel] = {}
@@ -412,6 +432,7 @@ class _Era5ProvenanceManifestModel(BaseModel):
 def _to_model(manifest: Era5ProvenanceManifest) -> _Era5ProvenanceManifestModel:
     return _Era5ProvenanceManifestModel(
         dataset=manifest.dataset,
+        variable=manifest.variable,
         client_package_version=manifest.client_package_version,
         operator_provenance=_OperatorProvenanceModel(
             **asdict(manifest.operator_provenance)
@@ -434,6 +455,7 @@ def _to_model(manifest: Era5ProvenanceManifest) -> _Era5ProvenanceManifestModel:
 def _to_domain(model: _Era5ProvenanceManifestModel) -> Era5ProvenanceManifest:
     return Era5ProvenanceManifest(
         dataset=model.dataset,
+        variable=model.variable,
         client_package_version=model.client_package_version,
         operator_provenance=OperatorProvenance(
             **model.operator_provenance.model_dump()
