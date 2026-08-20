@@ -35,9 +35,12 @@ Exit codes:
        field-count ceiling). Distinct from 2: the credentials are fine.
        Re-slice the window to monthly granularity (D4, corrected
        2026-08-17).
-    7  the requested --stage is not applicable to the requested --variable
-       (e.g. transforming an INSTANTANEOUS field through the accumulator
-       path), or the --data-root already holds a different variable.
+    7  the requested --stage is not applicable to the requested --variable.
+       '--stage transform' accepts both ACCUMULATED and INSTANTANEOUS
+       variables (Plan 191 routes the latter through the K->degC path,
+       never the deaccumulator); '--stage all' still accepts ACCUMULATED
+       variables only, since its bundled transform step deaccumulates
+       against ERA5-Land's 01 UTC reset and applies an m->mm units factor.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -111,7 +114,10 @@ from scripts.dhm_precip.era5_request import (  # noqa: E402
     expand_for_acquisition,
     parse_window_arg,
 )
-from scripts.dhm_precip.era5_transform import transform_year  # noqa: E402
+from scripts.dhm_precip.era5_transform import (  # noqa: E402
+    transform_year,
+    transform_year_instantaneous,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -190,12 +196,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--variable",
         choices=sorted(ERA5_VARIABLES),
         default=DEFAULT_VARIABLE,
-        help="CDS variable to acquire. NOTE: '--stage transform' (and "
-        "'all') accept ACCUMULATED variables only — the transform "
-        "deaccumulates against ERA5-Land's 01 UTC reset and converts m->mm, "
-        "both of which are meaningless for an instantaneous field. Acquire "
-        "an instantaneous variable with '--stage acquire' into its OWN "
-        "--data-root.",
+        help="CDS variable to acquire. NOTE: '--stage all' accepts "
+        "ACCUMULATED variables only — its bundled transform step "
+        "deaccumulates against ERA5-Land's 01 UTC reset and converts "
+        "m->mm, both meaningless for an instantaneous field. "
+        "'--stage transform' accepts INSTANTANEOUS variables too (Plan "
+        "191's K->degC path — no deaccumulation, no boundary context). "
+        "Acquire an instantaneous variable with '--stage acquire' into its "
+        "OWN --data-root, then run '--stage transform' separately.",
     )
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     return parser
@@ -235,14 +243,19 @@ def run(
     *,
     acquire_fn: Callable[..., RawWindowRecord] = acquire_window,
     transform_fn: Callable[..., TransformYearRecord] = transform_year,
+    transform_instantaneous_fn: Callable[
+        ..., TransformYearRecord
+    ] = transform_year_instantaneous,
     client: CdsClient | None = None,
     clock: Callable[[], datetime] | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> int:
-    # A variable this pipeline cannot transform must never reach the
-    # deaccumulator: it would emit hour-to-hour DIFFERENCES as values and
-    # multiply Kelvin by 1000 (`era5_transform.py`'s m->mm units_factor),
-    # producing plausible-looking numbers that are entirely wrong.
+    # A variable the ACCUMULATOR path cannot transform must never reach it:
+    # it would emit hour-to-hour DIFFERENCES as values and multiply Kelvin
+    # by 1000 (`era5_transform.py`'s m->mm units_factor), producing
+    # plausible-looking numbers that are entirely wrong. '--stage transform'
+    # is exempt (Plan 191): an INSTANTANEOUS variable there is routed
+    # through the separate K->degC path instead, never the deaccumulator.
     #
     # This sits FIRST — ahead of even the provenance read. A test that pointed
     # `--provenance` at a nonexistent file proved the guard was unreachable
@@ -250,15 +263,17 @@ def run(
     # would learn their provenance path was wrong and never learn the far more
     # important fact that the command could not have worked at all.
     variable: str = getattr(args, "variable", DEFAULT_VARIABLE)
-    if args.stage in ("transform", "all") and (
+    if args.stage == "all" and (
         accumulation_of(variable) is not Era5Accumulation.ACCUMULATED
     ):
         raise Era5StageNotApplicableError(
             f"--stage {args.stage!r} cannot be run for variable "
-            f"{variable!r}: it is INSTANTANEOUS, and the transform stage "
-            "deaccumulates against ERA5-Land's 01 UTC accumulator reset and "
-            "applies an m->mm units factor. Use '--stage acquire' and "
-            "transform it through the instantaneous path instead."
+            f"{variable!r}: it is INSTANTANEOUS, and --stage all's bundled "
+            "transform step deaccumulates against ERA5-Land's 01 UTC "
+            "accumulator reset and applies an m->mm units factor, neither "
+            "of which applies to an instantaneous field. Use "
+            "'--stage acquire' then '--stage transform' (routed through "
+            "the instantaneous K->degC path) instead."
         )
     spec = replace(DEFAULT_REQUEST_SPEC, variable=variable)
 
@@ -337,8 +352,17 @@ def run(
             years = requested_years
         else:
             years = list(STUDY_YEARS)
+        # Plan 191 T3: an INSTANTANEOUS variable is routed through the
+        # separate K->degC driver — never `transform_fn` (the accumulator
+        # path). '--stage all' already refused this above, so this branch is
+        # reached only via '--stage transform'.
+        resolved_transform_fn = (
+            transform_instantaneous_fn
+            if accumulation_of(variable) is Era5Accumulation.INSTANTANEOUS
+            else transform_fn
+        )
         for year in years:
-            record = transform_fn(
+            record = resolved_transform_fn(
                 year, data_root=data_root, provenance=provenance, clock=resolved_clock
             )
             log.info("era5.cli.transformed", year=record.product_year)
