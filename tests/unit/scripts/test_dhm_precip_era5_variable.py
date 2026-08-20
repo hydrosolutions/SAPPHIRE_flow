@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -94,6 +95,38 @@ class TestRawPathIsKeyedByVariable:
         assert raw_artifact_path("2020-01", root).name == "era5_land_tp_raw_2020-01.nc"
 
 
+def _write_valid_provenance(path: Path) -> None:
+    """A real, loadable D15 operator-provenance file — so `run()` actually
+    gets PAST `load_operator_provenance` and reaches the transform-stage
+    dispatch, instead of dying on a nonexistent path before dispatch is
+    ever exercised (Finding 3)."""
+    path.write_text(
+        json.dumps(
+            {
+                "cds_portal_url": "https://cds.climate.copernicus.eu",
+                "dataset_landing_page_url": "https://cds.climate.copernicus.eu/x",
+                "licence_name": "Licence to use Copernicus Products",
+                "licence_version": "1.2",
+                "licence_accepted_at": "2026-08-19T00:00:00+00:00",
+            }
+        )
+    )
+
+
+class _TransformSpy:
+    """Records every year it was called for, standing in for either
+    `transform_fn` or `transform_instantaneous_fn` — `run()` accepts both
+    as injectable seams precisely so a test can tell WHICH ONE dispatch
+    actually reached, rather than merely that dispatch ran to completion."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def __call__(self, year: int, **_kwargs: object) -> SimpleNamespace:
+        self.calls.append(year)
+        return SimpleNamespace(product_year=year)
+
+
 class TestTransformRefusesAnInstantaneousVariable:
     """Plan 191 T3 lifted the guard for '--stage transform': an INSTANTANEOUS
     variable is now routed through the separate K->degC path instead of
@@ -114,13 +147,6 @@ class TestTransformRefusesAnInstantaneousVariable:
         with pytest.raises(Era5StageNotApplicableError, match="INSTANTANEOUS"):
             run(args)
 
-    def test_stage_transform_no_longer_refuses_temperature(self) -> None:
-        """This now fails past the guard, on the absent provenance file —
-        proof the instantaneous path is actually reached, not refused."""
-        args = self._args(stage="transform", variable="2m_temperature")
-        with pytest.raises((Era5StorageError, OSError)):
-            run(args)
-
     def test_the_all_refusal_precedes_reading_the_provenance_file(self) -> None:
         """The guard must cost nothing: --provenance points at a file that does
         not exist, so if the guard fired AFTER provenance loading this would
@@ -129,12 +155,72 @@ class TestTransformRefusesAnInstantaneousVariable:
         with pytest.raises(Era5StageNotApplicableError):
             run(args)
 
-    def test_precipitation_is_not_refused(self) -> None:
-        """The guard must not block the variable the pipeline was built for —
-        this fails past the guard, on the absent provenance file."""
-        args = self._args(stage="transform", variable="total_precipitation")
-        with pytest.raises((Era5StorageError, OSError)):
-            run(args)
+
+class TestStageTransformDispatch:
+    """Finding 3 — the PREVIOUS version of this test (`--provenance
+    /nonexistent.json`) died inside `load_operator_provenance`, before the
+    instantaneous-vs-accumulator dispatch (`acquire_era5.py`'s
+    `resolved_transform_fn` selection) was ever reached: routing
+    temperature through the accumulator `transform_fn` would still have
+    passed it. These give `run()` a REAL, loadable provenance file and
+    inject spies for both `transform_fn` and `transform_instantaneous_fn`,
+    asserting which one dispatch actually called — never merely that `run`
+    raised or returned."""
+
+    def _args(self, tmp_path: Path, *, variable: str) -> argparse.Namespace:
+        provenance_path = tmp_path / "provenance.json"
+        _write_valid_provenance(provenance_path)
+        return build_parser().parse_args(
+            [
+                "--provenance",
+                str(provenance_path),
+                "--stage",
+                "transform",
+                "--variable",
+                variable,
+                "--data-root",
+                str(tmp_path / "data"),
+            ]
+        )
+
+    def test_temperature_dispatches_to_the_instantaneous_transform_only(
+        self, tmp_path: Path
+    ) -> None:
+        args = self._args(tmp_path, variable="2m_temperature")
+        accumulator_spy = _TransformSpy()
+        instantaneous_spy = _TransformSpy()
+
+        exit_code = run(
+            args,
+            transform_fn=accumulator_spy,
+            transform_instantaneous_fn=instantaneous_spy,
+        )
+
+        assert exit_code == 0
+        assert instantaneous_spy.calls, "the instantaneous transform was never called"
+        assert not accumulator_spy.calls, (
+            "an INSTANTANEOUS variable must never reach the accumulator transform_fn"
+        )
+
+    def test_precipitation_dispatches_to_the_accumulator_transform_only(
+        self, tmp_path: Path
+    ) -> None:
+        args = self._args(tmp_path, variable="total_precipitation")
+        accumulator_spy = _TransformSpy()
+        instantaneous_spy = _TransformSpy()
+
+        exit_code = run(
+            args,
+            transform_fn=accumulator_spy,
+            transform_instantaneous_fn=instantaneous_spy,
+        )
+
+        assert exit_code == 0
+        assert accumulator_spy.calls, "the accumulator transform was never called"
+        assert not instantaneous_spy.calls, (
+            "an ACCUMULATED variable must never reach the instantaneous "
+            "transform_instantaneous_fn"
+        )
 
 
 class TestExitCodes:

@@ -53,7 +53,10 @@ import argparse
 import hashlib
 import json
 import math
+import os
+import shutil
 import sys
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,6 +92,7 @@ from scripts.dhm_precip.era5_extract import (  # noqa: E402
     load_expected_station_coordinates,
 )
 from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
+    assert_payload_checksum_matches,
     manifest_filename,
     points_root,
     read_extraction_manifest,
@@ -101,9 +105,7 @@ from scripts.dhm_precip.era5_manifest import (  # noqa: E402
     checksum_file,
     manifest_path_for,
     product_artifact_path,
-    publish_atomic,
     read_manifest,
-    tmp_path_for,
 )
 from scripts.dhm_precip.era5_request import (  # noqa: E402
     DEFAULT_REQUEST_SPEC,
@@ -190,11 +192,22 @@ def _default_expected_stations() -> frozenset[Station]:
     )
 
 
+_PRECIP_ELEVATION_CSV = "station_grid_elevation.csv"
+
+
 def _discover_precip_bundle(precip_data_root: Path) -> tuple[Path, str]:
     """P6's own discovery convention, reused read-only: the highest `NNNN`
     whose manifest is present and readable. D6 — this never re-runs
     orography or publishes anything into the precipitation bundle; it only
-    reads the already-published one."""
+    reads the already-published one.
+
+    Readable is not enough: before this module trusts the referenced
+    `station_grid_elevation.csv`, its bytes must reconcile against the
+    manifest's own `payload_sha256s` record for that file (P4a, reused
+    verbatim from `era5_extract_manifest` — never re-derived here). D6's
+    "elevations are REUSED, never re-derived" is only safe if the reused
+    file is the file the manifest's identity actually names; a mismatch is
+    a typed post-condition failure, never a silently-accepted warning."""
     root = points_root(precip_data_root)
     if not root.exists():
         raise ExtractionInputAbsentError(
@@ -209,6 +222,7 @@ def _discover_precip_bundle(precip_data_root: Path) -> tuple[Path, str]:
     for candidate in reversed(candidates):
         manifest = read_extraction_manifest(candidate / manifest_filename())
         if manifest is not None:
+            assert_payload_checksum_matches(candidate, manifest, _PRECIP_ELEVATION_CSV)
             return candidate, manifest.extraction_identity
     raise ExtractionInputAbsentError(
         f"no published precipitation extraction bundle with a readable "
@@ -308,9 +322,11 @@ class T2mExtractionManifest(BaseModel):
     dir` hands out a fresh `<NNNN>-<identity>` directory on every gate-suite
     run (P1a — no adoption, no dedup), so a path recorded today can point at
     a directory pruned tomorrow while an identically-identified sibling
-    survives. A consumer resolves the current directory by globbing
-    `<precip_data_root>/era5_land/points/*-<referenced_precipitation_bundle_
-    identity>`, mirroring `_discover_precip_bundle`."""
+    survives. An identity is a LABEL, never a lookup key (P3), and the same
+    identity may legitimately cover DIFFERENT payloads — a consumer must
+    NOT resolve the bundle by globbing `*-<identity>`. Discovery is P2/P6's
+    convention instead: the highest `NNNN` whose manifest validates,
+    exactly what `_discover_precip_bundle` does."""
 
     extraction_identity: str
     operator_id: str
@@ -325,9 +341,11 @@ class T2mExtractionManifest(BaseModel):
 
 
 def _write_t2m_manifest(manifest: T2mExtractionManifest, path: Path) -> None:
-    tmp_path = tmp_path_for(path)
-    tmp_path.write_text(manifest.model_dump_json(indent=2))
-    publish_atomic(tmp_path, path)
+    """Writes directly to `path` — Finding 1: the caller stages this beside
+    the series file in a not-yet-visible directory and swaps both into
+    place together (`_publish_t2m_bundle`), so there is no per-file
+    `publish_atomic` here to race against the series."""
+    path.write_text(manifest.model_dump_json(indent=2))
 
 
 def _write_t2m_series_netcdf(
@@ -335,7 +353,8 @@ def _write_t2m_series_netcdf(
 ) -> None:
     """D9's own (narrow) on-disk contract: `temperature_degc(station,
     valid_time)` float32, `units` attr `degC`, `valid_time.attrs["timezone"]
-    == "UTC"`."""
+    == "UTC"`. Writes directly to `path` — see `_write_t2m_manifest`'s
+    docstring: the caller is responsible for staging."""
     stations = sorted(by_station)
     valid_time = by_station[stations[0]].valid_time
     values = np.stack([by_station[s].values for s in stations], axis=0).astype(
@@ -347,10 +366,8 @@ def _write_t2m_series_netcdf(
     )
     ds[T2M_DATA_VARIABLE].attrs["units"] = "degC"
     ds["valid_time"].attrs["timezone"] = "UTC"
-    tmp_path = tmp_path_for(path)
-    tmp_path.unlink(missing_ok=True)
     ds.to_netcdf(
-        tmp_path,
+        path,
         engine="h5netcdf",
         encoding={
             T2M_DATA_VARIABLE: {"dtype": "float32", "zlib": True, "complevel": 4},
@@ -360,7 +377,64 @@ def _write_t2m_series_netcdf(
             },
         },
     )
-    publish_atomic(tmp_path, path)
+
+
+def _stage_t2m_bundle_dir(era5_land_dir: Path) -> Path:
+    """A fresh, per-invocation-unique staging directory — mirrors
+    `era5_extract_manifest.prepare_staging_dir`'s own token discipline, so
+    two concurrent runs never share (or race on) one staging path."""
+    era5_land_dir.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex[:16]
+    staging = era5_land_dir / f".points_staging-{token}"
+    staging.mkdir(parents=False, exist_ok=False)
+    return staging
+
+
+def _publish_t2m_bundle(
+    era5_land_dir: Path, points_dir: Path, staged_dir: Path
+) -> None:
+    """Finding 1 — the series and its manifest are published as ONE pair,
+    never as two independent `publish_atomic` calls: the series used to
+    replace its final path BEFORE the manifest was written, so a manifest
+    failure left a new series beside a stale or absent manifest (a
+    published artefact whose own manifest described it falsely).
+
+    Follows the precipitation side's own precedent — stage first, validate,
+    then swap (`era5_extract_manifest.prepare_staging_dir`/`publish_bundle`)
+    — generalised from a fresh identity-numbered directory to a single
+    evolving `points_dir`, combined with the `.prev`-backup/rollback idiom
+    already used for a (product, manifest) pair in `era5_transform.py`
+    (`transform_year`/`transform_year_instantaneous`). Both artefacts are
+    fully written and staged OFF to the side first, invisible at their
+    final path; the swap is then at most two directory renames (the old
+    pair out to `.points.prev`, the staged pair in), so a reader only ever
+    observes the complete PREVIOUS pair, nothing, or the complete NEW pair
+    — never a new series beside a stale manifest. A failure during the
+    swap restores the previous pair rather than leaving a half-published
+    one."""
+    backup_dir = era5_land_dir / ".points.prev"
+    if backup_dir.exists():
+        # A prior crash died between the swap below and the backup cleanup
+        # in `finally` — self-heal before this run touches anything else.
+        if not points_dir.exists():
+            os.replace(backup_dir, points_dir)
+        else:
+            shutil.rmtree(backup_dir)
+    had_previous = points_dir.exists()
+    try:
+        if had_previous:
+            os.replace(points_dir, backup_dir)
+        os.replace(staged_dir, points_dir)
+    except OSError as exc:
+        if had_previous and not points_dir.exists() and backup_dir.exists():
+            os.replace(backup_dir, points_dir)
+        raise Era5StorageError(
+            f"failed to publish t2m series/manifest pair from {staged_dir} "
+            f"to {points_dir}: {exc}"
+        ) from exc
+    finally:
+        if backup_dir.exists() and points_dir.exists():
+            shutil.rmtree(backup_dir)
 
 
 def _concat_series(parts: list[ExtractedSeries]) -> ExtractedSeries:
@@ -496,12 +570,8 @@ def run(
         output_dtype=T2M_OUTPUT_DTYPE,
     )
 
+    era5_land_dir = data_root / "era5_land"
     points_dir = t2m_points_dir(data_root)
-    points_dir.mkdir(parents=True, exist_ok=True)
-    series_path = points_dir / "series_t2m_degc.nc"
-    manifest_out_path = points_dir / "extraction_manifest.json"
-
-    _write_t2m_series_netcdf(series_path, merged)
 
     manifest = T2mExtractionManifest(
         extraction_identity=identity,
@@ -515,7 +585,23 @@ def run(
         output_dtype=T2M_OUTPUT_DTYPE,
         generated_at=resolved_clock(),
     )
-    _write_t2m_manifest(manifest, manifest_out_path)
+
+    # Finding 1: stage both artefacts off to the side, fully written, before
+    # either is ever visible at its final path — then swap the pair into
+    # place as one operation (`_publish_t2m_bundle`). A failure while
+    # staging never touches `points_dir` at all; a failure during the swap
+    # rolls back to the previous pair.
+    staged_dir = _stage_t2m_bundle_dir(era5_land_dir)
+    try:
+        _write_t2m_series_netcdf(staged_dir / "series_t2m_degc.nc", merged)
+        _write_t2m_manifest(manifest, staged_dir / "extraction_manifest.json")
+    except Exception:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        raise
+    _publish_t2m_bundle(era5_land_dir, points_dir, staged_dir)
+
+    series_path = points_dir / "series_t2m_degc.nc"
+    manifest_out_path = points_dir / "extraction_manifest.json"
 
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

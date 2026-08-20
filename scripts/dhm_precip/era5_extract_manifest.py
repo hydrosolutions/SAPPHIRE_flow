@@ -637,6 +637,31 @@ def checksum_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def assert_payload_checksum_matches(
+    directory: Path, manifest: ExtractionManifest, name: str
+) -> None:
+    """P4a's single-payload-file predicate, factored out so it applies
+    IDENTICALLY everywhere a payload's bytes must be trusted against the
+    manifest's `payload_sha256s` record: the `D9_PAYLOAD_FILES` loop inside
+    `reopen_and_validate_bundle` below, and any consumer that reads ONE
+    payload out of an already-published bundle without re-running the whole
+    D9 validation (e.g. Plan 191's t2m extraction reusing this bundle's
+    `station_grid_elevation.csv` for D6). A payload modified after its hash
+    was computed must fail HERE, not silently pass."""
+    expected = manifest.payload_sha256s.get(name)
+    if expected is None:
+        raise ExtractionPostConditionError(
+            f"extraction manifest for {directory} records no sha256 for {name!r} (P4a)"
+        )
+    actual = checksum_file(directory / name)
+    if actual != expected:
+        raise ExtractionPostConditionError(
+            f"{name} sha256 {actual} does not match the manifest's "
+            f"recorded {expected} — payload was modified after its hash "
+            "was computed (P4a)"
+        )
+
+
 def prepare_staging_dir(data_root: Path, *, identity: str) -> Path:
     """MAJOR (2026-08-17 review) — every call allocates a FRESH,
     per-invocation-unique staging directory (`staging_dir`'s `token`), never
@@ -1459,16 +1484,4 @@ def reopen_and_validate_bundle(
     # P4a — the same predicate discovery would apply: every D9 payload
     # file's sha256 must reconcile against what the manifest recorded.
     for name in D9_PAYLOAD_FILES:
-        expected = manifest.payload_sha256s.get(name)
-        if expected is None:
-            raise ExtractionPostConditionError(
-                f"extraction manifest at {manifest_path} records no sha256 "
-                f"for {name!r} (P4a)"
-            )
-        actual = checksum_file(directory / name)
-        if actual != expected:
-            raise ExtractionPostConditionError(
-                f"{name} sha256 {actual} does not match the manifest's "
-                f"recorded {expected} — payload was modified after its "
-                "hash was computed (P4a)"
-            )
+        assert_payload_checksum_matches(directory, manifest, name)

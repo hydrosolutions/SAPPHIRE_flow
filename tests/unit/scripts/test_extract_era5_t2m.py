@@ -198,9 +198,11 @@ def _build_precip_bundle(
     corrupt_station: str | None = None,
     extraction_identity: str = "precip-identity-abc123",
     omit_elevation_csv: bool = False,
+    tamper_elevation_csv_after_hashing: bool = False,
 ) -> Path:
     bundle_dir = precip_root / "era5_land" / "points" / "0000-fake"
     bundle_dir.mkdir(parents=True, exist_ok=True)
+    payload_sha256s: dict[str, str] = {}
     if not omit_elevation_csv:
         rows: list[dict[str, object]] = []
         for name, series in _true_grid().items():
@@ -214,7 +216,20 @@ def _build_precip_bundle(
                     "grid_lon": series.grid_lon,
                 }
             )
-        pl.DataFrame(rows).write_csv(bundle_dir / "station_grid_elevation.csv")
+        elevation_csv_path = bundle_dir / "station_grid_elevation.csv"
+        pl.DataFrame(rows).write_csv(elevation_csv_path)
+        # Finding 2: the manifest must record the checksum of the bytes as
+        # actually written, so a real run reconciles cleanly.
+        payload_sha256s["station_grid_elevation.csv"] = checksum_file(
+            elevation_csv_path
+        )
+        if tamper_elevation_csv_after_hashing:
+            # Simulate a bundle corrupted AFTER its manifest was published:
+            # the recorded checksum still describes the ORIGINAL bytes, but
+            # the file on disk has since changed underneath it.
+            elevation_csv_path.write_text(
+                elevation_csv_path.read_text() + "\n# tampered after hashing"
+            )
 
     manifest = ExtractionManifest(
         orography_identity="oro-x",
@@ -222,7 +237,7 @@ def _build_precip_bundle(
         operator_id=str(ExtractionOperator.NEAREST),
         coordinate_table_sha256="0" * 64,
         source_sha256s_by_year={"2020": "0" * 64},
-        payload_sha256s={},
+        payload_sha256s=payload_sha256s,
         orography_spec={},
         orography_source_record={},
         accumulation_diagnostic={},
@@ -271,6 +286,56 @@ class TestGridAgreementD6:
             extract_era5_t2m.assert_grid_matches_precipitation_bundle(
                 _true_grid(), bundle_dir / "station_grid_elevation.csv"
             )
+
+
+class TestDiscoverPrecipBundleReconcilesElevationChecksum:
+    """Finding 2 — D6 rests on "elevations are REUSED, never re-derived",
+    which is only safe if the reused `station_grid_elevation.csv` is
+    actually the file the referenced manifest's identity names.
+    `_discover_precip_bundle` used to accept any syntactically readable
+    manifest without reconciling the CSV's bytes against the manifest's own
+    `payload_sha256s` — a corrupted table would silently pass through and
+    be trusted for the rest of the run."""
+
+    def test_matching_checksum_discovers_the_bundle(self, tmp_path: Path) -> None:
+        bundle_dir = _build_precip_bundle(tmp_path)
+        discovered_dir, identity = extract_era5_t2m._discover_precip_bundle(tmp_path)
+        assert discovered_dir == bundle_dir
+        assert identity == "precip-identity-abc123"
+
+    def test_tampered_elevation_csv_is_rejected_not_trusted(
+        self, tmp_path: Path
+    ) -> None:
+        _build_precip_bundle(tmp_path, tamper_elevation_csv_after_hashing=True)
+        with pytest.raises(ExtractionPostConditionError, match="sha256"):
+            extract_era5_t2m._discover_precip_bundle(tmp_path)
+
+    def test_tampered_bundle_stops_the_full_run(self, tmp_path: Path) -> None:
+        """The typed failure must actually reach the CLI's exit-code
+        mapping (exit 4) — never a warning, never a silent pass-through."""
+        data_root = _build_t2m_root(tmp_path)
+        precip_root = tmp_path / "precip"
+        _build_precip_bundle(precip_root, tamper_elevation_csv_after_hashing=True)
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+
+        exit_code = extract_era5_t2m.main(
+            [
+                "--data-root",
+                str(data_root),
+                "--precip-data-root",
+                str(precip_root),
+            ],
+            clock=_CLOCK,
+            coords_path=coords_path,
+            expected_stations=frozenset({Station(s[0]) for s in _STATIONS}),
+            params=_TEST_PARAMS,
+            request_area=_AREA,
+        )
+        assert exit_code == 4
+        assert not (
+            extract_era5_t2m.t2m_points_dir(data_root) / "series_t2m_degc.nc"
+        ).exists()
 
 
 class TestExtractionIdentity:
@@ -501,3 +566,119 @@ class TestRealRunSeamArtifacts:
             request_area=_AREA,
         )
         assert exit_code == 4
+
+
+class TestAtomicPublishOfSeriesAndManifest:
+    """Finding 1 — the series and its manifest must publish as ONE pair.
+    Before the fix, `_write_t2m_series_netcdf` replaced the series' final
+    path BEFORE the manifest was written, so a manifest-write failure left
+    a NEW series beside a STALE or ABSENT manifest — a published artefact
+    its own manifest described falsely. These simulate that failure and
+    assert there is never a half-published pair: either the previous pair
+    survives byte-for-byte, or (with no previous pair) nothing at all is
+    published."""
+
+    def _run(self, tmp_path: Path, *, data_root: Path, precip_root: Path) -> int:
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+        return extract_era5_t2m.main(
+            [
+                "--data-root",
+                str(data_root),
+                "--precip-data-root",
+                str(precip_root),
+            ],
+            clock=_CLOCK,
+            coords_path=coords_path,
+            expected_stations=frozenset({Station(s[0]) for s in _STATIONS}),
+            params=_TEST_PARAMS,
+            request_area=_AREA,
+        )
+
+    def test_manifest_write_failure_with_no_previous_pair_publishes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data_root = _build_t2m_root(tmp_path)
+        precip_root = tmp_path / "precip"
+        _build_precip_bundle(precip_root)
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise OSError("simulated manifest write failure")
+
+        monkeypatch.setattr(extract_era5_t2m, "_write_t2m_manifest", _boom)
+
+        exit_code = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
+        assert exit_code == 5
+        assert not extract_era5_t2m.t2m_points_dir(data_root).exists()
+
+    def test_manifest_write_failure_leaves_the_previous_pair_intact(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data_root = _build_t2m_root(tmp_path)
+        precip_root = tmp_path / "precip"
+        _build_precip_bundle(precip_root)
+
+        first_exit = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
+        assert first_exit == 0
+        points_dir = extract_era5_t2m.t2m_points_dir(data_root)
+        series_path = points_dir / "series_t2m_degc.nc"
+        manifest_path = points_dir / "extraction_manifest.json"
+        original_series_sha256 = checksum_file(series_path)
+        original_manifest_text = manifest_path.read_text()
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise OSError("simulated manifest write failure")
+
+        monkeypatch.setattr(extract_era5_t2m, "_write_t2m_manifest", _boom)
+
+        second_exit = self._run(tmp_path, data_root=data_root, precip_root=precip_root)
+        assert second_exit == 5
+
+        # The PREVIOUS pair survives byte-for-byte — never a new series
+        # beside a stale/absent manifest — and no orphaned staging/backup
+        # directory is left behind either.
+        assert checksum_file(series_path) == original_series_sha256
+        assert manifest_path.read_text() == original_manifest_text
+        stray = [
+            p.name for p in points_dir.parent.iterdir() if p.name.startswith(".points")
+        ]
+        assert stray == []
+
+
+class TestPublishT2mBundleSwapRollback:
+    """A focused test of `_publish_t2m_bundle`'s own rollback: a failure
+    DURING the swap itself (not merely before staging becomes visible) must
+    restore the previous pair, never leave `points_dir` half-replaced or
+    missing."""
+
+    def test_swap_failure_restores_the_previous_pair(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        era5_land_dir = tmp_path / "era5_land"
+        points_dir = era5_land_dir / "points"
+        points_dir.mkdir(parents=True)
+        (points_dir / "series_t2m_degc.nc").write_bytes(b"old-series")
+        (points_dir / "extraction_manifest.json").write_text('{"old": true}')
+
+        staged_dir = era5_land_dir / ".points_staging-test"
+        staged_dir.mkdir()
+        (staged_dir / "series_t2m_degc.nc").write_bytes(b"new-series")
+        (staged_dir / "extraction_manifest.json").write_text('{"new": true}')
+
+        real_replace = extract_era5_t2m.os.replace
+        call_count = {"n": 0}
+
+        def _flaky_replace(src: object, dst: object) -> None:
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise OSError("simulated swap failure")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(extract_era5_t2m.os, "replace", _flaky_replace)
+
+        with pytest.raises(Era5StorageError):
+            extract_era5_t2m._publish_t2m_bundle(era5_land_dir, points_dir, staged_dir)
+
+        assert (points_dir / "series_t2m_degc.nc").read_bytes() == b"old-series"
+        assert (points_dir / "extraction_manifest.json").read_text() == '{"old": true}'
+        assert not (era5_land_dir / ".points.prev").exists()
