@@ -108,6 +108,22 @@ All decisions are now made.
   D6 constrains the SIGN only and states we know neither gauge type nor wind speed. Cite primary
   literature or give no number.
 
+  **AMENDED 2026-08-20 — the mass fraction carries a LAPSE sensitivity as well as a threshold
+  sensitivity.** D4's argument that "the choice of 1.5 °C must not be invisible" applies equally to
+  D14's lapse correction, which is large and measured: at Humde the model orography is 1,299 m above
+  the station, so the correction is **+8.44 °C at 6.5 °C/km** and spans **6.24 °C** across plausible
+  rates (5.0–9.8 °C/km); Olangchunggola +6.73, Lukla +6.52, Syangboche +4.86. Both choices move the
+  effective rain/snow cutoff, so **both are reported** and the binding Exit rule covers both.
+
+  **⛔ Do NOT rank the two.** A 6.24 °C band is not "three times" a 2.00 °C band in effect: how much
+  either moves the mass fraction depends on where precipitation mass actually sits in the temperature
+  distribution, which is an output of this analysis, not an input to it. Report both; let the numbers
+  say which mattered. *(Codex review 2026-08-20 — an earlier draft asserted the lapse term dominated;
+  that ordering was unestablished.)*
+
+  This is **not** licence to refit: D14's "use 6.5, never fit to Pyramid" stands, and a reported
+  sensitivity is neither a refit nor a decision threshold (vision D8 is unaffected).
+
 - **D5 — Representativeness is characterised, not decomposed.** One point vs one cell cannot separate
   grid error from model error. Use M-A5's operator-sensitivity envelope, the elevation mismatch, and
   neighbouring-cell variability — and label it a characterisation.
@@ -135,6 +151,18 @@ All decisions are now made.
   and cannot be re-phased rain→snow by it. Any such attribution would be **wrong about how the dataset
   is built**. Station-side datum is `UNKNOWN` ⇒ the mismatch is **datum-unreconciled**; label it.
   *(D4 is unaffected — it rests on GAUGE undercatch, not on model phasing.)*
+
+  **AMENDED 2026-08-20 — the caveat extends to TEMPERATURE, which D7 was written without.** D14's
+  phase flag pairs **gauge** precipitation mass with an **ERA5-cell** temperature adjusted to station
+  elevation: cross-source and cross-scale, a ~110 km² cell value standing in for point air
+  temperature in terrain where D3 already refuses to headline the precipitation equivalent. The lapse
+  step **applies an assumed elevation adjustment** — it does not establish that the observed offset
+  was caused by elevation, and it does nothing about the boundary-layer structure of a cell whose
+  surface sits 750–1,300 m above the gauge. Every row of M-A5's elevation table is
+  `datum_reconciled = UNRECONCILED` with station datum `UNKNOWN`, so **the elevation difference
+  driving the adjustment carries an unquantified datum error — label it, and put no number on it**
+  (Plan 174 permits the label only). *(Codex review 2026-08-20 — an earlier draft said the lapse step
+  "fixes the mean offset" and invented a ±30–50 m datum figure; both are withdrawn.)*
 
 - **D8 — The within-cell pair is DESCRIPTIVE. Do not convert it into a bound.** Kirtipur and Khumaltar
   share one cell, 4.33 km apart; ERA5 returns one identical series for both. Compute the discrepancy on
@@ -208,6 +236,27 @@ All decisions are now made.
   **literature, chosen a priori**, never fitted to the validation data. **If the check fails, widen the
   reported uncertainty on the mass-fraction column; do not refit.**
 
+  **AMENDED 2026-08-20 — the check is NARROWER than this decision assumed, its loader does not exist,
+  and aggregation does NOT dispose of the timing problem.** Measured against the real files:
+
+  - **Five** Pyramid stations carry `AT` overlapping our window, at **2,660 / 3,570 / 4,260 / 5,035 /
+    5,600 m** — a 2,940 m transect, a genuinely strong test of a lapse rate.
+  - **The overlap is 2020–2023 only**; the Pyramid record ends in 2023 (AWS0 to 2005, South Col
+    2008–11, Changri Nup 2010–15 do not overlap at all). The rate is therefore validated on **four of
+    the six comparison years** — say so beside any 2024–2025 figure.
+  - **⛔ Aggregating to monthly means does NOT remove the ±1.75 h alignment uncertainty, and a naive
+    monthly mean introduces a SEPARATE bias.** Pyramid's record is **irregularly sampled**: AWS3
+    August 2023 holds **215 `AT` observations, 3–19 per hour**, so its ordinary monthly mean is
+    **17.37 °C against 16.37 °C hour-equalised — a 1.00 °C shift**, on a check trying to validate a
+    ~6.5 °C correction. **Equalise hour-of-day exposure in any aggregate**, and **state the ±1.75 h
+    rather than resolve it** (Plan 182 D2 requires exactly that). Hourly pairing is not forbidden —
+    it is one legitimate view, reported with its alignment uncertainty attached.
+    *(Codex review 2026-08-20 — an earlier draft claimed aggregation removed the uncertainty and
+    banned hourly pairs; the first was false, the second unjustified.)*
+  - **⚠️ `pyramid_loader.py` parses `RR` ONLY.** `AT` appears in that module solely inside an error
+    message. The loader is unwritten work **inside this plan's scope** — Plan 191 deliberately stopped
+    at the cell-level series (its D7).
+
 ## Exit
 
 A single comparison bundle plus the short report that reads it. Nothing here is a new framework —
@@ -255,13 +304,127 @@ the deliverable is numbers with their conditions attached.
    reported. If the check fails, the reported uncertainty on the mass-fraction column widens; the
    rate is never refitted.
 
-9. **Regenerable.** Every number in the report comes out of the committed pipeline from the on-disk
-   inputs, in one command. The report states the ERA5-Land product identity and the
-   extraction-bundle identity it was computed against.
+9. **Regenerable, and every consumed identity is recorded.** Every number in the report comes out of
+   the committed pipeline from the on-disk inputs, in one command. The report records the ERA5-Land
+   product identity and **every** extraction identity it consumed — the precipitation bundle's and
+   t2m's separate one — and **never a run-numbered path**, since `<NNNN>-` is allocated per publish
+   and is a function of how many times the gated suite has run.
+
+   **⛔ But an identity is a LABEL, not a lookup key** (`era5_extract_manifest.py` P3), and the same
+   identity may legitimately cover **different** payloads (`test_era5_extract_manifest.py:445`
+   publishes two). So **do not resolve a bundle by globbing `*-<identity>`** — that can match many.
+   Use the existing documented convention: **the highest `NNNN` whose manifest validates** (P2/P6).
+   M-A6 CONSUMES the published bundle and does not re-run extraction.
+   *(Codex review 2026-08-20 — an earlier draft prescribed the glob and assumed re-runs produce
+   identical copies; both contradict the publication contract.)*
 
 **Explicitly NOT an exit condition:** any statement about whether ERA5-Land is fit to force a
 hydrological model (that is M-A8/M-DEC), and any correction, adjustment or downscaling design
 (D7, vision).
+
+## Tasks
+
+Six tasks, four phases. **The shape follows M-A10's precedent** (`coloc_*.py` + `stats_coloc.py` + one
+runner writing a markdown report to `--out`) — that convention exists and is not re-invented. No new
+framework, no config surface, no new file format.
+
+Throughout, `$ENV` abbreviates
+`DHM_PRECIP_ERA5_ROOT=data/dhm_precip DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx`.
+
+### T1 — the paired, masked substrate
+**In:** a public, season-agnostic accessor returning each station's M-A3-masked gauge series paired
+hour-by-hour with the ERA5-Land nearest series on **commonly-retained timestamps only** (D2), and a
+**per-subset** common-retained-hour count — computed for whatever season/scale/period a caller asks
+for, **never a single series-level `n`**, since a JJAS-monthly statistic does not rest on the whole
+series' retention (Exit 1/4). Consume D11's list via `qc_mask.build_exclusion_list` and report what it
+removed (empty on this delivery — a measured result, not a skipped step). **Out:** any statistic; any
+re-derivation of the mask or the exclusion predicate.
+*The only masked-series code today is `coloc_run.py:422` — private, JJAS-only, bound to M-A10's
+two-station registry. This generalises it; it does not fork it.*
+
+**⛔ T1 exposes the GAUGE-ONLY masked population as a named output, before ERA5 pairing.** M-A7
+(Plan 193) is gauge-only and consumes exactly that; if the only public output were the paired frame,
+a gauge-only milestone would become conditional on ERA5 availability, and the alternative — a second
+implementation of "the masked series" — would drift invisibly, both versions looking right alone.
+Two named outputs, one definition. *(Codex review 2026-08-20.)*
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_pairs.py -q` and
+`$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
+
+### T2 — Pyramid `AT` loader and the D14 lapse correction
+**In:** `AT` support in `pyramid_loader.py` sharing **only its file/timestamp parsing**; the standard
+6.5 °C/km correction from model orography to station elevation using M-A5's published
+`station_grid_elevation.csv` (D6 — reuse, never re-derive); and the check on the five-station
+2,660–5,600 m transect over **2020–2023**, with **hour-of-day exposure equalised** and the **±1.75 h
+stated, not resolved**. **Out:** fitting or tuning the rate (D14), and **routing `AT` through the
+precipitation retention path**.
+
+**⛔ `AT` MUST NOT pass through the `RR` range check.** `pyramid_loader.py:198` rejects
+`value_mm < qc_mask_range_check_value_min_mm` = **0.0** (`params.py:142`). `AT` is °C and largely
+sub-zero at altitude — measured on the real files: **AWS4 5,600 m 82.0 % sub-zero (min −24.79 °C)**,
+AWS1 5,035 m 60.1 %, AWS2 4,260 m 42.3 %, AWS5 3,570 m 20.6 %, AWS3 2,660 m 3.5 %. The deletion rate
+rises **monotonically with elevation — the very axis this check measures** — so reusing that path
+would flatten the measured lapse rate by deleting the cold high end. *(Codex review 2026-08-20.)*
+**Verify:** `uv run pytest tests/unit/scripts/test_pyramid_at.py -q`, including a test that a −24 °C
+reading is RETAINED; and `$ENV uv run python scripts/dhm_precip/ma6_lapse_check.py --out <dir>`
+
+### T3 — the estimands (depends: T1)
+**In:** D1's three — matched-hour mean difference, conditional accumulated difference, wet-hour
+conditional intensity bias — at the D3 scales with the scale named beside every number; plus D12's
+categorical scores at **daily and monthly grain only**, the 0.2 mm floor applied **after** valid
+aggregation (Rule 3), on jointly-valid periods, labelled conditional-on-retention (Rule 1). **Every
+statistic carries its OWN subset `n` from T1**, is emitted **per station AND per elevation stratum**
+(Exit 1), and cross-station summaries are **stratified BY retention, never filtered ON it** (D13,
+Exit 4). **Out:** annualisation, unconditional totals, any headline hourly matched pair (D3).
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_estimands.py -q`, including a test that a
+JJAS/DJF-grain categorical score is refused rather than computed (D12's vacuity trap), and one that a
+statistic emitted without its own subset `n` fails.
+
+### T4 — representativeness, characterised (depends: T1)
+**In:** the operator-sensitivity envelope read from the published bundle's `operator_sensitivity.csv`
+(D9's real schema — `sign_agreement_fraction` is legitimately null on `STATION` rows), the elevation
+mismatch as a covariate labelled **datum-unreconciled** (D7), neighbouring-cell variability, and the
+Kirtipur/Khumaltar within-cell pair on hours retained for **both** — reported descriptively with its
+`n` and each station's exposure. **Out:** any decomposition of representativeness from model error,
+and any lower-bound claim from the pair (D5, D8).
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_representativeness.py -q`
+
+### T5 — the sub-freezing mass fraction (depends: T2, T3)
+**In:** the mass-weighted fraction of each period's precipitation falling below 1.5 °C, computed
+alongside each magnitude and carrying that magnitude's subset `n`, with the **0 °C / 2 °C threshold
+sensitivity AND the 5.0–9.8 °C/km lapse sensitivity**. **Out:** gating, adjusting or correcting
+anything by it; ranking the two sensitivities against each other (D4); and any assertion about how it
+is *rendered* — that is T6's, which owns the renderer.
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_mass_fraction.py -q`
+
+### T6 — the report and Exit compliance (depends: T1–T5)
+**In:** one runner writing the markdown report plus its tables to `--out` (M-A10 shape), enforcing the
+binding placement rule — **no magnitude rendered without BOTH its subset `n` and its mass fraction in
+the same cell** — and signing every result per D6 with its estimand, retained fraction and the
+catch-efficiency caveat (Exit 3). Record **every** consumed identity: the **precipitation** bundle's,
+discovered by the highest valid `NNNN` (P2/P6), and **t2m's, read directly from its own fixed
+`era5_land/points/extraction_manifest.json`** — Plan 191 D5 deliberately gave t2m no `NNNN` bundle
+shape, so a highest-`NNNN` scan cannot find it. Headline numbers locked in
+`tests/integration/test_dhm_precip_reproduction.py`; results folded into
+`docs/design/dhm-precipitation-milestones.md`, this track's only durable record.
+**Out:** any fitness-to-force statement (M-A8/M-DEC) and any correction design.
+**Verify:** `uv run pytest tests/unit/scripts/test_ma6_report.py -q` (including a rendering test that a
+magnitude missing either companion is a hard failure), then end-to-end:
+`$ENV uv run python scripts/dhm_precip/ma6_run.py --out <dir>` followed by
+`$ENV uv run pytest tests/integration/test_dhm_precip_era5_extraction.py tests/integration/test_dhm_precip_reproduction.py -q`
+
+```json
+{
+  "phases": [
+    {"id": "phase-1", "tasks": ["T1", "T2"], "parallel": true},
+    {"id": "phase-2", "tasks": ["T3", "T4"], "parallel": true, "depends_on": ["phase-1"]},
+    {"id": "phase-3", "tasks": ["T5"], "parallel": false, "depends_on": ["phase-2"]},
+    {"id": "phase-4", "tasks": ["T6"], "parallel": false, "depends_on": ["phase-3"]}
+  ]
+}
+```
+
+*T2 is independent of the gauge side; T5 is the first required join. The graph conservatively lets
+T3/T4 wait on phase-1 as a whole — harmless, and not worth a finer graph.*
 
 ## Non-goals
 

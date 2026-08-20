@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-20
 plan: 132
 title: Reconcile the recap-probe repo artifacts with the container-exec deployment
@@ -11,6 +11,30 @@ blocks: []
 # Plan 132 — recap-probe deployment reconciliation
 
 ## Status
+
+**COMPLETE 2026-08-20.** The repo half merged as **PR #107 (`1285c17`) on 2026-07-20**; the
+**post-merge cutover was never performed**, so for ~31 days the host kept running the untracked fork
+while the corrected wrapper sat in `main`. That gap is the whole story of the probe's silence:
+**2448 probe records, ZERO `ok=True`** — the fork lacked `--workdir /tmp`, so every cycle died on
+`OSError [Errno 30] Read-only file system: '/app/.tmp_recap_*.parquet'` before reaching the gateway,
+and it also lacked `--user app`, so it exec'd as root.
+
+**Cutover executed 2026-08-20**, all four steps: clone already current at `508bd29`; repo plist
+installed and `launchctl bootout`+`bootstrap`ed (old plist backed up to
+`~/ch.hydrosolutions.sapphire-recap-probe.plist.bak-20260820`); `~/recap-probe/` renamed to
+`~/recap-probe.retired-20260820` (renamed, not deleted — reversible); `launchctl kickstart` produced
+**exit code 0, 11 lines, 0 non-JSON, 5 `ok=True`**. Plan verification passed: both host clone copies
+`diff` clean against `main`, and the `0600` key file at `~/.config/sapphire/recap_api_key` is
+untouched (it lives outside the retired directory).
+
+The wrapper was run by hand BEFORE the cutover, so a working-if-flawed fork was never swapped for an
+unproven replacement. Its six `ok=False` results are all legitimate `No ERA5 dataset found for <date>`
+answers — data availability, not infrastructure.
+
+**Residual (trivial, deliberately not done here):** `scripts/launchd/run-recap-probe.sh:20` cites this
+plan at its pre-archive path. Fixing it means a code commit + version bump + PR for a one-line comment,
+so it should ride along with the next `scripts/` change. Precedent exists —
+`scripts/audit_distribution_shift.py:16` already cites archived `115b4`.
 
 **READY** (owner, 2026-07-20). Implementation authorised; hold at PR. Reviewed via the `plan` workflow
 (3 rounds, escalated) + two focused independent Codex passes. Round-2 Codex confirmed **9/12 findings resolved** and raised 3

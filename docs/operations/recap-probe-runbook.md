@@ -6,7 +6,7 @@ which does not work on this host (no `recap_client` in the host `uv` venv, no ho
 credential for the private `recap-dg-client` clone, and `uv` lives at `/Users/sapphire/.local/bin/uv`
 not `/usr/local/bin/uv`).
 **Owner:** Bea (marti@hydrosolutions.ch)
-**Related:** [Plan 132](../plans/132-recap-probe-deployment-reconciliation.md) (this reconciliation);
+**Related:** [Plan 132](../plans/archive/132-recap-probe-deployment-reconciliation.md) (this reconciliation);
 [Plan 121](../plans/121-recap-flow6-and-integration-followons.md) §Live probe (the findings this
 longitudinal run extends); [[project_recap_era5_probe_and_115_stac]];
 [Plan 111b](../plans/111b-bafu-collector-macmini-deployment.md) (the collector-on-mac-mini precedent).

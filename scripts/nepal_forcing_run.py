@@ -1,0 +1,261 @@
+"""Plan 192 Stage B (light shape) — one unattended gateway-forcing run for HRU 12300.
+
+Fetches the IFS forcing for basin 12300 from the recap Data Gateway at an
+EXPLICIT 00Z cycle and stores it, then appends one JSONL record describing what
+the Gateway actually served. Single-shot by design (like the watchdog and the
+recap probe); the host timer owns the cadence.
+
+Why an explicit cycle rather than the adapter's own walk-back: the legacy
+resolver takes the first candidate whose probe does not raise, with no horizon
+check (``adapters/recap_gateway.py``), and 06/12/18Z runs carry ~2 days against
+00Z's ~15. Naming the cycle sidesteps that entirely and needs no ``src/`` change
+(Plan 192 D5/D8).
+
+Why the JSONL record: this feed is UNATTENDED and unmonitored — an explicit
+``cycle_time`` also suppresses the ``FORECAST_FRESHNESS`` heartbeat — so silence
+would otherwise be indistinguishable from success. The record is also the
+evidence used to report Gateway issues upstream, capturing what the forecast
+path discards (resolved cycle, member/step counts, horizon, error codes).
+
+Runs inside a container that already has ``recap_client`` and ``sapphire_flow``
+baked in; ``scripts/`` is never in the image, so the wrapper feeds this file via
+stdin (same mechanism as ``scripts/launchd/run-recap-probe.sh``).
+
+Config (env):
+  DATABASE_URL          standing Nepal store (built by docker/entrypoint.sh)
+  RECAP_API_KEY         gateway key (never logged)
+  NEPAL_FORCING_LOG     JSONL sink (default /dev/stderr, captured by the wrapper)
+  NEPAL_FORCING_STATION station UUID to force (default: the seeded 12300 station)
+  NEPAL_MAX_CYCLE_AGE_HOURS  walk-back bound; < 6 keeps it to one candidate
+
+Exit codes: 0 = forcing stored; 1 = the run failed (gateway/store); 2 = config.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+EXIT_OK = 0
+EXIT_RUN_FAILED = 1
+EXIT_CONFIG = 2
+
+_DEFAULT_STATION = "22222222-2222-2222-2222-222222222222"
+_MIN_EXPECTED_HORIZON_DAYS = 14.0
+
+
+def resolve_cycle(now: datetime) -> datetime:
+    """The 00Z cycle of ``now``'s UTC day — the only cycle worth requesting.
+
+    00Z runs carry ~15 days; 06/12/18Z carry ~2. Flooring to the day rather
+    than to the 6 h publication cadence is the whole point.
+    """
+    return now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def classify(stored: dict[str, Any]) -> tuple[bool, str | None]:
+    """Decide whether a completed run actually delivered usable forcing.
+
+    A run that stores rows but only a stub horizon is NOT a success: it means
+    the Gateway served a short cycle, which is exactly the condition this feed
+    exists to notice and report.
+    """
+    if not stored.get("rows"):
+        return False, "no_rows_stored"
+    horizon = stored.get("horizon_days")
+    if horizon is None:
+        return False, "no_horizon"
+    if horizon < _MIN_EXPECTED_HORIZON_DAYS:
+        return False, f"short_horizon_{horizon}d"
+    return True, None
+
+
+def build_record(
+    *,
+    run_ts: str,
+    cycle: datetime,
+    stored: dict[str, Any] | None,
+    duration_s: float,
+    error: BaseException | None,
+) -> dict[str, Any]:
+    """One JSONL line: what was asked for, what came back, and what went wrong."""
+    record: dict[str, Any] = {
+        "run_ts": run_ts,
+        "hru": "12300",
+        "cycle_requested": cycle.isoformat(),
+        "duration_s": round(duration_s, 1),
+    }
+    if error is not None:
+        record["ok"] = False
+        record["error_type"] = type(error).__name__
+        record["error_code"] = getattr(error, "code", None)
+        record["error_msg"] = str(error)[:300]
+        return record
+    stored = stored or {}
+    ok, reason = classify(stored)
+    record["ok"] = ok
+    if reason is not None:
+        record["degraded_reason"] = reason
+    record.update(stored)
+    return record
+
+
+def summarize_stored(conn: Any, cycle: datetime) -> dict[str, Any]:
+    """Read back what actually landed — the run's own claim is not evidence."""
+    import sqlalchemy as sa
+
+    row = conn.execute(
+        sa.text(
+            "SELECT count(*) AS rows, count(DISTINCT member_id) AS members, "
+            "count(DISTINCT valid_time) AS steps, "
+            "count(DISTINCT parameter) AS parameters, "
+            "min(valid_time) AS first_step, max(valid_time) AS last_step "
+            "FROM weather_forecasts WHERE cycle_time = :cycle"
+        ),
+        {"cycle": cycle},
+    ).one()
+    out: dict[str, Any] = {
+        "rows": int(row.rows),
+        "members": int(row.members),
+        "steps": int(row.steps),
+        "parameters": int(row.parameters),
+    }
+    if row.first_step is not None and row.last_step is not None:
+        out["first_step"] = row.first_step.isoformat()
+        out["last_step"] = row.last_step.isoformat()
+        out["horizon_days"] = round(
+            (row.last_step - cycle.replace(tzinfo=row.last_step.tzinfo)).total_seconds()
+            / 86400.0,
+            2,
+        )
+    return out
+
+
+def emit(record: dict[str, Any], sink: str) -> None:
+    """Append the record to ``sink``; stream names are written, never reopened.
+
+    The wrapper points ``NEPAL_FORCING_LOG`` at ``/dev/stderr`` and redirects
+    the container's stderr to a host file. Under ``docker run`` the app process
+    is non-root while that file belongs to the host user, so *reopening*
+    ``/dev/stderr`` raises ``PermissionError`` — write to the inherited stream
+    instead. (The recap probe gets away with ``open()`` because ``docker exec``
+    hands it a pipe.)
+    """
+    line = json.dumps(record, default=str) + "\n"
+    if sink in {"/dev/stderr", "-"}:
+        sys.stderr.write(line)
+    elif sink == "/dev/stdout":
+        sys.stdout.write(line)
+    else:
+        with open(sink, "a", encoding="utf-8") as fh:  # noqa: PTH123
+            fh.write(line)
+    tail = record.get("error_code") or record.get("degraded_reason") or ""
+    sys.stdout.write(
+        f"{record['run_ts']} nepal-forcing ok={record['ok']!s:5s} "
+        f"rows={record.get('rows', 0)} {tail}\n"
+    )
+
+
+def run(clock: Callable[[], datetime]) -> int:
+    import time
+
+    import sqlalchemy as sa
+    from recap_client import RecapClient
+    from recap_client.config import ApiClientConfig
+
+    from sapphire_flow.adapters.recap_gateway import (
+        RecapClientLike,
+        RecapGatewayForecastAdapter,
+        StoreBackedGatewayPolygonResolver,
+    )
+    from sapphire_flow.flows._db import make_pg_stores
+
+    # Deliberate coupling to a private flow task: it is the seam that fetches
+    # AND persists, and Plan 192 D8 chose it over standing up Prefect. Tracked
+    # in the runbook as the thing to re-check when run_forecast_cycle changes.
+    from sapphire_flow.flows.run_forecast_cycle import (  # noqa: PLC2701
+        _fetch_nwp_task,  # pyright: ignore[reportPrivateUsage]
+    )
+    from sapphire_flow.types.datetime import ensure_utc
+    from sapphire_flow.types.ids import StationId
+
+    sink = os.environ.get("NEPAL_FORCING_LOG", "/dev/stderr")
+    try:
+        database_url = os.environ["DATABASE_URL"]
+        api_key = os.environ["RECAP_API_KEY"]
+    except KeyError as exc:
+        sys.stderr.write(f"missing required env var: {exc}\n")
+        return EXIT_CONFIG
+
+    station_id = StationId(
+        UUID(os.environ.get("NEPAL_FORCING_STATION", _DEFAULT_STATION))
+    )
+    max_age = float(os.environ.get("NEPAL_MAX_CYCLE_AGE_HOURS", "5.0"))
+    now = ensure_utc(clock())
+    cycle = ensure_utc(resolve_cycle(now))
+    run_ts = now.isoformat()
+
+    started = time.perf_counter()
+    stored: dict[str, Any] | None = None
+    error: BaseException | None = None
+    engine = sa.create_engine(database_url)
+    try:
+        with engine.begin() as conn:
+            stores = make_pg_stores(conn)
+            station_store = stores["station_store"]
+            binding = station_store.fetch_forecast_binding(station_id)  # type: ignore[attr-defined]
+            adapter = RecapGatewayForecastAdapter(
+                client=cast(
+                    "RecapClientLike",
+                    RecapClient(
+                        ApiClientConfig(
+                            base_url=os.environ.get(
+                                "RECAP_BASE_URL", "https://recap.ieasyhydro.org/sdk"
+                            ),
+                            api_key=api_key,
+                        )
+                    ),
+                ),
+                resolver=StoreBackedGatewayPolygonResolver(
+                    stores["gateway_polygon_store"]  # type: ignore[arg-type]
+                ),
+                max_cycle_age_hours=max_age,
+            )
+            outcome = _fetch_nwp_task.fn(
+                adapter=adapter,
+                station_configs=[binding],
+                cycle_time=cycle,
+                weather_forecast_store=stores["weather_forecast_store"],
+                clock=lambda: ensure_utc(clock()),
+                pipeline_health_store=stores["pipeline_health_store"],
+            )
+            if outcome is None:
+                raise RuntimeError("NWP fetch returned None (flow-fatal condition)")
+            stored = summarize_stored(conn, cycle)
+    except Exception as exc:  # noqa: BLE001 - every failure mode becomes a record
+        error = exc
+
+    record = build_record(
+        run_ts=run_ts,
+        cycle=cycle,
+        stored=stored,
+        duration_s=time.perf_counter() - started,
+        error=error,
+    )
+    emit(record, sink)
+    return EXIT_OK if record["ok"] else EXIT_RUN_FAILED
+
+
+def main() -> int:
+    return run(clock=lambda: datetime.now(UTC))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

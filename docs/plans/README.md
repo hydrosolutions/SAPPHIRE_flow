@@ -140,6 +140,14 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
   (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
   the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
+- **192** — Gateway forcing for 12300 on the mac-mini — `DRAFT` — the weather-forecast adapter selector is
+  deployment-wide (one adapter per stack), so 12300 cannot co-host with the Swiss/BAFU stations. **Two
+  independent Codex rounds folded.** Round 2 forced a restructure: **Stage A** is a throwaway proof
+  (disposable DB, seeded records, one manual 00Z fetch — no schedule, no code change); **Stage B**, the
+  standing daily stack, is built only if the owner wants a daily feed. Corrected a real identity error
+  (station code is `123`, `12300` is the Gateway HRU, polygon `g_123` — the loader derives
+  `g_<station_code>`). Live re-probe: same-day 00Z IFS (+14.75 d), ~4-day retention, and the mini's own
+  probe had produced **0 `ok=True` in 31 days**. Needs `/plan`.
 - **143** — DHM/v1 basin + gauge onboarding — `DRAFT` — GeoPackage → **N gauges** → forecast-ready
   (geometry via Plan 120 + station/rating + gateway binding + subscriptions). Owner-aligned 2026-07-23; needs
   `/plan`. Blocks 144.
