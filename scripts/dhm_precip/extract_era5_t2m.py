@@ -34,6 +34,24 @@ per-run-unique `<NNNN>-<identity>` directory under `t2m_points_dir` — so
 back. `discover_t2m_bundle` below applies the identical highest-valid-`NNNN`
 rule to t2m's own bundle.
 
+**Round-3 review (2026-08-20), two follow-on fixes.** (1) The t2m manifest
+used to carry NO payload checksum at all — a truncated or wrong-schema
+`series_t2m_degc.nc` under the highest `NNNN` could shadow a valid older
+bundle, the exact asymmetry the precipitation side's `payload_sha256s`
+already closed for the bundle t2m only *reads* (`_discover_precip_bundle`
+above). `T2mExtractionManifest.payload_sha256s` now records the series
+file's sha256 at publish time, and `discover_t2m_bundle` reconciles it via
+the SAME `era5_extract_manifest.assert_payload_checksum_matches` predicate
+the precipitation side uses (widened to a structural `Protocol` there —
+no second checksum routine). A mismatch or missing hash SKIPS that one
+candidate rather than stopping discovery, so an older valid bundle is still
+found; a caller that reads a NAMED bundle directly still raises. (2) A
+handled publish failure used to strand its staging directory:
+`_publish_t2m_bundle` sat OUTSIDE the `try`/cleanup that only covered the
+two writers. Publication now runs inside the same block, cleaned up by a
+`finally` that removes the staging directory whether or not publication
+succeeded (a no-op on success, since `os.replace` already moved it).
+
 Usage:
     uv run python scripts/dhm_precip/extract_era5_t2m.py \
         --data-root data/dhm_precip/era5_land_t2m \
@@ -80,7 +98,7 @@ import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 import structlog  # noqa: E402
 import xarray as xr  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 from sapphire_flow.logging import configure_cli_logging  # noqa: E402
 from scripts.dhm_precip.domain_types import ExtractionOperator, Station  # noqa: E402
@@ -351,6 +369,15 @@ class T2mExtractionManifest(BaseModel):
     coordinate_table_sha256: str
     source_sha256s_by_year: dict[str, str]
     referenced_precipitation_bundle_identity: str
+    payload_sha256s: dict[str, str] = Field(default_factory=dict)
+    """Finding 1 (2026-08-20 review) — filename (relative to this identity
+    directory) -> sha256, mirroring the precipitation `ExtractionManifest`'s
+    own field exactly (`era5_extract_manifest.ExtractionManifest.
+    payload_sha256s`), reconciled the same way via `assert_payload_checksum_
+    matches`. Defaults to `{}` so a manifest published BEFORE this field
+    existed still parses — `discover_t2m_bundle` then reconciles it, finds
+    no recorded hash for the series file, and treats that (correctly) as a
+    typed, skippable failure rather than an unrelated parse error."""
     station_count: int
     stamp_count: int
     output_schema_version: str
@@ -433,7 +460,21 @@ def discover_t2m_bundle(data_root: Path) -> tuple[Path, T2mExtractionManifest]:
     manifest parses AND its own `extraction_identity` matches what it was
     published under AND the series file it names is present — the same
     shape of check `publish_bundle` applies before allocating a directory,
-    now also applied on the read side."""
+    now also applied on the read side.
+
+    Finding 1 (2026-08-20 review) — "validates" now ALSO means the series
+    file's bytes reconcile against the manifest's own `payload_sha256s`
+    record (`assert_payload_checksum_matches`, reused verbatim from
+    `era5_extract_manifest` — never re-derived here). Unlike
+    `_discover_precip_bundle`, where a checksum failure on the highest
+    candidate stops the whole run (there is exactly one precipitation
+    bundle in play, referenced by identity only), a t2m checksum failure
+    here SKIPS that one candidate and falls back to the next-highest — a
+    truncated or corrupted LATEST bundle must not shadow a valid older one.
+    A caller that reads a NAMED bundle directly (e.g. calling
+    `assert_payload_checksum_matches` on a specific directory, bypassing
+    this discovery loop) still gets a raised exception — the skip behaviour
+    is deliberately local to this loop, not a property of the predicate."""
     root = t2m_points_dir(data_root)
     if not root.exists():
         raise ExtractionInputAbsentError(f"no t2m extraction points root at {root}")
@@ -443,12 +484,21 @@ def discover_t2m_bundle(data_root: Path) -> tuple[Path, T2mExtractionManifest]:
     )
     for candidate in reversed(candidates):
         manifest = _read_t2m_manifest(candidate / manifest_filename())
-        if (
-            manifest is not None
-            and (candidate / _T2M_SERIES_FILENAME).exists()
-            and manifest.extraction_identity in candidate.name
-        ):
-            return candidate, manifest
+        if manifest is None:
+            continue
+        if not (candidate / _T2M_SERIES_FILENAME).exists():
+            continue
+        if manifest.extraction_identity not in candidate.name:
+            continue
+        try:
+            assert_payload_checksum_matches(candidate, manifest, _T2M_SERIES_FILENAME)
+        except ExtractionPostConditionError:
+            log.warning(
+                "era5_extract_t2m.discover.payload_checksum_mismatch_skipped",
+                candidate=str(candidate),
+            )
+            continue
+        return candidate, manifest
     raise ExtractionInputAbsentError(
         "no published t2m extraction bundle with a readable manifest found "
         f"under {root}"
@@ -637,19 +687,6 @@ def run(
         output_dtype=T2M_OUTPUT_DTYPE,
     )
 
-    manifest = T2mExtractionManifest(
-        extraction_identity=identity,
-        operator_id=str(ExtractionOperator.NEAREST),
-        coordinate_table_sha256=coordinate_table_sha256,
-        source_sha256s_by_year=source_sha256s_by_year,
-        referenced_precipitation_bundle_identity=precip_bundle_identity,
-        station_count=len(merged),
-        stamp_count=expected_stamp_count,
-        output_schema_version=T2M_OUTPUT_SCHEMA_VERSION,
-        output_dtype=T2M_OUTPUT_DTYPE,
-        generated_at=resolved_clock(),
-    )
-
     # Finding 1: stage both artefacts off to the side, fully written, before
     # either is ever visible at their final path. Finding 4: the final path
     # is now a fresh, per-run-unique numbered directory allocated by
@@ -658,16 +695,59 @@ def run(
     # a failure while staging never touches the published root at all; a
     # failure during publish leaves every previously published bundle
     # untouched (there is nothing to roll back).
+    #
+    # Round-3 review (2026-08-20), finding "a handled publish failure
+    # strands its staging directory": `_publish_t2m_bundle` used to sit
+    # OUTSIDE this cleanup, so a failure inside it (a staged bundle that
+    # fails its own pre-publish checks, or `os.replace` itself failing)
+    # left the staging directory behind forever. The manifest is now also
+    # built and written INSIDE this block — it needs the series file's
+    # on-disk bytes to record `payload_sha256s` (below) — so publication
+    # moves inside too, and a single `finally` covers every step. On the
+    # success path `staged_dir` no longer exists (moved by `os.replace`
+    # inside `_publish_t2m_bundle`), so the `rmtree` below is a no-op; on
+    # any failure it removes the now-orphaned staging directory. The
+    # `final_dir` `_publish_t2m_bundle` may have already allocated
+    # (`allocate_published_dir`) before an `os.replace` failure is
+    # deliberately left alone, exactly as the precipitation side's own
+    # `publish_bundle` already does: its run number's `.run-<NNNN>.reserve`
+    # marker is permanent by design (P1a), so no later run can ever be
+    # assigned that number either way, and an empty, unmanifested directory
+    # is invisible to discovery (`_read_t2m_manifest` on it returns `None`)
+    # — there is no race to reintroduce by leaving it, only a few bytes of
+    # inert storage on an already-rare failure path.
     staged_dir = prepare_staging_dir(data_root, identity=identity)
     try:
-        _write_t2m_series_netcdf(staged_dir / _T2M_SERIES_FILENAME, merged)
+        staged_series_path = staged_dir / _T2M_SERIES_FILENAME
+        _write_t2m_series_netcdf(staged_series_path, merged)
+        # Finding 1 (round-3 review, 2026-08-20): the payload checksum is
+        # computed over the bytes actually written, mirroring the
+        # precipitation `ExtractionManifest.payload_sha256s` field exactly
+        # (`era5_extract_manifest.checksum_file` and this module's own
+        # `era5_manifest.checksum_file` import are byte-identical
+        # implementations — reused here rather than re-derived).
+        payload_sha256s = {_T2M_SERIES_FILENAME: checksum_file(staged_series_path)}
+        manifest = T2mExtractionManifest(
+            extraction_identity=identity,
+            operator_id=str(ExtractionOperator.NEAREST),
+            coordinate_table_sha256=coordinate_table_sha256,
+            source_sha256s_by_year=source_sha256s_by_year,
+            referenced_precipitation_bundle_identity=precip_bundle_identity,
+            payload_sha256s=payload_sha256s,
+            station_count=len(merged),
+            stamp_count=expected_stamp_count,
+            output_schema_version=T2M_OUTPUT_SCHEMA_VERSION,
+            output_dtype=T2M_OUTPUT_DTYPE,
+            generated_at=resolved_clock(),
+        )
         _write_t2m_manifest(manifest, staged_dir / manifest_filename())
-    except Exception:
+        final_dir = _publish_t2m_bundle(
+            staged_dir, data_root=data_root, identity=identity
+        )
+    finally:
         shutil.rmtree(staged_dir, ignore_errors=True)
-        raise
-    final_dir = _publish_t2m_bundle(staged_dir, data_root=data_root, identity=identity)
 
-    series_path = final_dir / _T2M_SERIES_FILENAME
+    series_out_path = final_dir / _T2M_SERIES_FILENAME
     manifest_out_path = final_dir / manifest_filename()
 
     if args.out is not None:
@@ -676,7 +756,7 @@ def run(
             json.dumps(
                 {
                     "extraction_identity": identity,
-                    "series_path": str(series_path),
+                    "series_path": str(series_out_path),
                     "manifest_path": str(manifest_out_path),
                 },
                 indent=2,

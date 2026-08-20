@@ -37,7 +37,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime  # noqa: TC003 - pydantic must resolve this at runtime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
 from pydantic import BaseModel
@@ -637,17 +637,41 @@ def checksum_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+class _HasPayloadSha256s(Protocol):
+    """Structural (Protocol) type, not inheritance — the one attribute
+    `assert_payload_checksum_matches` actually reads. `ExtractionManifest`
+    (this module's precipitation-bundle dataclass) and
+    `extract_era5_t2m.T2mExtractionManifest` (a separate pydantic model —
+    t2m's manifest is narrower and cannot subclass this dataclass) both
+    satisfy it without either needing to know about the other, and without a
+    second checksum routine (finding 1, 2026-08-20 review): t2m's own bundle
+    now records `payload_sha256s` too and reconciles it on discovery, mirror-
+    ing what this predicate already did for the precipitation bundle."""
+
+    @property
+    def payload_sha256s(self) -> Mapping[str, str]:
+        """Declared as a read-only PROPERTY, not a plain attribute: a plain
+        `Mapping[str, str]` attribute is invariant (pyright), so neither
+        dataclass's `dict[str, str]` field would structurally satisfy it. A
+        read-only property is covariant — this predicate only ever READS
+        the mapping, never assigns through it, so read-only is the correct
+        (and the only type-checking) shape."""
+        ...
+
+
 def assert_payload_checksum_matches(
-    directory: Path, manifest: ExtractionManifest, name: str
+    directory: Path, manifest: _HasPayloadSha256s, name: str
 ) -> None:
     """P4a's single-payload-file predicate, factored out so it applies
     IDENTICALLY everywhere a payload's bytes must be trusted against the
     manifest's `payload_sha256s` record: the `D9_PAYLOAD_FILES` loop inside
-    `reopen_and_validate_bundle` below, and any consumer that reads ONE
-    payload out of an already-published bundle without re-running the whole
-    D9 validation (e.g. Plan 191's t2m extraction reusing this bundle's
-    `station_grid_elevation.csv` for D6). A payload modified after its hash
-    was computed must fail HERE, not silently pass."""
+    `reopen_and_validate_bundle` below, any consumer that reads ONE payload
+    out of an already-published bundle without re-running the whole D9
+    validation (e.g. Plan 191's t2m extraction reusing this bundle's
+    `station_grid_elevation.csv` for D6), and `extract_era5_t2m.
+    discover_t2m_bundle` reconciling t2m's own `series_t2m_degc.nc` against
+    t2m's own manifest. A payload modified after its hash was computed must
+    fail HERE, not silently pass."""
     expected = manifest.payload_sha256s.get(name)
     if expected is None:
         raise ExtractionPostConditionError(
