@@ -48,6 +48,30 @@ cut Stage B back to what the plan actually consumes and closed the shared-image-
   decision (O4). And the `sapphire-flow:${VERSION}` image tag, which `-p sapphire-nepal` does *not* scope,
   is now separated structurally (B1 `image:` override) instead of carried as a warning.
 
+### ✅ Stage A EXECUTED AND PASSED — 2026-08-20 (owner-authorised)
+
+Ran on the mac-mini against a disposable Postgres on its own network; the Swiss stack was verified
+untouched before and after, and every Stage A artefact was destroyed afterwards.
+
+| A-task | Result |
+|---|---|
+| A1 disposable DB | postgis 16-3.4 on `sapphire-a-net`, migrated to head **0048**, 42 tables |
+| A2 seed | station `123` (river/operational/**ungauged**/tenant `sapphire`), basin `g_123`, binding `gateway_hru_name=12300` + `name=g_123`, one active `ifs_ecmwf`/`basin_average`/`forecast` row |
+| A3 fetch | `_fetch_nwp_task.fn(...)` with explicit cycle `2026-08-20T00:00Z`, `max_cycle_age_hours=5.0`; **8568 records stored in 22.9 s**, `fallback_used=False` |
+| A4 assert | **precipitation + temperature × 51 members × 84 steps**; cycle `2026-08-20T00:00Z`; horizon **14.75 d**; precip 0–140.35 **mm**, temp 13.3–27.5 **°C** (m→mm, K→°C applied); all rows joined to station `123` |
+| teardown | container + network removed, no residue; Swiss containers unchanged, API healthy on `:8000` |
+
+**So the premise holds: recap Gateway forcing reaches the store for 12300, end to end, with no production
+code change, no schedule and no Prefect.** D3's identity, D4's direct seeding and A2's "minimum record
+set" are all confirmed by execution rather than by reading.
+
+**🔁 One measured correction to this plan's own evidence — `pf` does NOT lag by a day.** At 09:27 UTC
+`pf` for run_date 2026-08-20 returned `source_data_missing` for every member, which this plan recorded as
+"~1 day behind `fc`". At 12:59 UTC the **full 51-member ensemble (1 `fc` + 50 `pf`) was present for the
+same 00Z cycle** — that is what the 8568 rows are (2 params × 51 members × 84 steps). The `pf` lag is
+therefore **intra-day (hours behind `fc`), not a day**, and a same-day run late enough in the morning
+gets the whole ensemble. Corrected below; the "control-only" framing is weaker than the gateway requires.
+
 ### Round 3 — the `/plan` workflow (ESCALATED, then folded by hand)
 
 Ran the repo `/plan` loop (3 rounds, 16 agents, 1 Codex round failed). It **escalated: stalled — a
@@ -397,8 +421,10 @@ ordering rule).
 - **Gateway run retention is ~4 days.** Under option (a), three missed daily runs exhaust the walk-back
   window (D6's 72 h). Under option (b) there is no walk-back at all by design — a missed 00Z is a missed
   day. Retries do not help either way.
-- **`pf` and JSNOW forecast lag `fc` by ~1 day.** Irrelevant while this is control-only; a hard
-  constraint the moment an ensemble or snow-fed model is added.
+- **`pf` lags `fc` by hours, not a day** (measured twice on 2026-08-20 — see Status). A run scheduled
+  too early gets `fc` only; by ~13:00 UTC the full 51-member ensemble was available. This makes O3's
+  timing choice matter more than "control-only" framing suggested. JSNOW forecast lag was only observed
+  at 09:27 UTC and has **not** been re-measured later in the day — do not assume it is a full day either.
 - **Stage B is unmonitored.** The host watchdog probes `localhost:8000` (the Swiss API) and the launchd
   start script manages only the Swiss file set, so this stack is **not launchd-managed, not reconciled and
   not monitored** — nothing brings it back if it is stopped, nothing notices if it fails, and nothing
@@ -458,7 +484,7 @@ constraint: run it from a writable CWD.
 | 06/12/18Z are short | 24 rows each (~2 d) — the reason D5 matters |
 | Polygon column name | the numeric column for HRU 12300 is `g_123` — the value D3 requires in the binding's `name` |
 | Run retention ~4 days | 08-16…08-20 present; 08-15 and older `source_data_missing` |
-| `pf` lags ~1 day | today missing; 08-17/18/19 → 84 rows; `member` is `'1'`..`'50'` |
+| `pf` lag is INTRA-DAY | 09:27 UTC: today's 00Z `pf` absent. 12:59 UTC: all 50 `pf` + `fc` present for that same 00Z cycle (51 members × 84 steps stored). Earlier "~1 day" reading was a time-of-day artefact. `member` is `'1'`..`'50'` |
 | ERA5-Land | edge `2026-08-13`; 2026-07-15→08-13 complete (720 rows, 30/30 days, 24 h each) |
 | `operational`/`gap_fill` dead | ERA5 ends 08-13, IFS retained from 08-16 → the gap is coverable by nothing; `subdaily_resolution=3` → HTTP 500 |
 | Host headroom | Swiss stack ≈1.1 GB of a 7.65 GiB Docker VM; disk 25 % used, 2.7 TB free |
