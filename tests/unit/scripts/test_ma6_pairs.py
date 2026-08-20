@@ -33,8 +33,11 @@ from scripts.dhm_precip.era5_extract_manifest import (
 )
 from scripts.dhm_precip.ma6_pairs import (
     GaugeMaskedPopulation,
+    GaugeRetainedSubset,
     MaskedGaugeSeries,
+    PairedRetainedSubset,
     PairedSeries,
+    RetainedSubsetSchemaError,
     _read_era5_nearest_frames,
     build_gauge_masked_population,
     build_paired_population,
@@ -249,33 +252,107 @@ class TestPairWithEra5DropsHoursEra5Lacks:
 
 
 class TestSubsetComputesItsOwnN:
-    def test_a_subset_n_differs_from_the_full_frame_n(self) -> None:
+    """Finding 1 (Plan 184 T1 review, 2026-08-20): the gauge-retained and
+    commonly-retained counts are DISTINCT TYPES (`GaugeRetainedSubset` /
+    `PairedRetainedSubset`), never one `RetainedSubset` type reporting both
+    under the same `n_common_retained` name."""
+
+    def test_a_gauge_subsets_n_differs_from_the_full_frame_n(self) -> None:
         july_hours = [datetime(2024, 7, 1, h) for h in range(6)]
         january_hours = [datetime(2024, 1, 1, h) for h in range(4)]
-        frame = pl.DataFrame(
-            {
-                "timestamp": july_hours + january_hours,
-                "gauge_value_mm": [1.0] * 10,
-                "era5_nearest_mm_per_h": [1.0] * 10,
-            }
+        gauge = MaskedGaugeSeries(
+            station=Station("A"),
+            frame=pl.DataFrame(
+                {
+                    "timestamp": july_hours + january_hours,
+                    "value_mm": [1.0] * 10,
+                }
+            ),
         )
 
-        full = subset(frame, pl.lit(True))
-        july_only = subset(frame, pl.col("timestamp").dt.month() == 7)
+        full = subset(gauge, pl.lit(True))
+        july_only = subset(gauge, pl.col("timestamp").dt.month() == 7)
 
-        assert full.n_common_retained == 10
-        assert july_only.n_common_retained == 6
-        assert july_only.n_common_retained != full.n_common_retained, (
+        assert isinstance(full, GaugeRetainedSubset)
+        assert full.n_gauge_retained == 10
+        assert july_only.n_gauge_retained == 6
+        assert july_only.n_gauge_retained != full.n_gauge_retained, (
             "if a subset's n always equalled the series-level n the "
             "per-subset requirement would be vacuous (Exit 1/4)"
         )
 
-    def test_n_common_retained_cannot_diverge_from_the_subsets_own_rows(self) -> None:
-        # RetainedSubset.n_common_retained is a PROPERTY, not a field: there
-        # is no constructor path that lets a caller attach a mismatched n.
-        frame = pl.DataFrame({"timestamp": [1, 2, 3]})
-        result = subset(frame, pl.col("timestamp") <= 2)
-        assert result.n_common_retained == result.frame.height == 2
+    def test_a_paired_subsets_n_is_the_common_retained_count(self) -> None:
+        july_hours = [datetime(2024, 7, 1, h) for h in range(6)]
+        january_hours = [datetime(2024, 1, 1, h) for h in range(4)]
+        paired = PairedSeries(
+            station=Station("A"),
+            frame=pl.DataFrame(
+                {
+                    "timestamp": july_hours + january_hours,
+                    "gauge_value_mm": [1.0] * 10,
+                    "era5_nearest_mm_per_h": [1.0] * 10,
+                }
+            ),
+        )
+
+        full = subset(paired, pl.lit(True))
+        july_only = subset(paired, pl.col("timestamp").dt.month() == 7)
+
+        assert isinstance(full, PairedRetainedSubset)
+        assert full.n_common_retained == 10
+        assert july_only.n_common_retained == 6
+
+    def test_n_cannot_diverge_from_the_subsets_own_rows(self) -> None:
+        # Both n_gauge_retained and n_common_retained are PROPERTIES, not
+        # fields: there is no constructor path that lets a caller attach a
+        # mismatched n.
+        gauge = MaskedGaugeSeries(
+            station=Station("A"),
+            frame=pl.DataFrame({"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}),
+        )
+        result = subset(gauge, pl.col("timestamp") <= 2)
+        assert result.n_gauge_retained == result.frame.height == 2
+
+    def test_a_gauge_subset_does_not_carry_the_paired_count(self) -> None:
+        # The two estimands are different TYPES, not one type wearing two
+        # names: a gauge-retained subset has no `n_common_retained` at all
+        # (runtime confirmation of the static guarantee proven separately
+        # with pyright), so a caller cannot read gauge exposure as if it
+        # were commonly-retained exposure.
+        gauge = MaskedGaugeSeries(
+            station=Station("A"),
+            frame=pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+        )
+        gauge_subset = subset(gauge, pl.lit(True))
+
+        assert not hasattr(gauge_subset, "n_common_retained")
+
+
+class TestRetainedSubsetSchemaGuard:
+    """The typing hole `subset()`'s `@overload` cannot close: direct
+    construction bypasses it entirely, since both frames are just
+    `pl.DataFrame` to pyright. `__post_init__` on both subset types makes
+    the mismatch a runtime error instead of a silent estimand swap."""
+
+    def test_a_paired_frame_is_rejected_by_gauge_retained_subset(self) -> None:
+        paired_frame = pl.DataFrame(
+            {
+                "timestamp": [1, 2, 3],
+                "gauge_value_mm": [1.0, 2.0, 3.0],
+                "era5_nearest_mm_per_h": [0.1, 0.2, 0.3],
+            }
+        )
+
+        with pytest.raises(RetainedSubsetSchemaError, match="era5_nearest_mm_per_h"):
+            GaugeRetainedSubset(frame=paired_frame)
+
+    def test_a_gauge_frame_is_rejected_by_paired_retained_subset(self) -> None:
+        gauge_frame = pl.DataFrame(
+            {"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}
+        )
+
+        with pytest.raises(RetainedSubsetSchemaError, match="era5_nearest_mm_per_h"):
+            PairedRetainedSubset(frame=gauge_frame)
 
 
 def _write_series_nearest_nc(

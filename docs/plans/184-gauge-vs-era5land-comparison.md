@@ -353,7 +353,10 @@ a gauge-only milestone would become conditional on ERA5 availability, and the al
 implementation of "the masked series" — would drift invisibly, both versions looking right alone.
 Two named outputs, one definition. *(Codex review 2026-08-20.)*
 **Verify:** `uv run pytest tests/unit/scripts/test_ma6_pairs.py -q` and
-`$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
+`$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q` and
+`$ENV uv run pytest tests/integration/test_dhm_precip_ma6_pairs.py -q` (Finding 2, T1 review
+2026-08-20 — a real-data regression over the production path neither of the other two gates
+exercises: `load_gauge_masked_population` -> `discover_precip_bundle` -> `build_paired_population`)
 
 ### T2 — Pyramid `AT` loader and the D14 lapse correction
 **In:** `AT` support in `pyramid_loader.py` sharing **only its file/timestamp parsing**; the standard

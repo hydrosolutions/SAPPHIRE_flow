@@ -21,10 +21,22 @@ these must be separate, not one derived from the other by convention):
 
 Every subset either output's frame is sliced into — for whatever season,
 scale or period a later task asks for — carries its own retained-hour count
-as a `RetainedSubset.n_common_retained` PROPERTY, computed live from that
-subset's own row count. There is no field a caller could instead pass a
-stale or mismatched count through (Exit 1/4: "a JJAS-monthly statistic does
-not rest on the whole series' retention").
+as a PROPERTY, computed live from that subset's own row count. There is no
+field a caller could instead pass a stale or mismatched count through
+(Exit 1/4: "a JJAS-monthly statistic does not rest on the whole series'
+retention").
+
+That count is TWO DISTINCT ESTIMANDS, never one type wearing two names
+(Finding 1, Plan 184 T1 independent review, 2026-08-20): a slice of
+`GaugeMaskedPopulation` is GAUGE-retained exposure (`GaugeRetainedSubset.
+n_gauge_retained`); a slice of `PairedSeries` is COMMONLY-retained exposure
+(`PairedRetainedSubset.n_common_retained`) — the count D2 and Exit 1/4 mean
+by "n". A single `RetainedSubset` type that reported both under the same
+name let a caller attach gauge-only exposure to a paired statistic with no
+static signal. `subset()` returns whichever type matches the frame kind it
+was given, so a T3 function that requires a *paired* `n` can declare
+`PairedRetainedSubset` in its signature and have a gauge subset rejected at
+type-check time, not at review time.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -35,7 +47,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 import polars as pl
 import xarray as xr
@@ -71,6 +83,18 @@ if TYPE_CHECKING:
 
 _ERA5_NEAREST_SERIES_FILENAME = "series_nearest.nc"
 _ERA5_VALUE_VAR = "precipitation_mm_per_h"
+
+_PAIRED_ONLY_COLUMN = "era5_nearest_mm_per_h"
+
+
+class RetainedSubsetSchemaError(ValueError):
+    """A `GaugeRetainedSubset`/`PairedRetainedSubset` was constructed with a
+    frame whose schema does not match its own estimand — the typing hole
+    `subset()`'s `@overload` cannot close, since direct construction bypasses
+    it entirely (Finding 1 follow-up, Plan 184 T1 independent review,
+    2026-08-20). Gauge frames are `(timestamp, value_mm)`; paired frames are
+    `(timestamp, gauge_value_mm, era5_nearest_mm_per_h)` — the presence or
+    absence of `era5_nearest_mm_per_h` is the discriminator."""
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -118,31 +142,90 @@ class PairedSeries:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class RetainedSubset:
-    """A slice of a `MaskedGaugeSeries` or `PairedSeries` frame, taken by
-    whatever season/scale/period predicate a caller supplies (`subset()`),
-    together with ITS OWN retained-hour count.
+class GaugeRetainedSubset:
+    """A slice of a `MaskedGaugeSeries.frame`, taken by whatever
+    season/scale/period predicate a caller supplies (`subset()`), together
+    with ITS OWN gauge-retained-hour count.
+
+    `n_gauge_retained` is a PROPERTY derived from `frame.height`, never a
+    separately-suppliable field — there is no constructor argument through
+    which a caller could attach an `n` that doesn't match this subset's own
+    rows. This is GAUGE exposure only — before any ERA5 pairing — and is a
+    DIFFERENT TYPE from `PairedRetainedSubset` precisely so the two counts
+    cannot be confused: a function that needs the commonly-retained count
+    D2/Exit 1/4 mean by "n" cannot accept this type (Finding 1, Plan 184 T1
+    review)."""
+
+    frame: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        if _PAIRED_ONLY_COLUMN in self.frame.columns:
+            raise RetainedSubsetSchemaError(
+                "GaugeRetainedSubset requires a gauge-only frame "
+                "(timestamp, value_mm), but the given frame carries "
+                f"{_PAIRED_ONLY_COLUMN!r} — this is a PAIRED frame, and "
+                "belongs in PairedRetainedSubset instead"
+            )
+
+    @property
+    def n_gauge_retained(self) -> int:
+        return self.frame.height
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PairedRetainedSubset:
+    """A slice of a `PairedSeries.frame`, taken by whatever
+    season/scale/period predicate a caller supplies (`subset()`), together
+    with ITS OWN commonly-retained-hour count.
 
     `n_common_retained` is a PROPERTY derived from `frame.height`, never a
     separately-suppliable field — there is no constructor argument through
     which a caller could attach an `n` that doesn't match this subset's own
     rows. This is the structural answer to Exit 1/4: a JJAS-monthly
     statistic's `n` can only ever be that statistic's own JJAS-monthly row
-    count, never the whole series' retention count."""
+    count, never the whole series' retention count — and, being a distinct
+    type from `GaugeRetainedSubset`, it can never be gauge-only exposure
+    wearing the common-retained name (Finding 1, Plan 184 T1 review)."""
 
     frame: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        if _PAIRED_ONLY_COLUMN not in self.frame.columns:
+            raise RetainedSubsetSchemaError(
+                "PairedRetainedSubset requires a paired frame "
+                f"(timestamp, gauge_value_mm, {_PAIRED_ONLY_COLUMN}), but "
+                f"the given frame is missing {_PAIRED_ONLY_COLUMN!r} — this "
+                "is a GAUGE-ONLY frame, and belongs in GaugeRetainedSubset "
+                "instead"
+            )
 
     @property
     def n_common_retained(self) -> int:
         return self.frame.height
 
 
-def subset(frame: pl.DataFrame, predicate: pl.Expr) -> RetainedSubset:
+@overload
+def subset(series: MaskedGaugeSeries, predicate: pl.Expr) -> GaugeRetainedSubset: ...
+
+
+@overload
+def subset(series: PairedSeries, predicate: pl.Expr) -> PairedRetainedSubset: ...
+
+
+def subset(
+    series: MaskedGaugeSeries | PairedSeries, predicate: pl.Expr
+) -> GaugeRetainedSubset | PairedRetainedSubset:
     """The one way T3+ take a season/scale/period slice of either named
-    output's frame (`MaskedGaugeSeries.frame` or `PairedSeries.frame`).
-    `RetainedSubset.n_common_retained` is always freshly computed from the
+    output. The RETURN TYPE tracks the INPUT type — a `MaskedGaugeSeries`
+    yields a `GaugeRetainedSubset` (`n_gauge_retained`); a `PairedSeries`
+    yields a `PairedRetainedSubset` (`n_common_retained`) — so a caller
+    (and pyright, statically) can never mistake one estimand for the
+    other. Either subset's count is always freshly computed from the
     RESULT of this filter."""
-    return RetainedSubset(frame=frame.filter(predicate))
+    filtered = series.frame.filter(predicate)
+    if isinstance(series, MaskedGaugeSeries):
+        return GaugeRetainedSubset(frame=filtered)
+    return PairedRetainedSubset(frame=filtered)
 
 
 def build_gauge_masked_population(
