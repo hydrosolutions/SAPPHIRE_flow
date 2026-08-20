@@ -95,6 +95,12 @@ class TestRawPathIsKeyedByVariable:
 
 
 class TestTransformRefusesAnInstantaneousVariable:
+    """Plan 191 T3 lifted the guard for '--stage transform': an INSTANTANEOUS
+    variable is now routed through the separate K->degC path instead of
+    being refused outright. '--stage all' still refuses it — its bundled
+    transform step is the accumulator path, unconditionally.
+    """
+
     def _args(self, **over: object) -> argparse.Namespace:
         args = build_parser().parse_args(
             ["--provenance", "/nonexistent.json", "--stage", "transform"]
@@ -103,17 +109,23 @@ class TestTransformRefusesAnInstantaneousVariable:
             setattr(args, k, v)
         return args
 
-    @pytest.mark.parametrize("stage", ["transform", "all"])
-    def test_temperature_cannot_reach_the_deaccumulator(self, stage: str) -> None:
-        args = self._args(stage=stage, variable="2m_temperature")
+    def test_stage_all_still_refuses_temperature(self) -> None:
+        args = self._args(stage="all", variable="2m_temperature")
         with pytest.raises(Era5StageNotApplicableError, match="INSTANTANEOUS"):
             run(args)
 
-    def test_the_refusal_precedes_reading_the_provenance_file(self) -> None:
+    def test_stage_transform_no_longer_refuses_temperature(self) -> None:
+        """This now fails past the guard, on the absent provenance file —
+        proof the instantaneous path is actually reached, not refused."""
+        args = self._args(stage="transform", variable="2m_temperature")
+        with pytest.raises((Era5StorageError, OSError)):
+            run(args)
+
+    def test_the_all_refusal_precedes_reading_the_provenance_file(self) -> None:
         """The guard must cost nothing: --provenance points at a file that does
         not exist, so if the guard fired AFTER provenance loading this would
         raise a storage error instead."""
-        args = self._args(stage="transform", variable="2m_temperature")
+        args = self._args(stage="all", variable="2m_temperature")
         with pytest.raises(Era5StageNotApplicableError):
             run(args)
 
