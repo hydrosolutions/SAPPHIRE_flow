@@ -234,6 +234,18 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   ungauged forecasting still needs an FI operational model (modelling team; mountain
   snow+glacier+bands — paradigm under discussion) + basin geometry (117/120). The floor is
   deferrable + downstream of the model choice; basin user-upload+security is optional.
+- **194** — The backup target must be the device it claims to be — `READY` — extracted from Plan 162's
+  never-built T6. Measured 2026-08-20: `/Volumes/sapphire-backup` is a plain **boot-disk directory**, not a
+  mount, so ~11 GB of dumps share a failure domain with the database they protect, and the sentinel guard
+  Plan 046 specified was **never built** (no `BackupRefusedError` anywhere in `src/`). `/plan` **escalated and
+  over-expanded** (Codex failed 3 of 4 rounds); reconstructed by hand. A later hand review restated **D1 over
+  two paths** — a mount-ness test against `pg_dumps`, a child of the mount, rejects a healthy disk forever —
+  dropped the marker file again, and restored T2's `set -e` note. Review by hand; do not re-run `/plan`.
+- **195** — A launchd agent that cannot run must not look healthy — `DRAFT` — the stack-starter
+  `ch.hydrosolutions.sapphire` has **never** worked in 119 days (launchd's default PATH cannot resolve
+  `/usr/local/bin/docker`; `docker info` → 127), and **nothing monitors launchd agent health** — no
+  `launchctl` anywhere in `watchdog.py`. One probe, one transition-latched condition. Sequenced after 194
+  T3, which rewrites the same region of the watchdog. Needs owner confirmation before build.
 
 ## Active — dev experience / dashboard (C)
 
