@@ -723,24 +723,40 @@ from a Prefect worker would require mounting the Docker socket into the containe
 
 ### Rollback-anchor protection
 
-Image tags matching `PROTECT_RE` (default `:rollback`) are never pruned. Rollback
-anchors — e.g. `sapphire-flow:rollback-backup` — are unreferenced by design: no
-container runs them, so a blanket `docker image prune -a -f` deletes them, and
-reproducing a prior version then needs a rebuild at a commit that may no longer be
-checked out.
+Images whose **tag** matches `PROTECT_RE` (default `^rollback($|-)`) are never
+pruned. Rollback anchors — e.g. `sapphire-flow:rollback-backup` — are unreferenced
+by design: no container runs them, so a blanket `docker image prune -a -f` deletes
+them, and reproducing a prior version then needs a rebuild at a commit that may no
+longer be checked out.
 
 This cannot be a docker-side filter: `docker image prune` accepts only `until=` and
 `label=`, neither of which matches a tag name, and tagging an existing image cannot
-add a label. The script therefore enumerates candidates itself — every image not
-pinned by a container (`docker ps -a`, so exited containers still pin, matching
-`prune -a` semantics) and not matching `PROTECT_RE` — and removes them by name,
-finishing with `docker image prune -f` to reclaim dangling layers.
+add a label. The script therefore enumerates candidates itself:
 
-Override with `PRUNE_PROTECT_RE` to widen or narrow the protected set.
+- **Use is keyed on the immutable image ID**, never on the reference a container was
+  created from. Those differ for digest-pinned images (this repo pins postgis by
+  `@sha256`), implicit `latest`, containers created by ID, and alternate tags on one
+  image. Comparing references would `rmi` a second tag of an in-use image, which
+  `prune -a` would have preserved. The in-use set is `docker ps -aq` piped through
+  `docker inspect -f '{{.Image}}'`, so exited containers still pin.
+- **The pattern is matched against the tag only**, so a repository named
+  `rollback/...` is not silently protected.
+- **Every inventory step fails closed.** If listing containers, resolving their image
+  IDs, or enumerating images fails, the prune is skipped entirely — an empty in-use
+  set caused by a daemon error would otherwise mean "nothing is in use".
+- Unprotected, unused references are removed by name, then `docker image prune -f`
+  reclaims dangling layers.
+
+Removal failures are counted, logged per image, and surfaced: the script exits
+non-zero if any `rmi`, the dangling prune, or the build-cache prune failed, so a run
+that reclaimed nothing cannot look like a clean weekly prune in launchd's records.
+
+Override with `PRUNE_PROTECT_RE` to widen or narrow the protected set; an invalid
+pattern aborts the prune rather than failing open.
 
 ### Stack-up guard
 
-Image pruning removes ALL images not referenced by a container —
+Image pruning removes all unprotected images not referenced by a container —
 including the current `sapphire-flow:${VERSION}` tag if the stack is down. The script
 therefore checks that the stack is running before pruning:
 

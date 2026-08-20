@@ -15,6 +15,7 @@ instead of the fake.)
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import textwrap
@@ -192,112 +193,212 @@ class TestInstallLaunchdPruneRegistration:
         )
 
 
-def _write_rich_fake_docker(
-    bin_dir: Path,
-    *,
-    running: list[str],
-    all_container_images: list[str],
-    images: list[str],
-    rmi_log: Path,
-) -> Path:
-    """A fake docker that models the subset of the CLI the prune path uses.
+# --- Rollback-anchor protection ------------------------------------------
+#
+# The stub below is a Python fake, not a bash one, because the behaviour under
+# test is keyed on IMAGE IDS and on which `--format` was requested. A bash stub
+# that dispatches on "$1"/"$2" alone cannot represent two tags sharing one image
+# id, and answers `ps` and `ps -a` with different FIELDS rather than different
+# CONTAINER SETS — which makes a `ps -a` -> `ps` mutation fail for the wrong
+# reason and silently validates reference-equality code.
 
-    Distinguishes `ps` (guard: container names) from `ps -a` (image pins),
-    serves an image inventory, reports >= 1 GB reclaimable so the prune gate
-    opens, and records every `rmi` target to rmi_log instead of deleting.
-    """
-    running_out = " ".join(f'"{c}"' for c in running) or '""'
-    pinned_out = " ".join(f'"{c}"' for c in all_container_images) or '""'
-    images_out = " ".join(f'"{c}"' for c in images) or '""'
-    stub = textwrap.dedent(
-        f"""\
-        #!/bin/bash
-        if [[ "$1" == "ps" && "$2" == "-a" ]]; then
-            printf '%s\\n' {pinned_out}
-            exit 0
-        fi
-        if [[ "$1" == "ps" ]]; then
-            printf '%s\\n' {running_out}
-            exit 0
-        fi
-        if [[ "$1" == "images" ]]; then
-            printf '%s\\n' {images_out}
-            exit 0
-        fi
-        if [[ "$1" == "system" && "$2" == "df" ]]; then
-            echo '{{"Type":"Images","Reclaimable":"9.0GB (86%)"}}'
-            echo '{{"Type":"Build Cache","Reclaimable":"0B"}}'
-            exit 0
-        fi
-        if [[ "$1" == "rmi" ]]; then
-            echo "$2" >> "{rmi_log}"
-            exit 0
-        fi
-        exit 0
-        """
+_FAKE_DOCKER = """#!/usr/bin/env python3
+import json, sys
+fx = json.load(open(FIXTURE))
+a = sys.argv[1:]
+def out(lines):
+    sys.stdout.write("".join(l + "\\n" for l in lines))
+if a[:1] == ["ps"]:
+    if fx.get("ps_fails"):
+        sys.exit(1)
+    flags = "".join(x[1:] for x in a[1:] if x.startswith("-"))
+    allc = fx["containers"]
+    sel = allc if "a" in flags else [c for c in allc if c["running"]]
+    if "q" in flags:
+        out([c["cid"] for c in sel])
+    elif "{{.Image}}" in a:
+        out([c["image_ref"] for c in sel])
+    else:
+        out([c["name"] for c in sel])
+    sys.exit(0)
+if a[:1] == ["inspect"]:
+    if fx.get("inspect_fails"):
+        sys.exit(1)
+    ids = [x for x in a[3:]]
+    by_cid = {c["cid"]: c for c in fx["containers"]}
+    out([by_cid[i]["image_id"] for i in ids if i in by_cid])
+    sys.exit(0)
+if a[:1] == ["images"]:
+    if fx.get("images_fails"):
+        sys.exit(1)
+    out([f"{i['id']} {i['ref']}" for i in fx["images"]])
+    sys.exit(0)
+if a[:2] == ["system", "df"]:
+    rec = fx.get("images_reclaimable", "9.0GB (86%)")
+    out([json.dumps({"Type": "Images", "Reclaimable": rec}),
+         json.dumps({"Type": "Build Cache", "Reclaimable": "0B"})])
+    sys.exit(0)
+if a[:1] == ["rmi"]:
+    open(RMI_LOG, "a").write(a[1] + "\\n")
+    sys.exit(1 if a[1] in fx.get("rmi_fails", []) else 0)
+sys.exit(0)
+"""
+
+
+def _write_py_fake_docker(bin_dir: Path, fixture: dict, rmi_log: Path) -> Path:
+    fixture_path = bin_dir / "fixture.json"
+    fixture_path.write_text(json.dumps(fixture))
+    body = (
+        f"FIXTURE = {str(fixture_path)!r}\nRMI_LOG = {str(rmi_log)!r}\n"
+        + _FAKE_DOCKER.split("\n", 1)[1]
     )
     fake = bin_dir / "docker"
-    fake.write_text(stub)
+    fake.write_text("#!/usr/bin/env python3\n" + body)
     fake.chmod(0o755)
     return fake
 
 
-class TestPruneDockerRollbackProtection:
-    """Rollback anchor images must survive the weekly prune."""
+def _container(cid: str, name: str, image_id: str, ref: str, running: bool) -> dict:
+    return {
+        "cid": cid,
+        "name": name,
+        "image_id": image_id,
+        "image_ref": ref,
+        "running": running,
+    }
 
-    def _run(self, tmp_path: Path, images: list[str]) -> tuple[str, list[str]]:
+
+_ID_LIVE = "sha256:aaa"
+_ID_OLD = "sha256:bbb"
+_ID_ANCHOR = "sha256:ccc"
+
+
+class TestPruneDockerRollbackProtection:
+    """Rollback anchors survive; everything genuinely unused does not."""
+
+    def _run(
+        self, tmp_path: Path, fixture: dict
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         rmi_log = tmp_path / "rmi.log"
-        fake = _write_rich_fake_docker(
-            bin_dir,
-            running=["sapphire_flow-api-1"],
-            all_container_images=["sapphire-flow:0.1.775"],
-            images=images,
-            rmi_log=rmi_log,
-        )
+        fake = _write_py_fake_docker(bin_dir, fixture, rmi_log)
         result = _run_prune_script(tmp_path, docker_cmd=fake)
-        assert result.returncode == 0, f"script failed: {result.stderr}"
         removed = rmi_log.read_text().split() if rmi_log.exists() else []
-        return result.stdout + result.stderr, removed
+        return result, removed
 
-    def test_rollback_images_are_never_removed(self, tmp_path: Path) -> None:
-        combined, removed = self._run(
-            tmp_path,
-            images=[
-                "sapphire-flow:0.1.775",
-                "sapphire-flow:rollback-backup",
-                "sapphire-flow:rollback-0.1.653",
-                "sapphire-flow:0.1.653",
+    def _base(self, **over: object) -> dict:
+        fx: dict = {
+            "containers": [
+                _container(
+                    "c1", "sapphire_flow-api-1", _ID_LIVE, "sapphire-flow:0.1.775", True
+                )
             ],
-        )
-        assert "sapphire-flow:rollback-backup" not in removed, (
-            f"rollback anchor was pruned; removed={removed}\n{combined}"
-        )
-        assert "sapphire-flow:rollback-0.1.653" not in removed, (
-            f"rollback anchor was pruned; removed={removed}\n{combined}"
-        )
-        assert "protected, not pruned" in combined
-
-    def test_unreferenced_non_rollback_images_are_removed(self, tmp_path: Path) -> None:
-        _, removed = self._run(
-            tmp_path,
-            images=[
-                "sapphire-flow:0.1.775",
-                "sapphire-flow:rollback-backup",
-                "sapphire-flow:0.1.653",
+            "images": [
+                {"id": _ID_LIVE, "ref": "sapphire-flow:0.1.775"},
+                {"id": _ID_OLD, "ref": "sapphire-flow:0.1.653"},
+                {"id": _ID_ANCHOR, "ref": "sapphire-flow:rollback-backup"},
             ],
-        )
-        assert "sapphire-flow:0.1.653" in removed, (
-            f"stale image was not pruned; removed={removed}"
+        }
+        fx.update(over)
+        return fx
+
+    def test_rollback_anchor_is_never_removed(self, tmp_path: Path) -> None:
+        result, removed = self._run(tmp_path, self._base())
+        assert result.returncode == 0, result.stderr
+        assert "sapphire-flow:rollback-backup" not in removed, f"removed={removed}"
+        assert "protected, not pruned: sapphire-flow:rollback-backup" in (
+            result.stdout + result.stderr
         )
 
-    def test_image_pinned_by_exited_container_is_kept(self, tmp_path: Path) -> None:
-        """`ps -a` pins, so an exited container's image must survive."""
-        _, removed = self._run(
-            tmp_path,
-            images=["sapphire-flow:0.1.775", "sapphire-flow:0.1.653"],
+    def test_unreferenced_non_anchor_is_removed(self, tmp_path: Path) -> None:
+        _, removed = self._run(tmp_path, self._base())
+        assert removed == ["sapphire-flow:0.1.653"], f"removed={removed}"
+
+    def test_image_pinned_only_by_an_exited_container_is_kept(
+        self, tmp_path: Path
+    ) -> None:
+        """The exited container pins a DISTINCT image, so `ps` vs `ps -a` is
+        genuinely load-bearing here: with plain `ps` this image looks unused."""
+        fx = self._base()
+        fx["containers"].append(
+            _container(
+                "c2", "sapphire_flow-init-1", _ID_OLD, "sapphire-flow:0.1.653", False
+            )
         )
-        assert "sapphire-flow:0.1.775" not in removed, (
-            f"in-use image was pruned; removed={removed}"
+        _, removed = self._run(tmp_path, fx)
+        assert removed == [], f"exited container's image was pruned: {removed}"
+
+    def test_alternate_tag_of_an_in_use_image_is_kept(self, tmp_path: Path) -> None:
+        """Two refs, one image id, container created from the other ref.
+        Comparing references instead of ids would untag the live image."""
+        fx = self._base()
+        fx["images"].append({"id": _ID_LIVE, "ref": "sapphire-flow:alias"})
+        _, removed = self._run(tmp_path, fx)
+        assert "sapphire-flow:alias" not in removed, f"removed={removed}"
+
+    def test_digest_pinned_container_still_protects_its_image(
+        self, tmp_path: Path
+    ) -> None:
+        """docker-compose.yml pins postgis by @sha256, so the container's
+        reference never equals the `repo:tag` from `docker images`."""
+        fx = self._base()
+        fx["containers"].append(
+            _container(
+                "c3",
+                "sapphire_flow-postgres-1",
+                "sha256:ddd",
+                "postgis/postgis:16-3.4@sha256:44126d",
+                True,
+            )
         )
+        fx["images"].append({"id": "sha256:ddd", "ref": "postgis/postgis:16-3.4"})
+        _, removed = self._run(tmp_path, fx)
+        assert "postgis/postgis:16-3.4" not in removed, f"removed={removed}"
+
+    def test_dangling_rows_are_skipped(self, tmp_path: Path) -> None:
+        fx = self._base()
+        fx["images"].append({"id": "sha256:eee", "ref": "<none>:<none>"})
+        _, removed = self._run(tmp_path, fx)
+        assert "<none>:<none>" not in removed, f"removed={removed}"
+
+    def test_container_inventory_failure_prunes_nothing_and_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """A daemon error must never read as 'nothing is in use'."""
+        result, removed = self._run(tmp_path, self._base(inspect_fails=True))
+        assert removed == [], f"pruned despite unusable inventory: {removed}"
+        assert result.returncode != 0
+        assert "skipping image prune" in (result.stdout + result.stderr)
+
+    def test_image_inventory_failure_prunes_nothing_and_fails(
+        self, tmp_path: Path
+    ) -> None:
+        result, removed = self._run(tmp_path, self._base(images_fails=True))
+        assert removed == [], f"removed={removed}"
+        assert result.returncode != 0
+
+    def test_rmi_failure_is_reported_in_exit_status(self, tmp_path: Path) -> None:
+        result, _ = self._run(tmp_path, self._base(rmi_fails=["sapphire-flow:0.1.653"]))
+        assert result.returncode != 0, "a failed rmi must not report success"
+        assert "WITH FAILURES" in (result.stdout + result.stderr)
+
+    def test_invalid_protect_pattern_fails_closed(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        rmi_log = tmp_path / "rmi.log"
+        fake = _write_py_fake_docker(bin_dir, self._base(), rmi_log)
+        env = {**os.environ, "DOCKER_CMD": str(fake), "PRUNE_PROTECT_RE": "*bad["}
+        result = subprocess.run(
+            ["bash", str(_PRUNE_SCRIPT)], capture_output=True, text=True, env=env
+        )
+        removed = rmi_log.read_text().split() if rmi_log.exists() else []
+        assert removed == [], f"pruned under an invalid pattern: {removed}"
+        assert result.returncode != 0
+
+    def test_repository_named_rollback_is_not_protected(self, tmp_path: Path) -> None:
+        """Protection is a TAG match; a repo called rollback/* must still prune."""
+        fx = self._base()
+        fx["images"].append({"id": "sha256:fff", "ref": "rollback/tool:1.0"})
+        _, removed = self._run(tmp_path, fx)
+        assert "rollback/tool:1.0" in removed, f"removed={removed}"

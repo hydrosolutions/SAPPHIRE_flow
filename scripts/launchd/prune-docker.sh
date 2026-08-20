@@ -123,25 +123,69 @@ PRUNE_THRESHOLD=1
 # without a rebuild. `docker image prune -a` cannot express this: its only
 # filters are `until=` and `label=`, neither of which matches a tag name. So
 # the candidate set is enumerated here and protected tags are skipped.
-# Overridable so tests exercise the protection without depending on the
-# production naming convention.
-PROTECT_RE="${PRUNE_PROTECT_RE:-:rollback}"
+#
+# Matched with `grep -E` against the TAG ONLY, never the whole reference, so a
+# repository called `rollback/foo` is not silently protected. Overridable so
+# tests exercise the protection without depending on the production naming
+# convention.
+PROTECT_RE="${PRUNE_PROTECT_RE:-^rollback($|-)}"
+
+IMAGE_PRUNE_FAILED=0
 
 prune_unreferenced_images() {
-    local in_use candidates img removed=0 protected=0
-    # `ps -a`, not `ps`: an exited container still pins its image, which is
-    # what `docker image prune -a` itself honours. Using `ps` here would
-    # delete the image out from under a stopped container.
-    in_use=$("${DOCKER}" ps -a --format '{{.Image}}' 2>/dev/null | sort -u || true)
-    candidates=$("${DOCKER}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
-        | grep -v '^<none>:<none>$' | sort -u || true)
+    local cids in_use_ids candidates img_id img tag
+    local removed=0 protected=0 failures=0 rc=0
 
-    while IFS= read -r img; do
-        [ -z "${img}" ] && continue
-        if printf '%s\n' "${in_use}" | grep -qxF "${img}"; then
+    # An unusable protect pattern must never be discovered mid-loop: `grep -E`
+    # answers 2 for an invalid regex, and as an `if` condition that is
+    # indistinguishable from "no match" — i.e. it would fail OPEN and prune the
+    # very images the operator meant to keep. Validate once, before any rmi.
+    printf '' | grep -Eq -- "${PROTECT_RE}" 2>/dev/null || rc=$?
+    if [ "${rc}" -ge 2 ]; then
+        log "invalid PRUNE_PROTECT_RE '${PROTECT_RE}' — skipping image prune"
+        return 1
+    fi
+
+    # Use is decided by IMMUTABLE IMAGE ID, never by the reference string a
+    # container was created from. Those differ for digest-pinned images
+    # (docker-compose.yml:19 pins postgis by @sha256), for implicit `latest`,
+    # for containers created by ID, and for alternate tags on one image.
+    # `docker image prune -a` keys on the image object, so this must too —
+    # comparing references would `rmi` a second tag of an in-use image.
+    #
+    # Every inventory command FAILS CLOSED: an empty in-use set caused by a
+    # daemon error would otherwise mean "nothing is in use", and every
+    # unprotected reference would be deleted.
+    if ! cids=$("${DOCKER}" ps -aq 2>/dev/null); then
+        log "could not list containers — skipping image prune"
+        return 1
+    fi
+    in_use_ids=""
+    if [ -n "${cids}" ]; then
+        if ! in_use_ids=$(printf '%s\n' "${cids}" \
+            | xargs "${DOCKER}" inspect -f '{{.Image}}' 2>/dev/null); then
+            log "could not resolve container image ids — skipping image prune"
+            return 1
+        fi
+    fi
+    # --no-trunc so these ids are the full sha256: form that `inspect` returns.
+    if ! candidates=$("${DOCKER}" images --no-trunc \
+        --format '{{.ID}} {{.Repository}}:{{.Tag}}' 2>/dev/null); then
+        log "could not enumerate images — skipping image prune"
+        return 1
+    fi
+
+    while IFS=' ' read -r img_id img; do
+        [ -z "${img_id}" ] && continue
+        [ "${img}" = "<none>:<none>" ] && continue
+        # here-string, not `printf | grep -q`: grep -q exits on first match and
+        # SIGPIPEs the producer, which under `set -o pipefail` turns a HIT into
+        # a false MISS — deleting an in-use image.
+        if grep -qxF -- "${img_id}" <<< "${in_use_ids}"; then
             continue
         fi
-        if printf '%s' "${img}" | grep -q "${PROTECT_RE}"; then
+        tag="${img##*:}"
+        if grep -Eq -- "${PROTECT_RE}" <<< "${tag}"; then
             log "protected, not pruned: ${img}"
             protected=$((protected + 1))
             continue
@@ -151,28 +195,52 @@ prune_unreferenced_images() {
             removed=$((removed + 1))
         else
             log "could not remove ${img} — leaving in place"
+            failures=$((failures + 1))
         fi
     done <<< "${candidates}"
 
     # Untagged/dangling layers left behind carry no rollback value and are
     # safe to reclaim wholesale.
-    "${DOCKER}" image prune -f >/dev/null 2>&1 || true
+    if ! "${DOCKER}" image prune -f >/dev/null 2>&1; then
+        log "dangling-layer prune failed"
+        failures=$((failures + 1))
+    fi
+
+    if [ "${failures}" -gt 0 ]; then
+        log "image prune completed with ${failures} failures — ${removed} removed, ${protected} protected"
+        return 1
+    fi
     log "image prune complete — ${removed} removed, ${protected} protected"
+    return 0
 }
 
 if python3 -c "import sys; sys.exit(0 if float('${IMAGES_GB}') >= ${PRUNE_THRESHOLD} else 1)"; then
     log "pruning images (${IMAGES_GB} GB reclaimable >= ${PRUNE_THRESHOLD} GB threshold)"
-    prune_unreferenced_images
+    # Never abort here: the build-cache gate below is independent and must
+    # still run. The failure is remembered and surfaced in the exit status.
+    prune_unreferenced_images || IMAGE_PRUNE_FAILED=1
 else
     log "images reclaimable ${IMAGES_GB} GB < ${PRUNE_THRESHOLD} GB — skipping image prune"
 fi
 
+CACHE_PRUNE_FAILED=0
 if python3 -c "import sys; sys.exit(0 if float('${CACHE_GB}') >= ${PRUNE_THRESHOLD} else 1)"; then
     log "pruning build cache (${CACHE_GB} GB reclaimable >= ${PRUNE_THRESHOLD} GB threshold)"
-    "${DOCKER}" builder prune -f
-    log "build-cache prune complete"
+    if "${DOCKER}" builder prune -f; then
+        log "build-cache prune complete"
+    else
+        log "build-cache prune failed"
+        CACHE_PRUNE_FAILED=1
+    fi
 else
     log "build cache reclaimable ${CACHE_GB} GB < ${PRUNE_THRESHOLD} GB — skipping builder prune"
+fi
+
+# Exit status must be truthful: launchd records it, and a run that pruned
+# nothing because docker went away must not look like a clean weekly prune.
+if [ "${IMAGE_PRUNE_FAILED}" -ne 0 ] || [ "${CACHE_PRUNE_FAILED}" -ne 0 ]; then
+    log "done — WITH FAILURES"
+    exit 1
 fi
 
 log "done"
