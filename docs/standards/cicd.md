@@ -717,13 +717,30 @@ from a Prefect worker would require mounting the Docker socket into the containe
 
 | File | Purpose |
 |------|---------|
-| `scripts/launchd/prune-docker.sh` | Main script: reads `docker system df --format '{{json .}}'`, parses Images and Build Cache reclaimable figures, runs `docker image prune -a -f` (≥ 1 GB reclaimable) and `docker builder prune -f` (≥ 1 GB reclaimable) independently |
+| `scripts/launchd/prune-docker.sh` | Main script: reads `docker system df --format '{{json .}}'`, parses Images and Build Cache reclaimable figures, then prunes images (≥ 1 GB reclaimable) and runs `docker builder prune -f` (≥ 1 GB reclaimable) independently. Image pruning enumerates candidates itself rather than calling `docker image prune -a -f`, so rollback anchors can be spared — see **Rollback-anchor protection** below |
 | `scripts/launchd/ch.hydrosolutions.sapphire-docker-prune.plist` | launchd agent — label `ch.hydrosolutions.sapphire-docker-prune`, weekly `StartCalendarInterval` (Sunday 04:00 local) |
 | `scripts/launchd/install-launchd.sh` | Updated to include the new plist in the `PLISTS=(...)` array (alongside `ch.hydrosolutions.sapphire.plist` and `ch.hydrosolutions.sapphire-watchdog.plist`) |
 
+### Rollback-anchor protection
+
+Image tags matching `PROTECT_RE` (default `:rollback`) are never pruned. Rollback
+anchors — e.g. `sapphire-flow:rollback-backup` — are unreferenced by design: no
+container runs them, so a blanket `docker image prune -a -f` deletes them, and
+reproducing a prior version then needs a rebuild at a commit that may no longer be
+checked out.
+
+This cannot be a docker-side filter: `docker image prune` accepts only `until=` and
+`label=`, neither of which matches a tag name, and tagging an existing image cannot
+add a label. The script therefore enumerates candidates itself — every image not
+pinned by a container (`docker ps -a`, so exited containers still pin, matching
+`prune -a` semantics) and not matching `PROTECT_RE` — and removes them by name,
+finishing with `docker image prune -f` to reclaim dangling layers.
+
+Override with `PRUNE_PROTECT_RE` to widen or narrow the protected set.
+
 ### Stack-up guard
 
-`docker image prune -a -f` removes ALL images not referenced by a running container —
+Image pruning removes ALL images not referenced by a container —
 including the current `sapphire-flow:${VERSION}` tag if the stack is down. The script
 therefore checks that the stack is running before pruning:
 

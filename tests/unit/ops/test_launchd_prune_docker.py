@@ -190,3 +190,114 @@ class TestInstallLaunchdPruneRegistration:
         assert os.access(_PRUNE_SCRIPT, os.X_OK), (
             f"prune-docker.sh is not executable: {_PRUNE_SCRIPT}"
         )
+
+
+def _write_rich_fake_docker(
+    bin_dir: Path,
+    *,
+    running: list[str],
+    all_container_images: list[str],
+    images: list[str],
+    rmi_log: Path,
+) -> Path:
+    """A fake docker that models the subset of the CLI the prune path uses.
+
+    Distinguishes `ps` (guard: container names) from `ps -a` (image pins),
+    serves an image inventory, reports >= 1 GB reclaimable so the prune gate
+    opens, and records every `rmi` target to rmi_log instead of deleting.
+    """
+    running_out = " ".join(f'"{c}"' for c in running) or '""'
+    pinned_out = " ".join(f'"{c}"' for c in all_container_images) or '""'
+    images_out = " ".join(f'"{c}"' for c in images) or '""'
+    stub = textwrap.dedent(
+        f"""\
+        #!/bin/bash
+        if [[ "$1" == "ps" && "$2" == "-a" ]]; then
+            printf '%s\\n' {pinned_out}
+            exit 0
+        fi
+        if [[ "$1" == "ps" ]]; then
+            printf '%s\\n' {running_out}
+            exit 0
+        fi
+        if [[ "$1" == "images" ]]; then
+            printf '%s\\n' {images_out}
+            exit 0
+        fi
+        if [[ "$1" == "system" && "$2" == "df" ]]; then
+            echo '{{"Type":"Images","Reclaimable":"9.0GB (86%)"}}'
+            echo '{{"Type":"Build Cache","Reclaimable":"0B"}}'
+            exit 0
+        fi
+        if [[ "$1" == "rmi" ]]; then
+            echo "$2" >> "{rmi_log}"
+            exit 0
+        fi
+        exit 0
+        """
+    )
+    fake = bin_dir / "docker"
+    fake.write_text(stub)
+    fake.chmod(0o755)
+    return fake
+
+
+class TestPruneDockerRollbackProtection:
+    """Rollback anchor images must survive the weekly prune."""
+
+    def _run(self, tmp_path: Path, images: list[str]) -> tuple[str, list[str]]:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        rmi_log = tmp_path / "rmi.log"
+        fake = _write_rich_fake_docker(
+            bin_dir,
+            running=["sapphire_flow-api-1"],
+            all_container_images=["sapphire-flow:0.1.775"],
+            images=images,
+            rmi_log=rmi_log,
+        )
+        result = _run_prune_script(tmp_path, docker_cmd=fake)
+        assert result.returncode == 0, f"script failed: {result.stderr}"
+        removed = rmi_log.read_text().split() if rmi_log.exists() else []
+        return result.stdout + result.stderr, removed
+
+    def test_rollback_images_are_never_removed(self, tmp_path: Path) -> None:
+        combined, removed = self._run(
+            tmp_path,
+            images=[
+                "sapphire-flow:0.1.775",
+                "sapphire-flow:rollback-backup",
+                "sapphire-flow:rollback-0.1.653",
+                "sapphire-flow:0.1.653",
+            ],
+        )
+        assert "sapphire-flow:rollback-backup" not in removed, (
+            f"rollback anchor was pruned; removed={removed}\n{combined}"
+        )
+        assert "sapphire-flow:rollback-0.1.653" not in removed, (
+            f"rollback anchor was pruned; removed={removed}\n{combined}"
+        )
+        assert "protected, not pruned" in combined
+
+    def test_unreferenced_non_rollback_images_are_removed(self, tmp_path: Path) -> None:
+        _, removed = self._run(
+            tmp_path,
+            images=[
+                "sapphire-flow:0.1.775",
+                "sapphire-flow:rollback-backup",
+                "sapphire-flow:0.1.653",
+            ],
+        )
+        assert "sapphire-flow:0.1.653" in removed, (
+            f"stale image was not pruned; removed={removed}"
+        )
+
+    def test_image_pinned_by_exited_container_is_kept(self, tmp_path: Path) -> None:
+        """`ps -a` pins, so an exited container's image must survive."""
+        _, removed = self._run(
+            tmp_path,
+            images=["sapphire-flow:0.1.775", "sapphire-flow:0.1.653"],
+        )
+        assert "sapphire-flow:0.1.775" not in removed, (
+            f"in-use image was pruned; removed={removed}"
+        )

@@ -10,11 +10,13 @@
 # Invoked weekly by launchd (ch.hydrosolutions.sapphire-docker-prune.plist).
 # Never run automatically from inside any container.
 #
-# Stack-up guard: `docker image prune -a -f` removes ALL images not
-# referenced by a running container. The -a flag is REQUIRED (plain
-# `docker image prune -f` only removes dangling/untagged images and would
-# reclaim nothing from old tagged `sapphire-flow:0.1.xxx` images — the
-# primary ~15 GB offender). Protection: the running `sapphire-flow:${VERSION}`
+# Stack-up guard: this script removes ALL images not referenced by a
+# container, matching `docker image prune -a` semantics. Removing only
+# dangling/untagged images would reclaim nothing from old tagged
+# `sapphire-flow:0.1.xxx` images — the primary ~15 GB offender. Tags matching
+# PROTECT_RE (rollback anchors) are the one exception; see
+# `prune_unreferenced_images` below for why that cannot be a docker filter.
+# Protection: the running `sapphire-flow:${VERSION}`
 # image and its base images remain referenced while the stack is up. If the
 # stack is DOWN (docker compose down during maintenance), every image
 # including the current version would be removed; `docker compose up -d` alone
@@ -111,15 +113,56 @@ print(total)
 log "images reclaimable: ${IMAGES_GB} GB  |  build-cache reclaimable: ${CACHE_GB} GB"
 
 # Gate each prune independently on ≥ 1 GB reclaimable.
-# docker image prune -a -f: removes ALL images not referenced by a running
-# container (including old tagged `sapphire-flow:0.1.xxx` images). The running
-# stack's images are protected because their containers reference them.
+# Images attached to NO container (running or exited) are removed, including
+# old tagged `sapphire-flow:0.1.xxx` images. The deployed stack's images are
+# protected because their containers reference them.
 PRUNE_THRESHOLD=1
+
+# Rollback anchors must survive the prune. They are unreferenced by design —
+# no container runs them — and are the only way to reproduce a prior version
+# without a rebuild. `docker image prune -a` cannot express this: its only
+# filters are `until=` and `label=`, neither of which matches a tag name. So
+# the candidate set is enumerated here and protected tags are skipped.
+# Overridable so tests exercise the protection without depending on the
+# production naming convention.
+PROTECT_RE="${PRUNE_PROTECT_RE:-:rollback}"
+
+prune_unreferenced_images() {
+    local in_use candidates img removed=0 protected=0
+    # `ps -a`, not `ps`: an exited container still pins its image, which is
+    # what `docker image prune -a` itself honours. Using `ps` here would
+    # delete the image out from under a stopped container.
+    in_use=$("${DOCKER}" ps -a --format '{{.Image}}' 2>/dev/null | sort -u || true)
+    candidates=$("${DOCKER}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+        | grep -v '^<none>:<none>$' | sort -u || true)
+
+    while IFS= read -r img; do
+        [ -z "${img}" ] && continue
+        if printf '%s\n' "${in_use}" | grep -qxF "${img}"; then
+            continue
+        fi
+        if printf '%s' "${img}" | grep -q "${PROTECT_RE}"; then
+            log "protected, not pruned: ${img}"
+            protected=$((protected + 1))
+            continue
+        fi
+        if "${DOCKER}" rmi "${img}" >/dev/null 2>&1; then
+            log "removed ${img}"
+            removed=$((removed + 1))
+        else
+            log "could not remove ${img} — leaving in place"
+        fi
+    done <<< "${candidates}"
+
+    # Untagged/dangling layers left behind carry no rollback value and are
+    # safe to reclaim wholesale.
+    "${DOCKER}" image prune -f >/dev/null 2>&1 || true
+    log "image prune complete — ${removed} removed, ${protected} protected"
+}
 
 if python3 -c "import sys; sys.exit(0 if float('${IMAGES_GB}') >= ${PRUNE_THRESHOLD} else 1)"; then
     log "pruning images (${IMAGES_GB} GB reclaimable >= ${PRUNE_THRESHOLD} GB threshold)"
-    "${DOCKER}" image prune -a -f
-    log "image prune complete"
+    prune_unreferenced_images
 else
     log "images reclaimable ${IMAGES_GB} GB < ${PRUNE_THRESHOLD} GB — skipping image prune"
 fi
