@@ -20,6 +20,7 @@ from scripts.dhm_precip.era5_manifest import (
     checksum_file,
     load_operator_provenance,
     passing_accumulation_diagnostic,
+    product_artifact_path,
     publish_atomic,
     raw_request_identity,
     raw_window_is_current,
@@ -31,6 +32,7 @@ from scripts.dhm_precip.era5_manifest import (
     with_transform_year,
     write_manifest_atomic,
 )
+from scripts.dhm_precip.era5_request import ERA5_VARIABLE_CODES, STUDY_YEARS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -619,3 +621,41 @@ class TestStorageErrorWrapping:
         monkeypatch.setattr(_Path, "read_text", _boom_read_text)
         with pytest.raises(Era5StorageError, match="failed to read"):
             load_operator_provenance(path)
+
+
+class TestProductArtifactPathIsVariableAware:
+    """Plan 191 D8 — the seam, not the decision. PR #194's fifth bug passed
+    18 tests that asserted a decision (an argument was passed) rather than
+    the seam (the resolved path actually differs on disk). These assert on
+    the resolved path STRING, pinned as literals."""
+
+    def test_existing_precipitation_products_resolve_byte_identically(
+        self, tmp_path: Path
+    ) -> None:
+        expected = {
+            2020: "era5_land/hourly_mm/era5_land_tp_mm_2020.nc",
+            2021: "era5_land/hourly_mm/era5_land_tp_mm_2021.nc",
+            2022: "era5_land/hourly_mm/era5_land_tp_mm_2022.nc",
+            2023: "era5_land/hourly_mm/era5_land_tp_mm_2023.nc",
+            2024: "era5_land/hourly_mm/era5_land_tp_mm_2024.nc",
+            2025: "era5_land/hourly_mm/era5_land_tp_mm_2025.nc",
+        }
+        assert tuple(sorted(expected)) == STUDY_YEARS
+        for year, suffix in expected.items():
+            resolved = product_artifact_path(year, tmp_path)
+            assert str(resolved) == str(tmp_path / suffix)
+
+    def test_t2m_product_resolves_to_a_distinct_degc_path(self, tmp_path: Path) -> None:
+        resolved = product_artifact_path(
+            2021,
+            tmp_path,
+            variable_code=ERA5_VARIABLE_CODES["2m_temperature"],
+            product_dir_name="degc",
+            unit_label="degc",
+        )
+        assert str(resolved) == str(
+            tmp_path / "era5_land/degc/era5_land_t2m_degc_2021.nc"
+        )
+        assert "t2m_degc" in resolved.name
+        assert "tp" not in resolved.name
+        assert "_mm_" not in resolved.name

@@ -54,6 +54,7 @@ from scripts.dhm_precip.era5_request import (
     DEFAULT_REQUEST_SPEC,
     STUDY_YEARS,
     expected_grid_shape,
+    variable_code,
 )
 
 if TYPE_CHECKING:
@@ -207,17 +208,11 @@ def transform_year(
         *((window_id, "product month") for window_id in month_window_ids),
         (next_window_id, "next-month boundary context"),
     )
-    consumed_paths = {
-        window_id: raw_artifact_path(window_id, data_root) for window_id, _ in consumed
-    }
-    for window_id, label in consumed:
-        path = consumed_paths[window_id]
-        if not path.exists():
-            raise Era5MissingBoundaryContextError(
-                f"required raw artifact for {label} window {window_id!r} is "
-                f"missing: {path}"
-            )
 
+    # The manifest must be read BEFORE `consumed_paths` is built: the raw
+    # artifacts' variable code is recorded on the manifest (`manifest.variable`,
+    # set once at acquisition), not defaulted, so resolving the same paths
+    # `acquire_window` actually wrote requires knowing it first.
     manifest_path = manifest_path_for(data_root)
     manifest = read_manifest(manifest_path)
     if manifest is None:
@@ -232,6 +227,21 @@ def transform_year(
             f"--provenance does not match the acquisition manifest at "
             f"{manifest_path}: {provenance} != {manifest.operator_provenance}"
         )
+
+    consumed_variable_code = variable_code(manifest.variable)
+    consumed_paths = {
+        window_id: raw_artifact_path(
+            window_id, data_root, variable_code=consumed_variable_code
+        )
+        for window_id, _ in consumed
+    }
+    for window_id, label in consumed:
+        path = consumed_paths[window_id]
+        if not path.exists():
+            raise Era5MissingBoundaryContextError(
+                f"required raw artifact for {label} window {window_id!r} is "
+                f"missing: {path}"
+            )
 
     raw_sha256s: list[str] = []
     request_family: dict[str, object] | None = None

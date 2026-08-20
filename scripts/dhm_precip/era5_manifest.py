@@ -34,8 +34,12 @@ def raw_dir(data_root: Path) -> Path:
     return data_root / "era5_land" / "raw"
 
 
+def product_dir(data_root: Path, product_dir_name: str) -> Path:
+    return data_root / "era5_land" / product_dir_name
+
+
 def hourly_mm_dir(data_root: Path) -> Path:
-    return data_root / "era5_land" / "hourly_mm"
+    return product_dir(data_root, "hourly_mm")
 
 
 def manifest_path_for(data_root: Path) -> Path:
@@ -52,8 +56,24 @@ def raw_artifact_path(
     return raw_dir(data_root) / f"era5_land_{variable_code}_raw_{window_id}.nc"
 
 
-def product_artifact_path(year: int, data_root: Path) -> Path:
-    return hourly_mm_dir(data_root) / f"era5_land_tp_mm_{year:04d}.nc"
+def product_artifact_path(
+    year: int,
+    data_root: Path,
+    *,
+    variable_code: str = "tp",
+    product_dir_name: str = "hourly_mm",
+    unit_label: str = "mm",
+) -> Path:
+    """The transformed product's on-disk path. `variable_code` AND
+    `unit_label` are both part of the FILENAME: keyed on `year` alone, a
+    second variable's product would overwrite the first under a name
+    claiming to be the first — the exact lie #194 fixed one layer down, at
+    `raw_artifact_path`. Defaults to `tp`/`mm`/`hourly_mm` so every existing
+    precipitation product keeps its current path."""
+    return (
+        product_dir(data_root, product_dir_name)
+        / f"era5_land_{variable_code}_{unit_label}_{year:04d}.nc"
+    )
 
 
 def tmp_path_for(final_path: Path) -> Path:
