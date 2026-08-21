@@ -13,9 +13,11 @@ source: SAPPHIRE-flow-map integration request 2026-08-21; grounded in the Flow M
 
 ## Status
 
-**DRAFT — NOT READY.** The `plan` workflow ran 3 rounds on 2026-08-21 and **escalated without
-converging**. Read § Owner decisions required before anything else: **O7 is a blocker** that no
-amount of further review can resolve, because it is a governance question the owner owns.
+**DRAFT — blocker cleared, awaiting a final review round.** The `plan` workflow ran 3 rounds on
+2026-08-21 and escalated on one blocker, **O7**, which the owner resolved the same day: verification
+(T4) is **cut**, and the raw BAFU export **proceeds**, recorded as an Export extension in Plan 111.
+Five owner forks remain open (O1, O3, O4, O5, O6) and none of them blocks — each has a stated
+recommendation and a working default.
 
 Review provenance, because it changes how much the rounds are worth: **the independent Codex pass
 failed in rounds 1 and 2** (`codexFailedRounds: 2`), so those rounds were Claude-lens only and
@@ -24,7 +26,8 @@ got the first real Codex pass and raised 2 blockers + 12 majors, which tripped t
 comparing a Codex-less round to a Codex-ful one. **That is a false stall**, and the round-3 findings
 were the valuable ones: every one this session verified against the repo or the live host held up,
 and four of them corrected *this plan's own* measured facts (F1, F6, F8, D2). Those are folded.
-Still open: O7, plus the T4-internal findings that only matter if T4 survives it.
+The three T4-internal findings died with T4. **Next step: one more `plan` round with a raised
+`codexTimeoutMs`, so the whole loop gets the independent reviewer that only round 3 had.**
 
 ## Goal
 
@@ -70,7 +73,8 @@ platform. Specifically:
   omitted.
 - **Adding length is a cost.** Prefer deleting to adding. A revision that grows the plan without
   removing a concrete failure has made the plan worse.
-- **Do not reinstate cut scope.** T4, T9 and T10 are marked **separable** deliberately, and the
+- **Do not reinstate cut scope.** **T4 is CUT, not deferred** — reinstating it would breach Plan
+  111's scorer gate (O7.1). T9 and T10 are marked **separable** deliberately, and the
   six owner forks in § Owner decisions required are for the human, not for reviewers to
   pre-resolve by expanding the plan.
 - **Do not propose new apparatus.** Per `CLAUDE.md` § Ad-hoc Analyses, a one-off check is a
@@ -221,11 +225,15 @@ of this fallback had a worker pre-build the whole document to a shared volume; i
 because it would add a scheduled job (barred by proportionality rule 4), a third producer (breaking
 D1) and a staleness class the contract would have to model.*
 
-**D3 — Verification is computed from raw archive + observations only.** The verification path must
-**never** query `hindcast_forecasts`, `hindcast_values`, or `skill_scores`. That is not a filter —
-it is a structural exclusion, and it makes "no contaminated future-dated hindcasts enter
-verification" (2,752 known-bad rows, `hindcast_step` up to 2028-07-09) a one-line test rather than
-a data-cleaning exercise.
+**D3 — v1 computes no verification at all; the section is a declared sentinel.** *(Resolved by
+owner decision O7.1, 2026-08-21 — T4 is CUT.)* `verification` is always
+`{"status": "insufficient_data", ...}` with the window, method version and limitations populated,
+and no metrics. This is not a stub awaiting code — it is the **honest** answer under Plan 111,
+which bars computing a BAFU-derived benchmark before Gate G1. It also makes the contaminated-data
+requirement structural rather than defensive: `build_snapshot()` **never queries
+`hindcast_forecasts`, `hindcast_values` or `skill_scores` at all**, so the 2,752 known-bad
+future-dated hindcast rows cannot reach the export by any path. A single test asserts those three
+tables are untouched.
 
 **D4 — `aligned_daily_comparison.sapphire` is a keyed object, not a row per model.** One row per
 UTC day, with `sapphire` keyed by `model_key`. Row-per-model would duplicate the `observation` and
@@ -370,10 +378,8 @@ DB. *Recommendation: yes.* Fallback: D2-alt — the route still builds live but 
 `bafu_forecast: missing`, and only the CLI (run in a container that already has the mount) produces
 the complete three-source snapshot.
 
-**O2 — Ship verification in v1, or ship `insufficient_data`?** T4 is real work (historical run
-scanning + issue-time pairing + metrics) and the numbers will be honest but weak: 2 stations,
-~6 weeks, no verified high-flow event. *Recommendation: ship it — the daily-aggregation machinery
-is already needed for `aligned_daily_comparison`, so the marginal cost is pairing + metrics.*
+**O2 — ✅ RESOLVED 2026-08-21: ship `insufficient_data`.** Superseded by O7.1 — T4 is cut, so the
+question is moot. See D3.
 
 **O3 — Archive the BAFU inventory (T9)?** Unlocks `river` and `display_name` and closes a gap the
 audit already identified. **Correction to my earlier "~15 lines" estimate:** it is more than a
@@ -384,9 +390,16 @@ collector ever sees the inventory (`adapters/bafu_forecast.py:126,280`), and
 payload, plus atomic archival and reader tests. *Recommendation: still yes, but price it honestly;
 it is separable, and cutting it leaves those two fields `null`, which the contract already permits.*
 
-**O7 — ⛔ BLOCKING: does Plan 111's licence gate permit this export at all?** Raised by the
-independent Codex review and **verified against the plan text**. Plan 111 is `status: READY`, and
-therefore authoritative:
+**O7 — ✅ RESOLVED 2026-08-21 by the owner. Both halves answered; the blocker is cleared.**
+
+> **O7.1 — verification: CUT.** T4 is removed from v1. Plan 111's scorer gate stands untouched.
+> **O7.2 — raw BAFU export: PROCEED.** Owner: *"proceed with that. we use the data."* Recorded
+> where the gate lives, as an **Export extension** in `docs/plans/111-...md` § Non-goals
+> (commit on `main`, 2026-08-21), not only here.
+
+The finding that forced the decision, retained because it is why the plan is shaped this way. It
+was raised by the independent Codex review and **verified against the plan text**. Plan 111 is
+`status: READY`, and therefore authoritative:
 
 - *"The scoring half … stays **BLOCKED on external gate G1**: no benchmark can be **computed** or
   published until the BAFU request … returns"* (`111:3-6`), and among its non-goals:
@@ -397,18 +410,12 @@ therefore authoritative:
   reaches — a weakening of the discard guarantee the owner accepted, whatever the payload says.
   `licence_status: "unresolved"` (O6) documents the constraint; it does not lift it.
 
-The two halves are separable and deserve separate answers:
-
-1. **T4 / verification — barred as things stand.** Cut it, or record an explicit owner override
-   amending Plan 111's scorer gate the way the 2026-07-10 override amended its collector gate.
-   *Recommendation: cut T4 from v1.* The MVP is the live comparison contract; the audit already
-   showed the numbers would be weak (2 stations, ~6 weeks, no verified high-flow event), so little
-   is lost and the gate stays clean.
-2. **Serving raw BAFU forecasts in the snapshot — narrower, and genuinely the owner's call.** It is
-   internal, LAN-only, research-only, and not a skill score or a publication. But it does put copies
-   outside the single-`rm` boundary. *Recommendation: proceed, with the export explicitly named as
-   an extension of the existing collect-now/discard-if-refused posture and recorded in Plan 111* —
-   so the decision lives where the gate lives, not only here.
+**Consequence the implementer must carry forward.** The archive's discard property — *"a single
+`rm -rf` of that directory discards the whole archive"* — no longer holds on its own, because
+exported snapshots are copies outside it and the map deliberately caches the last good one. Plan 111
+now records that a full discard takes three steps (volume, exported files, map cache). **T8 must
+document this in the Forecast Lab spec**, so the operational consequence is not buried in a plan
+nobody re-reads.
 
 **O4 — Add `GZipMiddleware` (T10)?** *Recommendation: no for this MVP (D11).*
 
@@ -467,22 +474,20 @@ query, any query-count assertion (D14).
 `aligned_daily_comparison` with the daily completeness gates (BAFU ≥ 22 h, observations ≥ 130
 samples), `snapshot_id` (D10), deterministic ordering (D12), unavailable-model entries with a
 reason and last-known successful issue time; **ownership of the `include_verification` flag** — it
-is a parameter of `build_snapshot()` itself, which calls `verification.py` internally when true and
-emits the `insufficient_data` sentinel when T4 is cut or returns nothing. This resolves a real
-contradiction in an earlier draft: with the flag owned by T5 and T6, each surface would have had to
-splice verification into the document before hashing it — two producers doing the merge, which is
-exactly the drift D1 exists to prevent.
-*Scope (out):* HTTP, files, and the metric mathematics itself (T4).
+is a parameter of `build_snapshot()` itself, and with T4 cut (O7.1) it selects only whether the
+`verification` key is present at all. When present it is always the `insufficient_data` sentinel
+(D3). The flag stays on `build_snapshot()` rather than on the surfaces: with it owned by T5 and T6,
+each would have had to splice verification into the document before hashing it — two producers
+doing the merge, exactly the drift D1 exists to prevent.
+*Scope (out):* HTTP, files, and any computed metric (barred — see D3/O7.1).
 *Exit:* `uv run pytest tests/unit/services/forecast_lab/test_snapshot.py`.
 
-**T4 — Verification summary.** *(separable — see O2)* `services/forecast_lab/verification.py`.
-*Scope (in):* 30-day window; pairing = latest BAFU `issued_at` ≤ SAPPHIRE `issued_at`; UTC daily
-mean; `bias`/`mae`/`rmse`/`p25_p75_interval_coverage` overall and `by_lead`; sample counts
-everywhere; incomplete days excluded; `peak_magnitude_error` = `null`; no threshold metrics (F8).
-*Scope (out):* any read of `hindcast_*` or `skill_scores` (D3); any winner declaration; any metric
-returned as a number when it cannot be computed honestly.
-*Exit:* `uv run pytest tests/unit/services/forecast_lab/test_verification.py` — including a test that
-asserts no hindcast/skill table is touched.
+**T4 — CUT (owner decision O7.1, 2026-08-21).** No `verification.py`, no metrics, no pairing
+logic, no historical BAFU run scanning. T3 emits the `insufficient_data` sentinel (D3). **Do not
+reinstate this task** — it is barred by Plan 111's scorer gate, not merely deprioritised. A future
+plan may pick it up once Gate G1 returns publication rights; the pairing rule, the daily
+aggregation and the UTC-mean convention are already specified in `comparison_semantics` and in the
+audit, so nothing is lost by deleting the task here.
 
 ### Phase 4 — surfaces (parallel, after Phase 3)
 
@@ -584,7 +589,9 @@ Every one of these is a test, not a review item.
     sources failing yields `200` + `status.overall == "unavailable"` (D16 rule 2).
 14. Daily completeness gates (BAFU ≥ 22 h, observations ≥ 130) are applied and tested at the
     boundary.
-15. Verification touches no `hindcast_*` or `skill_scores` table.
+15. `build_snapshot()` queries no `hindcast_forecasts`, `hindcast_values` or `skill_scores` table
+    at all, and `verification.status` is always `"insufficient_data"` (D3, O7.1) — so the 2,752
+    known-bad future-dated hindcast rows cannot reach the export by any path.
 16. Two builds over identical data are byte-identical except `generated_at`.
 17. The CLI writes atomically and leaves no partial file on failure.
 
@@ -620,18 +627,16 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
   "phases": [
     { "id": "phase-1", "tasks": ["T1"], "parallel": false },
     { "id": "phase-2", "tasks": ["T2a", "T2b"], "parallel": true, "depends_on": ["phase-1"] },
-    { "id": "phase-3", "tasks": ["T4"], "parallel": false, "depends_on": ["phase-2"] },
-    { "id": "phase-4", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-3"] },
-    { "id": "phase-5", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-4"] },
-    { "id": "phase-6", "tasks": ["T7", "T8"], "parallel": true, "depends_on": ["phase-5"] },
-    { "id": "phase-opt", "tasks": ["T9", "T10"], "parallel": true, "depends_on": ["phase-6"] }
+    { "id": "phase-3", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-2"] },
+    { "id": "phase-4", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-3"] },
+    { "id": "phase-5", "tasks": ["T7", "T8"], "parallel": true, "depends_on": ["phase-4"] },
+    { "id": "phase-opt", "tasks": ["T9", "T10"], "parallel": true, "depends_on": ["phase-5"] }
   ]
 }
 ```
 
-`T4` is separable (O2 and, decisively, **O7**): cut it and `phase-3` is empty — T3 still owns the
-`insufficient_data` sentinel, so no task orphans (that was the D1/T3 contradiction, now fixed).
-`phase-opt` is separable in full (O3, O4).
+**T4 is gone** (O7.1) — six tasks plus two separable extras remain. T3 owns the
+`insufficient_data` sentinel, so nothing orphans. `phase-opt` is separable in full (O3, O4).
 
 ## Review
 
