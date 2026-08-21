@@ -92,16 +92,14 @@ lives in `config/deployment.py:450` (`bafu_forecast_archive_path`, blank-normali
 ### F3 — ⚠️ The requested percentile normalization is INVERTED
 
 The request states *"`25.-75. Percentile`, first half → `p75`; second half → `p25`"*. **This is
-backwards.** Measured on three independent runs across three stations:
-
-| run | idx 100 forward | idx 100 mirrored | median | conclusion |
-|---|---|---|---|---|
-| `2009_q_forecast_20260821T030000Z` | 177.0 | 192.6 | 181.9 | forward = **lower** |
-| `2091_q_forecast_20260821T030000Z` | 492.1 | 507.6 | 497.9 | forward = **lower** |
-| `2011_q_forecast_20260820T210000Z` | 143.2 | 150.4 | 145.9 | forward = **lower** |
-
-The correct mapping is **first half → `p25`, second (backward) half → `p75`**. Implementing the
-request as written would silently swap the uncertainty band on every chart.
+backwards.** Measured 2026-08-21 on three independent runs across three stations
+(`2009` and `2091` @ `20260821T030000Z`, `2011` @ `20260820T210000Z`): in every run the **forward**
+half is the lower series and the mirrored (backward) half the upper, with the `Median` trace between
+them. The correct mapping is therefore **first half → `p25`, second (backward) half → `p75`**.
+Implementing the request as written would silently swap the uncertainty band on every chart.
+*The raw per-run numbers are deliberately not reproduced here: they belong with the assertion they
+back (T2a's regression-fixture docstring), where they document a live test rather than rotting in a
+plan as the archive rolls over.*
 
 Polygon geometry, verified: length **237** = 118 forward + 118 backward + **1 closing vertex**.
 `half = (n - 1) // 2`. Indices `half-1` and `half` share the same `valid_time` (the horizon turn).
@@ -141,7 +139,8 @@ is never archived). See D7.
 
 - SAPPHIRE: daily (`time_step_seconds=86400`), 5 steps, `representation='members'`,
   21 members (`nwp_regression`) or 50 (`linear_regression_daily`); `parameter='discharge'`,
-  `units='m³/s'`. Leads are **not** round for 06/12/18Z runs (17, 41, 65, 89, 113).
+  `units='m³/s'`. Leads are **not** round for 06/12/18Z runs — D12 orders points by
+  `valid_time`, so no lead schedule is assumed anywhere.
 - BAFU: hourly, 118 points ≈ 117 h. `issued_at` from the `Forecast as of` layout annotation;
   `produced_at` is fetch time. Filenames: `{key}_{variant}_{issued_at:%Y%m%dT%H%M%SZ}.parquet`.
 - Observations: 10-minute grid; filter `source='measured' AND qc_status='qc_passed'`;
@@ -165,19 +164,28 @@ is the pattern to mirror.
 ## Design decisions
 
 **D1 — One assembly function, two surfaces.** `services/forecast_lab/snapshot.py::build_snapshot()`
-is the single source of truth. The route and the CLI both call it and both serialise the same
-Pydantic model. No second implementation, no drift. *(Follows the existing
-`services/skill/` package shape.)*
+is the single source of truth. The route and the CLI both call it per invocation and both serialise
+the same Pydantic model. No second implementation, no drift, no third producer. *(Follows the
+existing `services/skill/` package shape.)* **This invariant holds under both branches of owner
+decision O1** — see D2 and D2-alt, neither of which introduces a pre-built document.
 
 **D2 — The API reads the archive through a read-only volume mount.** Add to the `api` service:
-`bafu_forecast_archive:/data/bafu_forecasts:ro` and `SAPPHIRE_CONFIG: /app/config.toml`; add the
-overlay mount in `docker-compose.macmini.yml`. This **mirrors the pattern already in the file**
+`bafu_forecast_archive:/data/bafu_forecasts:ro` and `SAPPHIRE_CONFIG: /app/config.toml`. The mini
+overlay needs no edit — its `api` override is `ports` only (`docker-compose.macmini.yml:47-49`), so
+the base mount merges through (T7). This **mirrors the pattern already in the file**
 (`model_artifacts:/data/artifacts:ro`). The quarantine is preserved and arguably strengthened: the
 mount is `:ro`, nothing writes BAFU values to the DB, and no `ModelId` is minted.
-*Rejected alternative (D2-alt): have a worker pre-build the snapshot to a shared volume and let the
-API serve the file. Cheaper on the API, but adds a scheduling concern, a staleness class the
-contract would have to model, and still needs a shared volume. Kept as the fallback if the owner
-declines to widen the archive mount to the API — see Owner decision O1.*
+*Fallback if O1 = no (D2-alt): **nothing is pre-built and nothing is served from a file.** The route
+still calls `build_snapshot()` live (D1) and still computes `snapshot_id`/`ETag` over its own
+response body (D10, T5) — it simply has no archive to read, so the BAFU section comes back through
+the D13 guard as `status.bafu_forecast = "missing"`, reason `"archive not mounted"`. The complete
+three-source snapshot is then produced only by the CLI (T6), run inside a container that already
+has the mount (`docker-compose.yml:131` mounts `bafu_forecast_archive` on `prefect-worker`), and
+handed to the map as a file. **Trade-off, stated rather than hidden:** under D2-alt the map loses
+live BAFU forecasts over HTTP and gets them only from a manually exported file. An earlier variant
+of this fallback had a worker pre-build the whole document to a shared volume; it is **rejected**,
+because it would add a scheduled job (barred by proportionality rule 4), a third producer (breaking
+D1) and a staleness class the contract would have to model.*
 
 **D3 — Verification is computed from raw archive + observations only.** The verification path must
 **never** query `hindcast_forecasts`, `hindcast_values`, or `skill_scores`. That is not a filter —
@@ -208,12 +216,32 @@ valid times**. Any mismatch → the run is emitted with `available: true` plus a
 archived BAFU inventory snapshot if one exists, else **`null`**. T9 (separable) adds inventory
 archiving to the collector so they stop being null within one hour of deploy.
 
-**D8 — `403` when the authorized set resolves empty; `404` is never used for a station.** Plan 147
-R2 deliberately made out-of-scope indistinguishable from not-found. A single `403` for
-"zero stations remain after scoping" preserves that (it does not reveal whether an unknown code
-exists) *and* satisfies the requested contract. Unknown codes that are not in scope are simply
-absent from the result, and are reported in a top-level `requested_but_unavailable` list only when
-at least one station **is** authorised.
+**D8 — Scoping reuses `ensure_station_in_scope`; an out-of-scope or unknown `station_code` is
+`404`; a stationless principal gets an empty `200`. This route introduces no new status code.**
+The repo-wide Plan 147 R2 mechanism is `api/security.py:230-233`, whose docstring reads
+"404 (not 403) on an out-of-scope station — R2: do not reveal existence of stations outside the
+caller's scope", and every station-scoped route uses it (`api_forecasts.py:95`,
+`api_stations.py:185,242,269`). This route does the same for **explicitly requested** codes that
+are unknown or out of scope: `404 Station not found`.
+
+The other case — a non-admin principal with an empty `station_ids` that supplies **no**
+`station_code` — is handled the way the one directly analogous sibling handles it. `list_stations`
+(`api/routes/api_stations.py:145-171`) takes no station id, filters to scope
+(`:163-164`, `if not principal.is_admin: all_stations = [s for s in all_stations if
+principal.station_in_scope(s.id)]`, and `security.py:134-142` makes a stationless consumer match
+nothing) and returns `200` with `total=0, items=[]`. So does this route: it builds the snapshot over
+the (empty) scoped station set and returns `200` with `stations: []` and
+`status.overall == "unavailable"` (D16 rule 2). That reveals nothing about which stations exist,
+adds no HTTP branch and no new test, and stays inside D13's rule that non-200 is reserved for "the
+snapshot could not be generated at all" — a caller with zero grants is the "no data" case D13/D16
+already have a vocabulary for.
+
+*(This supersedes two earlier drafts of D8. The first claimed `403` on an empty authorized set
+"preserves" R2; the second kept the `403` and claimed it "matches every sibling route". Both were
+wrong: the only `403` in the whole API is `require_admin` (`security.py:226`, verified by
+`grep -rn "403" src/sapphire_flow/api/` → two hits, both in `security.py`), and
+`ensure_station_in_scope` never raises `403`. No `requested_but_unavailable` list either — with 404
+on any out-of-scope code there is nothing for it to carry.)*
 
 **D9 — `422` for invalid query parameters,** via FastAPI-native `Query(..., ge=, le=)`. Sibling
 routes return `400` from `_parse_enum` (`api/routes/api_stations.py:127`); this route is new, the
@@ -243,17 +271,35 @@ own guard. A source failure sets `status.<source> = error|missing|stale` with a 
 message and leaves that section unavailable — it never propagates. `500` is reserved for "the
 snapshot could not be generated at all" (DB unreachable, config missing).
 
-**D14 — Two queries for all SAPPHIRE ensembles, regardless of station or model count.** One
-windowed query for the latest `forecast_id` per `(station, model)`, one `IN` query for their
-`forecast_values`. This is an acceptance criterion, asserted by counting queries in a test — not a
-hope.
+**D14 — Latest-forecast fetching reuses the existing store method; no query-count contract.**
+`ForecastStore.fetch_latest_forecast()` already exists (`store/forecast_store.py:123-138`) and
+returns the latest forecast per `(station_id, model_id, parameter)`. T2b calls it in a small loop
+over the assigned `(station, model)` pairs. At the scope this plan is capped to — **two stations**,
+a handful of models — that is a handful of trivial indexed queries on a once-per-request LAN
+endpoint, functionally indistinguishable from a windowed batch query, and it adds **no** new store
+code. An earlier draft mandated "two queries regardless of station or model count" and asserted it
+by counting queries in a test; that is a performance guarantee for a station count this plan says
+will never exist (proportionality rule 6), and it would have failed a future, correct
+implementation that needed one more query (e.g. joining `model_assignments` for the D12
+`is_primary` order). **Trade-off, stated:** query count now grows linearly with `(station, model)`
+pairs. If that ever matters it will matter at Nepal/v1 scale, and the batch query
+(`store/historical_forcing_store.py:90-113` is the `row_number()` pattern to copy) belongs to
+whichever plan introduces those stations.
 
 **D15 — The JSON Schema is generated from the Pydantic models and committed**, with a test
 asserting the committed file equals `model_json_schema()`. The schema cannot drift from the code.
 
-**D16 — `status.overall` semantics.** `ok` = all three sources `ok`. `partial` = at least one
-source not `ok` and at least one `ok`. `stale` = every available source is `stale`. Staleness
-thresholds are constants in the module, documented in the schema, and deliberately generous —
+**D16 — `status.overall` semantics — exhaustive.** Each of the three sources carries a per-source
+status in `ok | stale | error | missing`. `status.overall` is the **first** matching rule, so every
+combination maps to exactly one value:
+
+1. all three sources `ok` → `ok`;
+2. else no source is `ok` or `stale` (every source is `error` or `missing`) → `unavailable`;
+3. else no source is `ok` and at least one is `stale` → `stale`;
+4. else → `partial`.
+
+Rule 2 is the case the earlier draft left undefined (e.g. one `error`, one `missing`, one `stale`,
+or a same-day outage across all three sources). Staleness thresholds are constants in the module, documented in the schema, and deliberately generous —
 **the snapshot never declares itself unusable because it is old; the map decides how to label age.**
 
 ---
@@ -263,7 +309,9 @@ thresholds are constants in the module, documented in the schema, and deliberate
 **O1 — Widen the archive mount to the API container?** D2 mounts `bafu_forecast_archive` read-only
 into `api`. This is the only way the REST route can serve BAFU data live. It slightly widens the
 Plan 111 quarantine surface (from workers to the API), though read-only and still never into the
-DB. *Recommendation: yes.* Fallback: D2-alt (worker pre-builds, API serves the file).
+DB. *Recommendation: yes.* Fallback: D2-alt — the route still builds live but reports
+`bafu_forecast: missing`, and only the CLI (run in a container that already has the mount) produces
+the complete three-source snapshot.
 
 **O2 — Ship verification in v1, or ship `insufficient_data`?** T4 is real work (historical run
 scanning + issue-time pairing + metrics) and the numbers will be honest but weak: 2 stations,
@@ -298,7 +346,7 @@ travel with the data.
 them; a sanitized two-station example at
 `tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json`.
 *Scope (out):* any assembly logic, any DB or filesystem access.
-*Exit:* `uv run pytest tests/api/test_forecast_lab_schema.py` — the committed schema equals
+*Exit:* `uv run pytest tests/unit/api/test_forecast_lab_schema.py` — the committed schema equals
 `model_json_schema()` (D15) and the example validates against it.
 
 ### Phase 2 — source readers (parallel)
@@ -308,16 +356,19 @@ them; a sanitized two-station example at
 self-checked trace normalization of D6/F3/F4; `issued_at` vs `fetched_at` kept distinct;
 monotonicity + geometry quality flags; a pure function taking a base `Path`.
 *Scope (out):* `p_forecast` (lakes — excluded from a discharge comparison), any write, any DB.
-*Exit:* `uv run pytest tests/services/forecast_lab/test_bafu_archive.py` — including a fixture
-that would pass under the *inverted* mapping and fails under it.
+*Exit:* `uv run pytest tests/unit/services/forecast_lab/test_bafu_archive.py` — including a
+fixture that **fails under the inverted (first-half → `p75`) mapping and passes only under the
+corrected (first-half → `p25`) mapping** (F3). The fixture's docstring carries the three measured
+runs behind F3, so the evidence sits with the assertion. A directionally insensitive fixture (one
+that passes under both mappings) does not satisfy this exit criterion.
 
 **T2b — Database readers.** `services/forecast_lab/db_sources.py`.
 *Scope (in):* station metadata + `basins.area_km2`; observations filtered
 `measured`/`qc_passed`/`discharge` over the window; latest forecast per assigned model in the
-two-query shape of D14, with artifact provenance.
-*Scope (out):* new tables, migrations, changes to existing stores' signatures.
-*Exit:* `uv run pytest tests/services/forecast_lab/test_db_sources.py` — includes a query-count
-assertion proving D14.
+way of D14 (a loop over the existing `fetch_latest_forecast()`), with artifact provenance.
+*Scope (out):* new tables, migrations, changes to existing stores' signatures, any new batch/windowed
+query, any query-count assertion (D14).
+*Exit:* `uv run pytest tests/unit/services/forecast_lab/test_db_sources.py`.
 
 ### Phase 3 — assembly
 
@@ -327,7 +378,7 @@ assertion proving D14.
 samples), `snapshot_id` (D10), deterministic ordering (D12), unavailable-model entries with a
 reason and last-known successful issue time.
 *Scope (out):* HTTP, files, verification.
-*Exit:* `uv run pytest tests/services/forecast_lab/test_snapshot.py`.
+*Exit:* `uv run pytest tests/unit/services/forecast_lab/test_snapshot.py`.
 
 **T4 — Verification summary.** *(separable — see O2)* `services/forecast_lab/verification.py`.
 *Scope (in):* 30-day window; pairing = latest BAFU `issued_at` ≤ SAPPHIRE `issued_at`; UTC daily
@@ -335,33 +386,50 @@ mean; `bias`/`mae`/`rmse`/`p25_p75_interval_coverage` overall and `by_lead`; sam
 everywhere; incomplete days excluded; `peak_magnitude_error` = `null`; no threshold metrics (F8).
 *Scope (out):* any read of `hindcast_*` or `skill_scores` (D3); any winner declaration; any metric
 returned as a number when it cannot be computed honestly.
-*Exit:* `uv run pytest tests/services/forecast_lab/test_verification.py` — including a test that
+*Exit:* `uv run pytest tests/unit/services/forecast_lab/test_verification.py` — including a test that
 asserts no hindcast/skill table is touched.
 
 ### Phase 4 — surfaces (parallel, after Phase 3)
 
 **T5 — REST route.** `api/routes/forecast_lab.py`, registered under `require_principal`.
 *Scope (in):* `GET /api/v1/forecast-lab/snapshot`; `station_code` (repeatable),
-`observation_hours` (default 168, max 720), `include_verification` (default true); scoping and D8
-status codes; `ETag`/`Last-Modified`/`304` (D10); `application/json`.
+`observation_hours` (default 168, max 720), `include_verification` (default true); scoping via
+`ensure_station_in_scope` for explicitly requested codes (`404`) and scope-filtering for the
+no-code case (`200` + empty `stations`, D8); `ETag`/`Last-Modified`/`304` computed live over the response body (D10) — unchanged under
+D2-alt; `application/json`.
 *Scope (out):* CORS changes, gzip, rate limiting, any change to an existing route.
-*Exit:* `uv run pytest tests/api/test_forecast_lab_route.py`.
+*Exit:* `uv run pytest tests/unit/api/test_forecast_lab_route.py`.
 
 **T6 — CLI export.** `cli/export_forecast_lab.py`, mirroring `cli/bafu_observation_audit.py` (F10).
 *Scope (in):* `--output`, plus the same three parameters; atomic write (temp → validate against the
 generated schema → `os.replace`); non-zero exit on total failure; zero exit on a partial snapshot.
 *Scope (out):* a new console-script entry in `pyproject.toml` (F10 — module invocation is the
 convention).
-*Exit:* `uv run pytest tests/cli/test_export_forecast_lab.py` — asserts no partial file survives a
+*Exit:* `uv run pytest tests/unit/cli/test_export_forecast_lab.py` — asserts no partial file survives a
 mid-write failure.
 
 ### Phase 5 — deployment and documentation
 
 **T7 — Compose wiring.** `docker-compose.yml` (`api`: `SAPPHIRE_CONFIG`, `bafu_forecast_archive`
-`:ro`) and `docker-compose.macmini.yml` (`api`: overlay mount).
+`:ro`). No `docker-compose.macmini.yml` edit is needed — its `api` override is `ports` only
+(`docker-compose.macmini.yml:47-49`) and compose merges the base service's volumes through.
 *Scope (out):* ports, TLS, `SAPPHIRE_DOMAIN`, CORS, any other service.
-*Exit:* `uv run python -c "import yaml,sys; yaml.safe_load(open('docker-compose.yml'))"` plus a
-documented redeploy procedure; **verification on the mini is a separate, owner-scheduled step.**
+*Exit:* `uv run pytest tests/unit/deploy/test_compose_forecast_lab_api_mount.py` — a **committed**
+regression test, not an inline heredoc, so the plan's own `uv run pytest` gate covers it and a later
+PR cannot silently drop the mount. It mirrors the existing sibling
+`tests/unit/deploy/test_compose_ingest_bafu_observation_mount.py`, which asserts a worker's archive
+mount against the **rendered** configuration (`docker compose -f … config --format json`, skipping
+when the `docker` CLI is absent) — the same mechanism, one service over. It asserts, on the base
+file merged with `docker-compose.macmini.yml`, that the `api` service (a) mounts
+`bafu_forecast_archive` at `/data/bafu_forecasts` read-only and (b) has
+`SAPPHIRE_CONFIG=/app/config.toml`. Both assertions are **false on today's repo** (F1, F2) and true
+only once this task's edit lands.
+
+The mini overlay is included in the render as a guard, not a second mount: its `api` override
+currently declares only `ports` (`docker-compose.macmini.yml:47-49`), so the base-file mount merges
+through — the rendered assertion fails only if a future edit adds a `volumes` override that drops
+it. Plus a documented redeploy procedure; **verification on the mini is a separate, owner-scheduled
+step.**
 
 **T8 — Documentation.** `docs/spec/forecast-lab-snapshot.md` (timestamp and aggregation semantics,
 quantile method, trace normalization **with the F3 correction called out**, staleness thresholds,
@@ -369,7 +437,7 @@ offline/caching guidance, the `curl` example using `$SAPPHIRE_API_TOKEN` and a
 `<company-lan-host>` placeholder); OpenAPI descriptions on the route; a `docs/touchpoint-maps.md`
 entry; a `docs/conventions.md` line if a new convention lands.
 *Scope (out):* any doc restructuring beyond these.
-*Exit:* `uv run pytest tests/docs/` if such a gate exists, else link-and-example review.
+*Exit:* `uv run pytest tests/unit/docs/` if such a gate exists, else link-and-example review.
 
 ### Separable extras
 
@@ -387,7 +455,10 @@ Every one of these is a test, not a review item.
 1. The committed example validates against the committed JSON Schema, and the schema equals
    `model_json_schema()` (no drift).
 2. Both MVP stations are returned in **one** request.
-3. Station scoping is enforced; an empty authorized intersection returns `403` (D8).
+3. Station scoping is enforced: an explicitly requested out-of-scope or unknown `station_code`
+   returns `404` via `ensure_station_in_scope`; a stationless non-admin principal that requests no
+   code returns `200` with `stations: []` and `status.overall == "unavailable"`, matching
+   `list_stations` (D8, D16 rule 2).
 4. Every timestamp is RFC 3339 UTC with a `Z` suffix — asserted by regex over the whole document.
 5. Every numeric leaf is a JSON number or `null` — no `NaN`, no `Infinity`, no numeric strings.
 6. Coordinates are EPSG:4326 and `crs` says so.
@@ -397,17 +468,20 @@ Every one of these is a test, not a review item.
 9. `issued_at` and `fetched_at` are never conflated.
 10. SAPPHIRE ensemble summaries match `numpy.quantile(..., method="linear")` on a known member set.
 11. Multiple SAPPHIRE models stay distinguishable and are never merged.
-12. `nwp_cycle_selection == "fallback"` produces no error, no warning and no degraded status.
-13. A missing source yields `200` + `status.overall == "partial"` + an explicit reason.
+12. `nwp_cycle_source == "fallback"` (the persisted column, F5) produces no error, no warning and
+    no degraded status.
+13. A missing source yields `200` + `status.overall == "partial"` + an explicit reason; all three
+    sources failing yields `200` + `status.overall == "unavailable"` (D16 rule 2).
 14. Daily completeness gates (BAFU ≥ 22 h, observations ≥ 130) are applied and tested at the
     boundary.
 15. Verification touches no `hindcast_*` or `skill_scores` table.
 16. Two builds over identical data are byte-identical except `generated_at`.
 17. The CLI writes atomically and leaves no partial file on failure.
-18. Ensemble fetching costs two queries regardless of station/model count (D14).
 
 **Gates:** `uv run pytest`, `uv run ruff format --check`, `uv run ruff check`, `uv run pyright`
-(ratchet). Hold at PR — no push, no merge.
+(ratchet). Hold at PR — no push, no merge. *(Every Exit path above is under `tests/unit/…` because
+that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `deployment/`, `fakes/`,
+`fixtures/` only; `tests/unit/{api,cli,services,deploy,docs}` all exist today.)*
 
 ---
 
@@ -423,7 +497,7 @@ Every one of these is a test, not a review item.
 | 6 | `sapphire-flow export-forecast-lab` | `python -m sapphire_flow.cli.export_forecast_lab` | **F10** — repo convention. |
 | 7 | — | **added** `comparison_semantics.sapphire_quantile_method` | D5 — the request asked for the method to be documented; putting it in the payload is cheaper and cannot drift. |
 | 8 | — | **added** `bafu_forecast.licence_status` | O6 — the unresolved Plan 111 G1 constraint should travel with the data. |
-| 9 | `404`/`403` split | `403` on empty authorized set; no `404` for stations | D8 — preserves Plan 147 R2 non-disclosure while meeting the request. |
+| 9 | `404`/`403` split | `404` for an out-of-scope/unknown requested `station_code`; **no `403` at all** — a stationless principal gets `200` + empty `stations` | D8 — `404` is the actual Plan 147 R2 helper (`api/security.py:230-233`); the empty-scope case follows `list_stations` (`api_stations.py:163-164`), the only analogous sibling, which narrows to an empty `200`. The API's only `403` is `require_admin`. |
 | 10 | `peak_magnitude_error` | `null` | No event definition exists and thresholds are empty (F8). Honest null over a fabricated number. |
 
 ---
