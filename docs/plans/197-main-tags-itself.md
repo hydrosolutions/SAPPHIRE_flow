@@ -15,7 +15,10 @@ source: tag audit 2026-08-21
 
 **DRAFT.** Not for implementation until the owner confirms.
 
-**Independent Codex review 2026-08-21 — 1 blocker, 1 major, 1 minor, ALL VERIFIED AND FOLDED.** The
+**D1 REVERSED by the owner 2026-08-21** — tag on push, not on CI success (see D1 for why; it also
+deletes the `workflow_run` machinery). The draft's open question is resolved and removed.
+
+**Independent Codex review round 1 — 1 blocker, 1 major, 1 minor, ALL VERIFIED AND FOLDED.** The
 blocker (no git identity for `git tag -a`) would have failed the workflow on its first real run. The
 major corrected D6 outright: my concurrency group would have *dropped* tags rather than protecting
 them. The minor caught the version count going stale mid-draft. The reviewer separately confirmed the
@@ -56,13 +59,29 @@ nothing forces anyone to take.
 
 ## Decisions
 
-- **D1 — Trigger on CI success, not on push.** Use `workflow_run` against the `CI` workflow, filtered to
-  `conclusion == 'success'` and to main. A tag is a claim that a state is good; tagging on push would
-  stamp commits whose CI later fails, and main has been red before (Plan 190). The cost is that the tag
-  arrives minutes after the merge rather than instantly, which nothing depends on.
+- **D1 — Trigger on `push` to main. Do NOT gate on CI.** *(Owner decision 2026-08-21; this REVERSES the
+  draft, which used `workflow_run` on CI success.)* **A tag here is an identifier, not a release gate** —
+  measured, not assumed: no workflow in `.github/workflows/` triggers on a tag; the mac-mini deploy
+  `git pull`s main and sets `.env VERSION` rather than checking out a tag (rollback uses a *Docker* image
+  tag); and `docs/standards/cicd.md:336` already states tags are "a convenience, not an inventory".
+
+  The general rule: gate on CI when tags **trigger releases**, tag on merge when tags **identify
+  versions**. This repo is the second case, and gating would actively damage it:
+  1. **It punches permanent holes in a lookup table.** "Which commit is 0.1.787?" has an answer whether
+     or not CI passed. Withholding the tag loses that answer forever, because the eventual fix carries a
+     *new* version — defeating the tag's only purpose.
+  2. **It makes tags depend on CI's mood.** PR #195 existed solely because an apt mirror flaked, and two
+     runs were auto-cancelled by the superseded-run rule. Infrastructure noise would silently decide
+     which versions get tagged.
+  3. **Main is already PR-gated.** A red main is exceptional (Plan 190's cross-PR interaction), and that
+     commit still *is* version X. Quality already lives in the checks API; keep identity separate from it.
+
+  This also makes the workflow markedly smaller: no `workflow_run`, no `head_sha`-versus-head subtlety,
+  no event filtering — the exact places the first review found real defects. The tag also lands on the
+  commit that **introduced** the version rather than a later docs commit.
 - **D2 — Idempotent by construction: skip if the tag exists.** Never overwrite, never force. A docs-only
   push carries an unchanged version, finds its tag present, and no-ops. This is what makes the workflow
-  safe to run on every CI success rather than only on version changes.
+  safe to run on every push rather than only on version changes.
 - **D3 — Gaps are accepted, not repaired.** If two PRs both land carrying `0.1.790`, the first tags it
   and the second finds it present and skips. The second commit ends up untagged. That is strictly better
   than the alternatives (force-moving a tag, or inventing a number nothing was built at), and it matches
@@ -87,20 +106,21 @@ nothing forces anyone to take.
 
 ### T1 — `.github/workflows/tag-main.yml`
 
-One job. Read the version from `pyproject.toml`, exit cleanly if `v$VERSION` already exists, otherwise
-create an annotated tag at the commit CI validated and push it.
+`on: push: branches: [main]`. One job, `permissions: { contents: write }`. Read the version from
+`pyproject.toml` at the checked-out commit, exit cleanly if `v$VERSION` already exists, otherwise create
+an annotated tag at `github.sha` and push it.
 
-Three details that decide whether this works at all:
+Two details that decide whether this works at all:
 
 - **Configure a git identity before `git tag -a`.** *(Independent review, BLOCKER — the draft omitted
   it.)* A clean GitHub runner has no `user.name`/`user.email`, and annotated tag creation fails with
   "Committer identity unknown" before anything is written. Set the `github-actions[bot]` identity in
   the job. Lightweight tags would sidestep this, but D4 chose annotated deliberately.
-
-- **Tag the SHA `workflow_run` reports, not `main`'s current head.** They differ whenever another merge
-  lands during the CI run, and tagging the head would stamp a commit CI never validated. Check out
-  `github.event.workflow_run.head_sha` explicitly.
-- **Read the version from that same SHA**, for the same reason — not from a later checkout.
+- **Fetch tags before checking existence.** `actions/checkout` does not fetch tags by default, so an
+  existence check against a tagless local repo would report every tag missing and try to create one that
+  already exists on the remote. Either fetch tags explicitly or query the remote
+  (`git ls-remote --tags`). Without this, D2's idempotency is inert — the push rejection in D6 becomes
+  the *only* thing preventing a duplicate, on every single run.
 
 **Red-first:** a test asserting the workflow skips when the tag exists must fail against an
 implementation that always creates. Verify the YAML with `actionlint` if the repo has it, otherwise a
@@ -118,10 +138,3 @@ parse check.
 Backfilling the 5 missing tags (owner declined) · changing `bump-my-version` (`tag = false` stays) ·
 changing when versions bump · releases, changelogs, or GitHub Releases · signed tags · reconciling the
 existing mix of annotated and lightweight tags.
-
-## Open question for the owner
-
-**What should happen when CI is red on main?** D1 means no tag is created, which is intended — but the
-version then stays untagged even after a later fix, because the fix carries a *new* version. That is
-just another accepted gap (D3), and the alternative is tagging known-bad states. Confirm that is the
-behaviour you want, or say tags should follow pushes regardless of CI.
