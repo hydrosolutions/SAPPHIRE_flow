@@ -45,6 +45,23 @@ try:
 except ImportError:
     backup_target_verified = None  # type: ignore[assignment]
 
+try:
+    # Plan 199 T1: same guarded-import convention as `backup_target_verified`
+    # above — an absent symbol (pre-implementation) fails only the tests that
+    # need it, as a genuine assertion/TypeError, not a collection-time
+    # ImportError that would mask every OTHER test in this file.
+    from sapphire_flow.ops.watchdog import (
+        DEFAULT_DISK_PATH,
+        DISK_FREE_THRESHOLD_PCT,
+        DiskSpaceResult,
+        probe_disk_free,
+    )
+except ImportError:
+    DEFAULT_DISK_PATH = None  # type: ignore[assignment]
+    DISK_FREE_THRESHOLD_PCT = None  # type: ignore[assignment]
+    DiskSpaceResult = None  # type: ignore[assignment,misc]
+    probe_disk_free = None  # type: ignore[assignment]
+
 _NOW = datetime(2026, 4, 22, 12, 0, tzinfo=UTC)
 
 
@@ -3777,6 +3794,370 @@ class TestMainCliDeadmanWiring:
         assert captured["config"].deadman_url_path == Path(
             str(watchdog_module.DEFAULT_DEADMAN_PATH)
         )
+
+
+class TestDiskSpaceOk:
+    """Plan 199 D1: the threshold is 5% of the volume's OWN total capacity,
+    not an absolute byte count. Pre-implementation, `DISK_FREE_THRESHOLD_PCT`
+    is None (see the guarded import above), so every comparison here fails
+    as a genuine assertion/TypeError, not a collection-time ImportError."""
+
+    def test_threshold_constant_is_five_percent(self) -> None:
+        assert pytest.approx(0.05) == DISK_FREE_THRESHOLD_PCT
+
+    def test_default_disk_path_is_root(self) -> None:
+        assert Path("/") == DEFAULT_DISK_PATH
+
+    def test_exactly_at_threshold_is_ok(self) -> None:
+        # 5% of 1000 = 50 -> ok (>=, not >).
+        result = DiskSpaceResult(ok=True, free_bytes=50, total_bytes=1000)
+        assert result.ok
+
+    def test_probe_disk_free_computes_ratio_from_one_call(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The mac mini's own numbers (Plan 199 D1): 3.6 TB volume, 214 GB
+        free is well BELOW the ~184 GB floor's sibling ratio of 5.9% ...
+        actually check the concrete case cited in the plan: 95% used / 214
+        GB free on a 3.6 TB volume is BELOW 5% free -> not ok."""
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        total = 3_600 * 1024**3  # ~3.6 TB
+        free = 152 * 1024**3  # 152 GB -> ~4.2% free, below the 5% floor
+
+        class _FakeUsage:
+            def __init__(self) -> None:
+                self.total = total
+                self.free = free
+                self.used = total - free
+
+        monkeypatch.setattr(
+            watchdog_module.shutil, "disk_usage", lambda _path: _FakeUsage()
+        )
+
+        result = probe_disk_free(tmp_path)
+
+        assert result.ok is False
+        assert result.free_bytes == free
+        assert result.total_bytes == total
+
+    def test_probe_disk_free_above_threshold_is_ok(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        total = 3_600 * 1024**3
+        free = 500 * 1024**3  # ~13.9% free -> comfortably above 5%
+
+        class _FakeUsage:
+            def __init__(self) -> None:
+                self.total = total
+                self.free = free
+                self.used = total - free
+
+        monkeypatch.setattr(
+            watchdog_module.shutil, "disk_usage", lambda _path: _FakeUsage()
+        )
+
+        result = probe_disk_free(tmp_path)
+
+        assert result.ok is True
+
+    def test_probe_disk_free_unreadable_path_is_not_ok(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        def _raise(_path: Path) -> None:
+            raise OSError("no such volume")
+
+        monkeypatch.setattr(watchdog_module.shutil, "disk_usage", _raise)
+
+        result = probe_disk_free(tmp_path)
+
+        assert result.ok is False
+        assert result.free_bytes is None
+        assert result.error is not None
+
+
+class TestRunOnceDiskSpace:
+    """Mirrors `TestRunOnceBackupDeviceVerification` (Plan 194 D6) for the
+    DISTINCT free-disk-space condition (Plan 199 T1). Pre-implementation,
+    `run_once` does not accept `disk_probe` at all, so every case here fails
+    red as a TypeError against the pre-Plan-199 signature — same as the
+    backup-device tests did against the pre-Plan-194 signature.
+
+    A single fires-below-threshold assertion is NOT enough (independent
+    review of Plan 199's T1): it would be satisfied by an implementation
+    that alerts every tick and posts directly via `slack_poster` rather than
+    `_safe_slack_post` — this class locks sustained-low SILENCE after the
+    first alert, exactly one recovery, retry-on-failed-delivery, and
+    independence from a simultaneous backup-device alert."""
+
+    def _low_probe(self, _path: Path) -> DiskSpaceResult:
+        return DiskSpaceResult(ok=False, free_bytes=1, total_bytes=1000)
+
+    def _ok_probe(self, _path: Path) -> DiskSpaceResult:
+        return DiskSpaceResult(ok=True, free_bytes=999, total_bytes=1000)
+
+    def test_low_then_repeated_low_then_recovered(self, tmp_path: Path) -> None:
+        # A fresh, verified backup dir + verifier isolates this from the
+        # (independent) staleness and device-verification checks, so only
+        # the disk-space condition is under test here.
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: first low tick -> alerts exactly once.
+        slack1 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack1,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._low_probe,
+        )
+        assert state.consecutive_disk_low_ticks == 1
+        assert len(slack1.calls) == 1
+        assert "disk space LOW" in slack1.calls[0][1]
+
+        # Tick 2: still low -> hysteresis stays SILENT (never every tick).
+        slack2 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack2,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._low_probe,
+        )
+        assert state.consecutive_disk_low_ticks == 2
+        assert slack2.calls == []
+
+        # Tick 3: space recovers -> a single recovery alert.
+        slack3 = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack3,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._ok_probe,
+        )
+        assert state.consecutive_disk_low_ticks == 0
+        assert len(slack3.calls) == 1
+        assert "disk space RECOVERED" in slack3.calls[0][1]
+
+    def test_disk_alert_does_not_suppress_or_duplicate_backup_device_alert(
+        self, tmp_path: Path
+    ) -> None:
+        """The two conditions must never be folded together — a
+        SIMULTANEOUSLY low-disk AND unverified-backup-device tick must
+        alert on BOTH, exactly once each, not have one swallow the other."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)  # fresh: NOT stale
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: False,  # unverified too
+            disk_probe=self._low_probe,
+        )
+
+        messages = [msg for _, msg in slack.calls]
+        assert len(messages) == 2
+        assert any("backup volume NOT MOUNTED" in m for m in messages)
+        assert any("disk space LOW" in m for m in messages)
+
+    def test_ok_disk_space_has_no_alert(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        slack = _SlackRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._ok_probe,
+        )
+
+        assert slack.calls == []
+
+    def test_disk_check_receives_configured_disk_path(self, tmp_path: Path) -> None:
+        """The injected probe must be called with `config.disk_path` — not
+        some other derived path — so a caller-supplied fake can assert on
+        it."""
+        custom_path = tmp_path / "some-volume"
+        cfg = _config(tmp_path)
+        cfg = _replace(cfg, disk_path=custom_path)
+        received: list[Path] = []
+
+        def _spy_probe(path: Path) -> DiskSpaceResult:
+            received.append(path)
+            return DiskSpaceResult(ok=True, free_bytes=999, total_bytes=1000)
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            disk_probe=_spy_probe,
+        )
+
+        assert received == [custom_path]
+
+
+class TestRunOnceDiskSpaceNotificationStateMachine:
+    """Mirrors `TestRunOnceBackupDeviceNotificationStateMachine` for the
+    disk-space condition: a LOW alert lost to a failed Slack post must not
+    be lost forever, and delivery must go through `_safe_slack_post` (not a
+    direct, unguarded `slack_poster(...)` call) so a raising poster cannot
+    abort the tick before state persistence and the dead-man ping."""
+
+    def _low_probe(self, _path: Path) -> DiskSpaceResult:
+        return DiskSpaceResult(ok=False, free_bytes=1, total_bytes=1000)
+
+    def test_failed_low_delivery_is_retried_until_it_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        # Tick 1: low, delivery FAILS.
+        failing_slack = _SlackRecorder(succeed=False)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=failing_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._low_probe,
+        )
+        assert len(failing_slack.calls) == 1
+        assert "disk space LOW" in failing_slack.calls[0][1]
+        assert state.disk_notification_pending == "low"
+        assert state.consecutive_disk_low_ticks == 1
+
+        # Tick 2: still low — no NEW hysteresis transition (already
+        # latched) — but the pending notification must be retried.
+        retry_slack = _SlackRecorder(succeed=True)
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=retry_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._low_probe,
+        )
+        assert len(retry_slack.calls) == 1
+        assert "disk space LOW" in retry_slack.calls[0][1]
+        assert state.disk_notification_pending is None
+
+        # A further tick must NOT re-send — pending was cleared, and the
+        # condition has not transitioned again.
+        quiet_slack = _SlackRecorder(succeed=True)
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=quiet_slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._low_probe,
+        )
+        assert quiet_slack.calls == []
+
+    def test_raising_slack_poster_does_not_abort_the_tick(self, tmp_path: Path) -> None:
+        """A raising `slack_poster` must be contained by `_safe_slack_post`
+        (mirroring the backup-device and health blocks), so the tick still
+        reaches state persistence and the dead-man ping (watchdog.py's
+        documented ordering). The branch this was salvaged from called
+        `slack_poster` directly for the disk-space block — this test fails
+        against that shape."""
+
+        def _raising_poster(_url: str, _message: str) -> bool:
+            raise RuntimeError("simulated Slack outage")
+
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_raising_poster,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            disk_probe=self._low_probe,
+        )
+
+        # The tick completed and persisted (state reflects the low tick),
+        # rather than propagating the poster's exception.
+        assert state.consecutive_disk_low_ticks == 1
+        assert state.disk_notification_pending == "low"
+        assert cfg.state_path.exists()
+
+
+class TestWatchdogStateDiskSpaceBackwardCompat:
+    """Plan 199 T1 — the new disk-space hysteresis + pending-notification
+    fields. Brand new (no predecessor field to migrate from): absent keys
+    default cleanly to 0/None."""
+
+    def test_roundtrip_includes_new_fields(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        original = WatchdogState(
+            consecutive_disk_low_ticks=3,
+            disk_notification_pending="low",
+        )
+        original.dump(path)
+        loaded = WatchdogState.load(path)
+        assert loaded == original
+
+    def test_state_file_without_the_new_keys_defaults_to_zero(
+        self, tmp_path: Path
+    ) -> None:
+        p = tmp_path / "old_state.json"
+        p.write_text('{"consecutive_health_failures": 0}')
+        s = WatchdogState.load(p)
+        assert s.consecutive_disk_low_ticks == 0
+        assert s.disk_notification_pending is None
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -31,9 +31,11 @@ set -euo pipefail
 # the default PATH. Mirrors the convention in start-sapphire.sh.
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
-# DOCKER_CMD may be set in tests to point at a fake docker stub, bypassing the
-# PATH-based resolution (which the script's own `export PATH=...` reorders).
-DOCKER="${DOCKER_CMD:-docker}"
+# shellcheck source=scripts/launchd/docker-endpoint.sh
+source "$(dirname "${BASH_SOURCE[0]}")/docker-endpoint.sh"
+# DOCKER_CMD may be set in tests to point at a fake docker stub, bypassing
+# both PATH resolution and DOCKER_BIN.
+DOCKER="${DOCKER_CMD:-${DOCKER_BIN}}"
 
 log() { printf '[prune-docker] %s\n' "$1"; }
 
