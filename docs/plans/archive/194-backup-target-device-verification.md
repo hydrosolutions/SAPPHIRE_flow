@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-20
 plan: 194
 title: The backup target must be the device it claims to be (extracted from Plan 162 T6)
@@ -16,7 +16,35 @@ source: docs/plans/162-robust-database-backup.md § T6
 **COMPLETE** — shipped on `main` as `357386b` (Plan 194 — the backup target must be the device it claims to be (#200)).
 *(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
 
-**READY** — owner flip 2026-08-20, with D6 ratified (see the resolved decision below).
+**COMPLETE** — shipped 2026-08-21 in **PR #200** (`357386b`), with the marker-file follow-up in
+**PR #201** (`e55e62b`). All three tasks are on `main` and verified there:
+
+| Task | Landed at |
+|---|---|
+| T1 — `bootstrap-mac-mini.sh` fails closed | `scripts/bootstrap-mac-mini.sh:118` (predicate), `:314` (call) |
+| T2 — `start-sapphire.sh` warns and proceeds | `scripts/launchd/start-sapphire.sh:77`, `:122-123` |
+| T3 — watchdog distinct condition | `src/sapphire_flow/ops/watchdog.py:624`, `:649`, `:1087` |
+
+**D1 landed correctly**: the predicate tests the *mount root* (`backup_dir.parent`), not the dump
+directory — `watchdog.py:646` is `return backup_dir.parent.is_mount()`. A mount-ness test against
+`pg_dumps`, which is never itself a mount point, would have rejected a healthy disk forever.
+
+**D3 landed with its `set -e` guard**: `start-sapphire.sh:113-122` runs the check as
+`if ! backup_target_verified ...`, with the reasoning inline — a bare statement would abort the
+wrapper before `exec docker compose` and turn a backup problem into a forecasting outage.
+
+**D3's marker file was dropped after the fact** (PR #201, "nothing ever read it") — the same
+conclusion this plan's own review reached twice.
+
+### ⚠️ Carried forward: the predicate now exists in THREE places
+
+`scripts/bootstrap-mac-mini.sh`, `scripts/launchd/start-sapphire.sh`, and
+`src/sapphire_flow/ops/watchdog.py` each implement it independently. An earlier draft specified one
+sourced helper (`scripts/launchd/backup-volume-check.sh`); the reconstruction dropped that and the
+implementation duplicated instead. **All three were compared on 2026-08-21 and agree** — but nothing
+keeps them agreeing, and the shell copies already carry a "fixer round" comment showing one was
+corrected after the other. If a fourth caller appears, or one copy is fixed again, extract the helper
+then. Recorded rather than fixed: two shell copies is a defensible size, and this plan is closed.
 
 Extracted verbatim-in-substance from **Plan 162 T6**, which is fully specified there but was cut from
 Phase A and never built.
