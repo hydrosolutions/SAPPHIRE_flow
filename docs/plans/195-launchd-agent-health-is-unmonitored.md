@@ -19,7 +19,13 @@ source: launchd audit 2026-08-20; see docs/plans/164-watchdog-system-domain.md �
 every finding verified against the repo before folding). What changed: the latch is **per label**, not
 one boolean; the probe moved from `launchctl print` to `launchctl list`; D2 gained a coherent
 source and "absent = failing"; D4 gained a timeout contract and made `UNKNOWN` observable; the Plan 194
-seam name was corrected — the one I cited did not exist. Details inline.
+seam name was corrected — the one I cited did not exist.
+
+**Round 2 (2026-08-21)** returned NEEDS_CHANGES again: D3 and D4 contradicted each other on UNKNOWN
+(fixed by giving probe-level unreadability its own latch), D2's "covered automatically" was not
+implementable (now an explicit constant plus a parity test), "finite timeout" was too weak (now
+`5.0 s`), and a failing-label set alone would lose an alert whose Slack post failed (now per-label
+pending delivery). Details inline.
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT ON THIS PLAN AND ON ITS REVIEW
 
@@ -81,6 +87,9 @@ present.
   - **OK** — second column is `0`. This *conflates never-run with succeeded*, and that is
     deliberate: a periodic agent that has not yet fired is normal, and only non-zero is evidence of
     failure. It also removes the draft's never-run special case entirely.
+    *(Measured on the mini 2026-08-21 — the man page does not state this, so it is evidence, not
+    inference: `ch.hydrosolutions.sapphire-docker-prune` reports `runs = 0`,
+    `last exit code = (never exited)` under `print`, and `-  0  <label>` under `list`.)*
   - **UNKNOWN** — `launchctl` missing, timed out, or output that does not parse. See D4: this is
     **reported**, never silently swallowed.
 
@@ -99,8 +108,14 @@ present.
   rather than installer-managed, and recap is explicitly time-boxed and uninstallable
   (`docs/operations/recap-probe-runbook.md:98`, `:193`; `docs/operations/nepal-forcing-runbook.md`).
   *Trade-off, stated not hidden:* the Nepal forcing feed is live and stays unmonitored by this plan.
-  When either becomes installer-managed it is covered automatically, with no edit here — which is the
-  whole reason the source is the installer array and not a list in this document.
+
+  **The labels are an explicit Python constant, kept honest by a parity test.** *(Revised: the draft
+  said the installer array was the source of truth and that new agents would be "covered
+  automatically". That is not implementable — runtime Python cannot consume a Bash array — and it
+  would have been a false promise: adding a label to `PLISTS` would have left it unmonitored.)* A test
+  asserts the constant equals the installer's `PLISTS` labels minus the watchdog, so adding an agent
+  to the installer FAILS the suite until it is monitored too. That is a parity assertion, not a
+  registry.
 
   **The watchdog excludes itself.** It cannot observe its own failure — a dead watchdog raises nothing
   — and Plan 163's dead-man switch already covers that within ~20 minutes.
@@ -119,20 +134,42 @@ present.
   the PATH fix deploys.
 
   **UNKNOWN preserves the prior verdict for that label and produces no transition** — neither a new
-  incident nor a recovery. Absence of evidence is not evidence of recovery.
+  incident nor a recovery. Absence of evidence is not evidence of recovery. (A probe that cannot read
+  launchd at all is a separate, separately-latched condition — see D4.)
+
+  **Pending delivery is also per label.** *(Revised: a set alone loses alerts. Plan 162/194 established
+  that a failed Slack post must stay pending and retry — `backup_notification_pending` and
+  `backup_device_notification_pending` at `src/sapphire_flow/ops/watchdog.py:225-238`, retried at
+  `:1172-1188`. With only a failing-label set, a Slack failure on the entry tick is followed by no
+  transition next tick, so that alert is lost PERMANENTLY — the exact bug those fields exist to
+  prevent, reintroduced.)* Keep a per-label pending entry carrying the notification kind and the
+  status that produced it, so it remains retryable — including across a tick where that label probes
+  UNKNOWN, since the message content is already determined. A single scalar would drop one of two
+  simultaneous per-label transitions.
 
   Distinct from every existing condition: a failing agent is not a stale backup and not an unhealthy
   API.
 
-- **D4 — Never abort the tick, and never fail silent.**
-  The probe runs with a **finite subprocess timeout**. `launchctl` missing, hanging, or emitting
-  unparseable output must degrade to UNKNOWN and leave every later probe running — the BAFU (`:1277`), forecast-freshness
-  (`:1418`), state-persistence (`:1480`) and dead-man (`:1496`) steps all follow it in `run_once`. A monitor that dies while checking whether things are alive is the failure this plan
-  exists to prevent.
+- **D4 — Never abort the tick, and never fail silent — but latch that separately from D3.**
+  *(Revised: the previous D3/D4 pair contradicted each other. D3 said UNKNOWN produces no transition;
+  D4 said UNKNOWN must surface in "the same transition-latched condition". With only a failing-label
+  set, a healthy→unreadable probe was either silent (breaking D4) or alerting every 300 s (breaking
+  D3), and unreadable→readable had no recovery at all.)*
 
-  **UNKNOWN is itself reportable.** If the probe cannot read launchd at all — an OS format change, a
-  missing binary — that must surface in the same transition-latched condition rather than presenting
-  as "no agents failing". Silent degradation is the exact defect being fixed, one level up.
+  **The timeout is `5.0 s`**, a named constant beside the existing probe budgets
+  (`HEALTH_CHECK_TIMEOUT_S`, `SLACK_POST_TIMEOUT_S`, `DEADMAN_POST_TIMEOUT_S` — all `5.0` at
+  `src/sapphire_flow/ops/watchdog.py:173-180`, where the comment computes the worst-case sequential
+  tick budget at ~45 s against the plist's 300 s `StartInterval`). "Finite" was too weak: a 300 s
+  timeout is finite and would consume the entire cadence, delaying every later probe and the dead-man
+  ping. `launchctl` missing, hanging, or emitting unparseable output degrades to UNKNOWN and leaves
+  every later probe running — BAFU (`:1277`), forecast freshness (`:1418`), state persistence
+  (`:1480`), dead-man (`:1496`).
+
+  **Probe-level unreadability is its OWN latched condition**, with its own persisted flag and pending
+  entry: alert once when the probe first cannot read launchd, stay silent while it stays unreadable,
+  and alert once on recovery. Per-label verdicts are held unchanged throughout (D3). This is one
+  boolean and one pending slot — not a second subsystem — and it is what stops "the monitor stopped
+  monitoring" from presenting as "no agents failing".
 
 ## Sequencing — resolved
 
@@ -165,12 +202,15 @@ must NOT copy verbatim — is `:813`.
 *In:* `src/sapphire_flow/ops/watchdog.py`.
 A pure function from `launchctl list` output to a per-label verdict (`OK` / `FAILING(status)` /
 `ABSENT` / `UNKNOWN`), and an injectable probe callable — the same seam `backup_device_verifier` uses
-— so tests never shell out. The subprocess call carries a finite timeout.
+— so tests never shell out. The subprocess call carries `LAUNCHD_PROBE_TIMEOUT_S = 5.0`, declared
+beside the existing `*_TIMEOUT_S` constants.
 **Red-first:** a test asserting FAILING for real captured `launchctl list` output with a non-zero
 second column, OK for `0`, ABSENT for a label missing from the output, and UNKNOWN for unparseable
 output, must fail before the parser exists.
 **Also test:** timeout, missing executable, and malformed output are each contained — the function
-returns UNKNOWN and does not raise.
+returns UNKNOWN and does not raise — **and that the subprocess call actually receives the 5.0 s
+timeout**, not merely that a simulated timeout is caught.
+**And:** the label constant matches the installer's `PLISTS` minus the watchdog (D2's parity test).
 
 ### T2 — the condition
 *In:* `src/sapphire_flow/ops/watchdog.py`.
@@ -178,10 +218,16 @@ Per D3: distinct message naming the agent and its status, own persisted state (t
 transition-latched. Mirror the state handling Plan 194 established, including `WatchdogState.load`
 tolerating the new key being absent from an existing state file (`watchdog.py:241`, tolerant
 `raw.get(...)` defaults through `:285`).
-**Red-first, and these are the blocker's tests:**
+**Red-first, and these are the blockers' tests:**
 - A failing agent alerts exactly once on the transition tick and nothing on the next.
 - **A-failing then B-failing raises a SECOND alert** — the case a single boolean would swallow.
 - **failing → UNKNOWN raises no recovery** and preserves the incident.
+- **A failed Slack post on the entry tick is retried on the next tick** and cleared once delivered —
+  including when the intervening verdict is UNKNOWN. Two simultaneous per-label transitions both
+  survive a delivery failure.
+- **Probe unreadable: exactly one alert on the first unreadable tick, silence while it persists, and
+  exactly one recovery when it becomes readable again** — with per-label verdicts unchanged
+  throughout.
 - A later probe still runs after the launchd probe times out.
 - This condition neither suppresses nor duplicates any existing alert.
 
@@ -189,8 +235,9 @@ tolerating the new key being absent from an existing state file (`watchdog.py:24
 *In:* `docs/deployment/mac-mini-staging.md`.
 `:450` opens "Docker Desktop did not start within 240s", explained as a VirtioFS cold-boot hang with
 remedy `open -a Docker` — a pre-written wrong diagnosis that absorbed the alarm for four months.
-`:333-334` (and `:533`) document an expected `0` that has never been true. Correct all three, and say
-what the new condition reports.
+`:333-334` documents an expected `0` that has never been true; `:533` repeats the same command
+without expected output and should gain a note on interpreting the status column. Correct all three,
+and say what the new condition reports.
 
 ⚠️ **Line numbers in this file drift** — it was edited twice on 2026-08-20/21 while this plan was being
 written. Re-locate by string, not by line, before editing.
@@ -209,8 +256,9 @@ uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright
 ```
 
-*(Revised: the draft checked `src/` only, while CI checks `src/ tests/` — `docs/standards/cicd.md:469`
-— so the declared gate could pass locally and fail CI on the new tests.)*
+*(Revised: the draft checked `src/` only, while CI checks `src/ tests/` —
+`docs/standards/cicd.md:438-439`, `.github/workflows/ci.yml:54-55` — so the declared gate could pass
+locally and fail CI on the new tests.)*
 
 **Red-first:** both T1 and T2 tests must fail against current committed code, which cannot observe a
 launchd agent at all.
