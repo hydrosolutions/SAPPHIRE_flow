@@ -403,19 +403,91 @@ class TestComputeTransectStationResult:
         assert result.discrepancy_degc == pytest.approx(expected_correction - 1.0)
         assert result.n_era5_hours == 24
         assert result.n_pyramid_retained == 24
+        assert result.n_paired == 24
 
-    def test_result_never_asserts_pass_fail(self) -> None:
+    def test_era5_is_paired_to_pyramids_own_timestamps_before_averaging(self) -> None:
+        """Finding 1, Plan 184 T2 review — D2: hour-of-day equalisation
+        alone equalises HOUR exposure, not SEASONAL/DATE exposure. ERA5
+        has full "coverage" across two disjoint dates: 2022-01-01/02 (value
+        0.0) and 2022-07-01/02 (value 100.0, a season Pyramid never
+        retained here). If ERA5 were averaged over its OWN full population
+        (all 4 hours, naive mean 50.0) rather than paired to the 2 hours
+        Pyramid actually retained (0.0), the check would compare two
+        different populations, not a clean lapse residual."""
+        era5_grid = pl.DataFrame(
+            {
+                "timestamp": [
+                    datetime(2022, 1, 1, 0),
+                    datetime(2022, 1, 2, 0),
+                    datetime(2022, 7, 1, 0),
+                    datetime(2022, 7, 2, 0),
+                ],
+                "value": [0.0, 0.0, 100.0, 100.0],
+            }
+        )
+        pyramid_at = pl.DataFrame(
+            {
+                "timestamp": [datetime(2022, 1, 1, 0), datetime(2022, 1, 2, 0)],
+                "value": [5.0, 5.0],
+            }
+        )
+        result = compute_transect_station_result(
+            station=self._STATION,
+            era5_grid=era5_grid,
+            # orography == station elevation => zero lapse correction,
+            # keeping era5_raw == era5_corrected for a simpler assertion.
+            orography_elev_m=self._STATION.elevation_m,
+            pyramid_at=pyramid_at,
+        )
+        assert result.n_paired == 2
+        assert result.era5_raw_hour_equalised_degc == pytest.approx(0.0)
+        assert result.era5_corrected_hour_equalised_degc == pytest.approx(0.0)
+        assert result.pyramid_hour_equalised_degc == pytest.approx(5.0)
+        assert result.discrepancy_degc == pytest.approx(-5.0)
+        # Context counts stay honest about each side's OWN population,
+        # distinct from the paired population the means are computed over.
+        assert result.n_era5_hours == 4
+        assert result.n_pyramid_retained == 2
+
+    def test_result_never_asserts_pass_fail(self, tmp_path: Path) -> None:
         """D14: the check reports a QUANTIFIED discrepancy, never a
-        verdict — there is no boolean/enum field on the result type."""
+        verdict — there is no boolean/enum field on the result type, AND
+        the RENDERED REPORT TEXT never emits one either (Finding 3, Plan
+        184 T2 review: a field-name-only check cannot catch `_write_report`
+        emitting literal "PASS"/"FAIL" text into the table or notes, so it
+        would stay green even if it did)."""
         from dataclasses import fields
 
-        from scripts.dhm_precip.ma6_lapse_check import TransectStationResult
+        from scripts.dhm_precip.ma6_lapse_check import (
+            TransectStationResult,
+            _write_report,
+        )
 
         field_names = {f.name for f in fields(TransectStationResult)}
         assert not any(
             "pass" in name or "fail" in name or "verdict" in name
             for name in field_names
         )
+
+        result = TransectStationResult(
+            pyramid_station=Station("AWS3 Lukla"),
+            station_elevation_m=2660.0,
+            orography_elev_m=3863.830322265625,
+            lapse_correction_degc=7.82,
+            n_era5_hours=24,
+            n_pyramid_retained=24,
+            n_paired=24,
+            era5_raw_hour_equalised_degc=4.08,
+            era5_corrected_hour_equalised_degc=11.91,
+            pyramid_hour_equalised_degc=10.15,
+            discrepancy_degc=1.76,
+        )
+        report_path = tmp_path / "ma6_lapse_check.md"
+        _write_report(report_path, (result,))
+        rendered = report_path.read_text().upper()
+        assert "PASS" not in rendered
+        assert "FAIL" not in rendered
+        assert "VERDICT" not in rendered
 
 
 class TestDiscoverAndLoadStationGridElevationTable:

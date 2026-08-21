@@ -210,12 +210,16 @@ def lapse_correct_to_station_degc(
 ) -> np.ndarray | float:
     """D14 — correct FROM model orography DOWN TO station elevation.
 
-    Sign: model orography sits ABOVE the station for every high-altitude
-    case this track cares about, so the correction WARMS — verified
-    against the real elevation table (D14 amendment, 2026-08-20): Humde's
-    1,299.18 m diff -> +8.44 degC at 6.5 degC/km; Olangchunggola +6.73;
-    Lukla +6.52; Syangboche +4.86 (all reproduced exactly by
-    `tests/unit/scripts/test_pyramid_at.py::TestLapseCorrectionSign`).
+    Sign: model orography sits ABOVE the station for most high-altitude
+    cases this track cares about, so the correction usually WARMS —
+    verified against the real elevation table (D14 amendment,
+    2026-08-20): Humde's 1,299.18 m diff -> +8.44 degC at 6.5 degC/km;
+    Olangchunggola +6.73; Lukla +6.52; Syangboche +4.86 (all reproduced
+    exactly by `tests/unit/scripts/test_pyramid_at.py::
+    TestLapseCorrectionSign`). This is NOT universal within the track:
+    AWS4 Kala Patthar (Finding 2, Plan 184 T2 review) sits ~19 m ABOVE its
+    own cell's orography (station 5,600 m vs orography 5,581.1 m), so its
+    correction is small and COOLS (-0.123 degC at 6.5 degC/km), not warms.
 
     `correction = rate * (orography_elev_m - station_elev_m) / 1000`,
     ADDED to the raw grid value: positive when orography is above the
@@ -257,7 +261,21 @@ class TransectStationResult:
     orography_elev_m: float
     lapse_correction_degc: float
     n_era5_hours: int
+    """Total ERA5-Land hours available in the transect window — context
+    only, NOT the population the means below are computed over."""
     n_pyramid_retained: int
+    """Total Pyramid `AT` hours Pyramid itself retained in the transect
+    window — context only, NOT the population the means below are
+    computed over."""
+    n_paired: int
+    """The COMMONLY-retained population (Finding 1, Plan 184 T2 review) —
+    `pair_pyramid_and_era5`'s inner join of `n_pyramid_retained` against
+    the finite ERA5 hours, mirroring `ma6_pairs.PairedRetainedSubset.
+    n_common_retained`'s discipline exactly. All three hour-of-day-
+    equalised means below (`era5_raw_*`, `era5_corrected_*`,
+    `pyramid_hour_equalised_degc`) are computed over THIS population,
+    never independently — hour-of-day equalisation alone equalises hour
+    exposure, not seasonal/date exposure."""
     era5_raw_hour_equalised_degc: float
     era5_corrected_hour_equalised_degc: float
     pyramid_hour_equalised_degc: float
@@ -265,6 +283,33 @@ class TransectStationResult:
     """`era5_corrected_hour_equalised_degc - pyramid_hour_equalised_degc` —
     the quantified check result. Positive: the lapse-corrected grid reads
     WARMER than Pyramid. Negative: colder."""
+
+
+def pair_pyramid_and_era5(
+    *, era5_grid: pl.DataFrame, pyramid_at: pl.DataFrame
+) -> pl.DataFrame:
+    """D2 (Finding 1, Plan 184 T2 review) — inner-join Pyramid's own
+    retained `AT` population against the finite ERA5-Land grid series on
+    exact timestamp, BEFORE any averaging, mirroring `ma6_pairs.
+    pair_with_era5`'s established discipline exactly: an hour survives
+    only when BOTH sides already kept it. Hour-of-day equalisation alone
+    only equalises HOUR exposure; it does not equalise SEASONAL or DATE
+    exposure, so comparing an all-season ERA5 mean against whatever subset
+    Pyramid happened to record measures observation availability, not
+    clean lapse residuals (D2: "masking one side measures selection, not
+    weather"). Never converts NPT<->UTC (module docstring) — the join key
+    is each source's own raw timestamp value, unconverted.
+
+    `era5_grid` is `(timestamp, value)`; `pyramid_at` is `(timestamp,
+    value)`. Returns `(timestamp, pyramid_value_degc, era5_value_degc)`,
+    sorted ascending."""
+    era5_aligned = era5_grid.rename({"value": "era5_value_degc"}).with_columns(
+        pl.col("timestamp").cast(pyramid_at.schema["timestamp"])
+    )
+    pyramid_renamed = pyramid_at.rename({"value": "pyramid_value_degc"})
+    return pyramid_renamed.join(era5_aligned, on="timestamp", how="inner").sort(
+        "timestamp"
+    )
 
 
 def compute_transect_station_result(
@@ -279,12 +324,17 @@ def compute_transect_station_result(
     value)` (UTC, the nearest-cell raw ERA5-Land t2m series already
     restricted to the transect window); `pyramid_at` is `(timestamp,
     value)` (NPT, `load_pyramid_lvl1_at_csv`'s retained population already
-    restricted to the transect window)."""
+    restricted to the transect window). Both sides are paired via
+    `pair_pyramid_and_era5` (Finding 1, Plan 184 T2 review) BEFORE any
+    hour-of-day equalisation — the three reported means are always
+    computed over the SAME commonly-retained population, never
+    independently."""
     lapse_correction = float(
         rate_degc_per_km * (orography_elev_m - station.elevation_m) / 1000.0
     )
-    corrected = era5_grid.with_columns(
-        (pl.col("value") + lapse_correction).alias("corrected")
+    paired = pair_pyramid_and_era5(era5_grid=era5_grid, pyramid_at=pyramid_at)
+    corrected = paired.with_columns(
+        (pl.col("era5_value_degc") + lapse_correction).alias("corrected")
     )
     return TransectStationResult(
         pyramid_station=station.pyramid_station,
@@ -293,8 +343,9 @@ def compute_transect_station_result(
         lapse_correction_degc=lapse_correction,
         n_era5_hours=era5_grid.height,
         n_pyramid_retained=pyramid_at.height,
+        n_paired=paired.height,
         era5_raw_hour_equalised_degc=hour_of_day_equalised_mean(
-            era5_grid, value_col="value"
+            paired, value_col="era5_value_degc"
         ),
         era5_corrected_hour_equalised_degc=(
             corrected_mean := hour_of_day_equalised_mean(
@@ -302,7 +353,9 @@ def compute_transect_station_result(
             )
         ),
         pyramid_hour_equalised_degc=(
-            pyramid_mean := hour_of_day_equalised_mean(pyramid_at, value_col="value")
+            pyramid_mean := hour_of_day_equalised_mean(
+                paired, value_col="pyramid_value_degc"
+            )
         ),
         discrepancy_degc=corrected_mean - pyramid_mean,
     )
@@ -519,6 +572,58 @@ def build_transect_report(
     return tuple(results)
 
 
+def _attribution_notes(results: tuple[TransectStationResult, ...]) -> list[str]:
+    """Finding 2 (Plan 184 T2 review) — states two things in the report
+    ITSELF, never left for a reader to infer: AWS4's tiny correction
+    cannot principally explain its residual (D7: no causal attribution;
+    D14: diagnostic, never a refit), and the AWS1/AWS4 shared-cell gauge
+    comparison is a DIAGNOSTIC only, never a candidate replacement rate."""
+    lines: list[str] = ["", "## Notes (Finding 2, Plan 184 T2 review)"]
+
+    aws4 = next((r for r in results if "AWS4" in str(r.pyramid_station)), None)
+    if aws4 is not None:
+        raw_residual = (
+            aws4.era5_raw_hour_equalised_degc - aws4.pyramid_hour_equalised_degc
+        )
+        lines.append(
+            f"- **{aws4.pyramid_station}**: the D14 correction here is only "
+            f"{aws4.lapse_correction_degc:+.3f} degC (orography "
+            f"{aws4.orography_elev_m:.1f} m vs station "
+            f"{aws4.station_elevation_m:.0f} m — the station sits ABOVE its "
+            "own cell's orography here, the exception to the module's "
+            f"usual sign), while the RAW (uncorrected) residual is already "
+            f"{raw_residual:+.3f} degC and the corrected discrepancy is "
+            f"{aws4.discrepancy_degc:+.3f} degC. The discrepancy at this "
+            "station therefore cannot principally be an error introduced "
+            "by the lapse correction — it is ERA5-versus-Pyramid bias at "
+            "that grid cell, NOT evidence that 6.5 degC/km is wrong (D7: "
+            "no causal attribution; D14: diagnostic, never a refit)."
+        )
+
+    aws1 = next((r for r in results if "AWS1" in str(r.pyramid_station)), None)
+    if (
+        aws1 is not None
+        and aws4 is not None
+        and abs(aws1.orography_elev_m - aws4.orography_elev_m) < 1e-6
+    ):
+        elev_diff_m = abs(aws4.station_elevation_m - aws1.station_elevation_m)
+        mean_diff = aws1.pyramid_hour_equalised_degc - aws4.pyramid_hour_equalised_degc
+        observed_rate = (
+            mean_diff / (elev_diff_m / 1000.0) if elev_diff_m else float("nan")
+        )
+        lines.append(
+            f"- **{aws1.pyramid_station}** and **{aws4.pyramid_station}** "
+            "share exactly the same ERA5-Land grid cell and orography "
+            f"({aws4.orography_elev_m:.1f} m). Their own Pyramid gauge "
+            f"means differ by {mean_diff:+.3f} degC over {elev_diff_m:.0f} m "
+            f"= {observed_rate:+.3f} degC/km — an OBSERVED rate from two "
+            "gauges, with no reanalysis involved. This is a DIAGNOSTIC "
+            "only, never a candidate replacement rate (D14 forbids fitting "
+            "the rate to Pyramid)."
+        )
+    return lines
+
+
 def _write_report(path: Path, results: tuple[TransectStationResult, ...]) -> None:
     lines = [
         "# Plan 184 (M-A6) T2 — D14 lapse-rate transect check",
@@ -529,10 +634,16 @@ def _write_report(path: Path, results: tuple[TransectStationResult, ...]) -> Non
         "record ends 2023).",
         "Timestamp convention: PERIOD-ENDING assumed; the hour-of-day-"
         "equalised means below are INVARIANT to that assumption.",
+        "ERA5 is paired to the timestamps Pyramid actually retained "
+        "(Finding 1, Plan 184 T2 review) BEFORE any averaging — 'ERA5 raw'"
+        "/'ERA5 corrected'/'Pyramid' below are all computed over the SAME "
+        "n(paired) population per station, never independently; "
+        "n(ERA5)/n(Pyramid) are context only.",
         "",
         "| Station | Elev (m) | Orography (m) | Correction (degC) | "
-        "ERA5 raw | ERA5 corrected | Pyramid | Discrepancy | n(ERA5) | n(Pyramid) |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "ERA5 raw | ERA5 corrected | Pyramid | Discrepancy | n(ERA5) | "
+        "n(Pyramid) | n(paired) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
@@ -542,8 +653,9 @@ def _write_report(path: Path, results: tuple[TransectStationResult, ...]) -> Non
             f"{r.era5_corrected_hour_equalised_degc:.2f} | "
             f"{r.pyramid_hour_equalised_degc:.2f} | "
             f"{r.discrepancy_degc:+.2f} | {r.n_era5_hours} | "
-            f"{r.n_pyramid_retained} |"
+            f"{r.n_pyramid_retained} | {r.n_paired} |"
         )
+    lines.extend(_attribution_notes(results))
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -591,6 +703,7 @@ def main(argv: list[str] | None = None) -> int:
                     "lapse_correction_degc": r.lapse_correction_degc,
                     "n_era5_hours": r.n_era5_hours,
                     "n_pyramid_retained": r.n_pyramid_retained,
+                    "n_paired": r.n_paired,
                     "era5_raw_hour_equalised_degc": r.era5_raw_hour_equalised_degc,
                     "era5_corrected_hour_equalised_degc": (
                         r.era5_corrected_hour_equalised_degc
