@@ -13,8 +13,18 @@ source: SAPPHIRE-flow-map integration request 2026-08-21; grounded in the Flow M
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms. Six owner forks are open in
-§ Owner decisions required; three of them change the delivered contract.
+**DRAFT — NOT READY.** The `plan` workflow ran 3 rounds on 2026-08-21 and **escalated without
+converging**. Read § Owner decisions required before anything else: **O7 is a blocker** that no
+amount of further review can resolve, because it is a governance question the owner owns.
+
+Review provenance, because it changes how much the rounds are worth: **the independent Codex pass
+failed in rounds 1 and 2** (`codexFailedRounds: 2`), so those rounds were Claude-lens only and
+"converged" 5 → 2 majors without the repo-grounded reviewer that `CLAUDE.md` makes a floor. Round 3
+got the first real Codex pass and raised 2 blockers + 12 majors, which tripped the stall detector by
+comparing a Codex-less round to a Codex-ful one. **That is a false stall**, and the round-3 findings
+were the valuable ones: every one this session verified against the repo or the live host held up,
+and four of them corrected *this plan's own* measured facts (F1, F6, F8, D2). Those are folded.
+Still open: O7, plus the T4-internal findings that only matter if T4 survives it.
 
 ## Goal
 
@@ -33,9 +43,9 @@ commercial publication of BAFU forecast data.
 
 > **Owner directive, 2026-08-21: this is an MVP. Do not over-engineer it.**
 > The directive is recorded here, in the plan doc, because per-run scope passed as workflow
-> args is silently discarded — only `planPath`, `repo` and `maxRounds` are read
-> (`.claude/workflows/plan.js:41-43`). Every reviewer and every revision round is bound by
-> what follows.
+> args is silently discarded: the workflow has **no generic per-run scope argument** — it reads only
+> `planPath`, `repo`, `maxRounds` and `codexTimeoutMs` (`.claude/workflows/plan.js`). Every reviewer
+> and every revision round is bound by what follows.
 
 This plan adds **one read path over data that already exists**. It must not become a data
 platform. Specifically:
@@ -80,7 +90,8 @@ re-verified by the implementer rather than assumed.
 
 `docker-compose.yml:308-310` — the `api` service mounts only `model_artifacts:/data/artifacts:ro`
 and `./config.toml`. The archive volumes are mounted on `prefect-worker`
-(`docker-compose.yml:131-132`) and `prefect-worker-ingest` (`:192`) only. **The REST route cannot
+(`docker-compose.yml:131-132`). `prefect-worker-ingest` mounts the **observation** archive only
+(`:192`) — the forecast archive is on `prefect-worker` alone. **The REST route cannot
 serve BAFU forecasts without a compose change.** See D2.
 
 ### F2 — The API does not set `SAPPHIRE_CONFIG` and never loads `DeploymentConfig`
@@ -101,6 +112,15 @@ Implementing the request as written would silently swap the uncertainty band on 
 back (T2a's regression-fixture docstring), where they document a live test rather than rotting in a
 plan as the archive rolls over.*
 
+**Independently corroborated inside the repo, and the likely origin of the error.** The checked-in
+reference payload `tests/fixtures/reference/bafu_q_forecast_2135.json` — a different station, and a
+different polygon length (233, so `half = 116`) — shows the same forward-is-lower orientation. Yet
+the domain comment at `types/bafu_forecast.py:116` states the **opposite** ("forward upper edge then
+backward lower edge"). That comment is wrong, and it is the most plausible source of the inverted
+mapping in the integration request. **T2a must correct it** — otherwise the next reader re-derives
+the same bug from the same sentence. It also confirms D6: `118` is not a constant and must never be
+hardcoded.
+
 Polygon geometry, verified: length **237** = 118 forward + 118 backward + **1 closing vertex**.
 `half = (n - 1) // 2`. Indices `half-1` and `half` share the same `valid_time` (the horizon turn).
 Index `n-1` duplicates the first vertex and must be dropped. The backward half is in **descending**
@@ -109,8 +129,8 @@ Index `n-1` duplicates the first vertex and must be dropped. The backward half i
 ### F4 — The min/max trace mapping in the request IS correct
 
 `Min. / Max.` (with periods) is the **upper** envelope → `maximum`; `Min / Max` is the **lower**
-→ `minimum`. Verified: they agree at lead 0 (both 315.1 on 2009) and diverge to 398.1 vs 246.6
-near the horizon. They differ **only by punctuation** and must never be deduplicated on a
+→ `minimum`. Verified: the two envelopes coincide at lead 0 and separate monotonically toward the
+horizon, the periodless name tracking the lower series throughout. They differ **only by punctuation** and must never be deduplicated on a
 normalised name. Parser: `adapters/bafu_forecast.py:302` (`fetch_variant_forecast`),
 `types/bafu_forecast.py:113-126` (`BafuForecastRow.point_index`, which exists for exactly this).
 
@@ -123,14 +143,18 @@ only in worker logs; Plan 196 explicitly **cut** the task that would persist it.
 
 ### F6 — Code/image version is not recorded per forecast
 
-`model_artifacts` carries `sha256_hash`, training window and status, but no code version. The
-running image tag is a property of *now*, not of the forecast. `code_or_image_version` must be
-`null`. Substituting the current tag would be a provenance lie.
+`model_artifacts` carries `sha256_hash`, training window and status, but no code version, and the
+running image tag is a property of *now*, not of the forecast — substituting it would be a
+provenance lie. **However `model_artifact_provenance.source_commit` exists**
+(`db/metadata.py:991`, `store/model_artifact_provenance.py:41`) and is the honest source when an
+artifact was imported. On the mini that table currently holds **0 rows** (verified 2026-08-21), so
+the field is `null` in practice today — but the plan must read `source_commit` and fall back to
+`null`, not hardcode `null`. Artifact SHA stays a separate field.
 
 ### F7 — River name and display name are not in SAPPHIRE
 
 `stations` has `code`, `name` (`Porte_du_Scex`, underscored), `location` (EPSG:4326) — and no
-river. `basins.area_km2` gives 5239.4 (2009) and 34479.4 (2091). River and label live in the BAFU
+river. `basins.area_km2` is populated for both MVP stations. River and label live in the BAFU
 inventory GeoJSON (`properties.hydro_body_name`, `properties.label`, CRS **EPSG:2056**), which the
 collector fetches hourly and **discards** (`flows/collect_bafu_forecasts.py:539` — the inventory
 is never archived). See D7.
@@ -142,7 +166,10 @@ is never archived). See D7.
   `units='m³/s'`. Leads are **not** round for 06/12/18Z runs — D12 orders points by
   `valid_time`, so no lead schedule is assumed anywhere.
 - BAFU: hourly, 118 points ≈ 117 h. `issued_at` from the `Forecast as of` layout annotation;
-  `produced_at` is fetch time. Filenames: `{key}_{variant}_{issued_at:%Y%m%dT%H%M%SZ}.parquet`.
+  `produced_at` is **not** our fetch time — it is BAFU's own `meta.produced_at` off the inventory
+  GeoJSON (`adapters/bafu_forecast.py:215`, threaded through
+  `flows/collect_bafu_forecasts.py:549`). Our true fetch clock is `run_at`, which is **only logged
+  and never persisted** (`collect_bafu_forecasts.py:531-536`). Filenames: `{key}_{variant}_{issued_at:%Y%m%dT%H%M%SZ}.parquet`.
 - Observations: 10-minute grid; filter `source='measured' AND qc_status='qc_passed'`;
   partial index `ix_observations_station_timestamp_qc_passed` exists for exactly this.
 - `station_thresholds` and `alerts` are **empty (0 rows)** — no threshold metrics are possible.
@@ -170,9 +197,16 @@ existing `services/skill/` package shape.)* **This invariant holds under both br
 decision O1** — see D2 and D2-alt, neither of which introduces a pre-built document.
 
 **D2 — The API reads the archive through a read-only volume mount.** Add to the `api` service:
-`bafu_forecast_archive:/data/bafu_forecasts:ro` and `SAPPHIRE_CONFIG: /app/config.toml`. The mini
-overlay needs no edit — its `api` override is `ports` only (`docker-compose.macmini.yml:47-49`), so
-the base mount merges through (T7). This **mirrors the pattern already in the file**
+`bafu_forecast_archive:/data/bafu_forecasts:ro` and `SAPPHIRE_CONFIG: /app/config.toml`. **The mini
+overlay DOES need an edit** — the archive *path* is declared only in
+`config/overlays/mac-mini.toml:7`; base `config.toml` has no `[adapters.bafu_forecast]` section at
+all (verified). `load_config()` merges overlays solely from `SAPPHIRE_CONFIG_OVERLAY`
+(`config/_overlay.py:27`), which the `api` service does not set, so without the overlay the
+quarantine gate resolves `bafu_forecast_archive_path = None` and the route reports the archive
+missing **even with the volume correctly mounted**. T7 must therefore add, to the mini `api`
+service, both `SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml` and the read-only
+overlay-file mount, mirroring `prefect-worker` (`docker-compose.macmini.yml:23-29`). This
+**mirrors the pattern already in the file**
 (`model_artifacts:/data/artifacts:ro`). The quarantine is preserved and arguably strengthened: the
 mount is `:ro`, nothing writes BAFU values to the DB, and no `ModelId` is minted.
 *Fallback if O1 = no (D2-alt): **nothing is pre-built and nothing is served from a file.** The route
@@ -203,6 +237,11 @@ UTC day, with `sapphire` keyed by `model_key`. Row-per-model would duplicate the
 Summaries: `minimum` = min member, `p25`/`median`/`p75` = interpolated quantiles, `maximum` = max
 member. **These are summaries of stored ensemble members and must be labelled as such — BAFU's
 five traces are *not* members** (F4) and the schema descriptions must say so on both sides.
+**Guard, not a feature:** `forecast_values` enforces a member/quantile XOR and `ForecastInterface`
+can emit `EnsembleRepresentation.QUANTILES` (`types/ensemble.py`, `db/metadata.py`). All 232 stored
+forecasts on the mini are `members` (verified), so quantile support is not built — but a
+`representation != members` forecast must return an explicit unavailable entry with reason
+`"unsupported_representation"`, never outer quantiles relabelled as `minimum`/`maximum`.
 
 **D6 — BAFU normalization is derived and self-checked, never hardcoded.** Split at
 `half = (n-1)//2`, drop the closing vertex, reverse the backward half, then **assert the two half
@@ -236,12 +275,8 @@ adds no HTTP branch and no new test, and stays inside D13's rule that non-200 is
 snapshot could not be generated at all" — a caller with zero grants is the "no data" case D13/D16
 already have a vocabulary for.
 
-*(This supersedes two earlier drafts of D8. The first claimed `403` on an empty authorized set
-"preserves" R2; the second kept the `403` and claimed it "matches every sibling route". Both were
-wrong: the only `403` in the whole API is `require_admin` (`security.py:226`, verified by
-`grep -rn "403" src/sapphire_flow/api/` → two hits, both in `security.py`), and
-`ensure_station_in_scope` never raises `403`. No `requested_but_unavailable` list either — with 404
-on any out-of-scope code there is nothing for it to carry.)*
+*(D8 was revised twice during review; the text above is the settled answer. There is no
+`requested_but_unavailable` list — with `404` on any out-of-scope code, nothing would populate it.)*
 
 **D9 — `422` for invalid query parameters,** via FastAPI-native `Query(..., ge=, le=)`. Sibling
 routes return `400` from `_parse_enum` (`api/routes/api_stations.py:127`); this route is new, the
@@ -250,8 +285,12 @@ intentional local difference.
 
 **D10 — `snapshot_id` and `ETag` are content-derived and identical.**
 `snapshot_id = "fls1-" + sha256(canonical_body_without(snapshot_id, generated_at))[:16]`;
-`ETag` is the same digest (strong); `Last-Modified` is `data_cutoff_at`. `If-None-Match` returns
-`304`. Consequence, and the reason for the design: **a re-sync that yields identical data produces
+`ETag` is the same digest, emitted as a **weak** validator (`W/"..."`). Weak is the correct and
+honest choice: the digest deliberately excludes `generated_at`, which *is* returned in the body, so
+two 304-equivalent responses are not byte-identical — a strong validator would be a lie
+(RFC 9110 §8.8.1). `Last-Modified` is `data_cutoff_at`, which is **nullable**: with zero stations or
+all sources missing there is no cutoff, and the header is then omitted rather than invented.
+`If-None-Match` returns `304`. Consequence, and the reason for the design: **a re-sync that yields identical data produces
 an identical `snapshot_id`, so the map can skip re-caching.** That is a real benefit for a LAN-only,
 cache-first consumer.
 
@@ -268,8 +307,14 @@ the lowest `model_assignments.priority` that produced a forecast (lowest wins; `
 
 **D13 — Partial is the default failure mode.** Each of the three sources is assembled inside its
 own guard. A source failure sets `status.<source> = error|missing|stale` with a short non-secret
-message and leaves that section unavailable — it never propagates. `500` is reserved for "the
-snapshot could not be generated at all" (DB unreachable, config missing).
+message and leaves that section unavailable. **But containment has a hard limit that must be stated
+rather than discovered:** observations and SAPPHIRE forecasts share one request-scoped SQL
+transaction (`api/deps.py`). Catching a failed statement does **not** repair an aborted PostgreSQL
+transaction — every later query in that request fails too. Therefore: **`SQLAlchemyError` and
+connection failures are whole-snapshot failures and must escape to `500`**; only non-poisoning
+failures (archive file missing or unparseable, trace-geometry mismatch, domain validation) degrade
+to a partial snapshot. No savepoints — that is machinery this MVP does not need (proportionality
+rule 5). `500` also covers config missing.
 
 **D14 — Latest-forecast fetching reuses the existing store method; no query-count contract.**
 `ForecastStore.fetch_latest_forecast()` already exists (`store/forecast_store.py:123-138`) and
@@ -285,6 +330,18 @@ implementation that needed one more query (e.g. joining `model_assignments` for 
 pairs. If that ever matters it will matter at Nepal/v1 scale, and the batch query
 (`store/historical_forcing_store.py:90-113` is the `row_number()` pattern to copy) belongs to
 whichever plan introduces those stations.
+
+**D17 — The eligible set is narrowed before scoping, and assignments are filtered to ACTIVE.**
+Two lookups in this plan default wider than the MVP claims, and both must be constrained explicitly:
+(a) `fetch_all_stations()` filters only on `kind` (`store/station_store.py`), so an unfiltered
+request under an **admin** token would sweep every station in every status — the eligible set is
+therefore **`network='bafu'` AND `station_kind='river'` AND `station_status='operational'`**,
+applied *before* principal scoping, matching what the forecast cycle already does. A bare
+`station_code` is resolved against the canonical `bafu` network, because
+`fetch_station_by_code(code, network)` requires both and `(network, code)` is the uniqueness
+constraint. (b) `fetch_model_assignments()` returns every status, so an **inactive** assignment
+could otherwise supply a stale forecast and even win `is_primary` on priority — filter to
+`ModelAssignmentStatus.ACTIVE` first. Both get a regression test (AC19, AC20).
 
 **D15 — The JSON Schema is generated from the Pydantic models and committed**, with a test
 asserting the committed file equals `model_json_schema()`. The schema cannot drift from the code.
@@ -318,9 +375,40 @@ scanning + issue-time pairing + metrics) and the numbers will be honest but weak
 ~6 weeks, no verified high-flow event. *Recommendation: ship it — the daily-aggregation machinery
 is already needed for `aligned_daily_comparison`, so the marginal cost is pairing + metrics.*
 
-**O3 — Archive the BAFU inventory (T9)?** ~15 lines in the collector; unlocks `river` and
-`display_name` and closes a gap the audit already identified. *Recommendation: yes, but it is
-separable — cut it and those two fields stay `null`, which the contract already permits.*
+**O3 — Archive the BAFU inventory (T9)?** Unlocks `river` and `display_name` and closes a gap the
+audit already identified. **Correction to my earlier "~15 lines" estimate:** it is more than a
+collector change. The adapter's boundary model drops geometry and `hydro_body_name` before the
+collector ever sees the inventory (`adapters/bafu_forecast.py:126,280`), and
+`BafuStationInventory` carries only parsed stations, source time and a skip count
+(`types/bafu_forecast.py:96`) — so T9 also needs an adapter/domain change to surface the raw
+payload, plus atomic archival and reader tests. *Recommendation: still yes, but price it honestly;
+it is separable, and cutting it leaves those two fields `null`, which the contract already permits.*
+
+**O7 — ⛔ BLOCKING: does Plan 111's licence gate permit this export at all?** Raised by the
+independent Codex review and **verified against the plan text**. Plan 111 is `status: READY`, and
+therefore authoritative:
+
+- *"The scoring half … stays **BLOCKED on external gate G1**: no benchmark can be **computed** or
+  published until the BAFU request … returns"* (`111:3-6`), and among its non-goals:
+  *"the collector may archive; the ***scorer*** and the paper stay gated"* (`111:563`).
+  **T4 computes a benchmark. This is a direct conflict, not a judgement call.**
+- The quarantine's stated property is that *"a single `rm -rf` of that directory discards the whole
+  archive"* (`111:12-16`). Exported snapshots are copies that a `rm` of the volume no longer
+  reaches — a weakening of the discard guarantee the owner accepted, whatever the payload says.
+  `licence_status: "unresolved"` (O6) documents the constraint; it does not lift it.
+
+The two halves are separable and deserve separate answers:
+
+1. **T4 / verification — barred as things stand.** Cut it, or record an explicit owner override
+   amending Plan 111's scorer gate the way the 2026-07-10 override amended its collector gate.
+   *Recommendation: cut T4 from v1.* The MVP is the live comparison contract; the audit already
+   showed the numbers would be weak (2 stations, ~6 weeks, no verified high-flow event), so little
+   is lost and the gate stays clean.
+2. **Serving raw BAFU forecasts in the snapshot — narrower, and genuinely the owner's call.** It is
+   internal, LAN-only, research-only, and not a skill score or a publication. But it does put copies
+   outside the single-`rm` boundary. *Recommendation: proceed, with the export explicitly named as
+   an extension of the existing collect-now/discard-if-refused posture and recorded in Plan 111* —
+   so the decision lives where the gate lives, not only here.
 
 **O4 — Add `GZipMiddleware` (T10)?** *Recommendation: no for this MVP (D11).*
 
@@ -355,6 +443,8 @@ them; a sanitized two-station example at
 *Scope (in):* newest `q_forecast` run per station code within a window; the derived,
 self-checked trace normalization of D6/F3/F4; `issued_at` vs `fetched_at` kept distinct;
 monotonicity + geometry quality flags; a pure function taking a base `Path`.
+**Also corrects the wrong orientation comment at `types/bafu_forecast.py:116`** (F3) — a
+comment-only edit, and the one place this plan touches an existing file's prose.
 *Scope (out):* `p_forecast` (lakes — excluded from a discharge comparison), any write, any DB.
 *Exit:* `uv run pytest tests/unit/services/forecast_lab/test_bafu_archive.py` — including a
 fixture that **fails under the inverted (first-half → `p75`) mapping and passes only under the
@@ -376,8 +466,13 @@ query, any query-count assertion (D14).
 *Scope (in):* orchestration, per-source guards (D13), status block (D16), ensemble summaries (D5),
 `aligned_daily_comparison` with the daily completeness gates (BAFU ≥ 22 h, observations ≥ 130
 samples), `snapshot_id` (D10), deterministic ordering (D12), unavailable-model entries with a
-reason and last-known successful issue time.
-*Scope (out):* HTTP, files, verification.
+reason and last-known successful issue time; **ownership of the `include_verification` flag** — it
+is a parameter of `build_snapshot()` itself, which calls `verification.py` internally when true and
+emits the `insufficient_data` sentinel when T4 is cut or returns nothing. This resolves a real
+contradiction in an earlier draft: with the flag owned by T5 and T6, each surface would have had to
+splice verification into the document before hashing it — two producers doing the merge, which is
+exactly the drift D1 exists to prevent.
+*Scope (out):* HTTP, files, and the metric mathematics itself (T4).
 *Exit:* `uv run pytest tests/unit/services/forecast_lab/test_snapshot.py`.
 
 **T4 — Verification summary.** *(separable — see O2)* `services/forecast_lab/verification.py`.
@@ -411,8 +506,11 @@ mid-write failure.
 ### Phase 5 — deployment and documentation
 
 **T7 — Compose wiring.** `docker-compose.yml` (`api`: `SAPPHIRE_CONFIG`, `bafu_forecast_archive`
-`:ro`). No `docker-compose.macmini.yml` edit is needed — its `api` override is `ports` only
-(`docker-compose.macmini.yml:47-49`) and compose merges the base service's volumes through.
+`:ro`) **and `docker-compose.macmini.yml` (`api`: `SAPPHIRE_CONFIG_OVERLAY` plus the read-only
+overlay-file mount)**. An earlier draft claimed the mini overlay needed no edit because its `api`
+override is `ports` only — true for the *volume*, wrong for the *path*: the archive path is declared
+only in `config/overlays/mac-mini.toml`, so without the overlay the gate resolves to `None` and the
+route reports the archive missing with the volume correctly mounted (D2).
 *Scope (out):* ports, TLS, `SAPPHIRE_DOMAIN`, CORS, any other service.
 *Exit:* `uv run pytest tests/unit/deploy/test_compose_forecast_lab_api_mount.py` — a **committed**
 regression test, not an inline heredoc, so the plan's own `uv run pytest` gate covers it and a later
@@ -421,15 +519,15 @@ PR cannot silently drop the mount. It mirrors the existing sibling
 mount against the **rendered** configuration (`docker compose -f … config --format json`, skipping
 when the `docker` CLI is absent) — the same mechanism, one service over. It asserts, on the base
 file merged with `docker-compose.macmini.yml`, that the `api` service (a) mounts
-`bafu_forecast_archive` at `/data/bafu_forecasts` read-only and (b) has
-`SAPPHIRE_CONFIG=/app/config.toml`. Both assertions are **false on today's repo** (F1, F2) and true
-only once this task's edit lands.
+`bafu_forecast_archive` at `/data/bafu_forecasts` read-only, (b) has
+`SAPPHIRE_CONFIG=/app/config.toml`, and (c) has `SAPPHIRE_CONFIG_OVERLAY` plus the overlay mount.
+All three are **false on today's repo** (F1, F2) and true only once this task's edit lands.
 
-The mini overlay is included in the render as a guard, not a second mount: its `api` override
-currently declares only `ports` (`docker-compose.macmini.yml:47-49`), so the base-file mount merges
-through — the rendered assertion fails only if a future edit adds a `volumes` override that drops
-it. Plus a documented redeploy procedure; **verification on the mini is a separate, owner-scheduled
-step.**
+**The mount test is necessary but not sufficient** — it proves the file is reachable, not that the
+path resolves. T7 therefore also loads `DeploymentConfig` under the rendered `api` environment and
+asserts `bafu_forecast_archive_path == Path("/data/bafu_forecasts")`. Without that second
+assertion the suite can go green while the endpoint returns "archive not mounted" forever. Plus a
+documented redeploy procedure; **verification on the mini is a separate, owner-scheduled step.**
 
 **T8 — Documentation.** `docs/spec/forecast-lab-snapshot.md` (timestamp and aggregation semantics,
 quantile method, trace normalization **with the F3 correction called out**, staleness thresholds,
@@ -465,9 +563,21 @@ Every one of these is a test, not a review item.
 7. Observations are `measured` + `qc_passed` + `discharge` only.
 8. BAFU traces normalize correctly despite punctuation (F4) **and the p25/p75 halves are the
    verified way round (F3)** — with a fixture that fails under the inverted mapping.
-9. `issued_at` and `fetched_at` are never conflated.
+9. `issued_at` is BAFU's annotated issue time and is never conflated with the archive's
+   `produced_at`, which is BAFU's inventory-generation stamp and is exported under a name that says
+   so (F8) — no field claims to be our fetch time, because the archive does not hold one.
 10. SAPPHIRE ensemble summaries match `numpy.quantile(..., method="linear")` on a known member set.
 11. Multiple SAPPHIRE models stay distinguishable and are never merged.
+19. Only `operational` `bafu` `river` stations are eligible, applied before principal scoping; an
+    `onboarding` station and a same-code station in another network are both excluded (D17a).
+20. An `inactive` model assignment is never exported and can never win `is_primary`, even at a
+    lower priority number than the active one (D17b).
+21. A forecast with `representation == "quantiles"` yields an explicit
+    `"unsupported_representation"` unavailable entry, never relabelled outer quantiles (D5).
+22. A poisoned SQL transaction surfaces as `500`, not as a partial snapshot; a missing archive file
+    surfaces as a partial snapshot, not `500` (D13).
+23. `ETag` is weak (`W/"..."`), a repeat `If-None-Match` request returns `304`, and
+    `Last-Modified` is omitted when `data_cutoff_at` is null (D10).
 12. `nwp_cycle_source == "fallback"` (the persisted column, F5) produces no error, no warning and
     no degraded status.
 13. A missing source yields `200` + `status.overall == "partial"` + an explicit reason; all three
@@ -489,9 +599,9 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
 
 | # | Requested | Delivered | Why |
 |---|---|---|---|
-| 1 | `25.-75. Percentile` first half → `p75` | first half → **`p25`** | **F3** — measured on 3 runs / 3 stations. The request is inverted. |
+| 1 | `25.-75. Percentile` first half → `p75` | first half → **`p25`** | **F3** — measured on 3 live runs / 3 stations and corroborated by the checked-in fixture for a 4th. The request is inverted, and the wrong comment at `types/bafu_forecast.py:116` is its likely source (T2a fixes it). |
 | 2 | `provenance.nwp_cycle_reason: "too_recent"` | `null` | **F5** — not persisted; Plan 196 cut the task that would persist it. |
-| 3 | `model.code_or_image_version` | `null` | **F6** — not recorded per forecast; the current image tag is not this forecast's provenance. |
+| 3 | `model.code_or_image_version` | `model_artifact_provenance.source_commit` when present, else `null` | **F6** — the column exists but holds 0 rows on the mini today, so `null` in practice. Never the running image tag: that is a property of *now*, not of the forecast. |
 | 4 | `station.river`, `display_name` | `null` until T9 lands | **F7** — not in SAPPHIRE; the request forbids substituting approximations. |
 | 5 | gzip "if already available" | not added | **F9** — not available; adding it changes every route (D11). |
 | 6 | `sapphire-flow export-forecast-lab` | `python -m sapphire_flow.cli.export_forecast_lab` | **F10** — repo convention. |
@@ -499,6 +609,7 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
 | 8 | — | **added** `bafu_forecast.licence_status` | O6 — the unresolved Plan 111 G1 constraint should travel with the data. |
 | 9 | `404`/`403` split | `404` for an out-of-scope/unknown requested `station_code`; **no `403` at all** — a stationless principal gets `200` + empty `stations` | D8 — `404` is the actual Plan 147 R2 helper (`api/security.py:230-233`); the empty-scope case follows `list_stations` (`api_stations.py:163-164`), the only analogous sibling, which narrows to an empty `200`. The API's only `403` is `require_admin`. |
 | 10 | `peak_magnitude_error` | `null` | No event definition exists and thresholds are empty (F8). Honest null over a fabricated number. |
+| 11 | `bafu_forecast.fetched_at` | `inventory_produced_at`; **no `fetched_at` field** | **F8** — the archive stores BAFU's `meta.produced_at`, not our fetch clock; `run_at` is logged and never persisted. Exporting it as `fetched_at` would be a fabricated provenance claim. |
 
 ---
 
@@ -509,17 +620,18 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
   "phases": [
     { "id": "phase-1", "tasks": ["T1"], "parallel": false },
     { "id": "phase-2", "tasks": ["T2a", "T2b"], "parallel": true, "depends_on": ["phase-1"] },
-    { "id": "phase-3", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-2"] },
-    { "id": "phase-3b", "tasks": ["T4"], "parallel": false, "depends_on": ["phase-3"] },
-    { "id": "phase-4", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-3"] },
-    { "id": "phase-5", "tasks": ["T7", "T8"], "parallel": true, "depends_on": ["phase-4"] },
-    { "id": "phase-opt", "tasks": ["T9", "T10"], "parallel": true, "depends_on": ["phase-5"] }
+    { "id": "phase-3", "tasks": ["T4"], "parallel": false, "depends_on": ["phase-2"] },
+    { "id": "phase-4", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-3"] },
+    { "id": "phase-5", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-4"] },
+    { "id": "phase-6", "tasks": ["T7", "T8"], "parallel": true, "depends_on": ["phase-5"] },
+    { "id": "phase-opt", "tasks": ["T9", "T10"], "parallel": true, "depends_on": ["phase-6"] }
   ]
 }
 ```
 
-`T4` is separable (O2): cut it and `verification.status` is `insufficient_data` with a follow-up
-plan. `phase-opt` is separable in full (O3, O4).
+`T4` is separable (O2 and, decisively, **O7**): cut it and `phase-3` is empty — T3 still owns the
+`insufficient_data` sentinel, so no task orphans (that was the D1/T3 contradiction, now fixed).
+`phase-opt` is separable in full (O3, O4).
 
 ## Review
 
