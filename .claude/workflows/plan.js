@@ -142,7 +142,9 @@ while (round < maxRounds) {
       `STEP 1 — write this exact prompt to a scratch file (use a heredoc so quoting is safe), then run Codex ` +
       `read-only over it, capturing ALL output. Give the Bash call a timeout of ${codexTimeoutMs}ms so a hung ` +
       `CLI cannot stall the workflow:\n` +
-      `  codex exec --sandbox read-only --skip-git-repo-check "$(cat <scratch-file>)"\n` +
+      `  codex exec --sandbox read-only --skip-git-repo-check "$(cat <scratch-file>)" < /dev/null\n` +
+      `(the \`< /dev/null\` is MANDATORY — without it \`codex exec\` blocks on "Reading additional input ` +
+      `from stdin..." and the call times out with no verdict.)\n` +
       `The prompt to give Codex is:\n<<<CODEX_PROMPT\n${codexReviewPrompt(round)}\nCODEX_PROMPT\n\n` +
       `STEP 2 — a Bash TIMEOUT, a NON-ZERO exit, empty output, or output that is only a startup/hang ` +
       `message ALL count as NO usable verdict. In any of those cases KILL the process and retry ONCE. If it ` +
