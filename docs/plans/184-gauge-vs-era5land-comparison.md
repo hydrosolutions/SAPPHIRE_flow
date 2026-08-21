@@ -358,10 +358,29 @@ Two named outputs, one definition. *(Codex review 2026-08-20.)*
 ### T2 — Pyramid `AT` loader and the D14 lapse correction
 **In:** `AT` support in `pyramid_loader.py` sharing **only its file/timestamp parsing**; the standard
 6.5 °C/km correction from model orography to station elevation using M-A5's published
-`station_grid_elevation.csv` (D6 — reuse, never re-derive); and the check on the five-station
-2,660–5,600 m transect over **2020–2023**, with **hour-of-day exposure equalised** and the **±1.75 h
-stated, not resolved**. **Out:** fitting or tuning the rate (D14), and **routing `AT` through the
-precipitation retention path**.
+`station_grid_elevation.csv` (D6 — reuse, never re-derive); and the check on the transect
+**AWS3 (2,660 m), AWS5 (3,570 m), AWS2 (4,260 m), AWS1 (5,035 m), AWS4 (5,600 m)** over **2020–2023**,
+with **hour-of-day exposure equalised**. **Out:** fitting or tuning the rate (D14), and **routing `AT`
+through the precipitation retention path**.
+
+**Timestamp convention: assume PERIOD-ENDING, state the assumption, and record that this check is
+INVARIANT to it.** *(Amended 2026-08-21 — an earlier version imported M-A10's "±1.75 h stated, not
+resolved" into this task, which overstates the uncertainty here.)* Pyramid's README does not declare
+whether an hourly value is period-beginning or period-ending; period-ending is the dominant convention
+(WMO reports precipitation as accumulation over the preceding period, and AWS loggers write a record
+when the interval closes). Two reasons it does not bind this task:
+
+  1. **Measured: a whole-hour relabelling moves an hour-equalised mean by exactly 0.000 °C** — the same
+     24 hour-means are averaged, only their labels change. Verified on AWS4 and AWS5 for 2022-07 and
+     2022-01.
+  2. The convention is **sharp for accumulations and soft for state variables**. Precipitation is an
+     integral, so a one-hour ambiguity is a full hour of rainfall; temperature varies smoothly, so the
+     difference between a spot reading and a preceding-interval mean is a fraction of the hourly rate
+     of change.
+
+  **The ±1.75 h belongs to M-A10 and M-A7's diurnal-PHASE work, not here.** Do not carry it into the
+  lapse report. The open question to the Pyramid authors stays open for those milestones; T2 does not
+  wait on it.
 
 **⛔ `AT` MUST NOT pass through the `RR` range check.** `pyramid_loader.py:198` rejects
 `value_mm < qc_mask_range_check_value_min_mm` = **0.0** (`params.py:142`). `AT` is °C and largely
