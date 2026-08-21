@@ -1,7 +1,7 @@
 """Unit tests for tools.dependency_safety — Plan 119 dependency-bump safety gate.
 
 Regression fixtures below are keyed to the exact deceptions the classifier
-must not fall for (see docs/plans/119-dependency-bump-safety-gate.md §1):
+must not fall for (see docs/plans/archive/119-dependency-bump-safety-gate.md §1):
 comment-vs-field drift (PR #78 shape) and "major digit unchanged" tag schemes
 (CPython minor-axis risk). Each fixture pair states, in its docstring, which
 wrong implementation it catches.
