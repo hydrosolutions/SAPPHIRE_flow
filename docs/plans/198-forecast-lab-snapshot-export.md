@@ -26,8 +26,16 @@ got the first real Codex pass and raised 2 blockers + 12 majors, which tripped t
 comparing a Codex-less round to a Codex-ful one. **That is a false stall**, and the round-3 findings
 were the valuable ones: every one this session verified against the repo or the live host held up,
 and four of them corrected *this plan's own* measured facts (F1, F6, F8, D2). Those are folded.
-The three T4-internal findings died with T4. **Next step: one more `plan` round with a raised
-`codexTimeoutMs`, so the whole loop gets the independent reviewer that only round 3 had.**
+The three T4-internal findings died with T4.
+
+**Second run (2 rounds, 2026-08-21): 0 blockers, 3 majors, 2 minors — all folded, and every one
+of them cut scope** (the admin-`404` two-step, eligibility on the explicit-code path, and dropping
+the vestigial `include_verification` flag; plus two de-speculation trims). **Root cause of the
+review flakiness found and fixed:** `.claude/workflows/{plan,implement}.js` invoked
+`codex exec` **without `< /dev/null`**, so the CLI blocked on "Reading additional input from
+stdin..." and timed out — a gotcha already recorded in project memory. That defect silenced the
+independent reviewer in **4 of 5 rounds across both runs**; both workflows are now fixed. **Any
+"convergence" reached before that fix should be read as Claude-only.**
 
 ## Goal
 
@@ -57,8 +65,9 @@ platform. Specifically:
 2. No ingestion of BAFU forecasts into Postgres — the quarantine stands (Plan 111).
 3. No change to any existing route's response shape.
 4. No new monitoring, no new scheduled job, no new probe harness, no new script file.
-5. No caching layer, no pagination, no rate limiting, no ETag beyond the single content hash
-   already specified in D10.
+5. No caching layer, no pagination, no rate limiting, and **no conditional-GET machinery**
+   (`ETag`/`If-None-Match`/`304`/`Last-Modified`) — the body-level content hash of D10 is the whole
+   of it. See T11 if that ever needs revisiting.
 6. No abstraction introduced for a second consumer, a second deployment, a second variable, or a
    second station set. There are **two stations and one consumer**. Generality that no caller
    exercises is over-engineering, not foresight.
@@ -214,16 +223,15 @@ overlay-file mount, mirroring `prefect-worker` (`docker-compose.macmini.yml:23-2
 (`model_artifacts:/data/artifacts:ro`). The quarantine is preserved and arguably strengthened: the
 mount is `:ro`, nothing writes BAFU values to the DB, and no `ModelId` is minted.
 *Fallback if O1 = no (D2-alt): **nothing is pre-built and nothing is served from a file.** The route
-still calls `build_snapshot()` live (D1) and still computes `snapshot_id`/`ETag` over its own
+still calls `build_snapshot()` live (D1) and still computes `snapshot_id` over its own
 response body (D10, T5) — it simply has no archive to read, so the BAFU section comes back through
 the D13 guard as `status.bafu_forecast = "missing"`, reason `"archive not mounted"`. The complete
 three-source snapshot is then produced only by the CLI (T6), run inside a container that already
 has the mount (`docker-compose.yml:131` mounts `bafu_forecast_archive` on `prefect-worker`), and
 handed to the map as a file. **Trade-off, stated rather than hidden:** under D2-alt the map loses
-live BAFU forecasts over HTTP and gets them only from a manually exported file. An earlier variant
-of this fallback had a worker pre-build the whole document to a shared volume; it is **rejected**,
-because it would add a scheduled job (barred by proportionality rule 4), a third producer (breaking
-D1) and a staleness class the contract would have to model.*
+live BAFU forecasts over HTTP and gets them only from a manually exported file. (A pre-build-to-a-
+shared-volume variant was **rejected**: a scheduled job (rule 4), a third producer (breaks D1), and
+a staleness class the contract would have to model.)*
 
 **D3 — v1 computes no verification at all; the section is a declared sentinel.** *(Resolved by
 owner decision O7.1, 2026-08-21 — T4 is CUT.)* `verification` is always
@@ -271,6 +279,23 @@ caller's scope", and every station-scoped route uses it (`api_forecasts.py:95`,
 `api_stations.py:185,242,269`). This route does the same for **explicitly requested** codes that
 are unknown or out of scope: `404 Station not found`.
 
+**⚠️ `ensure_station_in_scope` alone is NOT sufficient, and an earlier draft of D8 was wrong to
+imply it was.** `Principal.station_in_scope` returns `True` for an admin **before** it tests for
+`None` (`api/security.py:134-142`: `if self.is_admin: return True` precedes
+`if station_id is None: return False`). So `ensure_station_in_scope(admin_principal, None)` passes
+silently, and an admin token requesting a typo'd `station_code` would resolve to `None`, clear the
+scope check, and reach assembly with no station. **T5 must therefore use the same two-step the
+sibling `get_station` already uses** (`api_stations.py:185-198`): scope-check, then a *separate*
+existence check that runs regardless of `principal.is_admin` and raises `404` when the code did not
+resolve. Scope and existence are different questions; only a consumer principal accidentally
+conflates them. Tested by AC26.
+
+**`station_code` is repeatable, so the multi-code policy is stated rather than improvised: any
+invalid or out-of-scope code among several requested `404`s the whole request** — no partial
+result, no per-code error object. That is what `ensure_station_in_scope` already does when called
+in a loop (`api/security.py:230-234` raises on the first bad id), it is consistent with the
+single-code rule, and it costs no extra code. Tested by AC25.
+
 The other case — a non-admin principal with an empty `station_ids` that supplies **no**
 `station_code` — is handled the way the one directly analogous sibling handles it. `list_stations`
 (`api/routes/api_stations.py:145-171`) takes no station id, filters to scope
@@ -291,16 +316,27 @@ routes return `400` from `_parse_enum` (`api/routes/api_stations.py:127`); this 
 request specifies 422, and 422 is what FastAPI produces without custom code. Documented as an
 intentional local difference.
 
-**D10 — `snapshot_id` and `ETag` are content-derived and identical.**
-`snapshot_id = "fls1-" + sha256(canonical_body_without(snapshot_id, generated_at))[:16]`;
-`ETag` is the same digest, emitted as a **weak** validator (`W/"..."`). Weak is the correct and
-honest choice: the digest deliberately excludes `generated_at`, which *is* returned in the body, so
-two 304-equivalent responses are not byte-identical — a strong validator would be a lie
-(RFC 9110 §8.8.1). `Last-Modified` is `data_cutoff_at`, which is **nullable**: with zero stations or
-all sources missing there is no cutoff, and the header is then omitted rather than invented.
-`If-None-Match` returns `304`. Consequence, and the reason for the design: **a re-sync that yields identical data produces
-an identical `snapshot_id`, so the map can skip re-caching.** That is a real benefit for a LAN-only,
-cache-first consumer.
+**D10 — `snapshot_id` is a content-derived body field, and that is the whole caching story.**
+`snapshot_id = "fls1-" + sha256(canonical_body_without(snapshot_id, generated_at))[:16]`. The
+benefit that matters — **a re-sync yielding identical data produces an identical `snapshot_id`, so
+the map can skip re-caching** — is available to the consumer by comparing that one field in the
+parsed body. **No `ETag`, no `If-None-Match`, no `304`, no `Last-Modified`** (revised 2026-08-21):
+protocol-level conditional GET buys nothing the body field does not already give this single
+LAN consumer, and it is exactly the caching-layer addition proportionality rule 5 puts out of
+scope. **Trade-off, stated:** a repeat poll over unchanged data still transfers the full
+~300–600 KB body (D11) instead of a `304`. If that bandwidth is ever measured to matter, revisit conditional GET then — T11 is a
+placeholder, not a spec.
+
+**D18 — `include_verification` is dropped entirely.** *(Rule 6, applied to this plan's own
+leftovers.)* The request specified the flag, and it earned its place while T4 existed: it gated an
+expensive computation. With T4 cut (O7.1) `verification` is a static three-field sentinel that
+costs nothing to emit, so the flag would only toggle whether a free constant object appears in the
+JSON — a distinction the single consumer has no reason to exercise, with no acceptance criterion
+covering it, propagating a branch into three places (`build_snapshot()`, a query parameter, a CLI
+parameter). Carrying it "so the plumbing is ready when T4 returns" is exactly the foresight
+proportionality rule 6 forbids. `verification` is therefore **always present and always
+`insufficient_data`**. If a future plan restores real verification, it adds the parameter then.
+*(Deviation 12.)*
 
 **D11 — No global gzip.** F9: none exists. Adding `GZipMiddleware` changes every route's response
 encoding, which is out of scope ("do not redesign unrelated APIs"). The snapshot for two stations
@@ -309,9 +345,17 @@ offers it if the owner wants it.
 
 **D12 — Determinism is a tested property.** Stations sorted by `code`; points by `valid_time`
 ascending; models by `(is_primary desc, model_key asc)`; daily rows by `day_start`; JSON key order
-fixed by Pydantic field order; no set iteration anywhere. `is_primary` = the assigned model with
-the lowest `model_assignments.priority` that produced a forecast (lowest wins; `nwp_regression` is
-10). Two builds from identical data must be byte-identical apart from `generated_at`.
+fixed by Pydantic field order; no set iteration anywhere. Two builds from identical data must be
+byte-identical apart from `generated_at`.
+
+`is_primary` = the **ACTIVE** assignment (D17b) with the lowest `model_assignments.priority` that
+produced a forecast (lowest wins; `nwp_regression` is 10), **ties broken by `model_key` ascending** —
+the same rule already used for list order. The tiebreak is not decoration: `priority` has **no
+uniqueness constraint and a `server_default` of `0`** (`db/metadata.py:1016`), so any assignment
+created without an explicit priority collides at `0` with every other such assignment on the same
+station — the exact shape AC11 and F8 anticipate (two active models per MVP station). Without a
+stated tiebreak two builds over identical data could pick different winners on unordered DB read
+order, contradicting the byte-identical invariant above (AC16). Tested by AC24.
 
 **D13 — Partial is the default failure mode.** Each of the three sources is assembled inside its
 own guard. A source failure sets `status.<source> = error|missing|stale` with a short non-secret
@@ -330,14 +374,12 @@ returns the latest forecast per `(station_id, model_id, parameter)`. T2b calls i
 over the assigned `(station, model)` pairs. At the scope this plan is capped to — **two stations**,
 a handful of models — that is a handful of trivial indexed queries on a once-per-request LAN
 endpoint, functionally indistinguishable from a windowed batch query, and it adds **no** new store
-code. An earlier draft mandated "two queries regardless of station or model count" and asserted it
-by counting queries in a test; that is a performance guarantee for a station count this plan says
-will never exist (proportionality rule 6), and it would have failed a future, correct
-implementation that needed one more query (e.g. joining `model_assignments` for the D12
-`is_primary` order). **Trade-off, stated:** query count now grows linearly with `(station, model)`
-pairs. If that ever matters it will matter at Nepal/v1 scale, and the batch query
-(`store/historical_forcing_store.py:90-113` is the `row_number()` pattern to copy) belongs to
-whichever plan introduces those stations.
+code. (A "two queries regardless of station or model count" draft, asserted by counting queries in
+a test, was **rejected**: a performance guarantee for a station count this plan says will never
+exist (rule 6), and it would fail a correct implementation needing one more query — e.g. joining
+`model_assignments` for the D12 `is_primary` order.) **Trade-off, stated:** query count now grows linearly with `(station, model)`
+pairs. If that ever matters it will matter at Nepal/v1 scale, and batching belongs to whichever
+plan introduces those stations.
 
 **D17 — The eligible set is narrowed before scoping, and assignments are filtered to ACTIVE.**
 Two lookups in this plan default wider than the MVP claims, and both must be constrained explicitly:
@@ -347,7 +389,12 @@ therefore **`network='bafu'` AND `station_kind='river'` AND `station_status='ope
 applied *before* principal scoping, matching what the forecast cycle already does. A bare
 `station_code` is resolved against the canonical `bafu` network, because
 `fetch_station_by_code(code, network)` requires both and `(network, code)` is the uniqueness
-constraint. (b) `fetch_model_assignments()` returns every status, so an **inactive** assignment
+constraint. **The eligibility filter must run on that path too, not only on the list-all sweep** —
+`fetch_station_by_code` filters on `code` and `network` alone (`store/station_store.py:79-91`), so
+an explicitly named `bafu` lake or `onboarding` station would otherwise resolve, pass scope, and be
+assembled despite being out of scope for the whole feature. Re-check `station_kind == river` and
+`station_status == operational` on the resolved row and treat a mismatch as **unknown → `404`**
+(D8), so an ineligible station is indistinguishable from a typo. Tested by AC19. (b) `fetch_model_assignments()` returns every status, so an **inactive** assignment
 could otherwise supply a stale forecast and even win `is_primary` on priority — filter to
 `ModelAssignmentStatus.ACTIVE` first. Both get a regression test (AC19, AC20).
 
@@ -473,12 +520,8 @@ query, any query-count assertion (D14).
 *Scope (in):* orchestration, per-source guards (D13), status block (D16), ensemble summaries (D5),
 `aligned_daily_comparison` with the daily completeness gates (BAFU ≥ 22 h, observations ≥ 130
 samples), `snapshot_id` (D10), deterministic ordering (D12), unavailable-model entries with a
-reason and last-known successful issue time; **ownership of the `include_verification` flag** — it
-is a parameter of `build_snapshot()` itself, and with T4 cut (O7.1) it selects only whether the
-`verification` key is present at all. When present it is always the `insufficient_data` sentinel
-(D3). The flag stays on `build_snapshot()` rather than on the surfaces: with it owned by T5 and T6,
-each would have had to splice verification into the document before hashing it — two producers
-doing the merge, exactly the drift D1 exists to prevent.
+reason and last-known successful issue time; the always-present `verification` sentinel (D3).
+**There is no `include_verification` parameter** — see D18.
 *Scope (out):* HTTP, files, and any computed metric (barred — see D3/O7.1).
 *Exit:* `uv run pytest tests/unit/services/forecast_lab/test_snapshot.py`.
 
@@ -493,15 +536,17 @@ audit, so nothing is lost by deleting the task here.
 
 **T5 — REST route.** `api/routes/forecast_lab.py`, registered under `require_principal`.
 *Scope (in):* `GET /api/v1/forecast-lab/snapshot`; `station_code` (repeatable),
-`observation_hours` (default 168, max 720), `include_verification` (default true); scoping via
+`observation_hours` (default 168, max 720) — **no `include_verification`** (D18); scoping via
 `ensure_station_in_scope` for explicitly requested codes (`404`) and scope-filtering for the
-no-code case (`200` + empty `stations`, D8); `ETag`/`Last-Modified`/`304` computed live over the response body (D10) — unchanged under
-D2-alt; `application/json`.
-*Scope (out):* CORS changes, gzip, rate limiting, any change to an existing route.
+no-code case (`200` + empty `stations`, D8) — and **any** invalid code among several requested
+`404`s the whole request (D8); the body-level `snapshot_id` computed live over the response body
+(D10) — unchanged under D2-alt; `application/json`.
+*Scope (out):* CORS changes, gzip, rate limiting, conditional-GET headers (D10, T11), any change to
+an existing route.
 *Exit:* `uv run pytest tests/unit/api/test_forecast_lab_route.py`.
 
 **T6 — CLI export.** `cli/export_forecast_lab.py`, mirroring `cli/bafu_observation_audit.py` (F10).
-*Scope (in):* `--output`, plus the same three parameters; atomic write (temp → validate against the
+*Scope (in):* `--output`, plus the same two query parameters (D18); atomic write (temp → validate against the
 generated schema → `os.replace`); non-zero exit on total failure; zero exit on a partial snapshot.
 *Scope (out):* a new console-script entry in `pyproject.toml` (F10 — module invocation is the
 convention).
@@ -529,10 +574,35 @@ file merged with `docker-compose.macmini.yml`, that the `api` service (a) mounts
 All three are **false on today's repo** (F1, F2) and true only once this task's edit lands.
 
 **The mount test is necessary but not sufficient** — it proves the file is reachable, not that the
-path resolves. T7 therefore also loads `DeploymentConfig` under the rendered `api` environment and
-asserts `bafu_forecast_archive_path == Path("/data/bafu_forecasts")`. Without that second
-assertion the suite can go green while the endpoint returns "archive not mounted" forever. Plus a
-documented redeploy procedure; **verification on the mini is a separate, owner-scheduled step.**
+*path* resolves. Without a second assertion the suite can go green while the endpoint returns
+"archive not mounted" forever. But that assertion **cannot** be written the obvious way: feeding the
+rendered container environment straight into `load_config()` from a host-run pytest raises
+`FileNotFoundError` (`config/_overlay.py:35-36` — `/app/config.toml` does not exist on the host),
+which fails identically whether or not the compose wiring is right, so it would confirm nothing.
+No existing test under `tests/unit/deploy/` demonstrates a pattern for this, so T7 spells it out as
+**two separate assertions**:
+
+- **(a) Wiring — string comparison over the rendered JSON, no config loading.** On the base file
+  merged with `docker-compose.macmini.yml`, the `api` service's environment has
+  `SAPPHIRE_CONFIG == "/app/config.toml"` and
+  `SAPPHIRE_CONFIG_OVERLAY == "/app/config/overlays/mac-mini.toml"`, and both files are mounted
+  read-only at exactly those targets. **False on today's repo** (F1, F2) — this is the red half.
+- **(b) Path derivation — `load_config()` against the REAL repo-relative files.** With
+  `monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(root / "config/overlays/mac-mini.toml"))`,
+  call `load_config(root / "config.toml")` and assert
+  `bafu_forecast_archive_path == Path("/data/bafu_forecasts")`. This is sound because the overlay
+  declares that path as a **literal container-absolute string**
+  (`config/overlays/mac-mini.toml:8`, `archive_base_path = "/data/bafu_forecasts"`) and base
+  `config.toml` has no `[adapters.bafu_forecast]` section at all — so the value the host derives is
+  the value the container derives, and no `${SAPPHIRE_*}` interpolation is involved
+  (`config/deployment.py:388-403`; `config.toml` contains no `${…}` references, verified).
+  Measured 2026-08-21: it returns `PosixPath('/data/bafu_forecasts')` today, and `None` if the
+  overlay is dropped.
+
+(b) is therefore **green on today's repo** and is a guard, not a red-first assertion: (a) catches
+the compose wiring being wrong or later removed, (b) catches the overlay's path declaration being
+removed or renamed. Neither alone closes the gap. Plus a documented redeploy procedure;
+**verification on the mini is a separate, owner-scheduled step.**
 
 **T8 — Documentation.** `docs/spec/forecast-lab-snapshot.md` (timestamp and aggregation semantics,
 quantile method, trace normalization **with the F3 correction called out**, staleness thresholds,
@@ -548,6 +618,9 @@ entry; a `docs/conventions.md` line if a new convention lands.
 plot payloads; unlocks `river` and `display_name`; requires reprojection EPSG:2056 → 4326 for any
 coordinate use, though the DB coordinate remains canonical.
 **T10 — `GZipMiddleware`** *(see O4)*: two lines, affects all routes.
+**T11 — Conditional GET** *(cut from v1 by D10)*: `ETag`/`If-None-Match`/`Last-Modified`. Only
+worth building if repeat-poll bandwidth is measured to matter. Design it then, against the
+requirements that exist then.
 
 ---
 
@@ -573,16 +646,18 @@ Every one of these is a test, not a review item.
    so (F8) — no field claims to be our fetch time, because the archive does not hold one.
 10. SAPPHIRE ensemble summaries match `numpy.quantile(..., method="linear")` on a known member set.
 11. Multiple SAPPHIRE models stay distinguishable and are never merged.
-19. Only `operational` `bafu` `river` stations are eligible, applied before principal scoping; an
-    `onboarding` station and a same-code station in another network are both excluded (D17a).
+19. Only `operational` `bafu` `river` stations are eligible — enforced on **both** paths: the
+    list-all sweep and an explicitly requested `station_code`. An `onboarding` station, a `lake`
+    station and a same-code station in another network are each excluded, and an explicitly
+    requested ineligible code returns `404`, indistinguishable from a typo (D17a).
+26. An **admin** token requesting an unknown `station_code` gets `404`, not a crash and not a
+    silent drop — the existence check runs independently of `principal.is_admin` (D8).
 20. An `inactive` model assignment is never exported and can never win `is_primary`, even at a
     lower priority number than the active one (D17b).
 21. A forecast with `representation == "quantiles"` yields an explicit
     `"unsupported_representation"` unavailable entry, never relabelled outer quantiles (D5).
 22. A poisoned SQL transaction surfaces as `500`, not as a partial snapshot; a missing archive file
     surfaces as a partial snapshot, not `500` (D13).
-23. `ETag` is weak (`W/"..."`), a repeat `If-None-Match` request returns `304`, and
-    `Last-Modified` is omitted when `data_cutoff_at` is null (D10).
 12. `nwp_cycle_source == "fallback"` (the persisted column, F5) produces no error, no warning and
     no degraded status.
 13. A missing source yields `200` + `status.overall == "partial"` + an explicit reason; all three
@@ -594,6 +669,12 @@ Every one of these is a test, not a review item.
     known-bad future-dated hindcast rows cannot reach the export by any path.
 16. Two builds over identical data are byte-identical except `generated_at`.
 17. The CLI writes atomically and leaves no partial file on failure.
+24. Two ACTIVE assignments on one station at **equal** `priority` (e.g. both at the `0`
+    `server_default`, `db/metadata.py:1016`) yield a deterministic `is_primary` — the lower
+    `model_key` — identically across repeated builds and across shuffled DB row order (D12).
+25. A request mixing a valid and an invalid/out-of-scope `station_code`
+    (`?station_code=<valid>&station_code=<invalid>`) returns `404` for the whole request, not a
+    partial `200` (D8).
 
 **Gates:** `uv run pytest`, `uv run ruff format --check`, `uv run ruff check`, `uv run pyright`
 (ratchet). Hold at PR — no push, no merge. *(Every Exit path above is under `tests/unit/…` because
@@ -616,6 +697,7 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
 | 8 | — | **added** `bafu_forecast.licence_status` | O6 — the unresolved Plan 111 G1 constraint should travel with the data. |
 | 9 | `404`/`403` split | `404` for an out-of-scope/unknown requested `station_code`; **no `403` at all** — a stationless principal gets `200` + empty `stations` | D8 — `404` is the actual Plan 147 R2 helper (`api/security.py:230-233`); the empty-scope case follows `list_stations` (`api_stations.py:163-164`), the only analogous sibling, which narrows to an empty `200`. The API's only `403` is `require_admin`. |
 | 10 | `peak_magnitude_error` | `null` | No event definition exists and thresholds are empty (F8). Honest null over a fabricated number. |
+| 12 | `include_verification` query parameter | **dropped** | D18 — with T4 cut it would toggle only whether a free static sentinel appears; one consumer, no AC, three branches. Rule 6. |
 | 11 | `bafu_forecast.fetched_at` | `inventory_produced_at`; **no `fetched_at` field** | **F8** — the archive stores BAFU's `meta.produced_at`, not our fetch clock; `run_at` is logged and never persisted. Exporting it as `fetched_at` would be a fabricated provenance claim. |
 
 ---
@@ -630,13 +712,14 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
     { "id": "phase-3", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-2"] },
     { "id": "phase-4", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-3"] },
     { "id": "phase-5", "tasks": ["T7", "T8"], "parallel": true, "depends_on": ["phase-4"] },
-    { "id": "phase-opt", "tasks": ["T9", "T10"], "parallel": true, "depends_on": ["phase-5"] }
+    { "id": "phase-opt", "tasks": ["T9", "T10", "T11"], "parallel": true, "depends_on": ["phase-5"] }
   ]
 }
 ```
 
-**T4 is gone** (O7.1) — six tasks plus two separable extras remain. T3 owns the
-`insufficient_data` sentinel, so nothing orphans. `phase-opt` is separable in full (O3, O4).
+**T4 is gone** (O7.1) — six tasks plus three separable extras remain (T11 is conditional GET,
+cut from v1 by D10). T3 owns the
+`insufficient_data` sentinel, so nothing orphans. `phase-opt` is separable in full (O3, O4, D10).
 
 ## Review
 
