@@ -79,7 +79,9 @@ anti-phase and the analysis would have declared H1 anyway — then modified M-A7
   That is false and was never needed.** Measured on the real files: **4.2 % of positive JJAS values are
   not multiples of 0.2** (301/7,133 AWS3; 386/9,280 AWS5), forming a clean **0.24-family** (0.24, 0.48,
   0.72, 0.96) plus outliers — almost certainly a different bucket size or logger era, so Pyramid's
-  effective resolution is **not uniform across the record**.
+  effective resolution is **not uniform across the record**. *(Extended 2026-08-21 to all six RR
+  stations: **2,861 / 47,967 = 6.0 %**, ranging 0.9 % at AWS0 to 9.6 % at AWS2 — so the effect is
+  network-wide, not confined to the two co-located pairs.)*
   **D7's argument is unaffected**, because it rests only on the **FLOOR**: the smallest positive JJAS
   value is exactly 0.2 and nothing is below it, so every ladder rung is identical on Pyramid regardless
   of what the values are multiples of. *(The floor is a JJAS fact — AWS5 has a 0.15 mm positive reading
