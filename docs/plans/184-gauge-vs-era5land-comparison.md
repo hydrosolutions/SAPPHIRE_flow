@@ -124,6 +124,17 @@ All decisions are now made.
   This is **not** licence to refit: D14's "use 6.5, never fit to Pyramid" stands, and a reported
   sensitivity is neither a refit nor a decision threshold (vision D8 is unaffected).
 
+- **D4a — The elevation bands are Plan 193 D5a's, not a second set.** `< 700 m` / `700–2,000 m` /
+  `2,000–3,000 m` / `≥ 3,000 m`, giving **9 / 9 / 5 / 3** of the 26 stations. *(Added 2026-08-21.)*
+  Both this plan's Exit and T3 require results "per elevation stratum" without ever defining the
+  strata — the same gap an independent review found in Plan 193, where the edges were then named once,
+  a priori, from the literature the milestone already cites (southern margin ~500–700 m; Lesser
+  Himalaya ~2,000–2,200 m). **M-A8 joins M-A6 and M-A7**, so a second set of edges here would make the
+  two milestones' elevation results incomparable. One definition, two consumers — the same discipline
+  T1 applies to the masked population. Band products report their station count, and the `≥ 3,000 m`
+  band carries Plan 193's recorded limit: three stations, one of them Olangchunggola, whose 03 UTC
+  peak is unexplained.
+
 - **D5 — Representativeness is characterised, not decomposed.** One point vs one cell cannot separate
   grid error from model error. Use M-A5's operator-sensitivity envelope, the elevation mismatch, and
   neighbouring-cell variability — and label it a characterisation.
