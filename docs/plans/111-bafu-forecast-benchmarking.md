@@ -4,6 +4,9 @@
 collector only** (see the Override below). The scoring half (G2 pre-registration + G3
 scorer) stays **BLOCKED on external gate G1**: no benchmark can be computed or published
 until the BAFU request (archive, licence over `/plots/*.json`, publication rights) returns.
+**Two owner amendments now sit on this plan:** the 2026-07-10 collector override (below) and
+the **2026-08-21 Export extension** (see § Non-goals) permitting internal LAN-only read-back
+of the archive for Plan 198's Forecast Lab. Neither touches the scorer gate.
 
 > **Owner override (2026-07-10) — build the route-C collector NOW, pre-G1.** The owner
 > accepts the *collect-now / discard-if-refused* posture: start the forward-only archive
@@ -561,5 +564,41 @@ against DHM, so the only live framing concern is the BAFU/LINDAS relationship it
   (see the Status override). Characterising was not consent; this is a deliberate,
   owner-accepted *collect-now / discard-if-refused* decision, not a silent workaround.
 - **Publishing** any BAFU-derived skill score before G1 returns publication rights. The
-  collector may archive; the *scorer* and the paper stay gated. (Unchanged.)
+  collector may archive; the *scorer* and the paper stay gated. (Unchanged — and
+  **reaffirmed** 2026-08-21: Plan 198 cut its verification task, T4, precisely to keep this
+  non-goal intact.)
 - **Training or tuning any model on the collected BAFU data.** Evaluation-only, always.
+- ~~Reading the archive back out of its quarantined volume for internal research display.~~
+  **AMENDED by the owner 2026-08-21** — see the Export extension below.
+
+> ### Export extension (owner decision, 2026-08-21)
+>
+> **Decision.** The archived BAFU forecast series may be **read back and served internally**
+> to the SAPPHIRE-flow-map "Forecast Lab" (Plan 198): a versioned, read-only JSON snapshot
+> over the **company LAN only**, for research and model comparison. The owner's words:
+> *"proceed with that. we use the data."*
+>
+> **This is an extension of the 2026-07-10 collect-now / discard-if-refused posture, not a
+> new posture** — and, like that decision, it is recorded here rather than only in the
+> consuming plan, so the gate and its amendments stay in one place.
+>
+> **What is authorised:** reading the quarantined archive read-only; normalising the Plotly
+> traces into explicit `minimum`/`p25`/`median`/`p75`/`maximum` fields; serving and exporting
+> those values inside the Forecast Lab snapshot; displaying them next to SAPPHIRE forecasts
+> and BAFU observations.
+>
+> **What is NOT authorised, and remains gated on G1 (all unchanged):**
+> computing or publishing any BAFU-derived **skill score or benchmark** (this is why Plan 198
+> cut T4); training or tuning any model on the data; any public Internet exposure, tunnel,
+> public DNS or hosted replica; and any **commercial** publication of BAFU forecast data.
+>
+> **Cost, stated rather than hidden.** The archive's original discard property — *"a single
+> `rm -rf` of that directory discards the whole archive"* — **no longer holds on its own.**
+> Exported snapshots are copies outside that directory. If BAFU refuses, a complete discard
+> now requires three steps, not one: (1) `docker volume rm` the archive, (2) delete any
+> exported snapshot files, and (3) instruct SAPPHIRE-flow-map to purge its cached snapshots —
+> the map is explicitly designed to keep the last good snapshot when it cannot sync, so a
+> cached copy survives the server going dark. **Whoever sends the G1 letter must know this.**
+>
+> **Unblocked by this decision:** Plan 198's BAFU sections. **Still blocked:** Plan 198's T4,
+> Gate G2, Gate G3, and the paper.

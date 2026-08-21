@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-20
 plan: 195
 title: A launchd agent that cannot run must not look healthy
@@ -13,7 +13,8 @@ source: launchd audit 2026-08-20; see docs/plans/164-watchdog-system-domain.md �
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner confirmed 2026-08-21, after three independent Codex rounds converged
+(1 blocker + 4 majors → 1 blocker + 3 majors → **0 blockers** + 2 majors, all folded).
 
 **Revised 2026-08-21 after an independent Codex review** (NEEDS_CHANGES: 1 blocker, 4 majors, 1 minor;
 every finding verified against the repo before folding). What changed: the latch is **per label**, not
