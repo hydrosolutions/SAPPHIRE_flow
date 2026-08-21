@@ -572,6 +572,13 @@ moved on. Assert plausibility plus `alembic_version` instead.
 
 ### T6 — the local backup path must be the device it claims to be (Host + Repo)
 
+**Extracted to `docs/plans/194-backup-target-device-verification.md` and implemented there** (2026-08-20) — cut
+from Phase A here and never built in this doc. Plan 194 reconstructs T6's decisions below verbatim-in-substance,
+corrects two stale line-number citations against `main`, and ratifies one open decision (D6: the watchdog's new
+condition alerts on TRANSITION only, latched — not on every tick, since a permanently-diskless host like the
+mini today would otherwise alert forever). This section is kept as the historical record of the original design;
+see Plan 194 for what actually shipped.
+
 *In:* `scripts/bootstrap-mac-mini.sh`, `scripts/launchd/start-sapphire.sh`, `src/sapphire_flow/ops/watchdog.py`,
 `docs/deployment/mac-mini-staging.md`.
 

@@ -22,9 +22,10 @@ macOS / the hardware won't let a script do:
 1. Install **Docker Desktop** from
    <https://www.docker.com/products/docker-desktop/>, accept the
    licence, and launch it once so the daemon is running.
-2. Attach the **external USB SSD** and initialise it so that
-   `/Volumes/sapphire-backup/pg_dumps/.sapphire-backup-volume`
-   exists (the sentinel the backup flow checks for).
+2. Attach the **external USB SSD** and get it mounted at
+   `/Volumes/sapphire-backup` (Plan 194: the bootstrap script verifies
+   this is a REAL mounted volume — device id distinct from the repo's —
+   not merely a directory at that path; see § Troubleshooting).
 3. Enable **automatic login** for the `sapphire` user in
    System Settings -> Users & Groups -> Automatic Login.
 
@@ -202,8 +203,18 @@ token at boot.
    the Healthchecks.io check, same chmod-600/git-ignored convention as the
    Slack webhook. Absent ⇒ the watchdog runs without a heartbeat, no
    error.)
-6. **USB disk** — verifies
-   `/Volumes/sapphire-backup/pg_dumps/.sapphire-backup-volume` exists.
+6. **USB disk** — verifies `/Volumes/sapphire-backup` itself is a REAL
+   mounted volume: its device id differs from the repo's, and `mount`
+   lists a mount point there (Plan 194). Only once that is confirmed does
+   the script `mkdir -p` the `pg_dumps/` subdirectory if it isn't there
+   yet — a freshly initialised external volume has no `pg_dumps/` until
+   something writes to it, and the mount-root check must pass BEFORE that
+   `mkdir` runs, never after: `mkdir -p`-ing the full path unconditionally
+   is exactly how a Docker-style missing-bind-mount directory ends up on
+   the boot disk. A plain directory at the mount-root path — e.g. one
+   Docker silently created for a missing bind-mount host path — fails the
+   check and aborts the bootstrap; the old sentinel file
+   (`.sapphire-backup-volume`) is no longer read as proof of anything.
 7. **CAMELS-CH** — verifies `~/camels-ch` exists and is non-empty.
 8. **VERSION** — defaults to `latest` if unset (with a warning).
 9. **Compose up** — `docker compose -f docker-compose.yml -f
@@ -281,6 +292,14 @@ Two agents, user-context (`gui/$(id -u)`):
   (`check_type=forecast_freshness`, stale after 18 h / CRITICAL when a
   cycle stored zero forecasts) — posting Slack alerts with hysteresis
   (1st failure, every 6th thereafter, and recovery) for each.
+  **Plan 194**: also checks, BEFORE the staleness check above, whether
+  the backup directory is a real mounted volume distinct from the
+  repo's device — a condition freshness cannot see (a stale-looking
+  fresh dump can still be sitting on the boot disk). This is a DISTINCT
+  alert (`backup volume NOT MOUNTED` / `... VERIFIED`) that fires only on
+  TRANSITION, never every tick — a permanently-diskless host (e.g. this
+  one, today) would otherwise alert forever and train the operator to
+  ignore it.
   Without `secrets/slack_webhook_url` the watchdog runs log-only.
   **Plan 163**: after every tick that completes and persists its state,
   the watchdog also POSTs an empty heartbeat to the dead-man's-switch URL
@@ -438,11 +457,18 @@ Docker Desktop's VirtioFS layer occasionally hangs on cold boot.
    to retry the main agent immediately (otherwise it retries after
    the 60 s throttle).
 
-### USB disk not detected
+### USB disk not detected / not verified
+
+Bootstrap step 6 (Plan 194) rejects `/Volumes/sapphire-backup` unless it
+is a REAL mounted volume — a plain directory there (e.g. Docker's
+auto-created bind-mount host path for a disk that was never attached) is
+NOT accepted, even if it looks fine. Diagnose with:
 
 ```bash
-ls /Volumes/sapphire-backup/pg_dumps/.sapphire-backup-volume
-# ls: ...: No such file or directory
+diskutil list external          # empty -> no external disk attached at all
+mount | grep sapphire-backup    # nothing -> not mounted
+stat -f %d /Volumes/sapphire-backup /Users/sapphire
+# same number for both -> same device: NOT a distinct volume
 ```
 
 Reattach the USB SSD. If macOS didn't automount it:
@@ -450,15 +476,43 @@ Reattach the USB SSD. If macOS didn't automount it:
 ```bash
 diskutil list
 diskutil mount /dev/disk<N>s<M>    # from the listing above
-mkdir -p /Volumes/sapphire-backup/pg_dumps
-touch /Volumes/sapphire-backup/pg_dumps/.sapphire-backup-volume
 ```
 
-Then restart the stack:
+`touch`-ing a sentinel file no longer helps — the check now verifies a
+real mounted device, not a marker file. You do **not** need to
+`mkdir -p pg_dumps` yourself on a freshly initialised disk: once
+`mount | grep sapphire-backup` shows the volume mounted with a distinct
+device id, bootstrap creates `pg_dumps/` itself. Re-run
+`./scripts/bootstrap-mac-mini.sh` once the volume is mounted.
+
+start-sapphire.sh (the launchd stack-start wrapper) runs this same check
+on every boot but, per Plan 194 D3, never blocks the stack on it — an
+absent backup disk must not also cause a forecasting outage. It instead
+writes `.backup-volume-unverified.json` beside the compose files (cleared
+automatically once the volume verifies again) and proceeds; the watchdog
+(below) is what actually alerts on the condition.
+
+Then recreate the container that actually owns the backup bind mount —
+`prefect-worker-backup` (Plan 162 D2), **not** `prefect-worker`: the USB
+SSD is bound into `prefect-worker-backup`'s `/data/backups`
+(`docker-compose.macmini.yml`); force-recreating the wrong container
+leaves the backup worker running against its pre-remount bind, so nightly
+dumps keep landing wherever they were before you fixed the mount, even
+though the watchdog may already report `VERIFIED`.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.macmini.yml \
-    up -d --force-recreate prefect-worker
+    up -d --force-recreate prefect-worker-backup
+```
+
+Confirm the recreated container actually sees the new mount before
+trusting the next nightly backup:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.macmini.yml \
+    exec prefect-worker-backup sh -c 'stat -c %d /data/backups; stat -c %d /'
+# the two device ids must differ — same number means the container is
+# still (or again) writing to a path that resolves to the boot disk.
 ```
 
 ### Stack won't come up

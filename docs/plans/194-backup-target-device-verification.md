@@ -166,6 +166,24 @@ one, and the host watchdog takes CLI args only).
 **Red-first:** a test for the new condition must fail against current code, which cannot detect the
 wrong-device state at all; plus a test that it neither suppresses nor duplicates the staleness alert.
 
+## Accepted limitation — hot-remount with a stale container (reviewed, not fixed)
+
+A review round raised: after an unverified start, `prefect-worker-backup` binds the boot-disk directory;
+if the volume is then hot-mounted, the **host** predicate flips to verified and the watchdog announces
+VERIFIED while the container keeps writing through its pre-remount bind. The scenario is real.
+
+**Not fixed, deliberately, because the window is already covered and the proposed fix is apparatus this
+plan forbids.** The suggested remedy was a write-through probe plus an "awaiting writer verification"
+latch. But once the volume is mounted, the host path resolves to the volume, the container's writes land
+on the now-shadowed directory, and the watchdog sees **no new dumps** — so
+`BACKUP_STALE_THRESHOLD = timedelta(hours=26)` (`watchdog.py`) turns it red within a day. The failure is
+a **misleading VERIFIED message during a self-closing window**, not silent data loss behind a green
+monitor.
+
+The operational fix is already documented where the operator will meet it
+(`docs/deployment/mac-mini-staging.md`): after mounting the volume, recreate **`prefect-worker-backup`**
+— not `prefect-worker` — or the backup worker keeps running against its pre-remount bind.
+
 ## Non-goals
 
 Off-box replication (Plan 162 D4 follow-on) · backup encryption (162 T3, shipped) · restore rehearsal

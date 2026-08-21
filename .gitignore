@@ -53,3 +53,7 @@ tests/fixtures/meteoswiss_nwp/**/*.grib2.*.idx
 .coverage.*
 coverage.xml
 htmlcov/
+
+# Host-runtime marker written by start-sapphire.sh (Plan 194 D3) on every
+# unverified-backup boot — never a checked-in artifact.
+/.backup-volume-unverified.json
