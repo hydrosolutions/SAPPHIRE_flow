@@ -296,7 +296,7 @@ exactly this reason (see the CI lint table below).
 
 ## LaunchAgents
 
-Two agents, user-context (`gui/$(id -u)`):
+Three agents, user-context (`gui/$(id -u)`):
 
 - **`ch.hydrosolutions.sapphire`** — runs
   `scripts/launchd/start-sapphire.sh` at login. The wrapper waits up
@@ -343,6 +343,18 @@ Two agents, user-context (`gui/$(id -u)`):
   pending-notification kind independent of every other check. The alert
   message reports both the percentage and the bytes (e.g. "4.1% free (152 GB
   of 3654 GB)") since the percentage alone is not actionable.
+
+  **Plan 195**: also probes `launchctl list` on every tick and alerts on a
+  per-label last-exit-status/loaded transition for both installer-managed
+  agents below (excluding itself) — see § Launchd agent health (Plan 195)
+  under Troubleshooting.
+- **`ch.hydrosolutions.sapphire-docker-prune`** — runs
+  `scripts/launchd/prune-docker.sh` weekly (`StartCalendarInterval`: Sunday
+  04:00 local, off the operational cycle cadence; `RunAtLoad = false`).
+  Host-level `docker image prune -a` equivalent (Plan 105 D3) that reclaims
+  disk from version-bumped deploy images accumulating on the boot volume,
+  protecting rollback-anchor tags. Monitored by the watchdog's Plan 195
+  launchd-agent-health check, same as `ch.hydrosolutions.sapphire` above.
 
 ### Watchdog log rotation (manual, one-time)
 

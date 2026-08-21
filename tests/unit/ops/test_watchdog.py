@@ -195,18 +195,25 @@ def _launchd_verdicts(
     failing: Sequence[str] = (),
     absent: Sequence[str] = (),
     unknown: bool = False,
+    unknown_labels: Sequence[str] = (),
 ) -> dict[str, LaunchdVerdict]:
     """Build a full MONITORED_LAUNCHD_LABELS verdict map for run_once tests.
     `unknown=True` simulates a probe-unreadable tick (Plan 195 D4) — every
     label degrades together, matching `parse_launchctl_list_output`'s
-    all-or-nothing contract for unparseable output."""
+    all-or-nothing contract for unparseable output. `unknown_labels`
+    simulates a MIXED-result probe (fixer round, blocker 1) — the probe
+    overall is readable (other labels resolve normally), but a specific
+    row was individually unparseable/absent-from-the-parse, e.g. a
+    malformed launchctl row for just that one label."""
     if unknown:
         return {
             label: LaunchdVerdict(kind="unknown") for label in MONITORED_LAUNCHD_LABELS
         }
     verdicts: dict[str, LaunchdVerdict] = {}
     for label in MONITORED_LAUNCHD_LABELS:
-        if label in absent:
+        if label in unknown_labels:
+            verdicts[label] = LaunchdVerdict(kind="unknown")
+        elif label in absent:
             verdicts[label] = LaunchdVerdict(kind="absent")
         elif label in failing:
             verdicts[label] = LaunchdVerdict(kind="failing", status=1)
@@ -586,6 +593,32 @@ class TestParseLaunchctlListOutput:
         verdicts = parse_launchctl_list_output("", MONITORED_LAUNCHD_LABELS)
         assert all(v == LaunchdVerdict(kind="unknown") for v in verdicts.values())
 
+    def test_unknown_for_nonintegral_status_not_absent(self) -> None:
+        # Three whitespace-separated fields (the documented shape), but the
+        # status column is not an integer at all — a naive `except
+        # ValueError: continue` drops the row silently, which would leave
+        # this label out of `entries` and misreport it as ABSENT ("not
+        # loaded") rather than UNKNOWN ("could not be read").
+        output = f"PID\tStatus\tLabel\n-\tnot-a-number\t{_LABEL_A}\n"
+        verdicts = parse_launchctl_list_output(output, [_LABEL_A])
+        assert verdicts[_LABEL_A] == LaunchdVerdict(kind="unknown")
+
+    def test_unknown_for_nonintegral_pid_not_ok(self) -> None:
+        # The PID column is neither `-` nor a number — the documented
+        # table shape is violated even though the status column parses
+        # fine and would otherwise be accepted as OK.
+        output = f"weird-pid\t0\t{_LABEL_A}\n"
+        verdicts = parse_launchctl_list_output(output, [_LABEL_A])
+        assert verdicts[_LABEL_A] == LaunchdVerdict(kind="unknown")
+
+    def test_malformed_row_for_one_label_does_not_affect_a_wellformed_sibling(
+        self,
+    ) -> None:
+        output = f"PID\tStatus\tLabel\n-\tbroken\t{_LABEL_A}\n-\t0\t{_LABEL_B}\n"
+        verdicts = parse_launchctl_list_output(output, [_LABEL_A, _LABEL_B])
+        assert verdicts[_LABEL_A] == LaunchdVerdict(kind="unknown")
+        assert verdicts[_LABEL_B] == LaunchdVerdict(kind="ok")
+
 
 # ---------- probe_launchd_agents (Plan 195 D1/D4/T1) ---------------------------
 
@@ -622,6 +655,27 @@ class TestProbeLaunchdAgents:
     ) -> None:
         class _FakeCompleted:
             stdout = "garbage\nnot a launchctl table\n"
+            returncode = 0
+
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *a, **k: _FakeCompleted(),  # noqa: ARG005
+        )
+        verdicts = probe_launchd_agents(MONITORED_LAUNCHD_LABELS)
+        assert all(v.kind == "unknown" for v in verdicts.values())
+
+    def test_nonzero_exit_is_contained_as_unknown_even_with_parseable_stdout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed `launchctl list` invocation must never be trusted as
+        healthy merely because its stdout happens to parse — `check=False`
+        means a non-zero exit does not raise, so the return code has to be
+        checked explicitly."""
+
+        class _FakeCompleted:
+            stdout = f"PID\tStatus\tLabel\n-\t0\t{_LABEL_A}\n"
+            returncode = 1
 
         monkeypatch.setattr(
             subprocess,
@@ -642,6 +696,7 @@ class TestProbeLaunchdAgents:
 
         class _FakeCompleted:
             stdout = "PID\tStatus\tLabel\n"
+            returncode = 0
 
         def _fake_run(*args: object, **kwargs: object) -> _FakeCompleted:
             captured["args"] = args
@@ -1871,7 +1926,7 @@ class TestRunOnceLaunchdAgentHealth:
         )
         assert len(tick1.calls) == 1
         assert _LABEL_A in tick1.calls[0][1]
-        assert "FAILING" in tick1.calls[0][1]
+        assert "LAST RUN FAILED" in tick1.calls[0][1]
         assert state.failing_launchd_labels == (_LABEL_A,)
 
         tick2 = _SlackRecorder()
@@ -1940,6 +1995,83 @@ class TestRunOnceLaunchdAgentHealth:
             "the incident must survive an UNKNOWN tick unchanged"
         )
 
+    def test_mixed_result_probe_does_not_false_recover_the_unknown_label(
+        self, tmp_path: Path
+    ) -> None:
+        """Fixer round blocker 1: a probe where SOME labels are known
+        (probe_readable is True) must not treat a label whose OWN verdict
+        is `unknown` as 'not failing'. A implementation that only guards
+        the whole-probe UNKNOWN case (D4) and forgets the per-label case
+        would resolve B's unknown verdict to `is_failing=False`, see
+        `was_failing=True`, and fabricate a RECOVERED for an incident that
+        never actually cleared."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        entry = _SlackRecorder()
+        state = _run_once_launchd(
+            cfg,
+            slack=entry,
+            launchd_probe=lambda _l: _launchd_verdicts(failing=[_LABEL_A, _LABEL_B]),
+        )
+        assert set(state.failing_launchd_labels) == {_LABEL_A, _LABEL_B}
+
+        mixed = _SlackRecorder()
+        state = _run_once_launchd(
+            cfg,
+            slack=mixed,
+            launchd_probe=lambda _l: _launchd_verdicts(
+                failing=[_LABEL_A], unknown_labels=[_LABEL_B]
+            ),
+        )
+        messages = [msg for _, msg in mixed.calls]
+        assert not any("RECOVERED" in m and _LABEL_B in m for m in messages), (
+            "B's own unknown verdict must not be reported as recovered"
+        )
+        assert _LABEL_B in state.failing_launchd_labels, (
+            "B's prior failing membership must carry forward unchanged "
+            "while its own verdict is unknown"
+        )
+        assert _LABEL_A in state.failing_launchd_labels
+
+    def test_mixed_result_probe_preserves_pending_payload_for_the_unknown_label(
+        self, tmp_path: Path
+    ) -> None:
+        """Same mixed-result scenario, but B has an undelivered pending
+        notification going in — that payload must be carried forward
+        UNCHANGED (never dropped, never resolved) while B's own verdict is
+        unknown."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        entry = _SlackRecorder(succeed=False)
+        state = _run_once_launchd(
+            cfg,
+            slack=entry,
+            launchd_probe=lambda _l: _launchd_verdicts(failing=[_LABEL_A, _LABEL_B]),
+        )
+        assert dict(state.launchd_notification_pending) == {
+            _LABEL_A: "failing",
+            _LABEL_B: "failing",
+        }
+
+        mixed = _SlackRecorder(succeed=True)
+        state = _run_once_launchd(
+            cfg,
+            slack=mixed,
+            launchd_probe=lambda _l: _launchd_verdicts(
+                failing=[_LABEL_A], unknown_labels=[_LABEL_B]
+            ),
+        )
+        # A's pending "failing" was successfully delivered (a repeat, since
+        # A is still failing and nothing has changed for it) and cleared;
+        # B's pending payload must survive B's own unknown verdict
+        # untouched, ready to retry once B is readable again.
+        assert dict(state.launchd_notification_pending) == {_LABEL_B: "failing"}
+        assert _LABEL_B in state.failing_launchd_labels
+
     def test_absent_opens_an_incident(self, tmp_path: Path) -> None:
         """An implementation that only alerts on FAILING(status) would pass
         every other test in this class while an unloaded agent stays
@@ -1955,7 +2087,7 @@ class TestRunOnceLaunchdAgentHealth:
             launchd_probe=lambda _l: _launchd_verdicts(absent=[_LABEL_A]),
         )
         assert len(slack.calls) == 1
-        assert "FAILING" in slack.calls[0][1]
+        assert "ABSENT" in slack.calls[0][1]
         assert _LABEL_A in slack.calls[0][1]
         assert state.failing_launchd_labels == (_LABEL_A,)
 
@@ -2042,7 +2174,7 @@ class TestRunOnceLaunchdAgentHealth:
             launchd_probe=lambda _l: _launchd_verdicts(failing=[_LABEL_A]),
         )
         messages = [msg for _, msg in retry.calls]
-        assert any(_LABEL_A in m and "FAILING" in m for m in messages)
+        assert any(_LABEL_A in m and "LAST RUN FAILED" in m for m in messages)
         assert dict(state.launchd_notification_pending) == {}
 
     def test_reversal_before_retry_sends_recovery_not_stale_failure(
@@ -2064,7 +2196,7 @@ class TestRunOnceLaunchdAgentHealth:
         state = _run_once_launchd(cfg, slack=retry, launchd_probe=_launchd_ok_probe)
         assert len(retry.calls) == 1
         assert "RECOVERED" in retry.calls[0][1]
-        assert "FAILING" not in retry.calls[0][1]
+        assert "LAST RUN FAILED" not in retry.calls[0][1]
         assert dict(state.launchd_notification_pending) == {}
 
     def test_probe_unreadable_pending_delivery_is_itself_retried(
@@ -2086,6 +2218,38 @@ class TestRunOnceLaunchdAgentHealth:
             cfg, slack=retry, launchd_probe=lambda _l: _launchd_verdicts(unknown=True)
         )
         assert len(retry.calls) == 1
+        assert state.launchd_probe_notification_pending is None
+
+    def test_probe_reversal_before_retry_sends_recovery_not_stale_unreadable(
+        self, tmp_path: Path
+    ) -> None:
+        """Fixer round majors 4/7 — the probe-level mirror of
+        `test_reversal_before_retry_sends_recovery_not_stale_failure`. The
+        entry tick's Slack post fails while the probe is unreadable
+        (`launchd_probe_notification_pending == "unreadable"`); before the
+        retry fires, the CONDITION ITSELF reverses (the probe becomes
+        readable again). A naive `_launchd_probe_notification_kind` coded
+        as `if pending is not None: return pending` (replaying the stale
+        kind instead of recomputing from the current verdict) would resend
+        UNREADABLE here — the exact stale-failure-resend bug Plan
+        162/194/195 all exist to prevent. The correct behaviour is exactly
+        one RECOVERED message, never a stale UNREADABLE."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        entry = _SlackRecorder(succeed=False)
+        state = _run_once_launchd(
+            cfg, slack=entry, launchd_probe=lambda _l: _launchd_verdicts(unknown=True)
+        )
+        assert len(entry.calls) == 1
+        assert state.launchd_probe_notification_pending == "unreadable"
+
+        retry = _SlackRecorder(succeed=True)
+        state = _run_once_launchd(cfg, slack=retry, launchd_probe=_launchd_ok_probe)
+        assert len(retry.calls) == 1
+        assert "RECOVERED" in retry.calls[0][1]
+        assert "UNREADABLE" not in retry.calls[0][1]
         assert state.launchd_probe_notification_pending is None
 
     def test_probe_unreadable_alerts_once_stays_silent_then_recovers_once(
@@ -2182,7 +2346,9 @@ class TestRunOnceLaunchdAgentHealth:
         )
         messages = [msg for _, msg in slack.calls]
         assert any("health check FAILED" in m for m in messages)
-        assert any("launchd agent FAILING" in m and _LABEL_A in m for m in messages)
+        assert any(
+            "launchd agent LAST RUN FAILED" in m and _LABEL_A in m for m in messages
+        )
         assert len(slack.calls) == 2
         assert state.consecutive_health_failures == 1
         assert state.failing_launchd_labels == (_LABEL_A,)
@@ -3618,6 +3784,46 @@ class TestWatchdogStateBafuObsBackwardCompat:
         assert s.consecutive_bafu_obs_failures == 0
         assert s.consecutive_bafu_failures == 1
         assert s.consecutive_health_failures == 2
+
+
+class TestWatchdogStateLaunchdBackwardCompat:
+    """Fixer round major 8 — Plan 195's four new fields
+    (`failing_launchd_labels`, `launchd_notification_pending`,
+    `launchd_probe_unreadable_ticks`, `launchd_probe_notification_pending`)
+    get the same dedicated backward-compat test every prior watchdog field
+    addition got. Brand new (no predecessor field to migrate from): a
+    state file written before this plan has none of these four keys at
+    all, and `WatchdogState.load` must default them cleanly rather than
+    KeyError."""
+
+    def test_roundtrip_includes_new_fields(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        original = WatchdogState(
+            failing_launchd_labels=(_LABEL_A, _LABEL_B),
+            launchd_notification_pending=((_LABEL_A, "failing"),),
+            launchd_probe_unreadable_ticks=2,
+            launchd_probe_notification_pending="unreadable",
+        )
+        original.dump(path)
+        loaded = WatchdogState.load(path)
+        assert loaded == original
+
+    def test_state_file_without_the_new_keys_defaults_cleanly(
+        self, tmp_path: Path
+    ) -> None:
+        # A real pre-Plan-195 state file — other keys present, these four
+        # entirely absent (not present-and-empty). If `load` ever switched
+        # from `raw.get(...)` to `raw[...]` for any of the four, this is
+        # the test that would catch it: the mini's actual on-disk
+        # state.json predates this plan and would crash the very first
+        # Plan 195 tick otherwise.
+        p = tmp_path / "old_state.json"
+        p.write_text('{"consecutive_health_failures": 0}')
+        s = WatchdogState.load(p)
+        assert s.failing_launchd_labels == ()
+        assert s.launchd_notification_pending == ()
+        assert s.launchd_probe_unreadable_ticks == 0
+        assert s.launchd_probe_notification_pending is None
 
 
 # ---------- Plan 163 T1: malformed-URL hardening across all outbound sites ----

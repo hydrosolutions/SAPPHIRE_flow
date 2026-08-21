@@ -858,8 +858,15 @@ def parse_launchctl_list_output(
       version of this defect, not a reason for silence).
     - output containing no parseable data row at all -> every requested
       label degrades to UNKNOWN, never guessed at as ABSENT.
+    - a row that HAS the documented three-column shape but fails to
+      validate (PID is neither `-` nor an integer, or status is not an
+      integer) -> that label, specifically, degrades to UNKNOWN. It is
+      mentioned in the output, so it must never silently fall through to
+      ABSENT (which would misreport a structurally-malformed row as "not
+      loaded") — see `_valid_launchctl_pid`.
     """
     entries: dict[str, int] = {}
+    malformed_labels: set[str] = set()
     for line in output.splitlines():
         parts = line.split()
         if len(parts) != 3:
@@ -867,24 +874,41 @@ def parse_launchctl_list_output(
         pid, status_str, label = parts
         if pid == "PID" and status_str == "Status" and label == "Label":
             continue  # header row
-        try:
-            status = int(status_str)
-        except ValueError:
+        if not _valid_launchctl_pid(pid) or not _is_int(status_str):
+            malformed_labels.add(label)
             continue
-        entries[label] = status
+        entries[label] = int(status_str)
 
-    if not entries:
+    if not entries and not malformed_labels:
         return {label: LaunchdVerdict(kind="unknown") for label in labels}
 
     verdicts: dict[str, LaunchdVerdict] = {}
     for label in labels:
-        if label not in entries:
+        if label in malformed_labels:
+            verdicts[label] = LaunchdVerdict(kind="unknown")
+        elif label not in entries:
             verdicts[label] = LaunchdVerdict(kind="absent")
         elif entries[label] == 0:
             verdicts[label] = LaunchdVerdict(kind="ok")
         else:
             verdicts[label] = LaunchdVerdict(kind="failing", status=entries[label])
     return verdicts
+
+
+def _is_int(value: str) -> bool:
+    try:
+        int(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _valid_launchctl_pid(value: str) -> bool:
+    """`launchctl list`'s documented PID column is either `-` (not
+    running) or a numeric PID — anything else means the row does not
+    actually have the documented shape, even though it split into three
+    whitespace-separated fields."""
+    return value == "-" or _is_int(value)
 
 
 def probe_launchd_agents(
@@ -909,6 +933,16 @@ def probe_launchd_agents(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("watchdog.launchd_probe_failed", error=str(exc))
+        return {label: LaunchdVerdict(kind="unknown") for label in labels}
+    if completed.returncode != 0:
+        # `check=False` means a non-zero exit does NOT raise — stdout from
+        # a failed invocation is not the documented table and must never
+        # be trusted as healthy just because it happens to parse.
+        log.warning(
+            "watchdog.launchd_probe_failed",
+            error="non-zero exit",
+            returncode=completed.returncode,
+        )
         return {label: LaunchdVerdict(kind="unknown") for label in labels}
     return parse_launchctl_list_output(completed.stdout, labels)
 
@@ -1245,12 +1279,21 @@ def _format_disk_space_recovery_alert(*, hostname: str, now: datetime) -> str:
 def _format_launchd_alert(
     *, hostname: str, now: datetime, label: str, verdict: LaunchdVerdict
 ) -> str:
-    status_str = (
-        "absent (not loaded)" if verdict.kind == "absent" else str(verdict.status)
-    )
+    # D1: "last run failed", never "is failing now" — a KeepAlive agent can
+    # be RUNNING right now while its last-exit-status column still shows a
+    # previous invocation's non-zero code (measured on the mini: the
+    # stack-starter shows `state = running`, `last exit code = 1`).
+    # ABSENT is a distinct condition (unloaded entirely, no exit status to
+    # report) and gets its own word, not a fabricated exit code.
+    if verdict.kind == "absent":
+        return (
+            f"[SAPPHIRE staging] launchd agent ABSENT — label: {label}, "
+            f"host: {hostname}, time: {now.isoformat()}"
+        )
     return (
-        f"[SAPPHIRE staging] launchd agent FAILING — label: {label}, "
-        f"last exit status: {status_str}, host: {hostname}, time: {now.isoformat()}"
+        f"[SAPPHIRE staging] launchd agent LAST RUN FAILED — label: {label}, "
+        f"last exit status: {verdict.status}, host: {hostname}, "
+        f"time: {now.isoformat()}"
     )
 
 
@@ -1681,8 +1724,27 @@ def run_once(
 
         for label in MONITORED_LAUNCHD_LABELS:
             verdict = launchd_verdicts.get(label, LaunchdVerdict(kind="unknown"))
-            is_failing = verdict.kind in ("failing", "absent")
             was_failing = label in prev_failing
+
+            if verdict.kind == "unknown":
+                # Mixed-result probe (Plan 195 fixer round): the probe AS A
+                # WHOLE returned something readable (`probe_readable` is
+                # True), but THIS label's own row was individually
+                # unparseable/absent-from-the-parse. Resolving that to
+                # "not failing" would fabricate a spurious RECOVERED for an
+                # incident that never actually cleared, and resolving it to
+                # "failing" would fabricate a spurious FAILING with no
+                # evidence. Carry the label's prior membership and pending
+                # payload forward UNCHANGED and skip notification entirely
+                # — exactly the same contract D4 applies to the WHOLE probe
+                # being unreadable, applied per-label here.
+                if was_failing:
+                    new_failing.add(label)
+                if label in prev_pending:
+                    new_pending[label] = prev_pending[label]
+                continue
+
+            is_failing = verdict.kind in ("failing", "absent")
             if is_failing:
                 new_failing.add(label)
 
