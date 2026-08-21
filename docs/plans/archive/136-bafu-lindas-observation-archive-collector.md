@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-21
 plan: 136
 title: BAFU LINDAS observation archive collector (all gauges, quarantined, sub-daily)
@@ -12,6 +12,25 @@ supersedes: [58]
 # Plan 136 — BAFU LINDAS observation archive collector
 
 ## Status
+
+
+**COMPLETE 2026-08-21.** Merged as **PR #121 (`ea33394`, 2026-07-22)** and running on the mac-mini
+staging host ever since. Supersedes Plan 058 as designed (T7).
+
+**Live evidence (2026-08-21).** The quarantined archive in the `sapphire_flow_bafu_observation_archive`
+volume holds **700 snapshots / 81 MB**, each **233 gauges × 495 rows**, columns
+`gauge_code, lindas_kind, parameter, value, measurement_time, cycle_at`. The earliest snapshot is
+`obs-20260722T070000Z.parquet` — the day the collector merged. The quarantine held: nothing here ever
+reached the `observations` table, and no gauge was onboarded as a station.
+
+Three follow-ons hardened this collector and are archived alongside it:
+[175](175-lindas-rate-limit-resilience.md) (rate limiting),
+[176](176-lindas-archive-completeness.md) (the 10-minute grid — it falsified this plan's locked
+`cadence = hourly` finding), and [189](189-audit-window-edge-and-poll-bound.md) (audit + poll-bound
+edges). [186](186-whole-graph-observation-ingest.md) reused this plan's query layer for the
+*operational* ingest without touching the archive.
+
+*The original READY narrative is retained below as the design record.*
 
 **READY** (owner flip 2026-07-21; parquet quarantine confirmed over any DB backend — the `observations`
 table would force real onboarding via its NOT-NULL `station_id` FK). Went through

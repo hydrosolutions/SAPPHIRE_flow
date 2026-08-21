@@ -106,7 +106,7 @@ regression) but no longer multiply by station count either. A
 transport/HTTP fault on that one request now fails every eligible station at
 once (whole-batch) rather than some — a real, deliberately-accepted change
 in kind (Plan 186 Q1). See
-`docs/plans/186-whole-graph-observation-ingest.md` for the full decision
+`docs/plans/archive/186-whole-graph-observation-ingest.md` for the full decision
 record (D1–D4) and test matrix.
 
 **Pacing is process-local, not cluster-wide (D6).** A token bucket inside one
@@ -268,7 +268,7 @@ Consequences for THIS decision record's contract table: the collector now
 over-polls at ~18-20 requests/hour (Plan 176 D1) instead of ~1/hour — still
 comfortably inside the measured ~45 req/min capacity this plan established,
 and D2 keeps archive writes tracking the grid (~6/hour), not the poll rate.
-See `docs/plans/176-lindas-archive-completeness.md` for the full evidence
+See `docs/plans/archive/176-lindas-archive-completeness.md` for the full evidence
 and the D1–D7 decisions built on it.
 
 ## Escalation

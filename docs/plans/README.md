@@ -100,8 +100,18 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
   **HARD prod prerequisite.** Depends on 046.
 - **046** — Mac Mini staging deployment + edge-case suite — `IN_PROGRESS`.
-- **058** — BAFU LINDAS archive via operational collection — `SUPERSEDED by 136`.
-- **136** — BAFU LINDAS observation archive collector (quarantined, all gauges) — `READY`.
+- **058** — BAFU LINDAS archive via operational collection — `SUPERSEDED by 136` (archived).
+- **136 / 175 / 176 / 186 / 189** — **BAFU LINDAS observation archiving — COMPLETE, ARCHIVED
+  (2026-08-21).** The whole family is merged and running on the mac-mini in image `0.1.775`:
+  **136** the quarantined all-gauge archive collector (#121, `ea33394`), **175** LINDAS rate-limit
+  resilience (#172, `9c96792`), **176** the 10-minute grid (#181, `afbf7e2`), **186** whole-graph
+  operational ingest resolving 175's deferred D5 (#188, `4ae7cf8`), **189** audit edge + poll bound
+  (#193, `d1f0837`). Live evidence 2026-08-21: **233 gauges × 495 rows per 10-minute slot, 700
+  snapshots / 81 MB**, and the on-demand T8 audit measures completeness at **95.8 %** (322/336)
+  post-176 against **16.3 %** (94/576) on the old hourly cadence. Remaining gaps are BAFU publish
+  stalls upstream, not collector faults. The archive stays quarantined — no gauge is onboarded, and
+  nothing here reaches the `observations` table. See
+  [archive/136-bafu-lindas-observation-archive-collector.md](archive/136-bafu-lindas-observation-archive-collector.md).
 - **091** — Mac-mini NWP-on data-collection runbook — `DRAFT` — depends on 046.
 - **094** — Cap onboarding/hindcast window to actual data range — `DRAFT`.
 - **083** — Human-readable `station_code` in structured logs — `DRAFT`.
@@ -234,6 +244,18 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   ungauged forecasting still needs an FI operational model (modelling team; mountain
   snow+glacier+bands — paradigm under discussion) + basin geometry (117/120). The floor is
   deferrable + downstream of the model choice; basin user-upload+security is optional.
+- **194** — The backup target must be the device it claims to be — `READY` — extracted from Plan 162's
+  never-built T6. Measured 2026-08-20: `/Volumes/sapphire-backup` is a plain **boot-disk directory**, not a
+  mount, so ~11 GB of dumps share a failure domain with the database they protect, and the sentinel guard
+  Plan 046 specified was **never built** (no `BackupRefusedError` anywhere in `src/`). `/plan` **escalated and
+  over-expanded** (Codex failed 3 of 4 rounds); reconstructed by hand. A later hand review restated **D1 over
+  two paths** — a mount-ness test against `pg_dumps`, a child of the mount, rejects a healthy disk forever —
+  dropped the marker file again, and restored T2's `set -e` note. Review by hand; do not re-run `/plan`.
+- **195** — A launchd agent that cannot run must not look healthy — `DRAFT` — the stack-starter
+  `ch.hydrosolutions.sapphire` has **never** worked in 119 days (launchd's default PATH cannot resolve
+  `/usr/local/bin/docker`; `docker info` → 127), and **nothing monitors launchd agent health** — no
+  `launchctl` anywhere in `watchdog.py`. One probe, one transition-latched condition. Sequenced after 194
+  T3, which rewrites the same region of the watchdog. Needs owner confirmation before build.
 
 ## Active — dev experience / dashboard (C)
 
@@ -308,7 +330,7 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (88 entries).
+See [archive/](archive/) for completed and archived plans (95 entries).
 
 ## Superseded / stranded branches (recorded 2026-08-17)
 

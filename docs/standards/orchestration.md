@@ -65,7 +65,7 @@ rather than pinned in prose. The min-gap bound was relaxed from D1's
 original ≥3 to ≥2 because `max≤3` AND `min≥3` together force every gap to
 exactly 3 min (a single residue class mod 3), and every such class contains
 4 multiples of 5 — arithmetically incompatible with "no minute divisible by
-5" (see `docs/plans/189-audit-window-edge-and-poll-bound.md` § T2 for the
+5" (see `docs/plans/archive/189-audit-window-edge-and-poll-bound.md` § T2 for the
 full argument and the accepted residual: at a 2-minute minimum the gap can
 equal Plan 175's 120s total retry deadline under sustained upstream
 failure). See `docs/decisions/bafu-lindas-rate-limit.md` for the measured
@@ -122,7 +122,7 @@ property** — a return to heavier NWP-bearing cycles could plausibly bring
 mechanism (a) back). Where a flow cannot tolerate that uncertainty, prefer
 a dedicated pool (cheap insurance) AND build a content-derived completeness
 check that can detect a miss after the fact — a schedule can promise intent,
-never delivery. See `docs/plans/176-lindas-archive-completeness.md` § T0
+never delivery. See `docs/plans/archive/176-lindas-archive-completeness.md` § T0
 measurement and § T8 (the completeness audit) for the worked example.
 
 ## Task granularity

@@ -501,9 +501,18 @@ the peak is immovable across the ablation ladder — and the finding the vision 
 since 2026-08-13 is retired for Lukla, though it stands at Olangchunggola for a different reason.
 
 **⚠️ The test as first written could not identify H1 — corrected before implementation (Plan 182).** A
-negative control (a threshold ladder applied to Pyramid) was found to be **vacuous**: every positive
-Pyramid JJAS value is an exact multiple of 0.2 mm (LSI-Lastem tipping-bucket resolution), so a threshold
-ladder is a structural no-op on Pyramid and could never have detected anything — removed. In its place:
+negative control (a threshold ladder applied to Pyramid) was found to be **vacuous**: the smallest
+positive Pyramid JJAS value is **exactly 0.2 mm and nothing falls below it** (LSI-Lastem tipping
+buckets), so every rung of a 0.0/0.1/0.2 ladder selects the identical population — the ladder is a
+structural no-op on Pyramid and could never have detected anything. Removed.
+
+**⛔ CORRECTED 2026-08-21 — this passage previously justified that with "every positive Pyramid JJAS
+value is an exact multiple of 0.2 mm". That is FALSE**, and Plan 182 had already said so on 2026-08-18
+(`182:77`) without the correction reaching here. Measured across all six RR stations: **2,861 of 47,967
+positive JJAS values (6.0 %) are not multiples of 0.2** — per station 0.9 % (AWS0) to 9.6 % (AWS2) —
+forming a 0.24-family plus outliers, so Pyramid's effective resolution is **not uniform across the
+record**. **The conclusion is unaffected**: D7's argument rests on the FLOOR, not on the grid, and the
+floor holds. Surfaced by an external review of the data bundle prepared for the student team. In its place:
 **(1)** a **matched-resolution comparison**, DHM thresholded at ≥0.2 mm against Pyramid at its native
 resolution (the only apples-to-apples phase comparison available, since Pyramid cannot represent
 anything finer); **(2)** a **DHM-only threshold-ladder ablation** (all values / ≥0.1 mm / ≥0.2 mm,

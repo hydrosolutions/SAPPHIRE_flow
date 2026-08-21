@@ -28,6 +28,39 @@ real. But it now hardens against a failure mode that has not recurred, needs **c
 a real logout test), and is the only remaining item that could leave the host worse than it started.
 **T2 (the installer migration guard) is separate and still worth finishing** — see its escalated findings.
 
+## 🔄 REVISIT 2026-08-20 — new evidence, conclusion UNCHANGED for T1
+
+A launchd audit on 2026-08-20 produced evidence bearing directly on the deprioritisation above. It does
+**not** reopen T1. Recorded here so the next reader does not have to re-derive it.
+
+**What is new:**
+
+1. **`ch.hydrosolutions.sapphire` — the stack-starter — has NEVER worked**, since its only commit
+   `514ff36` (2026-04-23). launchd's default `PATH=/usr/bin:/bin:/usr/sbin:/sbin` cannot resolve
+   `/usr/local/bin/docker`, so `docker info` returns **127**, the 240 s wait always expires, the script
+   exits 1, and `KeepAlive` restarts it every ~250 s. Measured: 15,217 log lines, one distinct string,
+   zero compose output in 58 days. Fix is a two-line PR, not this plan.
+2. **The session-death failure mode is confirmed from a SECOND, independent source.** Log-line arithmetic
+   on `sapphire-flow.log` (constant 249.8 s cadence, so line count is a clock) recovers a **14.21-day
+   dormancy** — matching the 2026-07-29 → 08-12 window in the post-mortem (14.06 d) to within 3.5 hours.
+   That agent really did stop with the GUI session. This corroborates 29 July; it shows **no recurrence
+   after 08-12**.
+3. **Nothing monitors launchd agent health.** There is no `launchctl` anywhere in `watchdog.py`. The
+   documented verification in `docs/deployment/mac-mini-staging.md:314-316` expects
+   `ch.hydrosolutions.sapphire  0  -`; the live value is `1`. A 119-day-dead agent sat behind a
+   green-looking status line and was found only by hand.
+
+**Why T1 stays deprioritised.** Finding 2 confirms what this plan already accepted — 29 July was real —
+and adds no *recurrence*. The watchdog itself is alive (verified 2026-08-20: `runs = 646`, last exit 0,
+healthchecks.io dead-man ping returning 200). T1 still needs **console** access, still cannot be done over
+SSH, and is still the only item that could leave the host worse than it started. Nothing here changes that
+balance. **T2 remains separate and still worth finishing.**
+
+**What the evidence DOES demand is not in this plan.** Finding 3 is a different subject — the watchdog
+checking *other* agents, not the watchdog's own domain — and unlike T1 it is repo-only, needs no console,
+and closes the gap that actually went unnoticed for 119 days. Burying it in a console-gated, deprioritised
+plan would mean it never ships. It is drafted separately as **Plan 195**.
+
 ## Status
 **READY** (2026-08-17). Operational reliability (category **A**). Four review rounds: two adversarial, one
 proportionality pass that **cut 12 of 16 requirements and 5 of 6 tasks**, and a final targeted pass that returned

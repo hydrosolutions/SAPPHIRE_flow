@@ -4,7 +4,7 @@
 **Date**: 2026-04-18
 **Revision**: 2 — corrections after review round found multiple wrong claims.
 
-> **Superseded 2026-07-21** by `docs/plans/136-bafu-lindas-observation-archive-collector.md`,
+> **Superseded 2026-07-21** by `docs/plans/archive/136-bafu-lindas-observation-archive-collector.md`,
 > which rejects this plan's "onboard the full roster as real stations, let Flow 2
 > accumulate the `observations` table" approach in favor of a standalone quarantined
 > collector keyed on `(gauge_code, lindas_kind)`, decoupled from station onboarding.
