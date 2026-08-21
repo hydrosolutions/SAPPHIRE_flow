@@ -1,9 +1,9 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-21
 plan: 197
 title: main tags itself — remove the manual step that keeps being skipped
-scope: One CI workflow that creates the version tag on main when CI passes, if it does not already exist. NOT backfilling existing gaps (owner declined), NOT changing bump-my-version, NOT changing when or how versions are bumped, NOT a release-notes or changelog mechanism.
+scope: One CI workflow that creates the version tag on every push to main, if it does not already exist. Deliberately NOT gated on CI (D1). NOT backfilling existing gaps (owner declined), NOT changing bump-my-version, NOT changing when or how versions are bumped, NOT a release-notes or changelog mechanism.
 depends_on: []
 blocks: []
 source: tag audit 2026-08-21
@@ -13,12 +13,19 @@ source: tag audit 2026-08-21
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner flip 2026-08-21, after two independent Codex rounds converged.
 
 **D1 REVERSED by the owner 2026-08-21** — tag on push, not on CI success (see D1 for why; it also
 deletes the `workflow_run` machinery). The draft's open question is resolved and removed.
 
-**Independent Codex review round 1 — 1 blocker, 1 major, 1 minor, ALL VERIFIED AND FOLDED.** The
+**Round 2 (post-reversal) — 0 blockers, 1 major, 1 minor, both folded.** The major: out-of-order runs
+can place the tag on a later commit carrying the same version (now D7, accepted with reasoning). The
+minor: the frontmatter still described the pre-reversal design. Round 2 independently CONFIRMED the
+pinned `actions/checkout` defaults to `fetch-tags: false`, that `github.sha` is the pushed tip, that a
+`GITHUB_TOKEN` tag push cannot retrigger this workflow (`branches: [main]` excludes tag refs), and every
+D1 factual claim about this repo.
+
+**Round 1 — 1 blocker, 1 major, 1 minor, ALL VERIFIED AND FOLDED.** The
 blocker (no git identity for `git tag -a`) would have failed the workflow on its first real run. The
 major corrected D6 outright: my concurrency group would have *dropped* tags rather than protecting
 them. The minor caught the version count going stale mid-draft. The reviewer separately confirmed the
@@ -77,8 +84,8 @@ nothing forces anyone to take.
      commit still *is* version X. Quality already lives in the checks API; keep identity separate from it.
 
   This also makes the workflow markedly smaller: no `workflow_run`, no `head_sha`-versus-head subtlety,
-  no event filtering — the exact places the first review found real defects. The tag also lands on the
-  commit that **introduced** the version rather than a later docs commit.
+  no event filtering — the exact places the first review found real defects. The tag **usually** lands on
+  the commit that introduced the version rather than a later docs commit — see D7 for the exception.
 - **D2 — Idempotent by construction: skip if the tag exists.** Never overwrite, never force. A docs-only
   push carries an unchanged version, finds its tag present, and no-ops. This is what makes the workflow
   safe to run on every push rather than only on version changes.
@@ -101,6 +108,19 @@ nothing forces anyone to take.
   with `! [rejected] ... already exists`. Treat that rejection as **success** — re-check that the tag
   now exists and exit 0. Pure idempotency (D2) with no scheduling apparatus, and strictly fewer moving
   parts than the concurrency block it replaces.
+
+- **D7 — The tag identifies a VERSION, not a specific commit; out-of-order runs are accepted.**
+  *(Independent review round 2, MAJOR — the draft over-promised.)* Commit A introduces version X and a
+  docs-only commit B retains it. GitHub does not guarantee the two workflow runs execute in order, so
+  B's run may create `vX` **at B**, after which A's run finds the tag present and exits cleanly. The tag
+  then points at B, not at the commit that introduced X.
+
+  **Accepted, not fixed.** Plan-doc commits do not bump and do not change code (CLAUDE.md § Version
+  Bumping), so A and B carry **identical `src/`** — the tag still answers "where is version X" with a
+  tree whose code is exactly version X's. Making it exact would mean detecting "did this commit
+  introduce the version", which is apparatus this plan forbids for a difference nothing can observe in
+  the code. D1's wording is corrected from "lands on" to "usually lands on" rather than left to imply a
+  guarantee the design does not provide.
 
 ## Task
 
