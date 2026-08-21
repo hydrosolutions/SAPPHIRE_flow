@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-23
 plan: 146
 title: Antecedent (past) snow reanalysis channel — provenance + owning ingest flow + read-side routing
@@ -12,6 +12,9 @@ supersedes: []
 # Plan 146 — Antecedent (past) snow reanalysis channel
 
 ## Status
+**COMPLETE** — shipped on `main` as `e4fbbec` (feat(forcing): Plan 146 antecedent snow reanalysis channel (model-agnostic ingest + read routing) (#135)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY (owner 2026-07-24) → /implement (hold-at-PR).** Design converged through two `/plan` runs (7 rounds) +
 the model-agnostic pivot + two direct-folds; all Open items resolved or accepted (licence gate CLOSED —
 `"SnowMapper Operational (MIT License, 2026)"`). Split from Plan 145 (owner 2026-07-23). This is the load-bearing half of the original snow-forcing

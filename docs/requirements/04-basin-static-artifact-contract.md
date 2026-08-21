@@ -468,7 +468,7 @@ Two consequences worth stating:
   a superseded version's snapshot is retained (never deleted). Plan 120 deliberately scoped OUT
   finer-than-basin-version (sub-basin / per-attribute) provenance — a basin's attributes are all
   produced by ONE package import, so basin-version granularity already satisfies §11's provenance
-  questions without a separate per-attribute table (`docs/plans/120-basin-static-importer.md`
+  questions without a separate per-attribute table (`docs/plans/archive/120-basin-static-importer.md`
   "Versioned basin state" + "Not in scope").
 
 ### 6.3 Geometry-derived vs forcing-derived attributes — the package is self-contained
@@ -731,7 +731,7 @@ were trained on which basin geometry/attributes — is answered by the
 the superseded version, write the new one, refresh the §5a mapping) and **emits the exact
 affected-artifact set** (`model_artifact_basin_versions` joined against the just-superseded
 `basin_version_id`) so step 4 (retrain) has a deterministic, auditable target list rather than a
-guess. See `docs/plans/120-basin-static-importer.md` "Versioned basin state" and
+guess. See `docs/plans/archive/120-basin-static-importer.md` "Versioned basin state" and
 `docs/operations/basin-static-importer-runbook.md`.
 
 ## 12. Maintenance and deliverable boundary

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-15
 revised: 2026-08-15
 plan: 173
@@ -13,6 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 173 — M-A3 fit-for-purpose QC mask
 
 ## Status
+**COMPLETE** — shipped on `main` as `c2d59d0` (feat(dhm-precip): Plan 173 — M-A3 fit-for-purpose QC mask (#158)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY — owner-confirmed 2026-08-15.** Gated with **three manual Codex rounds** (2B+3M, then a
 third round asked what the first two had MISSED, which found 2B+4M more). Two of the four blockers
 were the same class of defect — an unpinned, mask-changing parameter — caught in different places.

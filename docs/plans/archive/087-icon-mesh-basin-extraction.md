@@ -738,9 +738,9 @@ milestone:
   extraction from the ICON unstructured mesh is now supported (the data-flow §
   referencing the GridExtractor / NWP path), and that elevation-band extraction (the
   shipped `h`/orography coord) remains a Plan 047 follow-up.
-- `docs/plans/086-nwp-memory-bounded-streaming.md` — cross-reference: mark **Open Item
+- `docs/plans/archive/086-nwp-memory-bounded-streaming.md` — cross-reference: mark **Open Item
   E** as addressed by Plan 087 (a one-line pointer; do not rewrite 086's scope).
-- `docs/plans/087-icon-mesh-basin-extraction.md` (this plan),
+- `docs/plans/archive/087-icon-mesh-basin-extraction.md` (this plan),
   `docs/plans/README.md` (index entry).
 - No other production files.
 ```

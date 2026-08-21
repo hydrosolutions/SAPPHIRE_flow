@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-20
 plan: 131
 title: level→discharge (h→Q) conversion service
@@ -7,6 +7,11 @@ scope: v1 — the pure rating-curve conversion service. The reprocess flow (Flow
 ---
 
 # Plan 131 — level→discharge (h→Q) conversion service
+
+**COMPLETE** — shipped on `main` as `7a7852c` (feat(131): level→discharge (h→Q) conversion service (#106)).
+*(Archived 2026-08-21 after an independent verification pass confirmed the in-scope work is
+implemented and the apparent remainder is explicitly out of scope or a successor plan.)*
+
 
 **Status**: READY
 **Depends on**: Plan 035 Task 1 (`RatingCurve` + `RatingCurveStore`, #100) — MERGED. Adopts

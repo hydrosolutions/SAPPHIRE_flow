@@ -123,7 +123,7 @@ must not require either path to be writable.
    though no NWP was used. This is accepted for v0 because no current
    NWP-consuming models exist and `nwp_cycle_source` is not used for skill or
    filtering. The correct fix is a cross-cutting schema, API, and verification
-   change owned by `docs/plans/078-forecast-provenance-no-nwp.md`; Plan 077
+   change owned by `docs/plans/archive/078-forecast-provenance-no-nwp.md`; Plan 077
    must not change the enum, schema, API response, or `input_quality`.
 
 5. **Disabling NWP does not affect current watchdog alerts.** The Mac Mini

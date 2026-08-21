@@ -5,7 +5,7 @@ instantaneous field needs no deaccumulation, no boundary context and no
 packing/conservation accounting; merging the two paths behind a shared
 strategy seam would put the 01 UTC accumulation-day reset one boolean away
 from a field it does not apply to. See
-`docs/plans/191-era5-land-instantaneous-t2m.md`.
+`docs/plans/archive/191-era5-land-instantaneous-t2m.md`.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false

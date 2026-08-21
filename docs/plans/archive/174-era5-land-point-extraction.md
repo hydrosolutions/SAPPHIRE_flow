@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-15
 revised: 2026-08-16 (post-implementation review — 4 plan-level blockers corrected)
 plan: 174
@@ -13,6 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 174 — M-A5 ERA5-Land point extraction
 
 ## Status
+**COMPLETE** — shipped on `main` as `ae47e7d` (feat(dhm-precip): Plan 174 — M-A5 ERA5-Land point extraction at the 26 gauges (#170)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY — owner-confirmed 2026-08-16.**
 
 Gated by one `/plan` round that **stalled** (3 rounds; 4 blockers, 11 majors). Its design reasoning
@@ -300,7 +303,7 @@ and the one that de-risks Plan 152's OOD concern.
 **The split is not real until the authoritative documents say so.** Task 5b does that work
 (D12): M-A5's exit and M-A6's dependency text in `docs/design/dhm-precipitation-milestones.md`, the
 milestone JSON graph at `docs/design/dhm-precipitation-milestones.md:555-575`, and Plan 171's
-forward reference at `docs/plans/171-era5-land-acquisition.md:357-366` ("M-A5 decides, once IMERG's
+forward reference at `docs/plans/archive/171-era5-land-acquisition.md:357-366` ("M-A5 decides, once IMERG's
 real API is known, whether to refactor this module or write a sibling") all still route IMERG to
 M-A5. A scope correction that lives only in this plan is a scope correction nobody downstream sees.
 
@@ -417,7 +420,7 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   fallback with no acquisition path at all.)*
   Task 1a is a probe whose **only** exit is a frozen, committed `OrographySpec` record — the same
   discipline Plan 171 used to freeze the CDS payload (m-4, corrected citation:
-  `docs/plans/171-era5-land-acquisition.md:92-94`, "## Observed CDS payload — supplied by the
+  `docs/plans/archive/171-era5-land-acquisition.md:92-94`, "## Observed CDS payload — supplied by the
   operator" — the previous citation, `:340-355`, is D11's manifest-atomicity discipline, unrelated).
   It **must** resolve to exactly one of two branches, and "stop" is not one of them:
 
@@ -576,7 +579,7 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
      `monotone_within_day` / `sample_size_days` · injected-clock timestamp) into the acquisition
      manifest, and **Task 4a's real-data path refuses to publish** unless the manifest carries a
      passing record for a real window. Under Plan 171's proposed 2b sample that window is
-     **2021-10** (`docs/plans/171-era5-land-acquisition.md:444`); any real window is accepted.
+     **2021-10** (`docs/plans/archive/171-era5-land-acquisition.md:444`); any real window is accepted.
      M-A5 **cites** that record; it does not claim to have re-established the semantics.
 
 - **D6 — The Kirtipur/Khumaltar gauge-pair diagnostic MOVES to M-A6. This plan emits only the ERA-side
@@ -604,7 +607,7 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
     a small representativeness signal — but it is **not** evidence of a specific defect, and must not
     be cited as one.
     Plan 170 quotes the raw pair disagreement at ~37 % of seasonal total
-    (`docs/plans/170-dhm-precip-reproducible-baseline.md:55-58`) — the *same order* as the known
+    (`docs/plans/archive/170-dhm-precip-reproducible-baseline.md:55-58`) — the *same order* as the known
     defect. Unmasked, the "representativeness bound" would be dominated by a gauge malfunction.
   - Even fully masked, gauge-to-gauge disagreement carries **both** stations' residual measurement
     error; the triangle inequality supports only the weaker conditional statement below, not a bound
@@ -924,7 +927,7 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
 
   **CLI:** `scripts/dhm_precip/extract_era5.py`, mirroring `acquire_era5.py`'s shape —
   `--stage {orography,extract,sensitivity,all}`, `--data-root`, `--out`.
-  **Exit codes** (mirroring `docs/plans/171-era5-land-acquisition.md:510`): `0` success ·
+  **Exit codes** (mirroring `docs/plans/archive/171-era5-land-acquisition.md:510`): `0` success ·
   `2` inputs absent (no product / no coordinate table / no orography spec) · `3` orography
   acquisition or validation failed · `4` an extraction post-condition failed (bounds, NaN, station
   set, axis, checksum) · `5` storage/manifest write failed.
@@ -935,9 +938,9 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
 
 - **D10 — The real-data gate is opt-in by its own variable, and it is gated on Plan 171 Task 4b —
   not 2b.** *(Corrected on review: 171 Task 2b is acquisition-only for a single October window and
-  "is never transformed into a product" — `docs/plans/171-era5-land-acquisition.md:444-455`. The six
+  "is never transformed into a product" — `docs/plans/archive/171-era5-land-acquisition.md:444-455`. The six
   annual `hourly_mm` files this plan consumes are produced by **171 Task 4b**,
-  `docs/plans/171-era5-land-acquisition.md:523`.)
+  `docs/plans/archive/171-era5-land-acquisition.md:523`.)
   Mirroring the `DHM_PRECIP_XLSX` pattern (`tests/integration/test_dhm_precip_reproduction.py:37`):
   **`DHM_PRECIP_ERA5_ROOT` unset is the ONLY skip condition.** When it is set, the gate must **fail**
   — never skip, never warn — on: fewer than the six expected annual files; any file whose sha256
@@ -975,7 +978,7 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
   two-way-now/three-way-when-M-A5b-lands; a new **M-A5b · IMERG acquisition + extraction** milestone
   is added with `depends_on: ["M-D2"]` and *no* edge into M-A6's current exit; the JSON graph at
   `:555-575` updated to match) and adds a superseded note at
-  `docs/plans/171-era5-land-acquisition.md:357-366`. Without this, the milestone doc still makes
+  `docs/plans/archive/171-era5-land-acquisition.md:357-366`. Without this, the milestone doc still makes
   IMERG part of M-A5's exit and M-A5 can never be marked complete.
 
 - **D13 — `blocks` is M-A6 only.** The previous revision listed M-A7. The authoritative graph makes
@@ -997,7 +1000,7 @@ revision of this table quoted 3.5 km for the pair below, which was the latitude 
 4. **`scripts/` is outside the default type gate.** `pyrightconfig.json:2` includes only `src`, and
    the pre-push ratchet runs `pyright src/`. Strict mode still applies to explicitly-named files, so
    every task's gate runs **`uv run pyright scripts/dhm_precip/`** explicitly, as Plans 170/171/173
-   already do (`docs/plans/171-era5-land-acquisition.md:381`).
+   already do (`docs/plans/archive/171-era5-land-acquisition.md:381`).
 5. **Dev-only dependencies.** Any new raster dependency needed by Branch B must be `uv add --dev`
    (Plan 171 D13) — the production image installs `--no-dev` (`Dockerfile:32`). Prefer the stack
    already present (`xarray`, `rioxarray`, `h5netcdf`) and add nothing if it suffices.
@@ -1029,7 +1032,7 @@ a new "## Observed orography route" section **and** as
 `scripts/dhm_precip/era5_orography_spec.py` (a frozen dataclass literal, per CLAUDE.md — not JSON in
 a docstring).
 *Out of scope:* downloading the full raster, aggregating, or touching extraction.
-*Target files:* `docs/plans/174-era5-land-point-extraction.md`,
+*Target files:* `docs/plans/archive/174-era5-land-point-extraction.md`,
 `scripts/dhm_precip/era5_orography_spec.py`, `scripts/dhm_precip/domain_types.py` (add
 `OrographySource`, `VerticalDatum` enums).
 *Verification:* `uv run pytest tests/unit/scripts/test_era5_orography.py -k spec` — the frozen spec
@@ -1265,7 +1268,7 @@ orography-source enum and the sensitivity envelope; M-A6 becomes two-way now / t
 **gains the "within-cell observed gauge variability" deliverable with its masking and conditional-claim
 wording (D6)**; a new **M-A5b · IMERG acquisition + extraction** milestone; the JSON graph at `:555-575`
 updated (`M-A5b` added; `M-A5` unchanged in its edges; M-A7 untouched — it depends on M-A2/M-A3,
-D13). Plus a superseded note at `docs/plans/171-era5-land-acquisition.md:357-366`.
+D13). Plus a superseded note at `docs/plans/archive/171-era5-land-acquisition.md:357-366`.
 *Out of scope:* drafting the M-A5b plan itself; editing the vision doc's findings.
 *Verification:* `uv run pytest tests/unit/scripts/test_dhm_precip_expectations.py` still green, and a
 grep shows **no** remaining statement that M-A5's exit includes IMERG.

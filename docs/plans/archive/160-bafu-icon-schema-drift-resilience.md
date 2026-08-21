@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-13
 plan: 160
 title: BAFU forecast adapter — survive upstream schema drift instead of dying on one station
@@ -12,6 +12,9 @@ supersedes: []
 # Plan 160 — BAFU forecast adapter: schema-drift resilience
 
 ## Status
+**COMPLETE** — shipped on `main` as `2bfb24d` (fix(bafu): survive BAFU icon schema drift instead of dying on one station (Plan 160) (#146)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY** (2026-08-13). Operational reliability (category **A**). Fixes a **live, ongoing** collection outage.
 
 ## Problem

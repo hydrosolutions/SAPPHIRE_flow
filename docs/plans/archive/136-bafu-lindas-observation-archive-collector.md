@@ -99,7 +99,7 @@ correction, with its measurement, belongs to **Plan 176** (which depends on Plan
    `config/overlays/mac-mini.toml`, all updated) and D2 replaced this plan's clock-derived `cycle_at`
    (§T3 above) with a data-derived one (the response's modal `measurement_time`, truncated to the
    10-minute grid) — the clock key cannot survive a poll rate decoupled from the grid; its failure mode
-   was observed live during Plan 175's own deployment (see `docs/plans/176-lindas-archive-completeness.md`
+   was observed live during Plan 175's own deployment (see `docs/plans/archive/176-lindas-archive-completeness.md`
    § Evidence). **This is a genuine narrowing of this plan's restatement guarantee**: under the old
    clock key, any re-fetch in a later hour preserved a correction; under the data key, a correction is
    preserved only if the network's modal slot has advanced between the two fetches — which, at Plan 176's

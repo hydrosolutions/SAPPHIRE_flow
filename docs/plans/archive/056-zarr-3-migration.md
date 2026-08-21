@@ -76,7 +76,7 @@ only direct `numcodecs` or `zarr` call site is one line in
   `rioxarray` (pinned `>=0.19.0` in `pyproject.toml`, resolved to `0.22.0` or
   later after `uv lock --upgrade`) supports zarr 3 upstream; T1 runs
   `uv tree --package rioxarray` before commit to confirm the resolved version.
-- Plan 052 (DRAFT, `docs/plans/052-nwp-gridded-path-hardening.md`) overlaps on
+- Plan 052 (DRAFT, `docs/plans/archive/052-nwp-gridded-path-hardening.md`) overlaps on
   the same file but at a different layer (atomic-swap crash safety, datetime
   rejection, NaN fail-fast). No semantic conflict; sequence either way works.
 - Plan 045 is DONE (archived); its `ZarrNwpGridStore` implementation stays.

@@ -15,7 +15,7 @@ updated: 2026-07-21
 # A 2026-07-21 `/plan` run (Codex-backed) ESCALATED but surfaced two durable design gaps
 # (§"Open design problems": P1 Branch-A has no skill gate; P2 the Step-8 climatology floor
 # is unsatisfiable for zero-obs stations). Design content originated in the
-# `⚠ REFERENCE-ONLY (ungauged plan)` sections of docs/plans/015-virtual-station-support.md.
+# `⚠ REFERENCE-ONLY (ungauged plan)` sections of docs/plans/archive/015-virtual-station-support.md.
 category: B  # v1 Nepal feature
 scope: design — UNGAUGED station support (no observations; models on NWP forcing + basin characteristics)
 depends_on: [015]  # CALCULATED support (done). Live go-live also needs: an FI model (modelling team) + basin geometry (117/120).
@@ -39,7 +39,7 @@ real slice of **SAP3 scaffolding is buildable now** against the shipped FI inter
 (§"SAP3 scaffolding (unblocked)"), getting the system *model-ready* so the model plugs in.
 
 The detailed design originated in the `⚠ REFERENCE-ONLY (ungauged plan)` sections of
-`docs/plans/015-virtual-station-support.md` — consult those for the original framing.
+`docs/plans/archive/015-virtual-station-support.md` — consult those for the original framing.
 
 ## Problem
 

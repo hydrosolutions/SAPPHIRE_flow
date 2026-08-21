@@ -13,6 +13,9 @@ supersedes: []
 
 ## Status
 
+**COMPLETE** — shipped on `main` as `3264a45` (fix(nwp): Plan 140 — restore ICON-CH2-EPS fetch (raise STAC pagination cap 800->1500 + observability) (#123)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY (owner 2026-07-22) — production outage.** Diagnosed live on the mac-mini (as the T1 step of Plan
 138's deploy) and grounded in live MeteoSwiss STAC probes; **T1 benchmark is DONE** (861 pages, sizing the
 cap at 1500). The fix is small and low-risk — a cap constant + observability + tests — so it goes straight to

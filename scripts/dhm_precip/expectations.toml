@@ -93,7 +93,7 @@ method = { denominator = "26 usable stations; per ON_GRID row, count of stations
 [[expectation]]
 id = "inv_group_a_elevation_range"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:52"
 statistic = "group_a_elevation_range_m"
 range = [2490.0, 3700.0]
 unit = "m"
@@ -108,7 +108,7 @@ method = { denominator = "min/max elevation over Group A stations" }
 [[expectation]]
 id = "inv_group_b_elevation_range"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:52"
 statistic = "group_b_elevation_range_m"
 range = [67.0, 2147.0]
 unit = "m"
@@ -123,7 +123,7 @@ method = { denominator = "min/max elevation over Group B stations" }
 [[expectation]]
 id = "inv_group_elevation_gap"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:52"
 statistic = "group_elevation_gap_m"
 value = 343
 unit = "m"
@@ -559,7 +559,7 @@ method = { wet_threshold_side = ">=", denominator = "P(missing | region wet, sta
 [[expectation]]
 id = "coh_median_nn_distance_km"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "nearest_neighbour_distance_km"
 value = 27
 unit = "km"
@@ -574,7 +574,7 @@ method = { denominator = "median over stations of each station's nearest-neighbo
 [[expectation]]
 id = "coh_pairs_within_25km_count"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "pair_count_within_25km"
 value = 7
 unit = "count"
@@ -589,7 +589,7 @@ method = { denominator = "unordered station pairs with great-circle distance < 2
 [[expectation]]
 id = "coh_hourly_r_within_25km"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:47"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:47"
 statistic = "distance_stratified_pearson_r"
 value = 0.243
 unit = "r"
@@ -608,7 +608,7 @@ method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "
 [[expectation]]
 id = "coh_hourly_r_beyond_200km"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:47"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:47"
 statistic = "distance_stratified_pearson_r"
 value = 0.032
 unit = "r"
@@ -710,7 +710,7 @@ method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "
 [[expectation]]
 id = "coh_daily_r_within_25km"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "distance_stratified_pearson_r"
 value = 0.463
 unit = "r"
@@ -729,7 +729,7 @@ method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "
 [[expectation]]
 id = "coh_daily_r_beyond_200km"
 source = "plan-170"
-plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+plan_ref = "docs/plans/archive/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "distance_stratified_pearson_r"
 value = 0.165
 unit = "r"

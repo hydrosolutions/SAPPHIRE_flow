@@ -309,7 +309,7 @@ pins `retry_max=1` so the outer driver is the sole retry owner; D9's raw/final s
 (grid count/spacing/order, time uniqueness, dtype, attrs, on-disk encoding via `validate_output_encoding`);
 D6 post-condition 1b (per-day/cell post-clamp accounting) is asserted in code; a manifest-write failure
 mid-revision restores the previous good product (D5); the acquisition-wide dataset is now immutable once
-a manifest exists. See `docs/plans/171-era5-land-acquisition.md` for the full finding list and fixes.
+a manifest exists. See `docs/plans/archive/171-era5-land-acquisition.md` for the full finding list and fixes.
 
 ### M-A5 · Point extraction at station locations
 **Depends: M-D2, M-A4.** *(M-A4 needs no coordinates; only the extraction does.)*

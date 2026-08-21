@@ -16,7 +16,7 @@
 > forcing-adapter contract — HRU addressing, one-variable wide DataFrames, endpoint
 > provenance, HRES-as-control `member_id=0`, K→°C / m→mm unit conversions, and no-coverage
 > metadata as a Plan 082 readiness blocker — lives in
-> `docs/plans/081-recap-dg-client-integration.md` (§Contract-Fit Review and §Adapter
+> `docs/plans/archive/081-recap-dg-client-integration.md` (§Contract-Fit Review and §Adapter
 > Decisions). This requirements doc is the Gateway-facing agreement; Plan 081 is the SAP3-side
 > adapter contract. There is no separate `docs/design/` copy.
 

@@ -156,7 +156,7 @@ outage — escalate manually rather than keep retrying.
   asserts schema integrity.
 - `src/sapphire_flow/adapters/hydro_scraper.py` — the BAFU SPARQL
   adapter (unchanged through this incident).
-- `docs/plans/070-precommit-and-gate-parity.md` §C2 — the LINDAS
+- `docs/plans/archive/070-precommit-and-gate-parity.md` §C2 — the LINDAS
   carve-out anchored on this evidence.
 - `docs/plans/archive/074-*.md` — the plan that introduced the
   schema-drift check (referenced from

@@ -13,6 +13,9 @@ source: docs/plans/162-robust-database-backup.md § T6
 
 ## Status
 
+**COMPLETE** — shipped on `main` as `357386b` (Plan 194 — the backup target must be the device it claims to be (#200)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY** — owner flip 2026-08-20, with D6 ratified (see the resolved decision below).
 
 Extracted verbatim-in-substance from **Plan 162 T6**, which is fully specified there but was cut from

@@ -2,7 +2,7 @@
 
 Acquires (CDS) and/or transforms (local, D6-D9) hourly ERA5-Land total
 precipitation over the Nepal study box for 2020-2025, per the D2-D11
-design. See `docs/plans/171-era5-land-acquisition.md`.
+design. See `docs/plans/archive/171-era5-land-acquisition.md`.
 
 Usage:
     uv run python scripts/dhm_precip/acquire_era5.py \

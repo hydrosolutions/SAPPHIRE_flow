@@ -307,7 +307,7 @@ Two agents, user-context (`gui/$(id -u)`):
   pings (the heartbeat means "the tick ran", not "the stack is healthy");
   a tick that raises before persisting does not, which is the correct
   failure signal. Without `secrets/deadman_url` no ping is attempted, no
-  error. See `docs/plans/163-watchdog-deadman-and-http-hardening.md`.
+  error. See `docs/plans/archive/163-watchdog-deadman-and-http-hardening.md`.
 
 ### Watchdog log rotation (manual, one-time)
 

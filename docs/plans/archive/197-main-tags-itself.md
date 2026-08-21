@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-21
 plan: 197
 title: main tags itself — remove the manual step that keeps being skipped
@@ -12,6 +12,17 @@ source: tag audit 2026-08-21
 # Plan 197 — main tags itself
 
 ## Status
+
+**COMPLETE 2026-08-21** — merged as PR #202 (`2e2f3b7`) and **verified live on its first real run**.
+The workflow fired on the merge push and created `v0.1.789`: an **annotated** tag object (D4), tagger
+`github-actions[bot]` — so round 1's blocker fix works in reality, not only in tests — pointing exactly
+at the merge commit. The tag series resumes from 0.1.789; the six earlier gaps stay, per the owner's
+decision not to backfill.
+
+The implementation improved on this plan in one place: it queries the **remote** (`git ls-remote`) rather
+than fetching tags locally, sidestepping `actions/checkout`'s `fetch-tags: false` default instead of
+working around it. D2's idempotency (a docs-only push finding its tag present) is exercised by the next
+docs push to main.
 
 **READY** — owner flip 2026-08-21, after two independent Codex rounds converged.
 

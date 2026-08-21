@@ -130,7 +130,7 @@ If any station returns 0 in the local run, that's expected (real-time-only). Con
 7. Optionally, manually trigger the workflow via `gh workflow run live-lindas-weekly.yml` and watch one run go green to close the loop. (Not required for plan exit; the local run plus deterministic logic is enough.)
 8. Archive in a second commit:
    - flip `Status: READY` → `Status: DONE` in the plan header,
-   - `git mv docs/plans/074-live-lindas-multi-station-quorum.md docs/plans/archive/074-live-lindas-multi-station-quorum.md`,
+   - `git mv docs/plans/archive/074-live-lindas-multi-station-quorum.md docs/plans/archive/074-live-lindas-multi-station-quorum.md`,
    - remove the "074" line from `docs/plans/README.md` Active section (the "Archived" pointer is unchanged — it just says "see archive/"),
    - patch bump again, commit `docs(plan-074): archive completed plan`, tag.
 
@@ -142,7 +142,7 @@ If any station returns 0 in the local run, that's expected (real-time-only). Con
 |---|---|---|
 | `tests/integration/live/test_lindas_live_schema.py` | T1 + T2 | Replace single-station station factory + single test with mixed-kind 7-station check; count only six river stations in the river quorum; query 2004 as an opportunistic lake-path sample; rename test method; update docstring. |
 | `pyproject.toml`, `src/sapphire_flow/__init__.py` | T4 | Patch version bump (×2 — implementation commit + archive commit). |
-| `docs/plans/074-live-lindas-multi-station-quorum.md` | T4 | Add (already present from this plan-write step), then archive-move. |
+| `docs/plans/archive/074-live-lindas-multi-station-quorum.md` | T4 | Add (already present from this plan-write step), then archive-move. |
 | `docs/plans/README.md` | T4 | Already lists 074 under Active; remove the line on archive commit. |
 
 No adapter changes (`src/sapphire_flow/adapters/hydro_scraper.py` untouched).

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-15
 plan: 119
 title: Dependency-bump safety gate — make CI catch dangerous major bumps before merge
@@ -11,6 +11,9 @@ blocks: []
 # Plan 119 — Dependency-bump safety gate
 
 ## Status
+
+**COMPLETE** — shipped on `main` as `1c82adc` (Plan 119 — dependency-bump safety gate (#82)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
 
 **DRAFT.** Do not implement until promoted to READY.
 

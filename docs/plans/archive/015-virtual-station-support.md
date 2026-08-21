@@ -1,8 +1,13 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-03-30
 updated: 2026-07-20
 # RE-DRAFT 2026-07-20 (grill-me owner-resolved): narrowed to CALCULATED (component-
+
+**COMPLETE** — shipped on `main` as `e309fa5` (feat(calculated-stations): Plan 015 §5.C — calculated-station onboarding (TOML post-pass) (#113)).
+*(Archived 2026-08-21 after an independent verification pass confirmed the in-scope work is
+implemented and the apparent remainder is explicitly out of scope or a successor plan.)*
+
 # derived) stations only. UNGAUGED support split to a separate deferred plan. Formula
 # audit via structlog now (audit_log/AuditEventType rows deferred to the Wave-3
 # auth/audit plan). Flow 12-triggered re-derivation deferred to a follow-up. The v0

@@ -440,7 +440,7 @@ plan to fix a pre-existing gap — not a new SAP3-side workaround.
     5. **`docs/plans/README.md`:** **add a Plan 150 entry**, and **reconcile Plan 148's status** (currently listed
        `DRAFT` at `README.md:106`; #139 merged to `main` at `fa14b9a`). Plan 148's archival is handled as a
        **separate bookkeeping action** and is **specified**, not performed, here: move
-       `docs/plans/148-forecast-redesign-phase1-modelruncontext.md` → `docs/plans/archive/`, set its frontmatter
+       `docs/plans/archive/148-forecast-redesign-phase1-modelruncontext.md` → `docs/plans/archive/`, set its frontmatter
        `status: COMPLETE`, and update the `README.md:106` line from `DRAFT` to `COMPLETE (archived, PR #139)`. (Do
        **not** move 148 as part of Plan 150's own commits unless the orchestrator folds it in; the point is to stop
        listing a merged plan as an active `DRAFT`/`MERGED` status. "MERGED" is a git state, not a plan status —

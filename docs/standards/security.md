@@ -754,7 +754,7 @@ persistent volume.
    residual gap (yanked-but-not-CVE releases) is mitigated by the 48 h
    Dependabot cooldown (`dependabot.yml`).
 
-See `docs/plans/119-dependency-bump-safety-gate.md` for the full design and
+See `docs/plans/archive/119-dependency-bump-safety-gate.md` for the full design and
 `docs/standards/cicd.md` § `dependency-safety.yml` for the workflow's
 operational shape.
 

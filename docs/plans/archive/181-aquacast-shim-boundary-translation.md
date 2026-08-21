@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-18
 plan: 181
 title: aquacast shim — proxy the FI surface and translate the name/unit boundary
@@ -10,6 +10,10 @@ supersedes: []
 ---
 
 # Plan 181 — aquacast shim: proxy the FI surface, translate the boundary
+
+**COMPLETE** — shipped on `main` as `5faea28` (feat(aquacast): shim boundary translation — proxy the FI surface, translate names and units (Plan 181) (#173)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 
 **READY** (owner, 2026-08-18). D1–D3 settled. Verified by a lean Codex pass that returned three
 corrections, all folded — most importantly that the shim is registered UNWRAPPED, so T1 is the

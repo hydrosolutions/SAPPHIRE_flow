@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-12
 revised: 2026-08-13
 plan: 170
@@ -13,6 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 170 — M-A1 reproducible ingest and baseline
 
 ## Status
+
+**COMPLETE** — shipped on `main` as `4cec29d` (M-A1: reproducible DHM precipitation ingest and baseline (Plan 170) (#147)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
 
 **READY — owner-confirmed 2026-08-13.**
 

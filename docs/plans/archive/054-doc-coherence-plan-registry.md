@@ -44,10 +44,10 @@ subagents read these docs as ground truth. Specifically:
    `ForcingType.REANALYSIS`" in the v0 simplifications table, predating
    Plan 021's basin-average supersession. The design doc diverges from
    `v0-scope.md` §A12 and from the corrected architecture-context prose.
-6. **docs/plans/029-lindas-adapter-fix.md** exists in both `docs/plans/` AND
+6. **docs/plans/archive/029-lindas-adapter-fix.md** exists in both `docs/plans/` AND
    `docs/plans/archive/` with identical content.
-7. **docs/plans/036-hindcast-flow-standalone.md** and
-   **docs/plans/037-security-audit.md** are both `status: DONE` but not
+7. **docs/plans/archive/036-hindcast-flow-standalone.md** and
+   **docs/plans/archive/037-security-audit.md** are both `status: DONE` but not
    archived, which is out of line with the current archive convention for
    completed plans.
 8. **docs/plans/039-alert-data-unavailable-status.md** and
@@ -225,13 +225,13 @@ channels.
 
 ### T6 — Delete duplicate Plan 029
 
-**File operation**: `rm docs/plans/029-lindas-adapter-fix.md` (keep the
+**File operation**: `rm docs/plans/archive/029-lindas-adapter-fix.md` (keep the
 archive copy only).
 
 1. Verify `docs/plans/archive/029-lindas-adapter-fix.md` is identical to
    the active copy (`diff` returns nothing).
 2. Delete the active copy.
-3. Confirm no plan links target `docs/plans/029-lindas-adapter-fix.md`
+3. Confirm no plan links target `docs/plans/archive/029-lindas-adapter-fix.md`
    (links should target archive or no path at all).
 
 **Exit**: `ls docs/plans/029*` returns only the archive copy.
@@ -240,9 +240,9 @@ archive copy only).
 
 **File operations**:
 
-1. `git mv docs/plans/036-hindcast-flow-standalone.md
+1. `git mv docs/plans/archive/036-hindcast-flow-standalone.md
    docs/plans/archive/036-hindcast-flow-standalone.md`
-2. `git mv docs/plans/037-security-audit.md
+2. `git mv docs/plans/archive/037-security-audit.md
    docs/plans/archive/037-security-audit.md`
 3. Verify both have `status: DONE` in frontmatter.
 4. If either has a `## Follow-up plans` section referencing open work,
@@ -375,9 +375,9 @@ Notes that do not fit the JSON shape:
 
 | Path | Task | Action |
 |---|---|---|
-| `docs/plans/029-lindas-adapter-fix.md` | T6 | Delete (archive copy retained) |
-| `docs/plans/036-hindcast-flow-standalone.md` | T7 | `git mv` to `archive/` |
-| `docs/plans/037-security-audit.md` | T7 | `git mv` to `archive/` |
+| `docs/plans/archive/029-lindas-adapter-fix.md` | T6 | Delete (archive copy retained) |
+| `docs/plans/archive/036-hindcast-flow-standalone.md` | T7 | `git mv` to `archive/` |
+| `docs/plans/archive/037-security-audit.md` | T7 | `git mv` to `archive/` |
 
 ---
 
@@ -388,7 +388,7 @@ Notes that do not fit the JSON shape:
 2. `Grep -l "notification_smtp\|notification_sms" docs/` returns **no hits
    outside `docs/plans/` and `docs/plans/archive/`** (historical plan
    records may legitimately cite the old secret names).
-3. `docs/plans/029-lindas-adapter-fix.md` does not exist; archive copy
+3. `docs/plans/archive/029-lindas-adapter-fix.md` does not exist; archive copy
    present.
 4. `docs/plans/036*` and `docs/plans/037*` live only in `archive/`.
 5. `docs/workflow.md` documents the current plan-status vocabulary,
