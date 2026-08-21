@@ -608,7 +608,7 @@ uv run pytest
 
 ## References
 
-- Plan 081 `docs/plans/081-recap-dg-client-integration.md` (dispatch design)
+- Plan 081 `docs/plans/archive/081-recap-dg-client-integration.md` (dispatch design)
 - Plan 082 `docs/plans/082-recap-gateway-operational-readiness.md` (Task 2C)
 - Plan 106 §4 (v1 critical-path roadmap — Wave 1 forcing spine)
 - `docs/standards/cicd.md` § Rollback (migration backwards-compatibility rule)

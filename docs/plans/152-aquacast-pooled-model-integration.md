@@ -743,7 +743,7 @@ expected.**
 `CLAUDE.md` § Ad-hoc Analyses, not a checked-in script.
 
 ### T0b — Fail loudly on a multi-resolution requirement → **SPLIT OUT: Plan 156**
-Moved verbatim to `docs/plans/156-fi-multiresolution-fail-loud-guard.md`. It is a standalone safety
+Moved verbatim to `docs/plans/archive/156-fi-multiresolution-fail-loud-guard.md`. It is a standalone safety
 fix protecting **every** FI model, with no dependency on this integration — it ships immediately
 while this plan waits on external tracks. G5 (the gap) stays documented here for context.
 

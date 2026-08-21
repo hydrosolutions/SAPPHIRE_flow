@@ -132,6 +132,6 @@ uv run pytest
   `:113-115`; worker `/data/*` volume mounts `:118-129`).
 - `docker/entrypoint.sh:30` (the `chown app:app /data/*` line — extended for Option B's named volume).
 - Plan 133 (the read-only-data-dir / read-only container hardening this interacts with);
-  `docs/plans/133-read-only-data-dir-resilience.md`.
+  `docs/plans/archive/133-read-only-data-dir-resilience.md`.
 - Observed 2026-07-22 during Plan 138 `onboard-model` (`tidy-mastiff`) — the warning fires on every task.
 - memory `reference_macmini_ssh_access` (deploy overlay), `feedback_worktree_discipline_parallel_sessions`.

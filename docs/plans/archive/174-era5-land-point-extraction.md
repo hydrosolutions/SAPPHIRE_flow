@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-15
 revised: 2026-08-16 (post-implementation review — 4 plan-level blockers corrected)
 plan: 174
@@ -13,6 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 174 — M-A5 ERA5-Land point extraction
 
 ## Status
+**COMPLETE** — shipped on `main` as `ae47e7d` (feat(dhm-precip): Plan 174 — M-A5 ERA5-Land point extraction at the 26 gauges (#170)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY — owner-confirmed 2026-08-16.**
 
 Gated by one `/plan` round that **stalled** (3 rounds; 4 blockers, 11 majors). Its design reasoning

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-20
 plan: 191
 title: ERA5-Land instantaneous variable path — t2m transform and point extraction
@@ -12,6 +12,9 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 191 — ERA5-Land instantaneous path (t2m)
 
 ## Status
+
+**COMPLETE** — shipped on `main` as `06c2731` (feat(dhm-precip): Plan 191 — ERA5-Land instantaneous path (t2m transform + narrow extraction) (#199)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
 
 **READY** — owner go, 2026-08-20, against the task breakdown in session. This is the last
 prerequisite for Plan 184 D14, which needs a measured sub-freezing mass fraction and therefore needs

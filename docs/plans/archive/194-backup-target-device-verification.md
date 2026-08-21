@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-20
 plan: 194
 title: The backup target must be the device it claims to be (extracted from Plan 162 T6)
@@ -12,6 +12,9 @@ source: docs/plans/162-robust-database-backup.md § T6
 # Plan 194 — the backup target must be the device it claims to be
 
 ## Status
+
+**COMPLETE** — shipped on `main` as `357386b` (Plan 194 — the backup target must be the device it claims to be (#200)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
 
 **READY** — owner flip 2026-08-20, with D6 ratified (see the resolved decision below).
 

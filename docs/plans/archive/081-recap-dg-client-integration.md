@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-06-25
 plan: 081
 title: recap-dg-client forcing adapter
@@ -52,6 +52,9 @@ One line per review cycle; net outcome only.
   branch 845-861/852-858, clone `ecmwf.ifs_forecast` 55/80-81. No DECISION changed.
 
 ## Status
+
+**COMPLETE** — shipped on `main` as `f65624a` (feat(adapters): Plan 081 — offline recap-dg-client forcing adapter (#84)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
 
 **READY** (owner-confirmed 2026-07-15). Implementable offline with a fake client;
 live Gateway work is Plan 082. Multi-model review converged (see § Review History):

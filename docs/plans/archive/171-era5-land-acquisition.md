@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-13
 revised: 2026-08-13
 plan: 171
@@ -13,6 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 171 — M-A4 ERA5-Land acquisition
 
 ## Status
+**COMPLETE** — shipped on `main` as `b8073a6` (fix(dhm-precip): Plan 171 — monthly acquisition windows; a 403 is not always an auth failure (#171)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY — owner-confirmed 2026-08-13.** Arrived here after a `/plan` escalation (stalled at 2 rounds,
 3 blockers + 10 majors) followed by a targeted repair and **six manual Codex rounds** converging
 3B+10M → 4M → 2M → 2M → 1M → clean. The loop earned its keep: it corrected this plan's original

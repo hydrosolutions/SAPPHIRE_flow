@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-12
 plan: 156
 title: FI multi-FUTURE-FORCED-resolution requirement — fail loudly instead of silently flattening
@@ -12,6 +12,9 @@ supersedes: []
 # Plan 156 — fail loudly on a multi-resolution FI requirement
 
 ## Status
+**COMPLETE** — shipped on `main` as `aaafa12` (Plan 156 — fail loudly on multi-future-forced-resolution FI requirements (#145)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **DRAFT.** Split out of **Plan 152** (task T0b) on 2026-08-12. Grounded against `main`; every
 citation below was verified during Plan 152's review rounds.
 

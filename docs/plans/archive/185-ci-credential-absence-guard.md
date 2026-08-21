@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-18
 revised: 2026-08-18
 plan: 185
@@ -12,6 +12,9 @@ blocks: []
 # Plan 185 — CI credential-absence guard
 
 ## Status
+**COMPLETE** — shipped on `main` as `d532a13` (Plan 185 — a withheld CI credential should degrade loudly, not fail red (#187)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY** — owner confirmed 2026-08-18, after two independent Codex rounds
 (round 1: NEEDS_CHANGES on proportionality, 496 → 161 lines; round 2: NEEDS_CHANGES on
 five specifics, including a push-event guard the rewrite had dropped). No open blockers;

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-14
 revised: 2026-08-14
 plan: 172
@@ -13,6 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 172 — M-A2 canonical hourly axis + M-I1 precipitation QC rules
 
 ## Status
+**COMPLETE** — shipped on `main` as `98bf747` (M-A2 + M-I1: canonical hourly axis and precipitation QC rules (Plan 172) (#156)).
+*(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
+
 **READY — owner-confirmed 2026-08-14.** Gated with **two manual Codex rounds** (1 blocker + 6 majors
 + 1 minor → clean) rather than `/plan`, after Plans 170 and 171 both escalated through over-expansion.
 The rounds corrected this plan's original premise and its conservation check — see D1 and D5.
