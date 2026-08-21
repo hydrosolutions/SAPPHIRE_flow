@@ -1,7 +1,7 @@
 """Acceptance tests for the Plan 146 dedicated recap-reanalysis snow ingest flow.
 
 Locks the KEY acceptance criteria from
-docs/plans/146-antecedent-snow-reanalysis-channel.md Phase 2b: health-by-EFFECT
+docs/plans/archive/146-antecedent-snow-reanalysis-channel.md Phase 2b: health-by-EFFECT
 via fetch_covered_days, the D5 outcome
 classification (subscription_not_found excluded / source_data_missing
 partial+total loss / no-horizon-advance / config-auth-raises), the D5
