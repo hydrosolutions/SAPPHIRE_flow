@@ -385,7 +385,9 @@ class TestComputeTransectStationResult:
 
     def test_discrepancy_is_corrected_minus_pyramid(self) -> None:
         """ERA5 (UTC) and Pyramid (NPT) timestamps are 6h apart labels for
-        the SAME physical hours (Finding A, Plan 184 T2 round-2 review) —
+        ROUNDED-ALIGNED hours (Finding A, Plan 184 T2 round-2 review; the
+        true offset is 5h45m, so +6h is an approximation, never the same
+        physical hour) —
         NOT identically-labelled, so this test exercises the real clock
         reconciliation `pair_pyramid_and_era5` performs, rather than
         relying on a coincidental label match."""
@@ -526,9 +528,11 @@ class TestPairPyramidAndEra5ClockReconciliation:
     def test_reconciles_utc_and_npt_labels_before_joining(self) -> None:
         # ERA5 (UTC) at 00:00 and 06:00; Pyramid (NPT) at 06:00 and 12:00.
         # With the declared +6h UTC->NPT offset (params.coloc_dhm_utc_to_
-        # npt_hour_offset), ERA5 00:00 UTC is the SAME physical hour as
-        # Pyramid's 06:00 NPT reading, and ERA5 06:00 UTC is the SAME
-        # physical hour as Pyramid's 12:00 NPT reading.
+        # npt_hour_offset), ERA5 00:00 UTC is ROUNDED-ALIGNED to Pyramid's
+        # 06:00 NPT reading, and ERA5 06:00 UTC to Pyramid's 12:00 NPT.
+        # NOT the same physical hour: NPT is UTC+5h45m, so the +6h shift
+        # carries up to 15 min of residual misalignment — part of D2's
+        # declared +/-1.75h (params.coloc_alignment_uncertainty_hours).
         era5_grid = pl.DataFrame(
             {
                 "timestamp": [datetime(2022, 1, 1, 0), datetime(2022, 1, 1, 6)],
