@@ -52,9 +52,10 @@ Verified on the mac mini 2026-08-20 (host-side measurements; not reproducible fr
 Verifiable from this repo:
 
 - `grep -c launchctl src/sapphire_flow/ops/watchdog.py` → **0**. Nothing checks agent health.
-- `docs/deployment/mac-mini-staging.md:314-316` documents the expected output as
+- `docs/deployment/mac-mini-staging.md:333-334` documents the expected output as
   `ch.hydrosolutions.sapphire  0  -`. The live value is `1`. The documented check would have caught
-  this on any day in 119; it was evidently never run against real output.
+  this on any day in 119; it was evidently never run against real output. (A second copy of the same
+  command sits at `:533`.)
 
 **The point is not that this agent is broken** — that is a two-line PR, out of scope here. The point
 is that it was broken for 119 days *behind a green-looking status line*, and the monitor whose job is
@@ -186,10 +187,13 @@ tolerating the new key being absent from an existing state file (`watchdog.py:24
 
 ### T3 — the docs that were wrong
 *In:* `docs/deployment/mac-mini-staging.md`.
-`:431-439` explains "Docker Desktop did not start within 240s" as a VirtioFS cold-boot hang with remedy
-`open -a Docker` — a pre-written wrong diagnosis that absorbed the alarm for four months. `:314-316`
-documents an expected `0` that has never been true. Correct both, and say what the new condition
-reports.
+`:450` opens "Docker Desktop did not start within 240s", explained as a VirtioFS cold-boot hang with
+remedy `open -a Docker` — a pre-written wrong diagnosis that absorbed the alarm for four months.
+`:333-334` (and `:533`) document an expected `0` that has never been true. Correct all three, and say
+what the new condition reports.
+
+⚠️ **Line numbers in this file drift** — it was edited twice on 2026-08-20/21 while this plan was being
+written. Re-locate by string, not by line, before editing.
 
 ## Non-goals
 
