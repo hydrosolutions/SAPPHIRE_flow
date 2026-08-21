@@ -14,14 +14,15 @@ import pytest
 
 from scripts.dhm_precip.domain_types import Station
 from scripts.dhm_precip.ma6_estimands import (
-    AccumulatedDifferenceReconciliationError,
     CategoricalGrainRefusedError,
     ConditionalAccumulatedDifference,
     ElevationBand,
     EmptySubsetError,
     EstimandSubsetTypeError,
-    PeriodAccumulation,
+    MatchedHourMeanDifference,
+    RetentionConditionality,
     Scale,
+    WetHourConditionalIntensityBias,
     assign_elevation_band,
     band_matched_hour_mean_difference,
     categorical_scores,
@@ -245,10 +246,18 @@ class TestConditionalAccumulatedDifference:
         assert day1.gauge_sum_mm == pytest.approx(2.0)
         assert day1.era5_sum_mm == pytest.approx(1.0)
 
-    def test_periods_partition_the_subsets_own_hours_or_raise(self) -> None:
-        # Prove the reconciliation guard has teeth: hand-construct a
-        # ConditionalAccumulatedDifference whose periods DO NOT sum to the
-        # subset's own n_common_retained.
+    def test_periods_is_not_an_independently_settable_field(self) -> None:
+        # Finding 1 (Plan 184 T3 independent review, 2026-08-21): the OLD
+        # version of this test hand-constructed a ConditionalAccumulated-
+        # Difference with a `periods=` kwarg summing to 999 hours against a
+        # subset carrying only 3, and asserted the size-mismatch runtime
+        # check raised. That check is gone because the field it guarded is
+        # gone: `periods` is now a `@property` computed from `subset` and
+        # `scale` (see `_compute_periods`), so there is no `periods=`
+        # constructor argument to mismatch in the first place — a stronger
+        # guarantee than a runtime check, since it also closes the
+        # EQUAL-size case the old check could not catch (see
+        # TestValueCannotBeAttachedFromADifferentPopulation below).
         station = Station("A")
         paired = _make_paired_series(
             station,
@@ -260,18 +269,12 @@ class TestConditionalAccumulatedDifference:
         real_subset = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
         assert real_subset.n_common_retained == 3
 
-        mismatched_periods = (
-            PeriodAccumulation(
-                period_label="bogus", n_hours=999, gauge_sum_mm=1.0, era5_sum_mm=0.0
-            ),
-        )
-
-        with pytest.raises(AccumulatedDifferenceReconciliationError):
+        with pytest.raises(TypeError, match="periods"):
             ConditionalAccumulatedDifference(
                 station=station,
                 scale=Scale.JJAS,
                 subset=real_subset,
-                periods=mismatched_periods,
+                periods=(),  # type: ignore[call-arg]
             )
 
     def test_rejects_a_subset_that_is_not_a_real_pairedretainedsubset(self) -> None:
@@ -280,7 +283,6 @@ class TestConditionalAccumulatedDifference:
                 station=Station("A"),
                 scale=Scale.JJAS,
                 subset=42,  # type: ignore[arg-type]
-                periods=(),
             )
 
     def test_empty_subset_raises(self) -> None:
@@ -408,6 +410,162 @@ class TestElevationBandEstimand:
         # Station-equal mean of 2.0 and 10.0 = 6.0, NOT the hour-pooled
         # weighted mean ((2*40 + 10*4) / 44 = 2.7273).
         assert band.mean_value == pytest.approx(6.0)
+
+
+class TestValueCannotBeAttachedFromADifferentPopulation:
+    """Finding 1 (Plan 184 T3 independent review, 2026-08-21) — the FIFTH
+    instance of this milestone's signature defect: a value attached to a
+    population it was not computed from. The old regression
+    (`test_periods_is_not_an_independently_settable_field`, formerly
+    `test_periods_partition_the_subsets_own_hours_or_raise`) only proved a
+    SIZE mismatch (999 hours vs 3) was caught — it could not catch the
+    EQUAL-size case, which is the one that matters (an attacker with two
+    subsets of the same n has no size signal to be caught on). These tests
+    build two DIFFERENT but EQUAL-SIZED subsets, compute a real value from
+    one, and prove there is no constructor argument through which that
+    value could be attached to the other: the field simply does not exist,
+    so the attempt is a `TypeError`, not a value that silently passes."""
+
+    @staticmethod
+    def _two_equal_sized_but_different_subsets() -> tuple[object, object]:
+        station = Station("A")
+        paired_x = _make_paired_series(
+            station,
+            datetime(2024, 7, 1, 0),
+            3,
+            gauge=[1.0, 1.0, 1.0],
+            era5=[0.0, 0.0, 0.0],
+        )
+        paired_y = _make_paired_series(
+            station,
+            datetime(2024, 7, 1, 0),
+            3,
+            gauge=[100.0, 100.0, 100.0],
+            era5=[0.0, 0.0, 0.0],
+        )
+        subset_x = scale_subset(paired_x, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        subset_y = scale_subset(paired_y, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        assert subset_x.n_common_retained == subset_y.n_common_retained == 3
+        return subset_x, subset_y
+
+    def test_matched_hour_mean_difference_has_no_value_field_to_attach_through(
+        self,
+    ) -> None:
+        station = Station("A")
+        subset_x, subset_y = self._two_equal_sized_but_different_subsets()
+        result_from_x = matched_hour_mean_difference(
+            subset_x, station=station, scale=Scale.JJAS
+        )
+        value_from_x = result_from_x.mean_difference_mm_per_h
+
+        with pytest.raises(TypeError, match="mean_difference_mm_per_h"):
+            MatchedHourMeanDifference(
+                station=station,
+                scale=Scale.JJAS,
+                subset=subset_y,  # a DIFFERENT, equal-sized population
+                mean_difference_mm_per_h=value_from_x,  # type: ignore[call-arg]
+            )
+
+    def test_wet_hour_conditional_intensity_bias_has_no_value_field_to_attach_through(
+        self,
+    ) -> None:
+        station = Station("A")
+        subset_x, subset_y = self._two_equal_sized_but_different_subsets()
+        result_from_x = wet_hour_conditional_intensity_bias(
+            subset_x, station=station, scale=Scale.JJAS
+        )
+        value_from_x = result_from_x.mean_intensity_bias_mm_per_h
+
+        with pytest.raises(TypeError, match="mean_intensity_bias_mm_per_h"):
+            WetHourConditionalIntensityBias(
+                station=station,
+                scale=Scale.JJAS,
+                subset=subset_y,  # a DIFFERENT, equal-sized population
+                mean_intensity_bias_mm_per_h=value_from_x,  # type: ignore[call-arg]
+            )
+
+    def test_conditional_accumulated_difference_has_no_periods_field_to_attach_through(
+        self,
+    ) -> None:
+        station = Station("A")
+        subset_x, subset_y = self._two_equal_sized_but_different_subsets()
+        result_from_x = conditional_accumulated_difference(
+            subset_x, station=station, scale=Scale.JJAS
+        )
+        periods_from_x = result_from_x.periods
+
+        with pytest.raises(TypeError, match="periods"):
+            ConditionalAccumulatedDifference(
+                station=station,
+                scale=Scale.JJAS,
+                subset=subset_y,  # a DIFFERENT, equal-sized population
+                periods=periods_from_x,  # type: ignore[call-arg]
+            )
+
+
+class TestCategoricalScoresRetentionConditionalityLabel:
+    """Finding 2 (Plan 184 T3 independent review, 2026-08-21) — Rule 1's
+    conditional-on-retention label must travel with `CategoricalScores`
+    (POD/FAR/CSI are only reportable conditional-on-retention under the
+    MNAR mask) but must NOT be attached to the two estimands Rule 1 says
+    ARE well-defined under the mask, since that would over-caveat an
+    already-well-defined result."""
+
+    @staticmethod
+    def _daily_accumulated() -> ConditionalAccumulatedDifference:
+        station = Station("A")
+        start = datetime(2024, 7, 1, 0)
+        n_hours = 48
+        gauge = [1.0] * 24 + [0.0] * 24
+        era5 = [1.0] * 24 + [0.0] * 24
+        timestamps = [start + timedelta(hours=i) for i in range(n_hours)]
+        frame = _paired_frame(
+            [
+                {
+                    "timestamp": timestamps[i],
+                    "gauge_value_mm": gauge[i],
+                    "era5_nearest_mm_per_h": era5[i],
+                }
+                for i in range(n_hours)
+            ]
+        )
+        paired = PairedSeries(station=station, frame=frame)
+        daily = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
+        return conditional_accumulated_difference(
+            daily, station=station, scale=Scale.DAILY
+        )
+
+    def test_categorical_scores_carries_the_conditional_on_retention_label(
+        self,
+    ) -> None:
+        scores = categorical_scores(self._daily_accumulated(), params=DEFAULT_PARAMS)
+
+        assert (
+            scores.retention_conditionality
+            is RetentionConditionality.CONDITIONAL_ON_RETENTION
+        )
+
+    def test_mask_well_defined_estimands_do_not_carry_the_label(self) -> None:
+        station = Station("A")
+        paired = _make_paired_series(
+            station,
+            datetime(2024, 7, 1, 0),
+            3,
+            gauge=[2.0, 4.0, 0.0],
+            era5=[1.0, 1.0, 0.0],
+        )
+        jjas = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+
+        mean_result = matched_hour_mean_difference(
+            jjas, station=station, scale=Scale.JJAS
+        )
+        wet_result = wet_hour_conditional_intensity_bias(
+            wet_jjas, station=station, scale=Scale.JJAS
+        )
+
+        assert not hasattr(mean_result, "retention_conditionality")
+        assert not hasattr(wet_result, "retention_conditionality")
 
 
 class TestSubsetSchemaGuardStillAppliesThroughThisModule:

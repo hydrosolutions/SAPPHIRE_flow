@@ -6,18 +6,30 @@ categorical scores, computed ONLY from T1's typed subsets
 (`ma6_pairs.PairedRetainedSubset`) — never from a bare `pl.DataFrame` and
 never with an `n` supplied independently of that subset.
 
-**Why every result type stores the `PairedRetainedSubset` object itself,
-not a bare `n: int`.** Phase 1 of this track found the same defect four
-times: two means formed over populations that were not the same (D2's
-"identical masking on both sides" rule broken four separate ways). The
-structural answer used throughout `ma6_pairs.py` is that `n` is never a
-field a caller can set independently — it is always read off the frame
-that actually produced the statistic. This module extends that discipline:
-`MatchedHourMeanDifference`, `WetHourConditionalIntensityBias` and
-`ConditionalAccumulatedDifference` all store their `PairedRetainedSubset`
-(or, for the latter, the per-period partition of one), and `__post_init__`
-rejects anything that is not that type. There is no constructor path that
-accepts a bare integer as "the n".
+**Why every result type stores ONLY the `PairedRetainedSubset` object
+itself — never the reported value, never `n`, never `periods`, as
+independently-suppliable constructor fields.** Phase 1 of this track found
+the same defect four times: two means formed over populations that were
+not the same (D2's "identical masking on both sides" rule broken four
+separate ways). Phase 2's T3 independent review (2026-08-21) found it a
+FIFTH time, inside this very module: `mean_difference_mm_per_h`,
+`mean_intensity_bias_mm_per_h` and `periods` were plain constructor
+fields, so a value (or bucket partition) computed from one subset could be
+attached to a DIFFERENT, equal-sized subset and pass every existing check
+(type, scale, row-count reconciliation) undetected — the reconciliation
+check only ever compared *counts*, never *identity*. The structural fix —
+the same move `ma6_pairs.py` already uses for `n_common_retained` — is
+that none of these are stored fields at all: `MatchedHourMeanDifference.
+mean_difference_mm_per_h`, `WetHourConditionalIntensityBias.
+mean_intensity_bias_mm_per_h` and `ConditionalAccumulatedDifference.
+periods` are all `@property`s computed live from `self.subset` (and, for
+`periods`, `self.scale`) via the SAME construction path every time. There
+is no constructor argument through which a caller could attach a value or
+partition computed elsewhere — not "checked and rejected", genuinely
+absent from the signature. `n` was already such a property (T1's own
+discipline); this extends it to the statistic itself.
+`__post_init__` still rejects any `subset` that is not a real
+`PairedRetainedSubset`.
 
 **Scope decision, stated explicitly (not implied by the plan):** D1's
 "matched-hour mean difference" and "wet-hour conditional intensity bias"
@@ -58,7 +70,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
@@ -102,11 +114,14 @@ class CategoricalGrainRefusedError(ValueError):
 
 
 class AccumulatedDifferenceReconciliationError(ValueError):
-    """`ConditionalAccumulatedDifference.periods` must partition its own
-    `subset` exactly — every retained hour accounted for in exactly one
-    period, none invented, none dropped. A mismatch means the periods were
-    built from a DIFFERENT population than the subset the result claims to
-    carry (the exact defect D2 exists to forbid, one level up)."""
+    """Internal defence-in-depth only (Finding 1 follow-up, Plan 184 T3
+    independent review, 2026-08-21): `ConditionalAccumulatedDifference.
+    periods` is now a `@property` computed by `_compute_periods` from
+    `subset` itself (see the module docstring), so no caller-facing path
+    can attach a mismatched `periods` any more — the partition is
+    structurally guaranteed to sum to `subset.n_common_retained`. This
+    error guards `_compute_periods`'s own bucketing arithmetic, not a
+    caller input; it is not expected to ever fire in practice."""
 
 
 class Scale(StrEnum):
@@ -204,12 +219,17 @@ def wet_scale_subset(
 class MatchedHourMeanDifference:
     """D1's first estimand: mean(gauge - ERA5) over every commonly-
     retained hour in `subset`, wet and dry alike. `n` is `subset`'s own —
-    never a series-level or gauge-only count."""
+    never a series-level or gauge-only count.
+
+    `mean_difference_mm_per_h` is a `@property` computed live from
+    `self.subset` — NOT a constructor field (Finding 1, Plan 184 T3
+    independent review, 2026-08-21) — so there is no argument through
+    which a caller could attach a mean computed from a different subset,
+    even one of the same size."""
 
     station: Station
     scale: Scale
     subset: PairedRetainedSubset
-    mean_difference_mm_per_h: float
 
     def __post_init__(self) -> None:
         # Dataclasses do not enforce field types at runtime — this guard
@@ -234,6 +254,14 @@ class MatchedHourMeanDifference:
     def n(self) -> int:
         return self.subset.n_common_retained
 
+    @property
+    def mean_difference_mm_per_h(self) -> float:
+        return as_float(
+            self.subset.frame.select(
+                (pl.col("gauge_value_mm") - pl.col("era5_nearest_mm_per_h")).mean()
+            ).item()
+        )
+
 
 def matched_hour_mean_difference(
     paired_subset: PairedRetainedSubset, *, station: Station, scale: Scale
@@ -243,17 +271,7 @@ def matched_hour_mean_difference(
             f"{station!r} at {scale}: zero commonly-retained hours — no "
             "matched-hour mean difference is computable"
         )
-    diff = as_float(
-        paired_subset.frame.select(
-            (pl.col("gauge_value_mm") - pl.col("era5_nearest_mm_per_h")).mean()
-        ).item()
-    )
-    return MatchedHourMeanDifference(
-        station=station,
-        scale=scale,
-        subset=paired_subset,
-        mean_difference_mm_per_h=diff,
-    )
+    return MatchedHourMeanDifference(station=station, scale=scale, subset=paired_subset)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -267,7 +285,6 @@ class WetHourConditionalIntensityBias:
     station: Station
     scale: Scale
     subset: PairedRetainedSubset
-    mean_intensity_bias_mm_per_h: float
 
     def __post_init__(self) -> None:
         # Dataclasses do not enforce field types at runtime — this guard
@@ -292,6 +309,14 @@ class WetHourConditionalIntensityBias:
     def n(self) -> int:
         return self.subset.n_common_retained
 
+    @property
+    def mean_intensity_bias_mm_per_h(self) -> float:
+        return as_float(
+            self.subset.frame.select(
+                (pl.col("gauge_value_mm") - pl.col("era5_nearest_mm_per_h")).mean()
+            ).item()
+        )
+
 
 def wet_hour_conditional_intensity_bias(
     wet_paired_subset: PairedRetainedSubset, *, station: Station, scale: Scale
@@ -301,16 +326,8 @@ def wet_hour_conditional_intensity_bias(
             f"{station!r} at {scale}: zero gauge-wet commonly-retained hours "
             "— no wet-hour conditional intensity bias is computable"
         )
-    diff = as_float(
-        wet_paired_subset.frame.select(
-            (pl.col("gauge_value_mm") - pl.col("era5_nearest_mm_per_h")).mean()
-        ).item()
-    )
     return WetHourConditionalIntensityBias(
-        station=station,
-        scale=scale,
-        subset=wet_paired_subset,
-        mean_intensity_bias_mm_per_h=diff,
+        station=station, scale=scale, subset=wet_paired_subset
     )
 
 
@@ -341,17 +358,75 @@ def _bucket_label_expr(scale: Scale) -> pl.Expr:
     )
 
 
+def _compute_periods(
+    subset: PairedRetainedSubset, scale: Scale
+) -> tuple[PeriodAccumulation, ...]:
+    """The ONLY place `ConditionalAccumulatedDifference.periods` is
+    produced — always grouped from `subset`'s own frame, inside the same
+    construction path every time (Finding 1, Plan 184 T3 independent
+    review, 2026-08-21). `total_period_hours` is asserted against
+    `subset.n_common_retained` as defence-in-depth against a bug in this
+    function's own bucketing arithmetic — not against a caller, since a
+    caller has no way to reach this function with anything but `subset`'s
+    own frame."""
+    if scale in _GRAIN_SCALES:
+        grouped = (
+            subset.frame.with_columns(_bucket_label_expr(scale).alias("_period_label"))
+            .group_by("_period_label")
+            .agg(
+                pl.len().alias("n_hours"),
+                pl.col("gauge_value_mm").sum().alias("gauge_sum_mm"),
+                pl.col("era5_nearest_mm_per_h").sum().alias("era5_sum_mm"),
+            )
+            .sort("_period_label")
+        )
+        periods = tuple(
+            PeriodAccumulation(
+                period_label=str(row["_period_label"]),
+                n_hours=as_int(row["n_hours"]),
+                gauge_sum_mm=as_float(row["gauge_sum_mm"]),
+                era5_sum_mm=as_float(row["era5_sum_mm"]),
+            )
+            for row in grouped.iter_rows(named=True)
+        )
+    else:
+        row = subset.frame.select(
+            pl.len().alias("n_hours"),
+            pl.col("gauge_value_mm").sum().alias("gauge_sum_mm"),
+            pl.col("era5_nearest_mm_per_h").sum().alias("era5_sum_mm"),
+        ).row(0, named=True)
+        periods = (
+            PeriodAccumulation(
+                period_label=str(scale),
+                n_hours=as_int(row["n_hours"]),
+                gauge_sum_mm=as_float(row["gauge_sum_mm"]),
+                era5_sum_mm=as_float(row["era5_sum_mm"]),
+            ),
+        )
+    total_period_hours = sum(period.n_hours for period in periods)
+    if total_period_hours != subset.n_common_retained:
+        raise AccumulatedDifferenceReconciliationError(
+            f"at {scale}: periods sum to {total_period_hours} hours, but "
+            f"subset carries {subset.n_common_retained} — this function's "
+            "own bucketing arithmetic does not partition subset's retained "
+            "hours (internal bug, not a caller error)"
+        )
+    return periods
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ConditionalAccumulatedDifference:
-    """D1's second estimand. `periods` must EXACTLY partition `subset`'s
-    own retained hours — `__post_init__` reconciles `sum(n_hours)` against
-    `subset.n_common_retained` and raises rather than accept a `periods`
-    tuple built from a different population than `subset` claims."""
+    """D1's second estimand. `periods` is a `@property` computed live from
+    `self.subset` and `self.scale` via `_compute_periods` — NOT a
+    constructor field (Finding 1, Plan 184 T3 independent review,
+    2026-08-21) — so there is no argument through which a caller could
+    attach a periods tuple built from a different population, even one of
+    the same total size. `periods` therefore always partitions `subset`'s
+    own retained hours exactly, by construction."""
 
     station: Station
     scale: Scale
     subset: PairedRetainedSubset
-    periods: tuple[PeriodAccumulation, ...]
 
     def __post_init__(self) -> None:
         # Dataclasses do not enforce field types at runtime — this guard
@@ -366,18 +441,14 @@ class ConditionalAccumulatedDifference:
                 "ConditionalAccumulatedDifference.subset must be a real "
                 f"PairedRetainedSubset, got {type(self.subset)}"
             )
-        total_period_hours = sum(period.n_hours for period in self.periods)
-        if total_period_hours != self.subset.n_common_retained:
-            raise AccumulatedDifferenceReconciliationError(
-                f"{self.station!r} at {self.scale}: periods sum to "
-                f"{total_period_hours} hours, but subset carries "
-                f"{self.subset.n_common_retained} — periods do not "
-                "partition this subset's own retained hours"
-            )
 
     @property
     def n(self) -> int:
         return self.subset.n_common_retained
+
+    @property
+    def periods(self) -> tuple[PeriodAccumulation, ...]:
+        return _compute_periods(self.subset, self.scale)
 
     @property
     def n_periods(self) -> int:
@@ -405,45 +476,26 @@ def conditional_accumulated_difference(
             f"{station!r} at {scale}: zero commonly-retained hours — no "
             "conditional accumulated difference is computable"
         )
-    if scale in _GRAIN_SCALES:
-        grouped = (
-            paired_subset.frame.with_columns(
-                _bucket_label_expr(scale).alias("_period_label")
-            )
-            .group_by("_period_label")
-            .agg(
-                pl.len().alias("n_hours"),
-                pl.col("gauge_value_mm").sum().alias("gauge_sum_mm"),
-                pl.col("era5_nearest_mm_per_h").sum().alias("era5_sum_mm"),
-            )
-            .sort("_period_label")
-        )
-        periods = tuple(
-            PeriodAccumulation(
-                period_label=str(row["_period_label"]),
-                n_hours=as_int(row["n_hours"]),
-                gauge_sum_mm=as_float(row["gauge_sum_mm"]),
-                era5_sum_mm=as_float(row["era5_sum_mm"]),
-            )
-            for row in grouped.iter_rows(named=True)
-        )
-    else:
-        row = paired_subset.frame.select(
-            pl.len().alias("n_hours"),
-            pl.col("gauge_value_mm").sum().alias("gauge_sum_mm"),
-            pl.col("era5_nearest_mm_per_h").sum().alias("era5_sum_mm"),
-        ).row(0, named=True)
-        periods = (
-            PeriodAccumulation(
-                period_label=str(scale),
-                n_hours=as_int(row["n_hours"]),
-                gauge_sum_mm=as_float(row["gauge_sum_mm"]),
-                era5_sum_mm=as_float(row["era5_sum_mm"]),
-            ),
-        )
     return ConditionalAccumulatedDifference(
-        station=station, scale=scale, subset=paired_subset, periods=periods
+        station=station, scale=scale, subset=paired_subset
     )
+
+
+class RetentionConditionality(StrEnum):
+    """Rule 1 (`docs/design/dhm-precipitation-milestones.md`): POD/FAR/CSI
+    (and the counts they are built from) are reportable ONLY as
+    conditional-on-retention estimands — under the MNAR mask POD/CSI are
+    inflated and FAR biased low. `CategoricalScores.retention_conditionality`
+    carries this label as a `ClassVar` (Finding 2, Plan 184 T3 independent
+    review, 2026-08-21) — not a per-instance field a caller could omit or
+    swap, so it travels with every `CategoricalScores` value and cannot be
+    dropped by a downstream renderer (T6). The two estimands Rule 1 says
+    ARE well-defined under the mask (`MatchedHourMeanDifference`,
+    `WetHourConditionalIntensityBias`) do NOT carry this marker at all —
+    giving them the same label would over-caveat an already-well-defined
+    result."""
+
+    CONDITIONAL_ON_RETENTION = "CONDITIONAL_ON_RETENTION"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -452,7 +504,11 @@ class CategoricalScores:
     jointly-valid periods the contingency table rests on (every period in
     `accumulated.periods` has >=1 jointly-retained hour by construction —
     a groupby never emits an empty bucket); `n_hours` is the underlying
-    subset's own retained-hour count."""
+    subset's own retained-hour count.
+
+    `retention_conditionality` is Rule 1's conditional-on-retention marker
+    (see `RetentionConditionality`) — always
+    `CONDITIONAL_ON_RETENTION` for every instance of this type."""
 
     station: Station
     scale: Scale
@@ -461,6 +517,10 @@ class CategoricalScores:
     pod: float
     far: float
     csi: float
+
+    retention_conditionality: ClassVar[RetentionConditionality] = (
+        RetentionConditionality.CONDITIONAL_ON_RETENTION
+    )
 
 
 def categorical_scores(
