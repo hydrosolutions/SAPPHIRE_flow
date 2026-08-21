@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-19
 plan: 189
 title: Two small follow-ons from Plan 176's first night — audit window edge, and D1's poll bound
@@ -12,6 +12,18 @@ supersedes: []
 # Plan 189 — audit window edge + poll bound
 
 ## Status
+
+
+**COMPLETE 2026-08-21.** Merged as **PR #193 (`d1f0837`, 2026-08-19)**. Both single-parameter
+corrections are live and verified on the mini 2026-08-21:
+
+- **T1** — the trailing-edge exclusion is in the audit's own output as `skipped_too_recent_slots`
+  (`src/sapphire_flow/cli/bafu_observation_audit.py`).
+- **T2** — the deployed `collect-bafu-observations` schedule is exactly the specified list:
+  `1,3,6,8,11,13,16,18,21,23,26,28,31,33,36,38,41,43,46,48,51,53,56,58 * * * *` — 24 runs/hour, gaps
+  alternating 2 and 3 min, no minute divisible by 5.
+
+*The original READY narrative is retained below as the design record.*
 
 **READY** (owner flip 2026-08-19). Both items come from **measurements**, not review opinion: Plan 176's first
 overnight run (`docs/decisions/bafu-lindas-rate-limit.md` § First overnight run) and Plan 176 T7's

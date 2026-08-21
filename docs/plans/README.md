@@ -100,8 +100,18 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
   **HARD prod prerequisite.** Depends on 046.
 - **046** — Mac Mini staging deployment + edge-case suite — `IN_PROGRESS`.
-- **058** — BAFU LINDAS archive via operational collection — `SUPERSEDED by 136`.
-- **136** — BAFU LINDAS observation archive collector (quarantined, all gauges) — `READY`.
+- **058** — BAFU LINDAS archive via operational collection — `SUPERSEDED by 136` (archived).
+- **136 / 175 / 176 / 186 / 189** — **BAFU LINDAS observation archiving — COMPLETE, ARCHIVED
+  (2026-08-21).** The whole family is merged and running on the mac-mini in image `0.1.775`:
+  **136** the quarantined all-gauge archive collector (#121, `ea33394`), **175** LINDAS rate-limit
+  resilience (#172, `9c96792`), **176** the 10-minute grid (#181, `afbf7e2`), **186** whole-graph
+  operational ingest resolving 175's deferred D5 (#188, `4ae7cf8`), **189** audit edge + poll bound
+  (#193, `d1f0837`). Live evidence 2026-08-21: **233 gauges × 495 rows per 10-minute slot, 700
+  snapshots / 81 MB**, and the on-demand T8 audit measures completeness at **95.8 %** (322/336)
+  post-176 against **16.3 %** (94/576) on the old hourly cadence. Remaining gaps are BAFU publish
+  stalls upstream, not collector faults. The archive stays quarantined — no gauge is onboarded, and
+  nothing here reaches the `observations` table. See
+  [archive/136-bafu-lindas-observation-archive-collector.md](archive/136-bafu-lindas-observation-archive-collector.md).
 - **091** — Mac-mini NWP-on data-collection runbook — `DRAFT` — depends on 046.
 - **094** — Cap onboarding/hindcast window to actual data range — `DRAFT`.
 - **083** — Human-readable `station_code` in structured logs — `DRAFT`.
@@ -320,7 +330,7 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (88 entries).
+See [archive/](archive/) for completed and archived plans (95 entries).
 
 ## Superseded / stranded branches (recorded 2026-08-17)
 

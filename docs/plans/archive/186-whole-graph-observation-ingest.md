@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-18
 plan: 186
 title: Whole-graph observation ingest — one request for the network, not one per station
@@ -12,6 +12,21 @@ supersedes: []
 # Plan 186 — Whole-graph observation ingest
 
 ## Status
+
+
+**COMPLETE 2026-08-21.** Merged as **PR #188 (`4ae7cf8`, 2026-08-18)** with fixer round `63d936d`;
+deployed in image `0.1.775`. **Resolves Plan 175 D5.**
+
+`HydroScraperAdapter` now issues one whole-graph SPARQL request per call and filters to onboarded
+stations locally (`adapters/hydro_scraper.py:106`, `build_whole_graph_query`). The archive collector and
+its quarantine were not touched, as the plan required — only the query layer is shared.
+
+**Deployed, not yet exercised at scale.** The mac-mini has **2 onboarded stations**, so the whole-graph
+fetch currently filters the network down to 2. That is this plan's success condition rather than a
+defect: the burst-3 structural ceiling is gone, and adding stations is now a config/onboarding task, not
+an adapter one.
+
+*The original READY narrative is retained below as the design record.*
 
 **READY** (owner flip 2026-08-18). Resolves **Plan 175 D5**, deferred there by owner decision and documented in
 `docs/decisions/bafu-lindas-rate-limit.md` rather than fixed.

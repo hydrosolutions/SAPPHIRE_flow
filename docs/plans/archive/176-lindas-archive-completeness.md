@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-17
 plan: 176
 title: LINDAS archive completeness — capture the 10-minute grid we have been sampling hourly
@@ -12,6 +12,29 @@ supersedes: []
 # Plan 176 — LINDAS archive completeness
 
 ## Status
+
+
+**COMPLETE 2026-08-21.** Merged as **PR #181 (`afbf7e2`, 2026-08-18)** and deployed the same day —
+visible in the archive as the cadence step-change on 08-18 (24 snapshots/day before, 143 the day after).
+
+**Acceptance evidence — the before/after this plan asked for**, from the T8 audit run live on the mini
+2026-08-21 (`python -m sapphire_flow.cli.bafu_observation_audit`):
+
+| Window | Cadence | Slots present / expected | Completeness |
+|---|---|---|---|
+| 2026-08-13 → 08-17 | hourly (pre-176) | 94 / 576 | **16.3 %** |
+| 2026-08-19 → 08-21T08:00Z | 10-minute grid (post-176) | 322 / 336 | **95.8 %** |
+
+16.3 % is the predicted ~1-in-6. **The 14 missing slots in the "after" window are upstream, not
+collector faults:** 11 of them fall inside 2026-08-20 17:10–19:20Z, matching a BAFU publish stall
+recorded independently in `pipeline_health` — 35 `critical` / `stale_measurement_time` rows in 48 h,
+each with a *healthy* 495-row fetch and a frozen upstream `measurementTime`. As this plan and Plan 189
+both state, faster polling cannot capture a state that never existed upstream.
+
+T8 shipped as an **on-demand CLI** (`src/sapphire_flow/cli/bafu_observation_audit.py`), deliberately not
+scheduled and not alerting — its absence from `pipeline_health` is the design, not a gap.
+
+*The original READY narrative is retained below as the design record.*
 
 **READY** (owner flip 2026-08-18). Split out of Plan 175 after review escalation — see § Why this is its own plan.
 All measurements below are live, from the development machine on 2026-08-17.

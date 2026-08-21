@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-17
 plan: 175
 title: LINDAS rate-limit resilience — stop a 3-request burst ceiling from looking like a dead collector
@@ -12,6 +12,22 @@ supersedes: []
 # Plan 175 — LINDAS rate-limit resilience
 
 ## Status
+
+
+**COMPLETE 2026-08-21.** Merged as **PR #172 (`9c96792`, 2026-08-18)**; deployed on the mac-mini in
+image `0.1.775`.
+
+The shared limiter lives at `src/sapphire_flow/adapters/lindas_rate_limiter.py` and is consumed by both
+LINDAS callers (`adapters/bafu_observation.py`, `adapters/hydro_scraper.py`).
+
+**Live evidence (2026-08-21, 48 h window).** `observation_ingest_fetch` — **576 checks, all `ok`, zero
+`stations_fetch_failed`**. The `[SAPPHIRE staging] BAFU observation collector DEGRADED` alert storm that
+motivated the plan has not recurred.
+
+**D5 is no longer deferred.** The per-station fan-out's scaling ceiling, left documented-but-unsolved
+here by owner decision, was resolved by [186](186-whole-graph-observation-ingest.md).
+
+*The original READY narrative is retained below as the design record.*
 
 **READY** (owner flip 2026-08-17). Root cause **measured, not inferred** — the reproduction and the rate-limit
 characterisation in § Evidence were run live against `lindas.admin.ch/query` from the development
