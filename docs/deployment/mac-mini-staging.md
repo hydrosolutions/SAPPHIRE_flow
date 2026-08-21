@@ -366,12 +366,25 @@ curl -s http://localhost:8000/api/v1/health | jq .
 # {"status": "ok", "prefect_status": "ok", "checked_at": "..."}
 
 launchctl list | grep hydrosolutions
-# ch.hydrosolutions.sapphire          0  -
-# ch.hydrosolutions.sapphire-watchdog 0  -
+# PID  Status  Label
+# -    0       ch.hydrosolutions.sapphire
+# -    0       ch.hydrosolutions.sapphire-watchdog
+# -    0       ch.hydrosolutions.sapphire-docker-prune
 
 docker compose -f docker-compose.yml -f docker-compose.macmini.yml ps
 # all services healthy
 ```
+
+The second column above is the **last exit status**, not "is running
+now" — a `KeepAlive` agent can show `running` in `launchctl print` while
+this column still holds a *previous* invocation's non-zero code. `0`
+means either a clean last run or (for a periodic agent) that it has
+simply not fired yet — `launchctl` does not distinguish the two.
+Non-zero (including a negative value, the negation of a stopping signal)
+means the last run failed and is worth investigating even while the
+agent is currently running. The watchdog (Plan 195) now checks this
+automatically for every installer-managed agent except itself — see
+"Watchdog isn't alerting" below for what it reports.
 
 From a team laptop on the office LAN, via SSH tunnel (see below):
 
@@ -484,13 +497,40 @@ Plan 100 operator visibility:
 
 ### "Docker Desktop did not start within 240s" in `sapphire-flow.log`
 
-Docker Desktop's VirtioFS layer occasionally hangs on cold boot.
+**This line is not proof of a VirtioFS cold-boot hang** — that was this
+doc's own pre-written diagnosis, and it absorbed the alarm for 119 days
+(2026-04-23 to 2026-08-20) while `ch.hydrosolutions.sapphire` failed on
+*every single run* (`runs = 768`, `last exit code = 1`) for an unrelated
+reason: under launchd's default `PATH=/usr/bin:/bin:/usr/sbin:/sbin`,
+`docker info` is not found (`docker` is not on that `PATH`) and returns
+exit 127, so the 240 s wait always expires regardless of whether Docker
+Desktop is actually running. Nothing before Plan 195 checked the agent's
+last exit status, so this went unnoticed behind a green-looking
+`docker compose ps`.
+
+Diagnose before assuming either cause:
+
+```bash
+launchctl list | grep ch.hydrosolutions.sapphire$
+# second column non-zero -> the agent's last run failed; see below
+tail -50 ~/Library/Logs/sapphire-flow.log
+# "docker: command not found" or exit 127 -> the PATH issue, not VirtioFS
+```
+
+If Docker Desktop is genuinely not running yet (the VirtioFS case):
 
 1. `open -a Docker` from Terminal (or the Dock icon).
 2. Wait for the green "running" indicator.
 3. `launchctl kickstart -k gui/$(id -u)/ch.hydrosolutions.sapphire`
    to retry the main agent immediately (otherwise it retries after
    the 60 s throttle).
+
+If `docker` is simply missing from launchd's `PATH`, fixing
+`start-sapphire.sh`'s `PATH` is a separate, out-of-scope two-line PR —
+report it rather than repeating the VirtioFS steps above, which will not
+help. Either way, the watchdog (Plan 195) now alerts once when this
+agent's last exit status goes non-zero and once when it recovers — do
+not rely on this doc section alone to notice the failure.
 
 ### USB disk not detected / not verified
 
@@ -570,6 +610,16 @@ launchctl print gui/$(id -u)/ch.hydrosolutions.sapphire | head -40
 tail -50 ~/Library/Logs/sapphire-flow.log
 ```
 
+`launchctl list`'s second column is the label's **last exit status**
+(`0` = last run succeeded or has not yet run; non-zero, including
+negative — the negation of a stopping signal — = last run failed). A
+missing row for a label that should be loaded is worse than a non-zero
+status: it means the agent was booted out entirely. `launchctl print`,
+used above for its human-readable detail, is explicitly NOT a documented
+format (`launchctl(1)`: "Do NOT rely on the structure or information
+emitted for ANY reason") — the watchdog (Plan 195) parses `list` instead,
+never `print`.
+
 To force a reload:
 
 ```bash
@@ -601,6 +651,25 @@ docker compose -f docker-compose.yml -f docker-compose.macmini.yml \
     stop api
 # wait 5 min for the next watchdog tick; Slack alert should arrive
 ```
+
+**Launchd agent health (Plan 195):** every tick also checks the last
+exit status of each installer-managed agent — currently
+`ch.hydrosolutions.sapphire` and `ch.hydrosolutions.sapphire-docker-prune`
+(the watchdog excludes itself; Plan 163's dead-man switch covers that).
+Look for `watchdog.launchd_probe_completed` (per-label verdict:
+`ok`/`failing`/`absent`/`unknown`) every tick, and
+`watchdog.launchd_agent_failing_alert` /
+`watchdog.launchd_agent_recovery_alert` on a transition — exactly once
+each way, not every tick, even while an agent stays broken. An agent
+that has been **booted out of launchd entirely** (`absent`) alerts too,
+same as a non-zero exit status — an unloaded agent is not silence, it is
+the loudest version of this failure. If `launchctl` itself cannot be read
+(missing, timed out, or unparseable output — 5 s timeout,
+`LAUNCHD_PROBE_TIMEOUT_S`), look for
+`watchdog.launchd_probe_unreadable_alert` /
+`watchdog.launchd_probe_recovery_alert` instead — a separate,
+separately-latched condition from any individual agent's status, so a
+dead probe cannot look like "no agents failing".
 
 ### Dead-man's switch isn't pinging (Plan 163)
 
