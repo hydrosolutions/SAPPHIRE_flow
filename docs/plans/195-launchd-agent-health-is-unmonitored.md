@@ -25,7 +25,12 @@ seam name was corrected — the one I cited did not exist.
 (fixed by giving probe-level unreadability its own latch), D2's "covered automatically" was not
 implementable (now an explicit constant plus a parity test), "finite timeout" was too weak (now
 `5.0 s`), and a failing-label set alone would lose an alert whose Slack post failed (now per-label
-pending delivery). Details inline.
+pending delivery).
+
+**Round 3 (2026-08-21)** returned **0 blockers** and confirmed all six round-2 findings resolved and
+every cited line still matching. Two majors folded: pending payloads must be recomputed from the
+current verdict rather than replayed (else a recovery is lost), and the red-first list did not lock
+ABSENT-opens-an-incident or `FAILING → OK`. Details inline.
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT ON THIS PLAN AND ON ITS REVIEW
 
@@ -142,10 +147,17 @@ present.
   `backup_device_notification_pending` at `src/sapphire_flow/ops/watchdog.py:225-238`, retried at
   `:1172-1188`. With only a failing-label set, a Slack failure on the entry tick is followed by no
   transition next tick, so that alert is lost PERMANENTLY — the exact bug those fields exist to
-  prevent, reintroduced.)* Keep a per-label pending entry carrying the notification kind and the
-  status that produced it, so it remains retryable — including across a tick where that label probes
-  UNKNOWN, since the message content is already determined. A single scalar would drop one of two
-  simultaneous per-label transitions.
+  prevent, reintroduced.)* Keep a per-label pending entry so a failed post is retried; a single scalar
+  would drop one of two simultaneous per-label transitions.
+
+  **Pending is never ground truth about what to say now.** `_backup_notification_kind` is explicit
+  about this (`src/sapphire_flow/ops/watchdog.py:813-822`): the notification a tick owes is *"computed
+  fresh from the CURRENT condition every time — never by resending whatever kind happened to be
+  `pending`"*. So: an UNKNOWN tick **preserves** the stored payload (the condition has not been
+  observed to move), but a new **known, opposite** verdict **replaces** it with the current one.
+  Without that, a failure post that failed to deliver would be sent after the agent already recovered,
+  and the recovery notification would be lost — which is the exact reversal bug that rule exists to
+  prevent. The probe-level pending slot follows the same rule.
 
   Distinct from every existing condition: a failing agent is not a stale backup and not an unhealthy
   API.
@@ -205,8 +217,9 @@ A pure function from `launchctl list` output to a per-label verdict (`OK` / `FAI
 — so tests never shell out. The subprocess call carries `LAUNCHD_PROBE_TIMEOUT_S = 5.0`, declared
 beside the existing `*_TIMEOUT_S` constants.
 **Red-first:** a test asserting FAILING for real captured `launchctl list` output with a non-zero
-second column, OK for `0`, ABSENT for a label missing from the output, and UNKNOWN for unparseable
-output, must fail before the parser exists.
+second column — **including a negative one (`-15`, SIGTERM), so a `status > 0` implementation fails**
+— OK for `0`, ABSENT for a label missing from the output, and UNKNOWN for unparseable output, must
+fail before the parser exists.
 **Also test:** timeout, missing executable, and malformed output are each contained — the function
 returns UNKNOWN and does not raise — **and that the subprocess call actually receives the 5.0 s
 timeout**, not merely that a simulated timeout is caught.
@@ -225,6 +238,13 @@ tolerating the new key being absent from an existing state file (`watchdog.py:24
 - **A failed Slack post on the entry tick is retried on the next tick** and cleared once delivered —
   including when the intervening verdict is UNKNOWN. Two simultaneous per-label transitions both
   survive a delivery failure.
+- **ABSENT opens an incident**, not merely a parse result — an implementation that alerts only on
+  `FAILING(status)` would otherwise pass every other test here while an unloaded agent stays
+  invisible, which is this plan's headline failure mode.
+- **`FAILING → OK` emits exactly one recovery.**
+- **Reversal before retry:** a pending failure whose post failed, followed by a tick where that label
+  is OK, sends the RECOVERY — not the stale failure. Same for the probe-level slot.
+- **A failed post of the probe-unreadable notification is itself retried.**
 - **Probe unreadable: exactly one alert on the first unreadable tick, silence while it persists, and
   exactly one recovery when it becomes readable again** — with per-label verdicts unchanged
   throughout.
