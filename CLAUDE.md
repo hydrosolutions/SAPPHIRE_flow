@@ -248,19 +248,27 @@ Before committing code, follow this exact sequence:
 1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/sapphire_flow/__init__.py`
 2. Stage version files alongside code changes
 3. Commit with a conventional commit message
-4. **Do NOT tag on a feature branch** — tagging happens once, on `main`, after the PR merges (see below).
+4. **Do NOT tag on a feature branch** — tagging happens automatically, on `main`, after the PR merges (see below).
 
 **Rules:**
 - **Patch bumps**: Automatic with every commit. Claude MUST do this.
 - **Minor/major bumps**: Only when the user explicitly requests. Use `uv run bump-my-version bump minor` or `major`.
 - **Never let bump-my-version create its own commit** — config has `commit = false`. Fold version changes into the real commit.
-- **Tag on `main` after merge — NEVER on a feature branch.** *(Changed 2026-08-13.)* Patch versions are a **global
-  sequence**, but every worktree shares one `.git` and therefore one tag namespace, while each branch's
-  `bump-my-version` computes the next patch from its **own** `pyproject.toml` — which cannot see what other branches
-  have already tagged. With several sessions active this collides routinely: `v0.1.692`, `v0.1.697` and `v0.1.712`
-  were each claimed twice in a single day, each costing a re-bump. **The version bump still happens in the commit**
-  (so every diff carries its version); only the `git tag` moves to post-merge on `main`, where the sequence is
-  authoritative. If two branches land the same number, fix it once on `main` rather than in each branch.
+- **Tagging on `main` is automatic — NEVER tag on a feature branch.** *(Changed 2026-08-21, Plan 197.)*
+  `.github/workflows/tag-main.yml` runs on every push to `main`, reads `${VERSION}` from `pyproject.toml`
+  at the pushed commit, and creates `v${VERSION}` if it does not already exist — replacing the manual
+  "tag after merge" step, which was skipped 5 times in 3 days. It is deliberately **not** gated on CI
+  (a tag identifies a version, it does not gate a release — see `docs/standards/cicd.md` § Image tagging
+  and versioning) and is idempotent (a docs-only push finds its version's tag already present and
+  no-ops). Patch versions are still a **global sequence**, but every worktree shares one `.git` and
+  therefore one tag namespace, while each branch's `bump-my-version` computes the next patch from its
+  **own** `pyproject.toml` — which cannot see what other branches have already tagged. With several
+  sessions active this collides routinely: `v0.1.692`, `v0.1.697` and `v0.1.712` were each claimed twice
+  in a single day, each costing a re-bump. **The version bump still happens in the commit** (so every
+  diff carries its version); the `git tag` is still created only on `main`, after merge — now by the
+  workflow rather than by hand. If two branches land the same number, fix it once on `main` rather than
+  in each branch. Gaps in the tag series (a version claimed by a branch that never reached `main`, or
+  two versions landing on the same commit) remain expected — see `docs/standards/cicd.md`.
 - **Prefer a separate clone over a shared worktree for long-running parallel work.** Worktrees share `.git`, so
   tags, refs and `core.bare` state are common to all of them; a clone gives an independent namespace.
 
