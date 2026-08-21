@@ -6,10 +6,13 @@ Two things, per the task spec:
 
 1. **The D14 lapse correction** (`lapse_correct_to_station_degc`) — the
    standard 6.5 degC/km rate, applied from MODEL OROGRAPHY down to STATION
-   elevation. Model orography sits ABOVE our high-altitude stations
+   elevation. Model orography sits ABOVE most of our high-altitude stations
    (Syangboche 3,700 m vs cell 4,447 m; Humde 3,401 m vs cell 4,700 m), so
-   the correction WARMS. Never fitted, never tuned (D14: "a rate derived
-   from Lukla and Namche could not then be validated at Lukla and Namche").
+   the correction usually WARMS — this is NOT universal: AWS4 Kala Patthar
+   sits ~19 m ABOVE its own cell's orography, so its correction COOLS (see
+   `lapse_correct_to_station_degc`'s docstring). Never fitted, never tuned
+   (D14: "a rate derived from Lukla and Namche could not then be validated
+   at Lukla and Namche").
 
 2. **The transect check** — Pyramid `AT` at AWS3 (2,660 m), AWS5 (3,570 m),
    AWS2 (4,260 m), AWS1 (5,035 m), AWS4 (5,600 m), 2020-2023 (the Pyramid
@@ -44,18 +47,32 @@ Pyramid station coordinates and elevations are the network's own published
 metadata (`data/dhm_precip/pyramid/README_.txt`), not derived from
 anything this track computes.
 
-**Timestamp convention (D14 amendment, 2026-08-21).** Pyramid's README does
-not declare period-beginning vs period-ending; this module ASSUMES
+**Timestamp convention (D14 amendment, 2026-08-21; corrected 2026-08-21,
+Finding A of the Plan 184 T2 round-2 review).** Pyramid's README does not
+declare period-beginning vs period-ending; this module ASSUMES
 period-ending (WMO/AWS-logger convention) and does not resolve it further,
-because the check is INVARIANT to it: a whole-hour relabelling moves an
-hour-of-day-equalised mean by exactly 0.000 degC (the same 24 hourly means
-are averaged, only their labels change). The Pyramid/ERA5-Land NPT-vs-UTC
-clock offset (M-A10's declared +-1.75h) is a SEPARATE question belonging to
-the diurnal-PHASE work (M-A7/M-A10), not to this magnitude check — this
-module never converts NPT to UTC, and the hour-of-day equalisation makes
-that conversion unnecessary here: both series are equal-weighted across
-their own 24 hour-of-day buckets before comparison, so a constant phase
-offset between the two clocks does not bias the grand mean.
+because the hour-of-day-equalised MEAN, taken alone, is INVARIANT to a
+whole-hour relabelling applied uniformly to an already-fixed population
+(the same 24 hourly means are averaged, only their labels change). That
+invariance does NOT extend to `pair_pyramid_and_era5`'s join itself:
+`pyramid_loader.load_pyramid_lvl1_at_csv` returns Pyramid timestamps as NPT
+wall-clock, UNCONVERTED, while the ERA5-Land grid series is UTC — joining
+those two label sets directly would pair each Pyramid hour to the WRONG
+ERA5 hour (a ~5h45m physical offset), silently selecting a different,
+uncorrelated population rather than measuring a clean lapse residual (the
+same D2 "masking one side measures selection, not weather" failure mode
+Finding 1 of the first review round fixed on the OTHER axis). `pair_pyramid_
+and_era5` therefore reconciles the clocks BEFORE joining: it shifts the
+ERA5 (UTC) timestamps forward by `params.coloc_dhm_utc_to_npt_hour_offset`
+whole hours (the SAME rounded 5h45m->6h convention `stats_coloc.
+dhm_utc_to_npt` already applies to DHM-vs-Pyramid pairing — reused here
+verbatim, never re-derived), landing them on NPT-labelled hours before the
+join. This reconciliation is ROUNDED, so a residual sub-hour misalignment
+remains — the same declared +-1.75h family M-A10 documents
+(`params.coloc_alignment_uncertainty_hours`) — this module does not
+re-derive that uncertainty, only inherits it. Neither this rounding nor the
+still-unresolved period-ending assumption is fully resolved by this check;
+both are bounded, not eliminated.
 
 Usage:
     uv run python scripts/dhm_precip/ma6_lapse_check.py --out <dir>
@@ -122,6 +139,7 @@ from scripts.dhm_precip.era5_request import (  # noqa: E402
     expected_grid_shape,
 )
 from scripts.dhm_precip.numeric import as_float  # noqa: E402
+from scripts.dhm_precip.params import DEFAULT_PARAMS  # noqa: E402
 from scripts.dhm_precip.pyramid_loader import (  # noqa: E402
     PyramidLoaderError,
     load_pyramid_lvl1_at_csv,
@@ -286,29 +304,85 @@ class TransectStationResult:
 
 
 def pair_pyramid_and_era5(
-    *, era5_grid: pl.DataFrame, pyramid_at: pl.DataFrame
+    *,
+    era5_grid: pl.DataFrame,
+    pyramid_at: pl.DataFrame,
+    utc_to_npt_hour_offset: int = DEFAULT_PARAMS.coloc_dhm_utc_to_npt_hour_offset,
 ) -> pl.DataFrame:
-    """D2 (Finding 1, Plan 184 T2 review) — inner-join Pyramid's own
-    retained `AT` population against the finite ERA5-Land grid series on
-    exact timestamp, BEFORE any averaging, mirroring `ma6_pairs.
-    pair_with_era5`'s established discipline exactly: an hour survives
-    only when BOTH sides already kept it. Hour-of-day equalisation alone
-    only equalises HOUR exposure; it does not equalise SEASONAL or DATE
-    exposure, so comparing an all-season ERA5 mean against whatever subset
-    Pyramid happened to record measures observation availability, not
-    clean lapse residuals (D2: "masking one side measures selection, not
-    weather"). Never converts NPT<->UTC (module docstring) — the join key
-    is each source's own raw timestamp value, unconverted.
+    """D2 (Finding 1, Plan 184 T2 round-1 review; clock fix Finding A,
+    round-2 review) — inner-join Pyramid's own retained `AT` population
+    against the finite ERA5-Land grid series on exact timestamp, BEFORE any
+    averaging, mirroring `ma6_pairs.pair_with_era5`'s established
+    discipline exactly: an hour survives only when BOTH sides already kept
+    it. Hour-of-day equalisation alone only equalises HOUR exposure; it
+    does not equalise SEASONAL or DATE exposure, so comparing an all-season
+    ERA5 mean against whatever subset Pyramid happened to record measures
+    observation availability, not clean lapse residuals (D2: "masking one
+    side measures selection, not weather").
+
+    `era5_grid` (UTC) and `pyramid_at` (NPT wall-clock, unconverted —
+    `pyramid_loader` module docstring) are NOT on the same clock, so a join
+    on raw labels would pair each side's DIFFERENT physical hour — the same
+    D2 failure mode, relocated to the clock axis rather than resolved. This
+    function therefore reconciles the clocks FIRST: `era5_grid`'s UTC
+    timestamps are shifted forward by `utc_to_npt_hour_offset` whole hours
+    (default `params.coloc_dhm_utc_to_npt_hour_offset`, the SAME rounded
+    5h45m->6h convention `stats_coloc.dhm_utc_to_npt` already applies to
+    DHM-vs-Pyramid pairing — reused verbatim, never re-derived, never a
+    hand-rolled offset) onto NPT-labelled hours, THEN joined against
+    Pyramid's own NPT labels. The reconciliation is ROUNDED: a residual
+    sub-hour misalignment remains, the same declared +-1.75h family M-A10
+    documents (`params.coloc_alignment_uncertainty_hours`) — not
+    re-derived here, only inherited.
 
     `era5_grid` is `(timestamp, value)`; `pyramid_at` is `(timestamp,
     value)`. Returns `(timestamp, pyramid_value_degc, era5_value_degc)`,
-    sorted ascending."""
-    era5_aligned = era5_grid.rename({"value": "era5_value_degc"}).with_columns(
-        pl.col("timestamp").cast(pyramid_at.schema["timestamp"])
+    sorted ascending, on the NPT-labelled join key."""
+    era5_npt = era5_grid.rename({"value": "era5_value_degc"}).with_columns(
+        (pl.col("timestamp") + pl.duration(hours=utc_to_npt_hour_offset))
+        .cast(pyramid_at.schema["timestamp"])
+        .alias("timestamp")
     )
     pyramid_renamed = pyramid_at.rename({"value": "pyramid_value_degc"})
-    return pyramid_renamed.join(era5_aligned, on="timestamp", how="inner").sort(
-        "timestamp"
+    return pyramid_renamed.join(era5_npt, on="timestamp", how="inner").sort("timestamp")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GaugeToGaugeDiagnostic:
+    """Finding B, Plan 184 T2 round-2 review — the AWS1/AWS4 shared-cell
+    gauge comparison, computed on the timestamps BOTH gauges retained
+    (never on each gauge's own, independently-sized, ERA5-paired
+    population — that was the round-2 finding: 35,019 vs 24,369 hours,
+    the same D2 population error relocated from the gauge-vs-ERA5 axis to
+    the gauge-vs-gauge axis)."""
+
+    n_common_retained: int
+    mean_a_degc: float
+    mean_b_degc: float
+
+
+def paired_gauge_diagnostic(
+    frame_a: pl.DataFrame, frame_b: pl.DataFrame
+) -> GaugeToGaugeDiagnostic | None:
+    """D2/D3 (Finding B, Plan 184 T2 round-2 review) — inner-join two
+    Pyramid gauges' own retained `AT` populations on exact timestamp
+    BEFORE any averaging, mirroring `pair_pyramid_and_era5`'s discipline
+    gauge-to-gauge instead of gauge-to-ERA5. `frame_a`/`frame_b` are each
+    `(timestamp, value)` (a station's own windowed, retained population).
+    Returns `None` when the two gauges share zero common-retained
+    timestamps — the diagnostic is optional (D14: never a candidate
+    replacement rate), never worth a hard failure."""
+    a = frame_a.select(pl.col("timestamp"), pl.col("value").alias("_a"))
+    b = frame_b.select(
+        pl.col("timestamp").cast(a.schema["timestamp"]), pl.col("value").alias("_b")
+    )
+    paired = a.join(b, on="timestamp", how="inner")
+    if paired.height == 0:
+        return None
+    return GaugeToGaugeDiagnostic(
+        n_common_retained=paired.height,
+        mean_a_degc=hour_of_day_equalised_mean(paired, value_col="_a"),
+        mean_b_degc=hour_of_day_equalised_mean(paired, value_col="_b"),
     )
 
 
@@ -528,12 +602,23 @@ def build_transect_report(
     precip_data_root: Path,
     t2m_data_root: Path,
     pyramid_dir: Path,
-) -> tuple[TransectStationResult, ...]:
+) -> tuple[tuple[TransectStationResult, ...], GaugeToGaugeDiagnostic | None]:
     """Production wiring for the transect check — real files, real I/O.
     Not covered by unit tests (those exercise `compute_transect_station_
-    result` directly); this is exercised by the real-data verify command."""
+    result` directly); this is exercised by the real-data verify command.
+
+    Returns the per-station results AND the AWS1/AWS4 gauge-to-gauge
+    diagnostic (`paired_gauge_diagnostic`, Finding B, Plan 184 T2 round-2
+    review), computed HERE — the only point in the call graph that still
+    holds both stations' own windowed, retained Pyramid frames before each
+    is independently paired to ERA5 inside `compute_transect_station_
+    result` (which is why the diagnostic cannot be reconstructed from
+    `results` alone: `TransectStationResult.pyramid_hour_equalised_degc`
+    is each station's OWN ERA5-paired population, a different population
+    per station — reusing it here is exactly the round-2 finding)."""
     orography_ds = load_verified_orography(precip_data_root)
     results: list[TransectStationResult] = []
+    pyramid_windows: dict[str, pl.DataFrame] = {}
     for station in TRANSECT_STATIONS:
         coord = StationCoordinate(
             station=station.pyramid_station,
@@ -560,6 +645,7 @@ def build_transect_report(
             .dt.year()
             .is_between(TRANSECT_START_YEAR, TRANSECT_END_YEAR)
         ).rename({"value_degc": "value"})
+        pyramid_windows[str(station.pyramid_station)] = pyramid_window
 
         results.append(
             compute_transect_station_result(
@@ -569,16 +655,43 @@ def build_transect_report(
                 pyramid_at=pyramid_window,
             )
         )
-    return tuple(results)
+
+    aws1_name = next((name for name in pyramid_windows if "AWS1" in name), None)
+    aws4_name = next((name for name in pyramid_windows if "AWS4" in name), None)
+    aws1_aws4_diagnostic = (
+        paired_gauge_diagnostic(pyramid_windows[aws1_name], pyramid_windows[aws4_name])
+        if aws1_name is not None and aws4_name is not None
+        else None
+    )
+    return tuple(results), aws1_aws4_diagnostic
 
 
-def _attribution_notes(results: tuple[TransectStationResult, ...]) -> list[str]:
-    """Finding 2 (Plan 184 T2 review) — states two things in the report
-    ITSELF, never left for a reader to infer: AWS4's tiny correction
-    cannot principally explain its residual (D7: no causal attribution;
-    D14: diagnostic, never a refit), and the AWS1/AWS4 shared-cell gauge
-    comparison is a DIAGNOSTIC only, never a candidate replacement rate."""
+def _attribution_notes(
+    results: tuple[TransectStationResult, ...],
+    *,
+    aws1_aws4_diagnostic: GaugeToGaugeDiagnostic | None = None,
+) -> list[str]:
+    """Finding 2 (Plan 184 T2 round-1 review) — states two things in the
+    report ITSELF, never left for a reader to infer: AWS4's tiny
+    correction cannot principally explain its residual (D7: no causal
+    attribution; D14: diagnostic, never a refit), and the AWS1/AWS4
+    shared-cell gauge comparison is a DIAGNOSTIC only, never a candidate
+    replacement rate. Finding C (round-2 review) adds a general D5/D7
+    attribution caveat that applies to every row, not just AWS4. Finding B
+    (round-2 review) recomputes the AWS1/AWS4 rate on the timestamps BOTH
+    gauges retained, via the `aws1_aws4_diagnostic` this function no
+    longer derives from `results` itself (each result's `pyramid_hour_
+    equalised_degc` is that station's OWN ERA5-paired population, a
+    different population per station)."""
     lines: list[str] = ["", "## Notes (Finding 2, Plan 184 T2 review)"]
+    lines.append(
+        "- **General (D5/D7)**: every residual and discrepancy figure "
+        "above is a MAGNITUDE only. One point gauge against one ERA5-Land "
+        "cell cannot separate grid/representativeness bias from "
+        "lapse-rate error (D5: 'representativeness is characterised, not "
+        "decomposed'); nothing in this report attributes a discrepancy to "
+        "a specific cause (D7: no causal attribution)."
+    )
 
     aws4 = next((r for r in results if "AWS4" in str(r.pyramid_station)), None)
     if aws4 is not None:
@@ -605,26 +718,35 @@ def _attribution_notes(results: tuple[TransectStationResult, ...]) -> list[str]:
         aws1 is not None
         and aws4 is not None
         and abs(aws1.orography_elev_m - aws4.orography_elev_m) < 1e-6
+        and aws1_aws4_diagnostic is not None
     ):
         elev_diff_m = abs(aws4.station_elevation_m - aws1.station_elevation_m)
-        mean_diff = aws1.pyramid_hour_equalised_degc - aws4.pyramid_hour_equalised_degc
+        mean_diff = aws1_aws4_diagnostic.mean_a_degc - aws1_aws4_diagnostic.mean_b_degc
         observed_rate = (
             mean_diff / (elev_diff_m / 1000.0) if elev_diff_m else float("nan")
         )
         lines.append(
             f"- **{aws1.pyramid_station}** and **{aws4.pyramid_station}** "
             "share exactly the same ERA5-Land grid cell and orography "
-            f"({aws4.orography_elev_m:.1f} m). Their own Pyramid gauge "
-            f"means differ by {mean_diff:+.3f} degC over {elev_diff_m:.0f} m "
-            f"= {observed_rate:+.3f} degC/km — an OBSERVED rate from two "
-            "gauges, with no reanalysis involved. This is a DIAGNOSTIC "
-            "only, never a candidate replacement rate (D14 forbids fitting "
-            "the rate to Pyramid)."
+            f"({aws4.orography_elev_m:.1f} m). On the "
+            f"{aws1_aws4_diagnostic.n_common_retained} timestamps BOTH "
+            "gauges retained (Finding B, Plan 184 T2 round-2 review — "
+            "never each gauge's own independently-sized ERA5-paired "
+            f"population), their means differ by {mean_diff:+.3f} degC "
+            f"over {elev_diff_m:.0f} m = {observed_rate:+.3f} degC/km — "
+            "an OBSERVED rate from two gauges, with no reanalysis "
+            "involved. This is a DIAGNOSTIC only, never a candidate "
+            "replacement rate (D14 forbids fitting the rate to Pyramid)."
         )
     return lines
 
 
-def _write_report(path: Path, results: tuple[TransectStationResult, ...]) -> None:
+def _write_report(
+    path: Path,
+    results: tuple[TransectStationResult, ...],
+    *,
+    aws1_aws4_diagnostic: GaugeToGaugeDiagnostic | None = None,
+) -> None:
     lines = [
         "# Plan 184 (M-A6) T2 — D14 lapse-rate transect check",
         "",
@@ -632,13 +754,17 @@ def _write_report(path: Path, results: tuple[TransectStationResult, ...]) -> Non
         "never fitted or tuned to this check (D14).",
         f"Window: {TRANSECT_START_YEAR}-{TRANSECT_END_YEAR} (the Pyramid "
         "record ends 2023).",
-        "Timestamp convention: PERIOD-ENDING assumed; the hour-of-day-"
-        "equalised means below are INVARIANT to that assumption.",
+        "Timestamp convention: PERIOD-ENDING assumed for the whole-hour "
+        "label (the hour-of-day-equalised means below are INVARIANT to "
+        "that assumption); ERA5 (UTC) is additionally shifted onto "
+        "NPT-labelled hours via `params.coloc_dhm_utc_to_npt_hour_offset` "
+        "BEFORE pairing (Finding A, Plan 184 T2 round-2 review) — a "
+        "rounded reconciliation, residual +-1.75h uncertainty per M-A10.",
         "ERA5 is paired to the timestamps Pyramid actually retained "
-        "(Finding 1, Plan 184 T2 review) BEFORE any averaging — 'ERA5 raw'"
-        "/'ERA5 corrected'/'Pyramid' below are all computed over the SAME "
-        "n(paired) population per station, never independently; "
-        "n(ERA5)/n(Pyramid) are context only.",
+        "(Finding 1, Plan 184 T2 round-1 review) BEFORE any averaging — "
+        "'ERA5 raw'/'ERA5 corrected'/'Pyramid' below are all computed "
+        "over the SAME n(paired) population per station, never "
+        "independently; n(ERA5)/n(Pyramid) are context only.",
         "",
         "| Station | Elev (m) | Orography (m) | Correction (degC) | "
         "ERA5 raw | ERA5 corrected | Pyramid | Discrepancy | n(ERA5) | "
@@ -655,7 +781,7 @@ def _write_report(path: Path, results: tuple[TransectStationResult, ...]) -> Non
             f"{r.discrepancy_degc:+.2f} | {r.n_era5_hours} | "
             f"{r.n_pyramid_retained} | {r.n_paired} |"
         )
-    lines.extend(_attribution_notes(results))
+    lines.extend(_attribution_notes(results, aws1_aws4_diagnostic=aws1_aws4_diagnostic))
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -677,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         else Path(os.environ.get("DHM_PRECIP_ERA5_ROOT", str(DEFAULT_DATA_ROOT)))
     )
     try:
-        results = build_transect_report(
+        results, aws1_aws4_diagnostic = build_transect_report(
             precip_data_root=precip_data_root,
             t2m_data_root=args.t2m_data_root,
             pyramid_dir=args.pyramid_dir,
@@ -691,7 +817,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     report_path = args.out / "ma6_lapse_check.md"
-    _write_report(report_path, results)
+    _write_report(report_path, results, aws1_aws4_diagnostic=aws1_aws4_diagnostic)
     json_path = args.out / "ma6_lapse_check.json"
     json_path.write_text(
         json.dumps(
