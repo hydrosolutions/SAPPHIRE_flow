@@ -15,6 +15,13 @@ source: tag audit 2026-08-21
 
 **DRAFT.** Not for implementation until the owner confirms.
 
+**Independent Codex review 2026-08-21 — 1 blocker, 1 major, 1 minor, ALL VERIFIED AND FOLDED.** The
+blocker (no git identity for `git tag -a`) would have failed the workflow on its first real run. The
+major corrected D6 outright: my concurrency group would have *dropped* tags rather than protecting
+them. The minor caught the version count going stale mid-draft. The reviewer separately confirmed the
+`workflow_run` trigger, `workflow_run.head_sha`, `GITHUB_TOKEN` non-recursion and `contents: write`
+claims are correct, and that the CLAUDE.md / `ci.yml` / cicd.md / `tag = false` citations hold.
+
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT
 
 **This is one workflow file of roughly 30 lines.** It needs no new service, no changelog, no release
@@ -24,8 +31,12 @@ duplicated), not a missing feature. Adding scope is a cost.
 
 ## The problem, measured 2026-08-21
 
-Since `v0.1.773`, main has carried **7 distinct versions**; **5 have no tag** — `0.1.774`, `0.1.775`,
-`0.1.776`, `0.1.779`, and `0.1.787` (current main). Only `0.1.773` and `0.1.786` are tagged.
+Since `v0.1.773`, main has carried **8 distinct versions**; **6 have no tag** — `0.1.774`, `0.1.775`,
+`0.1.776`, `0.1.779`, `0.1.787`, and `0.1.788` (current main). Only `0.1.773` and `0.1.786` are tagged.
+
+*(The count moved while this plan was being written: PR #201 merged as `e55e62b` and took main from
+0.1.787 to 0.1.788, which an independent review caught as a stale figure. That is the problem
+restated — a number maintained by hand goes stale between writing it and reading it.)*
 
 Two facts shape the design:
 
@@ -61,9 +72,16 @@ nothing forces anyone to take.
 - **D5 — Least privilege, job-scoped.** `permissions: { contents: write }` on the job only, matching the
   file's existing convention of scoping permissions per job (`ci.yml:87`, `:445`). A tag pushed with
   `GITHUB_TOKEN` does not trigger further workflows, so there is no recursion risk.
-- **D6 — Serialise with `concurrency`.** Two merges landing close together could otherwise race to
-  create the same tag. A workflow-level concurrency group makes the second wait and then observe the
-  tag already exists (D2). Do **not** set `cancel-in-progress` — cancelling would drop a tag.
+- **D6 — NO concurrency group; tolerate the race instead.** *(Corrected after independent review — the
+  draft had this backwards.)* A concurrency group would **lose tags, not protect them**: with
+  `cancel-in-progress: false` GitHub still allows only one *running* plus one *pending* run per group,
+  and a third queued run **supersedes the pending one**, so three merges in quick succession can cancel
+  the middle tagging run outright and leave that version permanently untagged. Serialisation is the
+  wrong tool here.
+  Instead, make the race harmless: two runs may both observe the tag absent, and one loses the push
+  with `! [rejected] ... already exists`. Treat that rejection as **success** — re-check that the tag
+  now exists and exit 0. Pure idempotency (D2) with no scheduling apparatus, and strictly fewer moving
+  parts than the concurrency block it replaces.
 
 ## Task
 
@@ -72,7 +90,12 @@ nothing forces anyone to take.
 One job. Read the version from `pyproject.toml`, exit cleanly if `v$VERSION` already exists, otherwise
 create an annotated tag at the commit CI validated and push it.
 
-Two details that decide whether this works at all:
+Three details that decide whether this works at all:
+
+- **Configure a git identity before `git tag -a`.** *(Independent review, BLOCKER — the draft omitted
+  it.)* A clean GitHub runner has no `user.name`/`user.email`, and annotated tag creation fails with
+  "Committer identity unknown" before anything is written. Set the `github-actions[bot]` identity in
+  the job. Lightweight tags would sidestep this, but D4 chose annotated deliberately.
 
 - **Tag the SHA `workflow_run` reports, not `main`'s current head.** They differ whenever another merge
   lands during the CI run, and tagging the head would stamp a commit CI never validated. Check out
