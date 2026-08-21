@@ -164,6 +164,7 @@ class TestAggregationRuleIdDoesNotClaimWeighting:
             Path(__file__).resolve().parents[3]
             / "docs"
             / "plans"
+            / "archive"
             / "174-era5-land-point-extraction.md"
         ).read_text()
         assert "`mean_of_contained_cells` — the (unweighted)" in text
@@ -1045,6 +1046,7 @@ class TestPlanSelfRecord:
             Path(__file__).resolve().parents[3]
             / "docs"
             / "plans"
+            / "archive"
             / "174-era5-land-point-extraction.md"
         )
         text = plan_path.read_text()
