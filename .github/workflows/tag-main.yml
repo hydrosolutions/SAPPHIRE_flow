@@ -1,0 +1,61 @@
+name: Tag main
+
+# Plan 197 — replaces the manual "tag on main after merge" step (CLAUDE.md
+# § Version Bumping), which was skipped 5 times in 3 days. D1: triggers on
+# push, NOT gated on CI success — a tag here is an identifier, not a release
+# gate (docs/standards/cicd.md § Image tagging and versioning). D6: no
+# concurrency group — serialising these runs would LOSE tags outright, so
+# the race is tolerated instead (see the tagging step below).
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # D5 — least privilege, job-scoped, matching the file's existing
+    # convention (ci.yml's `unit` and `build-image-and-scan` jobs).
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Tag the version if not already tagged
+        run: |
+          set -euo pipefail
+
+          VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          TAG="v${VERSION}"
+
+          # D2 — idempotent by construction: a docs-only push carries an
+          # unchanged version, finds its tag already on the remote, and
+          # no-ops. Queried against the remote (not the local clone) because
+          # actions/checkout does not fetch tags by default (D2/T1 note) —
+          # a local-only check would report every tag missing.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin — skipping."
+            exit 0
+          fi
+
+          # Round-1 BLOCKER — a clean runner has no git identity; annotated
+          # tag creation fails with "Committer identity unknown" without this.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # D4 — annotated, not lightweight. D7 — usually the commit that
+          # introduced the version, but out-of-order runs can land it on a
+          # later docs-only commit carrying the same version; accepted.
+          git tag -a "${TAG}" -m "${TAG}" "${{ github.sha }}"
+
+          if git push origin "refs/tags/${TAG}"; then
+            echo "Pushed ${TAG}."
+          elif git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            # D6 — another run won the race and pushed it first; the push
+            # rejection ("already exists") is expected, not a failure.
+            echo "Tag ${TAG} already exists on origin (lost the race) — treating as success."
+          else
+            echo "::error::push of ${TAG} failed and the tag is still missing on origin."
+            exit 1
+          fi

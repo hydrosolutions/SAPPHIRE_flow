@@ -336,13 +336,34 @@ Three distinct concepts live under "image tagging" in this repo. They are not in
 ### Git version tags are BEST-EFFORT and gappy — do not treat them as a release ledger
 
 `git tag v0.1.x` on `main` after merge (CLAUDE.md § Version Bumping) is a convenience, not an inventory.
-Two things make the tag series legitimately incomplete, and both are expected rather than bugs:
+
+**Since Plan 197 (2026-08-21), the tag is created automatically** by `.github/workflows/tag-main.yml`,
+which runs on every push to `main`: it reads `${VERSION}` from `pyproject.toml` at the pushed commit and
+creates the annotated tag `v${VERSION}` if it does not already exist on the remote, then exits — no
+manual step required. It is **deliberately not gated on CI**: a tag here is an identifier, not a release
+gate. No workflow in this repo triggers on a tag, the mac-mini deploy reads `${VERSION}` from `.env`
+rather than checking out a tag, and gating would punch permanent holes in a "which commit is this
+version" lookup whenever CI happened to be red on the commit that introduced it. The workflow also runs
+with no concurrency group: serialising it would let a third rapid merge cancel a queued run and leave
+that version permanently untagged, so the design tolerates the race instead — a losing run's `git push`
+is rejected with "already exists", which it treats as success after re-confirming the tag is now present.
+The 5 tags missing before this workflow existed were **not backfilled** (owner declined); this workflow
+changes the future only.
+
+Two things make the tag series legitimately incomplete, and both remain expected rather than bugs:
 
 - **Versions claimed by a branch may never reach `main`.** Each branch computes its next patch from its
   own `pyproject.toml`, so two branches routinely claim the same number; whichever merges second gets
   re-bumped, and the number it originally claimed is simply skipped. `0.1.768` and `0.1.770` are examples
   — both were claimed, neither exists on `main`.
-- **Tagging is manual and often skipped.** Several merges land without anyone tagging.
+- **A version may span more than one commit, and the tag may land on any of them.** Plan-doc-only
+  commits to `main` do not bump (CLAUDE.md § Version Bumping), so several consecutive commits can carry
+  one version. The workflow's idempotent skip (create only if the tag is absent) means the tag is
+  created by whichever of those commits' workflow runs executes first — usually, but not guaranteed to
+  be, the commit that introduced the version, since GitHub does not order concurrent workflow runs
+  against the same branch. Those commits carry identical `src/`, so the tag still answers "where is this
+  version" correctly even when it points at a later docs-only commit rather than the one that introduced
+  it.
 
 Consequences worth knowing before you go looking for a missing tag:
 
