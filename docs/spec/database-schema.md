@@ -1075,7 +1075,7 @@ erDiagram
 Plan 120 (basin/static package importer, Nepal v1) additively adds
 `basin_static_packages`, `basin_versions`, and `model_artifact_basin_versions`
 (+ a nullable `basins.package_id` FK) — see "Versioned basin state" in
-`docs/plans/120-basin-static-importer.md`. Plan 147 Slice A additively adds
+`docs/plans/archive/120-basin-static-importer.md`. Plan 147 Slice A additively adds
 `tenants` (+ `tenant_id` on `stations`/`station_groups`/`station_group_members`)
 — already live in v0, see the v0 table inventory above. Plan 147 Slice B
 additively adds `audit_log` — also already live in v0 (as an unused

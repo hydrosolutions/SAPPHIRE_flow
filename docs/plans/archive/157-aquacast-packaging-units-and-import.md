@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-12
 plan: 157
 title: External-artifact import path + provenance (the in-repo half of aquacast packaging)
@@ -12,6 +12,10 @@ supersedes: []
 # Plan 157 — external-artifact import path + provenance
 
 ## Status
+**COMPLETE** — shipped on `main` as `fff634f` (Plan 157 — external-artifact import path + provenance (rescoped; shim/worker split to Plan 159) (#148)).
+*(Archived 2026-08-21 after an independent verification pass confirmed the in-scope work is
+implemented and the apparent remainder is explicitly out of scope or a successor plan.)*
+
 **DRAFT.** Split out of **Plan 152** (tasks T2 and T3) on 2026-08-12.
 
 **Read Plan 152 first** for shared context: the selected artifact (`cmal_pool_PT`), its verified

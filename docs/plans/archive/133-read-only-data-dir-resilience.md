@@ -12,7 +12,7 @@ blocks: []
 
 ## Status
 
-**COMPLETE** — shipped on `main` as `e470071` (fix(config): RESTORE read-only data-dir fix dropped from main (Plan 133, was #110) (#111)).
+**COMPLETE** — shipped on `main` as `00fe8ce` (the implementation; the follow-up `e470071` only realigned the version) (fix(config): RESTORE read-only data-dir fix dropped from main (Plan 133, was #110) (#111)).
 *(Status reconciled 2026-08-21 in a housekeeping pass: the plan had shipped but was still marked READY, so it read as outstanding work.)*
 
 **READY** (owner, 2026-07-20). Implementation authorised; hold at PR. `/plan` ran (2 rounds, escalated:

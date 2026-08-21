@@ -413,7 +413,7 @@ After T1-T4 land and the sapphire-flow image is rebuilt:
 Separate commit after T6 lands cleanly:
 
 ```bash
-git mv docs/plans/060-a3-prefect-deployment-compat-sweep.md docs/plans/archive/060-a3-prefect-deployment-compat-sweep.md
+git mv docs/plans/archive/060-a3-prefect-deployment-compat-sweep.md docs/plans/archive/060-a3-prefect-deployment-compat-sweep.md
 uv run bump-my-version bump patch  # yes, every commit bumps per CLAUDE.md
 uv sync
 git add docs/plans/archive/060-a3-prefect-deployment-compat-sweep.md pyproject.toml src/sapphire_flow/__init__.py uv.lock

@@ -1261,7 +1261,7 @@ question.
 - `docs/plans/117-basin-static-artifact-architecture.md` (docs-only contract alignment)
 - `docs/plans/082-recap-gateway-operational-readiness.md` (Task 2D `:297` — base §5a
   table + resolver this plan populates/extends)
-- `docs/plans/081-recap-dg-client-integration.md:213` (basin-average-only DECISION)
+- `docs/plans/archive/081-recap-dg-client-integration.md:213` (basin-average-only DECISION)
 - `src/sapphire_flow/types/basin.py:11-22`; `src/sapphire_flow/db/metadata.py:42-65`
   (`basins`), `:172-178`/`:362,369` (`elevation_band` usage), `:198-238` (§5a base
   table + one-basin_average partial unique index + upsert-REPLACE comment), `:612-669`

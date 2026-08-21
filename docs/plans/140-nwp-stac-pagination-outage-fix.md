@@ -1,5 +1,5 @@
 ---
-status: COMPLETE
+status: READY
 created: 2026-07-22
 plan: 140
 title: Restore ICON-CH2-EPS NWP fetch — the STAC pagination cap is exceeded (production outage)

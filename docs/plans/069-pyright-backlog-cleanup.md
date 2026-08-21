@@ -348,7 +348,7 @@ still references the removed flag.
    - `docs/plans/068-onboard-stations-parallelization.md:106`
 
    **Leave alone (prose/historical — do NOT rewrite):**
-   - `docs/plans/070-precommit-and-gate-parity.md:56` — historical
+   - `docs/plans/archive/070-precommit-and-gate-parity.md:56` — historical
      narrative describing the disabled gate, not a command to run.
    - `docs/v0-launch-roadmap.md:303` — the line describing task T1b
      itself; rewriting it would corrupt the description of this work.
@@ -366,7 +366,7 @@ still references the removed flag.
 grep -rn "pyright --strict" docs/ \
   | grep -v docs/plans/archive/ \
   | grep -v docs/plans/069-pyright-backlog-cleanup.md \
-  | grep -v docs/plans/070-precommit-and-gate-parity.md \
+  | grep -v docs/plans/archive/070-precommit-and-gate-parity.md \
   | grep -v docs/v0-launch-roadmap.md
 ```
 returns nothing; every remaining command-form reference to pyright invokes
@@ -538,7 +538,7 @@ correctness is T2's responsibility; T3 trusts the committed baseline.
 ### Phase 2 — Fix the 166 concrete violations inside `flows/`
 
 **Scope note**: Concrete violations outside `flows/` are owned by
-Plan 073 (see `docs/plans/073-concrete-type-violations-cleanup.md`).
+Plan 073 (see `docs/plans/archive/073-concrete-type-violations-cleanup.md`).
 Plan 069 Phase 2 does NOT touch non-flows files.
 
 #### T4 — `reportArgumentType` sweep inside `flows/` (103 errors)

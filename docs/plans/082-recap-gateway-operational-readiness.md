@@ -80,7 +80,7 @@ executable training-readiness coverage gate.
 ## Context Read
 
 - `CLAUDE.md`, `docs/workflow.md`, `docs/conventions.md`
-- Plans 081, 115a; `docs/plans/117-basin-static-artifact-architecture.md` (the `04` contract/§5a); `docs/plans/120-basin-static-importer.md` (the §5a importer 082's resolver reads)
+- Plans 081, 115a; `docs/plans/117-basin-static-artifact-architecture.md` (the `04` contract/§5a); `docs/plans/archive/120-basin-static-importer.md` (the §5a importer 082's resolver reads)
 - `docs/requirements/01-data-gateway-requirements.md`
 - `docs/requirements/04-basin-static-artifact-contract.md` §5a
 - `docs/standards/{orchestration,logging,security,cicd}.md`

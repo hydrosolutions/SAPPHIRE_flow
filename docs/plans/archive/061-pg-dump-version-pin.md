@@ -126,11 +126,11 @@ Expected: COMPLETED. Verify dump file: `docker compose exec -T prefect-worker ls
 ### T4 — Commit + bump + tag + archive
 
 - `uv run ruff format` + `uv run ruff check --fix` on Dockerfile (no-op; ruff doesn't parse Dockerfile, but keeps habit).
-- Stage: `Dockerfile`, `pyproject.toml`, `src/sapphire_flow/__init__.py`, `uv.lock`, `docs/plans/061-pg-dump-version-pin.md`.
+- Stage: `Dockerfile`, `pyproject.toml`, `src/sapphire_flow/__init__.py`, `uv.lock`, `docs/plans/archive/061-pg-dump-version-pin.md`.
 - `uv run bump-my-version bump patch`; `uv sync`.
 - Commit `fix(plan-061): pin pg_dump to postgresql-client-16 (A3 backup finding)`. Include a migration-note bullet: "rebuild the sapphire-flow image on every dev box: `docker compose build --no-cache prefect-worker api init`."
 - Tag.
-- Archive commit: `git mv docs/plans/061-pg-dump-version-pin.md docs/plans/archive/061-pg-dump-version-pin.md`, second bump, commit `docs(plan-061): archive completed plan`, tag.
+- Archive commit: `git mv docs/plans/archive/061-pg-dump-version-pin.md docs/plans/archive/061-pg-dump-version-pin.md`, second bump, commit `docs(plan-061): archive completed plan`, tag.
 
 ---
 
@@ -140,7 +140,7 @@ Expected: COMPLETED. Verify dump file: `docker compose exec -T prefect-worker ls
 |---|---|---|
 | `Dockerfile` | T1 | Replace unversioned `postgresql-client` with PGDG source + `postgresql-client-16` |
 | `pyproject.toml`, `src/sapphire_flow/__init__.py`, `uv.lock` | T4 | Version bump |
-| `docs/plans/061-pg-dump-version-pin.md` | T4 | Archive move |
+| `docs/plans/archive/061-pg-dump-version-pin.md` | T4 | Archive move |
 
 No docs/standards edits — the cap_add documentation from Plan 060 T2 already covers the privilege model.
 

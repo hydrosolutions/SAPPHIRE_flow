@@ -1,5 +1,5 @@
 ---
-status: COMPLETE
+status: READY
 created: 2026-08-20
 plan: 194
 title: The backup target must be the device it claims to be (extracted from Plan 162 T6)

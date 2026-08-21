@@ -666,7 +666,7 @@ milestone:
 - `docs/plans/084-dev-deployment-validation-2-station-runoff.md` — cross-reference:
   mark Finding NWP-OOM as addressed by Plan 086 (one-line pointer); note that
   mesh-extraction (Open Item E) remains open.
-- `docs/plans/086-nwp-memory-bounded-streaming.md` (this plan),
+- `docs/plans/archive/086-nwp-memory-bounded-streaming.md` (this plan),
   `docs/plans/README.md` (index entry).
 - No other production files.
 ```

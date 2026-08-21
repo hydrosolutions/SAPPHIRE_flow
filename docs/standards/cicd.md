@@ -166,7 +166,7 @@ worker/API confirms the new reader is actually serving. Concretely, this meant t
 Release B migration could not merely be *documented* as later — it had to be physically
 **absent from `main`'s Alembic head** until Release A was confirmed serving: Release A's
 code shipped with **no `0033` file in `alembic/versions/`**; the migration was authored
-on a separate branch (`115b5`, see `docs/plans/115b5-camels-ch-retire-migration.md`), to
+on a separate branch (`115b5`, see `docs/plans/archive/115b5-camels-ch-retire-migration.md`), to
 be merged to `main` **only after** the Release-A staging deploy-gate below had passed —
 that gate was met 2026-07-17. Once merged, `alembic heads` shows a single head, `0033`.
 
@@ -468,7 +468,7 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 ### Cross-references
 
 - `CLAUDE.md` §Pre-commit hooks — per-contributor install instructions, hook policy, and the check-only rationale.
-- [`docs/plans/070-precommit-and-gate-parity.md`](../plans/070-precommit-and-gate-parity.md) — the plan that introduced the developer-tier gate and `uv run check`. A4 wires the pyright ratchet at `pre-push`, with CI as the backstop.
+- [`docs/plans/archive/070-precommit-and-gate-parity.md`](../plans/archive/070-precommit-and-gate-parity.md) — the plan that introduced the developer-tier gate and `uv run check`. A4 wires the pyright ratchet at `pre-push`, with CI as the backstop.
 - [`docs/plans/064-supply-chain-hardening.md`](../plans/064-supply-chain-hardening.md) — predecessor plan that surfaced the "wired but unrun" gate problem this plan fixes. Introduced Trivy image scan, SBOM generation, and CI action SHA pinning.
 - [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — follow-on that supplied the pyright ratchet baseline and CI backstop consumed by Plan 070 A4.
 
@@ -602,7 +602,7 @@ manually.
 
 `uv run check` is the developer ergonomics counterpart to the
 `pre-commit` developer-tier gate (see `CLAUDE.md` §Pre-commit hooks and
-`docs/plans/070-precommit-and-gate-parity.md` for the full design).
+`docs/plans/archive/070-precommit-and-gate-parity.md` for the full design).
 The CI `lint` job keeps its own standalone ruff steps; this helper does
 not modify CI behaviour.
 
@@ -861,7 +861,7 @@ an off-box URL read from the HOST secret file `./secrets/deadman_url` (chmod 600
 The external provider (Healthchecks.io) alerts through Slack + email when the heartbeat stops arriving
 — independent of the mini and of Docker/Prefect. A ping means "the tick ran," not "the stack is
 healthy": an unhealthy stack still pings, and only a tick that raises before persisting withholds the
-heartbeat. See `docs/plans/163-watchdog-deadman-and-http-hardening.md` and
+heartbeat. See `docs/plans/archive/163-watchdog-deadman-and-http-hardening.md` and
 `docs/deployment/mac-mini-staging.md` § Dead-man's switch isn't pinging.
 
 ## Access-token pepper + probe-token rotation (Plan 147 Slice C, REALIZED)

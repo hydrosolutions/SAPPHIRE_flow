@@ -550,7 +550,7 @@ acceptanceCriteria:
 - `docs/plans/084-dev-deployment-validation-2-station-runoff.md` — line 54 (D6):
   one-line `ingest-observations (*/30)` → `*/5` (it is presented as current truth,
   MINOR-3).
-- `docs/plans/085-observation-ingest-upsert-and-poll-cadence.md` (this plan),
+- `docs/plans/archive/085-observation-ingest-upsert-and-poll-cadence.md` (this plan),
   `docs/plans/README.md` (index entry).
 - No other production files.
 ```

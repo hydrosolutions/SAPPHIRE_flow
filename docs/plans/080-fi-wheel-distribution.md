@@ -92,6 +92,6 @@ packages.
 
 - [[project_fi_packaging_distribution]] — packaging/distribution decision
 - [[project_forecast_interface_contract]] — FI contract relationship
-- Plan 079 (`docs/plans/079-fi-ci-wheel-guard-exception.md`) — the exception this
+- Plan 079 (`docs/plans/archive/079-fi-ci-wheel-guard-exception.md`) — the exception this
   plan removes
 - Plan 064 — wheel-only guard / supply-chain policy this restores in full

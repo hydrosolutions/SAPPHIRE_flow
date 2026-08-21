@@ -838,7 +838,7 @@ daily forcing (G1). One data workstream, one owner, one discipline. **Plan 155 g
 the spike cannot hand-shape real Swiss inputs until the statics exist.
 
 ### T2 / T3 — Packaging, units and import → **SPLIT OUT: Plan 157**
-Moved to `docs/plans/157-aquacast-packaging-units-and-import.md`: the shim distribution (G3), the
+Moved to `docs/plans/archive/157-aquacast-packaging-units-and-import.md`: the shim distribution (G3), the
 **`mm/day` unit boundary** (G9), the aquacast worker image (G10), and the external-artifact import
 path + provenance (G4/G7). All of it is exercised against **synthetic** FI models, so it blocks on
 nothing and is the work that can start today. Plan 157 also carries **D13**, the unresolved question
