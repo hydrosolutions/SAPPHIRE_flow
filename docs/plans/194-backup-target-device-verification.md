@@ -118,6 +118,14 @@ wrong and are corrected here):
   `/System/Volumes/Data`, `/Users/sapphire` and `/Volumes/sapphire-backup`. A review round asserted `/`
   and `/Users` necessarily differ on post-Catalina macOS; on the target host they do not. The switch to
   the data path is for honesty about intent, not because `/` misfires here.)*
+  **⚠️ Implementation status (2026-08-21): D1 clause 3 is NOT in the merged code.** PR #200 shipped the
+  looser form — *dir* exists, *dir*'s device differs from the DATA path, and *root* is a real mount —
+  because this hand review was committed locally and never pushed, so `/implement` built from the
+  pushed READY version. The shipped form is weaker, not wrong: the stricter rule implies it, while the
+  shipped one additionally accepts a `pg_dumps` sitting on some THIRD device (off the boot disk, but
+  not the declared volume). Tightening it to clause 3 is a small, well-defined follow-up — deliberately
+  not folded into the marker-removal PR, which is scoped to the marker.
+
 - **D2 — `bootstrap-mac-mini.sh` fails closed.** It is interactive, so blocking is safe.
 - **D3 — `start-sapphire.sh` checks, records, and PROCEEDS.** Deliberately not fail-closed: refusing to
   start the stack because a removable disk is absent trades a backup outage for a *forecasting* outage,
