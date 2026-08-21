@@ -28,7 +28,6 @@ running. `TestMarkerWriteIsBestEffort` locks that.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import textwrap
@@ -99,7 +98,6 @@ def _run_start_sapphire(
     *,
     repo_root: Path,
     backup_dir: Path,
-    marker_path: Path,
     bin_dir: Path,
 ) -> subprocess.CompletedProcess[str]:
     env = {
@@ -107,7 +105,6 @@ def _run_start_sapphire(
         "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
         "SAPPHIRE_REPO_ROOT": str(repo_root),
         "SAPPHIRE_BACKUP_DIR": str(backup_dir),
-        "SAPPHIRE_BACKUP_MARKER_PATH": str(marker_path),
     }
     return subprocess.run(
         ["bash", str(_SCRIPT)],
@@ -130,7 +127,6 @@ class TestStartSapphireBackupVerification:
         backup_dir.mkdir()
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        marker_path = repo_root / ".backup-volume-unverified.json"
         compose_log = tmp_path / "compose.log"
 
         _write_fake_docker(bin_dir, compose_log=compose_log)
@@ -147,14 +143,13 @@ class TestStartSapphireBackupVerification:
             tmp_path,
             repo_root=repo_root,
             backup_dir=backup_dir,
-            marker_path=marker_path,
             bin_dir=bin_dir,
         )
 
         assert result.returncode == 0, result.stderr
-        assert marker_path.exists(), "marker must be written on an unverified check"
-        payload = json.loads(marker_path.read_text())
-        assert payload["verified"] is False
+        assert "backup volume not verified" in result.stderr, (
+            "an unverified check must WARN on stderr -> the launchd log"
+        )
         assert compose_log.exists(), (
             "the stack must still start (D3: never fail closed)"
         )
@@ -179,7 +174,6 @@ class TestStartSapphireBackupVerification:
         backup_dir.mkdir()
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        marker_path = repo_root / ".backup-volume-unverified.json"
         compose_log = tmp_path / "compose.log"
 
         _write_fake_docker(bin_dir, compose_log=compose_log)
@@ -197,16 +191,14 @@ class TestStartSapphireBackupVerification:
             tmp_path,
             repo_root=repo_root,
             backup_dir=backup_dir,
-            marker_path=marker_path,
             bin_dir=bin_dir,
         )
 
         assert result.returncode == 0, result.stderr
-        assert marker_path.exists(), (
+        assert "backup volume not verified" in result.stderr, (
             "a differing device id is NOT sufficient — the path must also be a "
             "real mount point, or the mount clause is dead code"
         )
-        assert json.loads(marker_path.read_text())["verified"] is False
         assert compose_log.exists(), "D3: the stack still starts"
         assert "up -d" in compose_log.read_text()
 
@@ -219,7 +211,6 @@ class TestStartSapphireBackupVerification:
         backup_dir.mkdir()
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        marker_path = repo_root / ".backup-volume-unverified.json"
         compose_log = tmp_path / "compose.log"
 
         _write_fake_docker(bin_dir, compose_log=compose_log)
@@ -236,179 +227,10 @@ class TestStartSapphireBackupVerification:
             tmp_path,
             repo_root=repo_root,
             backup_dir=backup_dir,
-            marker_path=marker_path,
             bin_dir=bin_dir,
         )
 
         assert result.returncode == 0, result.stderr
-        assert not marker_path.exists()
+        assert "backup volume not verified" not in result.stderr
         assert compose_log.exists()
         assert "up -d" in compose_log.read_text()
-
-    def test_stale_marker_from_prior_failure_is_cleared_once_verified(
-        self, tmp_path: Path
-    ) -> None:
-        """A marker written by a previous unverified tick must not linger
-        forever once the volume is verified again."""
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        backup_dir = tmp_path / "backup"
-        backup_dir.mkdir()
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        marker_path = repo_root / ".backup-volume-unverified.json"
-        marker_path.write_text('{"verified": false, "checked_at": "stale"}\n')
-        compose_log = tmp_path / "compose.log"
-
-        _write_fake_docker(bin_dir, compose_log=compose_log)
-        _write_fake_stat_mount(
-            bin_dir,
-            backup_path=str(backup_dir),
-            data_path=str(repo_root),
-            backup_dev="99",
-            data_dev="1",
-            mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
-        )
-
-        result = _run_start_sapphire(
-            tmp_path,
-            repo_root=repo_root,
-            backup_dir=backup_dir,
-            marker_path=marker_path,
-            bin_dir=bin_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert not marker_path.exists()
-
-
-class TestMarkerWriteIsBestEffort:
-    """Fixer round (Codex review of Plan 194, major finding): under `set -e`,
-    a failure to remove/write the marker must not itself abort the script
-    before `exec docker compose ... up -d` — that would silently turn a
-    marker-bookkeeping problem into a forecasting outage, exactly what D3
-    exists to prevent. Each scenario here would exit non-zero WITHOUT
-    reaching `docker compose ... up -d` against the pre-fix script."""
-
-    def test_marker_write_failure_when_path_is_a_directory_does_not_block_stack(
-        self, tmp_path: Path
-    ) -> None:
-        """Unverified case: BACKUP_MARKER_PATH collides with an existing
-        directory, so `printf ... > "${BACKUP_MARKER_PATH}"` fails."""
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        backup_dir = tmp_path / "backup"
-        backup_dir.mkdir()
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        marker_path = repo_root / ".backup-volume-unverified.json"
-        marker_path.mkdir()  # a directory, not a file — write must fail
-        compose_log = tmp_path / "compose.log"
-
-        _write_fake_docker(bin_dir, compose_log=compose_log)
-        _write_fake_stat_mount(
-            bin_dir,
-            backup_path=str(backup_dir),
-            data_path=str(repo_root),
-            backup_dev="16777234",
-            data_dev="16777234",  # SAME device — unverified
-            mount_output=f"/dev/disk1 on {backup_dir.parent} (apfs, local)",
-        )
-
-        result = _run_start_sapphire(
-            tmp_path,
-            repo_root=repo_root,
-            backup_dir=backup_dir,
-            marker_path=marker_path,
-            bin_dir=bin_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert compose_log.exists(), (
-            "the stack must still start even though the marker could not be "
-            "written (best-effort only)"
-        )
-        assert "up -d" in compose_log.read_text()
-        assert marker_path.is_dir(), "the colliding directory must be left alone"
-
-    def test_marker_removal_failure_when_path_is_a_directory_does_not_block_stack(
-        self, tmp_path: Path
-    ) -> None:
-        """Verified case: BACKUP_MARKER_PATH collides with an existing
-        directory, so `rm -f "${BACKUP_MARKER_PATH}"` fails (rm refuses a
-        directory without -r)."""
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        backup_dir = tmp_path / "backup"
-        backup_dir.mkdir()
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        marker_path = repo_root / ".backup-volume-unverified.json"
-        marker_path.mkdir()  # a directory, not a file — rm -f must fail
-        compose_log = tmp_path / "compose.log"
-
-        _write_fake_docker(bin_dir, compose_log=compose_log)
-        _write_fake_stat_mount(
-            bin_dir,
-            backup_path=str(backup_dir),
-            data_path=str(repo_root),
-            backup_dev="99",
-            data_dev="1",  # distinct — verified
-            mount_output=f"/dev/disk4s1 on {backup_dir.parent} (apfs, local)",
-        )
-
-        result = _run_start_sapphire(
-            tmp_path,
-            repo_root=repo_root,
-            backup_dir=backup_dir,
-            marker_path=marker_path,
-            bin_dir=bin_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert compose_log.exists(), (
-            "the stack must still start even though the stale marker could "
-            "not be removed (best-effort only)"
-        )
-        assert "up -d" in compose_log.read_text()
-
-    def test_marker_write_failure_when_parent_missing_does_not_block_stack(
-        self, tmp_path: Path
-    ) -> None:
-        """Unverified case: the marker's parent directory does not exist
-        (e.g. REPO_ROOT itself vanished under a read-only/partial
-        checkout), so the redirect fails with "No such file or directory"."""
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        backup_dir = tmp_path / "backup"
-        backup_dir.mkdir()
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        marker_path = tmp_path / "does-not-exist" / ".backup-volume-unverified.json"
-        compose_log = tmp_path / "compose.log"
-
-        _write_fake_docker(bin_dir, compose_log=compose_log)
-        _write_fake_stat_mount(
-            bin_dir,
-            backup_path=str(backup_dir),
-            data_path=str(repo_root),
-            backup_dev="16777234",
-            data_dev="16777234",  # SAME device — unverified
-            mount_output=f"/dev/disk1 on {backup_dir.parent} (apfs, local)",
-        )
-
-        result = _run_start_sapphire(
-            tmp_path,
-            repo_root=repo_root,
-            backup_dir=backup_dir,
-            marker_path=marker_path,
-            bin_dir=bin_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert compose_log.exists(), (
-            "the stack must still start even though the marker's parent "
-            "directory is missing (best-effort only)"
-        )
-        assert "up -d" in compose_log.read_text()
-        assert not marker_path.exists()

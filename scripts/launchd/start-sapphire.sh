@@ -17,7 +17,6 @@ set -e
 # scripts/launchd/run-recap-probe.sh's RECAP_PROBE_SCRIPT etc.
 REPO_ROOT="${SAPPHIRE_REPO_ROOT:-/Users/sapphire/SAPPHIRE_flow}"
 BACKUP_DIR="${SAPPHIRE_BACKUP_DIR:-/Volumes/sapphire-backup/pg_dumps}"
-BACKUP_MARKER_PATH="${SAPPHIRE_BACKUP_MARKER_PATH:-${REPO_ROOT}/.backup-volume-unverified.json}"
 
 # --- Backup target device verification (Plan 194 D1) ------------------------
 # Mirrors the identical trio of functions in scripts/bootstrap-mac-mini.sh —
@@ -113,29 +112,15 @@ done
 # launchd-triggered stack start: refusing to bring up the forecasting stack
 # because a removable backup disk is absent would trade a backup outage for
 # a *forecasting* outage, the exact mistake this plan exists to avoid.
-# Check, record a machine-readable marker, and proceed regardless.
+# Check, WARN, and proceed regardless.
 #
-# The marker read/write below is BEST-EFFORT: under `set -e`, a failure to
-# remove or write it (read-only checkout, disk full, a root-owned marker
-# left behind by a prior run, or the marker path colliding with a
-# directory) must never itself abort this script before `exec docker
-# compose` — that would turn a backup-marker bookkeeping problem into
-# exactly the forecasting outage this whole check exists to avoid. Each
-# branch below is its own `if <command>; then` (the command is the `if`'s
-# condition, so it is exempt from `-e`) with a warning on failure, never a
-# bare command whose failure could trip `-e` and skip the compose-up.
-if backup_target_verified "${BACKUP_DIR}" "${REPO_ROOT}"; then
-    if ! rm -f "${BACKUP_MARKER_PATH}" 2>/dev/null; then
-        echo "WARNING: could not clear stale backup marker at ${BACKUP_MARKER_PATH} (best-effort only) — continuing." >&2
-    fi
-else
-    if printf '{"verified": false, "checked_at": "%s", "backup_dir": "%s", "data_dir": "%s"}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${BACKUP_DIR}" "${REPO_ROOT}" \
-        > "${BACKUP_MARKER_PATH}" 2>/dev/null; then
-        echo "WARNING: backup volume not verified at ${BACKUP_DIR} — dumps may land on the boot disk. Marker written to ${BACKUP_MARKER_PATH}." >&2
-    else
-        echo "WARNING: backup volume not verified at ${BACKUP_DIR} — dumps may land on the boot disk. Marker could NOT be written to ${BACKUP_MARKER_PATH} (best-effort only) — continuing." >&2
-    fi
+# `set -e` safety: the check runs as an `if` CONDITION, which is exempt
+# from `-e`. A bare `backup_target_verified ...` statement would abort this
+# script before `exec docker compose` on an unverified volume — turning a
+# backup problem into exactly the forecasting outage this check exists to
+# avoid. Keep it in the `if`.
+if ! backup_target_verified "${BACKUP_DIR}" "${REPO_ROOT}"; then
+    echo "WARNING: backup volume not verified at ${BACKUP_DIR} — dumps may land on the boot disk." >&2
 fi
 
 exec docker compose \

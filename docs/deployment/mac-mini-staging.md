@@ -487,10 +487,9 @@ device id, bootstrap creates `pg_dumps/` itself. Re-run
 
 start-sapphire.sh (the launchd stack-start wrapper) runs this same check
 on every boot but, per Plan 194 D3, never blocks the stack on it — an
-absent backup disk must not also cause a forecasting outage. It instead
-writes `.backup-volume-unverified.json` beside the compose files (cleared
-automatically once the volume verifies again) and proceeds; the watchdog
-(below) is what actually alerts on the condition.
+absent backup disk must not also cause a forecasting outage. It warns to
+stderr — which launchd routes to the stack-start log — and proceeds; the
+watchdog (below) is what actually alerts on the condition.
 
 Then recreate the container that actually owns the backup bind mount —
 `prefect-worker-backup` (Plan 162 D2), **not** `prefect-worker`: the USB
