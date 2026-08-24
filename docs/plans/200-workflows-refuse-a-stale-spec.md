@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-24
 plan: 200
 title: A workflow must refuse to build from a stale copy of its plan
@@ -13,7 +13,7 @@ source: PR #201 post-mortem; worktree-hygiene incidents 2026-08-20/21/24
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner flip 2026-08-24. All decisions ratified (D1-D5); the root cause was corrected and independently verified.
 
 **⚠️ ROOT CAUSE CORRECTED 2026-08-24 (third revision).** A separate verification pass disproved this
 plan's own diagnosis: the marker was implemented at **17:41**, before the 18:14 review, so the build did
