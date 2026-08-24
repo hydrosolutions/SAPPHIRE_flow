@@ -38,6 +38,7 @@ from scripts.dhm_precip.ma6_pairs import (
     PairedRetainedSubset,
     PairedSeries,
     RetainedSubsetSchemaError,
+    Scale,
     _read_era5_nearest_frames,
     build_gauge_masked_population,
     build_paired_population,
@@ -270,8 +271,8 @@ class TestSubsetComputesItsOwnN:
             ),
         )
 
-        full = subset(gauge, pl.lit(True))
-        july_only = subset(gauge, pl.col("timestamp").dt.month() == 7)
+        full = subset(gauge, pl.lit(True), scale=Scale.JJAS)
+        july_only = subset(gauge, pl.col("timestamp").dt.month() == 7, scale=Scale.JJAS)
 
         assert isinstance(full, GaugeRetainedSubset)
         assert full.n_gauge_retained == 10
@@ -295,8 +296,10 @@ class TestSubsetComputesItsOwnN:
             ),
         )
 
-        full = subset(paired, pl.lit(True))
-        july_only = subset(paired, pl.col("timestamp").dt.month() == 7)
+        full = subset(paired, pl.lit(True), scale=Scale.JJAS)
+        july_only = subset(
+            paired, pl.col("timestamp").dt.month() == 7, scale=Scale.JJAS
+        )
 
         assert isinstance(full, PairedRetainedSubset)
         assert full.n_common_retained == 10
@@ -310,7 +313,7 @@ class TestSubsetComputesItsOwnN:
             station=Station("A"),
             frame=pl.DataFrame({"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}),
         )
-        result = subset(gauge, pl.col("timestamp") <= 2)
+        result = subset(gauge, pl.col("timestamp") <= 2, scale=Scale.JJAS)
         assert result.n_gauge_retained == result.frame.height == 2
 
     def test_a_gauge_subset_does_not_carry_the_paired_count(self) -> None:
@@ -323,9 +326,89 @@ class TestSubsetComputesItsOwnN:
             station=Station("A"),
             frame=pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
         )
-        gauge_subset = subset(gauge, pl.lit(True))
+        gauge_subset = subset(gauge, pl.lit(True), scale=Scale.JJAS)
 
         assert not hasattr(gauge_subset, "n_common_retained")
+
+
+class TestSubsetCarriesItsOwnIdentity:
+    """Root-cause structural fix (Plan 184 phase 2, 2026-08-24): `subset()`
+    used to throw the station away entirely and never carried a scale at
+    all — every downstream estimand had to accept both as independently-
+    suppliable constructor fields just to re-attach identity `subset()`'s
+    own inputs already carried. `GaugeRetainedSubset`/`PairedRetainedSubset`
+    now stamp `station`/`scale` at `subset()` time, from the series being
+    sliced and the scale argument itself."""
+
+    def test_gauge_subset_carries_the_series_station_and_the_call_scale(self) -> None:
+        gauge = MaskedGaugeSeries(
+            station=Station("Kirtipur"),
+            frame=pl.DataFrame({"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}),
+        )
+
+        result = subset(gauge, pl.lit(True), scale=Scale.DJF)
+
+        assert result.station == Station("Kirtipur")
+        assert result.scale is Scale.DJF
+
+    def test_paired_subset_carries_the_series_station_and_the_call_scale(self) -> None:
+        paired = PairedSeries(
+            station=Station("Khumaltar"),
+            frame=pl.DataFrame(
+                {
+                    "timestamp": [1, 2, 3],
+                    "gauge_value_mm": [1.0, 2.0, 3.0],
+                    "era5_nearest_mm_per_h": [0.1, 0.2, 0.3],
+                }
+            ),
+        )
+
+        result = subset(paired, pl.lit(True), scale=Scale.MONTHLY)
+
+        assert result.station == Station("Khumaltar")
+        assert result.scale is Scale.MONTHLY
+
+    def test_two_stations_sliced_the_same_way_carry_different_identities(self) -> None:
+        # The station a subset carries comes from the SERIES it was taken
+        # from, never from a shared default — two different series produce
+        # subsets that disagree on station even under the identical
+        # predicate/scale.
+        gauge_a = MaskedGaugeSeries(
+            station=Station("A"),
+            frame=pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+        )
+        gauge_b = MaskedGaugeSeries(
+            station=Station("B"),
+            frame=pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+        )
+
+        subset_a = subset(gauge_a, pl.lit(True), scale=Scale.JJAS)
+        subset_b = subset(gauge_b, pl.lit(True), scale=Scale.JJAS)
+
+        assert subset_a.station != subset_b.station
+        assert subset_a.station == Station("A")
+        assert subset_b.station == Station("B")
+
+    def test_subset_rejects_a_paired_retained_subset_passed_back_in(self) -> None:
+        # Closes the duck-typing hole: a PairedRetainedSubset also carries a
+        # `.frame`/`.station`, so without an explicit isinstance check
+        # `subset()` would silently "re-subset" an already-built subset and
+        # have it come out looking freshly taken — exactly what would let
+        # an unconditioned subset be laundered into looking conditioned.
+        paired = PairedSeries(
+            station=Station("A"),
+            frame=pl.DataFrame(
+                {
+                    "timestamp": [1, 2],
+                    "gauge_value_mm": [1.0, 2.0],
+                    "era5_nearest_mm_per_h": [0.1, 0.2],
+                }
+            ),
+        )
+        already_built = subset(paired, pl.lit(True), scale=Scale.JJAS)
+
+        with pytest.raises(TypeError, match="MaskedGaugeSeries or PairedSeries"):
+            subset(already_built, pl.lit(True), scale=Scale.DJF)  # type: ignore[type-var]
 
 
 class TestRetainedSubsetSchemaGuard:
@@ -344,7 +427,9 @@ class TestRetainedSubsetSchemaGuard:
         )
 
         with pytest.raises(RetainedSubsetSchemaError, match="era5_nearest_mm_per_h"):
-            GaugeRetainedSubset(frame=paired_frame)
+            GaugeRetainedSubset(
+                frame=paired_frame, station=Station("A"), scale=Scale.JJAS
+            )
 
     def test_a_gauge_frame_is_rejected_by_paired_retained_subset(self) -> None:
         gauge_frame = pl.DataFrame(
@@ -352,7 +437,9 @@ class TestRetainedSubsetSchemaGuard:
         )
 
         with pytest.raises(RetainedSubsetSchemaError, match="era5_nearest_mm_per_h"):
-            PairedRetainedSubset(frame=gauge_frame)
+            PairedRetainedSubset(
+                frame=gauge_frame, station=Station("A"), scale=Scale.JJAS
+            )
 
 
 def _write_series_nearest_nc(

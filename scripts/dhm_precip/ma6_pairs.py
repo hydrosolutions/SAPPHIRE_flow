@@ -37,7 +37,24 @@ static signal. `subset()` returns whichever type matches the frame kind it
 was given, so a T3 function that requires a *paired* `n` can declare
 `PairedRetainedSubset` in its signature and have a gauge subset rejected at
 type-check time, not at review time.
-"""
+
+**Root-cause structural fix (Plan 184 phase 2, 2026-08-24): a subset now
+carries its OWN identity.** Eight independent T3 review findings all traced
+to the same hole one layer below where each was found: `PairedSeries` knows
+its `station`, but `subset()` used to throw that away — `GaugeRetainedSubset`
+and `PairedRetainedSubset` carried only `frame`, and `scale` was never
+carried at all. Every downstream estimand therefore had to ACCEPT `station`
+and `scale` as independently-suppliable constructor fields just to re-attach
+what the subset itself already knew — and that re-supply was the hole a
+mismatched station or scale could pass through undetected.
+
+`GaugeRetainedSubset` and `PairedRetainedSubset` now carry `station: Station`
+and `scale: Scale` as plain fields, populated ONCE, at `subset()` time, from
+the series being sliced (`series.station`) and the `scale` `subset()` itself
+was called with — never re-derived or re-suppliable downstream. `Scale`
+lives here, not in `ma6_estimands.py`, for the same reason: a subset's scale
+is a property of HOW it was taken, not of what statistic is later computed
+from it. `ma6_estimands.py` imports it from here."""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 # pyright: reportUnknownArgumentType=false
@@ -47,6 +64,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, overload
 
 import polars as pl
@@ -85,6 +103,20 @@ _ERA5_NEAREST_SERIES_FILENAME = "series_nearest.nc"
 _ERA5_VALUE_VAR = "precipitation_mm_per_h"
 
 _PAIRED_ONLY_COLUMN = "era5_nearest_mm_per_h"
+
+
+class Scale(StrEnum):
+    """The D3 scales a subset can be taken at — `DAILY`/`MONTHLY` are D12's
+    categorical grain; `JJAS`/`DJF` are the two seasons this track already
+    treats as canonical (Rule 1). Lives here, not in `ma6_estimands.py`,
+    because a subset's scale is a property of HOW it was taken (`subset()`'s
+    own `scale` argument), not of what statistic is later computed from it
+    (module docstring, root-cause structural fix)."""
+
+    DAILY = "DAILY"
+    MONTHLY = "MONTHLY"
+    JJAS = "JJAS"
+    DJF = "DJF"
 
 
 class RetainedSubsetSchemaError(ValueError):
@@ -154,8 +186,15 @@ class GaugeRetainedSubset:
     DIFFERENT TYPE from `PairedRetainedSubset` precisely so the two counts
     cannot be confused: a function that needs the commonly-retained count
     D2/Exit 1/4 mean by "n" cannot accept this type (Finding 1, Plan 184 T1
-    review)."""
+    review).
 
+    `station` and `scale` are plain fields populated ONCE, by `subset()`
+    itself, from the series being sliced and the scale it was sliced by
+    (root-cause structural fix, module docstring) — a downstream consumer
+    reads them off this subset rather than accepting them independently."""
+
+    station: Station
+    scale: Scale
     frame: pl.DataFrame
 
     def __post_init__(self) -> None:
@@ -185,8 +224,16 @@ class PairedRetainedSubset:
     statistic's `n` can only ever be that statistic's own JJAS-monthly row
     count, never the whole series' retention count — and, being a distinct
     type from `GaugeRetainedSubset`, it can never be gauge-only exposure
-    wearing the common-retained name (Finding 1, Plan 184 T1 review)."""
+    wearing the common-retained name (Finding 1, Plan 184 T1 review).
 
+    `station` and `scale` are plain fields populated ONCE, by `subset()`
+    itself, from the series being sliced and the scale it was sliced by
+    (root-cause structural fix, module docstring) — every T3 estimand built
+    from this subset derives its own `station`/`scale` from THESE fields,
+    never accepting them as independent arguments."""
+
+    station: Station
+    scale: Scale
     frame: pl.DataFrame
 
     def __post_init__(self) -> None:
@@ -205,15 +252,19 @@ class PairedRetainedSubset:
 
 
 @overload
-def subset(series: MaskedGaugeSeries, predicate: pl.Expr) -> GaugeRetainedSubset: ...
+def subset(
+    series: MaskedGaugeSeries, predicate: pl.Expr, *, scale: Scale
+) -> GaugeRetainedSubset: ...
 
 
 @overload
-def subset(series: PairedSeries, predicate: pl.Expr) -> PairedRetainedSubset: ...
+def subset(
+    series: PairedSeries, predicate: pl.Expr, *, scale: Scale
+) -> PairedRetainedSubset: ...
 
 
 def subset(
-    series: MaskedGaugeSeries | PairedSeries, predicate: pl.Expr
+    series: MaskedGaugeSeries | PairedSeries, predicate: pl.Expr, *, scale: Scale
 ) -> GaugeRetainedSubset | PairedRetainedSubset:
     """The one way T3+ take a season/scale/period slice of either named
     output. The RETURN TYPE tracks the INPUT type — a `MaskedGaugeSeries`
@@ -221,11 +272,28 @@ def subset(
     yields a `PairedRetainedSubset` (`n_common_retained`) — so a caller
     (and pyright, statically) can never mistake one estimand for the
     other. Either subset's count is always freshly computed from the
-    RESULT of this filter."""
+    RESULT of this filter.
+
+    `station` and `scale` are stamped onto the result HERE, from
+    `series.station` and this call's own `scale` argument — the single
+    place either subset type's identity is ever populated (root-cause
+    structural fix, module docstring). The `isinstance` checks are not
+    merely a `MaskedGaugeSeries`/else dispatch: something that duck-types a
+    `.frame`/`.station` pair without actually being a `MaskedGaugeSeries`
+    or `PairedSeries` (for instance, a `PairedRetainedSubset` passed back in
+    by mistake) is rejected outright, rather than silently re-subset — this
+    is what makes it impossible to launder an unconditioned subset through
+    `subset()` a second time and have it come out looking freshly taken."""
     filtered = series.frame.filter(predicate)
     if isinstance(series, MaskedGaugeSeries):
-        return GaugeRetainedSubset(frame=filtered)
-    return PairedRetainedSubset(frame=filtered)
+        return GaugeRetainedSubset(frame=filtered, station=series.station, scale=scale)
+    if isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
+        series, PairedSeries
+    ):
+        return PairedRetainedSubset(frame=filtered, station=series.station, scale=scale)
+    raise TypeError(
+        f"subset() requires a MaskedGaugeSeries or PairedSeries, got {type(series)}"
+    )
 
 
 def build_gauge_masked_population(
