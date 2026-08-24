@@ -15,6 +15,7 @@ import pytest
 from scripts.dhm_precip.domain_types import Station
 from scripts.dhm_precip.ma6_estimands import (
     CategoricalGrainRefusedError,
+    CategoricalScores,
     ConditionalAccumulatedDifference,
     ElevationBand,
     EmptySubsetError,
@@ -24,9 +25,9 @@ from scripts.dhm_precip.ma6_estimands import (
     MatchedHourMeanDifference,
     RetentionConditionality,
     Scale,
+    ScaleNotSupportedError,
     WetHourConditionalIntensityBias,
     WetHourConditionalIntensityBiasComparison,
-    WetHourConditioningReconciliationError,
     assign_elevation_band,
     band_matched_hour_mean_difference,
     categorical_scores,
@@ -249,10 +250,10 @@ class TestJointWetHourConditionalIntensityBias:
             wet_jjas, station=station, scale=Scale.JJAS
         )
 
-        assert (
-            joint_result.joint_conditionality
-            is JointWetConditionality.CONDITIONAL_ON_ERA5_WET_CLASSIFICATION
+        expected_conditionality = (
+            JointWetConditionality.CONDITIONAL_ON_RETENTION_AND_ERA5_WET_CLASSIFICATION
         )
+        assert joint_result.joint_conditionality is expected_conditionality
         # Rule 1: the gauge-alone conditioning is already well-defined
         # under the mask (singly conditional) — over-caveating it with the
         # doubly-conditional marker would misrepresent it.
@@ -261,7 +262,7 @@ class TestJointWetHourConditionalIntensityBias:
 
 class TestWetHourConditionalIntensityBiasComparison:
     @staticmethod
-    def _real_shaped_comparison() -> WetHourConditionalIntensityBiasComparison:
+    def _real_shaped_paired() -> tuple[Station, PairedSeries]:
         # A 4-hour cycle repeated 20 times (80 hours): dry/dry, gauge-wet-
         # only, both-wet, era5-wet-only. Gauge-wet hours = 2 per cycle (40
         # total); jointly-wet hours = 1 per cycle (20 total) — a real
@@ -276,12 +277,13 @@ class TestWetHourConditionalIntensityBiasComparison:
         paired = _make_paired_series(
             station, datetime(2024, 7, 1, 0), len(gauge), gauge=gauge, era5=era5
         )
-        wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
-        joint_wet_jjas = joint_wet_scale_subset(
-            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
-        )
+        return station, paired
+
+    @classmethod
+    def _real_shaped_comparison(cls) -> WetHourConditionalIntensityBiasComparison:
+        station, paired = cls._real_shaped_paired()
         return wet_hour_conditional_intensity_bias_comparison(
-            wet_jjas, joint_wet_jjas, station=station, scale=Scale.JJAS
+            paired, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
 
     def test_joint_n_is_strictly_less_than_gauge_alone_n_on_real_shaped_data(
@@ -305,91 +307,155 @@ class TestWetHourConditionalIntensityBiasComparison:
         assert comparison.joint.mean_intensity_bias_mm_per_h == pytest.approx(1.5)
         assert comparison.mean_shift_mm_per_h == pytest.approx(1.5 - 1.2)
 
-    def test_station_and_scale_must_agree_between_the_two_components(self) -> None:
-        station_a = Station("A")
-        station_b = Station("B")
-        paired_a = _make_paired_series(
-            station_a, datetime(2024, 7, 1, 0), 2, gauge=[1.0, 2.0], era5=[0.5, 0.5]
-        )
-        paired_b = _make_paired_series(
-            station_b, datetime(2024, 7, 1, 0), 2, gauge=[1.0, 2.0], era5=[0.5, 0.5]
-        )
-        wet_a = wet_scale_subset(paired_a, scale=Scale.JJAS, params=DEFAULT_PARAMS)
-        joint_b = joint_wet_scale_subset(
-            paired_b, scale=Scale.JJAS, params=DEFAULT_PARAMS
-        )
-        gauge_alone = wet_hour_conditional_intensity_bias(
-            wet_a, station=station_a, scale=Scale.JJAS
-        )
-        joint = joint_wet_hour_conditional_intensity_bias(
-            joint_b, station=station_b, scale=Scale.JJAS
-        )
-
-        with pytest.raises(WetHourConditioningReconciliationError, match="station"):
+    def test_rejects_a_paired_that_is_not_a_real_pairedseries(self) -> None:
+        with pytest.raises(EstimandSubsetTypeError):
             WetHourConditionalIntensityBiasComparison(
-                gauge_alone=gauge_alone, joint=joint
+                station=Station("A"),
+                scale=Scale.JJAS,
+                paired=42,  # type: ignore[arg-type]
+                params=DEFAULT_PARAMS,
             )
 
-    def test_joint_population_not_nested_in_gauge_alone_is_rejected(self) -> None:
-        # Finding-shaped teeth test (per Rule 1 discipline this track
-        # keeps needing): pair a REAL gauge_alone with a "joint" built from
-        # an UNRELATED station's hours at the same station label — same n,
-        # same scale, but the jointly-wet hours are NOT a subset of
-        # gauge_alone's retained hours. The reconciliation check must
-        # catch this by row identity (timestamps), not merely by count.
+    def test_daily_scale_is_not_supported(self) -> None:
+        _station, paired = self._real_shaped_paired()
+
+        with pytest.raises(ScaleNotSupportedError):
+            WetHourConditionalIntensityBiasComparison(
+                station=Station("A"),
+                scale=Scale.DAILY,
+                paired=paired,
+                params=DEFAULT_PARAMS,
+            )
+
+    def test_gauge_alone_and_joint_are_not_independently_suppliable_fields(
+        self,
+    ) -> None:
+        # Finding 1 (Plan 184 phase 2 independent review, 2026-08-24): the
+        # OLD comparator took `gauge_alone`/`joint` as independently-
+        # suppliable constructor fields. The fix removes the fields
+        # entirely rather than strengthening the guard on them — so
+        # attempting to supply either is a TypeError (unexpected keyword
+        # argument), the same "no field to attach through" shape every
+        # other estimand in this module already proves.
+        station, paired = self._real_shaped_paired()
+        comparison = wet_hour_conditional_intensity_bias_comparison(
+            paired, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+
+        with pytest.raises(TypeError, match="gauge_alone"):
+            WetHourConditionalIntensityBiasComparison(
+                station=station,
+                scale=Scale.JJAS,
+                paired=paired,
+                params=DEFAULT_PARAMS,
+                gauge_alone=comparison.gauge_alone,  # type: ignore[call-arg]
+            )
+        with pytest.raises(TypeError, match="joint"):
+            WetHourConditionalIntensityBiasComparison(
+                station=station,
+                scale=Scale.JJAS,
+                paired=paired,
+                params=DEFAULT_PARAMS,
+                joint=comparison.joint,  # type: ignore[call-arg]
+            )
+
+    def test_same_timestamps_different_values_cannot_be_crossed_between_conditionings(
+        self,
+    ) -> None:
+        # Finding 1 (Plan 184 phase 2 independent review, 2026-08-24) — the
+        # SIXTH instance of this milestone's signature defect, and the
+        # case the OLD test (`test_joint_population_not_nested_in_gauge_
+        # alone_is_rejected`, which used DISJOINT timestamps) could not
+        # reach: two subsets built from DIFFERENT PairedSeries that share
+        # the SAME timestamps but carry UNRELATED gauge/ERA5 values passed
+        # the old anti-join-on-timestamp guard undetected. `paired_x` and
+        # `paired_y` below are exactly that shape — same station, same 4
+        # timestamps, different values, each with its own non-trivial
+        # gauge-wet/jointly-wet population (so a crossed result would be
+        # numerically distinguishable, not a degenerate no-op).
         station = Station("A")
-        paired = _make_paired_series(
-            station,
-            datetime(2024, 7, 1, 0),
-            4,
-            gauge=[0.0, 1.0, 2.0, 0.0],
-            era5=[0.0, 0.1, 0.5, 1.0],
+        start = datetime(2024, 7, 1, 0)
+        # paired_x: all 4 hours gauge-wet; 2 of those also era5-wet.
+        paired_x = _make_paired_series(
+            station, start, 4, gauge=[1.0, 1.0, 1.0, 1.0], era5=[0.5, 0.5, 0.1, 0.1]
         )
-        wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
-        gauge_alone = wet_hour_conditional_intensity_bias(
-            wet_jjas, station=station, scale=Scale.JJAS
-        )
-        # A disjoint-in-time "joint" subset, same station label, same
-        # scale, non-zero n — but none of its hours are among
-        # gauge_alone's.
-        unrelated_paired = _make_paired_series(
-            station,
-            datetime(2025, 7, 1, 0),
-            1,
-            gauge=[5.0],
-            era5=[5.0],
-        )
-        unrelated_joint_subset = joint_wet_scale_subset(
-            unrelated_paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
-        )
-        unrelated_joint = joint_wet_hour_conditional_intensity_bias(
-            unrelated_joint_subset, station=station, scale=Scale.JJAS
+        # paired_y: same timestamps, DIFFERENT values — only 2 hours
+        # gauge-wet, both of those also era5-wet (a completely different
+        # detection/intensity shape).
+        paired_y = _make_paired_series(
+            station, start, 4, gauge=[5.0, 5.0, 0.0, 0.0], era5=[50.0, 50.0, 0.0, 0.0]
         )
 
-        with pytest.raises(WetHourConditioningReconciliationError, match="subset"):
+        comparison_x = wet_hour_conditional_intensity_bias_comparison(
+            paired_x, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        comparison_y = wet_hour_conditional_intensity_bias_comparison(
+            paired_y, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+
+        # The two series give genuinely different, non-degenerate numbers
+        # — confirming this WOULD be a meaningful attack if crossing were
+        # possible, not a no-op with nothing to fabricate.
+        assert comparison_x.gauge_alone.n == 4
+        assert comparison_x.joint.n == 2
+        assert comparison_x.detection_ratio == pytest.approx(0.5)
+        assert comparison_x.gauge_alone.mean_intensity_bias_mm_per_h == pytest.approx(
+            0.7
+        )
+        assert comparison_x.joint.mean_intensity_bias_mm_per_h == pytest.approx(0.5)
+
+        assert comparison_y.gauge_alone.n == 2
+        assert comparison_y.joint.n == 2
+        assert comparison_y.detection_ratio == pytest.approx(1.0)
+        assert comparison_y.gauge_alone.mean_intensity_bias_mm_per_h == pytest.approx(
+            -45.0
+        )
+
+        # There is no argument through which `comparison_x`'s `paired`
+        # could be swapped for `paired_y`'s components after the fact —
+        # `gauge_alone`/`joint` are properties, `paired` is the only
+        # data-bearing field, and reconstructing with `paired_y`'s
+        # PRE-COMPUTED gauge_alone/joint (rather than `paired_y` itself)
+        # is rejected outright because those are not constructor fields.
+        with pytest.raises(TypeError, match="joint"):
             WetHourConditionalIntensityBiasComparison(
-                gauge_alone=gauge_alone, joint=unrelated_joint
+                station=station,
+                scale=Scale.JJAS,
+                paired=paired_x,
+                params=DEFAULT_PARAMS,
+                joint=comparison_y.joint,  # type: ignore[call-arg]
             )
+        # The only way to get comparison_x's numbers is to pass paired_x;
+        # they are never contaminated by paired_y's values.
+        assert comparison_x.detection_ratio != pytest.approx(
+            comparison_y.detection_ratio
+        )
 
     def test_detection_ratio_has_no_field_to_attach_through(self) -> None:
+        station, paired = self._real_shaped_paired()
         comparison = self._real_shaped_comparison()
         stolen_ratio = comparison.detection_ratio
 
         with pytest.raises(TypeError, match="detection_ratio"):
             WetHourConditionalIntensityBiasComparison(
-                gauge_alone=comparison.gauge_alone,
-                joint=comparison.joint,
+                station=station,
+                scale=Scale.JJAS,
+                paired=paired,
+                params=DEFAULT_PARAMS,
                 detection_ratio=stolen_ratio,  # type: ignore[call-arg]
             )
 
     def test_mean_shift_has_no_field_to_attach_through(self) -> None:
+        station, paired = self._real_shaped_paired()
         comparison = self._real_shaped_comparison()
         stolen_shift = comparison.mean_shift_mm_per_h
 
         with pytest.raises(TypeError, match="mean_shift_mm_per_h"):
             WetHourConditionalIntensityBiasComparison(
-                gauge_alone=comparison.gauge_alone,
-                joint=comparison.joint,
+                station=station,
+                scale=Scale.JJAS,
+                paired=paired,
+                params=DEFAULT_PARAMS,
                 mean_shift_mm_per_h=stolen_shift,  # type: ignore[call-arg]
             )
 
@@ -554,6 +620,19 @@ class TestCategoricalScoresRefusesSeasonGrain:
         with pytest.raises(CategoricalGrainRefusedError):
             categorical_scores(accumulated, params=DEFAULT_PARAMS)
 
+    def test_jjas_grain_is_refused_by_direct_construction_too(self) -> None:
+        # Finding 2 (Plan 184 phase 2 independent review, 2026-08-24): the
+        # OLD `CategoricalScores` refused seasonal grain ONLY inside the
+        # `categorical_scores()` factory — direct construction accepted a
+        # JJAS score with arbitrary n_hours/POD/FAR/CSI, bypassing D12's
+        # vacuity refusal entirely. The refusal now lives in
+        # `CategoricalScores.__post_init__` itself, so direct construction
+        # (bypassing the factory) must raise too.
+        accumulated = self._jjas_accumulated()
+
+        with pytest.raises(CategoricalGrainRefusedError):
+            CategoricalScores(accumulated=accumulated, params=DEFAULT_PARAMS)
+
     def test_djf_grain_is_also_refused(self) -> None:
         station = Station("A")
         paired = _make_paired_series(
@@ -570,6 +649,74 @@ class TestCategoricalScoresRefusesSeasonGrain:
 
         with pytest.raises(CategoricalGrainRefusedError):
             categorical_scores(accumulated, params=DEFAULT_PARAMS)
+
+    def test_djf_grain_is_refused_by_direct_construction_too(self) -> None:
+        station = Station("A")
+        paired = _make_paired_series(
+            station,
+            datetime(2024, 12, 1, 0),
+            2,
+            gauge=[1.0, 2.0],
+            era5=[0.5, 0.5],
+        )
+        djf = scale_subset(paired, scale=Scale.DJF, params=DEFAULT_PARAMS)
+        accumulated = conditional_accumulated_difference(
+            djf, station=station, scale=Scale.DJF
+        )
+
+        with pytest.raises(CategoricalGrainRefusedError):
+            CategoricalScores(accumulated=accumulated, params=DEFAULT_PARAMS)
+
+    def test_rejects_an_accumulated_that_is_not_a_real_conditionalaccumulateddifference(
+        self,
+    ) -> None:
+        with pytest.raises(EstimandSubsetTypeError):
+            CategoricalScores(
+                accumulated=42,  # type: ignore[arg-type]
+                params=DEFAULT_PARAMS,
+            )
+
+    def test_scores_and_counts_are_not_independently_suppliable_fields(self) -> None:
+        # Finding 2 continued: `scale`, counts and scores were freely
+        # constructible fields — only the factory refused seasonal grain.
+        # They are now `@property`s derived from `self.accumulated`/
+        # `self.params`, so there is no `n_hours=`/`pod=`/`far=`/`csi=`
+        # constructor argument through which a caller could attach
+        # fabricated values to a real `CategoricalScores` instance.
+        station = Station("A")
+        start = datetime(2024, 7, 1, 0)
+        n_hours = 48
+        gauge = [1.0] * 24 + [0.0] * 24
+        era5 = [1.0] * 24 + [0.0] * 24
+        timestamps = [start + timedelta(hours=i) for i in range(n_hours)]
+        frame = _paired_frame(
+            [
+                {
+                    "timestamp": timestamps[i],
+                    "gauge_value_mm": gauge[i],
+                    "era5_nearest_mm_per_h": era5[i],
+                }
+                for i in range(n_hours)
+            ]
+        )
+        paired = PairedSeries(station=station, frame=frame)
+        daily = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
+        accumulated = conditional_accumulated_difference(
+            daily, station=station, scale=Scale.DAILY
+        )
+
+        with pytest.raises(TypeError, match="pod"):
+            CategoricalScores(
+                accumulated=accumulated,
+                params=DEFAULT_PARAMS,
+                pod=1.0,  # type: ignore[call-arg]
+            )
+        with pytest.raises(TypeError, match="n_hours"):
+            CategoricalScores(
+                accumulated=accumulated,
+                params=DEFAULT_PARAMS,
+                n_hours=999,  # type: ignore[call-arg]
+            )
 
     def test_daily_grain_is_accepted(self) -> None:
         # Sanity: the refusal is specific to JJAS/DJF, not everything.

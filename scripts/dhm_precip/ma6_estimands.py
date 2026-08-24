@@ -71,22 +71,57 @@ conditions on. `WetHourConditionalIntensityBias` (unchanged, still
 gauge-alone: hours the GAUGE calls wet, ERA5 wet or dry) answers "when
 the gauge says it rained, how far off is ERA5's intensity?" but mixes in
 ERA5's own detection failure. `JointWetHourConditionalIntensityBias`
-(new) restricts to hours BOTH sides call wet — isolating intensity from
-detection, at the cost of conditioning on ERA5's own wet/dry behaviour
-too (doubly conditional; see `JointWetConditionality`). These are TWO
-DIFFERENT, NESTED populations (`joint` a strict subset of `gauge_alone`,
-never the reverse) — NOT orthogonal components of one statistic. An
-earlier framing of "the difference between the two IS the detection
-contribution" was considered and rejected: a difference of means over
-nested (not orthogonal) populations is a comparison across two different
-populations, exactly what D2 forbids and what this milestone has already
-reproduced five times. `WetHourConditionalIntensityBiasComparison`
-therefore reports both means, each with its OWN `n` (never a shared or
-inherited count), plus `detection_ratio` (`joint.n / gauge_alone.n` — the
-fraction of gauge-wet hours ERA5 also calls wet, itself a detection
-statistic, not part of the bias estimate) and `mean_shift_mm_per_h`
-(described as how much the estimate moves when ERA5-dry hours are
-excluded from the gauge-alone population — not a decomposition).
+(new) restricts to hours BOTH sides call wet, at the cost of
+conditioning on ERA5's own wet/dry behaviour too (doubly conditional;
+see `JointWetConditionality`).
+
+**The honest framing (Plan 184 phase 2 independent review, 2026-08-24,
+Finding 4 — this paragraph replaces an earlier, self-contradictory
+draft):** `joint` and `gauge_alone` are two DIFFERENT, NESTED
+populations — `joint` a subset of `gauge_alone`'s retained hours,
+EQUALITY PERMITTED (a jointly-wet hour is always a gauge-wet hour, but
+every gauge-wet hour could turn out ERA5-wet too), never the reverse —
+NOT orthogonal components of one statistic. Nothing is "isolated": a
+nested population is not an independent one, so `joint`'s intensity mean
+still carries whatever selection ERA5's own wet/dry call imposes.
+`WetHourConditionalIntensityBiasComparison` reports both means, each
+with its OWN `n` (never a shared or inherited count), plus
+`detection_ratio` (`joint.n / gauge_alone.n` — the fraction of gauge-wet
+hours ERA5 also calls wet, itself a detection statistic, not part of the
+bias estimate) and `mean_shift_mm_per_h` — how much the estimate moves
+when ERA5-dry hours are excluded from the gauge-alone population. This
+*is* the comparison the module computes
+(`joint.mean_intensity_bias_mm_per_h -
+gauge_alone.mean_intensity_bias_mm_per_h`); an earlier draft of this
+docstring said the opposite of the code a few lines below it — that
+exactly this comparison was "what D2 forbids". D2 forbids comparing
+means computed from subsets that do NOT share a common parent population
+(the mismatched-population failure mode this milestone keeps
+reproducing); it does not forbid a sensitivity comparison between two
+NESTED subsets of the SAME parent, which is what `mean_shift_mm_per_h`
+is. A nested sensitivity is a legitimate result — which is why the owner
+asked for both means to begin with.
+
+**Structural fix for the nesting itself (Finding 1, Plan 184 phase 2
+independent review, 2026-08-24):** `WetHourConditionalIntensityBias
+Comparison` no longer takes `gauge_alone`/`joint` as independently-
+suppliable constructor fields. A prior version did, guarded only by an
+anti-join on `timestamp` between the two supplied subsets — two subsets
+built from DIFFERENT `PairedSeries` that happened to share timestamps
+but carried unrelated gauge/ERA5 values passed that guard undetected (an
+anti-join on timestamp is blind to values). The fix is structural, not a
+stronger check: `WetHourConditionalIntensityBiasComparison` now stores
+exactly ONE `paired: PairedSeries` (plus `station`, `scale`, `params`)
+and derives BOTH `gauge_alone` and `joint` from THAT SAME `paired`,
+inside its own `@property`s, via `wet_scale_subset`/
+`joint_wet_scale_subset` — the same functions, applied to the same
+input, whose predicates are supersets of one another by construction
+(`joint_wet_scale_subset`'s predicate is `wet_scale_subset`'s plus an
+ERA5-wet term). Nesting therefore follows from polars filter semantics
+on one shared frame, not from a runtime check comparing two
+independently-supplied objects — there is no longer any constructor
+argument through which two unrelated subsets could be supplied in the
+first place.
 """
 
 from __future__ import annotations
@@ -97,23 +132,26 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from scripts.dhm_precip.ma6_pairs import PairedRetainedSubset, subset
+from scripts.dhm_precip.ma6_pairs import PairedRetainedSubset, PairedSeries, subset
 from scripts.dhm_precip.numeric import as_float, as_int
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from scripts.dhm_precip.domain_types import Station
-    from scripts.dhm_precip.ma6_pairs import PairedSeries
     from scripts.dhm_precip.params import DhmPrecipParams
 
 
 class EstimandSubsetTypeError(TypeError):
-    """An estimand result was constructed with something other than a real
+    """An estimand result was constructed with something other than the
+    real domain object its construction path requires — a
     `PairedRetainedSubset` (or, for `ConditionalAccumulatedDifference`, a
-    `periods` partition that does not reconcile against one) — the
-    structural guard against a statistic wearing an `n` that is not its
-    own (⛔ this track's recurring failure mode, Plan 184 T1 review)."""
+    `periods` partition that does not reconcile against one), a
+    `PairedSeries` (`WetHourConditionalIntensityBiasComparison.paired`),
+    or a `ConditionalAccumulatedDifference` (`CategoricalScores.
+    accumulated`) — the structural guard against a statistic wearing an
+    `n` that is not its own (⛔ this track's recurring failure mode, Plan
+    184 T1 review)."""
 
 
 class EmptySubsetError(ValueError):
@@ -134,17 +172,6 @@ class CategoricalGrainRefusedError(ValueError):
     POD->1.0, CSI->1.0, FAR->0 BY CONSTRUCTION, while totals may differ by
     hundreds of mm. A well-defined number that reads as perfect agreement
     and is analytically vacuous must be refused, not computed."""
-
-
-class WetHourConditioningReconciliationError(ValueError):
-    """Internal defence-in-depth only (`WetHourConditionalIntensityBiasComparison`'s
-    own guard): the JOINT conditioning (gauge AND ERA5 wet) is by
-    construction a restriction of the GAUGE-ALONE conditioning (gauge wet,
-    ERA5 wet or dry) — same season, same station, and `joint`'s retained
-    hours must all be present among `gauge_alone`'s. This guards
-    `joint_wet_scale_subset`/`wet_scale_subset`'s own predicate logic and a
-    caller's own pairing of the two components, not a further-downstream
-    caller input; not expected to ever fire in practice."""
 
 
 class AccumulatedDifferenceReconciliationError(ValueError):
@@ -385,32 +412,37 @@ def wet_hour_conditional_intensity_bias(
 
 
 class JointWetConditionality(StrEnum):
-    """Rule 1: `JointWetHourConditionalIntensityBias` is DOUBLY conditional
-    — on retention (D2, like every subset in this module) AND on ERA5's
-    own wet/dry classification, since its population is restricted to
-    hours ERA5 itself calls wet, not merely the gauge. `JointWetHour
-    ConditionalIntensityBias.joint_conditionality` carries this label as a
-    `ClassVar` — the same mechanism `CategoricalScores.
-    retention_conditionality` uses (Finding 2, Plan 184 T3 independent
-    review, 2026-08-21) — so it travels with every instance and cannot be
-    dropped by a downstream renderer. `WetHourConditionalIntensityBias`
-    (gauge-alone) is only singly conditional (retention only) and Rule 1
-    already treats it as well-defined under the mask — giving it this
-    extra label would over-caveat an already-well-defined result, so it
-    does NOT carry this marker (owner decision, Plan 184 T3 follow-up)."""
+    """Rule 1 / D13: `JointWetHourConditionalIntensityBias` is DOUBLY
+    conditional — on retention (D2, like every subset in this module) AND
+    on ERA5's own wet/dry classification, since its population is
+    restricted to hours ERA5 itself calls wet, not merely the gauge. The
+    label carried on every instance must express BOTH conditions, not
+    only the ERA5 one (Finding 3, Plan 184 phase 2 independent review,
+    2026-08-24 — an earlier version of this member named only the ERA5
+    half). `JointWetHourConditionalIntensityBias.joint_conditionality`
+    carries this label as a `ClassVar` — the same mechanism
+    `CategoricalScores.retention_conditionality` uses — so it travels
+    with every instance and cannot be dropped by a downstream renderer.
+    `WetHourConditionalIntensityBias` (gauge-alone) is only singly
+    conditional (retention only) and Rule 1 already treats it as
+    well-defined under the mask — giving it this extra label would
+    over-caveat an already-well-defined result, so it does NOT carry this
+    marker (owner decision, Plan 184 T3 follow-up)."""
 
-    CONDITIONAL_ON_ERA5_WET_CLASSIFICATION = "CONDITIONAL_ON_ERA5_WET_CLASSIFICATION"
+    CONDITIONAL_ON_RETENTION_AND_ERA5_WET_CLASSIFICATION = (
+        "CONDITIONAL_ON_RETENTION_AND_ERA5_WET_CLASSIFICATION"
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class JointWetHourConditionalIntensityBias:
     """D1's third estimand, JOINT-conditioned: mean(gauge - ERA5) restricted
     to hours BOTH the gauge AND ERA5 call wet (`joint_wet_scale_subset`'s
-    output). Isolates intensity bias from detection bias, at the cost of
-    conditioning on ERA5's own wet/dry behaviour too (doubly conditional,
-    see `JointWetConditionality`). `subset` here is the JOINT-conditioned
-    subset, never the gauge-alone one — a different, NESTED (strictly
-    smaller) population from `WetHourConditionalIntensityBias`'s, never a
+    output), at the cost of conditioning on ERA5's own wet/dry behaviour
+    too (doubly conditional, see `JointWetConditionality`). `subset` here
+    is the JOINT-conditioned subset, never the gauge-alone one — a
+    different, NESTED population from `WetHourConditionalIntensityBias`'s
+    (a subset of its retained hours, equality permitted), never a
     component of it.
 
     `n` and `mean_intensity_bias_mm_per_h` are `@property`s computed live
@@ -423,7 +455,7 @@ class JointWetHourConditionalIntensityBias:
     subset: PairedRetainedSubset
 
     joint_conditionality: ClassVar[JointWetConditionality] = (
-        JointWetConditionality.CONDITIONAL_ON_ERA5_WET_CLASSIFICATION
+        JointWetConditionality.CONDITIONAL_ON_RETENTION_AND_ERA5_WET_CLASSIFICATION
     )
 
     def __post_init__(self) -> None:
@@ -472,97 +504,81 @@ def joint_wet_hour_conditional_intensity_bias(
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WetHourConditionalIntensityBiasComparison:
     """Owner decision, Plan 184 T3 follow-up: report BOTH wet-hour
-    conditionings, never gauge-alone only. Pairs an already-built
-    `gauge_alone` (`WetHourConditionalIntensityBias`) with an
-    already-built `joint` (`JointWetHourConditionalIntensityBias`) for the
-    SAME station and scale.
+    conditionings, never gauge-alone only.
 
-    These are two DIFFERENT, NESTED populations — `joint` a strict subset
-    of `gauge_alone`'s retained hours — NOT orthogonal components of one
-    statistic, and this type is NOT a decomposition. `detection_ratio`
-    (`joint.n / gauge_alone.n`) is itself a detection statistic (the
-    fraction of gauge-wet hours ERA5 also calls wet), not part of the bias
-    estimate. `mean_shift_mm_per_h` is how much the mean moves when
-    ERA5-dry hours are excluded from the gauge-alone population — reported
-    as a shift between two population means, never as an orthogonal
-    "detection contribution" (that framing was considered and rejected:
-    a difference of means over nested populations is a comparison across
-    populations, which is exactly what D2 forbids).
+    **Structural fix (Finding 1, Plan 184 phase 2 independent review,
+    2026-08-24):** this type does NOT take `gauge_alone`/`joint` as
+    constructor fields. A prior version did, guarded only by an anti-join
+    on `timestamp` — two subsets built from DIFFERENT `PairedSeries` that
+    happened to share timestamps but carried unrelated gauge/ERA5 values
+    passed that guard undetected. Instead, this type stores exactly ONE
+    `paired: PairedSeries` (plus `station`, `scale`, `params`); `gauge_alone`
+    and `joint` are `@property`s that derive BOTH conditionings from THAT
+    SAME `paired`, via `wet_scale_subset`/`joint_wet_scale_subset` — the
+    same functions applied to the same input, whose predicates are
+    supersets of one another by construction (`joint_wet_scale_subset`'s
+    predicate is `wet_scale_subset`'s plus an ERA5-wet term). Nesting is
+    therefore guaranteed by polars filter semantics on one shared frame —
+    there is no argument through which two unrelated subsets could ever be
+    supplied.
+
+    `gauge_alone` and `joint` are two DIFFERENT, NESTED populations —
+    `joint` a subset of `gauge_alone`'s retained hours, equality
+    permitted — NOT orthogonal components of one statistic, and this type
+    is NOT a decomposition. `detection_ratio` (`joint.n / gauge_alone.n`)
+    is itself a detection statistic (the fraction of gauge-wet hours ERA5
+    also calls wet), not part of the bias estimate. `mean_shift_mm_per_h`
+    is how much the mean moves when ERA5-dry hours are excluded from the
+    gauge-alone population — a sensitivity between two NESTED population
+    means, not a decomposition and not an orthogonal "detection
+    contribution".
 
     Neither derived number is a constructor field — both are `@property`s
-    computed live from `self.gauge_alone`/`self.joint`, which are
-    themselves already-validated, self-computing estimand objects. There
-    is no argument through which a caller could attach a `detection_ratio`
-    or `mean_shift_mm_per_h` computed elsewhere."""
+    computed live from `self.gauge_alone`/`self.joint`. There is no
+    argument through which a caller could attach a `detection_ratio` or
+    `mean_shift_mm_per_h` computed elsewhere."""
 
-    gauge_alone: WetHourConditionalIntensityBias
-    joint: JointWetHourConditionalIntensityBias
+    station: Station
+    scale: Scale
+    paired: PairedSeries
+    params: DhmPrecipParams
 
     def __post_init__(self) -> None:
-        # See MatchedHourMeanDifference.__post_init__ for why these
-        # isinstance checks exist despite the declared types.
+        # See MatchedHourMeanDifference.__post_init__ for why this
+        # isinstance check exists despite the declared type.
         if not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
-            self.gauge_alone, WetHourConditionalIntensityBias
+            self.paired, PairedSeries
         ):
             raise EstimandSubsetTypeError(
-                "WetHourConditionalIntensityBiasComparison.gauge_alone must "
-                f"be a real WetHourConditionalIntensityBias, got "
-                f"{type(self.gauge_alone)}"
+                "WetHourConditionalIntensityBiasComparison.paired must be a "
+                f"real PairedSeries, got {type(self.paired)}"
             )
-        if not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
-            self.joint, JointWetHourConditionalIntensityBias
-        ):
-            raise EstimandSubsetTypeError(
-                "WetHourConditionalIntensityBiasComparison.joint must be a "
-                f"real JointWetHourConditionalIntensityBias, got "
-                f"{type(self.joint)}"
+        if self.scale not in _MAGNITUDE_SCALES:
+            raise ScaleNotSupportedError(
+                f"wet-hour conditional intensity bias comparison is scoped "
+                f"to {_MAGNITUDE_SCALES}, got {self.scale}"
             )
-        if self.gauge_alone.station != self.joint.station:
-            raise WetHourConditioningReconciliationError(
-                f"gauge_alone station {self.gauge_alone.station!r} does not "
-                f"match joint station {self.joint.station!r} — both "
-                "conditionings must be for the same station"
-            )
-        if self.gauge_alone.scale != self.joint.scale:
-            raise WetHourConditioningReconciliationError(
-                f"{self.gauge_alone.station!r}: gauge_alone scale "
-                f"{self.gauge_alone.scale} does not match joint scale "
-                f"{self.joint.scale} — both conditionings must be for the "
-                "same scale"
-            )
-        # joint is by construction a restriction of gauge_alone
-        # (joint_wet_scale_subset's predicate is wet_scale_subset's plus an
-        # ERA5-wet term) — every jointly-retained hour must therefore be
-        # among gauge_alone's own retained hours. An anti-join, not just an
-        # n-comparison, so this catches a caller pairing gauge_alone and
-        # joint built from DIFFERENT underlying paired series (which could
-        # coincidentally have joint.n <= gauge_alone.n without joint's
-        # hours being a real subset).
-        not_nested = (
-            self.joint.subset.frame.select("timestamp")
-            .join(
-                self.gauge_alone.subset.frame.select("timestamp"),
-                on="timestamp",
-                how="anti",
-            )
-            .height
+
+    @property
+    def gauge_alone(self) -> WetHourConditionalIntensityBias:
+        """Derived from `self.paired` via `wet_scale_subset` — the SAME
+        `paired` `joint` is derived from (see class docstring)."""
+        wet_subset = wet_scale_subset(self.paired, scale=self.scale, params=self.params)
+        return wet_hour_conditional_intensity_bias(
+            wet_subset, station=self.station, scale=self.scale
         )
-        if not_nested > 0:
-            raise WetHourConditioningReconciliationError(
-                f"{self.gauge_alone.station!r} at {self.gauge_alone.scale}: "
-                f"{not_nested} of joint's {self.joint.n} retained hours are "
-                "not present in gauge_alone's retained hours — joint must "
-                "be a strict subset of gauge_alone, never an unrelated "
-                "population"
-            )
 
     @property
-    def station(self) -> Station:
-        return self.gauge_alone.station
-
-    @property
-    def scale(self) -> Scale:
-        return self.gauge_alone.scale
+    def joint(self) -> JointWetHourConditionalIntensityBias:
+        """Derived from `self.paired` via `joint_wet_scale_subset` — the
+        SAME `paired` `gauge_alone` is derived from (see class
+        docstring)."""
+        joint_subset = joint_wet_scale_subset(
+            self.paired, scale=self.scale, params=self.params
+        )
+        return joint_wet_hour_conditional_intensity_bias(
+            joint_subset, station=self.station, scale=self.scale
+        )
 
     @property
     def detection_ratio(self) -> float:
@@ -574,8 +590,8 @@ class WetHourConditionalIntensityBiasComparison:
     @property
     def mean_shift_mm_per_h(self) -> float:
         """How much the mean intensity bias moves when ERA5-dry hours are
-        excluded from the gauge-alone population — a shift between two
-        population means, NOT a decomposition or an orthogonal
+        excluded from the gauge-alone population — a sensitivity between
+        two NESTED population means, NOT a decomposition or an orthogonal
         "detection contribution"."""
         return (
             self.joint.mean_intensity_bias_mm_per_h
@@ -584,26 +600,25 @@ class WetHourConditionalIntensityBiasComparison:
 
 
 def wet_hour_conditional_intensity_bias_comparison(
-    wet_paired_subset: PairedRetainedSubset,
-    joint_wet_paired_subset: PairedRetainedSubset,
+    paired: PairedSeries,
     *,
     station: Station,
     scale: Scale,
+    params: DhmPrecipParams,
 ) -> WetHourConditionalIntensityBiasComparison:
-    """Builds both conditionings from their own, already-scale/wet-sliced
-    subsets (`wet_scale_subset`'s and `joint_wet_scale_subset`'s outputs,
-    respectively) and pairs them. Either component's own `EmptySubsetError`
-    propagates unchanged — a zero-`n` conditioning is never silently
-    paired with the other."""
-    gauge_alone = wet_hour_conditional_intensity_bias(
-        wet_paired_subset, station=station, scale=scale
+    """Builds the comparison from ONE `PairedSeries` — `gauge_alone` and
+    `joint` are derived INSIDE the comparison's own construction path from
+    that SAME input (see `WetHourConditionalIntensityBiasComparison`'s
+    docstring), so there is no argument through which two unrelated
+    subsets could ever be supplied. `.gauge_alone`/`.joint` are accessed
+    here so either component's own `EmptySubsetError` propagates from this
+    call, not silently deferred to first property access."""
+    comparison = WetHourConditionalIntensityBiasComparison(
+        station=station, scale=scale, paired=paired, params=params
     )
-    joint = joint_wet_hour_conditional_intensity_bias(
-        joint_wet_paired_subset, station=station, scale=scale
-    )
-    return WetHourConditionalIntensityBiasComparison(
-        gauge_alone=gauge_alone, joint=joint
-    )
+    _ = comparison.gauge_alone
+    _ = comparison.joint
+    return comparison
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -773,46 +788,13 @@ class RetentionConditionality(StrEnum):
     CONDITIONAL_ON_RETENTION = "CONDITIONAL_ON_RETENTION"
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
-class CategoricalScores:
-    """D12 — DAILY/MONTHLY grain only. `n_periods` is the number of
-    jointly-valid periods the contingency table rests on (every period in
-    `accumulated.periods` has >=1 jointly-retained hour by construction —
-    a groupby never emits an empty bucket); `n_hours` is the underlying
-    subset's own retained-hour count.
-
-    `retention_conditionality` is Rule 1's conditional-on-retention marker
-    (see `RetentionConditionality`) — always
-    `CONDITIONAL_ON_RETENTION` for every instance of this type."""
-
-    station: Station
-    scale: Scale
-    n_periods: int
-    n_hours: int
-    pod: float
-    far: float
-    csi: float
-
-    retention_conditionality: ClassVar[RetentionConditionality] = (
-        RetentionConditionality.CONDITIONAL_ON_RETENTION
-    )
-
-
-def categorical_scores(
-    accumulated: ConditionalAccumulatedDifference, *, params: DhmPrecipParams
-) -> CategoricalScores:
-    if accumulated.scale not in _GRAIN_SCALES:
-        raise CategoricalGrainRefusedError(
-            f"{accumulated.station!r}: categorical scores at "
-            f"{accumulated.scale} grain are analytically vacuous by "
-            "construction (D12) — refused, not computed. Use DAILY or "
-            "MONTHLY grain."
-        )
-    if accumulated.n_periods == 0:
-        raise EmptySubsetError(
-            f"{accumulated.station!r} at {accumulated.scale}: zero periods "
-            "— no categorical score is computable"
-        )
+def _confusion_counts(
+    accumulated: ConditionalAccumulatedDifference, params: DhmPrecipParams
+) -> tuple[int, int, int, int]:
+    """`(hits, misses, false_alarms, correct_negatives)` — the ONLY place
+    `CategoricalScores`'s POD/FAR/CSI are derived from, always from
+    `accumulated.periods` (mirrors `_compute_periods`'s role for
+    `ConditionalAccumulatedDifference.periods`)."""
     wet_threshold = params.wet_threshold_mm_per_h
     hits = misses = false_alarms = correct_negatives = 0
     for period in accumulated.periods:
@@ -826,26 +808,118 @@ def categorical_scores(
             false_alarms += 1
         else:
             correct_negatives += 1
-    pod = hits / (hits + misses) if (hits + misses) > 0 else float("nan")
-    far = (
-        false_alarms / (hits + false_alarms)
-        if (hits + false_alarms) > 0
-        else float("nan")
+    return hits, misses, false_alarms, correct_negatives
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CategoricalScores:
+    """D12 — DAILY/MONTHLY grain only.
+
+    **Structural fix (Finding 2, Plan 184 phase 2 independent review,
+    2026-08-24):** `scale`, counts and scores are NOT independently-
+    suppliable constructor fields any more. A prior version stored them
+    as freely constructible fields and refused seasonal grain only in the
+    `categorical_scores()` factory — direct construction accepted a
+    JJAS/DJF-grain score with arbitrary `n_hours`/POD/FAR/CSI, bypassing
+    both D12's vacuity refusal and this type's own-subset-`n`
+    requirement. This type now stores exactly `accumulated:
+    ConditionalAccumulatedDifference` and `params: DhmPrecipParams`;
+    `station`, `scale`, `n_periods`, `n_hours`, `pod`, `far` and `csi` are
+    all `@property`s derived live from `self.accumulated`/`self.params`
+    (via `_confusion_counts`), and the seasonal-grain refusal
+    (`CategoricalGrainRefusedError`) and the empty-periods refusal
+    (`EmptySubsetError`) are both enforced in `__post_init__` — where the
+    object is CREATED, not only in a factory. A JJAS/DJF-grain
+    `CategoricalScores` is therefore unconstructible, full stop.
+
+    `retention_conditionality` is Rule 1's conditional-on-retention marker
+    (see `RetentionConditionality`) — always
+    `CONDITIONAL_ON_RETENTION` for every instance of this type."""
+
+    accumulated: ConditionalAccumulatedDifference
+    params: DhmPrecipParams
+
+    retention_conditionality: ClassVar[RetentionConditionality] = (
+        RetentionConditionality.CONDITIONAL_ON_RETENTION
     )
-    csi = (
-        hits / (hits + misses + false_alarms)
-        if (hits + misses + false_alarms) > 0
-        else float("nan")
-    )
-    return CategoricalScores(
-        station=accumulated.station,
-        scale=accumulated.scale,
-        n_periods=accumulated.n_periods,
-        n_hours=accumulated.n,
-        pod=pod,
-        far=far,
-        csi=csi,
-    )
+
+    def __post_init__(self) -> None:
+        # See MatchedHourMeanDifference.__post_init__ for why this
+        # isinstance check exists despite the declared type.
+        if not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
+            self.accumulated, ConditionalAccumulatedDifference
+        ):
+            raise EstimandSubsetTypeError(
+                "CategoricalScores.accumulated must be a real "
+                f"ConditionalAccumulatedDifference, got {type(self.accumulated)}"
+            )
+        if self.accumulated.scale not in _GRAIN_SCALES:
+            raise CategoricalGrainRefusedError(
+                f"{self.accumulated.station!r}: categorical scores at "
+                f"{self.accumulated.scale} grain are analytically vacuous by "
+                "construction (D12) — refused, not computed. Use DAILY or "
+                "MONTHLY grain."
+            )
+        if self.accumulated.n_periods == 0:
+            raise EmptySubsetError(
+                f"{self.accumulated.station!r} at {self.accumulated.scale}: "
+                "zero periods — no categorical score is computable"
+            )
+
+    @property
+    def station(self) -> Station:
+        return self.accumulated.station
+
+    @property
+    def scale(self) -> Scale:
+        return self.accumulated.scale
+
+    @property
+    def n_periods(self) -> int:
+        return self.accumulated.n_periods
+
+    @property
+    def n_hours(self) -> int:
+        return self.accumulated.n
+
+    @property
+    def pod(self) -> float:
+        hits, misses, _false_alarms, _correct_negatives = _confusion_counts(
+            self.accumulated, self.params
+        )
+        return hits / (hits + misses) if (hits + misses) > 0 else float("nan")
+
+    @property
+    def far(self) -> float:
+        hits, _misses, false_alarms, _correct_negatives = _confusion_counts(
+            self.accumulated, self.params
+        )
+        return (
+            false_alarms / (hits + false_alarms)
+            if (hits + false_alarms) > 0
+            else float("nan")
+        )
+
+    @property
+    def csi(self) -> float:
+        hits, misses, false_alarms, _correct_negatives = _confusion_counts(
+            self.accumulated, self.params
+        )
+        return (
+            hits / (hits + misses + false_alarms)
+            if (hits + misses + false_alarms) > 0
+            else float("nan")
+        )
+
+
+def categorical_scores(
+    accumulated: ConditionalAccumulatedDifference, *, params: DhmPrecipParams
+) -> CategoricalScores:
+    """Thin wiring over `CategoricalScores`'s own construction path — the
+    grain refusal, the empty-periods refusal and the score derivation all
+    live in `CategoricalScores` itself now, so this function has nothing
+    left to check that the class does not already enforce."""
+    return CategoricalScores(accumulated=accumulated, params=params)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
