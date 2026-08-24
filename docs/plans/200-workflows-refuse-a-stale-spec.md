@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-24
 plan: 200
 title: A workflow must refuse to build from a stale copy of its plan
-scope: Add a preflight staleness gate to the plan/implement workflows so they escalate when the plan doc in the working repo differs from the newest committed version OR the working branch is behind origin/main, plus a commit-time nudge when main carries unpushed commits. NOT a new tool, NOT a change to what the workflows do once started, NOT a branch-protection or CI change.
+scope: Add a preflight staleness gate to the plan/implement workflows so they escalate when the working branch lacks the newest plan-changing commit, and warn (not escalate) when the branch is merely behind origin/main, plus a commit-time nudge when main carries unpushed commits. NOT a new tool, NOT a change to what the workflows do once started, NOT a branch-protection or CI change.
 depends_on: []
 blocks: []
 source: PR #201 post-mortem; worktree-hygiene incidents 2026-08-20/21/24
@@ -14,6 +14,14 @@ source: PR #201 post-mortem; worktree-hygiene incidents 2026-08-20/21/24
 ## Status
 
 **DRAFT.** Not for implementation until the owner confirms.
+
+**Independent Codex review 2026-08-24 — 1 blocker, 2 majors, minors clean; all VERIFIED AND FOLDED.**
+The blocker: D1's equality predicate would false-escalate on every `/plan` run, since `/plan` edits the
+plan doc by design. The majors: D5's hard stop would not have prevented its own example and cannot be
+narrowed in this repo; D4 fired at the wrong git stage and would have been silent in the very case that
+motivated it. **The root-cause claim was separately verified**: the worktree's plan copy (`e815776`)
+specifies the marker, and the review (`8302dd1`) says "No marker file" — the implementer followed its
+plan faithfully; the plan was an hour stale.
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT
 
@@ -50,10 +58,19 @@ long task, is not a control.
 
 ## Decisions
 
-- **D1 — Compare against the newest committed version, from BOTH refs.** The gate compares the plan
-  file in `${repo}` against `origin/main` **and** local `main`. Either differing is a stop: `origin`
+- **D1 — CONTAINMENT, not equality, against BOTH refs.** *(Corrected after independent review — the
+  draft used equality and that was a BLOCKER.)* Check both `origin/main` and local `main`: `origin`
   catches "someone else edited the plan since this worktree was cut"; local `main` catches "the edit is
   here but unpushed" — the Plan 194 case, where `origin` alone would have said nothing.
+
+  **But plain equality false-escalates on every legitimate run.** `/plan` **edits the plan document in
+  place by design**, so its branch differs from `main` the moment it does its job; so does a resumed
+  implementation branch that updated the plan's status. Equality would refuse those.
+
+  **The predicate is:** the working branch must **contain the latest plan-changing commit** from each
+  ref. Escalate only when such a commit is **absent from the branch AND** the worktree copy differs
+  from that ref. That catches a correction the branch never saw, while allowing edits the branch itself
+  made on top of the latest plan.
 - **D2 — Escalate, do not warn.** The workflow returns its standard escalation shape and builds nothing,
   exactly as the existing not-READY gate does (`implement.js:180-189`). A warning inside a long
   autonomous run is not read by anyone. **A stale spec is worse than no build**: it produces a confident,
@@ -63,10 +80,17 @@ long task, is not a control.
   was last seen — an unavailable check must not look like a passing one. *(This is the same lesson as
   the recap probe, which reported `ok=False` 2,448 times because its harness was broken: a check that
   cannot run must not resemble a check that ran.)*
-- **D4 — The commit-time nudge WARNS and never blocks.** It fires only when `HEAD` is on `main` and
-  `origin/main..main` is non-empty, printing the count. Blocking would punish an ordinary sequence of
-  commits and would be disabled within a day. This half is a nudge, deliberately weaker than D2 —
-  stranded work is a slower harm than a wrong build.
+- **D4 — The nudge WARNS, never blocks, and runs POST-commit.** *(Stage corrected after independent
+  review — as drafted it would have stayed silent in the exact case that motivated it.)* At **pre**-commit
+  the new commit does not exist yet, so on the FIRST unpushed commit `origin/main..main` is still empty
+  and the warning never fires. That is precisely the Plan 194 sequence: `e815776` was pushed, and
+  `8302dd1` — the review — was the *first* unpushed commit after it. **Verified:** `8302dd1` descends
+  directly from the pushed `e815776`.
+
+  So run it at the **post-commit** stage (`always_run: true`, `pass_filenames: false`), where it can
+  count the commit that was actually created. Warns on `main` only, always exits 0. Blocking would
+  punish an ordinary sequence of commits and be disabled within a day; stranded work is a slower harm
+  than a wrong build.
 
 ## Tasks
 
@@ -123,13 +147,21 @@ branch is behind `origin/main`" fires on essentially every branch, because `main
 day. A gate that fires constantly is disabled or ignored — the same failure as a blocking commit hook
 (D4). So the widening needs a shape that is *actionable and rare*, not merely correct.
 
-**Proposed shape (for review — this is the part most likely to be wrong):** the workflow refuses to
-start when the working branch is behind `origin/main`, and says so with the one-command remedy
-(`git merge origin/main`). The claim is that this is not noise but a **precondition**: syncing before a
-build is cheap, the fix is mechanical, and every build then sits on current code. The cost is that a
-long autonomous run started at 09:00 may be refused at 09:05 because an unrelated docs commit landed.
+**RESOLVED after independent review: a stale BASE WARNS and proceeds; only a stale PLAN escalates.**
+The draft proposed a hard refusal. The review attacked it successfully on two grounds, both verified:
 
-**Reviewers: attack this specifically.** Is "behind at all" the right threshold, or should it be
-narrowed — for example to commits touching `src/`, `scripts/` or `tests/`, or to the files the plan's
-own `*In:*` lines name? Is refusing correct, or should a stale base warn while only a stale *plan*
-escalates? A concrete argument that this will fire so often it gets bypassed is a valid finding.
+1. **It would not have prevented its own motivating example.** Plan 199's implementation commit
+   `35e7bae` was based on then-current `main` (`ab2e500`); `main` advanced over the weekend and the
+   conflict appeared only when it was merged three days later. **A start-only gate passes and then goes
+   stale during the run** — it cannot guarantee freshness through a long build, so a hard stop buys
+   noise without the safety.
+2. **Neither narrowing survives contact with this repo.** Filtering to `src/`/`scripts/`/`tests/` fires
+   on **every code commit**, because the mandatory version bump touches
+   `src/sapphire_flow/__init__.py` every time (CLAUDE.md § Version Bumping) — **verified across the
+   last three code merges, all of which touch it**. And a plan's `*In:*` lines are not a complete path
+   manifest: Plan 199's named the watchdog files, while its actual diff also touched hooks, CI and
+   wrappers — and the later conflict was **precisely in files absent from `*In:*`**.
+
+So: warn with the behind-count and the one-command remedy (`git merge origin/main`), and proceed. Do
+not path-filter it. **This is deliberately weaker than the owner's initial "refuse" instruction** — a
+gate that fires on nearly every run is bypassed, which is worse than no gate at all.
