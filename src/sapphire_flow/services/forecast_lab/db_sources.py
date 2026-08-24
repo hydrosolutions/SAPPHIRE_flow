@@ -14,6 +14,7 @@ assignment must never be exported or win `is_primary`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -119,7 +120,15 @@ def fetch_observation_window(
         qc_status=QcStatus.QC_PASSED,
         source=ObservationSource.MEASURED,
     )
-    return sorted(observations, key=lambda o: o.timestamp)
+    # AC5, at the source — the same treatment the BAFU traces and the
+    # ensemble members already get. A qc_passed reading whose value is
+    # non-finite is corrupt, not "missing": the contract has no per-point
+    # null for an observation, so the honest rendering is no point at all.
+    # Doing it HERE and not only at the schema keeps the required-float
+    # validator an unreachable invariant rather than a live raise on a code
+    # path that has no D13 guard (which would 500 the whole request).
+    finite = [o for o in observations if o.value is not None and math.isfinite(o.value)]
+    return sorted(finite, key=lambda o: o.timestamp)
 
 
 def fetch_active_model_assignments(

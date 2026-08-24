@@ -1028,8 +1028,14 @@ class TestNonFiniteValuesNeverReachTheJson:
 
     def test_a_required_float_rejects_non_finite_loudly(self) -> None:
         """A required numeric has no `null` to fall back to, so silently
-        nulling it would be worse than failing: D13 contains the raise as a
-        partial snapshot."""
+        nulling it would be worse than failing.
+
+        This locks an INVARIANT, not a reachable path: the sources sanitise
+        first, so nothing should ever hit it. It is deliberately NOT a
+        partial-snapshot path — observation assembly has no D13 guard, so a
+        live raise here would 500 the request. An earlier version of this
+        test claimed D13 containment that does not exist; the source-level
+        filter (see the test below) is what actually keeps it unreachable."""
         import pydantic
 
         from sapphire_flow.api.forecast_lab_schemas import ObservationPointSchema

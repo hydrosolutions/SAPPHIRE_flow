@@ -289,6 +289,41 @@ class TestObservationWindow:
         )
         assert [o.id for o in result] == [good.id]
 
+    def test_a_non_finite_reading_is_dropped_at_the_source(self) -> None:
+        """AC5 — Postgres `double precision` admits NaN/Infinity. The
+        contract has no per-point null for an observation, so a corrupt
+        reading must be dropped here; letting it through would hit the
+        required-float validator on a path with no D13 guard and 500 the
+        whole request."""
+        station_id = StationId(uuid4())
+        store = FakeObservationStore()
+        good = make_observation(
+            station_id=station_id,
+            parameter="discharge",
+            qc_status=QcStatus.QC_PASSED,
+            timestamp=_EPOCH,
+            rng=random.Random(11),
+        )
+        corrupt = replace(
+            make_observation(
+                station_id=station_id,
+                parameter="discharge",
+                qc_status=QcStatus.QC_PASSED,
+                timestamp=_EPOCH + timedelta(minutes=10),
+                rng=random.Random(12),
+            ),
+            value=float("nan"),
+        )
+        store.store_observations([good, corrupt])
+
+        result = fetch_observation_window(
+            _make_stores(observation_store=store),
+            station_id,
+            window_start=_EPOCH - timedelta(hours=1),
+            window_end=_EPOCH + timedelta(hours=1),
+        )
+        assert [o.id for o in result] == [good.id]
+
     def test_results_are_sorted_ascending_by_timestamp(self) -> None:
         station_id = StationId(uuid4())
         store = FakeObservationStore()

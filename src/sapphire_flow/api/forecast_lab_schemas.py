@@ -60,9 +60,15 @@ def _null_if_not_finite(value: Any) -> Any:
 
 def _reject_if_not_finite(value: Any) -> Any:
     """For a REQUIRED numeric there is no `null` to fall back to, so a
-    non-finite value is a data-integrity failure and must be loud. D13 then
-    contains it: the affected source degrades to unavailable and the
-    snapshot comes back partial, rather than emitting an invalid token."""
+    non-finite value is a data-integrity failure and must be loud.
+
+    This is an INVARIANT, not a live code path: the sources sanitise first
+    (`db_sources.fetch_observation_window` drops non-finite readings,
+    `bafu_archive` nulls non-finite trace values, `_quantile_summary` drops
+    non-finite members), so nothing should ever reach it. Do NOT read it as
+    a D13 partial-snapshot path — observation assembly has no D13 guard, so
+    a raise here would surface as `500`. An earlier revision of this
+    docstring claimed the opposite; the independent review caught it."""
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("non-finite value in a required numeric field")
     return value
