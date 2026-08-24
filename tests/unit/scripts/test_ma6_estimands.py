@@ -7,6 +7,7 @@ same discipline `test_ma6_pairs.py` states for T1.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta
 
 import polars as pl
@@ -17,7 +18,9 @@ from scripts.dhm_precip.ma6_estimands import (
     CategoricalGrainRefusedError,
     CategoricalScores,
     ConditionalAccumulatedDifference,
+    DuplicateBandMemberError,
     ElevationBand,
+    ElevationBandWetHourConditionalIntensityBiasComparison,
     EmptySubsetError,
     EstimandSubsetTypeError,
     JointWetConditionality,
@@ -30,6 +33,7 @@ from scripts.dhm_precip.ma6_estimands import (
     WetHourConditionalIntensityBiasComparison,
     assign_elevation_band,
     band_matched_hour_mean_difference,
+    band_wet_hour_conditional_intensity_bias_comparison,
     categorical_scores,
     conditional_accumulated_difference,
     joint_wet_hour_conditional_intensity_bias,
@@ -281,9 +285,9 @@ class TestWetHourConditionalIntensityBiasComparison:
 
     @classmethod
     def _real_shaped_comparison(cls) -> WetHourConditionalIntensityBiasComparison:
-        station, paired = cls._real_shaped_paired()
+        _station, paired = cls._real_shaped_paired()
         return wet_hour_conditional_intensity_bias_comparison(
-            paired, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
 
     def test_joint_n_is_strictly_less_than_gauge_alone_n_on_real_shaped_data(
@@ -310,7 +314,6 @@ class TestWetHourConditionalIntensityBiasComparison:
     def test_rejects_a_paired_that_is_not_a_real_pairedseries(self) -> None:
         with pytest.raises(EstimandSubsetTypeError):
             WetHourConditionalIntensityBiasComparison(
-                station=Station("A"),
                 scale=Scale.JJAS,
                 paired=42,  # type: ignore[arg-type]
                 params=DEFAULT_PARAMS,
@@ -321,11 +324,40 @@ class TestWetHourConditionalIntensityBiasComparison:
 
         with pytest.raises(ScaleNotSupportedError):
             WetHourConditionalIntensityBiasComparison(
-                station=Station("A"),
                 scale=Scale.DAILY,
                 paired=paired,
                 params=DEFAULT_PARAMS,
             )
+
+    def test_station_cannot_be_supplied_independently_of_paired(self) -> None:
+        # Finding 1 (Plan 184 phase 2 CLOSING independent review,
+        # 2026-08-24) — the SEVENTH instance of this milestone's signature
+        # defect: `station` used to be an independently-suppliable
+        # constructor field, never reconciled against `paired.station`, so
+        # a correctly-nested pair of values could be emitted under the
+        # WRONG station label. The fix removes the field entirely, so
+        # attempting to supply it is a TypeError (unexpected keyword
+        # argument) — a mislabelled result is now unconstructible, not
+        # merely unchecked.
+        _station, paired = self._real_shaped_paired()
+
+        with pytest.raises(TypeError, match="station"):
+            WetHourConditionalIntensityBiasComparison(
+                station=Station("mismatched"),  # type: ignore[call-arg]
+                scale=Scale.JJAS,
+                paired=paired,
+                params=DEFAULT_PARAMS,
+            )
+
+    def test_station_is_derived_from_paired_not_stored(self) -> None:
+        station, paired = self._real_shaped_paired()
+
+        comparison = wet_hour_conditional_intensity_bias_comparison(
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+
+        assert comparison.station == station
+        assert comparison.station == paired.station
 
     def test_gauge_alone_and_joint_are_not_independently_suppliable_fields(
         self,
@@ -337,14 +369,13 @@ class TestWetHourConditionalIntensityBiasComparison:
         # attempting to supply either is a TypeError (unexpected keyword
         # argument), the same "no field to attach through" shape every
         # other estimand in this module already proves.
-        station, paired = self._real_shaped_paired()
+        _station, paired = self._real_shaped_paired()
         comparison = wet_hour_conditional_intensity_bias_comparison(
-            paired, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
 
         with pytest.raises(TypeError, match="gauge_alone"):
             WetHourConditionalIntensityBiasComparison(
-                station=station,
                 scale=Scale.JJAS,
                 paired=paired,
                 params=DEFAULT_PARAMS,
@@ -352,7 +383,6 @@ class TestWetHourConditionalIntensityBiasComparison:
             )
         with pytest.raises(TypeError, match="joint"):
             WetHourConditionalIntensityBiasComparison(
-                station=station,
                 scale=Scale.JJAS,
                 paired=paired,
                 params=DEFAULT_PARAMS,
@@ -387,10 +417,10 @@ class TestWetHourConditionalIntensityBiasComparison:
         )
 
         comparison_x = wet_hour_conditional_intensity_bias_comparison(
-            paired_x, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
+            paired_x, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
         comparison_y = wet_hour_conditional_intensity_bias_comparison(
-            paired_y, station=station, scale=Scale.JJAS, params=DEFAULT_PARAMS
+            paired_y, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
 
         # The two series give genuinely different, non-degenerate numbers
@@ -419,7 +449,6 @@ class TestWetHourConditionalIntensityBiasComparison:
         # is rejected outright because those are not constructor fields.
         with pytest.raises(TypeError, match="joint"):
             WetHourConditionalIntensityBiasComparison(
-                station=station,
                 scale=Scale.JJAS,
                 paired=paired_x,
                 params=DEFAULT_PARAMS,
@@ -432,13 +461,12 @@ class TestWetHourConditionalIntensityBiasComparison:
         )
 
     def test_detection_ratio_has_no_field_to_attach_through(self) -> None:
-        station, paired = self._real_shaped_paired()
+        _station, paired = self._real_shaped_paired()
         comparison = self._real_shaped_comparison()
         stolen_ratio = comparison.detection_ratio
 
         with pytest.raises(TypeError, match="detection_ratio"):
             WetHourConditionalIntensityBiasComparison(
-                station=station,
                 scale=Scale.JJAS,
                 paired=paired,
                 params=DEFAULT_PARAMS,
@@ -446,13 +474,12 @@ class TestWetHourConditionalIntensityBiasComparison:
             )
 
     def test_mean_shift_has_no_field_to_attach_through(self) -> None:
-        station, paired = self._real_shaped_paired()
+        _station, paired = self._real_shaped_paired()
         comparison = self._real_shaped_comparison()
         stolen_shift = comparison.mean_shift_mm_per_h
 
         with pytest.raises(TypeError, match="mean_shift_mm_per_h"):
             WetHourConditionalIntensityBiasComparison(
-                station=station,
                 scale=Scale.JJAS,
                 paired=paired,
                 params=DEFAULT_PARAMS,
@@ -751,6 +778,75 @@ class TestCategoricalScoresRefusesSeasonGrain:
         assert scores.csi == pytest.approx(1.0)
 
 
+class TestCategoricalScoresHonoursWetThresholdSide:
+    """Finding 2 (Plan 184 phase 2 CLOSING independent review, 2026-08-24):
+    `_confusion_counts` used to hardcode `>=` for the aggregated-bucket
+    wet/dry call, ignoring a configured `wet_threshold_side=">"`. A bucket
+    totalling EXACTLY the wet threshold (0.2 mm) must be classified wet
+    under `">="` and dry under `">"`."""
+
+    @staticmethod
+    def _boundary_accumulated() -> ConditionalAccumulatedDifference:
+        # Day 1: gauge accumulates to EXACTLY the wet threshold (0.2 mm);
+        # ERA5 is clearly wet either way (0.5 mm). Day 2: gauge is clearly
+        # wet either way (1.0 mm); ERA5 is clearly dry either way (0.0
+        # mm). Day 2 is therefore a MISS under both sides — a stable
+        # denominator — while day 1 flips between a HIT (>=) and a FALSE
+        # ALARM (>), so POD/FAR/CSI move only because of the boundary
+        # bucket, not because of anything else in the population.
+        station = Station("A")
+        frame = _paired_frame(
+            [
+                {
+                    "timestamp": datetime(2024, 7, 1, 0),
+                    "gauge_value_mm": 0.2,
+                    "era5_nearest_mm_per_h": 0.5,
+                },
+                {
+                    "timestamp": datetime(2024, 7, 2, 0),
+                    "gauge_value_mm": 1.0,
+                    "era5_nearest_mm_per_h": 0.0,
+                },
+            ]
+        )
+        paired = PairedSeries(station=station, frame=frame)
+        daily = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
+        return conditional_accumulated_difference(
+            daily, station=station, scale=Scale.DAILY
+        )
+
+    def test_default_side_is_ge(self) -> None:
+        # The categorical-numbers-must-not-move claim in the Plan 184
+        # phase 2 verification instructions depends on this: the default
+        # `wet_threshold_side` must be ">=", so this fix does not change
+        # any DEFAULT_PARAMS-driven result.
+        assert DEFAULT_PARAMS.wet_threshold_side == ">="
+
+    def test_ge_side_classifies_the_boundary_bucket_wet(self) -> None:
+        accumulated = self._boundary_accumulated()
+
+        scores = categorical_scores(accumulated, params=DEFAULT_PARAMS)
+
+        # Day 1: 0.2 >= 0.2 -> gauge wet; 0.5 >= 0.2 -> era5 wet -> HIT.
+        # Day 2: gauge wet, era5 dry -> MISS.
+        assert scores.pod == pytest.approx(0.5)
+        assert scores.far == pytest.approx(0.0)
+        assert scores.csi == pytest.approx(0.5)
+
+    def test_gt_side_classifies_the_boundary_bucket_dry(self) -> None:
+        accumulated = self._boundary_accumulated()
+        gt_params = dataclasses.replace(DEFAULT_PARAMS, wet_threshold_side=">")
+
+        scores = categorical_scores(accumulated, params=gt_params)
+
+        # Day 1: 0.2 > 0.2 is False -> gauge DRY; 0.5 > 0.2 -> era5 wet ->
+        # FALSE ALARM (the boundary bucket flips from a hit under ">=").
+        # Day 2: gauge wet, era5 dry -> MISS, same as under ">=".
+        assert scores.pod == pytest.approx(0.0)
+        assert scores.far == pytest.approx(1.0)
+        assert scores.csi == pytest.approx(0.0)
+
+
 class TestElevationBandEstimand:
     def test_band_value_is_the_unweighted_mean_of_member_station_values(self) -> None:
         # Station A: 40 gauge hours (high retention). Station B: 4 hours
@@ -946,6 +1042,114 @@ class TestCategoricalScoresRetentionConditionalityLabel:
 
         assert not hasattr(mean_result, "retention_conditionality")
         assert not hasattr(wet_result, "retention_conditionality")
+
+
+class TestElevationBandWetHourConditionalIntensityBiasComparison:
+    """Finding 1 (Plan 184 phase 2 CLOSING independent review, 2026-08-24)
+    — the aggregation-boundary half of the SEVENTH instance. The OLD
+    `band_wet_hour_conditional_intensity_bias`/`band_joint_wet_hour_
+    conditional_intensity_bias` combined gauge-alone and joint band
+    results through two SEPARATE, independently-suppliable `Mapping[
+    Station, ...]` arguments, with no check that the two mappings shared
+    a station set, that a mapping's keys agreed with its values' own
+    `.station`, or that gauge-alone and joint shared a common parent. The
+    fix takes ONE `comparisons` tuple; `gauge_alone`/`joint` are both
+    derived from it, so a band cannot be assembled from mismatched
+    station sets."""
+
+    @staticmethod
+    def _comparison_for(station: Station) -> WetHourConditionalIntensityBiasComparison:
+        cycle_gauge = [0.0, 1.0, 2.0, 0.0]
+        cycle_era5 = [0.0, 0.1, 0.5, 1.0]
+        n_cycles = 5
+        gauge = cycle_gauge * n_cycles
+        era5 = cycle_era5 * n_cycles
+        paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), len(gauge), gauge=gauge, era5=era5
+        )
+        return wet_hour_conditional_intensity_bias_comparison(
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+
+    def test_gauge_alone_and_joint_bands_always_share_the_same_station_set(
+        self,
+    ) -> None:
+        comp_a = self._comparison_for(Station("A"))
+        comp_b = self._comparison_for(Station("B"))
+
+        band = band_wet_hour_conditional_intensity_bias_comparison(
+            ElevationBand.BELOW_700M, (comp_a, comp_b)
+        )
+
+        # There is exactly one `comparisons` tuple: both bands are counted
+        # over the SAME two stations, by construction, never independently.
+        assert band.gauge_alone.station_count == 2
+        assert band.joint.station_count == 2
+
+    def test_gauge_alone_and_joint_have_no_field_to_attach_through(self) -> None:
+        # A band cannot be assembled from mismatched station sets: there
+        # is no argument through which gauge-alone-only or joint-only
+        # comparisons (from some OTHER, unrelated set of stations) could
+        # be supplied in place of the derived properties.
+        comp_a = self._comparison_for(Station("A"))
+        comp_b = self._comparison_for(Station("B"))
+        band = band_wet_hour_conditional_intensity_bias_comparison(
+            ElevationBand.BELOW_700M, (comp_a, comp_b)
+        )
+
+        with pytest.raises(TypeError, match="gauge_alone"):
+            ElevationBandWetHourConditionalIntensityBiasComparison(
+                band=ElevationBand.BELOW_700M,
+                scale=Scale.JJAS,
+                comparisons=(comp_a, comp_b),
+                gauge_alone=band.gauge_alone,  # type: ignore[call-arg]
+            )
+        with pytest.raises(TypeError, match="joint"):
+            ElevationBandWetHourConditionalIntensityBiasComparison(
+                band=ElevationBand.BELOW_700M,
+                scale=Scale.JJAS,
+                comparisons=(comp_a, comp_b),
+                joint=band.joint,  # type: ignore[call-arg]
+            )
+
+    def test_duplicate_station_in_comparisons_is_rejected(self) -> None:
+        # The band-membership check the old two-mapping design had no way
+        # to make: a station counted twice would silently double its own
+        # weight in the unweighted-mean band value.
+        comp_a = self._comparison_for(Station("A"))
+
+        with pytest.raises(DuplicateBandMemberError):
+            band_wet_hour_conditional_intensity_bias_comparison(
+                ElevationBand.BELOW_700M, (comp_a, comp_a)
+            )
+
+    def test_empty_comparisons_is_rejected(self) -> None:
+        with pytest.raises(EmptySubsetError):
+            band_wet_hour_conditional_intensity_bias_comparison(
+                ElevationBand.BELOW_700M, ()
+            )
+
+    def test_mismatched_scale_in_comparisons_is_rejected_by_direct_construction(
+        self,
+    ) -> None:
+        comp_jjas = self._comparison_for(Station("A"))
+        djf_paired = _make_paired_series(
+            Station("B"),
+            datetime(2024, 12, 1, 0),
+            4,
+            gauge=[1.0, 1.0, 1.0, 1.0],
+            era5=[0.5, 0.5, 0.1, 0.1],
+        )
+        comp_djf = wet_hour_conditional_intensity_bias_comparison(
+            djf_paired, scale=Scale.DJF, params=DEFAULT_PARAMS
+        )
+
+        with pytest.raises(ScaleNotSupportedError):
+            ElevationBandWetHourConditionalIntensityBiasComparison(
+                band=ElevationBand.BELOW_700M,
+                scale=Scale.JJAS,
+                comparisons=(comp_jjas, comp_djf),
+            )
 
 
 class TestSubsetSchemaGuardStillAppliesThroughThisModule:

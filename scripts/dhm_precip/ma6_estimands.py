@@ -122,6 +122,51 @@ on one shared frame, not from a runtime check comparing two
 independently-supplied objects — there is no longer any constructor
 argument through which two unrelated subsets could be supplied in the
 first place.
+
+**Structural fix, closing review (Finding 1, Plan 184 phase 2 CLOSING
+independent review, 2026-08-24 — the SEVENTH instance of this milestone's
+signature defect, one level up from every prior fix):** the round above
+fixed which POPULATIONS `gauge_alone`/`joint` are computed from (both
+derived from ONE `paired`) but left `station` itself as an
+independently-suppliable constructor field, never reconciled against
+`paired.station` — a correctly-nested pair of values could still be
+emitted under the WRONG station label. `station` is now a `@property`
+computed live from `self.paired.station` — there is no constructor
+argument through which a caller could attach a station that disagrees
+with the data it was built from. The same move retires
+`wet_hour_conditional_intensity_bias_comparison`'s own `station`
+parameter, for the same reason: it is derived from `paired.station`
+inside the factory, not accepted as an independent argument.
+
+At the aggregation boundary, `band_wet_hour_conditional_intensity_bias`
+and `band_joint_wet_hour_conditional_intensity_bias` used to combine
+gauge-alone and joint results through two SEPARATE, independently-
+suppliable `Mapping[Station, ...]` arguments — a caller could align them
+by hand from different station sets with nothing catching it (no
+station-set check, no key/result identity check, no band-membership
+check, no shared-parent check: neither function even looked at its own
+mapping's keys, only at `.values()`). Both functions are replaced by
+`ElevationBandWetHourConditionalIntensityBiasComparison` (built via
+`band_wet_hour_conditional_intensity_bias_comparison`), which takes ONE
+`comparisons: tuple[WetHourConditionalIntensityBiasComparison, ...]` —
+`gauge_alone` and `joint` band estimands are `@property`s both derived
+from THAT SAME tuple, using each comparison's own `.station`, so they can
+never be built from different station sets: there is no argument through
+which gauge-alone-only or joint-only comparisons could be supplied
+separately. `__post_init__` also refuses a `comparisons` tuple carrying a
+repeated station (`DuplicateBandMemberError`) or a mixed scale
+(`ScaleNotSupportedError`) — the band-membership and station-set checks
+the old two-mapping design had no way to make.
+
+**Finding 2 (wet-threshold side), closing review, 2026-08-24:**
+`_confusion_counts` used to hardcode `>=` for the aggregated-bucket
+wet/dry call, ignoring a configured `wet_threshold_side=">"` even though
+`wet_predicate`'s own docstring claimed reuse "for both the hourly
+gauge-wet conditioning and the aggregated-bucket wet/dry classification".
+`_confusion_counts` now builds a small frame from `accumulated.periods`
+and calls `wet_predicate` itself on it — the SAME function, not a
+re-implementation of its branch — so the aggregated-bucket call and the
+hourly call are provably the same predicate, not merely claimed to be.
 """
 
 from __future__ import annotations
@@ -183,6 +228,16 @@ class AccumulatedDifferenceReconciliationError(ValueError):
     structurally guaranteed to sum to `subset.n_common_retained`. This
     error guards `_compute_periods`'s own bucketing arithmetic, not a
     caller input; it is not expected to ever fire in practice."""
+
+
+class DuplicateBandMemberError(ValueError):
+    """`ElevationBandWetHourConditionalIntensityBiasComparison` was given a
+    `comparisons` tuple carrying the same station more than once — a band
+    estimand is the UNWEIGHTED MEAN across its DISTINCT member stations
+    (D4a/D5a); a repeated station would silently double-count that
+    station's own value in both `gauge_alone` and `joint`, exactly the
+    band-membership check the old two-mapping design had no way to make
+    (Finding 1, Plan 184 phase 2 CLOSING independent review, 2026-08-24)."""
 
 
 class Scale(StrEnum):
@@ -536,9 +591,17 @@ class WetHourConditionalIntensityBiasComparison:
     Neither derived number is a constructor field — both are `@property`s
     computed live from `self.gauge_alone`/`self.joint`. There is no
     argument through which a caller could attach a `detection_ratio` or
-    `mean_shift_mm_per_h` computed elsewhere."""
+    `mean_shift_mm_per_h` computed elsewhere.
 
-    station: Station
+    **`station` is likewise not an independently-suppliable constructor
+    field (Finding 1, Plan 184 phase 2 CLOSING independent review,
+    2026-08-24 — see module docstring).** A prior version accepted
+    `station` alongside `paired`, with nothing reconciling the two — a
+    correctly-nested pair of values could be emitted under the WRONG
+    station label. `station` is now a `@property` computed live from
+    `self.paired.station`, so a mislabelled result is unconstructible,
+    not merely unchecked."""
+
     scale: Scale
     paired: PairedSeries
     params: DhmPrecipParams
@@ -558,6 +621,13 @@ class WetHourConditionalIntensityBiasComparison:
                 f"wet-hour conditional intensity bias comparison is scoped "
                 f"to {_MAGNITUDE_SCALES}, got {self.scale}"
             )
+
+    @property
+    def station(self) -> Station:
+        """Derived from `self.paired.station` — NOT a constructor field —
+        so a `WetHourConditionalIntensityBiasComparison` can never carry a
+        station label that disagrees with the data it was built from."""
+        return self.paired.station
 
     @property
     def gauge_alone(self) -> WetHourConditionalIntensityBias:
@@ -602,7 +672,6 @@ class WetHourConditionalIntensityBiasComparison:
 def wet_hour_conditional_intensity_bias_comparison(
     paired: PairedSeries,
     *,
-    station: Station,
     scale: Scale,
     params: DhmPrecipParams,
 ) -> WetHourConditionalIntensityBiasComparison:
@@ -610,11 +679,15 @@ def wet_hour_conditional_intensity_bias_comparison(
     `joint` are derived INSIDE the comparison's own construction path from
     that SAME input (see `WetHourConditionalIntensityBiasComparison`'s
     docstring), so there is no argument through which two unrelated
-    subsets could ever be supplied. `.gauge_alone`/`.joint` are accessed
-    here so either component's own `EmptySubsetError` propagates from this
+    subsets could ever be supplied. `station` is likewise derived from
+    `paired.station`, not accepted as an independent argument here (Finding
+    1, Plan 184 phase 2 CLOSING independent review, 2026-08-24) — there is
+    no way to ask for a comparison labelled with a station other than the
+    one `paired` itself carries. `.gauge_alone`/`.joint` are accessed here
+    so either component's own `EmptySubsetError` propagates from this
     call, not silently deferred to first property access."""
     comparison = WetHourConditionalIntensityBiasComparison(
-        station=station, scale=scale, paired=paired, params=params
+        scale=scale, paired=paired, params=params
     )
     _ = comparison.gauge_alone
     _ = comparison.joint
@@ -794,20 +867,31 @@ def _confusion_counts(
     """`(hits, misses, false_alarms, correct_negatives)` — the ONLY place
     `CategoricalScores`'s POD/FAR/CSI are derived from, always from
     `accumulated.periods` (mirrors `_compute_periods`'s role for
-    `ConditionalAccumulatedDifference.periods`)."""
-    wet_threshold = params.wet_threshold_mm_per_h
-    hits = misses = false_alarms = correct_negatives = 0
-    for period in accumulated.periods:
-        gauge_wet = period.gauge_sum_mm >= wet_threshold
-        era5_wet = period.era5_sum_mm >= wet_threshold
-        if gauge_wet and era5_wet:
-            hits += 1
-        elif gauge_wet and not era5_wet:
-            misses += 1
-        elif not gauge_wet and era5_wet:
-            false_alarms += 1
-        else:
-            correct_negatives += 1
+    `ConditionalAccumulatedDifference.periods`).
+
+    The wet/dry call on each bucket goes through `wet_predicate` itself
+    (Finding 2, Plan 184 phase 2 CLOSING independent review, 2026-08-24) —
+    not a re-implementation of its `>=`/`>` branch — so `wet_threshold_side`
+    genuinely governs the aggregated-bucket classification the same way it
+    governs every hourly one; a previous version hardcoded `>=` here,
+    silently ignoring a configured `">"` side."""
+    periods_frame = pl.DataFrame(
+        {
+            "gauge_sum_mm": [period.gauge_sum_mm for period in accumulated.periods],
+            "era5_sum_mm": [period.era5_sum_mm for period in accumulated.periods],
+        }
+    ).with_columns(
+        wet_predicate("gauge_sum_mm", params).alias("gauge_wet"),
+        wet_predicate("era5_sum_mm", params).alias("era5_wet"),
+    )
+    hits = periods_frame.filter(pl.col("gauge_wet") & pl.col("era5_wet")).height
+    misses = periods_frame.filter(pl.col("gauge_wet") & ~pl.col("era5_wet")).height
+    false_alarms = periods_frame.filter(
+        ~pl.col("gauge_wet") & pl.col("era5_wet")
+    ).height
+    correct_negatives = periods_frame.filter(
+        ~pl.col("gauge_wet") & ~pl.col("era5_wet")
+    ).height
     return hits, misses, false_alarms, correct_negatives
 
 
@@ -976,36 +1060,92 @@ def band_matched_hour_mean_difference(
     )
 
 
-def band_wet_hour_conditional_intensity_bias(
-    band: ElevationBand, results: Mapping[Station, WetHourConditionalIntensityBias]
-) -> ElevationBandEstimand:
-    scales = {r.scale for r in results.values()}
-    if len(scales) > 1:
-        raise ScaleNotSupportedError(
-            f"{band}: member results span more than one scale: {scales}"
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ElevationBandWetHourConditionalIntensityBiasComparison:
+    """The band-level analog of `WetHourConditionalIntensityBiasComparison`
+    (Finding 1, Plan 184 phase 2 CLOSING independent review, 2026-08-24).
+
+    The prior design combined gauge-alone and joint band estimands through
+    two SEPARATE `band_wet_hour_conditional_intensity_bias`/`band_joint_
+    wet_hour_conditional_intensity_bias` calls, each taking its own
+    independently-suppliable `Mapping[Station, ...]` — nothing checked that
+    the two mappings shared a station set, that a mapping's keys agreed
+    with its values' own `.station`, that a member actually belonged to
+    `band`, or that gauge-alone and joint shared a common parent
+    population. This type instead stores exactly ONE `comparisons:
+    tuple[WetHourConditionalIntensityBiasComparison, ...]`; `gauge_alone`
+    and `joint` are `@property`s BOTH derived from THAT SAME tuple, using
+    each comparison's own `.station` (never a caller-supplied mapping key)
+    — so gauge-alone and joint for one band can never be built from
+    different station sets, and there is no argument through which either
+    could be supplied independently of the other."""
+
+    band: ElevationBand
+    scale: Scale
+    comparisons: tuple[WetHourConditionalIntensityBiasComparison, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.comparisons) == 0:
+            raise EmptySubsetError(
+                f"{self.band} at {self.scale}: zero member comparisons — no "
+                "band estimand is computable"
+            )
+        stations = tuple(c.station for c in self.comparisons)
+        if len(set(stations)) != len(stations):
+            raise DuplicateBandMemberError(
+                f"{self.band} at {self.scale}: comparisons carries a "
+                f"repeated station: {stations}"
+            )
+        scales = {c.scale for c in self.comparisons}
+        if scales != {self.scale}:
+            raise ScaleNotSupportedError(
+                f"{self.band}: member comparisons span {scales}, not the "
+                f"declared scale {self.scale}"
+            )
+
+    @property
+    def gauge_alone(self) -> ElevationBandEstimand:
+        return _band_estimand(
+            self.band,
+            self.scale,
+            tuple(
+                (c.gauge_alone.mean_intensity_bias_mm_per_h, c.gauge_alone.n)
+                for c in self.comparisons
+            ),
         )
-    scale = next(iter(scales))
-    return _band_estimand(
-        band,
-        scale,
-        tuple((r.mean_intensity_bias_mm_per_h, r.n) for r in results.values()),
-    )
+
+    @property
+    def joint(self) -> ElevationBandEstimand:
+        return _band_estimand(
+            self.band,
+            self.scale,
+            tuple(
+                (c.joint.mean_intensity_bias_mm_per_h, c.joint.n)
+                for c in self.comparisons
+            ),
+        )
 
 
-def band_joint_wet_hour_conditional_intensity_bias(
-    band: ElevationBand, results: Mapping[Station, JointWetHourConditionalIntensityBias]
-) -> ElevationBandEstimand:
-    scales = {r.scale for r in results.values()}
-    if len(scales) > 1:
-        raise ScaleNotSupportedError(
-            f"{band}: member results span more than one scale: {scales}"
+def band_wet_hour_conditional_intensity_bias_comparison(
+    band: ElevationBand,
+    comparisons: tuple[WetHourConditionalIntensityBiasComparison, ...],
+) -> ElevationBandWetHourConditionalIntensityBiasComparison:
+    """Builds the band-level comparison from ONE tuple of per-station
+    `WetHourConditionalIntensityBiasComparison`s — `gauge_alone` and
+    `joint` are derived INSIDE the result's own construction path from
+    that SAME tuple (see `ElevationBandWetHourConditionalIntensityBias
+    Comparison`'s docstring), so there is no argument through which the
+    two could ever be assembled from different station sets."""
+    if not comparisons:
+        raise EmptySubsetError(
+            f"{band}: zero member comparisons — no band estimand is computable"
         )
-    scale = next(iter(scales))
-    return _band_estimand(
-        band,
-        scale,
-        tuple((r.mean_intensity_bias_mm_per_h, r.n) for r in results.values()),
+    result = ElevationBandWetHourConditionalIntensityBiasComparison(
+        band=band, scale=comparisons[0].scale, comparisons=comparisons
     )
+    _ = result.gauge_alone
+    _ = result.joint
+    return result
 
 
 def band_conditional_accumulated_difference(
