@@ -64,6 +64,29 @@ hours across stations (D5a's own reasoning: a high-retention station
 would otherwise dominate the band figure). Each member's own `n` is
 still carried so retention variation stays visible (D13: stratify by
 retention, never filter on it).
+
+**Owner decision, Plan 184 T3 follow-up: BOTH wet-hour conditionings are
+reported, never gauge-alone only.** D1 never defined what "wet-hour"
+conditions on. `WetHourConditionalIntensityBias` (unchanged, still
+gauge-alone: hours the GAUGE calls wet, ERA5 wet or dry) answers "when
+the gauge says it rained, how far off is ERA5's intensity?" but mixes in
+ERA5's own detection failure. `JointWetHourConditionalIntensityBias`
+(new) restricts to hours BOTH sides call wet — isolating intensity from
+detection, at the cost of conditioning on ERA5's own wet/dry behaviour
+too (doubly conditional; see `JointWetConditionality`). These are TWO
+DIFFERENT, NESTED populations (`joint` a strict subset of `gauge_alone`,
+never the reverse) — NOT orthogonal components of one statistic. An
+earlier framing of "the difference between the two IS the detection
+contribution" was considered and rejected: a difference of means over
+nested (not orthogonal) populations is a comparison across two different
+populations, exactly what D2 forbids and what this milestone has already
+reproduced five times. `WetHourConditionalIntensityBiasComparison`
+therefore reports both means, each with its OWN `n` (never a shared or
+inherited count), plus `detection_ratio` (`joint.n / gauge_alone.n` — the
+fraction of gauge-wet hours ERA5 also calls wet, itself a detection
+statistic, not part of the bias estimate) and `mean_shift_mm_per_h`
+(described as how much the estimate moves when ERA5-dry hours are
+excluded from the gauge-alone population — not a decomposition).
 """
 
 from __future__ import annotations
@@ -111,6 +134,17 @@ class CategoricalGrainRefusedError(ValueError):
     POD->1.0, CSI->1.0, FAR->0 BY CONSTRUCTION, while totals may differ by
     hundreds of mm. A well-defined number that reads as perfect agreement
     and is analytically vacuous must be refused, not computed."""
+
+
+class WetHourConditioningReconciliationError(ValueError):
+    """Internal defence-in-depth only (`WetHourConditionalIntensityBiasComparison`'s
+    own guard): the JOINT conditioning (gauge AND ERA5 wet) is by
+    construction a restriction of the GAUGE-ALONE conditioning (gauge wet,
+    ERA5 wet or dry) — same season, same station, and `joint`'s retained
+    hours must all be present among `gauge_alone`'s. This guards
+    `joint_wet_scale_subset`/`wet_scale_subset`'s own predicate logic and a
+    caller's own pairing of the two components, not a further-downstream
+    caller input; not expected to ever fire in practice."""
 
 
 class AccumulatedDifferenceReconciliationError(ValueError):
@@ -211,6 +245,25 @@ def wet_scale_subset(
     `scale_subset`'s unconditioned one."""
     predicate = season_membership_predicate(scale, params) & wet_predicate(
         "gauge_value_mm", params
+    )
+    return subset(paired, predicate)
+
+
+def joint_wet_scale_subset(
+    paired: PairedSeries, *, scale: Scale, params: DhmPrecipParams
+) -> PairedRetainedSubset:
+    """As `wet_scale_subset`, additionally restricted to ERA5-wet hours too
+    — the JOINT conditioning (both sides wet) `JointWetHourConditional
+    IntensityBias` needs. By construction a restriction of
+    `wet_scale_subset`'s own predicate (same season and gauge-wet term,
+    plus the ERA5-wet term), so the result is always a subset of
+    `wet_scale_subset`'s rows for the same `paired`/`scale`/`params` — this
+    is its OWN subset via T1's `subset()`, distinct from both
+    `scale_subset`'s and `wet_scale_subset`'s."""
+    predicate = (
+        season_membership_predicate(scale, params)
+        & wet_predicate("gauge_value_mm", params)
+        & wet_predicate("era5_nearest_mm_per_h", params)
     )
     return subset(paired, predicate)
 
@@ -328,6 +381,228 @@ def wet_hour_conditional_intensity_bias(
         )
     return WetHourConditionalIntensityBias(
         station=station, scale=scale, subset=wet_paired_subset
+    )
+
+
+class JointWetConditionality(StrEnum):
+    """Rule 1: `JointWetHourConditionalIntensityBias` is DOUBLY conditional
+    — on retention (D2, like every subset in this module) AND on ERA5's
+    own wet/dry classification, since its population is restricted to
+    hours ERA5 itself calls wet, not merely the gauge. `JointWetHour
+    ConditionalIntensityBias.joint_conditionality` carries this label as a
+    `ClassVar` — the same mechanism `CategoricalScores.
+    retention_conditionality` uses (Finding 2, Plan 184 T3 independent
+    review, 2026-08-21) — so it travels with every instance and cannot be
+    dropped by a downstream renderer. `WetHourConditionalIntensityBias`
+    (gauge-alone) is only singly conditional (retention only) and Rule 1
+    already treats it as well-defined under the mask — giving it this
+    extra label would over-caveat an already-well-defined result, so it
+    does NOT carry this marker (owner decision, Plan 184 T3 follow-up)."""
+
+    CONDITIONAL_ON_ERA5_WET_CLASSIFICATION = "CONDITIONAL_ON_ERA5_WET_CLASSIFICATION"
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class JointWetHourConditionalIntensityBias:
+    """D1's third estimand, JOINT-conditioned: mean(gauge - ERA5) restricted
+    to hours BOTH the gauge AND ERA5 call wet (`joint_wet_scale_subset`'s
+    output). Isolates intensity bias from detection bias, at the cost of
+    conditioning on ERA5's own wet/dry behaviour too (doubly conditional,
+    see `JointWetConditionality`). `subset` here is the JOINT-conditioned
+    subset, never the gauge-alone one — a different, NESTED (strictly
+    smaller) population from `WetHourConditionalIntensityBias`'s, never a
+    component of it.
+
+    `n` and `mean_intensity_bias_mm_per_h` are `@property`s computed live
+    from `self.subset`, exactly as `WetHourConditionalIntensityBias`'s are
+    — there is no constructor argument through which a caller could
+    attach a value computed from a different (e.g. gauge-alone) subset."""
+
+    station: Station
+    scale: Scale
+    subset: PairedRetainedSubset
+
+    joint_conditionality: ClassVar[JointWetConditionality] = (
+        JointWetConditionality.CONDITIONAL_ON_ERA5_WET_CLASSIFICATION
+    )
+
+    def __post_init__(self) -> None:
+        # See MatchedHourMeanDifference.__post_init__ for why this
+        # isinstance check exists despite the declared type.
+        if not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
+            self.subset, PairedRetainedSubset
+        ):
+            raise EstimandSubsetTypeError(
+                "JointWetHourConditionalIntensityBias.subset must be a real "
+                f"PairedRetainedSubset, got {type(self.subset)}"
+            )
+        if self.scale not in _MAGNITUDE_SCALES:
+            raise ScaleNotSupportedError(
+                f"joint wet-hour conditional intensity bias is scoped to "
+                f"{_MAGNITUDE_SCALES}, got {self.scale}"
+            )
+
+    @property
+    def n(self) -> int:
+        return self.subset.n_common_retained
+
+    @property
+    def mean_intensity_bias_mm_per_h(self) -> float:
+        return as_float(
+            self.subset.frame.select(
+                (pl.col("gauge_value_mm") - pl.col("era5_nearest_mm_per_h")).mean()
+            ).item()
+        )
+
+
+def joint_wet_hour_conditional_intensity_bias(
+    joint_wet_paired_subset: PairedRetainedSubset, *, station: Station, scale: Scale
+) -> JointWetHourConditionalIntensityBias:
+    if joint_wet_paired_subset.n_common_retained == 0:
+        raise EmptySubsetError(
+            f"{station!r} at {scale}: zero jointly-wet commonly-retained "
+            "hours — no joint wet-hour conditional intensity bias is "
+            "computable"
+        )
+    return JointWetHourConditionalIntensityBias(
+        station=station, scale=scale, subset=joint_wet_paired_subset
+    )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class WetHourConditionalIntensityBiasComparison:
+    """Owner decision, Plan 184 T3 follow-up: report BOTH wet-hour
+    conditionings, never gauge-alone only. Pairs an already-built
+    `gauge_alone` (`WetHourConditionalIntensityBias`) with an
+    already-built `joint` (`JointWetHourConditionalIntensityBias`) for the
+    SAME station and scale.
+
+    These are two DIFFERENT, NESTED populations — `joint` a strict subset
+    of `gauge_alone`'s retained hours — NOT orthogonal components of one
+    statistic, and this type is NOT a decomposition. `detection_ratio`
+    (`joint.n / gauge_alone.n`) is itself a detection statistic (the
+    fraction of gauge-wet hours ERA5 also calls wet), not part of the bias
+    estimate. `mean_shift_mm_per_h` is how much the mean moves when
+    ERA5-dry hours are excluded from the gauge-alone population — reported
+    as a shift between two population means, never as an orthogonal
+    "detection contribution" (that framing was considered and rejected:
+    a difference of means over nested populations is a comparison across
+    populations, which is exactly what D2 forbids).
+
+    Neither derived number is a constructor field — both are `@property`s
+    computed live from `self.gauge_alone`/`self.joint`, which are
+    themselves already-validated, self-computing estimand objects. There
+    is no argument through which a caller could attach a `detection_ratio`
+    or `mean_shift_mm_per_h` computed elsewhere."""
+
+    gauge_alone: WetHourConditionalIntensityBias
+    joint: JointWetHourConditionalIntensityBias
+
+    def __post_init__(self) -> None:
+        # See MatchedHourMeanDifference.__post_init__ for why these
+        # isinstance checks exist despite the declared types.
+        if not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
+            self.gauge_alone, WetHourConditionalIntensityBias
+        ):
+            raise EstimandSubsetTypeError(
+                "WetHourConditionalIntensityBiasComparison.gauge_alone must "
+                f"be a real WetHourConditionalIntensityBias, got "
+                f"{type(self.gauge_alone)}"
+            )
+        if not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
+            self.joint, JointWetHourConditionalIntensityBias
+        ):
+            raise EstimandSubsetTypeError(
+                "WetHourConditionalIntensityBiasComparison.joint must be a "
+                f"real JointWetHourConditionalIntensityBias, got "
+                f"{type(self.joint)}"
+            )
+        if self.gauge_alone.station != self.joint.station:
+            raise WetHourConditioningReconciliationError(
+                f"gauge_alone station {self.gauge_alone.station!r} does not "
+                f"match joint station {self.joint.station!r} — both "
+                "conditionings must be for the same station"
+            )
+        if self.gauge_alone.scale != self.joint.scale:
+            raise WetHourConditioningReconciliationError(
+                f"{self.gauge_alone.station!r}: gauge_alone scale "
+                f"{self.gauge_alone.scale} does not match joint scale "
+                f"{self.joint.scale} — both conditionings must be for the "
+                "same scale"
+            )
+        # joint is by construction a restriction of gauge_alone
+        # (joint_wet_scale_subset's predicate is wet_scale_subset's plus an
+        # ERA5-wet term) — every jointly-retained hour must therefore be
+        # among gauge_alone's own retained hours. An anti-join, not just an
+        # n-comparison, so this catches a caller pairing gauge_alone and
+        # joint built from DIFFERENT underlying paired series (which could
+        # coincidentally have joint.n <= gauge_alone.n without joint's
+        # hours being a real subset).
+        not_nested = (
+            self.joint.subset.frame.select("timestamp")
+            .join(
+                self.gauge_alone.subset.frame.select("timestamp"),
+                on="timestamp",
+                how="anti",
+            )
+            .height
+        )
+        if not_nested > 0:
+            raise WetHourConditioningReconciliationError(
+                f"{self.gauge_alone.station!r} at {self.gauge_alone.scale}: "
+                f"{not_nested} of joint's {self.joint.n} retained hours are "
+                "not present in gauge_alone's retained hours — joint must "
+                "be a strict subset of gauge_alone, never an unrelated "
+                "population"
+            )
+
+    @property
+    def station(self) -> Station:
+        return self.gauge_alone.station
+
+    @property
+    def scale(self) -> Scale:
+        return self.gauge_alone.scale
+
+    @property
+    def detection_ratio(self) -> float:
+        """`joint.n / gauge_alone.n` — the fraction of gauge-wet hours
+        ERA5 also calls wet. A detection statistic, not part of the bias
+        estimate."""
+        return self.joint.n / self.gauge_alone.n
+
+    @property
+    def mean_shift_mm_per_h(self) -> float:
+        """How much the mean intensity bias moves when ERA5-dry hours are
+        excluded from the gauge-alone population — a shift between two
+        population means, NOT a decomposition or an orthogonal
+        "detection contribution"."""
+        return (
+            self.joint.mean_intensity_bias_mm_per_h
+            - self.gauge_alone.mean_intensity_bias_mm_per_h
+        )
+
+
+def wet_hour_conditional_intensity_bias_comparison(
+    wet_paired_subset: PairedRetainedSubset,
+    joint_wet_paired_subset: PairedRetainedSubset,
+    *,
+    station: Station,
+    scale: Scale,
+) -> WetHourConditionalIntensityBiasComparison:
+    """Builds both conditionings from their own, already-scale/wet-sliced
+    subsets (`wet_scale_subset`'s and `joint_wet_scale_subset`'s outputs,
+    respectively) and pairs them. Either component's own `EmptySubsetError`
+    propagates unchanged — a zero-`n` conditioning is never silently
+    paired with the other."""
+    gauge_alone = wet_hour_conditional_intensity_bias(
+        wet_paired_subset, station=station, scale=scale
+    )
+    joint = joint_wet_hour_conditional_intensity_bias(
+        joint_wet_paired_subset, station=station, scale=scale
+    )
+    return WetHourConditionalIntensityBiasComparison(
+        gauge_alone=gauge_alone, joint=joint
     )
 
 
@@ -629,6 +904,22 @@ def band_matched_hour_mean_difference(
 
 def band_wet_hour_conditional_intensity_bias(
     band: ElevationBand, results: Mapping[Station, WetHourConditionalIntensityBias]
+) -> ElevationBandEstimand:
+    scales = {r.scale for r in results.values()}
+    if len(scales) > 1:
+        raise ScaleNotSupportedError(
+            f"{band}: member results span more than one scale: {scales}"
+        )
+    scale = next(iter(scales))
+    return _band_estimand(
+        band,
+        scale,
+        tuple((r.mean_intensity_bias_mm_per_h, r.n) for r in results.values()),
+    )
+
+
+def band_joint_wet_hour_conditional_intensity_bias(
+    band: ElevationBand, results: Mapping[Station, JointWetHourConditionalIntensityBias]
 ) -> ElevationBandEstimand:
     scales = {r.scale for r in results.values()}
     if len(scales) > 1:

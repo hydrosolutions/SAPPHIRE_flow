@@ -19,17 +19,24 @@ from scripts.dhm_precip.ma6_estimands import (
     ElevationBand,
     EmptySubsetError,
     EstimandSubsetTypeError,
+    JointWetConditionality,
+    JointWetHourConditionalIntensityBias,
     MatchedHourMeanDifference,
     RetentionConditionality,
     Scale,
     WetHourConditionalIntensityBias,
+    WetHourConditionalIntensityBiasComparison,
+    WetHourConditioningReconciliationError,
     assign_elevation_band,
     band_matched_hour_mean_difference,
     categorical_scores,
     conditional_accumulated_difference,
+    joint_wet_hour_conditional_intensity_bias,
+    joint_wet_scale_subset,
     matched_hour_mean_difference,
     scale_subset,
     wet_hour_conditional_intensity_bias,
+    wet_hour_conditional_intensity_bias_comparison,
     wet_scale_subset,
 )
 from scripts.dhm_precip.ma6_pairs import MaskedGaugeSeries, PairedSeries, subset
@@ -191,6 +198,232 @@ class TestWetHourConditionalIntensityBias:
             "unconditioned scale subset's — conflating them is the "
             "mismatched-population failure mode this track keeps hitting"
         )
+
+
+class TestJointWetHourConditionalIntensityBias:
+    def test_restricted_to_both_sides_wet_hours_only(self) -> None:
+        station = Station("A")
+        # wet_threshold_mm_per_h default 0.2. Hours: (gauge 0.0 dry, era5
+        # 0.0 dry) excluded; (gauge 1.0 wet, era5 0.1 dry) excluded — gauge
+        # wet but ERA5 dry; (gauge 2.0 wet, era5 0.5 wet) included, diff
+        # 1.5; (gauge 0.0 dry, era5 1.0 wet) excluded — ERA5 wet but gauge
+        # dry.
+        paired = _make_paired_series(
+            station,
+            datetime(2024, 7, 1, 0),
+            4,
+            gauge=[0.0, 1.0, 2.0, 0.0],
+            era5=[0.0, 0.1, 0.5, 1.0],
+        )
+        joint_wet_jjas = joint_wet_scale_subset(
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+
+        result = joint_wet_hour_conditional_intensity_bias(
+            joint_wet_jjas, station=station, scale=Scale.JJAS
+        )
+
+        assert result.n == 1
+        assert result.mean_intensity_bias_mm_per_h == pytest.approx(1.5)
+
+    def test_joint_conditionality_marker_is_carried_and_gauge_alone_lacks_it(
+        self,
+    ) -> None:
+        station = Station("A")
+        paired = _make_paired_series(
+            station,
+            datetime(2024, 7, 1, 0),
+            2,
+            gauge=[1.0, 2.0],
+            era5=[0.5, 0.5],
+        )
+        joint_wet_jjas = joint_wet_scale_subset(
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+
+        joint_result = joint_wet_hour_conditional_intensity_bias(
+            joint_wet_jjas, station=station, scale=Scale.JJAS
+        )
+        gauge_alone_result = wet_hour_conditional_intensity_bias(
+            wet_jjas, station=station, scale=Scale.JJAS
+        )
+
+        assert (
+            joint_result.joint_conditionality
+            is JointWetConditionality.CONDITIONAL_ON_ERA5_WET_CLASSIFICATION
+        )
+        # Rule 1: the gauge-alone conditioning is already well-defined
+        # under the mask (singly conditional) — over-caveating it with the
+        # doubly-conditional marker would misrepresent it.
+        assert not hasattr(gauge_alone_result, "joint_conditionality")
+
+
+class TestWetHourConditionalIntensityBiasComparison:
+    @staticmethod
+    def _real_shaped_comparison() -> WetHourConditionalIntensityBiasComparison:
+        # A 4-hour cycle repeated 20 times (80 hours): dry/dry, gauge-wet-
+        # only, both-wet, era5-wet-only. Gauge-wet hours = 2 per cycle (40
+        # total); jointly-wet hours = 1 per cycle (20 total) — a real
+        # (not contrived 1-row) population where n_joint is STRICTLY less
+        # than n_gauge_alone, not merely <=.
+        station = Station("A")
+        cycle_gauge = [0.0, 1.0, 2.0, 0.0]
+        cycle_era5 = [0.0, 0.1, 0.5, 1.0]
+        n_cycles = 20
+        gauge = cycle_gauge * n_cycles
+        era5 = cycle_era5 * n_cycles
+        paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), len(gauge), gauge=gauge, era5=era5
+        )
+        wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        joint_wet_jjas = joint_wet_scale_subset(
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        return wet_hour_conditional_intensity_bias_comparison(
+            wet_jjas, joint_wet_jjas, station=station, scale=Scale.JJAS
+        )
+
+    def test_joint_n_is_strictly_less_than_gauge_alone_n_on_real_shaped_data(
+        self,
+    ) -> None:
+        comparison = self._real_shaped_comparison()
+
+        assert comparison.gauge_alone.n == 40
+        assert comparison.joint.n == 20
+        assert comparison.joint.n < comparison.gauge_alone.n
+        assert comparison.joint is not comparison.gauge_alone
+        assert comparison.joint.n != comparison.gauge_alone.n
+
+    def test_detection_ratio_and_mean_shift_are_computed_not_stored(self) -> None:
+        comparison = self._real_shaped_comparison()
+
+        assert comparison.detection_ratio == pytest.approx(20 / 40)
+        # gauge_alone mean over 40 hours: 20x(1.0-0.1)+20x(2.0-0.5) = 48/40 = 1.2
+        # joint mean over 20 hours: (2.0-0.5) = 1.5
+        assert comparison.gauge_alone.mean_intensity_bias_mm_per_h == pytest.approx(1.2)
+        assert comparison.joint.mean_intensity_bias_mm_per_h == pytest.approx(1.5)
+        assert comparison.mean_shift_mm_per_h == pytest.approx(1.5 - 1.2)
+
+    def test_station_and_scale_must_agree_between_the_two_components(self) -> None:
+        station_a = Station("A")
+        station_b = Station("B")
+        paired_a = _make_paired_series(
+            station_a, datetime(2024, 7, 1, 0), 2, gauge=[1.0, 2.0], era5=[0.5, 0.5]
+        )
+        paired_b = _make_paired_series(
+            station_b, datetime(2024, 7, 1, 0), 2, gauge=[1.0, 2.0], era5=[0.5, 0.5]
+        )
+        wet_a = wet_scale_subset(paired_a, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        joint_b = joint_wet_scale_subset(
+            paired_b, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        gauge_alone = wet_hour_conditional_intensity_bias(
+            wet_a, station=station_a, scale=Scale.JJAS
+        )
+        joint = joint_wet_hour_conditional_intensity_bias(
+            joint_b, station=station_b, scale=Scale.JJAS
+        )
+
+        with pytest.raises(WetHourConditioningReconciliationError, match="station"):
+            WetHourConditionalIntensityBiasComparison(
+                gauge_alone=gauge_alone, joint=joint
+            )
+
+    def test_joint_population_not_nested_in_gauge_alone_is_rejected(self) -> None:
+        # Finding-shaped teeth test (per Rule 1 discipline this track
+        # keeps needing): pair a REAL gauge_alone with a "joint" built from
+        # an UNRELATED station's hours at the same station label — same n,
+        # same scale, but the jointly-wet hours are NOT a subset of
+        # gauge_alone's retained hours. The reconciliation check must
+        # catch this by row identity (timestamps), not merely by count.
+        station = Station("A")
+        paired = _make_paired_series(
+            station,
+            datetime(2024, 7, 1, 0),
+            4,
+            gauge=[0.0, 1.0, 2.0, 0.0],
+            era5=[0.0, 0.1, 0.5, 1.0],
+        )
+        wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        gauge_alone = wet_hour_conditional_intensity_bias(
+            wet_jjas, station=station, scale=Scale.JJAS
+        )
+        # A disjoint-in-time "joint" subset, same station label, same
+        # scale, non-zero n — but none of its hours are among
+        # gauge_alone's.
+        unrelated_paired = _make_paired_series(
+            station,
+            datetime(2025, 7, 1, 0),
+            1,
+            gauge=[5.0],
+            era5=[5.0],
+        )
+        unrelated_joint_subset = joint_wet_scale_subset(
+            unrelated_paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        unrelated_joint = joint_wet_hour_conditional_intensity_bias(
+            unrelated_joint_subset, station=station, scale=Scale.JJAS
+        )
+
+        with pytest.raises(WetHourConditioningReconciliationError, match="subset"):
+            WetHourConditionalIntensityBiasComparison(
+                gauge_alone=gauge_alone, joint=unrelated_joint
+            )
+
+    def test_detection_ratio_has_no_field_to_attach_through(self) -> None:
+        comparison = self._real_shaped_comparison()
+        stolen_ratio = comparison.detection_ratio
+
+        with pytest.raises(TypeError, match="detection_ratio"):
+            WetHourConditionalIntensityBiasComparison(
+                gauge_alone=comparison.gauge_alone,
+                joint=comparison.joint,
+                detection_ratio=stolen_ratio,  # type: ignore[call-arg]
+            )
+
+    def test_mean_shift_has_no_field_to_attach_through(self) -> None:
+        comparison = self._real_shaped_comparison()
+        stolen_shift = comparison.mean_shift_mm_per_h
+
+        with pytest.raises(TypeError, match="mean_shift_mm_per_h"):
+            WetHourConditionalIntensityBiasComparison(
+                gauge_alone=comparison.gauge_alone,
+                joint=comparison.joint,
+                mean_shift_mm_per_h=stolen_shift,  # type: ignore[call-arg]
+            )
+
+    def test_joint_intensity_bias_has_no_value_field_to_attach_through(self) -> None:
+        # Mirrors TestValueCannotBeAttachedFromADifferentPopulation for the
+        # NEW joint estimand type: two DIFFERENT, EQUAL-SIZED joint-wet
+        # subsets, a real value computed from one, no constructor field
+        # through which that value can be attached to the other.
+        station = Station("A")
+        paired_x = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 2, gauge=[1.0, 1.0], era5=[0.5, 0.5]
+        )
+        paired_y = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 2, gauge=[100.0, 100.0], era5=[0.5, 0.5]
+        )
+        subset_x = joint_wet_scale_subset(
+            paired_x, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        subset_y = joint_wet_scale_subset(
+            paired_y, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        assert subset_x.n_common_retained == subset_y.n_common_retained == 2
+        result_from_x = joint_wet_hour_conditional_intensity_bias(
+            subset_x, station=station, scale=Scale.JJAS
+        )
+        value_from_x = result_from_x.mean_intensity_bias_mm_per_h
+
+        with pytest.raises(TypeError, match="mean_intensity_bias_mm_per_h"):
+            JointWetHourConditionalIntensityBias(
+                station=station,
+                scale=Scale.JJAS,
+                subset=subset_y,  # a DIFFERENT, equal-sized population
+                mean_intensity_bias_mm_per_h=value_from_x,  # type: ignore[call-arg]
+            )
 
 
 class TestConditionalAccumulatedDifference:
