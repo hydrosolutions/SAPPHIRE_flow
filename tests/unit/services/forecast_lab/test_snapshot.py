@@ -801,7 +801,7 @@ class TestMultiStationSourceStatusAggregation:
         assert snapshot.status.sapphire_forecasts.status == "missing"
         assert (
             snapshot.status.sapphire_forecasts.message
-            == "no a SAPPHIRE forecast available for any station"
+            == "no station has a SAPPHIRE forecast"
         )
 
         # Not all-ok (bafu/sapphire aren't "ok"), but observations IS "ok"

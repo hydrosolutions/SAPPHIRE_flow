@@ -454,7 +454,7 @@ def _aggregate_source_status(
         return SourceStatusSchema(
             status="missing",
             latest_available_at=None,
-            message=None if total == 0 else f"no {kind} available for any station",
+            message=None if total == 0 else f"no station has {kind}",
         )
     if ok_count == total:
         return SourceStatusSchema(status="ok", latest_available_at=latest, message=None)
