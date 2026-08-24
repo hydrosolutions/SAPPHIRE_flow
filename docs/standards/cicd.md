@@ -875,7 +875,7 @@ never every tick, with its own persisted counter (`consecutive_disk_low_ticks`) 
 kind (`disk_notification_pending`) — independent of every other check, so a simultaneous disk-low and
 backup-device-unverified tick alerts on both, not one swallowing the other. The alert message reports
 both the percentage and the underlying bytes (e.g. "4.1% free (152 GB of 3654 GB)") since the percentage
-alone is not actionable. See `docs/plans/199-salvage-plan-158.md`.
+alone is not actionable. See `docs/plans/archive/199-salvage-plan-158.md`.
 
 ## Access-token pepper + probe-token rotation (Plan 147 Slice C, REALIZED)
 

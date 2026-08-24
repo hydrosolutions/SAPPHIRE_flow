@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-21
 plan: 199
 title: Salvage the three unlanded pieces of Plan 158
@@ -12,6 +12,17 @@ source: branch `docs/plan-158-session-independence` @ 9ef2080 (pushed to origin 
 # Plan 199 — salvage the three unlanded pieces of Plan 158
 
 ## Status
+
+**COMPLETE 2026-08-24** — merged as PR #205 (`23b7ce7`), tagged `v0.1.794`.
+
+Both tasks shipped: the 5 %-of-capacity disk alert (T1) and `docker-endpoint.sh` sourced by all four
+wrappers with both lint gates on `shellcheck -x` (T2).
+
+**`/implement`'s review loop never ran** — its agent stalled on all six attempts — so the diff was gated
+by hand with an independent Codex pass. That found **no implementation defect** and two test-locking
+gaps, both closed before the PR and both proved by writing the wrong implementation: with the disk alert
+folded into staleness, 169 tests passed and only the new one failed; with a wrapper's `source` replaced
+by inline duplication, 22 tests passed and only the two new structural ones failed.
 
 **READY** — owner flip 2026-08-21, with the threshold decided (D1 below).
 
