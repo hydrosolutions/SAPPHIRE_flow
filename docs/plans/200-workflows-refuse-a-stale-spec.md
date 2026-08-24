@@ -96,7 +96,7 @@ people to ignore it.
 
 Branch protection or server-side hooks · changing what the workflows do after they start · auto-pushing
 anything · a JS test framework for `.claude/workflows/` · touching `plan-review.js` (the deprecated
-Sonnet-only fallback) · preventing worktrees from going stale in general — only the plan doc is gated.
+Sonnet-only fallback) · preventing worktrees from going stale in general (D5 gates the BASE being behind origin/main; it does not police the worktree in any other way).
 
 ## Exit gates
 
