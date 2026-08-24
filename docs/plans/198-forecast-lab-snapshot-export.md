@@ -28,14 +28,33 @@ were the valuable ones: every one this session verified against the repo or the 
 and four of them corrected *this plan's own* measured facts (F1, F6, F8, D2). Those are folded.
 The three T4-internal findings died with T4.
 
+**Third run (2 rounds): 0 blockers, 2 majors, 2 minors — all folded.** The majors: no injected
+`clock` on `build_snapshot()`, violating a **CRITICAL** `CLAUDE.md` rule that 62 call sites in this
+repo already follow (D20); and an unavailable-model field that could never be populated (D19).
+Minors: T7 needlessly serialised behind the surfaces, and T7's exit criteria carrying literal test
+code the plan's own F3 policy forbids.
+
 **Second run (2 rounds, 2026-08-21): 0 blockers, 3 majors, 2 minors — all folded, and every one
 of them cut scope** (the admin-`404` two-step, eligibility on the explicit-code path, and dropping
 the vestigial `include_verification` flag; plus two de-speculation trims). **Root cause of the
 review flakiness found and fixed:** `.claude/workflows/{plan,implement}.js` invoked
 `codex exec` **without `< /dev/null`**, so the CLI blocked on "Reading additional input from
-stdin..." and timed out — a gotcha already recorded in project memory. That defect silenced the
-independent reviewer in **4 of 5 rounds across both runs**; both workflows are now fixed. **Any
-"convergence" reached before that fix should be read as Claude-only.**
+stdin..." and timed out. Both scripts are fixed. **But that fix is NOT confirmed as the cause and
+has never actually run:** `Workflow({name: "plan"})` resolves from a registration snapshot taken at
+session start, so run 3 executed the *unfixed* script (verified — the persisted
+`plan-wf_*.js` contains no `< /dev/null`). Run 3's own Codex failure was moreover a different
+mode: the relay agent stalled with *no progress* for 3 min × 6 attempts, during a window of
+platform model timeouts — an agent stall, not a CLI hang. **Net: across 3 runs / 7 rounds the
+independent Codex reviewer produced exactly ONE verdict** (run 1 round 3 — the round that found the
+most). Every other round was Claude lenses only. **Read this plan's review history accordingly:
+it is well-grounded but it has NOT had the independent repo-grounded review `CLAUDE.md` makes a
+floor.** To actually test the fix, invoke by `scriptPath` (reads from disk) rather than by name.
+
+**Third round (2026-08-21, independent Codex + Claude): 0 blockers, 1 major, 1 minor — both folded,
+and both cut scope.** The major killed D10's server-computed content hash (and with it AC16's
+byte-identity requirement): it was a caching apparatus rule 5 already forbids, rebuilt for a benefit
+the consumer can get by hashing the body it already holds. The minor killed D16's undefined `stale`
+status. Nothing was added.
 
 ## Goal
 
@@ -65,9 +84,9 @@ platform. Specifically:
 2. No ingestion of BAFU forecasts into Postgres — the quarantine stands (Plan 111).
 3. No change to any existing route's response shape.
 4. No new monitoring, no new scheduled job, no new probe harness, no new script file.
-5. No caching layer, no pagination, no rate limiting, and **no conditional-GET machinery**
-   (`ETag`/`If-None-Match`/`304`/`Last-Modified`) — the body-level content hash of D10 is the whole
-   of it. See T11 if that ever needs revisiting.
+5. No caching layer, no pagination, no rate limiting, **no conditional-GET machinery**
+   (`ETag`/`If-None-Match`/`304`/`Last-Modified`) and **no server-side content hash** — a consumer
+   that wants dedup hashes the body it already holds (D10). See T11 if that ever needs revisiting.
 6. No abstraction introduced for a second consumer, a second deployment, a second variable, or a
    second station set. There are **two stations and one consumer**. Generality that no caller
    exercises is over-engineering, not foresight.
@@ -223,8 +242,7 @@ overlay-file mount, mirroring `prefect-worker` (`docker-compose.macmini.yml:23-2
 (`model_artifacts:/data/artifacts:ro`). The quarantine is preserved and arguably strengthened: the
 mount is `:ro`, nothing writes BAFU values to the DB, and no `ModelId` is minted.
 *Fallback if O1 = no (D2-alt): **nothing is pre-built and nothing is served from a file.** The route
-still calls `build_snapshot()` live (D1) and still computes `snapshot_id` over its own
-response body (D10, T5) — it simply has no archive to read, so the BAFU section comes back through
+still calls `build_snapshot()` live (D1) and still emits `snapshot_id` (D10, T5) — it simply has no archive to read, so the BAFU section comes back through
 the D13 guard as `status.bafu_forecast = "missing"`, reason `"archive not mounted"`. The complete
 three-source snapshot is then produced only by the CLI (T6), run inside a container that already
 has the mount (`docker-compose.yml:131` mounts `bafu_forecast_archive` on `prefect-worker`), and
@@ -316,16 +334,43 @@ routes return `400` from `_parse_enum` (`api/routes/api_stations.py:127`); this 
 request specifies 422, and 422 is what FastAPI produces without custom code. Documented as an
 intentional local difference.
 
-**D10 — `snapshot_id` is a content-derived body field, and that is the whole caching story.**
-`snapshot_id = "fls1-" + sha256(canonical_body_without(snapshot_id, generated_at))[:16]`. The
-benefit that matters — **a re-sync yielding identical data produces an identical `snapshot_id`, so
-the map can skip re-caching** — is available to the consumer by comparing that one field in the
-parsed body. **No `ETag`, no `If-None-Match`, no `304`, no `Last-Modified`** (revised 2026-08-21):
-protocol-level conditional GET buys nothing the body field does not already give this single
-LAN consumer, and it is exactly the caching-layer addition proportionality rule 5 puts out of
-scope. **Trade-off, stated:** a repeat poll over unchanged data still transfers the full
-~300–600 KB body (D11) instead of a `304`. If that bandwidth is ever measured to matter, revisit conditional GET then — T11 is a
+**D10 — `snapshot_id` is a timestamp label, not a content hash, and there is no caching story at
+all.** `snapshot_id = "fls1-" + generated_at` in compact form (e.g. `fls1-20260821T104500Z`): one
+line to produce, promising nothing about content. *(Revised 2026-08-21, third review round —
+scope cut.)* The earlier draft made it `sha256` over a canonical serialization of the body that had
+to **exclude `snapshot_id` and `generated_at` from itself** — a self-referential construction and
+its own bug source — purely so a re-sync over unchanged data would yield an identical id and the map
+could skip re-caching. That is caching apparatus, the very thing proportionality rule 5 puts out of
+scope, built for a benefit the integration request never asked for and that the single LAN consumer
+gets for free: it already holds the response bytes, so `sha256(body)` on its side is one line, needs
+no canonicalisation rule here, no exclusion list, and imposes no byte-identity obligation on the
+server (the old AC16, now cut). **No `ETag`, no `If-None-Match`, no `304`, no `Last-Modified`**
+either. **Trade-off, stated:** a repeat poll over unchanged data still transfers the full
+~300–600 KB body (D11) and the server offers no dedup signal of its own; the consumer dedups on its
+own hash. If that bandwidth is ever measured to matter, revisit conditional GET then — T11 is a
 placeholder, not a spec.
+
+**D19 — an unavailable model carries a reason and nothing else.** An earlier draft had the entry
+also report a "last known successful issue time". That field cannot be populated, and the reason is
+structural rather than incidental: D14 fetches via `fetch_latest_forecast()`
+(`store/forecast_store.py:124-139`), which returns the most recent forecast a model ever produced
+for a station **regardless of age** and yields `None` only when the model has produced *none at
+all*. So an entry is unavailable exactly when no successful issue time exists — if one existed the
+call would have returned it and the entry would not be unavailable. Implementing the field would
+mean either a second historical query per unavailable model (new query surface D14 explicitly rules
+out) or a column that is always `null` (dead schema, rule 6). It was a leftover from the staleness
+concept D16 removed. **Cut.**
+
+**D20 — `build_snapshot()` takes an injected `clock`.** `CLAUDE.md` § Testability Requirements is
+marked **CRITICAL** — *"Never use `datetime.now()` … directly in business logic. Always inject
+dependencies"* — and this is a live convention, not a dead letter: **62 call sites** in this repo
+already take `clock: Callable[[], UtcDatetime]` (`flows/run_hindcast.py:48`,
+`preprocessing/converters.py:43`, and so on). The requirement bites harder here than usual because
+D10 derives `snapshot_id` **from `generated_at`**, so a bare `datetime.now(UTC)` inside
+`build_snapshot()` would make both the timestamp *and* the identifier untestable in one stroke.
+`build_snapshot(clock=...)` is therefore part of T3's signature; T5 injects the real clock the way
+sibling routes do and T6 defaults to the same. T1's `generated_at` field types as `UtcDatetime` to
+match. Tested by AC27 — a frozen clock yields a byte-identical document across two builds.
 
 **D18 — `include_verification` is dropped entirely.** *(Rule 6, applied to this plan's own
 leftovers.)* The request specified the flag, and it earned its place while T4 existed: it gated an
@@ -345,8 +390,10 @@ offers it if the owner wants it.
 
 **D12 — Determinism is a tested property.** Stations sorted by `code`; points by `valid_time`
 ascending; models by `(is_primary desc, model_key asc)`; daily rows by `day_start`; JSON key order
-fixed by Pydantic field order; no set iteration anywhere. Two builds from identical data must be
-byte-identical apart from `generated_at`.
+fixed by Pydantic field order; no set iteration anywhere. Two builds from identical data must
+produce the same ordering and the same `is_primary` (AC16, AC24). That is a **parsed-document**
+comparison, not a byte comparison — with D10's content hash cut, nothing in the contract promises
+byte identity, and ordering is what the consumer actually renders.
 
 `is_primary` = the **ACTIVE** assignment (D17b) with the lowest `model_assignments.priority` that
 produced a forecast (lowest wins; `nwp_regression` is 10), **ties broken by `model_key` ascending** —
@@ -355,10 +402,10 @@ uniqueness constraint and a `server_default` of `0`** (`db/metadata.py:1016`), s
 created without an explicit priority collides at `0` with every other such assignment on the same
 station — the exact shape AC11 and F8 anticipate (two active models per MVP station). Without a
 stated tiebreak two builds over identical data could pick different winners on unordered DB read
-order, contradicting the byte-identical invariant above (AC16). Tested by AC24.
+order, contradicting the determinism invariant above (AC16, AC24). Tested by AC24.
 
 **D13 — Partial is the default failure mode.** Each of the three sources is assembled inside its
-own guard. A source failure sets `status.<source> = error|missing|stale` with a short non-secret
+own guard. A source failure sets `status.<source> = error|missing` with a short non-secret
 message and leaves that section unavailable. **But containment has a hard limit that must be stated
 rather than discovered:** observations and SAPPHIRE forecasts share one request-scoped SQL
 transaction (`api/deps.py`). Catching a failed statement does **not** repair an aborted PostgreSQL
@@ -402,17 +449,28 @@ could otherwise supply a stale forecast and even win `is_primary` on priority �
 asserting the committed file equals `model_json_schema()`. The schema cannot drift from the code.
 
 **D16 — `status.overall` semantics — exhaustive.** Each of the three sources carries a per-source
-status in `ok | stale | error | missing`. `status.overall` is the **first** matching rule, so every
+status in `ok | error | missing`. `status.overall` is the **first** matching rule, so every
 combination maps to exactly one value:
 
 1. all three sources `ok` → `ok`;
-2. else no source is `ok` or `stale` (every source is `error` or `missing`) → `unavailable`;
-3. else no source is `ok` and at least one is `stale` → `stale`;
-4. else → `partial`.
+2. else no source is `ok` (every source is `error` or `missing`) → `unavailable`;
+3. else → `partial`.
 
-Rule 2 is the case the earlier draft left undefined (e.g. one `error`, one `missing`, one `stale`,
-or a same-day outage across all three sources). Staleness thresholds are constants in the module, documented in the schema, and deliberately generous —
-**the snapshot never declares itself unusable because it is old; the map decides how to label age.**
+Rule 2 is the case an earlier draft left undefined (e.g. one `error` and two `missing`, or a
+same-day outage across all three sources); it is tested by AC13.
+
+*(Revised 2026-08-21, third review round — scope cut. A fourth per-source value `stale` and its own
+overall rule were **removed**. Their thresholds were never given a number anywhere in this plan and
+no acceptance criterion exercised the ok/stale boundary or the stale→overall transition: a state
+introduced for exhaustiveness rather than for an observed failure. **The snapshot never declares
+itself unusable because it is old** — each source already exports its own `issued_at`/`produced_at`
+and the document carries `generated_at` (F8), so the map judges age from data it already holds,
+without SAPPHIRE encoding and testing a threshold nobody has specified. If a concrete staleness
+requirement arrives, it lands then, with real numbers and a real AC. **Not taken** from the same
+finding: collapsing `error` and `missing` into a single `unavailable` + reason. Both are concretely
+specified in D13, AC22 turns on the distinction (a missing archive file degrades, a poisoned
+transaction `500`s), and merging them removes information the consumer's reason string would only
+have to re-encode.)*
 
 ---
 
@@ -519,8 +577,9 @@ query, any query-count assertion (D14).
 **T3 — `build_snapshot()`.** `services/forecast_lab/snapshot.py`.
 *Scope (in):* orchestration, per-source guards (D13), status block (D16), ensemble summaries (D5),
 `aligned_daily_comparison` with the daily completeness gates (BAFU ≥ 22 h, observations ≥ 130
-samples), `snapshot_id` (D10), deterministic ordering (D12), unavailable-model entries with a
-reason and last-known successful issue time; the always-present `verification` sentinel (D3).
+samples), the timestamp-derived `snapshot_id` (D10 — **no content hash, no canonical
+serialization**), deterministic ordering (D12), unavailable-model entries carrying **a reason
+only** (D19); the always-present `verification` sentinel (D3); and an **injected `clock`** (D20).
 **There is no `include_verification` parameter** — see D18.
 *Scope (out):* HTTP, files, and any computed metric (barred — see D3/O7.1).
 *Exit:* `uv run pytest tests/unit/services/forecast_lab/test_snapshot.py`.
@@ -539,10 +598,10 @@ audit, so nothing is lost by deleting the task here.
 `observation_hours` (default 168, max 720) — **no `include_verification`** (D18); scoping via
 `ensure_station_in_scope` for explicitly requested codes (`404`) and scope-filtering for the
 no-code case (`200` + empty `stations`, D8) — and **any** invalid code among several requested
-`404`s the whole request (D8); the body-level `snapshot_id` computed live over the response body
-(D10) — unchanged under D2-alt; `application/json`.
-*Scope (out):* CORS changes, gzip, rate limiting, conditional-GET headers (D10, T11), any change to
-an existing route.
+`404`s the whole request (D8); `snapshot_id` as emitted by `build_snapshot()` (D10) — unchanged
+under D2-alt; `application/json`.
+*Scope (out):* CORS changes, gzip, rate limiting, conditional-GET headers, any server-side hashing
+of the response body (D10, T11), any change to an existing route.
 *Exit:* `uv run pytest tests/unit/api/test_forecast_lab_route.py`.
 
 **T6 — CLI export.** `cli/export_forecast_lab.py`, mirroring `cli/bafu_observation_audit.py` (F10).
@@ -587,17 +646,16 @@ No existing test under `tests/unit/deploy/` demonstrates a pattern for this, so 
   `SAPPHIRE_CONFIG == "/app/config.toml"` and
   `SAPPHIRE_CONFIG_OVERLAY == "/app/config/overlays/mac-mini.toml"`, and both files are mounted
   read-only at exactly those targets. **False on today's repo** (F1, F2) — this is the red half.
-- **(b) Path derivation — `load_config()` against the REAL repo-relative files.** With
-  `monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(root / "config/overlays/mac-mini.toml"))`,
-  call `load_config(root / "config.toml")` and assert
-  `bafu_forecast_archive_path == Path("/data/bafu_forecasts")`. This is sound because the overlay
-  declares that path as a **literal container-absolute string**
-  (`config/overlays/mac-mini.toml:8`, `archive_base_path = "/data/bafu_forecasts"`) and base
-  `config.toml` has no `[adapters.bafu_forecast]` section at all — so the value the host derives is
-  the value the container derives, and no `${SAPPHIRE_*}` interpolation is involved
-  (`config/deployment.py:388-403`; `config.toml` contains no `${…}` references, verified).
-  Measured 2026-08-21: it returns `PosixPath('/data/bafu_forecasts')` today, and `None` if the
-  overlay is dropped.
+- **(b) Path derivation — `load_config()` against the REAL repo-relative files**, with the overlay
+  env var pointed at the repo copy rather than the container path, asserting that
+  `bafu_forecast_archive_path` resolves to the archive mount point. This is sound because the
+  overlay declares that path as a **literal container-absolute string**
+  (`config/overlays/mac-mini.toml:8`) while base `config.toml` has no `[adapters.bafu_forecast]`
+  section at all — so the value a host-run test derives is the value the container derives, with no
+  `${SAPPHIRE_*}` interpolation in play (`config/deployment.py:388-403`; `config.toml` contains no
+  `${…}` references, verified). Verified 2026-08-21 that it resolves today and yields `None` when the
+  overlay is dropped. *(The exact `monkeypatch` calls and literal path values belong in the test,
+  not here — same policy F3 applies to itself: values rot in a plan, assertions do not.)*
 
 (b) is therefore **green on today's repo** and is a guard, not a red-first assertion: (a) catches
 the compose wiring being wrong or later removed, (b) catches the overlay's path declaration being
@@ -605,8 +663,9 @@ removed or renamed. Neither alone closes the gap. Plus a documented redeploy pro
 **verification on the mini is a separate, owner-scheduled step.**
 
 **T8 — Documentation.** `docs/spec/forecast-lab-snapshot.md` (timestamp and aggregation semantics,
-quantile method, trace normalization **with the F3 correction called out**, staleness thresholds,
-offline/caching guidance, the `curl` example using `$SAPPHIRE_API_TOKEN` and a
+quantile method, trace normalization **with the F3 correction called out**,
+offline/caching guidance (including: the server emits no content hash — a consumer that wants dedup
+hashes the body it fetched, D10), the `curl` example using `$SAPPHIRE_API_TOKEN` and a
 `<company-lan-host>` placeholder); OpenAPI descriptions on the route; a `docs/touchpoint-maps.md`
 entry; a `docs/conventions.md` line if a new convention lands.
 *Scope (out):* any doc restructuring beyond these.
@@ -652,6 +711,11 @@ Every one of these is a test, not a review item.
     requested ineligible code returns `404`, indistinguishable from a typo (D17a).
 26. An **admin** token requesting an unknown `station_code` gets `404`, not a crash and not a
     silent drop — the existence check runs independently of `principal.is_admin` (D8).
+27. `build_snapshot()` accepts an injected `clock`, and under a **frozen** clock two builds over
+    identical data are **byte-identical** — including `generated_at` and the `snapshot_id` derived
+    from it. No `datetime.now()` appears in `services/forecast_lab/` (D20, `CLAUDE.md` §
+    Testability Requirements).
+28. An unavailable-model entry carries a `reason` and no last-successful-issue-time field (D19).
 20. An `inactive` model assignment is never exported and can never win `is_primary`, even at a
     lower priority number than the active one (D17b).
 21. A forecast with `representation == "quantiles"` yields an explicit
@@ -667,7 +731,10 @@ Every one of these is a test, not a review item.
 15. `build_snapshot()` queries no `hindcast_forecasts`, `hindcast_values` or `skill_scores` table
     at all, and `verification.status` is always `"insufficient_data"` (D3, O7.1) — so the 2,752
     known-bad future-dated hindcast rows cannot reach the export by any path.
-16. Two builds over identical data are byte-identical except `generated_at`.
+16. Two builds over identical data produce identical **ordering** — of stations, forecast points,
+    models and daily rows — and the same `is_primary`, asserted on the parsed documents (D12).
+    *(Not byte identity: D10's content hash is cut, so nothing depends on field-order stability,
+    and two builds legitimately differ in `generated_at` and the `snapshot_id` derived from it.)*
 17. The CLI writes atomically and leaves no partial file on failure.
 24. Two ACTIVE assignments on one station at **equal** `priority` (e.g. both at the `0`
     `server_default`, `db/metadata.py:1016`) yield a deterministic `is_primary` — the lower
@@ -707,11 +774,12 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
 ```json
 {
   "phases": [
+    { "id": "phase-0", "tasks": ["T7"], "parallel": false },
     { "id": "phase-1", "tasks": ["T1"], "parallel": false },
     { "id": "phase-2", "tasks": ["T2a", "T2b"], "parallel": true, "depends_on": ["phase-1"] },
     { "id": "phase-3", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-2"] },
     { "id": "phase-4", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-3"] },
-    { "id": "phase-5", "tasks": ["T7", "T8"], "parallel": true, "depends_on": ["phase-4"] },
+    { "id": "phase-5", "tasks": ["T8"], "parallel": false, "depends_on": ["phase-4"] },
     { "id": "phase-opt", "tasks": ["T9", "T10", "T11"], "parallel": true, "depends_on": ["phase-5"] }
   ]
 }
@@ -720,6 +788,13 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
 **T4 is gone** (O7.1) — six tasks plus three separable extras remain (T11 is conditional GET,
 cut from v1 by D10). T3 owns the
 `insufficient_data` sentinel, so nothing orphans. `phase-opt` is separable in full (O3, O4, D10).
+
+**T7 has no dependencies and runs first.** It edits two compose files and its exit gate reads
+rendered compose JSON plus `load_config()` against real files — it never reads
+`services/forecast_lab/*`, the route, or the CLI. An earlier draft serialised it behind phase 4,
+forcing independent infra work to wait on code it does not touch. Running it first also front-loads
+the one task whose failure would invalidate the deployment story (F1/F2), so a wiring problem
+surfaces before six tasks of assembly work depend on it.
 
 ## Review
 
