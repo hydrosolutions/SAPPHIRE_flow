@@ -148,6 +148,11 @@ const STALE_PLAN = {
     notes: { type: 'string' },
   },
 }
+// NOTE — this gate is deliberately MAIN-ONLY, and does not follow `baseBranch`.
+// Plan documents live on `main` (docs/plans/), so `main`/`origin/main` is where a
+// plan correction lands regardless of which branch a diff is measured against. A
+// run invoked with `baseBranch: 'release-v1'` still checks the plan against main,
+// which is intended: the spec's authority is main, not the integration target.
 function stalePlanPromptText(stage) {
   return (
     `Check whether the CURRENT branch in repo ${repo} has gone stale against the plan doc at ${planPath}, ` +
