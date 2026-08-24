@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-21
 plan: 199
 title: Salvage the three unlanded pieces of Plan 158
@@ -13,7 +13,7 @@ source: branch `docs/plan-158-session-independence` @ 9ef2080 (pushed to origin 
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner flip 2026-08-21, with the threshold decided (D1 below).
 
 **Independent Codex review 2026-08-21 — 0 blockers, 3 majors, 2 minors, all VERIFIED AND FOLDED.** The
 majors: the installer was routed to the wrong plan; T2 missed a wrapper newer than the branch plus both
@@ -73,9 +73,23 @@ Read it, take the design, write the code against today's `main`.
 *In:* `src/sapphire_flow/ops/watchdog.py`, `tests/unit/ops/test_watchdog.py`.
 
 The most independent piece: it touches no shell script and so cannot collide with Plan 194's script
-work. The branch's shape — `DiskSpaceResult`, `DEFAULT_DISK_PATH = Path("/")`,
-`DISK_FREE_THRESHOLD_BYTES = 20 GiB`, alerting on the existing Slack path. *(The branch made only
-`--disk-path` a CLI flag; the threshold is a bare constant with no flag — see the open question.)*
+work. Take the branch's shape — `DiskSpaceResult`, `DEFAULT_DISK_PATH = Path("/")`, alerting on the
+existing Slack path — but **not its threshold**.
+
+**D1 (owner, 2026-08-21) — the threshold is 5 % of the volume's total capacity, not an absolute byte
+count.** This REPLACES the branch's `DISK_FREE_THRESHOLD_BYTES = 20 GiB`, which was chosen before the
+mini's disk behaviour was known and is **0.55 % of a 3.6 TB volume** — it would fire far too late to be
+actionable, and only after the host was effectively already full.
+
+Consequences to implement deliberately, not incidentally:
+- **Compute the total from the volume being checked**, not from a constant, so the rule travels to any
+  host (`shutil.disk_usage(path)` gives `total` and `free` together — take both from one call, so the
+  ratio cannot be computed from two different instants).
+- **The percentage is the contract; report the bytes too.** An alert saying "4.1 % free" is not
+  actionable on its own — the operator needs "4.1 % free (152 GB of 3.6 TB)" to judge urgency. Put both
+  in the message.
+- On today's mini that is a **~184 GB floor**, which the host has crossed in living memory: it sat at
+  214 GB free (95 % used) and nothing alerted.
 
 **Follow main's current conventions, not the branch's**, because `run_once` has changed since: the
 condition must be a **distinct** condition with its own notification state, and it must not be folded
@@ -167,9 +181,6 @@ uv run pyright
 **Doc sync:** `docs/standards/cicd.md` § Host-level watchdog (the new condition);
 `docs/deployment/mac-mini-staging.md` (the endpoint contract).
 
-## Open question for the owner
+## Decisions
 
-**Is 20 GiB the right free-space threshold for this host?** The branch chose it before the mini's
-3.4 TB anomaly was known, and the volume is 3.6 TB — 20 GiB is 0.55 %, which may fire too late to be
-useful. A percentage floor, or a higher absolute floor, may serve better. The plan does not assume the
-branch's number is still right.
+- **D1 — 5 % of volume capacity** (owner, 2026-08-21). See T1. The branch's absolute 20 GiB is rejected.
