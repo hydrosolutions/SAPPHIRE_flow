@@ -278,7 +278,12 @@ class BafuForecastAdapter:
             produced_at=produced_at.isoformat(),
         )
         return BafuStationInventory(
-            stations=stations, produced_at=produced_at, skipped_count=skipped_count
+            stations=stations,
+            produced_at=produced_at,
+            skipped_count=skipped_count,
+            # Plan 198 T9a: preserve the raw payload so the flow can archive
+            # it — the inventory is fetched hourly and otherwise discarded.
+            raw_payload=cast("dict[str, Any]", payload),
         )
 
     @staticmethod

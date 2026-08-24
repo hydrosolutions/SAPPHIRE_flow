@@ -17,9 +17,12 @@ from sapphire_flow.types.enums import AccessTokenRole, AlertStatus
 from sapphire_flow.types.ids import AccessTokenId
 from tests.fakes.fake_stores import (
     FakeAlertStore,
+    FakeArtifactProvenanceStore,
+    FakeBasinStore,
     FakeForecastStore,
     FakeHistoricalForcingStore,
     FakeModelArtifactStore,
+    FakeModelStore,
     FakeObservationStore,
     FakePipelineHealthStore,
     FakeStationStore,
@@ -71,6 +74,11 @@ def fake_stores() -> dict[str, Any]:
         "alert_store": AckAwareFakeAlertStore(),
         "artifact_store": FakeModelArtifactStore(),
         "pipeline_health_store": FakePipelineHealthStore(),
+        # Plan 198 T5 — services/forecast_lab/db_sources.py needs these two;
+        # no other route reads them from the stores dict.
+        "model_store": FakeModelStore(),
+        "basin_store": FakeBasinStore(),
+        "provenance_store": FakeArtifactProvenanceStore(),
     }
 
 

@@ -328,6 +328,7 @@ class TestRouteAuthMatrixExhaustive:
         ("GET", "/api/v1/forecasts/{forecast_id}"): "PRINCIPAL",
         ("GET", "/api/v1/alerts"): "PRINCIPAL",
         ("POST", "/api/v1/alerts/{alert_id}/acknowledge"): "PRINCIPAL",
+        ("GET", "/api/v1/forecast-lab/snapshot"): "PRINCIPAL",
     }
 
     def test_every_mounted_route_matches_the_expected_classification(self) -> None:

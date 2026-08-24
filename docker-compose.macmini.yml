@@ -45,5 +45,15 @@ services:
       - /Volumes/sapphire-backup/pg_dumps:/data/backups:rw
 
   api:
+    # Plan 198 T7/D2: the archive PATH is declared only in
+    # config/overlays/mac-mini.toml (base config.toml has no
+    # [adapters.bafu_forecast] section at all) — without this overlay the
+    # quarantine gate resolves bafu_forecast_archive_path to None and the
+    # Forecast Lab snapshot route reports the archive missing even with the
+    # base compose file's volume correctly mounted.
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
     ports:
       - "8000:8000"
+    volumes:
+      - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
