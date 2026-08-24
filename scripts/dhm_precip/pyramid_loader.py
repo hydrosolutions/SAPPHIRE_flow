@@ -27,6 +27,20 @@ guess:**
 A file that does not match this schema still fails loudly and specifically
 (`PyramidSchemaMismatchError` / `PyramidInvalidTimestampError` /
 `PyramidParseFailureError`) rather than silently producing empty data.
+
+Plan 184 (M-A6) task T2 adds `AT` (air temperature, °C) support, sharing
+**only** the file/timestamp parsing above (`_parse_pyramid_lvl1_column`).
+**`AT` MUST NOT pass through `RR`'s physical-range check** —
+`qc_mask_range_check_value_min_mm`/`_max_mm` are a *precipitation* bound
+(`[0.0, 200.0]` mm by default) and `AT` is °C, largely sub-zero at altitude:
+measured on the real files, routing it through that check would delete
+82.0% of AWS4 (5,600 m), 60.1% of AWS1 (5,035 m), 42.3% of AWS2 (4,260 m),
+20.6% of AWS5 (3,570 m) and 3.5% of AWS3 (2,660 m) — a deletion rate that
+rises monotonically with elevation, the very axis the check measures, which
+would flatten the lapse rate rather than merely bias it. `load_pyramid_lvl1_
+at_csv` therefore takes no `DhmPrecipParams` at all — there is no argument
+through which the precipitation bounds could reach it — and its own
+retention rule is "finite, full stop".
 """
 
 from __future__ import annotations
@@ -51,7 +65,9 @@ log = structlog.get_logger(__name__)
 SEPARATOR: Final = ";"
 TIME_COLUMNS: Final = ("year", "month", "day", "hour")
 PRECIP_COLUMN: Final = "RR"
+AIR_TEMP_COLUMN: Final = "AT"
 TIMESTAMP_ALIAS: Final = "timestamp"
+_VALUE_ALIAS: Final = "value"
 
 
 class PyramidLoaderError(Exception):
@@ -107,17 +123,22 @@ class PyramidLoadResult:
     n_retained: int
 
 
-def load_pyramid_lvl1_csv(
-    path: Path, *, station: Station, params: DhmPrecipParams = DEFAULT_PARAMS
-) -> PyramidLoadResult:
-    """`retained` is `(station, timestamp, value_mm)` — `timestamp` is NPT
-    wall-clock, UNCONVERTED (D2). `value_mm` is the raw `RR` reading at the
-    file's native resolution (empirically 0.2 mm — LSI-Lastem tipping
-    buckets, verified 2026-08-18 against the real files: 0.00% of 7,133 +
-    9,280 positive JJAS values fall below 0.2 mm), physical-range-checked
-    against `params.qc_mask_range_check_value_min_mm`/`_max_mm` — the SAME
-    D4 physical-impossibility bounds DHM's own mask uses, so "physical
-    range" means one thing across both networks."""
+def _parse_pyramid_lvl1_column(
+    path: Path, *, station: Station, value_column: str
+) -> tuple[pl.DataFrame, int]:
+    """The file/timestamp parsing SHARED by `RR` and `AT` (Plan 184 T2) —
+    file I/O, CR-only line-ending normalisation, schema check, timestamp
+    construction from the four integer time columns, the duplicate-
+    timestamp check, and numeric casting of `value_column`. Returns
+    `(station, timestamp, value)` UNFILTERED (a non-null, non-numeric TEXT
+    value still fails loudly here — that is a parse failure, not a
+    retention decision) plus the raw row count.
+
+    Deliberately stops short of any retention/range decision: RR's
+    physical-range check and AT's finite-only check are each column's own
+    semantics and are applied by the caller, never here — this is what
+    keeps `AT` structurally unable to pass through RR's `[0.0, 200.0]` mm
+    bound."""
     if not path.exists() or not path.is_file():
         raise PyramidSourceUnreadableError(
             f"source file not found or not a file: {path}"
@@ -144,7 +165,7 @@ def load_pyramid_lvl1_csv(
     except Exception as exc:  # noqa: BLE001 — any parse-time failure becomes a typed error
         raise PyramidParseFailureError(f"failed to parse {path}: {exc}") from exc
 
-    missing = {*TIME_COLUMNS, PRECIP_COLUMN} - set(raw.columns)
+    missing = {*TIME_COLUMNS, value_column} - set(raw.columns)
     if missing:
         raise PyramidSchemaMismatchError(
             f"{path} is missing expected column(s) {sorted(missing)} "
@@ -176,26 +197,42 @@ def load_pyramid_lvl1_csv(
         )
 
     casted = stamped.with_columns(
-        pl.col(PRECIP_COLUMN).cast(pl.Float64, strict=False).alias("value_mm")
+        pl.col(value_column).cast(pl.Float64, strict=False).alias(_VALUE_ALIAS)
     )
-    # An EMPTY `RR` field is a genuine missing reading (Lvl1 is ungapfilled)
-    # and arrives as a null, so it is never a cast failure; non-numeric TEXT
-    # is, and must fail loudly.
-    cast_failed = stamped[PRECIP_COLUMN].is_not_null() & casted["value_mm"].is_null()
+    # An EMPTY field is a genuine missing reading (Lvl1 is ungapfilled) and
+    # arrives as a null, so it is never a cast failure; non-numeric TEXT is,
+    # and must fail loudly.
+    cast_failed = stamped[value_column].is_not_null() & casted[_VALUE_ALIAS].is_null()
     if cast_failed.sum() > 0:
         raise PyramidParseFailureError(
-            f"{path} column {PRECIP_COLUMN!r} contains a non-numeric value "
+            f"{path} column {value_column!r} contains a non-numeric value "
             "that failed to cast"
         )
 
     frame = casted.select(
         pl.lit(str(station)).alias("station"),
         pl.col(TIMESTAMP_ALIAS).alias("timestamp"),
-        pl.col("value_mm"),
+        pl.col(_VALUE_ALIAS),
     )
-    n_raw = frame.height
+    return frame, frame.height
 
-    value = pl.col("value_mm")
+
+def load_pyramid_lvl1_csv(
+    path: Path, *, station: Station, params: DhmPrecipParams = DEFAULT_PARAMS
+) -> PyramidLoadResult:
+    """`retained` is `(station, timestamp, value_mm)` — `timestamp` is NPT
+    wall-clock, UNCONVERTED (D2). `value_mm` is the raw `RR` reading at the
+    file's native resolution (empirically 0.2 mm — LSI-Lastem tipping
+    buckets, verified 2026-08-18 against the real files: 0.00% of 7,133 +
+    9,280 positive JJAS values fall below 0.2 mm), physical-range-checked
+    against `params.qc_mask_range_check_value_min_mm`/`_max_mm` — the SAME
+    D4 physical-impossibility bounds DHM's own mask uses, so "physical
+    range" means one thing across both networks."""
+    frame, n_raw = _parse_pyramid_lvl1_column(
+        path, station=station, value_column=PRECIP_COLUMN
+    )
+
+    value = pl.col(_VALUE_ALIAS)
     nonfinite = value.is_not_null() & (value.is_nan() | value.is_infinite())
     out_of_range = (
         value.is_not_null()
@@ -215,9 +252,9 @@ def load_pyramid_lvl1_csv(
     cleaned = frame.with_columns(
         pl.when(flagged["_nonfinite"] | flagged["_out_of_range"])
         .then(None)
-        .otherwise(pl.col("value_mm"))
-        .alias("value_mm")
-    )
+        .otherwise(pl.col(_VALUE_ALIAS))
+        .alias(_VALUE_ALIAS)
+    ).rename({_VALUE_ALIAS: "value_mm"})
     retained = cleaned.filter(pl.col("value_mm").is_not_null())
 
     log.info(
@@ -234,5 +271,61 @@ def load_pyramid_lvl1_csv(
         n_raw=n_raw,
         n_nonfinite=n_nonfinite,
         n_out_of_range=n_out_of_range,
+        n_retained=retained.height,
+    )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PyramidAtLoadResult:
+    """Plan 184 (M-A6) T2 — the `AT` counterpart of `PyramidLoadResult`.
+    Deliberately carries no `n_out_of_range`: `AT` has NO physical-range
+    check at all (D14's binding rule — see module docstring), so the only
+    way a reading fails to survive is being non-finite."""
+
+    retained: pl.DataFrame
+    """`(station, timestamp, value_degc)` — finite only. NaN/infinite/null
+    values are EXCLUDED (never zeroed)."""
+    n_raw: int
+    n_nonfinite: int
+    """NaN or +-inf `value_degc` cells."""
+    n_retained: int
+
+
+def load_pyramid_lvl1_at_csv(path: Path, *, station: Station) -> PyramidAtLoadResult:
+    """`retained` is `(station, timestamp, value_degc)` — `timestamp` is NPT
+    wall-clock, UNCONVERTED (D2), exactly as `load_pyramid_lvl1_csv`. Takes
+    NO `DhmPrecipParams`: there is no argument through which the RR
+    precipitation range bound could reach this function. The only
+    retention rule is finite, full stop — a -24.79 degC reading (the real
+    AWS4 minimum) is retained, not deleted."""
+    frame, n_raw = _parse_pyramid_lvl1_column(
+        path, station=station, value_column=AIR_TEMP_COLUMN
+    )
+
+    value = pl.col(_VALUE_ALIAS)
+    nonfinite = value.is_not_null() & (value.is_nan() | value.is_infinite())
+    flagged = frame.select(nonfinite.alias("_nonfinite"))
+    n_nonfinite = int(flagged["_nonfinite"].sum())
+
+    cleaned = frame.with_columns(
+        pl.when(flagged["_nonfinite"])
+        .then(None)
+        .otherwise(pl.col(_VALUE_ALIAS))
+        .alias(_VALUE_ALIAS)
+    ).rename({_VALUE_ALIAS: "value_degc"})
+    retained = cleaned.filter(pl.col("value_degc").is_not_null())
+
+    log.info(
+        "dhm_precip.pyramid_loader.at_loaded",
+        station=str(station),
+        path=str(path),
+        n_raw=n_raw,
+        n_nonfinite=n_nonfinite,
+        n_retained=retained.height,
+    )
+    return PyramidAtLoadResult(
+        retained=retained,
+        n_raw=n_raw,
+        n_nonfinite=n_nonfinite,
         n_retained=retained.height,
     )
