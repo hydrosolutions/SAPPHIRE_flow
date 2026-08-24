@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-24
 plan: 200
 title: A workflow must refuse to build from a stale copy of its plan
-scope: Add a preflight staleness gate to the plan/implement workflows so they escalate when the plan doc in the working repo differs from the newest committed version, plus a commit-time nudge when main carries unpushed commits. NOT a new tool, NOT a change to what the workflows do once started, NOT a branch-protection or CI change.
+scope: Add a preflight staleness gate to the plan/implement workflows so they escalate when the plan doc in the working repo differs from the newest committed version OR the working branch is behind origin/main, plus a commit-time nudge when main carries unpushed commits. NOT a new tool, NOT a change to what the workflows do once started, NOT a branch-protection or CI change.
 depends_on: []
 blocks: []
 source: PR #201 post-mortem; worktree-hygiene incidents 2026-08-20/21/24
@@ -74,8 +74,9 @@ long task, is not a control.
 
 *In:* `.claude/workflows/implement.js`, `.claude/workflows/plan.js`.
 
-Beside the existing status preflight in `implement.js` (`:170-189`), add a check that the plan file's
-content in `${repo}` matches both refs (D1), fetching first (D3). On mismatch, return the standard
+Beside the existing status preflight in `implement.js` (`:170-189`), add two checks: the plan file's
+content in `${repo}` matches both refs (D1), and the working branch is not behind `origin/main` (D5) —
+fetching first (D3). On mismatch, return the standard
 escalation shape with a reason naming **which** ref differs and the file. `plan.js` gets the same gate;
 it has no preflight today, so this is its first.
 
@@ -110,10 +111,25 @@ has been deliberately edited, and confirm it escalates **without building**.
 **Doc sync:** `docs/workflow.md` § Tooling (the new gate and what escalation means);
 `CLAUDE.md` § Workflow if the one-line description of the workflows changes.
 
-## Open question for the owner
+## D5 — the gate ALSO covers a stale BASE, not only a stale plan (owner, 2026-08-24)
 
-**Should the gate also cover the `repo` worktree being behind `main` generally**, not just in the plan
-file? A worktree cut days ago builds against stale *code* too, which is a real hazard — but it is also
-the normal condition of any branch, so gating on it would escalate constantly. This plan deliberately
-gates **only the plan document**, on the grounds that the spec being wrong is categorically worse than
-the base being old. Confirm that boundary, or widen it.
+**Owner widened the scope.** A worktree cut days ago builds against stale *code*, and the resulting diff
+is reviewed — by Codex and by a human — against a tree that no longer matches `main`. Plan 199 hit
+exactly this: its branch had to merge `main` before the gates were meaningful, and that merge produced a
+`pyproject.toml`/`uv.lock` conflict that a reviewer reading the pre-merge diff would never have seen.
+
+**The design problem this creates, stated plainly so the review can attack it:** "escalate when the
+branch is behind `origin/main`" fires on essentially every branch, because `main` moves several times a
+day. A gate that fires constantly is disabled or ignored — the same failure as a blocking commit hook
+(D4). So the widening needs a shape that is *actionable and rare*, not merely correct.
+
+**Proposed shape (for review — this is the part most likely to be wrong):** the workflow refuses to
+start when the working branch is behind `origin/main`, and says so with the one-command remedy
+(`git merge origin/main`). The claim is that this is not noise but a **precondition**: syncing before a
+build is cheap, the fix is mechanical, and every build then sits on current code. The cost is that a
+long autonomous run started at 09:00 may be refused at 09:05 because an unrelated docs commit landed.
+
+**Reviewers: attack this specifically.** Is "behind at all" the right threshold, or should it be
+narrowed — for example to commits touching `src/`, `scripts/` or `tests/`, or to the files the plan's
+own `*In:*` lines name? Is refusing correct, or should a stale base warn while only a stale *plan*
+escalates? A concrete argument that this will fire so often it gets bypassed is a valid finding.
