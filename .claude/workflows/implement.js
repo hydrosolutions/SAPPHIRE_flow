@@ -163,6 +163,81 @@ function codexDiffPrompt(round) {
   )
 }
 
+// ── STALENESS GATE (Plan 200) ────────────────────────────────────────────────
+// PR #201 postmortem: a plan-doc correction made AFTER a build started, and never
+// pushed, could not reach the running branch before it merged — the branch built
+// (faithfully) from a plan an hour stale. A preflight-only check would NOT have
+// caught it (nothing was stale when the build started); the gate must also run at
+// FINALIZE, the only point where the workflow could still have seen the correction.
+//
+// D1 — CONTAINMENT, not equality, against BOTH origin/main and local main. Plain
+// equality false-escalates on every legitimate run (`/plan` edits the plan doc in
+// place by design). The predicate: the branch must CONTAIN the latest plan-changing
+// commit from each ref. Escalate only when that commit is ABSENT from the branch
+// AND the branch's own copy of the plan differs from that ref's version — the
+// signature of a correction the branch never saw, while still allowing edits the
+// branch itself made on top of the latest plan.
+// D3 — fetch origin FIRST; a failed fetch escalates rather than silently comparing
+// against a stale origin/main (an unavailable check must not resemble a passing one).
+const STALE_PLAN = {
+  type: 'object',
+  required: ['fetchOk', 'stale', 'staleRefs'],
+  properties: {
+    fetchOk: { type: 'boolean' },
+    stale: { type: 'boolean' },
+    staleRefs: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' },
+  },
+}
+function stalePlanPromptText(stage) {
+  return (
+    `Check whether the CURRENT branch in repo ${repo} has gone stale against the plan doc at ${planPath}, ` +
+    `at the ${stage} stage of a build. Steps:\n` +
+    `1. Run \`git -C ${repo} fetch origin main --quiet\`. If it FAILS (offline/auth/no such remote/etc.), STOP ` +
+    `and return {"fetchOk": false, "stale": false, "staleRefs": [], "notes": "<what failed>"} — do NOT compare ` +
+    `against a possibly-stale origin/main.\n` +
+    `2. For EACH of these two refs — "origin/main" and "main" — find the latest commit on that ref that ` +
+    `touched ${planPath}: \`git -C ${repo} log -1 --format=%H <ref> -- ${planPath}\`. If the file does not ` +
+    `exist on that ref (empty output), SKIP that ref (not stale for it).\n` +
+    `3. Check whether that commit is CONTAINED in the current branch: ` +
+    `\`git -C ${repo} merge-base --is-ancestor <sha> HEAD\` (exit 0 = contained, non-zero = not contained).\n` +
+    `4. If NOT contained, compare content: \`git -C ${repo} diff HEAD:${planPath} <ref>:${planPath}\`. An ` +
+    `EMPTY diff means the branch's copy already matches that ref's content — NOT stale for it (a branch whose ` +
+    `own history already carries an equivalent edit must not false-escalate). A NON-EMPTY diff means that ref ` +
+    `is STALE — record its name ("origin/main" or "main") in staleRefs.\n` +
+    `Return fetchOk=true, stale=(staleRefs is non-empty), staleRefs, and notes explaining what you found ` +
+    `(the SHAs compared, which ref(s) were stale vs current, and why).`
+  )
+}
+// D5 — a stale BASE (the branch is behind origin/main) WARNS and proceeds; it never
+// escalates. A hard refusal fires on essentially every branch (main moves several
+// times a day) and would be disabled within a day — the same failure as a blocking
+// commit hook (D4). This is deliberately weaker than a refusal to a stale PLAN.
+const BASE_BEHIND = {
+  type: 'object',
+  required: ['behindCount'],
+  properties: { behindCount: { type: 'number' }, notes: { type: 'string' } },
+}
+async function checkBaseBehind(phaseTitle) {
+  const baseBehind = await agent(
+    `In repo ${repo}, using the origin/main already fetched, report how many commits origin/main has that the ` +
+    `current branch (HEAD) lacks: \`git -C ${repo} rev-list --count HEAD..origin/main\`. Return behindCount as ` +
+    `a number (0 if the command errors, e.g. no such remote-tracking ref). Do not edit anything.`,
+    { label: 'base-behind', phase: phaseTitle, model: 'sonnet', effort: 'low', schema: BASE_BEHIND },
+  )
+  if (baseBehind && baseBehind.behindCount > 0) {
+    log(`⚠️ WARN — this branch is ${baseBehind.behindCount} commit(s) behind origin/main. Proceeding, but ` +
+        `review against the current diff and run \`git merge origin/main\` before opening the PR.`)
+  }
+  return baseBehind
+}
+function staleEscalation(check, stage) {
+  if (!check || !check.fetchOk) {
+    return `plan-staleness check could not run at ${stage} (${check?.notes || 'git fetch failed'})`
+  }
+  return `plan at ${planPath} is STALE at ${stage} against ${check.staleRefs.join(', ')}: ${check.notes || ''}`
+}
+
 phase('Implement')
 
 // PREFLIGHT — NEVER implement a plan that is not READY. A DRAFT is a proposal, not an
@@ -187,6 +262,24 @@ if (!preflight || !preflight.isReady) {
     implementerReport: null, verify: null, final: null,
   }
 }
+
+// PREFLIGHT STALENESS — D1/D3/D5 (Plan 200). Runs AFTER the READY check (no point
+// staleness-checking a plan that isn't buildable yet) and BEFORE any implementation work.
+const staleAtPreflight = await agent(
+  stalePlanPromptText('PREFLIGHT'),
+  { label: 'stale-plan-preflight', phase: 'Implement', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
+)
+if (!staleAtPreflight || !staleAtPreflight.fetchOk || staleAtPreflight.stale) {
+  const reason = staleEscalation(staleAtPreflight, 'PREFLIGHT')
+  log(`⚠️ ESCALATION — ${reason}. Refusing to build from an unverifiable or superseded spec (PR #201 postmortem).`)
+  return {
+    planPath, rounds: 0, converged: false, stalled: false, exhausted: false,
+    escalated: true, escalationReason: reason,
+    residualBlockerCount: 0, residualMajorCount: 0, residualFindings: [], codexFailedRounds: 0,
+    implementerReport: null, verify: null, final: null,
+  }
+}
+await checkBaseBehind('Implement')
 
 // Capture HEAD BEFORE implementing, so verification can prove a NEW commit actually
 // landed — a false `committed:true` over a pre-existing/stale branch diff must NOT pass.
@@ -450,27 +543,50 @@ if (escalated) {
 }
 
 phase('Finalize')
+
+// FINALIZE STALENESS — D1 re-checked (Plan 200). The PR #201 correction landed on
+// local `main` an HOUR into the run; a preflight-only check would have passed and
+// then gone stale DURING the build. This is the only point left where the workflow
+// can still catch it, before recommending the diff for a PR against a superseded spec.
+const staleAtFinalize = await agent(
+  stalePlanPromptText('FINALIZE'),
+  { label: 'stale-plan-finalize', phase: 'Finalize', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
+)
+const planWentStale = !staleAtFinalize || !staleAtFinalize.fetchOk || staleAtFinalize.stale
+if (planWentStale) {
+  log(`⚠️ ESCALATION at FINALIZE — ${staleEscalation(staleAtFinalize, 'FINALIZE')}. Do NOT open a PR from this ` +
+      `commit — the spec moved out from under it; the work is not lost, it just must not be proposed as-is.`)
+}
+
 const final = await agent(
   `Read the plan at ${planPath} and the final \`git diff ${baseBranch}...HEAD\` (repo ${repo}). ` +
   `The review loop ended: converged=${converged}, stalled=${stalled}, exhausted=${exhausted}, ` +
   `residual blockers=${residualBlockers.length}, residual majors=${residualMajors.length}, ` +
-  `rounds where the Codex pass failed=${codexFailedRounds}, red-first acceptance achieved=${!redFirstMissed}. ` +
+  `rounds where the Codex pass failed=${codexFailedRounds}, red-first acceptance achieved=${!redFirstMissed}, ` +
+  `plan went STALE during the build=${planWentStale}. ` +
   `Return: (1) 'summary' — a <=6-line summary of what was built + how it was verified; ` +
   `(2) 'residualRisks' — anything a human PR reviewer should still eyeball` +
-  (redFirstMissed ? ` — you MUST include that red-first acceptance was NOT achieved (a human should confirm the acceptance tests genuinely lock the spec, or hand-author them)` : ``) + `; ` +
+  (redFirstMissed ? ` — you MUST include that red-first acceptance was NOT achieved (a human should confirm the acceptance tests genuinely lock the spec, or hand-author them)` : ``) +
+  (planWentStale ? ` — you MUST include that the plan went stale during the build and this diff must be rebuilt against the current spec before a PR` : ``) + `; ` +
   `(3) 'recommendation' — 'PR-READY' (ready for a HUMAN to open/approve the PR — NOT auto-mergeable) only if ` +
-  `no residual blockers/majors AND the exit gates passed; else 'NOT-READY'. ` +
+  `no residual blockers/majors, the exit gates passed, AND the plan did NOT go stale during the build; else 'NOT-READY'. ` +
   `Remember: hold-at-PR — you are NOT merging; only the human merges. This is advice to the PR owner.`,
   { label: 'finalize', phase: 'Finalize', model: 'sonnet', effort: 'medium', schema: FINAL },
 )
 
-// PR-READY requires ACTUAL convergence (no residual blockers/majors on a complete panel).
-// An escalated run — stalled, exhausted, or a failed reviewer — is NOT-READY no matter
-// what the finalize agent inferred from a possibly-partial finding set.
-if (final && !converged && final.recommendation !== 'NOT-READY') {
-  log(`Overriding finalize recommendation → NOT-READY (converged=false, escalated=${escalated}).`)
+// PR-READY requires ACTUAL convergence (no residual blockers/majors on a complete panel)
+// AND a plan that did not go stale during the build. An escalated run — stalled,
+// exhausted, a failed reviewer, or a finalize-time staleness hit — is NOT-READY no
+// matter what the finalize agent inferred from a possibly-partial finding set.
+if (final && (!converged || planWentStale) && final.recommendation !== 'NOT-READY') {
+  log(`Overriding finalize recommendation → NOT-READY (converged=${converged}, planWentStale=${planWentStale}).`)
   final.recommendation = 'NOT-READY'
 }
+
+const finalEscalated = escalated || planWentStale
+const finalEscalationReason = planWentStale
+  ? (escalationReason ? `${escalationReason}; also: ${staleEscalation(staleAtFinalize, 'FINALIZE')}` : staleEscalation(staleAtFinalize, 'FINALIZE'))
+  : escalationReason
 
 return {
   planPath,
@@ -478,13 +594,14 @@ return {
   converged,
   stalled,
   exhausted,
-  escalated,
-  escalationReason,
+  escalated: finalEscalated,
+  escalationReason: finalEscalationReason,
   residualBlockerCount: residualBlockers.length,
   residualMajorCount: residualMajors.length,
   residualFindings: lastFindings,
   codexFailedRounds,
   redFirstMissed,
+  planWentStale,
   implementerReport,
   verify,
   final,

@@ -372,6 +372,23 @@ Notes:
   gate commands locally before a launch (see the manifest's own `_comment`).
   Adoption stance is manual-deploy-first, then WF2 fix-mode on confirmed bugs,
   **hold-at-PR — never auto-merge**.
+- **Staleness gate (Plan 200).** Both `plan` and `implement` refuse to proceed from a
+  plan doc the working branch never saw a correction to: at PREFLIGHT (before any work
+  starts) and again at FINALIZE (before recommending a PR), each checks that the branch
+  **contains** the latest plan-changing commit from both `origin/main` and local `main` —
+  escalating (no warning, no partial build) only when that commit is absent from the
+  branch **and** the branch's own copy of the plan differs from that ref's version. A
+  failed `git fetch` escalates too, rather than silently comparing against a stale
+  `origin/main`. Escalation returns `escalated: true` with `escalationReason` naming the
+  stale ref(s) — implement.js builds nothing; plan.js edits nothing. This is a build-time
+  gate; a plain equality check would false-escalate on every `/plan` run, since `/plan`
+  edits the plan doc in place by design — the predicate is containment, not equality.
+  Separately, a branch merely **behind** `origin/main` (D5) only **warns** with the
+  behind-count and `git merge origin/main` — it never escalates, since `main` moves
+  several times a day and a hard stop there would be disabled within a day. A commit-time
+  nudge (`unpushed-main-nudge`, `.pre-commit-config.yaml`, `post-commit` stage) separately
+  warns — never blocks — when local `main` carries commits `origin/main` doesn't have yet;
+  silent on every other branch. See `docs/plans/200-workflows-refuse-a-stale-spec.md`.
 
 ## Task Exit Gate
 

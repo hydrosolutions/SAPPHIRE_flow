@@ -113,7 +113,93 @@ function codexReviewPrompt(round) {
   )
 }
 
+// ── STALENESS GATE (Plan 200) ────────────────────────────────────────────────
+// PR #201 postmortem: a plan-doc correction made AFTER a build started, and never
+// pushed, could not reach the running branch before it merged. `plan.js` had NO
+// preflight at all before this — it gets the same gate `implement.js` got.
+//
+// D1 — CONTAINMENT, not equality, against BOTH origin/main and local main. Plain
+// equality false-escalates on every legitimate run (`/plan` edits the plan doc in
+// place by design — its own branch differs from `main` the moment it does its job).
+// The predicate: the branch must CONTAIN the latest plan-changing commit from each
+// ref. Escalate only when that commit is ABSENT from the branch AND the branch's
+// own copy of the plan differs from that ref's version.
+// D3 — fetch origin FIRST; a failed fetch escalates rather than silently comparing
+// against a stale origin/main.
+const STALE_PLAN = {
+  type: 'object',
+  required: ['fetchOk', 'stale', 'staleRefs'],
+  properties: {
+    fetchOk: { type: 'boolean' },
+    stale: { type: 'boolean' },
+    staleRefs: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' },
+  },
+}
+function stalePlanPromptText(stage) {
+  return (
+    `Check whether the CURRENT branch in repo ${repo} has gone stale against the plan doc at ${planPath}, ` +
+    `at the ${stage} stage of a plan-review run. Steps:\n` +
+    `1. Run \`git -C ${repo} fetch origin main --quiet\`. If it FAILS (offline/auth/no such remote/etc.), STOP ` +
+    `and return {"fetchOk": false, "stale": false, "staleRefs": [], "notes": "<what failed>"} — do NOT compare ` +
+    `against a possibly-stale origin/main.\n` +
+    `2. For EACH of these two refs — "origin/main" and "main" — find the latest commit on that ref that ` +
+    `touched ${planPath}: \`git -C ${repo} log -1 --format=%H <ref> -- ${planPath}\`. If the file does not ` +
+    `exist on that ref (empty output), SKIP that ref (not stale for it) — this is the common case for a ` +
+    `brand-new DRAFT plan that has not reached main yet.\n` +
+    `3. Check whether that commit is CONTAINED in the current branch: ` +
+    `\`git -C ${repo} merge-base --is-ancestor <sha> HEAD\` (exit 0 = contained, non-zero = not contained).\n` +
+    `4. If NOT contained, compare content: \`git -C ${repo} diff HEAD:${planPath} <ref>:${planPath}\`. An ` +
+    `EMPTY diff means the branch's copy already matches that ref's content — NOT stale for it. A NON-EMPTY ` +
+    `diff means that ref is STALE — record its name ("origin/main" or "main") in staleRefs.\n` +
+    `Return fetchOk=true, stale=(staleRefs is non-empty), staleRefs, and notes explaining what you found ` +
+    `(the SHAs compared, which ref(s) were stale vs current, and why).`
+  )
+}
+// D5 — a stale BASE WARNS and proceeds; it never escalates. A hard refusal fires on
+// essentially every branch (main moves several times a day) and would be disabled
+// within a day — the same failure as a blocking commit hook (D4).
+const BASE_BEHIND = {
+  type: 'object',
+  required: ['behindCount'],
+  properties: { behindCount: { type: 'number' }, notes: { type: 'string' } },
+}
+function staleEscalation(check, stage) {
+  if (!check || !check.fetchOk) {
+    return `plan-staleness check could not run at ${stage} (${check?.notes || 'git fetch failed'})`
+  }
+  return `plan at ${planPath} is STALE at ${stage} against ${check.staleRefs.join(', ')}: ${check.notes || ''}`
+}
+const ESCALATION_SHAPE = (reason) => ({
+  planPath, rounds: 0, converged: false, stalled: false, exhausted: false,
+  escalated: true, escalationReason: reason,
+  residualBlockerCount: 0, residualMajorCount: 0, residualFindings: [], codexFailedRounds: 0, final: null,
+})
+
 phase('Ground')
+
+// PREFLIGHT STALENESS — D1/D3/D5 (Plan 200). `plan.js` has no READY-status preflight
+// (a DRAFT plan is exactly what it is meant to work on), so this IS its preflight.
+const staleAtPreflight = await agent(
+  stalePlanPromptText('PREFLIGHT'),
+  { label: 'stale-plan-preflight', phase: 'Ground', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
+)
+if (!staleAtPreflight || !staleAtPreflight.fetchOk || staleAtPreflight.stale) {
+  const reason = staleEscalation(staleAtPreflight, 'PREFLIGHT')
+  log(`⚠️ ESCALATION — ${reason}. Refusing to review from an unverifiable or superseded copy (PR #201 postmortem).`)
+  return ESCALATION_SHAPE(reason)
+}
+const baseBehind = await agent(
+  `In repo ${repo}, using the origin/main already fetched, report how many commits origin/main has that the ` +
+  `current branch (HEAD) lacks: \`git -C ${repo} rev-list --count HEAD..origin/main\`. Return behindCount as ` +
+  `a number (0 if the command errors, e.g. no such remote-tracking ref). Do not edit anything.`,
+  { label: 'base-behind', phase: 'Ground', model: 'sonnet', effort: 'low', schema: BASE_BEHIND },
+)
+if (baseBehind && baseBehind.behindCount > 0) {
+  log(`⚠️ WARN — this branch is ${baseBehind.behindCount} commit(s) behind origin/main. Proceeding, but ` +
+      `review against the current diff and run \`git merge origin/main\` before treating the plan as READY.`)
+}
+
 // One shared grounding pass so reviewers start primed (they still re-verify live each round).
 const grounding = (await agent(
   `Read the DRAFT plan at ${planPath} (repo ${repo}). Summarize CONCISELY (NO code dumps): its problem, goal, proposed design/decisions, and EVERY file:line or symbol it cites. Then verify each citation with Read/Grep — report which are accurate vs stale/wrong, and one or two gaps the plan does not address. Keep it under ~40 lines.`,
@@ -243,25 +329,48 @@ if (escalated) {
 }
 
 phase('Finalize')
+
+// FINALIZE STALENESS — D1 re-checked (Plan 200). The multi-round review loop can run
+// long; if someone else moved the plan doc on origin/main or local main WHILE this
+// loop was revising its own copy, the revisions below were made against a copy that
+// is no longer the authoritative one. This is the last point the workflow can still
+// catch it before recommending READY.
+const staleAtFinalize = await agent(
+  stalePlanPromptText('FINALIZE'),
+  { label: 'stale-plan-finalize', phase: 'Finalize', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
+)
+const planWentStale = !staleAtFinalize || !staleAtFinalize.fetchOk || staleAtFinalize.stale
+if (planWentStale) {
+  log(`⚠️ ESCALATION at FINALIZE — ${staleEscalation(staleAtFinalize, 'FINALIZE')}. Do NOT flip this plan to ` +
+      `READY as-is — re-pull the authoritative copy and re-fold these revisions onto it.`)
+}
+
 const final = await agent(
   `Read the now-revised plan at ${planPath} (repo ${repo}). Spot-check its citations against the code (Read/Grep). ` +
   `The review loop ended: converged=${converged}, stalled=${stalled}, exhausted=${exhausted}, ` +
   `residual blockers=${residualBlockers.length}, residual majors=${residualMajors.length}, ` +
-  `rounds where the Codex pass failed=${codexFailedRounds}. ` +
+  `rounds where the Codex pass failed=${codexFailedRounds}, plan went STALE during the review=${planWentStale}. ` +
   `Return: (1) 'summary' — a <=6-line summary of the converged design; ` +
-  `(2) 'residualQuestions' — the genuine design forks a HUMAN must decide (the operator's grill-me); these are NOT defects; ` +
-  `(3) 'recommendation' — 'READY' only if there are no residual blockers/majors AND the residual questions are the kind a human simply picks; else 'NOT-READY'.`,
+  `(2) 'residualQuestions' — the genuine design forks a HUMAN must decide (the operator's grill-me); these are NOT defects` +
+  (planWentStale ? ` — you MUST include that the plan doc went stale during this review and must be re-pulled + re-folded before READY` : ``) + `; ` +
+  `(3) 'recommendation' — 'READY' only if there are no residual blockers/majors, the residual questions are the kind ` +
+  `a human simply picks, AND the plan did NOT go stale during the review; else 'NOT-READY'.`,
   { label: 'finalize', phase: 'Finalize', model: 'sonnet', effort: 'medium', schema: FINAL },
 )
 
 // The recommendation may NOT be READY unless the loop actually converged (no residual
-// blockers/majors on a COMPLETE panel). A run that escalated — stalled, exhausted, or
-// ended a round with a failed reviewer — is NOT-READY regardless of what the finalize
-// agent inferred from a possibly-partial finding set.
-if (final && !converged && final.recommendation !== 'NOT-READY') {
-  log(`Overriding finalize recommendation → NOT-READY (converged=false, escalated=${escalated}).`)
+// blockers/majors on a COMPLETE panel) AND the plan copy stayed current throughout. A
+// run that escalated — stalled, exhausted, ended a round with a failed reviewer, or hit
+// finalize-time staleness — is NOT-READY regardless of what the finalize agent inferred.
+if (final && (!converged || planWentStale) && final.recommendation !== 'NOT-READY') {
+  log(`Overriding finalize recommendation → NOT-READY (converged=${converged}, planWentStale=${planWentStale}).`)
   final.recommendation = 'NOT-READY'
 }
+
+const finalEscalated = escalated || planWentStale
+const finalEscalationReason = planWentStale
+  ? (escalationReason ? `${escalationReason}; also: ${staleEscalation(staleAtFinalize, 'FINALIZE')}` : staleEscalation(staleAtFinalize, 'FINALIZE'))
+  : escalationReason
 
 return {
   planPath,
@@ -269,11 +378,12 @@ return {
   converged,
   stalled,
   exhausted,
-  escalated,
-  escalationReason,
+  escalated: finalEscalated,
+  escalationReason: finalEscalationReason,
   residualBlockerCount: residualBlockers.length,
   residualMajorCount: residualMajors.length,
   residualFindings: lastFindings,
   codexFailedRounds,
+  planWentStale,
   final,
 }
