@@ -48,7 +48,10 @@ repos:
     hooks:
       - id: shellcheck
         name: shellcheck Mac-mini scripts
-        entry: shellcheck
+        # -x: follow `source` (Plan 199 T2 — docker-endpoint.sh is sourced,
+        # not executed, by every launchd wrapper; plain shellcheck can't see
+        # into it and flags the `source` line itself as SC1091).
+        entry: shellcheck -x
         language: system
         files: ^(scripts/launchd/.*\.sh|scripts/bootstrap-mac-mini\.sh)$
         types_or: [shell]

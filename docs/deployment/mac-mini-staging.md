@@ -268,6 +268,32 @@ The first-run helper install needs admin rights — if `sapphire` is a
 Standard user, grant it temporary admin (System Settings → Users &
 Groups), complete Docker Desktop setup, then demote if desired.
 
+### Docker endpoint contract
+
+`scripts/launchd/docker-endpoint.sh` (Plan 199 T2, salvaged from the
+never-merged Plan 158 D8/T4) is the single source of truth for the Docker CLI
+binary and daemon socket, **sourced** — not executed — by every launchd
+wrapper: `start-sapphire.sh`, `prune-docker.sh`, `run-recap-probe.sh`, and
+`run-nepal-forcing.sh`. It defines `DOCKER_BIN` (default
+`/usr/local/bin/docker`, the path Docker Desktop symlinks its CLI to) and
+exports `DOCKER_HOST` (default `unix:///var/run/docker.sock`). Each wrapper
+resolves its own `DOCKER` variable as `${DOCKER_CMD:-${DOCKER_BIN}}` —
+`DOCKER_CMD` is the pre-existing test-injection seam
+(`tests/unit/ops/test_launchd_prune_docker.py`,
+`test_recap_probe_wrapper.py`, `test_start_sapphire_backup_verification.py`),
+so a test pointing it at a fake `docker` stub still wins over both the
+contract and its override.
+
+A future headless container runtime (no Docker Desktop) repoints both values
+via the launchd plist's `EnvironmentVariables`
+(`SAPPHIRE_DOCKER_BIN`/`SAPPHIRE_DOCKER_HOST`) with **no script edits** — the
+whole point of factoring this out after the recap probe's fork of these two
+values drifted and sat dead for 31 days (Plan 132).
+
+A sourced file is invisible to plain `shellcheck` (SC1091 on the `source`
+line) — both the pre-commit hook and CI's lint step run `shellcheck -x` for
+exactly this reason (see the CI lint table below).
+
 ## LaunchAgents
 
 Two agents, user-context (`gui/$(id -u)`):
@@ -308,6 +334,15 @@ Two agents, user-context (`gui/$(id -u)`):
   a tick that raises before persisting does not, which is the correct
   failure signal. Without `secrets/deadman_url` no ping is attempted, no
   error. See `docs/plans/archive/163-watchdog-deadman-and-http-hardening.md`.
+  **Plan 199 T1** (salvaged from the never-merged Plan 158 D14): also checks
+  free space on the disk containing `/`, alerting when it drops below **5%
+  of that volume's total capacity** — not an absolute byte count, so the
+  rule travels to any host size. Same transition-latched shape as the Plan
+  194 backup-device check: alerts only on transition (`disk space LOW` /
+  `... RECOVERED`), never every tick, with its own persisted counter and
+  pending-notification kind independent of every other check. The alert
+  message reports both the percentage and the bytes (e.g. "4.1% free (152 GB
+  of 3654 GB)") since the percentage alone is not actionable.
 
 ### Watchdog log rotation (manual, one-time)
 

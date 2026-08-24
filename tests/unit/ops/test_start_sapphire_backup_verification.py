@@ -103,6 +103,11 @@ def _run_start_sapphire(
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        # Plan 199 T2: start-sapphire.sh now resolves its docker binary via
+        # the shared docker-endpoint.sh contract (DOCKER_CMD, if set, wins
+        # over DOCKER_BIN) — same test-injection seam already used by
+        # test_launchd_prune_docker.py / test_recap_probe_wrapper.py.
+        "DOCKER_CMD": str(bin_dir / "docker"),
         "SAPPHIRE_REPO_ROOT": str(repo_root),
         "SAPPHIRE_BACKUP_DIR": str(backup_dir),
     }

@@ -12,6 +12,13 @@
 
 set -e
 
+# shellcheck source=scripts/launchd/docker-endpoint.sh
+source "$(dirname "${BASH_SOURCE[0]}")/docker-endpoint.sh"
+# DOCKER_CMD is the pre-existing test-injection seam (see
+# tests/unit/ops/test_start_sapphire_backup_verification.py); DOCKER_BIN is
+# the shared contract's default (Plan 199 T2).
+DOCKER="${DOCKER_CMD:-${DOCKER_BIN}}"
+
 # Host-side paths are env-overridable for tests (production values are the
 # defaults, so production behaviour is unchanged) — same convention as
 # scripts/launchd/run-recap-probe.sh's RECAP_PROBE_SCRIPT etc.
@@ -98,7 +105,7 @@ fi
 
 WAIT_MAX=240
 WAITED=0
-until docker info >/dev/null 2>&1; do
+until "${DOCKER}" info >/dev/null 2>&1; do
     if [ "$WAITED" -ge "$WAIT_MAX" ]; then
         echo "Docker Desktop did not start within ${WAIT_MAX}s — aborting" >&2
         exit 1
@@ -123,7 +130,7 @@ if ! backup_target_verified "${BACKUP_DIR}" "${REPO_ROOT}"; then
     echo "WARNING: backup volume not verified at ${BACKUP_DIR} — dumps may land on the boot disk." >&2
 fi
 
-exec docker compose \
+exec "${DOCKER}" compose \
     -f "${REPO_ROOT}/docker-compose.yml" \
     -f "${REPO_ROOT}/docker-compose.macmini.yml" \
     up -d
