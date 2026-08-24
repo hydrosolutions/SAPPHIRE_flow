@@ -4204,6 +4204,51 @@ class TestRunOnceDiskSpace:
         assert any("backup volume NOT MOUNTED" in m for m in messages)
         assert any("disk space LOW" in m for m in messages)
 
+    def test_disk_alert_is_independent_of_backup_staleness(
+        self, tmp_path: Path
+    ) -> None:
+        """The disk condition must be independent of BACKUP STALENESS too.
+
+        The sibling test above pairs disk-low with an unverified DEVICE. This
+        pairs it with a STALE backup, which is a different block entirely.
+        Without this, an implementation like `if disk_kind and not is_stale:`
+        would suppress the disk alert exactly when backups are already stale —
+        and would still pass every other disk test here, because they all use
+        a FRESH backup.
+        """
+        import os
+
+        backup_dir = tmp_path / "pg_dumps"
+        backup_dir.mkdir()
+        stale_dump = backup_dir / "sapphire_stale_99999999.dump"
+        stale_dump.write_bytes(b"dummy")
+        stale_ts = (_NOW - timedelta(hours=30)).timestamp()  # > 26 h threshold
+        os.utime(stale_dump, (stale_ts, stale_ts))
+
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,  # device fine; backup STALE
+            disk_probe=self._low_probe,
+        )
+
+        messages = [msg for _, msg in slack.calls]
+        assert any("disk space LOW" in m for m in messages), (
+            "a stale backup must NOT swallow the disk alert"
+        )
+        assert len(messages) == 2, (
+            f"expected exactly one stale alert and one disk alert, got: {messages}"
+        )
+
     def test_ok_disk_space_has_no_alert(self, tmp_path: Path) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=1)
         cfg = _config(tmp_path, backup_dir=backup_dir)

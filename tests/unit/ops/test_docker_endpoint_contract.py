@@ -206,6 +206,36 @@ def _run(wrapper: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]
     )
 
 
+class TestEveryWrapperSourcesTheSharedFile:
+    """The behavioural tests below prove each wrapper RESOLVES the right
+    endpoint — but a wrapper that duplicated the same
+    SAPPHIRE_DOCKER_BIN/SAPPHIRE_DOCKER_HOST logic inline would satisfy them
+    all while re-creating the drift this contract exists to prevent. That is
+    not hypothetical: the recap probe's launchd wrapper drifted from the
+    repo's copy in exactly that way and sat dead for 31 days (Plan 132).
+
+    So assert the STRUCTURE too: each wrapper must `source` the shared file,
+    and must not re-derive the endpoint itself.
+    """
+
+    @pytest.mark.parametrize("wrapper_name", [name for name, _ in _WRAPPERS])
+    def test_wrapper_sources_docker_endpoint(self, wrapper_name: str) -> None:
+        text = (_SCRIPTS_DIR / wrapper_name).read_text()
+        assert 'source "$(dirname "${BASH_SOURCE[0]}")/docker-endpoint.sh"' in text, (
+            f"{wrapper_name} must source the shared endpoint contract"
+        )
+
+    @pytest.mark.parametrize("wrapper_name", [name for name, _ in _WRAPPERS])
+    def test_wrapper_does_not_re_derive_the_endpoint(self, wrapper_name: str) -> None:
+        """Only docker-endpoint.sh may read the SAPPHIRE_DOCKER_* overrides."""
+        text = (_SCRIPTS_DIR / wrapper_name).read_text()
+        for override in ("SAPPHIRE_DOCKER_BIN", "SAPPHIRE_DOCKER_HOST"):
+            assert override not in text, (
+                f"{wrapper_name} reads {override} itself — that is the shared "
+                "file's job, and duplicating it is how endpoints drift apart"
+            )
+
+
 class TestDockerEndpointConsumedByEveryWrapper:
     """Each wrapper enumerated in docker-endpoint.sh's own header comment
     must actually resolve its docker binary/host through the shared
