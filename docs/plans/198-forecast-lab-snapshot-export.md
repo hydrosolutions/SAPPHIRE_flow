@@ -13,48 +13,35 @@ source: SAPPHIRE-flow-map integration request 2026-08-21; grounded in the Flow M
 
 ## Status
 
-**DRAFT — blocker cleared, awaiting a final review round.** The `plan` workflow ran 3 rounds on
-2026-08-21 and escalated on one blocker, **O7**, which the owner resolved the same day: verification
-(T4) is **cut**, and the raw BAFU export **proceeds**, recorded as an Export extension in Plan 111.
-Five owner forks remain open (O1, O3, O4, O5, O6) and none of them blocks — each has a stated
-recommendation and a working default.
+**DRAFT — no blockers open; five non-blocking owner forks remain (O1, O3, O4, O5, O6), each with a
+recommendation and a working default.** The one blocker, **O7**, was resolved by the owner on
+2026-08-21: verification (T4) is **cut**, and the raw BAFU export **proceeds**, recorded as an
+Export extension in Plan 111.
 
-Review provenance, because it changes how much the rounds are worth: **the independent Codex pass
-failed in rounds 1 and 2** (`codexFailedRounds: 2`), so those rounds were Claude-lens only and
-"converged" 5 → 2 majors without the repo-grounded reviewer that `CLAUDE.md` makes a floor. Round 3
-got the first real Codex pass and raised 2 blockers + 12 majors, which tripped the stall detector by
-comparing a Codex-less round to a Codex-ful one. **That is a false stall**, and the round-3 findings
-were the valuable ones: every one this session verified against the repo or the live host held up,
-and four of them corrected *this plan's own* measured facts (F1, F6, F8, D2). Those are folded.
-The three T4-internal findings died with T4.
+### Review history — and an important caveat about what it is worth
 
-**Third run (2 rounds): 0 blockers, 2 majors, 2 minors — all folded.** The majors: no injected
-`clock` on `build_snapshot()`, violating a **CRITICAL** `CLAUDE.md` rule that 62 call sites in this
-repo already follow (D20); and an unavailable-model field that could never be populated (D19).
-Minors: T7 needlessly serialised behind the surfaces, and T7's exit criteria carrying literal test
-code the plan's own F3 policy forbids.
+Three `plan`-workflow runs, seven rounds. All findings verified against the repo or the live host
+before folding; four of them corrected *this plan's own* measured facts (F1, F6, F8, D2).
 
-**Second run (2 rounds, 2026-08-21): 0 blockers, 3 majors, 2 minors — all folded, and every one
-of them cut scope** (the admin-`404` two-step, eligibility on the explicit-code path, and dropping
-the vestigial `include_verification` flag; plus two de-speculation trims). **Root cause of the
-review flakiness found and fixed:** `.claude/workflows/{plan,implement}.js` invoked
-`codex exec` **without `< /dev/null`**, so the CLI blocked on "Reading additional input from
-stdin..." and timed out. Both scripts are fixed. **But that fix is NOT confirmed as the cause and
-has never actually run:** `Workflow({name: "plan"})` resolves from a registration snapshot taken at
-session start, so run 3 executed the *unfixed* script (verified — the persisted
-`plan-wf_*.js` contains no `< /dev/null`). Run 3's own Codex failure was moreover a different
-mode: the relay agent stalled with *no progress* for 3 min × 6 attempts, during a window of
-platform model timeouts — an agent stall, not a CLI hang. **Net: across 3 runs / 7 rounds the
-independent Codex reviewer produced exactly ONE verdict** (run 1 round 3 — the round that found the
-most). Every other round was Claude lenses only. **Read this plan's review history accordingly:
-it is well-grounded but it has NOT had the independent repo-grounded review `CLAUDE.md` makes a
-floor.** To actually test the fix, invoke by `scriptPath` (reads from disk) rather than by name.
+| Run | Rounds | Codex verdicts | Outcome |
+|---|---|---|---|
+| 1 | 3 | **1 of 3** | 2 blockers + 12 majors, all folded (the one Codex round found the most) |
+| 2 | 2 | 0 of 2 | 3 majors + 2 minors, all folded — every one cut scope |
+| 3 | 2 | 0 of 2 | 2 majors + 2 minors, all folded (D19, D20 + two trims) |
 
-**Third round (2026-08-21, independent Codex + Claude): 0 blockers, 1 major, 1 minor — both folded,
-and both cut scope.** The major killed D10's server-computed content hash (and with it AC16's
-byte-identity requirement): it was a caching apparatus rule 5 already forbids, rebuilt for a benefit
-the consumer can get by hashing the body it already holds. The minor killed D16's undefined `stale`
-status. Nothing was added.
+**⚠️ Across 7 rounds the independent Codex reviewer produced exactly ONE verdict.** Every other
+round was Claude lenses only. `.claude/workflows/{plan,implement}.js` invoked `codex exec` without
+`< /dev/null`, which makes the CLI block on stdin; both are now fixed — **but that fix is unproven
+and has never run**, because `Workflow({name: …})` resolves from a session-start registration
+snapshot, so run 3 executed the unfixed script (verified: the persisted `plan-wf_*.js` carries no
+redirect). Run 3's failure was a different mode anyway — the relay agent stalled with no progress
+for 3 min × 6 attempts during a window of platform model timeouts. To test the fix, invoke by
+`scriptPath` (reads from disk), not by name.
+
+**So: this plan is unusually well-grounded, and it has NOT had the independent repo-grounded review
+`CLAUDE.md` makes a floor.** Both halves of that sentence are true and neither cancels the other.
+Each run also ESCALATED as "stalled" — in runs 1 and 3 that verdict is an artefact of comparing a
+Codex-less round against a Codex-ful one, not evidence of thrash.
 
 ## Goal
 
