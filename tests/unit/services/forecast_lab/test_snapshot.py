@@ -636,7 +636,19 @@ class TestNoHindcastOrSkillTableAccess:
             Path(__file__).resolve().parents[4]
             / "src/sapphire_flow/services/forecast_lab"
         )
-        forbidden = {"hindcast_forecasts", "hindcast_values", "skill_scores"}
+        # Table names AND the store classes/modules that wrap them: the
+        # docstring above claims this catches a direct store import, and the
+        # table names alone would NOT — `PgHindcastStore` contains none of
+        # them (independent review caught the over-claim).
+        forbidden = {
+            "hindcast_forecasts",
+            "hindcast_values",
+            "skill_scores",
+            "PgHindcastStore",
+            "PgSkillStore",
+            "hindcast_store",
+            "skill_store",
+        }
         offenders: list[str] = []
         for module in sorted(package.glob("*.py")):
             tree = ast.parse(module.read_text())
@@ -650,7 +662,21 @@ class TestNoHindcastOrSkillTableAccess:
             }
             for node in ast.walk(tree):
                 found: str | None = None
-                if isinstance(node, ast.Name) and node.id in forbidden:
+                if isinstance(node, ast.ImportFrom):
+                    found = next(
+                        (
+                            f
+                            for f in forbidden
+                            if f in (node.module or "")
+                            or any(f == a.name for a in node.names)
+                        ),
+                        None,
+                    )
+                elif isinstance(node, ast.Import):
+                    found = next(
+                        (f for f in forbidden for a in node.names if f in a.name), None
+                    )
+                elif isinstance(node, ast.Name) and node.id in forbidden:
                     found = node.id
                 elif isinstance(node, ast.Attribute) and node.attr in forbidden:
                     found = node.attr
@@ -971,6 +997,51 @@ class TestNonFiniteValuesNeverReachTheJson:
             raise AssertionError(f"non-finite token {token!r} reached the JSON")
 
         json.loads(rendered, parse_constant=_reject)
+
+    def test_scalar_db_floats_are_nulled_not_propagated(self) -> None:
+        """The first AC5 fix sanitised only the BAFU traces and the ensemble
+        members; the SCALAR DB-sourced floats (`basin_area_km2`,
+        `observation_staleness_hours`, the daily means) were still exposed,
+        so a non-finite one made the CLI raise instead of producing a
+        snapshot. Enforced at the boundary type now, so this covers all of
+        them at once."""
+        from sapphire_flow.api.forecast_lab_schemas import StationSchema
+
+        station = StationSchema.model_validate(
+            {
+                "code": "2009",
+                "network": "bafu",
+                "name": "Porte_du_Scex",
+                "display_name": None,
+                "river": None,
+                "location": {
+                    "longitude": 6.89,
+                    "latitude": 46.35,
+                    "crs": "EPSG:4326",
+                },
+                "basin_area_km2": float("nan"),
+                "active": True,
+            }
+        )
+        assert station.model_dump(mode="json")["basin_area_km2"] is None
+        json.dumps(station.model_dump(mode="json"), allow_nan=False)
+
+    def test_a_required_float_rejects_non_finite_loudly(self) -> None:
+        """A required numeric has no `null` to fall back to, so silently
+        nulling it would be worse than failing: D13 contains the raise as a
+        partial snapshot."""
+        import pydantic
+
+        from sapphire_flow.api.forecast_lab_schemas import ObservationPointSchema
+
+        with pytest.raises(pydantic.ValidationError, match="non-finite"):
+            ObservationPointSchema.model_validate(
+                {
+                    "valid_time": "2026-08-21T10:40:00Z",
+                    "value": float("inf"),
+                    "qc_status": "qc_passed",
+                }
+            )
 
     def test_cli_write_guard_raises_rather_than_emitting_invalid_json(
         self, tmp_path: Path

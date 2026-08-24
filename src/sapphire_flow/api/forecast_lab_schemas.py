@@ -18,10 +18,11 @@ its deltas-from-the-request table for why each field looks the way it does.
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, WithJsonSchema
+from pydantic import BaseModel, BeforeValidator, Field, WithJsonSchema
 from pydantic.functional_serializers import PlainSerializer
 
 # ---------------------------------------------------------------------------
@@ -41,6 +42,36 @@ Rfc3339Utc = Annotated[
 ]
 
 
+def _null_if_not_finite(value: Any) -> Any:
+    """AC5 — a NaN/Infinity float is missing data, not a number, and `null`
+    is how this contract represents a missing numeric.
+
+    Enforced HERE, at the boundary type, rather than at each producer:
+    Postgres `double precision` and parquet float columns both admit
+    non-finite values, so every DB-sourced float is a potential source. An
+    earlier fix sanitised only the BAFU traces and the ensemble members and
+    left the scalar fields (`basin_area_km2`, `observation_staleness_hours`,
+    the daily means) exposed — the independent review caught that. One
+    annotated type closes the whole class."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _reject_if_not_finite(value: Any) -> Any:
+    """For a REQUIRED numeric there is no `null` to fall back to, so a
+    non-finite value is a data-integrity failure and must be loud. D13 then
+    contains it: the affected source degrades to unavailable and the
+    snapshot comes back partial, rather than emitting an invalid token."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("non-finite value in a required numeric field")
+    return value
+
+
+NullableFiniteFloat = Annotated[float | None, BeforeValidator(_null_if_not_finite)]
+FiniteFloat = Annotated[float, BeforeValidator(_reject_if_not_finite)]
+
+
 class ForecastLabModel(BaseModel):
     """Base for every model in this module — forbids unknown fields so a
     typo in builder code fails loudly rather than silently dropping data."""
@@ -54,8 +85,8 @@ class ForecastLabModel(BaseModel):
 
 
 class GeoCoordSchema(ForecastLabModel):
-    longitude: float
-    latitude: float
+    longitude: FiniteFloat
+    latitude: FiniteFloat
     crs: Literal["EPSG:4326"] = "EPSG:4326"
 
 
@@ -66,7 +97,7 @@ class StationSchema(ForecastLabModel):
     display_name: str | None
     river: str | None
     location: GeoCoordSchema
-    basin_area_km2: float | None
+    basin_area_km2: NullableFiniteFloat
     active: bool
 
 
@@ -106,7 +137,7 @@ class ComparisonSemanticsSchema(ForecastLabModel):
 
 class ObservationPointSchema(ForecastLabModel):
     valid_time: Rfc3339Utc
-    value: float
+    value: FiniteFloat
     qc_status: Literal["qc_passed"] = "qc_passed"
 
 
@@ -127,11 +158,11 @@ class ObservationsSectionSchema(ForecastLabModel):
 
 class QuantileEnvelopeSchema(ForecastLabModel):
     valid_time: Rfc3339Utc
-    minimum: float | None
-    p25: float | None
-    median: float | None
-    p75: float | None
-    maximum: float | None
+    minimum: NullableFiniteFloat
+    p25: NullableFiniteFloat
+    median: NullableFiniteFloat
+    p75: NullableFiniteFloat
+    maximum: NullableFiniteFloat
 
 
 class BafuForecastAvailableSchema(ForecastLabModel):
@@ -199,7 +230,7 @@ class SapphireForecastAvailableSchema(ForecastLabModel):
     variable: Literal["discharge"] = "discharge"
     unit: Literal["m3/s"] = "m3/s"
     issued_at: Rfc3339Utc
-    observation_staleness_hours: float | None
+    observation_staleness_hours: NullableFiniteFloat
     native_step_seconds: int
     ensemble_size: int
     horizon_start: Rfc3339Utc
@@ -225,27 +256,27 @@ SapphireForecastEntry = Annotated[
 
 
 class AlignedDailyObservationSchema(ForecastLabModel):
-    value: float | None
+    value: NullableFiniteFloat
     sample_count: int
     complete: bool
 
 
 class AlignedDailyBafuSchema(ForecastLabModel):
-    minimum: float | None
-    p25: float | None
-    median: float | None
-    p75: float | None
-    maximum: float | None
+    minimum: NullableFiniteFloat
+    p25: NullableFiniteFloat
+    median: NullableFiniteFloat
+    p75: NullableFiniteFloat
+    maximum: NullableFiniteFloat
     hour_count: int
     complete: bool
 
 
 class AlignedDailySapphireEntrySchema(ForecastLabModel):
-    minimum: float | None
-    p25: float | None
-    median: float | None
-    p75: float | None
-    maximum: float | None
+    minimum: NullableFiniteFloat
+    p25: NullableFiniteFloat
+    median: NullableFiniteFloat
+    p75: NullableFiniteFloat
+    maximum: NullableFiniteFloat
     complete: bool
 
 
