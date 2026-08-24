@@ -95,6 +95,19 @@ unavailable rather than aborting the whole document. `status.overall` is
 `"ok"` when every source is `ok`, `"unavailable"` when none is, else
 `"partial"`.
 
+**When a request spans multiple stations** (`stations[]` has more than one
+entry), `status.<source>` is a roll-up over every station actually rendered
+in the document: `"ok"` only when **every** requested station has that
+source available, `"missing"` when **none** do (including a stationless
+request that resolves to zero stations), and `"error"` when **some but not
+all** do — `message` then reports the exact count, e.g. `"1 of 2 stations
+missing a BAFU run in the requested window"`. This is a document-level
+signal for whether a source is worth showing at all in this response, not a
+per-station diagnostic: to find out *which* station is missing a source,
+read that station's own `stations[].availability` block, which is
+unaffected by the document-level roll-up. A single-station request is the
+same rule's `N = 1` case (`"ok"` or `"missing"`; `"error"` cannot occur).
+
 A genuinely poisoned database transaction (`SQLAlchemyError`) is **not**
 caught anywhere in the assembly path — it propagates to an HTTP `500` (the
 route) or a non-zero process exit (the CLI), because a failed statement

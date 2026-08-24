@@ -475,6 +475,30 @@ combination maps to exactly one value:
 Rule 2 is the case an earlier draft left undefined (e.g. one `error` and two `missing`, or a
 same-day outage across all three sources); it is tested by AC13.
 
+**D16a — the per-source status is a roll-up over every station in the request** (added
+2026-08-24, independent Codex review of the T3/T5/T6 diff: the multi-station case was
+implemented — `_aggregate_source_status` in `services/forecast_lab/snapshot.py` — but never
+specified, so AC13's "a missing source" was only exercised degenerately, at zero or one
+station). For each of the three sources, over the `N` **eligible, scoped** stations actually
+being rendered in this document (D8/D17 — after scoping, not before):
+
+- `ok` — every one of the `N` stations has that source available;
+- `missing` — none of the `N` stations has it (including `N == 0`, the stationless-principal
+  case, AC3);
+- `error` — some but not all of the `N` stations have it, with `message` reporting the exact
+  count (`"<k> of <N> stations missing <source>"`).
+
+This is a **document-level signal for "is this source worth showing at all in this response,"
+not a per-station diagnostic** — a consumer that needs to know *which* station is missing a
+source already has it, per station, in that station's own
+`availability.{observations,bafu_forecast,sapphire_forecast}` block (unaffected by this
+roll-up). A single-station request is the `N == 1` degenerate case of the same rule (`ok` or
+`missing`; `error` is unreachable at `N == 1`), which is why AC13's two clauses read as
+all-or-nothing — they are the `N == 1` projection of this rule, not a separate rule for the
+single-station case. Tested at `N == 2` with three different per-source outcomes in one request
+(`TestMultiStationSourceStatusAggregation`,
+`tests/unit/services/forecast_lab/test_snapshot.py`).
+
 *(Revised 2026-08-21, third review round — scope cut. A fourth per-source value `stale` and its own
 overall rule were **removed**. Their thresholds were never given a number anywhere in this plan and
 no acceptance criterion exercised the ok/stale boundary or the stale→overall transition: a state

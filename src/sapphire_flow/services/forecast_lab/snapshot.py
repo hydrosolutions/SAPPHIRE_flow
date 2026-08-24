@@ -441,9 +441,12 @@ def _aligned_daily_comparison(
 def _aggregate_source_status(
     available_flags: list[bool], available_times: list[UtcDatetime], *, kind: str
 ) -> SourceStatusSchema:
-    """D16 per-source status: `ok` if every eligible station has this
-    source available, `missing` if none do (including zero eligible
-    stations), `error` if some but not all do."""
+    """D16a per-source status, rolled up over every station in this
+    request: `ok` if every eligible station has this source available,
+    `missing` if none do (including zero eligible stations), `error` if
+    some but not all do. See docs/plans/198-forecast-lab-snapshot-export.md
+    D16a and docs/spec/forecast-lab-snapshot.md for the consumer-facing
+    rule and its N=1 degenerate case."""
     total = len(available_flags)
     ok_count = sum(available_flags)
     latest = max(available_times) if available_times else None

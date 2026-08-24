@@ -38,11 +38,12 @@ from sapphire_flow.types.enums import (
     ForecastStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
+    QcStatus,
 )
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import ForecastId, ModelId, StationId
 from sapphire_flow.types.station import ModelAssignment
-from tests.conftest import make_station_config
+from tests.conftest import make_observation, make_station_config
 from tests.fakes.fake_stores import (
     FakeArtifactProvenanceStore,
     FakeBasinStore,
@@ -657,4 +658,159 @@ class TestForecastLabSnapshotIsValidPydanticModel:
             stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
         )
         assert isinstance(snapshot, ForecastLabSnapshot)
-        assert snapshot.status.overall in {"ok", "partial", "unavailable"}
+        # No observation, no BAFU archive (archive_base_path=None), no model
+        # assignment for the one requested station: every source is
+        # unavailable for the only station in scope, so D16 rule 2 fires.
+        assert snapshot.status.observations.status == "missing"
+        assert snapshot.status.bafu_forecasts.status == "missing"
+        assert snapshot.status.sapphire_forecasts.status == "missing"
+        assert snapshot.status.overall == "unavailable"
+
+
+def _write_minimal_bafu_run(
+    base_path: Path, station_code: str, *, issued_at: UtcDatetime, n_hours: int = 22
+) -> None:
+    """A complete, reconstructable BAFU archive run — just enough for
+    `read_latest_bafu_run` to report the station's BAFU forecast source as
+    available. Mirrors `TestDailyCompletenessBoundary._write_run`."""
+    valid_times = [ensure_utc(issued_at + timedelta(hours=h)) for h in range(n_hours)]
+    rows: list[dict[str, Any]] = []
+    for i, vt in enumerate(valid_times):
+        for trace, val in (
+            ("Min / Max", 10.0),
+            ("Median", 20.0),
+            ("Min. / Max.", 30.0),
+        ):
+            rows.append(
+                {
+                    "station_key": station_code,
+                    "metric": "discharge_ms",
+                    "unit": "m3/s",
+                    "issued_at": issued_at,
+                    "produced_at": issued_at,
+                    "valid_time": vt,
+                    "trace_name": trace,
+                    "point_index": i,
+                    "value": val,
+                }
+            )
+    band = valid_times + list(reversed(valid_times)) + [valid_times[0]]
+    for i, vt in enumerate(band):
+        rows.append(
+            {
+                "station_key": station_code,
+                "metric": "discharge_ms",
+                "unit": "m3/s",
+                "issued_at": issued_at,
+                "produced_at": issued_at,
+                "valid_time": vt,
+                "trace_name": "25.-75. Percentile",
+                "point_index": i,
+                "value": 15.0 if i < n_hours else 25.0,
+            }
+        )
+    schema = {
+        "station_key": pl.Utf8,
+        "metric": pl.Utf8,
+        "unit": pl.Utf8,
+        "issued_at": pl.Datetime("us", "UTC"),
+        "produced_at": pl.Datetime("us", "UTC"),
+        "valid_time": pl.Datetime("us", "UTC"),
+        "trace_name": pl.Utf8,
+        "point_index": pl.Int64,
+        "value": pl.Float64,
+    }
+    frame = pl.DataFrame(rows, schema=schema)
+    parsed_dir = base_path / "parsed"
+    parsed_dir.mkdir(parents=True, exist_ok=True)
+    stamp = issued_at.strftime("%Y%m%dT%H%M%SZ")
+    frame.write_parquet(parsed_dir / f"{station_code}_q_forecast_{stamp}.parquet")
+
+
+class TestMultiStationSourceStatusAggregation:
+    """D16 — the document-level `status.<source>` is a roll-up over every
+    station in the request (`_aggregate_source_status`): `ok` only when
+    every requested station has that source, `missing` when none do, and
+    `error` when some but not all do. This is AC2's headline scenario (two
+    stations, one request) exercised with genuinely different per-station
+    availability, not the degenerate single-station or all-missing cases
+    the rest of this file covers — and it pins the exact per-source status,
+    message and `status.overall` roll-up (AC13), rather than merely
+    asserting the result is one of the three valid enum values."""
+
+    def test_mixed_availability_across_two_stations_pins_exact_status(
+        self, tmp_path: Path
+    ) -> None:
+        station_a = make_station_config(code="2009", station_id=StationId(uuid4()))
+        station_b = make_station_config(code="2016", station_id=StationId(uuid4()))
+        station_store = FakeStationStore()
+        station_store.store_station(station_a)
+        station_store.store_station(station_b)
+
+        # Observations: BOTH stations have a measured/qc_passed/discharge
+        # reading in the window -> status.observations == "ok".
+        observation_store = FakeObservationStore()
+        observation_store.store_observations(
+            [
+                make_observation(
+                    station_id=station_a.id,
+                    parameter="discharge",
+                    qc_status=QcStatus.QC_PASSED,
+                    timestamp=ensure_utc(_EPOCH - timedelta(hours=1)),
+                    rng=random.Random(101),
+                ),
+                make_observation(
+                    station_id=station_b.id,
+                    parameter="discharge",
+                    qc_status=QcStatus.QC_PASSED,
+                    timestamp=ensure_utc(_EPOCH - timedelta(hours=1)),
+                    rng=random.Random(102),
+                ),
+            ]
+        )
+
+        # BAFU archive: only station_a has a run on disk ->
+        # status.bafu_forecasts == "error" (1 of 2 missing).
+        _write_minimal_bafu_run(
+            tmp_path, "2009", issued_at=ensure_utc(_EPOCH - timedelta(hours=2))
+        )
+
+        # SAPPHIRE forecasts: neither station has an active model
+        # assignment -> status.sapphire_forecasts == "missing" (0 of 2).
+
+        stores = _stores(
+            station_store=station_store, observation_store=observation_store
+        )
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station_a, station_b],
+            archive_base_path=tmp_path,
+            clock=_frozen_clock(),
+        )
+
+        assert snapshot.status.observations.status == "ok"
+        assert snapshot.status.observations.message is None
+
+        assert snapshot.status.bafu_forecasts.status == "error"
+        assert (
+            snapshot.status.bafu_forecasts.message
+            == "1 of 2 stations missing a BAFU run in the requested window"
+        )
+
+        assert snapshot.status.sapphire_forecasts.status == "missing"
+        assert (
+            snapshot.status.sapphire_forecasts.message
+            == "no a SAPPHIRE forecast available for any station"
+        )
+
+        # Not all-ok (bafu/sapphire aren't "ok"), but observations IS "ok"
+        # so D16 rule 2 ("no source is ok") does not fire -> partial, not
+        # unavailable.
+        assert snapshot.status.overall == "partial"
+
+        # Per-station availability still reflects each station's own data,
+        # independent of the document-level roll-up.
+        by_code = {s.station.code: s for s in snapshot.stations}
+        assert by_code["2009"].availability.bafu_forecast is True
+        assert by_code["2016"].availability.bafu_forecast is False
