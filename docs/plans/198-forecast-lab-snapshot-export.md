@@ -13,9 +13,11 @@ source: SAPPHIRE-flow-map integration request 2026-08-21; grounded in the Flow M
 
 ## Status
 
-**DRAFT — no review blockers open. Five owner forks remain (O1, O3, O4, O5, O6); each has a
-recommendation and a working default, so none of them blocks further *review*, but all of them
-block **READY** — they are the human's to answer.** The one blocker, **O7**, was resolved by the owner on
+**DRAFT — every owner fork is now RESOLVED (2026-08-21) and no blockers remain. This plan is
+ready for the human to flip to READY.** O1 DO IT · O3 SPLIT (T9a now, T9b deferred) · O4 DON'T ·
+O5 CONFIRMED · O6 DO IT, alongside the earlier O7 (T4 cut, raw BAFU export proceeds). The
+independent Codex pass was consulted on the open forks and agreed on three of four; its dissent on
+O3 was accepted for the fields and split from the irreversible preservation half. The one blocker, **O7**, was resolved by the owner on
 2026-08-21: verification (T4) is **cut**, and the raw BAFU export **proceeds**, recorded as an
 Export extension in Plan 111.
 
@@ -100,9 +102,8 @@ platform. Specifically:
 - **Adding length is a cost.** Prefer deleting to adding. A revision that grows the plan without
   removing a concrete failure has made the plan worse.
 - **Do not reinstate cut scope.** **T4 is CUT, not deferred** — reinstating it would breach Plan
-  111's scorer gate (O7.1). T9 and T10 are marked **separable** deliberately, and the
-  six owner forks in § Owner decisions required are for the human, not for reviewers to
-  pre-resolve by expanding the plan.
+  111's scorer gate (O7.1). **T9b and T10 are deferred by owner decision** (O3, O4) — do not
+  reinstate them either. All owner forks are now **resolved**; do not reopen them.
 - **Do not propose new apparatus.** Per `CLAUDE.md` § Ad-hoc Analyses, a one-off check is a
   heredoc, not a committed script.
 - **The measured findings in § Verified facts are settled.** F1–F10 were measured on the live
@@ -614,26 +615,43 @@ records. AC1 validates the *committed fixture* against the generated schema — 
 
 ---
 
-## Owner decisions required (blocking READY)
+## Owner decisions — ALL RESOLVED (2026-08-21)
 
-**O1 — Widen the archive mount to the API container?** D2 mounts `bafu_forecast_archive` read-only
-into `api`. This is the only way the REST route can serve BAFU data live. It slightly widens the
-Plan 111 quarantine surface (from workers to the API), though read-only and still never into the
-DB. *Recommendation: yes.* Fallback: D2-alt — the route still builds live but reports
-`bafu_forecast: missing`, and only the CLI (run in a container that already has the mount) produces
-the complete three-source snapshot.
+**Every fork is answered; none blocks READY.** O1 DO IT · O2 superseded · O3 SPLIT (T9a now,
+T9b deferred) · O4 DON'T · O5 CONFIRMED · O6 DO IT · O7 resolved (T4 cut, export proceeds).
+The independent Codex pass was asked for a recommendation on O1/O3/O4/O6 and **agreed on three,
+disagreeing on O3**, where its DEFER argument was accepted for the fields and split from the
+irreversible preservation half.
+
+**O1 — ✅ RESOLVED 2026-08-21: DO IT.** `bafu_forecast_archive` is mounted **read-only** into the
+`api` service (D2, T7). Owner-approved; the independent Codex pass agreed. The Plan 111 quarantine
+widens from workers to the API but stays read-only and never reaches the DB, and the Export
+extension already authorises exactly this serving path. **D2-alt is therefore NOT taken** — it stays
+in D2 only as the recorded alternative, and T7's "O1 = no" branch is dead text kept for provenance.
 
 **O2 — ✅ RESOLVED 2026-08-21: ship `insufficient_data`.** Superseded by O7.1 — T4 is cut, so the
 question is moot. See D3.
 
-**O3 — Archive the BAFU inventory (T9)?** Unlocks `river` and `display_name` and closes a gap the
-audit already identified. **Correction to my earlier "~15 lines" estimate:** it is more than a
-collector change. The adapter's boundary model drops geometry and `hydro_body_name` before the
-collector ever sees the inventory (`adapters/bafu_forecast.py:126,280`), and
-`BafuStationInventory` carries only parsed stations, source time and a skip count
-(`types/bafu_forecast.py:96`) — so T9 also needs an adapter/domain change to surface the raw
-payload, plus atomic archival and reader tests. *Recommendation: still yes, but price it honestly;
-it is separable, and cutting it leaves those two fields `null`, which the contract already permits.*
+**O3 — ✅ RESOLVED 2026-08-21: SPLIT. Preserve the bytes now (T9a); defer the fields (T9b).**
+The original T9 tangled two questions that have different answers, and the independent Codex pass
+**disagreed with the plan's "yes"**, recommending DEFER on the grounds that `river` and
+`display_name` are two optional presentation fields for one consumer and two stations, which the
+contract already permits as `null`. That argument is correct **for the fields** and was accepted.
+
+But it prices one bundle. The two halves differ in one decisive way — **only one of them is
+irreversible**:
+
+- **T9a — preserve the raw inventory GeoJSON. DO NOW.** The collector fetches it hourly and
+  discards it; every hour without this is station-inventory history that cannot be recovered. This
+  is the same *collect-now / discard-if-refused* logic that justified the Plan 111 collector
+  override, over the same source, under the same posture — **no new licence question**. Cost is
+  about five lines: `payload` is already in scope at the adapter's return
+  (`adapters/bafu_forecast.py:280`) and `_atomic_write` already exists
+  (`flows/collect_bafu_forecasts.py:247`). **No reader, no domain modelling, no geometry plumbing.**
+- **T9b — populate `river` / `display_name`. DEFER.** *This* is the part that needs geometry and
+  `hydro_body_name` plumbed through the adapter's boundary model
+  (`adapters/bafu_forecast.py:126,280`; `types/bafu_forecast.py:96`) plus a reader and tests — real
+  work for two labels the map can hardcode for two stations. Both fields stay `null` (D7).
 
 **O7 — ✅ RESOLVED 2026-08-21 by the owner. Both halves answered; the blocker is cleared.**
 
@@ -662,17 +680,19 @@ now records that a full discard takes three steps (volume, exported files, map c
 document this in the Forecast Lab spec**, so the operational consequence is not buried in a plan
 nobody re-reads.
 
-**O4 — Add `GZipMiddleware` (T10)?** *Recommendation: no for this MVP (D11).*
+**O4 — ✅ RESOLVED 2026-08-21: DON'T.** No `GZipMiddleware` (D11, T10 not taken). Owner-approved;
+Codex agreed — no concrete bandwidth failure exists, and gzip would be the first application-wide
+response behaviour, affecting every route (`api/__init__.py` adds only conditional CORS today).
 
-**O5 — Confirm the F3 correction.** The delivered contract will have `p25`/`p75` the opposite way
-round from the request. This is measured, not inferred, and the plan will not proceed on the
-request's mapping. Owner acknowledgement wanted because it changes the agreed contract.
+**O5 — ✅ RESOLVED 2026-08-21: CONFIRMED.** The delivered contract uses the **measured** mapping —
+first half → `p25`, second (backward) half → `p75` — the opposite of the integration request (F3,
+Deviation 1). Owner explicitly acknowledged the contract change. T2a additionally corrects the wrong
+orientation comment at `types/bafu_forecast.py:116` that is the likely source of the error.
 
-**O6 — Licence posture in the payload.** The audit established Plan 111 Gate G1 is unsent and BAFU
-publication rights are unresolved. *Recommendation: the snapshot carries a
-`bafu_forecast.licence_status: "unresolved"` field and the schema documents that this export is
-research-only and not for commercial publication.* This costs nothing and makes the constraint
-travel with the data.
+**O6 — ✅ RESOLVED 2026-08-21: DO IT.** The snapshot carries
+`bafu_forecast.licence_status: "unresolved"`, and T8 documents that this export is research-only and
+not for commercial publication. Owner-approved; Codex agreed, noting that exported and map-cached
+copies survive outside the quarantined archive, so the marker must travel with the values.
 
 ---
 
@@ -732,6 +752,22 @@ No existing test under `tests/unit/deploy/` demonstrates a pattern for this, so 
 the compose wiring being wrong or later removed, (b) catches the overlay's path declaration being
 removed or renamed. Neither alone closes the gap. Plus a documented redeploy procedure;
 **verification on the mini is a separate, owner-scheduled step.**
+
+**T9a — Preserve the raw BAFU inventory GeoJSON.** *(O3, ~5 lines.)*
+`adapters/bafu_forecast.py` + `flows/collect_bafu_forecasts.py`.
+*Scope (in):* add `raw_payload` to `BafuStationInventory` (`types/bafu_forecast.py:96`), pass
+`payload` at the adapter's existing return site (`adapters/bafu_forecast.py:280`), and write it once
+per run with the existing `_atomic_write` helper (`flows/collect_bafu_forecasts.py:247`) under the
+archive's `raw/` tree using an inventory-specific stem. Same quarantine posture as the plot payloads
+— same source, same Plan 111 collector override, **no new licence question**.
+*Scope (out):* **any parsing or use of the archived bytes** — no reader, no `hydro_body_name`
+extraction, no geometry, no reprojection, no contract field. That is T9b, deferred. This task
+preserves data and nothing else.
+*Rationale:* it is the only item on the whole plan that is irreversible — the inventory is fetched
+hourly and discarded, so every hour without it is history that cannot be recovered.
+*Exit:* `uv run pytest tests/unit/flows/test_collect_bafu_forecasts.py` — one added assertion that a
+run writes exactly one inventory file and that a second run with an unchanged inventory does not
+crash or duplicate it.
 
 ### Phase 1 — contract
 
@@ -824,9 +860,10 @@ entry; a `docs/conventions.md` line if a new convention lands.
 
 ### Separable extras
 
-**T9 — Archive the BAFU inventory GeoJSON** *(see O3)*: one file per collector run alongside the
-plot payloads; unlocks `river` and `display_name`; requires reprojection EPSG:2056 → 4326 for any
-coordinate use, though the DB coordinate remains canonical.
+**T9b — Populate `river` / `display_name` from the archived inventory** *(DEFERRED by O3)*: needs
+geometry and `hydro_body_name` plumbed through the adapter's boundary model, a reader, and
+reprojection EPSG:2056 → 4326 for any coordinate use (the DB coordinate stays canonical). Not in
+v1; both fields are `null` (D7). T9a makes this buildable later without a data gap.
 **T10 — `GZipMiddleware`** *(see O4)*: two lines, affects all routes.
 **T11 — Conditional GET** *(cut from v1 by D10)*: `ETag`/`If-None-Match`/`Last-Modified`. Only
 worth building if repeat-poll bandwidth is measured to matter. Design it then, against the
@@ -925,21 +962,22 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
 ```json
 {
   "phases": [
-    { "id": "phase-0", "tasks": ["T7"], "parallel": false },
+    { "id": "phase-0", "tasks": ["T7", "T9a"], "parallel": true },
     { "id": "phase-1", "tasks": ["T1"], "parallel": false },
     { "id": "phase-2", "tasks": ["T2a", "T2b"], "parallel": true, "depends_on": ["phase-1"] },
     { "id": "phase-3", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-2"] },
     { "id": "phase-4", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-3"] },
     { "id": "phase-5", "tasks": ["T8"], "parallel": false, "depends_on": ["phase-4"] },
-    { "id": "phase-opt", "tasks": ["T9", "T10"], "parallel": true, "depends_on": ["phase-5"] }
+    { "id": "phase-deferred", "tasks": ["T9b", "T10"], "parallel": true, "depends_on": ["phase-5"] }
   ]
 }
 ```
 
-**T4 is gone** (O7.1) — **eight core task nodes** remain (T7, T1, T2a, T2b, T3, T5, T6, T8) plus two separable extras.
+**T4 is gone** (O7.1) — **nine core task nodes** remain (T7, T9a, T1, T2a, T2b, T3, T5, T6, T8). `phase-deferred` holds
+T9b and T10, neither of which is built in v1 (O3, O4).
 T11 is **cut from v1** by D10 and is deliberately **absent from the graph** — it is a named
 placeholder for a future plan, not a schedulable task here. T3 owns the
-`insufficient_data` sentinel, so nothing orphans. `phase-opt` is separable in full (O3, O4).
+`insufficient_data` sentinel, so nothing orphans.
 
 **T7 has no dependencies and runs first.** It edits two compose files and its exit gate reads
 rendered compose JSON plus `load_config()` against real files — it never reads
