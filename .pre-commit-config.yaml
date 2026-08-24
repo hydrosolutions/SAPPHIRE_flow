@@ -17,6 +17,15 @@
 # docs/plans/070-precommit-and-gate-parity.md for the rationale
 # (auto-fix conflicts with the mandatory bump-my-version commit sequence
 # documented in CLAUDE.md §Version Bumping).
+#
+# default_install_hook_types: a bare `pre-commit install` (no --hook-type
+# flags) now registers pre-commit + pre-push + post-commit, so a NEW clone
+# gets the Plan 200 D4 unpushed-main nudge without needing the long-form
+# command from CLAUDE.md/README.md/AGENTS.md. An EXISTING clone that already
+# ran the old two-type install must still re-run that command once (or
+# `pre-commit install` again) to pick up post-commit -- pre-commit only
+# registers the hook types actually requested at install time.
+default_install_hook_types: [pre-commit, pre-push, post-commit]
 
 repos:
   # ── ruff: lint + format check (fastest; check-only per D8) ──────────────

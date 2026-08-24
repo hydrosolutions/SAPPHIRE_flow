@@ -377,10 +377,17 @@ Notes:
   starts) and again at FINALIZE (before recommending a PR), each checks that the branch
   **contains** the latest plan-changing commit from both `origin/main` and local `main` —
   escalating (no warning, no partial build) only when that commit is absent from the
-  branch **and** the branch's own copy of the plan differs from that ref's version. A
-  failed `git fetch` escalates too, rather than silently comparing against a stale
-  `origin/main`. Escalation returns `escalated: true` with `escalationReason` naming the
-  stale ref(s) — implement.js builds nothing; plan.js edits nothing. This is a build-time
+  branch **and** the branch's actual **worktree** copy of the plan (not the last commit —
+  `plan.js` revises the doc in place without committing mid-loop) differs from that ref's
+  content. A failed `git fetch`, or any other git command erroring rather than returning
+  an expected result (a distinct `checkOk` flag, not the redundant top-level `stale`
+  boolean, is what the caller trusts), escalates too — fail-closed, never a silent compare
+  against stale or absent data. Escalation returns `escalated: true` with `escalationReason` naming the
+  stale ref(s). At PREFLIGHT this means `implement.js` builds nothing and `plan.js` edits
+  nothing; a FINALIZE hit fires **after** implement's round has already committed, or
+  plan's round has already revised the doc in place — that completed work is preserved on
+  the branch, but the run is forced to `NOT-READY` / `NOT PR-READY` rather than being
+  recommended against a spec that moved out from under it mid-run. This is a build-time
   gate; a plain equality check would false-escalate on every `/plan` run, since `/plan`
   edits the plan doc in place by design — the predicate is containment, not equality.
   Separately, a branch merely **behind** `origin/main` (D5) only **warns** with the

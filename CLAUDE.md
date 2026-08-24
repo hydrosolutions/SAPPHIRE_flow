@@ -132,6 +132,14 @@ uv run pre-commit install --hook-type pre-commit --hook-type pre-push --hook-typ
 # registers .git/hooks/pre-commit, .git/hooks/pre-push, .git/hooks/post-commit
 ```
 
+**Upgrading an existing clone:** `pre-commit install` only registers the
+hook types you pass it explicitly. A checkout set up before Plan 200
+(2026-08-24) ran the two-type command and will NOT pick up the new
+`post-commit` hook on its own — re-run the three-type command above once.
+`.pre-commit-config.yaml` also sets `default_install_hook_types` to all
+three now, so a bare `uv run pre-commit install` (no `--hook-type` flags)
+is enough for anyone reinstalling from scratch.
+
 **Hooks run automatically on `git commit` and `git push`**. The
 pre-push hook runs the pyright ratchet because `uv run pyright` takes
 30-60s and must stay out of the fast commit loop; CI is the hard

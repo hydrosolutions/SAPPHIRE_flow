@@ -177,14 +177,34 @@ function codexDiffPrompt(round) {
 // AND the branch's own copy of the plan differs from that ref's version — the
 // signature of a correction the branch never saw, while still allowing edits the
 // branch itself made on top of the latest plan.
-// D3 — fetch origin FIRST; a failed fetch escalates rather than silently comparing
-// against a stale origin/main (an unavailable check must not resemble a passing one).
+//
+// NOTE — this check is pinned to `main`/`origin/main` specifically, INDEPENDENT of
+// `baseBranch` (below): plan docs in this repo are committed directly to `main`, never
+// to a feature `baseBranch` (see CLAUDE.md "Plans direct to main; PRs for code"), so
+// `main` is the only ref a plan correction can land on. `checkBaseBehind`, further
+// down, IS parameterized on `baseBranch` — that check is about the actual diff base,
+// which legitimately can differ from `main`.
+//
+// The content comparison is against the WORKTREE file, never HEAD's committed blob:
+// a fixer/planner round can edit files without an intervening commit, so at FINALIZE
+// the on-disk file can already differ from HEAD. Diffing HEAD's blob against a ref
+// would false-escalate when the worktree independently already matches the ref, and
+// could equally miss real staleness if the worktree drifted from a HEAD that still
+// happens to match the ref.
+//
+// D3 — fetch origin FIRST; a failed fetch, or ANY other git command erroring instead
+// of returning one of its EXPECTED results, fails CLOSED (checkOk=false) rather than
+// silently reading as "not stale" (an unavailable check must not resemble a passing
+// one). `git log -1 -- <path>` returning a SHA does NOT mean the path exists now — a
+// deleted/archived plan still has a deletion commit — so existence is checked with
+// `cat-file -e` against the ref's current tip, not `log`.
 const STALE_PLAN = {
   type: 'object',
-  required: ['fetchOk', 'stale', 'staleRefs'],
+  required: ['fetchOk', 'checkOk', 'stale', 'staleRefs'],
   properties: {
     fetchOk: { type: 'boolean' },
-    stale: { type: 'boolean' },
+    checkOk: { type: 'boolean' }, // false = a git command errored; treat as unverifiable, NOT as "not stale"
+    stale: { type: 'boolean' },   // informational only — the caller derives staleness from staleRefs itself
     staleRefs: { type: 'array', items: { type: 'string' } },
     notes: { type: 'string' },
   },
@@ -192,27 +212,52 @@ const STALE_PLAN = {
 function stalePlanPromptText(stage) {
   return (
     `Check whether the CURRENT branch in repo ${repo} has gone stale against the plan doc at ${planPath}, ` +
-    `at the ${stage} stage of a build. Steps:\n` +
+    `at the ${stage} stage of a build. Throughout, distinguish an EXPECTED git result (empty output, "not an ` +
+    `ancestor", "no diff") from a git COMMAND ERROR (a non-zero exit for any reason OTHER than the one ` +
+    `documented expected-negative below) — a command error means the check could NOT run and MUST fail closed ` +
+    `(checkOk=false), never be read as "not stale". Steps:\n` +
     `1. Run \`git -C ${repo} fetch origin main --quiet\`. If it FAILS (offline/auth/no such remote/etc.), STOP ` +
-    `and return {"fetchOk": false, "stale": false, "staleRefs": [], "notes": "<what failed>"} — do NOT compare ` +
-    `against a possibly-stale origin/main.\n` +
-    `2. For EACH of these two refs — "origin/main" and "main" — find the latest commit on that ref that ` +
-    `touched ${planPath}: \`git -C ${repo} log -1 --format=%H <ref> -- ${planPath}\`. If the file does not ` +
-    `exist on that ref (empty output), SKIP that ref (not stale for it).\n` +
-    `3. Check whether that commit is CONTAINED in the current branch: ` +
-    `\`git -C ${repo} merge-base --is-ancestor <sha> HEAD\` (exit 0 = contained, non-zero = not contained).\n` +
-    `4. If NOT contained, compare content: \`git -C ${repo} diff HEAD:${planPath} <ref>:${planPath}\`. An ` +
-    `EMPTY diff means the branch's copy already matches that ref's content — NOT stale for it (a branch whose ` +
-    `own history already carries an equivalent edit must not false-escalate). A NON-EMPTY diff means that ref ` +
-    `is STALE — record its name ("origin/main" or "main") in staleRefs.\n` +
-    `Return fetchOk=true, stale=(staleRefs is non-empty), staleRefs, and notes explaining what you found ` +
-    `(the SHAs compared, which ref(s) were stale vs current, and why).`
+    `and return {"fetchOk": false, "checkOk": false, "stale": false, "staleRefs": [], "notes": "<what failed>"} ` +
+    `— do NOT compare against a possibly-stale origin/main.\n` +
+    `2. Check whether ${planPath} exists in the CURRENT WORKTREE right now: \`test -f ${repo}/${planPath}\`.\n` +
+    `3. For EACH of these two refs — "origin/main" and "main" — first check whether the plan file exists AT ` +
+    `THAT REF'S CURRENT TIP: \`git -C ${repo} cat-file -e <ref>:${planPath}\` (exit 0 = exists there now, ` +
+    `non-zero = absent there now). Do NOT use \`git log -1 -- <path>\` non-empty output as a proxy for "exists" ` +
+    `— a plan later DELETED or ARCHIVED (e.g. moved to docs/plans/archive/) still has history touching the ` +
+    `path, so \`log\` finds its deletion commit even though the blob is gone at that ref now; only \`cat-file ` +
+    `-e\` tells you whether it exists THERE NOW.\n` +
+    `   - ABSENT at the ref AND ABSENT in the worktree (step 2): consistent, SKIP this ref (not stale for it).\n` +
+    `   - ABSENT at the ref but PRESENT in the worktree: that ref no longer has this plan (likely archived or ` +
+    `moved upstream) while the branch still does — record this ref in staleRefs with a note that it was ` +
+    `removed there; do NOT attempt a content diff against a blob that no longer exists.\n` +
+    `   - PRESENT at the ref: continue to step 4.\n` +
+    `4. Find the latest commit on that ref that touched the file: \`git -C ${repo} log -1 --format=%H <ref> -- ` +
+    `${planPath}\`. Step 3 already confirmed the blob exists at the ref's tip, so this MUST return a SHA; if it ` +
+    `errors or returns empty anyway, that is a COMMAND ERROR — checkOk=false.\n` +
+    `5. Check containment: \`git -C ${repo} merge-base --is-ancestor <sha> HEAD\`. Exit 0 = contained (not ` +
+    `stale for this ref). Exit 1 = NOT contained — this is the EXPECTED negative, not an error; go to step 6. ` +
+    `Any OTHER exit code (e.g. an invalid SHA) is a COMMAND ERROR — checkOk=false.\n` +
+    `6. If NOT contained, compare the ACTUAL WORKTREE FILE — not HEAD's last commit; the current branch may ` +
+    `have UNCOMMITTED edits to the plan — against that ref's content: \`git -C ${repo} diff <ref> -- ` +
+    `${planPath}\`. An EMPTY diff (exit 0, no output) means the worktree copy ALREADY matches that ref's ` +
+    `content — NOT stale for it (a branch whose own working copy already carries an equivalent edit must not ` +
+    `false-escalate), even if the committed HEAD blob differs. A NON-EMPTY diff means that ref is STALE against ` +
+    `what is actually on disk — record its name ("origin/main" or "main") in staleRefs. Plain \`git diff\` (no ` +
+    `--exit-code) exits non-zero ONLY on a real error, never merely for having a diff — so any non-zero exit ` +
+    `here is a COMMAND ERROR — checkOk=false.\n` +
+    `Return fetchOk=true, checkOk=(false if ANY step above hit a command error, true otherwise), ` +
+    `stale=(staleRefs is non-empty) — informational; the caller derives staleness from staleRefs itself, not ` +
+    `from this field — staleRefs, and notes explaining what you found (the SHAs compared, which ref(s) were ` +
+    `stale vs current, and why).`
   )
 }
-// D5 — a stale BASE (the branch is behind origin/main) WARNS and proceeds; it never
-// escalates. A hard refusal fires on essentially every branch (main moves several
-// times a day) and would be disabled within a day — the same failure as a blocking
-// commit hook (D4). This is deliberately weaker than a refusal to a stale PLAN.
+// D5 — a stale BASE (the branch is behind origin/${baseBranch}) WARNS and proceeds; it
+// never escalates. A hard refusal fires on essentially every branch (a base branch
+// moves several times a day) and would be disabled within a day — the same failure as
+// a blocking commit hook (D4). This is deliberately weaker than a refusal to a stale
+// PLAN. Unlike the plan-staleness check above, this IS parameterized on `baseBranch`
+// (default 'main') — it measures drift against the actual branch the diff will be
+// compared to, which the caller may override.
 const BASE_BEHIND = {
   type: 'object',
   required: ['behindCount'],
@@ -220,22 +265,33 @@ const BASE_BEHIND = {
 }
 async function checkBaseBehind(phaseTitle) {
   const baseBehind = await agent(
-    `In repo ${repo}, using the origin/main already fetched, report how many commits origin/main has that the ` +
-    `current branch (HEAD) lacks: \`git -C ${repo} rev-list --count HEAD..origin/main\`. Return behindCount as ` +
-    `a number (0 if the command errors, e.g. no such remote-tracking ref). Do not edit anything.`,
+    `In repo ${repo}, fetch the base branch fresh (\`git -C ${repo} fetch origin ${baseBranch} --quiet\`; if ` +
+    `that fails, proceed with whatever origin/${baseBranch} is already known locally) and report how many ` +
+    `commits origin/${baseBranch} has that the current branch (HEAD) lacks: \`git -C ${repo} rev-list --count ` +
+    `HEAD..origin/${baseBranch}\`. Return behindCount as a number (0 if the command errors, e.g. no such ` +
+    `remote-tracking ref). Do not edit anything.`,
     { label: 'base-behind', phase: phaseTitle, model: 'sonnet', effort: 'low', schema: BASE_BEHIND },
   )
   if (baseBehind && baseBehind.behindCount > 0) {
-    log(`⚠️ WARN — this branch is ${baseBehind.behindCount} commit(s) behind origin/main. Proceeding, but ` +
-        `review against the current diff and run \`git merge origin/main\` before opening the PR.`)
+    log(`⚠️ WARN — this branch is ${baseBehind.behindCount} commit(s) behind origin/${baseBranch}. Proceeding, ` +
+        `but review against the current diff and run \`git merge origin/${baseBranch}\` before opening the PR.`)
   }
   return baseBehind
+}
+// The caller derives staleness itself from fetchOk/checkOk/staleRefs — never trusting
+// the agent-reported `stale` boolean on its own, since a structurally-valid-but-wrong
+// {stale:false} alongside a non-empty staleRefs must still be treated as stale.
+function isPlanStale(check) {
+  return !check || !check.fetchOk || !check.checkOk || !Array.isArray(check.staleRefs) || check.staleRefs.length > 0
 }
 function staleEscalation(check, stage) {
   if (!check || !check.fetchOk) {
     return `plan-staleness check could not run at ${stage} (${check?.notes || 'git fetch failed'})`
   }
-  return `plan at ${planPath} is STALE at ${stage} against ${check.staleRefs.join(', ')}: ${check.notes || ''}`
+  if (!check.checkOk) {
+    return `plan-staleness check hit a git error at ${stage} and produced no trustworthy verdict — treating as stale (${check.notes || 'see notes'})`
+  }
+  return `plan at ${planPath} is STALE at ${stage} against ${(check.staleRefs || []).join(', ')}: ${check.notes || ''}`
 }
 
 phase('Implement')
@@ -269,7 +325,7 @@ const staleAtPreflight = await agent(
   stalePlanPromptText('PREFLIGHT'),
   { label: 'stale-plan-preflight', phase: 'Implement', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
 )
-if (!staleAtPreflight || !staleAtPreflight.fetchOk || staleAtPreflight.stale) {
+if (isPlanStale(staleAtPreflight)) {
   const reason = staleEscalation(staleAtPreflight, 'PREFLIGHT')
   log(`⚠️ ESCALATION — ${reason}. Refusing to build from an unverifiable or superseded spec (PR #201 postmortem).`)
   return {
@@ -552,7 +608,7 @@ const staleAtFinalize = await agent(
   stalePlanPromptText('FINALIZE'),
   { label: 'stale-plan-finalize', phase: 'Finalize', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
 )
-const planWentStale = !staleAtFinalize || !staleAtFinalize.fetchOk || staleAtFinalize.stale
+const planWentStale = isPlanStale(staleAtFinalize)
 if (planWentStale) {
   log(`⚠️ ESCALATION at FINALIZE — ${staleEscalation(staleAtFinalize, 'FINALIZE')}. Do NOT open a PR from this ` +
       `commit — the spec moved out from under it; the work is not lost, it just must not be proposed as-is.`)

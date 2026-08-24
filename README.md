@@ -99,11 +99,17 @@ uv sync
 ```
 
 Then register the pre-commit hooks so lint/format/secret checks run
-on every `git commit` and the pyright ratchet runs before `git push`:
+on every `git commit`, the pyright ratchet runs before `git push`, and
+the unpushed-commits-on-`main` nudge runs after each commit:
 
 ```bash
-uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push --hook-type post-commit
 ```
+
+**Upgrading an existing clone:** if you set this up before 2026-08-24,
+re-run the command above once — `pre-commit install` only registers the
+hook types you pass it explicitly, so an older two-type install will not
+pick up the new `post-commit` hook on its own.
 
 If `pre-commit install` errors with `Cowardly refusing to install hooks
 with core.hooksPath set`, run `git config --unset-all core.hooksPath`
