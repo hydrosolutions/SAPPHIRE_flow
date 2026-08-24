@@ -20,6 +20,7 @@ module implements the MEASURED, corrected mapping only.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import timedelta
@@ -144,7 +145,13 @@ def _trace_series(
         .select(["valid_time", "value"])
         .iter_rows()
     )
-    return [(ensure_utc(vt), val) for vt, val in rows]
+    # A non-finite parquet value is missing data, not a number: `None` is
+    # how this contract represents that, and letting NaN/inf through would
+    # emit an invalid JSON token (AC5).
+    return [
+        (ensure_utc(vt), val if val is not None and math.isfinite(val) else None)
+        for vt, val in rows
+    ]
 
 
 def _split_percentile_band(

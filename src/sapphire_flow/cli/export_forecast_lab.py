@@ -110,7 +110,12 @@ def _write_atomically(output_path: Path, payload: dict[str, object]) -> None:
     )
     tmp_path = output_path.with_name(f".{output_path.name}.tmp")
     try:
-        tmp_path.write_text(json.dumps(payload, indent=2))
+        # allow_nan=False: json.dumps would otherwise emit bare NaN/Infinity
+        # tokens, which are invalid JSON and which jsonschema.validate above
+        # does NOT reject. Sources are sanitised upstream, so this is a
+        # last-line guard that fails loudly instead of shipping a file the
+        # consumer cannot parse.
+        tmp_path.write_text(json.dumps(payload, indent=2, allow_nan=False))
         os.replace(tmp_path, output_path)
     except BaseException:
         tmp_path.unlink(missing_ok=True)

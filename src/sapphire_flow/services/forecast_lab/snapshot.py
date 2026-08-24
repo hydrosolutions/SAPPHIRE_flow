@@ -95,9 +95,19 @@ def _verification_sentinel() -> VerificationSchema:
 
 def _quantile_summary(
     values: np.ndarray,  # type: ignore[type-arg]
-) -> tuple[float, float, float, float, float]:
+) -> tuple[float | None, float | None, float | None, float | None, float | None]:
     """D5 — linear-interpolation quantiles, matching
-    `numpy.quantile(..., method="linear")`."""
+    `numpy.quantile(..., method="linear")`.
+
+    Non-finite members (NaN/inf) are dropped first. Postgres `double
+    precision` permits both, and one such member would otherwise poison
+    every summary for that valid_time and emit a bare `NaN`/`Infinity`
+    token into the JSON — invalid per RFC 8259 and a breach of AC5. A
+    valid_time with no finite member summarises as all-`null`, which is
+    how the contract already represents a missing numeric."""
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None, None, None, None, None
     minimum = float(np.min(values))
     p25 = float(np.quantile(values, 0.25, method="linear"))
     median = float(np.quantile(values, 0.5, method="linear"))

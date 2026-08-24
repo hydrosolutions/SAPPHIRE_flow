@@ -27,6 +27,7 @@ import pytest
 from sapphire_flow.api.forecast_lab_schemas import (
     BafuForecastAvailableSchema,
     ForecastLabSnapshot,
+    QuantileEnvelopeSchema,
     SapphireForecastAvailableSchema,
     SapphireForecastUnavailableSchema,
 )
@@ -814,3 +815,87 @@ class TestMultiStationSourceStatusAggregation:
         by_code = {s.station.code: s for s in snapshot.stations}
         assert by_code["2009"].availability.bafu_forecast is True
         assert by_code["2016"].availability.bafu_forecast is False
+
+
+class TestNonFiniteValuesNeverReachTheJson:
+    """AC5 — every numeric leaf is a JSON number or `null`, never `NaN` or
+    `Infinity`.
+
+    The pre-existing AC5 test only re-reads the committed fixture, which by
+    construction holds no non-finite value, so it could not catch this.
+    Postgres `double precision` accepts NaN and Infinity, and so does a
+    parquet float column, meaning both real sources can deliver one. Before
+    the fix, a single non-finite member poisoned every summary at that
+    valid_time and `json.dumps` wrote bare `NaN`/`Infinity` tokens — invalid
+    per RFC 8259 and unparseable by a strict consumer."""
+
+    def test_non_finite_ensemble_members_are_dropped_not_propagated(self) -> None:
+        from sapphire_flow.services.forecast_lab.snapshot import _quantile_summary
+
+        summary = _quantile_summary(np.array([10.0, float("nan"), 20.0, float("inf")]))
+        assert summary == (10.0, 12.5, 15.0, 17.5, 20.0)
+        for leaf in summary:
+            assert leaf is None or np.isfinite(leaf)
+
+    def test_all_non_finite_members_summarise_as_all_null(self) -> None:
+        from sapphire_flow.services.forecast_lab.snapshot import _quantile_summary
+
+        assert _quantile_summary(np.array([float("nan"), float("inf")])) == (
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    def test_sanitised_summary_serialises_to_strictly_parseable_json(self) -> None:
+        # The exact CLI path (model_dump(mode="json") -> json.dumps) over
+        # values that came through _quantile_summary, which is the only
+        # producer of these numerics.
+        from sapphire_flow.services.forecast_lab.snapshot import _quantile_summary
+
+        minimum, p25, median, p75, maximum = _quantile_summary(
+            np.array([10.0, float("nan"), 20.0, float("inf")])
+        )
+        envelope = QuantileEnvelopeSchema(
+            valid_time=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+            minimum=minimum,
+            p25=p25,
+            median=median,
+            p75=p75,
+            maximum=maximum,
+        )
+        rendered = json.dumps(envelope.model_dump(mode="json"), allow_nan=False)
+
+        def _reject(token: str) -> float:
+            raise AssertionError(f"non-finite token {token!r} reached the JSON")
+
+        json.loads(rendered, parse_constant=_reject)
+
+    def test_cli_write_guard_raises_rather_than_emitting_invalid_json(
+        self, tmp_path: Path
+    ) -> None:
+        """Last-line guard, exercised through the real writer rather than
+        asserted on its source text: if a non-finite ever slips past the
+        source sanitisers, `_write_atomically` must fail loudly and leave no
+        file, not write one the consumer cannot parse. `jsonschema.validate`
+        does NOT reject non-finite floats, so it cannot catch this."""
+        from sapphire_flow.cli.export_forecast_lab import _write_atomically
+
+        fixture = (
+            Path(__file__).resolve().parents[4]
+            / "tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json"
+        )
+        payload = json.loads(fixture.read_text())
+        # Poison one numeric leaf, leaving the document structurally valid so
+        # the schema check upstream of the write still passes.
+        poisoned = payload["stations"][0]["observations"]["points"][0]
+        assert isinstance(poisoned["value"], float | int)
+        poisoned["value"] = float("nan")
+
+        out = tmp_path / "snapshot.json"
+        with pytest.raises(ValueError, match="Out of range float"):
+            _write_atomically(out, payload)
+
+        assert not out.exists()
+        assert list(tmp_path.iterdir()) == []
