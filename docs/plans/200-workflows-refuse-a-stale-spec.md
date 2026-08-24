@@ -15,6 +15,12 @@ source: PR #201 post-mortem; worktree-hygiene incidents 2026-08-20/21/24
 
 **DRAFT.** Not for implementation until the owner confirms.
 
+**⚠️ ROOT CAUSE CORRECTED 2026-08-24 (third revision).** A separate verification pass disproved this
+plan's own diagnosis: the marker was implemented at **17:41**, before the 18:14 review, so the build did
+NOT start from a stale plan. The real cause is a post-start, local-only correction that never reached
+the running branch. **Consequence: a preflight-only gate would not have caught it**, so T1 now runs at
+finalize too.
+
 **Independent Codex review 2026-08-24 — 1 blocker, 2 majors, minors clean; all VERIFIED AND FOLDED.**
 The blocker: D1's equality predicate would false-escalate on every `/plan` run, since `/plan` edits the
 plan doc by design. The majors: D5's hard stop would not have prevented its own example and cannot be
@@ -29,21 +35,35 @@ plan faithfully; the plan was an hour stale.
 branch protection. Reviewers: "no findings" is a complete review; a finding must name a concrete
 failure, not a missing feature. Adding scope is a cost.
 
-## The failure, measured
+## The failure, measured — and the root cause CORRECTED
 
-**Plan 194 shipped a file the owner's review had already rejected.**
+**Plan 194 shipped a file the owner's review had already rejected.** This plan's first two drafts each
+named a different cause; both were wrong, and an independent review with timestamps settled it.
 
 | Time (2026-08-20) | Event |
 |---|---|
-| 17:11 | worktree `sapphire-p194` cut from `main` at `e815776` |
-| 18:14 | owner's hand review committed to `main` as `8302dd1` — *"drop the marker"* |
-| later | `/implement` built from the worktree's **17:11** copy and shipped `.backup-volume-unverified.json` |
-| 2026-08-21 | PR #201 removed it: written, gitignored, documented, tested — and **read by nothing** |
+| 17:12 | worktree `sapphire-p194` created from `e815776` |
+| **17:41** | **the marker is implemented** (`26552a5`) — the plan it was built from was **CURRENT** |
+| 18:14 | owner's hand review authored — *"drop the marker"* — committed **locally only** |
+| 19:42 | the branch merges `origin/main` (`c88f92e`) — which does **not** contain the review |
+| 2026-08-21 09:11 | Plan 194 merges as `357386b`, marker included |
+| 2026-08-21 | PR #201 removes it: written, gitignored, documented, tested — **read by nothing** |
 
-`implement.js:175` reads the plan from `${repo}` — the worktree — and checks only that its status is
-`READY`. Nothing checks whether that copy is still **current**. The review was also never pushed, which
-removed the second chance to notice, but the root cause is narrower and fixable: **the workflow trusted
-a snapshot of its own specification.**
+**Verified independently.** `26552a5` is dated 17:41 and the review 18:14, so `/implement` did **not**
+begin from a stale plan — the plan was current when the work was done. (The review's committer
+timestamp reads 2026-08-21 09:14 only because a next-day rebase rewrote `f7d6a36` into `8302dd1`.)
+
+**The real root cause: a spec correction made AFTER the build started, and never pushed, could not
+reach the running branch before it merged.** Not "the worktree was cut too early", and not "an agent
+ignored the plan" — the agent followed the plan version it had, faithfully.
+
+**⚠️ This kills a start-only gate.** A preflight check would have passed at 17:12 and again at 17:41,
+because nothing was stale yet. **The check must also run at FINALIZE** — before the branch is committed
+for PR — where local `main` has carried the correction since 18:14. That is the only moment at which
+this failure was detectable inside the workflow.
+
+`implement.js:176` reads the plan from `${repo}` and checks only that its status is `READY`.
+`plan.js` has **no preflight at all** (`grep -c preflight` → 0).
 
 `plan.js` has **no preflight at all** (`grep -c preflight` → 0).
 
@@ -94,15 +114,19 @@ long task, is not a control.
 
 ## Tasks
 
-### T1 — preflight staleness gate in `implement.js` and `plan.js`
+### T1 — staleness gate at PREFLIGHT **and FINALIZE** in `implement.js` and `plan.js`
 
 *In:* `.claude/workflows/implement.js`, `.claude/workflows/plan.js`.
 
-Beside the existing status preflight in `implement.js` (`:170-189`), add two checks: the plan file's
-content in `${repo}` matches both refs (D1), and the working branch is not behind `origin/main` (D5) —
-fetching first (D3). On mismatch, return the standard
-escalation shape with a reason naming **which** ref differs and the file. `plan.js` gets the same gate;
-it has no preflight today, so this is its first.
+Beside the existing status preflight in `implement.js` (`:170-189`), add the D1 containment check
+(fetching first, D3) and the D5 behind-warning. `plan.js` gets the same gate; it has no preflight today.
+
+**And run the same D1 check again at FINALIZE, before the run commits for PR.** *(Added after the root
+cause was corrected — a preflight-only gate would NOT have caught Plan 194, because nothing was stale
+when the build started.)* The correction landed on local `main` at 18:14, an hour into the run; the
+finalize check is the only point where the workflow could still have seen it. On mismatch there,
+escalate **without opening the PR** and say which ref moved — the work is not lost, it just must not be
+proposed against a superseded spec.
 
 **Red-first:** a test that fails when the workflow proceeds with a modified plan copy. If these scripts
 have no test harness, state that plainly in the PR rather than inventing one — do not build a JS test
