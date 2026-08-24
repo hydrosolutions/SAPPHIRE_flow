@@ -13,8 +13,9 @@ source: SAPPHIRE-flow-map integration request 2026-08-21; grounded in the Flow M
 
 ## Status
 
-**DRAFT — no blockers open; five non-blocking owner forks remain (O1, O3, O4, O5, O6), each with a
-recommendation and a working default.** The one blocker, **O7**, was resolved by the owner on
+**DRAFT — no review blockers open. Five owner forks remain (O1, O3, O4, O5, O6); each has a
+recommendation and a working default, so none of them blocks further *review*, but all of them
+block **READY** — they are the human's to answer.** The one blocker, **O7**, was resolved by the owner on
 2026-08-21: verification (T4) is **cut**, and the raw BAFU export **proceeds**, recorded as an
 Export extension in Plan 111.
 
@@ -28,8 +29,18 @@ before folding; four of them corrected *this plan's own* measured facts (F1, F6,
 | 1 | 3 | **1 of 3** | 2 blockers + 12 majors, all folded (the one Codex round found the most) |
 | 2 | 2 | 0 of 2 | 3 majors + 2 minors, all folded — every one cut scope |
 | 3 | 2 | 0 of 2 | 2 majors + 2 minors, all folded (D19, D20 + two trims) |
+| **direct** | — | **1 (manual `codex exec`)** | **8 errors + 9 inconsistencies + 1 blocking gap, all folded** |
 
-**⚠️ Across 7 rounds the independent Codex reviewer produced exactly ONE verdict.** Every other
+**✅ The missing independent review has now been done — outside the workflow.** A direct
+`codex exec --sandbox read-only … < /dev/null` pass on 2026-08-21, scoped by the owner to *errors
+and consistency only, no engineering expansion*, returned a full verdict in ~8 minutes. It found
+**8 factual/citation errors, 9 internal inconsistencies and 1 blocking gap** — the gap being that
+the plan had **no authoritative v1 document shape**, so T1 had no input. All are folded, and the
+shape is now § The v1 document shape. It also CONFIRMED ~18 substantive claims, including the F3
+polygon orientation and the F4 envelope mapping against the checked-in fixture. **This satisfies the
+`CLAUDE.md` independent-review floor; the workflow rounds do not, on their own.**
+
+**⚠️ Across the 7 workflow rounds the independent Codex reviewer produced exactly ONE verdict.** Every other
 round was Claude lenses only. `.claude/workflows/{plan,implement}.js` invoked `codex exec` without
 `< /dev/null`, which makes the CLI block on stdin; both are now fixed — **but that fix is unproven
 and has never run**, because `Workflow({name: …})` resolves from a session-start registration
@@ -202,7 +213,7 @@ non-empty. There is no `GZipMiddleware`. See D11.
 
 `pyproject.toml:59-60` declares exactly one script (`check`). Every operational CLI is invoked as
 `python -m sapphire_flow.cli.<module>` (`docs/conventions.md:76`,
-`docs/plans/071-...:349`). `cli/bafu_observation_audit.py` is the existing archive-reading CLI and
+`docs/plans/071-weather-history-meteoswiss-reanalysis.md:349`). `cli/bafu_observation_audit.py` is the existing archive-reading CLI and
 is the pattern to mirror.
 
 ---
@@ -267,8 +278,12 @@ forecasts on the mini are `members` (verified), so quantile support is not built
 **D6 — BAFU normalization is derived and self-checked, never hardcoded.** Split at
 `half = (n-1)//2`, drop the closing vertex, reverse the backward half, then **assert the two half
 series carry identical ascending `valid_time` sequences and that they match the `Median` trace's
-valid times**. Any mismatch → the run is emitted with `available: true` plus an explicit
-`quality_flags` entry, not silently reshaped. Same for the monotonicity check
+valid times**. **Two outcomes, distinguished — D13 depends on the split.** If the halves still reconstruct
+(mismatch is in the *values*, e.g. non-monotonic), the run is emitted with `available: true` plus an
+explicit `quality_flags` entry, never silently reshaped. If the geometry is **unreconstructable**
+(the halves' `valid_time` sequences do not correspond, so there is no defensible p25/p75 series at
+all), the run is not emitted: that station's `bafu_forecast` is `available: false`, reason
+`"parse_error"`, and the source status degrades per D13. Same for the monotonicity check
 (`minimum <= p25 <= median <= p75 <= maximum`): retain source values, add a flag.
 
 **D7 — Station metadata: real or `null`, never approximated.** `code`, `name`, `location`
@@ -280,8 +295,11 @@ archiving to the collector so they stop being null within one hour of deploy.
 `404`; a stationless principal gets an empty `200`. This route introduces no new status code.**
 The repo-wide Plan 147 R2 mechanism is `api/security.py:230-233`, whose docstring reads
 "404 (not 403) on an out-of-scope station — R2: do not reveal existence of stations outside the
-caller's scope", and every station-scoped route uses it (`api_forecasts.py:95`,
-`api_stations.py:185,242,269`). This route does the same for **explicitly requested** codes that
+caller's scope", and the station-path/detail routes use it (`api_forecasts.py:95`,
+`api_stations.py:185,242,269`). *(Not universal: `api_alerts.py:86` calls
+`principal.station_in_scope` directly and returns an empty `200` — a query-filter route, not a
+station-path route. This plan follows the station-path pattern.)* This route does the same for
+**explicitly requested** codes that
 are unknown or out of scope: `404 Station not found`.
 
 **⚠️ `ensure_station_in_scope` alone is NOT sufficient, and an earlier draft of D8 was wrong to
@@ -317,7 +335,7 @@ already have a vocabulary for.
 `requested_but_unavailable` list — with `404` on any out-of-scope code, nothing would populate it.)*
 
 **D9 — `422` for invalid query parameters,** via FastAPI-native `Query(..., ge=, le=)`. Sibling
-routes return `400` from `_parse_enum` (`api/routes/api_stations.py:127`); this route is new, the
+routes return `400` from `_parse_enum` (`api/routes/api_stations.py:133-141`); this route is new, the
 request specifies 422, and 422 is what FastAPI produces without custom code. Documented as an
 intentional local difference.
 
@@ -342,8 +360,11 @@ also report a "last known successful issue time". That field cannot be populated
 structural rather than incidental: D14 fetches via `fetch_latest_forecast()`
 (`store/forecast_store.py:124-139`), which returns the most recent forecast a model ever produced
 for a station **regardless of age** and yields `None` only when the model has produced *none at
-all*. So an entry is unavailable exactly when no successful issue time exists — if one existed the
-call would have returned it and the entry would not be unavailable. Implementing the field would
+all*. There are therefore exactly two unavailable causes, and neither wants the field: for
+`"no_forecast"` no successful issue time exists at all; for `"unsupported_representation"` (D5) one
+does exist, but the entry is unavailable because the forecast cannot be *summarised*, and reporting
+a "last successful" time for a forecast we are actively refusing to render would be misleading.
+Either way the entry carries `reason` and nothing else, keeping one shape for both causes. Implementing the field would
 mean either a second historical query per unavailable model (new query surface D14 explicitly rules
 out) or a column that is always `null` (dead schema, rule 6). It was a leftover from the staleness
 concept D16 removed. **Cut.**
@@ -355,13 +376,17 @@ already take `clock: Callable[[], UtcDatetime]` (`flows/run_hindcast.py:48`,
 `preprocessing/converters.py:43`, and so on). The requirement bites harder here than usual because
 D10 derives `snapshot_id` **from `generated_at`**, so a bare `datetime.now(UTC)` inside
 `build_snapshot()` would make both the timestamp *and* the identifier untestable in one stroke.
-`build_snapshot(clock=...)` is therefore part of T3's signature; T5 injects the real clock the way
-sibling routes do and T6 defaults to the same. T1's `generated_at` field types as `UtcDatetime` to
+`build_snapshot(clock=...)` is therefore part of T3's signature; T5 and T6 pass the real clock in.
+**Note this is a NEW pattern at the route boundary, not a copy of a sibling:** no existing route
+injects a clock — `api_stations.py:270`, `health.py:41` and `security.py:204` all call
+`datetime.now(UTC)` directly. The 62 call sites are in `flows/`, `adapters/` and `preprocessing/`.
+The rule still binds (the assembly service is business logic, and `snapshot_id` derives from the
+timestamp), but T5 should expect to introduce the wiring rather than copy it. T1's `generated_at` field types as `UtcDatetime` to
 match. Tested by AC27 — a frozen clock yields a byte-identical document across two builds.
 
 **D18 — `include_verification` is dropped entirely.** *(Rule 6, applied to this plan's own
 leftovers.)* The request specified the flag, and it earned its place while T4 existed: it gated an
-expensive computation. With T4 cut (O7.1) `verification` is a static three-field sentinel that
+expensive computation. With T4 cut (O7.1) `verification` is a static four-field sentinel (status, window, method version, limitations — D3) that
 costs nothing to emit, so the flag would only toggle whether a free constant object appears in the
 JSON — a distinction the single consumer has no reason to exercise, with no acceptance criterion
 covering it, propagating a branch into three places (`build_snapshot()`, a query parameter, a CLI
@@ -398,12 +423,13 @@ rather than discovered:** observations and SAPPHIRE forecasts share one request-
 transaction (`api/deps.py`). Catching a failed statement does **not** repair an aborted PostgreSQL
 transaction — every later query in that request fails too. Therefore: **`SQLAlchemyError` and
 connection failures are whole-snapshot failures and must escape to `500`**; only non-poisoning
-failures (archive file missing or unparseable, trace-geometry mismatch, domain validation) degrade
-to a partial snapshot. No savepoints — that is machinery this MVP does not need (proportionality
+failures (archive file missing or unparseable, **unreconstructable** trace geometry per D6, domain
+validation) degrade to a partial snapshot. A *reconstructable* mismatch is not a failure at all — it
+is an available run carrying a `quality_flags` entry (D6), and it does not touch source status. No savepoints — that is machinery this MVP does not need (proportionality
 rule 5). `500` also covers config missing.
 
 **D14 — Latest-forecast fetching reuses the existing store method; no query-count contract.**
-`ForecastStore.fetch_latest_forecast()` already exists (`store/forecast_store.py:123-138`) and
+`ForecastStore.fetch_latest_forecast()` already exists (`store/forecast_store.py:124-139`) and
 returns the latest forecast per `(station_id, model_id, parameter)`. T2b calls it in a small loop
 over the assigned `(station, model)` pairs. At the scope this plan is capped to — **two stations**,
 a handful of models — that is a handful of trivial indexed queries on a once-per-request LAN
@@ -420,7 +446,10 @@ Two lookups in this plan default wider than the MVP claims, and both must be con
 (a) `fetch_all_stations()` filters only on `kind` (`store/station_store.py`), so an unfiltered
 request under an **admin** token would sweep every station in every status — the eligible set is
 therefore **`network='bafu'` AND `station_kind='river'` AND `station_status='operational'`**,
-applied *before* principal scoping, matching what the forecast cycle already does. A bare
+applied *before* principal scoping. This matches the forecast cycle's **kind and status**
+restrictions (`run_forecast_cycle.py:2074-2078` fetches `kind=RIVER` then filters
+`StationStatus.OPERATIONAL`) and **adds** the BAFU-network restriction, which the cycle does not
+apply. A bare
 `station_code` is resolved against the canonical `bafu` network, because
 `fetch_station_by_code(code, network)` requires both and `(network, code)` is the uniqueness
 constraint. **The eligibility filter must run on that path too, not only on the list-all sweep** —
@@ -461,6 +490,130 @@ have to re-encode.)*
 
 ---
 
+## The v1 document shape (authoritative)
+
+**This section exists because the plan previously did not contain one, and T1 therefore had no
+input** (found by the independent Codex review, 2026-08-21: *"the actual v1 JSON contract is
+absent"*). The integration request proposed a shape; the decisions above then modified it in a dozen
+places. What follows is that shape **as reconciled with every D-number** — the single artifact T1
+turns into Pydantic models. Where a decision changed the request, the decision wins and is cited
+inline. Field-level nullability rules live with the decisions, not repeated here.
+
+```json
+{
+  "schema_version": "forecast-lab-snapshot/v1",
+  "snapshot_id": "fls1-20260821T104500Z",
+  "generated_at": "2026-08-21T10:45:00Z",
+  "data_cutoff_at": "2026-08-21T10:40:00Z",
+  "status": {
+    "overall": "ok",
+    "observations":       { "status": "ok", "latest_available_at": "2026-08-21T10:40:00Z", "message": null },
+    "bafu_forecasts":     { "status": "ok", "latest_available_at": "2026-08-21T03:00:00Z", "message": null },
+    "sapphire_forecasts": { "status": "ok", "latest_available_at": "2026-08-21T06:00:06Z", "message": null }
+  },
+  "comparison_semantics": {
+    "variable": "discharge",
+    "unit": "m3/s",
+    "display_run_rule": "latest available run from each source",
+    "daily_aggregation": "UTC mean over [day_start, next_day_start)",
+    "bafu_daily_completeness_minimum": 22,
+    "observation_daily_completeness_minimum": 130,
+    "sapphire_quantile_method": "linear"
+  },
+  "stations": [
+    {
+      "station": {
+        "code": "2009", "network": "bafu",
+        "name": "Porte_du_Scex", "display_name": null, "river": null,
+        "location": { "longitude": 6.89, "latitude": 46.35, "crs": "EPSG:4326" },
+        "basin_area_km2": 5239.4, "active": true
+      },
+      "availability": { "observations": true, "bafu_forecast": true, "sapphire_forecast": true },
+      "observations": {
+        "variable": "discharge", "unit": "m3/s", "native_step_seconds": 600,
+        "window_start": "2026-08-14T10:40:00Z", "window_end": "2026-08-21T10:40:00Z",
+        "latest_available_at": "2026-08-21T10:40:00Z",
+        "points": [ { "valid_time": "2026-08-21T10:40:00Z", "value": 293.67, "qc_status": "qc_passed" } ]
+      },
+      "bafu_forecast": {
+        "available": true, "source": "bafu", "source_product": "hydrodaten_plot",
+        "station_code": "2009", "variable": "discharge", "unit": "m3/s",
+        "run_id": "2009_q_forecast_20260821T030000Z",
+        "issued_at": "2026-08-21T03:00:00Z",
+        "inventory_produced_at": "2026-08-21T05:58:09Z",
+        "licence_status": "unresolved",
+        "native_step_seconds": 3600,
+        "horizon_start": "2026-08-21T03:00:00Z", "horizon_end": "2026-08-26T00:00:00Z",
+        "point_count": 118,
+        "quality_flags": [],
+        "points": [ { "valid_time": "2026-08-21T03:00:00Z",
+                      "minimum": 315.1, "p25": 315.1, "median": 315.1, "p75": 315.1, "maximum": 315.1 } ]
+      },
+      "sapphire_forecasts": [
+        {
+          "available": true, "source": "sapphire",
+          "forecast_id": "6a8f4412-d3fa-4d2e-928b-523707eb6067",
+          "model": { "key": "nwp_regression", "display_name": "Nwp Regression",
+                     "artifact_id": "8b37b548-32a4-4c20-871c-22bf97797fd3",
+                     "artifact_sha256": "<sha256>", "code_or_image_version": null,
+                     "is_primary": true },
+          "variable": "discharge", "unit": "m3/s",
+          "issued_at": "2026-08-21T06:00:06Z",
+          "observation_staleness_hours": 0.2766,
+          "native_step_seconds": 86400, "ensemble_size": 21,
+          "horizon_start": "2026-08-22T00:00:00Z", "horizon_end": "2026-08-26T00:00:00Z",
+          "points": [ { "valid_time": "2026-08-22T00:00:00Z",
+                        "minimum": 287.03, "p25": 287.36, "median": 287.85, "p75": 288.16, "maximum": 288.96 } ]
+        },
+        { "available": false, "model": { "key": "nwp_rainfall_runoff" }, "reason": "no_forecast" }
+      ],
+      "aligned_daily_comparison": [
+        {
+          "day_start": "2026-08-22T00:00:00Z", "day_end": "2026-08-23T00:00:00Z",
+          "observation": { "value": null, "sample_count": 0, "complete": false },
+          "bafu": { "minimum": 265.0, "p25": 272.0, "median": 280.0, "p75": 291.0,
+                    "maximum": 305.0, "hour_count": 24, "complete": true },
+          "sapphire": { "nwp_regression": { "minimum": 287.03, "p25": 287.36, "median": 287.85,
+                                            "p75": 288.16, "maximum": 288.96, "complete": true } }
+        }
+      ],
+      "verification": {
+        "status": "insufficient_data",
+        "window_start": null, "window_end": null,
+        "method_version": "forecast-comparison/v1",
+        "limitations": [
+          "Verification is not computed in v1 (Plan 111 gate G1 — no BAFU-derived benchmark before licence clarity).",
+          "Only two operational SAPPHIRE stations.",
+          "Short comparison period."
+        ]
+      }
+    }
+  ]
+}
+```
+
+**Deltas from the integration request, each owned by a decision** — an implementer reading the
+request alone would get these wrong:
+
+| Request said | v1 says | Owner |
+|---|---|---|
+| `fetched_at` | `inventory_produced_at`, no fetch clock exists | F8, Dev 11 |
+| percentile first half → `p75` | first half → **`p25`** | F3 |
+| `nwp_cycle_reason: "too_recent"` | **no `provenance` block at all** — `nwp_cycle_reason` is not persisted (F5) and the remaining two fields are not worth a nested object for one consumer (rule 6) | F5 |
+| `code_or_image_version` | `source_commit` when present, else `null` (0 rows today) | F6 |
+| `verification.models[]`, `bafu_pairing_rule` | absent — the sentinel carries no metrics and no pairing rule, because none is computed | D3, O7.1 |
+| `include_verification` param | dropped | D18 |
+| `station.river` / `display_name` | `null` until T9 | D7, F7 |
+| `sapphire` as row-per-model | keyed object by `model_key` | D4 |
+| ETag / `Last-Modified` / `304` | none | D10 |
+
+**The example above is illustrative, not the fixture.** T1 produces the committed fixture from real
+data; the `bafu` daily-aggregate numbers here are plausible placeholders (no server-side daily
+aggregation exists yet to have measured them), and every other value is drawn from the audit's real
+records. AC1 validates the *committed fixture* against the generated schema — not this block.
+
+---
+
 ## Owner decisions required (blocking READY)
 
 **O1 — Widen the archive mount to the API container?** D2 mounts `bafu_forecast_archive` read-only
@@ -495,10 +648,10 @@ was raised by the independent Codex review and **verified against the plan text*
 
 - *"The scoring half … stays **BLOCKED on external gate G1**: no benchmark can be **computed** or
   published until the BAFU request … returns"* (`111:3-6`), and among its non-goals:
-  *"the collector may archive; the ***scorer*** and the paper stay gated"* (`111:563`).
+  *"the collector may archive; the ***scorer*** and the paper stay gated"* (`111:566-569`).
   **T4 computes a benchmark. This is a direct conflict, not a judgement call.**
 - The quarantine's stated property is that *"a single `rm -rf` of that directory discards the whole
-  archive"* (`111:12-16`). Exported snapshots are copies that a `rm` of the volume no longer
+  archive"* (`111:17-20`). Exported snapshots are copies that a `rm` of the volume no longer
   reaches — a weakening of the discard guarantee the owner accepted, whatever the payload says.
   `licence_status: "unresolved"` (O6) documents the constraint; it does not lift it.
 
@@ -525,10 +678,67 @@ travel with the data.
 
 ## Phases and tasks
 
+### Phase 0 — deployment wiring (no dependencies; runs first)
+
+**T7 — Compose wiring.** `docker-compose.yml` (`api`: `SAPPHIRE_CONFIG`, `bafu_forecast_archive`
+`:ro`) **and `docker-compose.macmini.yml` (`api`: `SAPPHIRE_CONFIG_OVERLAY` plus the read-only
+overlay-file mount)**. An earlier draft claimed the mini overlay needed no edit because its `api`
+override is `ports` only — true for the *volume*, wrong for the *path*: the archive path is declared
+only in `config/overlays/mac-mini.toml`, so without the overlay the gate resolves to `None` and the
+route reports the archive missing with the volume correctly mounted (D2).
+**Under O1 = no (D2-alt), T7 shrinks rather than disappearing:** the `api` archive mount is *not*
+added, and assertion (a) below drops its mount clause — but `SAPPHIRE_CONFIG` and
+`SAPPHIRE_CONFIG_OVERLAY` on `api` are still required, because the route must resolve the archive
+path far enough to report `"archive not mounted"` deliberately rather than crash. Assertion (b) is
+unchanged. The dependency graph is unchanged either way.
+*Scope (out):* ports, TLS, `SAPPHIRE_DOMAIN`, CORS, any other service.
+*Exit:* `uv run pytest tests/unit/deploy/test_compose_forecast_lab_api_mount.py` — a **committed**
+regression test, not an inline heredoc, so the plan's own `uv run pytest` gate covers it and a later
+PR cannot silently drop the mount. It mirrors the existing sibling
+`tests/unit/deploy/test_compose_ingest_bafu_observation_mount.py`, which asserts a worker's archive
+mount against the **rendered** configuration (`docker compose -f … config --format json`, skipping
+when the `docker` CLI is absent) — the same mechanism, one service over. It asserts, on the base
+file merged with `docker-compose.macmini.yml`, that the `api` service (a) mounts
+`bafu_forecast_archive` at `/data/bafu_forecasts` read-only, (b) has
+`SAPPHIRE_CONFIG=/app/config.toml`, and (c) has `SAPPHIRE_CONFIG_OVERLAY` plus the overlay mount.
+All three are **false on today's repo** (F1, F2) and true only once this task's edit lands.
+
+**The mount test is necessary but not sufficient** — it proves the file is reachable, not that the
+*path* resolves. Without a second assertion the suite can go green while the endpoint returns
+"archive not mounted" forever. But that assertion **cannot** be written the obvious way: feeding the
+rendered container environment straight into `load_config()` from a host-run pytest raises
+`FileNotFoundError` (`config/_overlay.py:36-38` — `/app/config.toml` does not exist on the host),
+which fails identically whether or not the compose wiring is right, so it would confirm nothing.
+No existing test under `tests/unit/deploy/` demonstrates a pattern for this, so T7 spells it out as
+**two separate assertions**:
+
+- **(a) Wiring — string comparison over the rendered JSON, no config loading.** On the base file
+  merged with `docker-compose.macmini.yml`, the `api` service's environment has
+  `SAPPHIRE_CONFIG == "/app/config.toml"` and
+  `SAPPHIRE_CONFIG_OVERLAY == "/app/config/overlays/mac-mini.toml"`, and both files are mounted
+  read-only at exactly those targets. **False on today's repo** (F1, F2) — this is the red half.
+- **(b) Path derivation — `load_config()` against the REAL repo-relative files**, with the overlay
+  env var pointed at the repo copy rather than the container path, asserting that
+  `bafu_forecast_archive_path` resolves to the archive mount point. This is sound because the
+  overlay declares that path as a **literal container-absolute string**
+  (`config/overlays/mac-mini.toml:8`) while base `config.toml` has no `[adapters.bafu_forecast]`
+  section at all — so the value a host-run test derives is the value the container derives, with no
+  `${SAPPHIRE_*}` interpolation in play (`config/deployment.py:388-403`; `config.toml` contains no
+  `${…}` references, verified). Verified 2026-08-21 that it resolves today and yields `None` when the
+  overlay is dropped. *(The exact `monkeypatch` calls and literal path values belong in the test,
+  not here — same policy F3 applies to itself: values rot in a plan, assertions do not.)*
+
+(b) is therefore **green on today's repo** and is a guard, not a red-first assertion: (a) catches
+the compose wiring being wrong or later removed, (b) catches the overlay's path declaration being
+removed or renamed. Neither alone closes the gap. Plus a documented redeploy procedure;
+**verification on the mini is a separate, owner-scheduled step.**
+
 ### Phase 1 — contract
 
 **T1 — Snapshot models, generated JSON Schema, example fixture.**
-*Scope (in):* Pydantic v2 boundary models for the whole document in
+*Scope (in):* Pydantic v2 boundary models for the document shape given in **§ The v1 document
+shape (authoritative)** — that section is T1's input; do not re-derive the shape from the
+integration request, which differs in nine places listed there. Models live in
 `api/forecast_lab_schemas.py`; `docs/spec/forecast-lab-snapshot-v1.schema.json` generated from
 them; a sanitized two-station example at
 `tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json`.
@@ -542,6 +752,8 @@ them; a sanitized two-station example at
 *Scope (in):* newest `q_forecast` run per station code within a window; the derived,
 self-checked trace normalization of D6/F3/F4; `issued_at` vs `fetched_at` kept distinct;
 monotonicity + geometry quality flags; a pure function taking a base `Path`.
+**`issued_at` (BAFU's annotation) and `inventory_produced_at` (BAFU's `meta.produced_at`) stay
+distinct; there is NO `fetched_at` — the archive holds no fetch clock (F8, Deviation 11).**
 **Also corrects the wrong orientation comment at `types/bafu_forecast.py:116`** (F3) — a
 comment-only edit, and the one place this plan touches an existing file's prose.
 *Scope (out):* `p_forecast` (lakes — excluded from a discharge comparison), any write, any DB.
@@ -599,55 +811,7 @@ convention).
 *Exit:* `uv run pytest tests/unit/cli/test_export_forecast_lab.py` — asserts no partial file survives a
 mid-write failure.
 
-### Phase 5 — deployment and documentation
-
-**T7 — Compose wiring.** `docker-compose.yml` (`api`: `SAPPHIRE_CONFIG`, `bafu_forecast_archive`
-`:ro`) **and `docker-compose.macmini.yml` (`api`: `SAPPHIRE_CONFIG_OVERLAY` plus the read-only
-overlay-file mount)**. An earlier draft claimed the mini overlay needed no edit because its `api`
-override is `ports` only — true for the *volume*, wrong for the *path*: the archive path is declared
-only in `config/overlays/mac-mini.toml`, so without the overlay the gate resolves to `None` and the
-route reports the archive missing with the volume correctly mounted (D2).
-*Scope (out):* ports, TLS, `SAPPHIRE_DOMAIN`, CORS, any other service.
-*Exit:* `uv run pytest tests/unit/deploy/test_compose_forecast_lab_api_mount.py` — a **committed**
-regression test, not an inline heredoc, so the plan's own `uv run pytest` gate covers it and a later
-PR cannot silently drop the mount. It mirrors the existing sibling
-`tests/unit/deploy/test_compose_ingest_bafu_observation_mount.py`, which asserts a worker's archive
-mount against the **rendered** configuration (`docker compose -f … config --format json`, skipping
-when the `docker` CLI is absent) — the same mechanism, one service over. It asserts, on the base
-file merged with `docker-compose.macmini.yml`, that the `api` service (a) mounts
-`bafu_forecast_archive` at `/data/bafu_forecasts` read-only, (b) has
-`SAPPHIRE_CONFIG=/app/config.toml`, and (c) has `SAPPHIRE_CONFIG_OVERLAY` plus the overlay mount.
-All three are **false on today's repo** (F1, F2) and true only once this task's edit lands.
-
-**The mount test is necessary but not sufficient** — it proves the file is reachable, not that the
-*path* resolves. Without a second assertion the suite can go green while the endpoint returns
-"archive not mounted" forever. But that assertion **cannot** be written the obvious way: feeding the
-rendered container environment straight into `load_config()` from a host-run pytest raises
-`FileNotFoundError` (`config/_overlay.py:35-36` — `/app/config.toml` does not exist on the host),
-which fails identically whether or not the compose wiring is right, so it would confirm nothing.
-No existing test under `tests/unit/deploy/` demonstrates a pattern for this, so T7 spells it out as
-**two separate assertions**:
-
-- **(a) Wiring — string comparison over the rendered JSON, no config loading.** On the base file
-  merged with `docker-compose.macmini.yml`, the `api` service's environment has
-  `SAPPHIRE_CONFIG == "/app/config.toml"` and
-  `SAPPHIRE_CONFIG_OVERLAY == "/app/config/overlays/mac-mini.toml"`, and both files are mounted
-  read-only at exactly those targets. **False on today's repo** (F1, F2) — this is the red half.
-- **(b) Path derivation — `load_config()` against the REAL repo-relative files**, with the overlay
-  env var pointed at the repo copy rather than the container path, asserting that
-  `bafu_forecast_archive_path` resolves to the archive mount point. This is sound because the
-  overlay declares that path as a **literal container-absolute string**
-  (`config/overlays/mac-mini.toml:8`) while base `config.toml` has no `[adapters.bafu_forecast]`
-  section at all — so the value a host-run test derives is the value the container derives, with no
-  `${SAPPHIRE_*}` interpolation in play (`config/deployment.py:388-403`; `config.toml` contains no
-  `${…}` references, verified). Verified 2026-08-21 that it resolves today and yields `None` when the
-  overlay is dropped. *(The exact `monkeypatch` calls and literal path values belong in the test,
-  not here — same policy F3 applies to itself: values rot in a plan, assertions do not.)*
-
-(b) is therefore **green on today's repo** and is a guard, not a red-first assertion: (a) catches
-the compose wiring being wrong or later removed, (b) catches the overlay's path declaration being
-removed or renamed. Neither alone closes the gap. Plus a documented redeploy procedure;
-**verification on the mini is a separate, owner-scheduled step.**
+### Phase 5 — documentation
 
 **T8 — Documentation.** `docs/spec/forecast-lab-snapshot.md` (timestamp and aggregation semantics,
 quantile method, trace normalization **with the F3 correction called out**,
@@ -767,14 +931,15 @@ that is the repo's actual layout — `tests/` holds `unit/`, `integration/`, `de
     { "id": "phase-3", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-2"] },
     { "id": "phase-4", "tasks": ["T5", "T6"], "parallel": true, "depends_on": ["phase-3"] },
     { "id": "phase-5", "tasks": ["T8"], "parallel": false, "depends_on": ["phase-4"] },
-    { "id": "phase-opt", "tasks": ["T9", "T10", "T11"], "parallel": true, "depends_on": ["phase-5"] }
+    { "id": "phase-opt", "tasks": ["T9", "T10"], "parallel": true, "depends_on": ["phase-5"] }
   ]
 }
 ```
 
-**T4 is gone** (O7.1) — six tasks plus three separable extras remain (T11 is conditional GET,
-cut from v1 by D10). T3 owns the
-`insufficient_data` sentinel, so nothing orphans. `phase-opt` is separable in full (O3, O4, D10).
+**T4 is gone** (O7.1) — **eight core task nodes** remain (T7, T1, T2a, T2b, T3, T5, T6, T8) plus two separable extras.
+T11 is **cut from v1** by D10 and is deliberately **absent from the graph** — it is a named
+placeholder for a future plan, not a schedulable task here. T3 owns the
+`insufficient_data` sentinel, so nothing orphans. `phase-opt` is separable in full (O3, O4).
 
 **T7 has no dependencies and runs first.** It edits two compose files and its exit gate reads
 rendered compose JSON plus `load_config()` against real files — it never reads
