@@ -74,7 +74,10 @@ class TestUnknownStationCodeIsATotalFailure:
     ) -> None:
         output_path = tmp_path / "snapshot.json"
 
-        with pytest.raises(SystemExit):
+        # Bare `pytest.raises(SystemExit)` would also pass on an unrelated
+        # exit (a config failure, say) that wrote nothing — match the message
+        # so this locks the unknown-code path specifically.
+        with pytest.raises(SystemExit, match="unknown or ineligible"):
             export_forecast_lab_snapshot(
                 _stores(),
                 archive_base_path=None,

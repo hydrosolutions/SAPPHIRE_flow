@@ -409,10 +409,15 @@ class TestUnavailableModelEntryShape:
         entry = snapshot.stations[0].sapphire_forecasts[0]
         assert isinstance(entry, SapphireForecastUnavailableSchema)
         assert entry.reason == "no_forecast"
-        assert entry.model_fields_set == {
+        # The WIRE shape, not `model_fields_set`: a newly added defaulted
+        # field (e.g. `last_successful_issue_time: None`, the thing D19
+        # exists to forbid) would serialise while leaving `model_fields_set`
+        # untouched, so the old assertion could not have caught it.
+        assert set(entry.model_dump(mode="json")) == {
+            "available",
             "model",
             "reason",
-        } or entry.model_fields_set <= {"available", "model", "reason"}
+        }
 
 
 class TestDailyCompletenessBoundary:
@@ -512,6 +517,56 @@ class TestDailyCompletenessBoundary:
         assert rows[0].bafu.hour_count == 21
         assert rows[0].bafu.complete is False
 
+    def _observations_on_the_bafu_day(
+        self, station_id: StationId, n: int
+    ) -> FakeObservationStore:
+        day = ensure_utc(datetime(2026, 8, 22, 0, 0, 0, tzinfo=UTC))
+        store = FakeObservationStore()
+        # Distinct rng per call: make_observation's default seed is fixed, so
+        # reusing it mints colliding ids and the dict-keyed fake silently
+        # drops all but the last — which would defeat the count assertion.
+        store.store_observations(
+            [
+                make_observation(
+                    station_id=station_id,
+                    parameter="discharge",
+                    qc_status=QcStatus.QC_PASSED,
+                    timestamp=ensure_utc(day + timedelta(minutes=10 * i)),
+                    rng=random.Random(1000 + i),
+                )
+                for i in range(n)
+            ]
+        )
+        return store
+
+    def test_130_observation_samples_is_complete_129_is_not(
+        self, tmp_path: Path
+    ) -> None:
+        """AC14 names TWO gates — BAFU's 22 hours and observations' 130
+        samples. Only the BAFU half was exercised, so an observation
+        threshold of 129, 131 or zero would have passed."""
+        now = ensure_utc(datetime(2026, 8, 23, 0, 0, 0, tzinfo=UTC))
+        for n, expected_complete in ((130, True), (129, False)):
+            station = make_station_config(code="2009")
+            station_store = FakeStationStore()
+            station_store.store_station(station)
+            base = tmp_path / f"n{n}"
+            self._write_run(base, "2009", 24)
+            stores = _stores(
+                station_store=station_store,
+                observation_store=self._observations_on_the_bafu_day(station.id, n),
+            )
+
+            snapshot = build_snapshot(
+                stores, stations=[station], archive_base_path=base, clock=lambda: now
+            )
+            rows = snapshot.stations[0].aligned_daily_comparison
+            assert len(rows) == 1
+            assert rows[0].observation.sample_count == n
+            assert rows[0].observation.complete is expected_complete, (
+                f"{n} samples should be complete={expected_complete}"
+            )
+
 
 class TestNwpCycleSourceFallbackIsBenign:
     """AC12 — a fallback-cycle forecast produces no error/warning/degraded
@@ -565,6 +620,51 @@ class TestNoHindcastOrSkillTableAccess:
         field_names = {f for f in ForecastLabStores.__dataclass_fields__}
         assert "hindcast_store" not in field_names
         assert "skill_store" not in field_names
+
+    def test_no_module_in_the_package_names_a_hindcast_or_skill_table(self) -> None:
+        """The store-field check above is necessary but not sufficient: it
+        would still pass if a module imported a hindcast store directly or
+        issued raw SQL naming those tables through an existing connection.
+        Scan the package's CODE — identifiers and non-docstring string
+        literals — for the forbidden names. A plain text scan would be wrong
+        here: this module's own docstring names all three tables in order to
+        say it never queries them, so prose has to be excluded or the test
+        fails on correct code."""
+        import ast
+
+        package = (
+            Path(__file__).resolve().parents[4]
+            / "src/sapphire_flow/services/forecast_lab"
+        )
+        forbidden = {"hindcast_forecasts", "hindcast_values", "skill_scores"}
+        offenders: list[str] = []
+        for module in sorted(package.glob("*.py")):
+            tree = ast.parse(module.read_text())
+            docstrings = {
+                ast.get_docstring(n, clean=False)
+                for n in ast.walk(tree)
+                if isinstance(
+                    n,
+                    ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+                )
+            }
+            for node in ast.walk(tree):
+                found: str | None = None
+                if isinstance(node, ast.Name) and node.id in forbidden:
+                    found = node.id
+                elif isinstance(node, ast.Attribute) and node.attr in forbidden:
+                    found = node.attr
+                elif (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and node.value not in docstrings
+                ):
+                    found = next((f for f in forbidden if f in node.value), None)
+                if found is not None:
+                    offenders.append(f"{module.name}: {found}")
+        assert offenders == [], (
+            f"forecast_lab must not reference hindcast/skill tables: {offenders}"
+        )
 
     def test_verification_is_always_insufficient_data(self) -> None:
         station = make_station_config(code="2009")

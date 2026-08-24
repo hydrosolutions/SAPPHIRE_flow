@@ -51,8 +51,8 @@ class TestCommittedSchemaMatchesModels:
 class TestExampleFixtureShape:
     """AC4/AC5/AC6 as they apply to the committed example itself."""
 
-    def test_every_timestamp_leaf_is_rfc3339_utc_with_z_suffix(self) -> None:
-        example = _load_json(_EXAMPLE_PATH)
+    @staticmethod
+    def _assert_all_timestamps_utc(document: Any) -> None:
         offenders: list[str] = []
 
         def walk(node: Any, path: str) -> None:
@@ -64,17 +64,41 @@ class TestExampleFixtureShape:
                     walk(v, f"{path}[{i}]")
             elif (
                 isinstance(node, str)
-                and ("_at" in path or path.endswith(("_start", "_end")))
+                and (
+                    "_at" in path
+                    or path.endswith(
+                        ("_start", "_end", "valid_time", "measurement_time")
+                    )
+                )
                 and not _TIMESTAMP_RE.match(node)
             ):
                 offenders.append(f"{path}={node!r}")
 
-        walk(example, "$")
+        walk(document, "$")
         assert offenders == []
 
-    def test_no_numeric_leaf_is_nan_or_infinity_or_a_numeric_string(self) -> None:
+    def test_every_timestamp_leaf_is_rfc3339_utc_with_z_suffix(self) -> None:
+        # `valid_time` was absent from the path predicate until the review
+        # caught it — and it is the commonest timestamp in the document, so
+        # the walker was silent on most of what it claimed to cover.
+        self._assert_all_timestamps_utc(_load_json(_EXAMPLE_PATH))
+
+    def test_the_timestamp_walker_actually_rejects_a_non_utc_offset(self) -> None:
+        # Negative control for the test above: without this, a walker whose
+        # path predicate misses a field name would report "no offenders" on a
+        # fixture that is in fact non-compliant, and pass forever.
+        example = _load_json(_EXAMPLE_PATH)
+        example["stations"][0]["observations"]["points"][0]["valid_time"] = (
+            "2026-08-21T12:40:00+02:00"
+        )
+        with pytest.raises(AssertionError):
+            self._assert_all_timestamps_utc(example)
+
+    def test_no_numeric_leaf_is_nan_or_infinity(self) -> None:
         # json.loads already rejects literal NaN/Infinity tokens unless
         # parse_constant is overridden — assert the raw text contains none.
+        # (Numeric-string leaves are caught by the JSON Schema validation
+        # test above, which types every numeric field.)
         raw = _EXAMPLE_PATH.read_text()
         assert "NaN" not in raw
         assert "Infinity" not in raw

@@ -9,6 +9,7 @@ AC24/D12: equal-priority assignments tie-break on `model_id` ascending.
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -22,7 +23,13 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_observation_window,
 )
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import ModelAssignmentStatus, QcStatus, StationKind
+from sapphire_flow.types.enums import (
+    ModelAssignmentStatus,
+    ObservationSource,
+    QcStatus,
+    StationKind,
+    StationStatus,
+)
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 from sapphire_flow.types.model import ModelArtifactProvenance
 from sapphire_flow.types.station import ModelAssignment
@@ -108,6 +115,21 @@ class TestEligibleStations:
         )
         stores = _make_stores(station_store=store)
         assert fetch_eligible_station_by_code(stores, "3001") is None
+
+    def test_by_code_rejects_a_non_operational_station(self) -> None:
+        # AC19 names status as well as kind and network. Without this an
+        # implementation that filters only kind+network on the by-code path
+        # passes, and an onboarding station would reach the snapshot.
+        store = FakeStationStore()
+        store.store_station(
+            make_station_config(
+                code="3003",
+                station_status=StationStatus.ONBOARDING,
+                station_id=StationId(uuid4()),
+            )
+        )
+        stores = _make_stores(station_store=store)
+        assert fetch_eligible_station_by_code(stores, "3003") is None
 
     def test_by_code_rejects_wrong_network(self) -> None:
         store = FakeStationStore()
@@ -243,7 +265,20 @@ class TestObservationWindow:
             timestamp=_EPOCH + timedelta(minutes=20),
             rng=random.Random(3),
         )
-        store.store_observations([good, raw_qc, wrong_param])
+        # AC7 names THREE filters; without a non-`measured` row the source
+        # filter is unlocked and an implementation that omits it passes.
+        # `make_observation` always mints `MEASURED`, so replace() it.
+        manual_import = replace(
+            make_observation(
+                station_id=station_id,
+                parameter="discharge",
+                qc_status=QcStatus.QC_PASSED,
+                timestamp=_EPOCH + timedelta(minutes=30),
+                rng=random.Random(4),
+            ),
+            source=ObservationSource.MANUAL_IMPORT,
+        )
+        store.store_observations([good, raw_qc, wrong_param, manual_import])
 
         stores = _make_stores(observation_store=store)
         result = fetch_observation_window(

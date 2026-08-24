@@ -110,6 +110,15 @@ class TestApiServiceWiring:
         )
         assert mount.get("type") == "bind"
         assert mount.get("read_only") is True
+        # The SOURCE matters too: without this a bind from any unrelated file
+        # to the right target would satisfy the assertions above, and the
+        # container would load the wrong overlay (or none of ours).
+        source = mount.get("source")
+        assert source is not None
+        assert (
+            Path(str(source)).resolve()
+            == (_repo_root() / "config/overlays/mac-mini.toml").resolve()
+        ), f"overlay mount source is {source!r}"
 
     def test_base_compose_alone_has_no_archive_mount_on_api(self) -> None:
         """The base file alone is never what runs on the mini (the overlay
