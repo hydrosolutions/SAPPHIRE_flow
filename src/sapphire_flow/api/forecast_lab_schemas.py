@@ -62,13 +62,23 @@ def _reject_if_not_finite(value: Any) -> Any:
     """For a REQUIRED numeric there is no `null` to fall back to, so a
     non-finite value is a data-integrity failure and must be loud.
 
-    This is an INVARIANT, not a live code path: the sources sanitise first
-    (`db_sources.fetch_observation_window` drops non-finite readings,
-    `bafu_archive` nulls non-finite trace values, `_quantile_summary` drops
-    non-finite members), so nothing should ever reach it. Do NOT read it as
-    a D13 partial-snapshot path — observation assembly has no D13 guard, so
-    a raise here would surface as `500`. An earlier revision of this
-    docstring claimed the opposite; the independent review caught it."""
+    This is an INVARIANT, not a live code path, but the protection differs
+    per field and neither is "sanitisation" everywhere:
+
+    * `ObservationPointSchema.value` — sanitised at the source
+      (`db_sources.fetch_observation_window` drops non-finite readings), as
+      are the BAFU trace values and the ensemble members.
+    * `GeoCoordSchema.longitude` / `latitude` — NOT sanitised. They are
+      rejected earlier, at the domain type: `GeoCoord.__post_init__`
+      (`types/domain.py:29-33`) tests `not (-180.0 <= lon <= 180.0)`, and
+      that form rejects `NaN` as well as infinities (the `lon < -180 or
+      lon > 180` form would NOT — a chained comparison against `NaN` is
+      False, so its negation raises, while the disjunctive form is False and
+      passes). Verified by test. A non-finite coordinate therefore fails at
+      `PgStationStore` before this schema is ever constructed.
+
+    Do NOT read this as a D13 partial-snapshot path either way — observation
+    assembly has no D13 guard, so a raise here would surface as `500`."""
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("non-finite value in a required numeric field")
     return value

@@ -13,6 +13,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.services.forecast_lab.db_sources import (
     ForecastLabStores,
     fetch_active_model_assignments,
@@ -418,3 +420,25 @@ class TestArtifactInfo:
         info = fetch_artifact_info(stores, ArtifactId(uuid4()))
         assert info.artifact_sha256 is None
         assert info.source_commit is None
+
+
+class TestGeoCoordRejectsNonFinite:
+    """Guards the assumption `FiniteFloat`'s docstring relies on: a
+    non-finite station coordinate never reaches the snapshot schema because
+    `GeoCoord` rejects it first.
+
+    This is load-bearing and fragile-looking: `not (-180.0 <= lon <= 180.0)`
+    rejects `NaN`, but the equally natural `lon < -180.0 or lon > 180.0`
+    would silently ACCEPT it, since every comparison against `NaN` is False.
+    An independent review read the guard as the second form and reported a
+    blocker that does not exist. This test pins the real behaviour so a
+    future "simplification" to the disjunctive form fails loudly."""
+
+    def test_non_finite_longitude_and_latitude_are_rejected(self) -> None:
+        from sapphire_flow.types.domain import GeoCoord
+
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with pytest.raises(ValueError, match="out of range"):
+                GeoCoord(lon=bad, lat=46.0)
+            with pytest.raises(ValueError, match="out of range"):
+                GeoCoord(lon=6.89, lat=bad)
