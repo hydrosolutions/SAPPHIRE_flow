@@ -171,7 +171,9 @@ branch is behind `origin/main`" fires on essentially every branch, because `main
 day. A gate that fires constantly is disabled or ignored — the same failure as a blocking commit hook
 (D4). So the widening needs a shape that is *actionable and rare*, not merely correct.
 
-**RESOLVED after independent review: a stale BASE WARNS and proceeds; only a stale PLAN escalates.**
+**RATIFIED BY THE OWNER 2026-08-24: a stale BASE WARNS and proceeds; only a stale PLAN escalates.**
+The owner's initial instruction was to refuse; the review argued it down and the owner accepted the
+argument. Recorded so the softening is a decision, not a drift.
 The draft proposed a hard refusal. The review attacked it successfully on two grounds, both verified:
 
 1. **It would not have prevented its own motivating example.** Plan 199's implementation commit
