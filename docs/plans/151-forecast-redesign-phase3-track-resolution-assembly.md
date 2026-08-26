@@ -59,8 +59,7 @@ calls **none** of the new T5–T7 entry points. **T1–T7 are therefore all merg
 **T8a (dormant)** and **T8b (activation)** per **D36**, after an independent Codex review of the T8 task spec returned
 **NO — not ready to build** (one blocker, four majors, two minors, all folded into the task text below). **D35** (the
 earlier T5–T7 / T8 split) sits under *Open items* and is the owner's to confirm. **D36** (the T8a/T8b split) is
-**RATIFIED** (owner, 2026-08-19, re-confirmed 2026-08-26) and is NOT among them
-and are the owner's to confirm.
+**RATIFIED** (owner, 2026-08-19, re-confirmed 2026-08-26) and is NOT among them.
 
 Phase 3 of the forecast-cycle redesign (`docs/design/forecast-cycle-redesign.md`, build-sequence item 3).
 This is the **one atomic phase** the redesign refuses to split: a per-`(track,station)` cycle has no coherent consumer
@@ -173,14 +172,11 @@ plan is now wrong because `main` moved 142 commits?* Not whether the design is t
   `D34-atmost-guard-unreachable`). Those three are **the owner's to settle, not a reviewer's**. Do not propose answers
   to them as findings.
 - **D1–D31 are settled, as are D33 and the D10a coverage rule. Do not reopen, re-argue, or "strengthen" them.**
-  ⚠️ **D34 CONTRADICTS ITSELF and is the owner's to settle (flagged 2026-08-26, deliberately NOT resolved here).**
-  Lines 32 and 162 say **"D34 — option (a) CHOSEN"**, while this list and line 173 carry it as unsettled. A grounding
-  pass on 2026-08-26 asserted the open items were "D21/D32/D35"; that was **wrong on both counts** — D35 is not among
-  them and D34's status is genuinely ambiguous. T8b does not depend on D34 (it concerns T7's route-time `AT_MOST`
-  guard, already built), so this does not block the T8b build — but it must not be read as settled just because two
-  lines say "CHOSEN".
-
-  (D21 / D32 / D34 are the owner's three open items above — the ONLY unsettled decisions in this document.) A finding that reduces to preferring a
+  ⚠️ **STALE PROSE, corrected 2026-08-26: D21, D32 and D34 are NOT open — the owner RATIFIED all three in commit
+  `1a02e24` ("Plan 151 READY — owner ratifies D21/D32/D34", 2026-08-18), consistent with lines 22-36 and 162.** This
+  paragraph pre-dates that commit. A grounding pass on 2026-08-26 read the stale wording and flagged D34 as
+  "contradicting itself and the owner's to settle" — that flag was WRONG and reopened a settled decision; it has been
+  removed. The only decision genuinely awaiting confirmation is **D35**. A finding that reduces to preferring a
   different design is out of scope by construction.
 - The **atomic 8-task phase shape**, the **phase dependency graph**, and every **Non-goal** are **fixed for this round**.
   *(That round is CLOSED. Since 2026-08-19 the graph carries NINE nodes — T8 split into T8a → T8b under D36 — and the
@@ -1014,7 +1010,7 @@ burning fixer rounds reformatting alembic migrations.
     into run inputs; T7's unit tests cannot detect a flow that drops the assignment, picks the wrong reason, or
     starves the fallback chain. Both cases assert the cause **and** that the chain still produced a station forecast:
     - **Walk-back exhaustion.** `resolve_candidate` returns `None` when the bound is exhausted
-      (`services/track_resolution.py:292`); the caller must construct `MissingTrackContext` (`track_assembly.py:121` (`class MissingTrackContext`)).
+      (`services/track_resolution.py:292`); the caller must construct `MissingTrackContext` (`track_assembly.py:121`, `class MissingTrackContext`).
       Golden: the affected assignment records **`MISSING_CONTEXT`** and the station's lower-priority fallback still
       **succeeds** (the station is not darkened).
     - **Accepted track, station unavailable.** A committed track can still yield a per-station
@@ -1053,7 +1049,7 @@ burning fixer rounds reformatting alembic migrations.
     **`passed >= 4550`** with no baseline test regressing; `pyright` at or below the ratcheted **432**
     over `src/`; `ruff check` with no new findings beyond the 12 pre-existing alembic `E501`s. **Plus**
     `uv run pytest tests/integration/test_e2e_pipeline.py -m slow -q`, overriding the default `not slow` exclusion
-    (`pyproject.toml:132`; the `slow` marker is declared at `:132`; `:131` is `live_recap`) — **as a RUNNER-level regression gate only.** That
+    (`pyproject.toml:134` — the default `not slow` exclusion; the `slow` marker itself is declared at `:132`; `:131` is `live_recap`) — **as a RUNNER-level regression gate only.** That
     file calls `run_station_forecast` directly (`tests/integration/test_e2e_pipeline.py:653`) and never references
     `run_forecast_cycle_flow`, so it **cannot** exercise the dispatch T8b activates; it proves the legacy direct-call
     entry point still works. **The dispatch protection is the flow-level goldens above — nothing else.**
