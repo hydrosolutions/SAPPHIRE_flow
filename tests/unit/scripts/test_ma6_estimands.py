@@ -35,6 +35,7 @@ from scripts.dhm_precip.ma6_estimands import (
     WetHourConditionalIntensityBias,
     WetHourConditionalIntensityBiasComparison,
     assign_elevation_band,
+    band_conditional_accumulated_difference,
     band_matched_hour_mean_difference,
     band_wet_hour_conditional_intensity_bias_comparison,
     categorical_scores,
@@ -51,8 +52,17 @@ from scripts.dhm_precip.ma6_pairs import MaskedGaugeSeries, PairedSeries, subset
 from scripts.dhm_precip.params import DEFAULT_PARAMS
 
 
-def _paired_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
-    return pl.DataFrame(rows).with_columns(pl.col("timestamp").cast(pl.Datetime("ms")))
+def _with_station(frame: pl.DataFrame, station: Station) -> pl.DataFrame:
+    """`station` is a frame column now — derived, never a separately-
+    suppliable constructor field (Plan 184 phase 2 round 2)."""
+    return frame.with_columns(pl.lit(str(station)).alias("station"))
+
+
+def _paired_frame(rows: list[dict[str, object]], *, station: Station) -> pl.DataFrame:
+    return _with_station(
+        pl.DataFrame(rows).with_columns(pl.col("timestamp").cast(pl.Datetime("ms"))),
+        station,
+    )
 
 
 def _make_paired_series(
@@ -71,9 +81,10 @@ def _make_paired_series(
                 "era5_nearest_mm_per_h": era5[i],
             }
             for i in range(n_hours)
-        ]
+        ],
+        station=station,
     )
-    return PairedSeries(station=station, frame=frame)
+    return PairedSeries(frame=frame)
 
 
 class TestScaleIsImportedNotDuplicated:
@@ -166,9 +177,10 @@ class TestMatchedHourMeanDifference:
                     "gauge_value_mm": 3.0,
                     "era5_nearest_mm_per_h": 1.0,
                 },
-            ]
+            ],
+            station=station,
         )
-        paired = PairedSeries(station=station, frame=frame)
+        paired = PairedSeries(frame=frame)
 
         djf = scale_subset(paired, scale=Scale.DJF, params=DEFAULT_PARAMS)
         result = matched_hour_mean_difference(djf)
@@ -666,9 +678,10 @@ class TestConditionalAccumulatedDifference:
                 for i, (v, e) in enumerate(
                     zip([1.0, 1.0, 2.0, 2.0], [0.5, 0.5, 1.0, 1.0], strict=True)
                 )
-            ]
+            ],
+            station=station,
         )
-        paired = PairedSeries(station=station, frame=frame)
+        paired = PairedSeries(frame=frame)
         all_hours = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
 
         result = conditional_accumulated_difference(all_hours)
@@ -824,9 +837,10 @@ class TestCategoricalScoresRefusesSeasonGrain:
                     "era5_nearest_mm_per_h": era5[i],
                 }
                 for i in range(n_hours)
-            ]
+            ],
+            station=station,
         )
-        paired = PairedSeries(station=station, frame=frame)
+        paired = PairedSeries(frame=frame)
         daily = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
         accumulated = conditional_accumulated_difference(daily)
 
@@ -860,9 +874,10 @@ class TestCategoricalScoresRefusesSeasonGrain:
                     "era5_nearest_mm_per_h": era5[i],
                 }
                 for i in range(n_hours)
-            ]
+            ],
+            station=station,
         )
-        paired = PairedSeries(station=station, frame=frame)
+        paired = PairedSeries(frame=frame)
         daily = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
         accumulated = conditional_accumulated_difference(daily)
 
@@ -903,9 +918,10 @@ class TestCategoricalScoresHonoursWetThresholdSide:
                     "gauge_value_mm": 1.0,
                     "era5_nearest_mm_per_h": 0.0,
                 },
-            ]
+            ],
+            station=station,
         )
-        paired = PairedSeries(station=station, frame=frame)
+        paired = PairedSeries(frame=frame)
         daily = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
         return conditional_accumulated_difference(daily)
 
@@ -968,7 +984,9 @@ class TestElevationBandEstimand:
         result_b = matched_hour_mean_difference(subset_b)
 
         band = band_matched_hour_mean_difference(
-            ElevationBand.BELOW_700M, (result_a, result_b)
+            ElevationBand.BELOW_700M,
+            (result_a, result_b),
+            station_elev_m={station_a: 500.0, station_b: 600.0},
         )
 
         assert band.station_count == 2
@@ -976,6 +994,73 @@ class TestElevationBandEstimand:
         # Station-equal mean of 2.0 and 10.0 = 6.0, NOT the hour-pooled
         # weighted mean ((2*40 + 10*4) / 44 = 2.7273).
         assert band.mean_value == pytest.approx(6.0)
+
+    def test_a_member_outside_the_bands_own_edges_is_rejected(self) -> None:
+        # Change 4 (Plan 184 phase 2 round 2): band_matched_hour_mean_
+        # difference gets the SAME band-membership verification the
+        # wet-hour comparison already has — a member whose own elevation
+        # places it outside the declared band's D4a edges is refused.
+        station_a = Station("A")
+        paired_a = _make_paired_series(
+            station_a, datetime(2024, 7, 1, 0), 4, gauge=[2.0] * 4, era5=[0.0] * 4
+        )
+        subset_a = scale_subset(paired_a, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        result_a = matched_hour_mean_difference(subset_a)
+
+        with pytest.raises(BandMembershipError, match="A"):
+            band_matched_hour_mean_difference(
+                ElevationBand.ABOVE_3000M,
+                (result_a,),
+                station_elev_m={station_a: 500.0},
+            )
+
+
+class TestBandConditionalAccumulatedDifferenceVerifiesMembership:
+    """Change 4 (Plan 184 phase 2 round 2): `band_conditional_accumulated_
+    difference` gets the SAME `station_elev_m` band-membership verification
+    `band_matched_hour_mean_difference`/`band_wet_hour_conditional_
+    intensity_bias_comparison` already have — the same `BandMembershipError`,
+    not a second mechanism."""
+
+    @staticmethod
+    def _result_for(station: Station) -> ConditionalAccumulatedDifference:
+        paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 4, gauge=[2.0] * 4, era5=[0.0] * 4
+        )
+        jjas = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        return conditional_accumulated_difference(jjas)
+
+    def test_accepts_a_member_inside_the_bands_own_edges(self) -> None:
+        station_a = Station("A")
+        result_a = self._result_for(station_a)
+
+        band = band_conditional_accumulated_difference(
+            ElevationBand.BELOW_700M,
+            (result_a,),
+            station_elev_m={station_a: 500.0},
+        )
+
+        assert band.station_count == 1
+
+    def test_a_member_outside_the_bands_own_edges_is_rejected(self) -> None:
+        station_a = Station("A")
+        result_a = self._result_for(station_a)
+
+        with pytest.raises(BandMembershipError, match="A"):
+            band_conditional_accumulated_difference(
+                ElevationBand.ABOVE_3000M,
+                (result_a,),
+                station_elev_m={station_a: 500.0},
+            )
+
+    def test_a_member_missing_from_station_elev_m_is_rejected(self) -> None:
+        station_a = Station("A")
+        result_a = self._result_for(station_a)
+
+        with pytest.raises(BandMembershipError, match="A"):
+            band_conditional_accumulated_difference(
+                ElevationBand.BELOW_700M, (result_a,), station_elev_m={}
+            )
 
 
 class TestStationAndScaleAreDerivedNotAccepted:
@@ -1237,9 +1322,10 @@ class TestCategoricalScoresRetentionConditionalityLabel:
                     "era5_nearest_mm_per_h": era5[i],
                 }
                 for i in range(n_hours)
-            ]
+            ],
+            station=station,
         )
-        paired = PairedSeries(station=station, frame=frame)
+        paired = PairedSeries(frame=frame)
         daily = scale_subset(paired, scale=Scale.DAILY, params=DEFAULT_PARAMS)
         return conditional_accumulated_difference(daily)
 
@@ -1428,17 +1514,25 @@ class TestSubsetSchemaGuardStillAppliesThroughThisModule:
     gauge-only frame in where a paired subset is required."""
 
     def test_scale_subset_on_a_gauge_only_series_raises(self) -> None:
-
+        # Fix (Plan 184 phase 2 round 2, change 5): the original version of
+        # this test omitted the now-required `scale=` keyword, so
+        # `subset()` raised `TypeError` on the missing argument and the
+        # broad `pytest.raises(Exception)` swallowed it — the schema guard
+        # this test claims to exercise (a caller cannot treat a
+        # GaugeRetainedSubset's frame as if it carried the PAIRED columns)
+        # was never actually reached.
         gauge_only = MaskedGaugeSeries(
-            station=Station("A"),
-            frame=pl.DataFrame(
-                {"timestamp": [datetime(2024, 7, 1, 0)], "value_mm": [1.0]}
+            frame=_with_station(
+                pl.DataFrame(
+                    {"timestamp": [datetime(2024, 7, 1, 0)], "value_mm": [1.0]}
+                ),
+                Station("A"),
             ),
         )
-        with pytest.raises(Exception):  # noqa: B017, PT011 — pyright would catch this statically
-            subset(gauge_only, pl.col("timestamp").dt.month() == 7).frame.select(
-                "gauge_value_mm"
-            )
+        with pytest.raises(pl.exceptions.ColumnNotFoundError, match="gauge_value_mm"):
+            subset(
+                gauge_only, pl.col("timestamp").dt.month() == 7, scale=Scale.JJAS
+            ).frame.select("gauge_value_mm")
 
 
 if __name__ == "__main__":

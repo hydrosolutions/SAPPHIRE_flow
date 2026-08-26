@@ -32,6 +32,7 @@ from scripts.dhm_precip.era5_extract_manifest import (
     write_extraction_manifest,
 )
 from scripts.dhm_precip.ma6_pairs import (
+    Era5NearestSeries,
     GaugeMaskedPopulation,
     GaugeRetainedSubset,
     MaskedGaugeSeries,
@@ -39,6 +40,8 @@ from scripts.dhm_precip.ma6_pairs import (
     PairedSeries,
     RetainedSubsetSchemaError,
     Scale,
+    ScaleConsistencyError,
+    StationIdentityError,
     _read_era5_nearest_frames,
     build_gauge_masked_population,
     build_paired_population,
@@ -56,6 +59,16 @@ _NOW = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 
 def _on_grid_frame(rows: list[dict[str, object]]) -> pl.DataFrame:
     return pl.DataFrame(rows).with_columns(pl.col("timestamp").cast(pl.Datetime("ms")))
+
+
+def _with_station(frame: pl.DataFrame, station: Station) -> pl.DataFrame:
+    """Every `MaskedGaugeSeries`/`PairedSeries`/`Era5NearestSeries`/subset
+    frame now carries its OWN `station` column — `.station` is derived from
+    it, never a separately-suppliable constructor field (Plan 184 phase 2
+    round 2). Test fixtures build a bare frame and stamp the column on with
+    this helper, exactly as production code does in `build_gauge_masked_
+    population`/`_read_era5_nearest_frames`."""
+    return frame.with_columns(pl.lit(str(station)).alias("station"))
 
 
 def _hourly_rows(
@@ -225,24 +238,31 @@ class TestPairWithEra5DropsHoursEra5Lacks:
         t1 = datetime(2024, 7, 1, 1)
         t2 = datetime(2024, 7, 1, 2)
         gauge = MaskedGaugeSeries(
-            station=Station("A"),
-            frame=pl.DataFrame(
-                {
-                    "timestamp": [t0, t1, t2],
-                    "value_mm": [1.0, 2.0, 3.0],
-                }
-            ).with_columns(pl.col("timestamp").cast(pl.Datetime("ms"))),
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [t0, t1, t2],
+                        "value_mm": [1.0, 2.0, 3.0],
+                    }
+                ).with_columns(pl.col("timestamp").cast(pl.Datetime("ms"))),
+                Station("A"),
+            ),
         )
         # ERA5 lacks t2 entirely (already finite-filtered by the caller, as
         # `_read_era5_nearest_frames` would have done).
-        era5_frame = pl.DataFrame(
-            {
-                "timestamp": [t0, t1],
-                "era5_nearest_mm_per_h": [0.5, 0.6],
-            }
-        ).with_columns(pl.col("timestamp").cast(pl.Datetime("ns")))
+        era5 = Era5NearestSeries(
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [t0, t1],
+                        "era5_nearest_mm_per_h": [0.5, 0.6],
+                    }
+                ).with_columns(pl.col("timestamp").cast(pl.Datetime("ns"))),
+                Station("A"),
+            ),
+        )
 
-        paired = pair_with_era5(gauge, era5_frame)
+        paired = pair_with_era5(gauge, era5)
 
         assert paired.frame["timestamp"].to_list() == [t0, t1]
         assert gauge.frame.height == 3, (
@@ -250,6 +270,31 @@ class TestPairWithEra5DropsHoursEra5Lacks:
             "PAIRED frame narrows on the common timestamps"
         )
         assert paired.frame.height == 2
+
+    def test_a_station_mismatch_between_gauge_and_era5_is_rejected(self) -> None:
+        # Plan 184 phase 2 round 2, change 3: the ERA5 side carries its OWN
+        # identity now — a Station-B ERA5 frame must never silently pair
+        # with Station-A gauge data and emit as A.
+        t0 = datetime(2024, 7, 1, 0)
+        gauge = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [t0], "value_mm": [1.0]}).with_columns(
+                    pl.col("timestamp").cast(pl.Datetime("ms"))
+                ),
+                Station("A"),
+            ),
+        )
+        era5 = Era5NearestSeries(
+            frame=_with_station(
+                pl.DataFrame(
+                    {"timestamp": [t0], "era5_nearest_mm_per_h": [0.5]}
+                ).with_columns(pl.col("timestamp").cast(pl.Datetime("ns"))),
+                Station("B"),
+            ),
+        )
+
+        with pytest.raises(StationSetMismatchError, match="mismatched station"):
+            pair_with_era5(gauge, era5)
 
 
 class TestSubsetComputesItsOwnN:
@@ -262,16 +307,21 @@ class TestSubsetComputesItsOwnN:
         july_hours = [datetime(2024, 7, 1, h) for h in range(6)]
         january_hours = [datetime(2024, 1, 1, h) for h in range(4)]
         gauge = MaskedGaugeSeries(
-            station=Station("A"),
-            frame=pl.DataFrame(
-                {
-                    "timestamp": july_hours + january_hours,
-                    "value_mm": [1.0] * 10,
-                }
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": july_hours + january_hours,
+                        "value_mm": [1.0] * 10,
+                    }
+                ),
+                Station("A"),
             ),
         )
 
-        full = subset(gauge, pl.lit(True), scale=Scale.JJAS)
+        # MONTHLY carries no season-consistency check (unlike JJAS/DJF), so
+        # a predicate that spans two calendar months is legitimately
+        # sliceable at this scale — the point of this test is n, not scale.
+        full = subset(gauge, pl.lit(True), scale=Scale.MONTHLY)
         july_only = subset(gauge, pl.col("timestamp").dt.month() == 7, scale=Scale.JJAS)
 
         assert isinstance(full, GaugeRetainedSubset)
@@ -286,17 +336,19 @@ class TestSubsetComputesItsOwnN:
         july_hours = [datetime(2024, 7, 1, h) for h in range(6)]
         january_hours = [datetime(2024, 1, 1, h) for h in range(4)]
         paired = PairedSeries(
-            station=Station("A"),
-            frame=pl.DataFrame(
-                {
-                    "timestamp": july_hours + january_hours,
-                    "gauge_value_mm": [1.0] * 10,
-                    "era5_nearest_mm_per_h": [1.0] * 10,
-                }
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": july_hours + january_hours,
+                        "gauge_value_mm": [1.0] * 10,
+                        "era5_nearest_mm_per_h": [1.0] * 10,
+                    }
+                ),
+                Station("A"),
             ),
         )
 
-        full = subset(paired, pl.lit(True), scale=Scale.JJAS)
+        full = subset(paired, pl.lit(True), scale=Scale.MONTHLY)
         july_only = subset(
             paired, pl.col("timestamp").dt.month() == 7, scale=Scale.JJAS
         )
@@ -308,12 +360,15 @@ class TestSubsetComputesItsOwnN:
     def test_n_cannot_diverge_from_the_subsets_own_rows(self) -> None:
         # Both n_gauge_retained and n_common_retained are PROPERTIES, not
         # fields: there is no constructor path that lets a caller attach a
-        # mismatched n.
+        # mismatched n. Scale.MONTHLY carries no season-consistency check,
+        # so plain integer timestamps (irrelevant to this test) are fine.
         gauge = MaskedGaugeSeries(
-            station=Station("A"),
-            frame=pl.DataFrame({"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}),
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}),
+                Station("A"),
+            ),
         )
-        result = subset(gauge, pl.col("timestamp") <= 2, scale=Scale.JJAS)
+        result = subset(gauge, pl.col("timestamp") <= 2, scale=Scale.MONTHLY)
         assert result.n_gauge_retained == result.frame.height == 2
 
     def test_a_gauge_subset_does_not_carry_the_paired_count(self) -> None:
@@ -323,43 +378,47 @@ class TestSubsetComputesItsOwnN:
         # with pyright), so a caller cannot read gauge exposure as if it
         # were commonly-retained exposure.
         gauge = MaskedGaugeSeries(
-            station=Station("A"),
-            frame=pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+                Station("A"),
+            ),
         )
-        gauge_subset = subset(gauge, pl.lit(True), scale=Scale.JJAS)
+        gauge_subset = subset(gauge, pl.lit(True), scale=Scale.MONTHLY)
 
         assert not hasattr(gauge_subset, "n_common_retained")
 
 
 class TestSubsetCarriesItsOwnIdentity:
-    """Root-cause structural fix (Plan 184 phase 2, 2026-08-24): `subset()`
-    used to throw the station away entirely and never carried a scale at
-    all — every downstream estimand had to accept both as independently-
-    suppliable constructor fields just to re-attach identity `subset()`'s
-    own inputs already carried. `GaugeRetainedSubset`/`PairedRetainedSubset`
-    now stamp `station`/`scale` at `subset()` time, from the series being
-    sliced and the scale argument itself."""
+    """Round 2 (Plan 184 phase 2, 2026-08-26): `station` is no longer
+    stamped by `subset()` at all — it is derived, lazily, from the result
+    frame's own `station` column (filtering preserves it). `scale` remains
+    a plain field, stamped from `subset()`'s own argument and VERIFIED
+    against the frame's timestamps (`TestScaleConsistency` below)."""
 
     def test_gauge_subset_carries_the_series_station_and_the_call_scale(self) -> None:
         gauge = MaskedGaugeSeries(
-            station=Station("Kirtipur"),
-            frame=pl.DataFrame({"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}),
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}),
+                Station("Kirtipur"),
+            ),
         )
 
-        result = subset(gauge, pl.lit(True), scale=Scale.DJF)
+        result = subset(gauge, pl.lit(True), scale=Scale.MONTHLY)
 
         assert result.station == Station("Kirtipur")
-        assert result.scale is Scale.DJF
+        assert result.scale is Scale.MONTHLY
 
     def test_paired_subset_carries_the_series_station_and_the_call_scale(self) -> None:
         paired = PairedSeries(
-            station=Station("Khumaltar"),
-            frame=pl.DataFrame(
-                {
-                    "timestamp": [1, 2, 3],
-                    "gauge_value_mm": [1.0, 2.0, 3.0],
-                    "era5_nearest_mm_per_h": [0.1, 0.2, 0.3],
-                }
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [1, 2, 3],
+                        "gauge_value_mm": [1.0, 2.0, 3.0],
+                        "era5_nearest_mm_per_h": [0.1, 0.2, 0.3],
+                    }
+                ),
+                Station("Khumaltar"),
             ),
         )
 
@@ -369,21 +428,25 @@ class TestSubsetCarriesItsOwnIdentity:
         assert result.scale is Scale.MONTHLY
 
     def test_two_stations_sliced_the_same_way_carry_different_identities(self) -> None:
-        # The station a subset carries comes from the SERIES it was taken
+        # The station a subset carries comes from the FRAME it was taken
         # from, never from a shared default — two different series produce
         # subsets that disagree on station even under the identical
         # predicate/scale.
         gauge_a = MaskedGaugeSeries(
-            station=Station("A"),
-            frame=pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+                Station("A"),
+            ),
         )
         gauge_b = MaskedGaugeSeries(
-            station=Station("B"),
-            frame=pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+                Station("B"),
+            ),
         )
 
-        subset_a = subset(gauge_a, pl.lit(True), scale=Scale.JJAS)
-        subset_b = subset(gauge_b, pl.lit(True), scale=Scale.JJAS)
+        subset_a = subset(gauge_a, pl.lit(True), scale=Scale.MONTHLY)
+        subset_b = subset(gauge_b, pl.lit(True), scale=Scale.MONTHLY)
 
         assert subset_a.station != subset_b.station
         assert subset_a.station == Station("A")
@@ -396,19 +459,210 @@ class TestSubsetCarriesItsOwnIdentity:
         # have it come out looking freshly taken — exactly what would let
         # an unconditioned subset be laundered into looking conditioned.
         paired = PairedSeries(
-            station=Station("A"),
-            frame=pl.DataFrame(
-                {
-                    "timestamp": [1, 2],
-                    "gauge_value_mm": [1.0, 2.0],
-                    "era5_nearest_mm_per_h": [0.1, 0.2],
-                }
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [1, 2],
+                        "gauge_value_mm": [1.0, 2.0],
+                        "era5_nearest_mm_per_h": [0.1, 0.2],
+                    }
+                ),
+                Station("A"),
             ),
         )
-        already_built = subset(paired, pl.lit(True), scale=Scale.JJAS)
+        already_built = subset(paired, pl.lit(True), scale=Scale.MONTHLY)
 
         with pytest.raises(TypeError, match="MaskedGaugeSeries or PairedSeries"):
-            subset(already_built, pl.lit(True), scale=Scale.DJF)  # type: ignore[type-var]
+            subset(already_built, pl.lit(True), scale=Scale.DAILY)  # type: ignore[type-var]
+
+
+class TestStationIdentityIsDerivedNeverStated:
+    """Change 1 (Plan 184 phase 2 round 2): `station` is no longer a
+    constructor field ANYWHERE in this module — attempting to supply one is
+    a `TypeError`, and the derived property itself refuses a frame that
+    does not resolve to exactly one distinct station."""
+
+    def test_masked_gauge_series_rejects_a_station_kwarg(self) -> None:
+        with pytest.raises(TypeError, match="station"):
+            MaskedGaugeSeries(
+                station=Station("A"),  # type: ignore[call-arg]
+                frame=_with_station(
+                    pl.DataFrame({"timestamp": [1], "value_mm": [1.0]}), Station("A")
+                ),
+            )
+
+    def test_paired_series_rejects_a_station_kwarg(self) -> None:
+        with pytest.raises(TypeError, match="station"):
+            PairedSeries(
+                station=Station("A"),  # type: ignore[call-arg]
+                frame=_with_station(
+                    pl.DataFrame(
+                        {
+                            "timestamp": [1],
+                            "gauge_value_mm": [1.0],
+                            "era5_nearest_mm_per_h": [0.1],
+                        }
+                    ),
+                    Station("A"),
+                ),
+            )
+
+    def test_masked_gauge_series_with_two_stations_in_its_frame_is_unconstructible(
+        self,
+    ) -> None:
+        # A frame mixing two stations' rows genuinely has no single station
+        # identity — construction itself must refuse it, eagerly (this type
+        # is never expected to be legitimately empty or multi-station).
+        mixed = pl.DataFrame(
+            {
+                "station": ["A", "B"],
+                "timestamp": [1, 2],
+                "value_mm": [1.0, 2.0],
+            }
+        )
+        with pytest.raises(StationIdentityError, match="exactly one distinct station"):
+            MaskedGaugeSeries(frame=mixed)
+
+    def test_masked_gauge_series_with_no_station_column_is_unconstructible(
+        self,
+    ) -> None:
+        no_station_col = pl.DataFrame({"timestamp": [1], "value_mm": [1.0]})
+        with pytest.raises(StationIdentityError, match="'station' column"):
+            MaskedGaugeSeries(frame=no_station_col)
+
+    def test_a_gauge_retained_subset_filtered_to_zero_rows_stays_constructible(
+        self,
+    ) -> None:
+        # A legitimately empty subset (e.g. a predicate matching nothing)
+        # must remain usable for its own n_gauge_retained == 0 check — the
+        # station derivation is LAZY, not enforced at construction, on the
+        # two subset types (unlike MaskedGaugeSeries/PairedSeries above).
+        gauge = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+                Station("A"),
+            ),
+        )
+
+        empty_subset = subset(gauge, pl.lit(False), scale=Scale.MONTHLY)  # noqa: FBT003
+
+        assert empty_subset.n_gauge_retained == 0
+
+    def test_reading_station_on_a_zero_row_subset_raises(self) -> None:
+        gauge = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1, 2], "value_mm": [1.0, 2.0]}),
+                Station("A"),
+            ),
+        )
+        empty_subset = subset(gauge, pl.lit(False), scale=Scale.MONTHLY)  # noqa: FBT003
+
+        with pytest.raises(StationIdentityError, match="exactly one distinct station"):
+            _ = empty_subset.station
+
+
+class TestScaleConsistencyIsVerified:
+    """Change 2 (Plan 184 phase 2 round 2): `scale` cannot be derived the
+    way `station` is, but IS exactly checkable against the frame's own
+    timestamps — `GaugeRetainedSubset`/`PairedRetainedSubset` verify it in
+    `__post_init__`."""
+
+    def test_jjas_scale_rejects_a_frame_carrying_a_non_jjas_month(self) -> None:
+        gauge = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [
+                            datetime(2024, 7, 1),
+                            datetime(2024, 1, 1),  # January — not JJAS
+                        ],
+                        "value_mm": [1.0, 2.0],
+                    }
+                ),
+                Station("A"),
+            ),
+        )
+
+        with pytest.raises(ScaleConsistencyError, match="JJAS"):
+            subset(gauge, pl.lit(True), scale=Scale.JJAS)
+
+    def test_djf_scale_rejects_a_frame_carrying_a_non_djf_month(self) -> None:
+        paired = PairedSeries(
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [
+                            datetime(2024, 12, 1),
+                            datetime(2024, 7, 1),  # July — not DJF
+                        ],
+                        "gauge_value_mm": [1.0, 2.0],
+                        "era5_nearest_mm_per_h": [0.1, 0.2],
+                    }
+                ),
+                Station("A"),
+            ),
+        )
+
+        with pytest.raises(ScaleConsistencyError, match="DJF"):
+            subset(paired, pl.lit(True), scale=Scale.DJF)
+
+    def test_jjas_scale_accepts_a_frame_whose_months_are_all_jjas(self) -> None:
+        gauge = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [
+                            datetime(2024, 6, 1),
+                            datetime(2024, 9, 30),
+                        ],
+                        "value_mm": [1.0, 2.0],
+                    }
+                ),
+                Station("A"),
+            ),
+        )
+
+        result = subset(gauge, pl.lit(True), scale=Scale.JJAS)
+
+        assert result.n_gauge_retained == 2
+
+    def test_daily_and_monthly_scales_have_no_month_restriction(self) -> None:
+        # DAILY/MONTHLY are D12's categorical grain, reported over the
+        # whole record — a frame spanning every calendar month is
+        # legitimately DAILY/MONTHLY-consistent.
+        gauge = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame(
+                    {
+                        "timestamp": [datetime(2024, m, 1) for m in range(1, 13)],
+                        "value_mm": [1.0] * 12,
+                    }
+                ),
+                Station("A"),
+            ),
+        )
+
+        daily = subset(gauge, pl.lit(True), scale=Scale.DAILY)
+        monthly = subset(gauge, pl.lit(True), scale=Scale.MONTHLY)
+
+        assert daily.n_gauge_retained == 12
+        assert monthly.n_gauge_retained == 12
+
+    def test_an_empty_frame_is_vacuously_consistent_with_any_scale(self) -> None:
+        # Deliberate decision (not an accident): an empty subset (e.g. a
+        # predicate matching nothing) is NOT rejected by the scale check —
+        # its own EmptySubsetError, raised downstream by ma6_estimands.py's
+        # factories, is where emptiness is flagged, not this guard.
+        gauge = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [datetime(2024, 7, 1)], "value_mm": [1.0]}),
+                Station("A"),
+            ),
+        )
+
+        result = subset(gauge, pl.lit(False), scale=Scale.DJF)  # noqa: FBT003
+
+        assert result.n_gauge_retained == 0
 
 
 class TestRetainedSubsetSchemaGuard:
@@ -427,9 +681,7 @@ class TestRetainedSubsetSchemaGuard:
         )
 
         with pytest.raises(RetainedSubsetSchemaError, match="era5_nearest_mm_per_h"):
-            GaugeRetainedSubset(
-                frame=paired_frame, station=Station("A"), scale=Scale.JJAS
-            )
+            GaugeRetainedSubset(frame=paired_frame, scale=Scale.MONTHLY)
 
     def test_a_gauge_frame_is_rejected_by_paired_retained_subset(self) -> None:
         gauge_frame = pl.DataFrame(
@@ -437,9 +689,30 @@ class TestRetainedSubsetSchemaGuard:
         )
 
         with pytest.raises(RetainedSubsetSchemaError, match="era5_nearest_mm_per_h"):
-            PairedRetainedSubset(
-                frame=gauge_frame, station=Station("A"), scale=Scale.JJAS
-            )
+            PairedRetainedSubset(frame=gauge_frame, scale=Scale.MONTHLY)
+
+    def test_a_gauge_frame_missing_the_station_column_is_rejected(self) -> None:
+        # Change 1's schema guard, eager at construction — distinct from
+        # StationIdentityError, which the LAZY `.station` property raises
+        # only when actually read.
+        no_station_col = pl.DataFrame(
+            {"timestamp": [1, 2, 3], "value_mm": [1.0, 2.0, 3.0]}
+        )
+
+        with pytest.raises(RetainedSubsetSchemaError, match="'station' column"):
+            GaugeRetainedSubset(frame=no_station_col, scale=Scale.MONTHLY)
+
+    def test_a_paired_frame_missing_the_station_column_is_rejected(self) -> None:
+        no_station_col = pl.DataFrame(
+            {
+                "timestamp": [1, 2, 3],
+                "gauge_value_mm": [1.0, 2.0, 3.0],
+                "era5_nearest_mm_per_h": [0.1, 0.2, 0.3],
+            }
+        )
+
+        with pytest.raises(RetainedSubsetSchemaError, match="'station' column"):
+            PairedRetainedSubset(frame=no_station_col, scale=Scale.MONTHLY)
 
 
 def _write_series_nearest_nc(
@@ -476,10 +749,12 @@ class TestReadEra5NearestFrames:
             },
         )
 
-        frames = _read_era5_nearest_frames(path)
+        series = _read_era5_nearest_frames(path)
 
-        assert frames[Station("A")].height == 2
-        assert frames[Station("B")].height == 3
+        assert series[Station("A")].frame.height == 2
+        assert series[Station("B")].frame.height == 3
+        assert series[Station("A")].station == Station("A")
+        assert series[Station("B")].station == Station("B")
 
 
 class TestBuildPairedPopulation:
@@ -497,10 +772,12 @@ class TestBuildPairedPopulation:
         gauge_only_b = GaugeMaskedPopulation(
             by_station={
                 Station("B"): MaskedGaugeSeries(
-                    station=Station("B"),
-                    frame=pl.DataFrame(
-                        {"timestamp": valid_time, "value_mm": [1.0, 2.0, 3.0]}
-                    ).with_columns(pl.col("timestamp").cast(pl.Datetime("ms"))),
+                    frame=_with_station(
+                        pl.DataFrame(
+                            {"timestamp": valid_time, "value_mm": [1.0, 2.0, 3.0]}
+                        ).with_columns(pl.col("timestamp").cast(pl.Datetime("ms"))),
+                        Station("B"),
+                    ),
                 )
             },
             excluded=(),
@@ -524,10 +801,12 @@ class TestBuildPairedPopulation:
         gauge_population = GaugeMaskedPopulation(
             by_station={
                 Station("A"): MaskedGaugeSeries(
-                    station=Station("A"),
-                    frame=pl.DataFrame(
-                        {"timestamp": valid_time, "value_mm": [10.0, 20.0, 30.0]}
-                    ).with_columns(pl.col("timestamp").cast(pl.Datetime("ms"))),
+                    frame=_with_station(
+                        pl.DataFrame(
+                            {"timestamp": valid_time, "value_mm": [10.0, 20.0, 30.0]}
+                        ).with_columns(pl.col("timestamp").cast(pl.Datetime("ms"))),
+                        Station("A"),
+                    ),
                 )
             },
             excluded=(),

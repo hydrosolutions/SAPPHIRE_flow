@@ -475,10 +475,13 @@ def matched_hour_mean_difference(
     paired_subset: PairedRetainedSubset,
 ) -> MatchedHourMeanDifference:
     if paired_subset.n_common_retained == 0:
+        # No `.station` here: an empty subset's frame carries zero rows, so
+        # its station column carries zero values too — genuinely unknowable
+        # (`ma6_pairs.StationIdentityError`), not merely unchecked. `.scale`
+        # remains available (a plain field, not frame-derived).
         raise EmptySubsetError(
-            f"{paired_subset.station!r} at {paired_subset.scale}: zero "
-            "commonly-retained hours — no matched-hour mean difference is "
-            "computable"
+            f"at {paired_subset.scale}: zero commonly-retained hours — no "
+            "matched-hour mean difference is computable"
         )
     return MatchedHourMeanDifference(subset=paired_subset)
 
@@ -550,10 +553,11 @@ def wet_hour_conditional_intensity_bias(
     instance `scale_subset`'s output, carrying dry hours too) is refused
     here — `UnconditionedSubsetError`, not silently accepted."""
     if wet_paired_subset.n_common_retained == 0:
+        # No `.station` here — see matched_hour_mean_difference's own empty
+        # branch: an empty subset's station is genuinely unknowable.
         raise EmptySubsetError(
-            f"{wet_paired_subset.station!r} at {wet_paired_subset.scale}: "
-            "zero gauge-wet commonly-retained hours — no wet-hour "
-            "conditional intensity bias is computable"
+            f"at {wet_paired_subset.scale}: zero gauge-wet commonly-retained "
+            "hours — no wet-hour conditional intensity bias is computable"
         )
     all_gauge_wet = wet_paired_subset.frame.select(
         wet_predicate("gauge_value_mm", params).all()
@@ -666,9 +670,10 @@ def joint_wet_hour_conditional_intensity_bias(
     conditioned) subset is refused here — `UnconditionedSubsetError`, not
     silently accepted."""
     if joint_wet_paired_subset.n_common_retained == 0:
+        # No `.station` here — see matched_hour_mean_difference's own empty
+        # branch: an empty subset's station is genuinely unknowable.
         raise EmptySubsetError(
-            f"{joint_wet_paired_subset.station!r} at "
-            f"{joint_wet_paired_subset.scale}: zero jointly-wet "
+            f"at {joint_wet_paired_subset.scale}: zero jointly-wet "
             "commonly-retained hours — no joint wet-hour conditional "
             "intensity bias is computable"
         )
@@ -977,10 +982,11 @@ def conditional_accumulated_difference(
     paired_subset: PairedRetainedSubset,
 ) -> ConditionalAccumulatedDifference:
     if paired_subset.n_common_retained == 0:
+        # No `.station` here — see matched_hour_mean_difference's own empty
+        # branch: an empty subset's station is genuinely unknowable.
         raise EmptySubsetError(
-            f"{paired_subset.station!r} at {paired_subset.scale}: zero "
-            "commonly-retained hours — no conditional accumulated "
-            "difference is computable"
+            f"at {paired_subset.scale}: zero commonly-retained hours — no "
+            "conditional accumulated difference is computable"
         )
     return ConditionalAccumulatedDifference(subset=paired_subset)
 
@@ -1173,6 +1179,33 @@ class ElevationBandEstimand:
             )
 
 
+def _verify_band_membership(
+    band: ElevationBand,
+    stations: tuple[Station, ...],
+    station_elev_m: Mapping[Station, float],
+) -> None:
+    """The ONE place D4a band membership is verified — re-derived through
+    `assign_elevation_band` (D4a's own edges), never a separately-
+    suppliable band label a caller could attach independently of the
+    stations actually being aggregated. Shared by every band factory
+    (`band_matched_hour_mean_difference`, `band_conditional_accumulated_
+    difference`, `band_wet_hour_conditional_intensity_bias_comparison`),
+    never re-implemented per factory (Plan 184 phase 2 round 2, change 4)."""
+    for station in stations:
+        if station not in station_elev_m:
+            raise BandMembershipError(
+                f"{band}: {station!r} has no known elevation in "
+                "station_elev_m — cannot verify band membership"
+            )
+        elev_m = station_elev_m[station]
+        actual_band = assign_elevation_band(elev_m)
+        if actual_band is not band:
+            raise BandMembershipError(
+                f"{band}: {station!r} at {elev_m} m belongs to {actual_band} "
+                f"(D4a edges), not the declared {band}"
+            )
+
+
 def _band_estimand(
     band: ElevationBand, scale: Scale, values_and_ns: tuple[tuple[float, int], ...]
 ) -> ElevationBandEstimand:
@@ -1188,14 +1221,23 @@ def _band_estimand(
 
 
 def band_matched_hour_mean_difference(
-    band: ElevationBand, results: tuple[MatchedHourMeanDifference, ...]
+    band: ElevationBand,
+    results: tuple[MatchedHourMeanDifference, ...],
+    *,
+    station_elev_m: Mapping[Station, float],
 ) -> ElevationBandEstimand:
     """`results` is a plain tuple, not a `Mapping[Station, ...]` — station
     identity is read off each result's own (now-intrinsic) `.station`,
     never a caller-aligned dict key that could disagree with it or repeat a
     station under two different keys (Finding, Plan 184 phase 2 root-cause
     fix, 2026-08-24 — the old `Mapping` design aggregated `.values()` and
-    never looked at its own keys)."""
+    never looked at its own keys).
+
+    `station_elev_m` gets the SAME band-membership verification
+    `band_wet_hour_conditional_intensity_bias_comparison` already applies
+    (`_verify_band_membership`) — a member whose own elevation places it
+    outside `band`'s D4a edges is refused, not silently averaged in (Plan
+    184 phase 2 round 2, change 4)."""
     if not results:
         raise EmptySubsetError(
             f"{band}: zero member results — no band estimand is computable"
@@ -1205,6 +1247,7 @@ def band_matched_hour_mean_difference(
         raise DuplicateBandMemberError(
             f"{band}: results carries a repeated station: {stations}"
         )
+    _verify_band_membership(band, stations, station_elev_m)
     scales = {r.scale for r in results}
     if len(scales) > 1:
         raise ScaleNotSupportedError(
@@ -1267,19 +1310,7 @@ class ElevationBandWetHourConditionalIntensityBiasComparison:
                 f"{self.band}: member comparisons span {scales}, not the "
                 f"declared scale {self.scale}"
             )
-        for c in self.comparisons:
-            if c.station not in self.station_elev_m:
-                raise BandMembershipError(
-                    f"{self.band}: {c.station!r} has no known elevation in "
-                    "station_elev_m — cannot verify band membership"
-                )
-            elev_m = self.station_elev_m[c.station]
-            actual_band = assign_elevation_band(elev_m)
-            if actual_band is not self.band:
-                raise BandMembershipError(
-                    f"{self.band}: {c.station!r} at {elev_m} m belongs to "
-                    f"{actual_band} (D4a edges), not the declared {self.band}"
-                )
+        _verify_band_membership(self.band, stations, self.station_elev_m)
 
     @property
     def gauge_alone(self) -> ElevationBandEstimand:
@@ -1334,14 +1365,23 @@ def band_wet_hour_conditional_intensity_bias_comparison(
 
 
 def band_conditional_accumulated_difference(
-    band: ElevationBand, results: tuple[ConditionalAccumulatedDifference, ...]
+    band: ElevationBand,
+    results: tuple[ConditionalAccumulatedDifference, ...],
+    *,
+    station_elev_m: Mapping[Station, float],
 ) -> ElevationBandEstimand:
     """`results` is a plain tuple, not a `Mapping[Station, ...]` — station
     identity is read off each result's own (now-intrinsic) `.station`,
     never a caller-aligned dict key that could disagree with it or repeat a
     station under two different keys (Finding, Plan 184 phase 2 root-cause
     fix, 2026-08-24 — the old `Mapping` design aggregated `.values()` and
-    never looked at its own keys)."""
+    never looked at its own keys).
+
+    `station_elev_m` gets the SAME band-membership verification
+    `band_wet_hour_conditional_intensity_bias_comparison` already applies
+    (`_verify_band_membership`) — a member whose own elevation places it
+    outside `band`'s D4a edges is refused, not silently averaged in (Plan
+    184 phase 2 round 2, change 4)."""
     if not results:
         raise EmptySubsetError(
             f"{band}: zero member results — no band estimand is computable"
@@ -1351,6 +1391,7 @@ def band_conditional_accumulated_difference(
         raise DuplicateBandMemberError(
             f"{band}: results carries a repeated station: {stations}"
         )
+    _verify_band_membership(band, stations, station_elev_m)
     scales = {r.scale for r in results}
     if len(scales) > 1:
         raise ScaleNotSupportedError(

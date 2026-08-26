@@ -444,10 +444,14 @@ class TestComputeNeighbourCellVariability:
 def _masked_series(
     station: str, timestamps: list[datetime], values: list[float]
 ) -> MaskedGaugeSeries:
-    frame = pl.DataFrame({"timestamp": timestamps, "value_mm": values}).with_columns(
-        pl.col("timestamp").cast(pl.Datetime("ms"))
-    )
-    return MaskedGaugeSeries(station=Station(station), frame=frame)
+    frame = pl.DataFrame(
+        {
+            "station": [station] * len(timestamps),
+            "timestamp": timestamps,
+            "value_mm": values,
+        }
+    ).with_columns(pl.col("timestamp").cast(pl.Datetime("ms")))
+    return MaskedGaugeSeries(frame=frame)
 
 
 def _t(hour: int) -> datetime:

@@ -423,8 +423,14 @@ def compute_within_cell_pair(
         )
     series_a = gauge_population.by_station[station_a]
     series_b = gauge_population.by_station[station_b]
+    # `series_a.frame`/`series_b.frame` each now carry their OWN `station`
+    # column (Plan 184 phase 2 round 2 — `station` is derived from it, not
+    # a separate field) — dropped from the `b` side before the join so the
+    # two frames' `station` columns do not collide on `timestamp`.
     joined = series_a.frame.rename({"value_mm": "value_a"}).join(
-        series_b.frame.rename({"value_mm": "value_b"}), on="timestamp", how="inner"
+        series_b.frame.rename({"value_mm": "value_b"}).drop("station"),
+        on="timestamp",
+        how="inner",
     )
     n_common = joined.height
     sum_a = sum_b = accumulated_difference = mean_difference = None

@@ -54,7 +54,27 @@ the series being sliced (`series.station`) and the `scale` `subset()` itself
 was called with — never re-derived or re-suppliable downstream. `Scale`
 lives here, not in `ma6_estimands.py`, for the same reason: a subset's scale
 is a property of HOW it was taken, not of what statistic is later computed
-from it. `ma6_estimands.py` imports it from here."""
+from it. `ma6_estimands.py` imports it from here.
+
+**Round 2 (Plan 184 phase 2, 2026-08-26): a stamp is still a label nothing
+checks.** `subset()` stamping `station`/`scale` onto its result closed WHERE
+identity could be re-supplied, but a `station=`/`scale=` constructor field is
+still just data a caller hands in alongside the frame — nothing enforces
+that it actually describes the frame underneath it. This round removes the
+ability to STATE identity at all, on every type that carries a frame:
+`station` is no longer a field anywhere in this module — `MaskedGaugeSeries`,
+`PairedSeries`, `GaugeRetainedSubset`, `PairedRetainedSubset` and the new
+`Era5NearestSeries` all derive it as a `@property` read off their own
+frame's `station` column (`_frame_station`), raising `StationIdentityError`
+if that column is absent or does not resolve to exactly one distinct
+station. `scale`, unlike `station`, cannot be derived this way (a JJAS
+subset's own sub-subset is still JJAS-consistent) — it stays a plain field
+on the two subset types, but is now VERIFIED against the frame's own
+timestamps in `__post_init__` (`_check_scale_consistency`), raising
+`ScaleConsistencyError` on a mismatch. `pair_with_era5` takes the new
+`Era5NearestSeries` (not a bare `pl.DataFrame`) and rejects a station
+mismatch between its two arguments, rather than trusting the gauge side's
+label for both."""
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
 # pyright: reportUnknownArgumentType=false
@@ -129,15 +149,102 @@ class RetainedSubsetSchemaError(ValueError):
     absence of `era5_nearest_mm_per_h` is the discriminator."""
 
 
+class StationIdentityError(ValueError):
+    """`station` is derived from a frame's own `station` column, never a
+    separately-suppliable constructor field (Plan 184 phase 2, round 2
+    root-cause fix — module docstring). Raised when that column is absent,
+    or when it does not resolve to exactly one distinct station.
+
+    A subset filtered down to zero rows (e.g. a station with no DJF hours
+    at all) genuinely carries no station identity any more — there is no
+    row left to read it from. `GaugeRetainedSubset`/`PairedRetainedSubset`
+    therefore derive `station` LAZILY (only when the property is actually
+    read), so a legitimately empty subset stays constructible and usable
+    for its own `n_*_retained == 0` check; only an attempt to read ITS
+    station then raises. `MaskedGaugeSeries`/`PairedSeries`/
+    `Era5NearestSeries` are never expected to be empty (a station's own
+    whole-record series), so they verify eagerly, at construction."""
+
+
+def _frame_station(frame: pl.DataFrame, *, type_name: str) -> Station:
+    if "station" not in frame.columns:
+        raise StationIdentityError(
+            f"{type_name} requires a 'station' column on its frame, got "
+            f"columns {frame.columns}"
+        )
+    stations = frame["station"].unique().to_list()
+    if len(stations) != 1:
+        raise StationIdentityError(
+            f"{type_name}'s frame must carry exactly one distinct station, "
+            f"got {sorted(str(s) for s in stations)}"
+        )
+    return Station(str(stations[0]))
+
+
+class ScaleConsistencyError(ValueError):
+    """A `GaugeRetainedSubset`/`PairedRetainedSubset` was constructed with a
+    `scale` its own frame's timestamps do not actually satisfy — e.g.
+    `Scale.JJAS` requires every retained hour's month to be in {6, 7, 8, 9}.
+    `scale` cannot be derived the way `station` is (a JJAS subset's own
+    sub-subset is still JJAS-consistent, so there is no single "the" scale
+    a frame implies), but it IS exactly checkable against the frame it
+    claims to describe — so it is checked, not merely trusted (Plan 184
+    phase 2, round 2 root-cause fix)."""
+
+
+_SCALE_MONTHS: dict[Scale, frozenset[int]] = {
+    Scale.JJAS: frozenset({6, 7, 8, 9}),
+    Scale.DJF: frozenset({12, 1, 2}),
+}
+"""DAILY/MONTHLY carry no entry — D12's categorical grain is reported over
+the whole record, with no season restriction to check (module docstring's
+scope decision)."""
+
+
+def _check_scale_consistency(
+    frame: pl.DataFrame, scale: Scale, *, type_name: str
+) -> None:
+    """DAILY/MONTHLY have no entry in `_SCALE_MONTHS` — nothing is checked
+    for those two scales. An EMPTY frame is deliberately treated as
+    vacuously consistent with any scale, not rejected: a legitimately
+    empty subset (e.g. a station with no DJF hours at all) is already
+    flagged by its own `EmptySubsetError` downstream (`ma6_estimands.py`);
+    this check exists to catch a scale that disagrees with data that IS
+    there, not to duplicate the emptiness check."""
+    months = _SCALE_MONTHS.get(scale)
+    if months is None or frame.height == 0:
+        return
+    bad = frame.filter(~pl.col("timestamp").dt.month().is_in(months))
+    if bad.height > 0:
+        bad_months = sorted(set(bad["timestamp"].dt.month().to_list()))
+        raise ScaleConsistencyError(
+            f"{type_name} declares scale={scale} but its frame carries "
+            f"{bad.height} row(s) outside months {sorted(months)} — found "
+            f"month(s) {bad_months}"
+        )
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class MaskedGaugeSeries:
     """One station's M-A3-masked, on-grid gauge series — season-agnostic:
     every hour `qc_mask` retained, across the whole record, never one
-    season's worth."""
+    season's worth.
 
-    station: Station
+    `station` is a `@property` derived from the frame's own `station`
+    column (`_frame_station`) — NOT a constructor field (Plan 184 phase 2,
+    round 2 root-cause fix, module docstring) — verified eagerly in
+    `__post_init__` since this type is never expected to be legitimately
+    empty."""
+
     frame: pl.DataFrame
-    """Columns `(timestamp, value_mm)`, sorted ascending."""
+    """Columns `(station, timestamp, value_mm)`, sorted ascending."""
+
+    def __post_init__(self) -> None:
+        _ = self.station
+
+    @property
+    def station(self) -> Station:
+        return _frame_station(self.frame, type_name="MaskedGaugeSeries")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -165,12 +272,22 @@ class GaugeMaskedPopulation:
 class PairedSeries:
     """T1's second named output — one station's gauge series paired against
     the ERA5-Land NEAREST series on commonly-retained timestamps only
-    (D2)."""
+    (D2).
 
-    station: Station
+    `station` is a `@property` derived from the frame's own `station`
+    column, exactly as `MaskedGaugeSeries`'s is (Plan 184 phase 2, round 2
+    root-cause fix) — verified eagerly in `__post_init__`."""
+
     frame: pl.DataFrame
-    """Columns `(timestamp, gauge_value_mm, era5_nearest_mm_per_h)`, sorted
-    ascending, restricted to timestamps present on both sides."""
+    """Columns `(station, timestamp, gauge_value_mm, era5_nearest_mm_per_h)`,
+    sorted ascending, restricted to timestamps present on both sides."""
+
+    def __post_init__(self) -> None:
+        _ = self.station
+
+    @property
+    def station(self) -> Station:
+        return _frame_station(self.frame, type_name="PairedSeries")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -188,12 +305,15 @@ class GaugeRetainedSubset:
     D2/Exit 1/4 mean by "n" cannot accept this type (Finding 1, Plan 184 T1
     review).
 
-    `station` and `scale` are plain fields populated ONCE, by `subset()`
-    itself, from the series being sliced and the scale it was sliced by
-    (root-cause structural fix, module docstring) — a downstream consumer
-    reads them off this subset rather than accepting them independently."""
+    `scale` is a plain field, populated ONCE by `subset()` itself from the
+    scale it was called with, and VERIFIED against the frame's own
+    timestamps in `__post_init__` (`_check_scale_consistency`) — round 2's
+    fix, module docstring. `station` is NOT a field at all any more — it is
+    a `@property` derived from the frame's own `station` column
+    (`_frame_station`), read LAZILY (never eagerly checked here) so a
+    legitimately empty subset stays constructible; only reading `.station`
+    on one raises `StationIdentityError`."""
 
-    station: Station
     scale: Scale
     frame: pl.DataFrame
 
@@ -201,10 +321,22 @@ class GaugeRetainedSubset:
         if _PAIRED_ONLY_COLUMN in self.frame.columns:
             raise RetainedSubsetSchemaError(
                 "GaugeRetainedSubset requires a gauge-only frame "
-                "(timestamp, value_mm), but the given frame carries "
-                f"{_PAIRED_ONLY_COLUMN!r} — this is a PAIRED frame, and "
-                "belongs in PairedRetainedSubset instead"
+                "(station, timestamp, value_mm), but the given frame "
+                f"carries {_PAIRED_ONLY_COLUMN!r} — this is a PAIRED frame, "
+                "and belongs in PairedRetainedSubset instead"
             )
+        if "station" not in self.frame.columns:
+            raise RetainedSubsetSchemaError(
+                "GaugeRetainedSubset requires a 'station' column on its "
+                f"frame, got columns {self.frame.columns}"
+            )
+        _check_scale_consistency(
+            self.frame, self.scale, type_name="GaugeRetainedSubset"
+        )
+
+    @property
+    def station(self) -> Station:
+        return _frame_station(self.frame, type_name="GaugeRetainedSubset")
 
     @property
     def n_gauge_retained(self) -> int:
@@ -226,13 +358,17 @@ class PairedRetainedSubset:
     type from `GaugeRetainedSubset`, it can never be gauge-only exposure
     wearing the common-retained name (Finding 1, Plan 184 T1 review).
 
-    `station` and `scale` are plain fields populated ONCE, by `subset()`
-    itself, from the series being sliced and the scale it was sliced by
-    (root-cause structural fix, module docstring) — every T3 estimand built
-    from this subset derives its own `station`/`scale` from THESE fields,
-    never accepting them as independent arguments."""
+    `scale` is a plain field, populated ONCE by `subset()` itself from the
+    scale it was called with, and VERIFIED against the frame's own
+    timestamps in `__post_init__` (`_check_scale_consistency`) — round 2's
+    fix, module docstring. `station` is NOT a field at all any more — it is
+    a `@property` derived from the frame's own `station` column
+    (`_frame_station`), read LAZILY (never eagerly checked here) so a
+    legitimately empty subset stays constructible; only reading `.station`
+    on one raises `StationIdentityError`. Every T3 estimand built from this
+    subset derives its own `station`/`scale` from these, never accepting
+    them as independent arguments."""
 
-    station: Station
     scale: Scale
     frame: pl.DataFrame
 
@@ -240,11 +376,23 @@ class PairedRetainedSubset:
         if _PAIRED_ONLY_COLUMN not in self.frame.columns:
             raise RetainedSubsetSchemaError(
                 "PairedRetainedSubset requires a paired frame "
-                f"(timestamp, gauge_value_mm, {_PAIRED_ONLY_COLUMN}), but "
-                f"the given frame is missing {_PAIRED_ONLY_COLUMN!r} — this "
-                "is a GAUGE-ONLY frame, and belongs in GaugeRetainedSubset "
-                "instead"
+                f"(station, timestamp, gauge_value_mm, {_PAIRED_ONLY_COLUMN}), "
+                f"but the given frame is missing {_PAIRED_ONLY_COLUMN!r} — "
+                "this is a GAUGE-ONLY frame, and belongs in "
+                "GaugeRetainedSubset instead"
             )
+        if "station" not in self.frame.columns:
+            raise RetainedSubsetSchemaError(
+                "PairedRetainedSubset requires a 'station' column on its "
+                f"frame, got columns {self.frame.columns}"
+            )
+        _check_scale_consistency(
+            self.frame, self.scale, type_name="PairedRetainedSubset"
+        )
+
+    @property
+    def station(self) -> Station:
+        return _frame_station(self.frame, type_name="PairedRetainedSubset")
 
     @property
     def n_common_retained(self) -> int:
@@ -274,23 +422,25 @@ def subset(
     other. Either subset's count is always freshly computed from the
     RESULT of this filter.
 
-    `station` and `scale` are stamped onto the result HERE, from
-    `series.station` and this call's own `scale` argument — the single
-    place either subset type's identity is ever populated (root-cause
-    structural fix, module docstring). The `isinstance` checks are not
-    merely a `MaskedGaugeSeries`/else dispatch: something that duck-types a
-    `.frame`/`.station` pair without actually being a `MaskedGaugeSeries`
-    or `PairedSeries` (for instance, a `PairedRetainedSubset` passed back in
-    by mistake) is rejected outright, rather than silently re-subset — this
-    is what makes it impossible to launder an unconditioned subset through
-    `subset()` a second time and have it come out looking freshly taken."""
+    `scale` is stamped onto the result HERE, from this call's own `scale`
+    argument. `station` is NOT stamped any more (round 2, module
+    docstring) — filtering `series.frame` on `predicate` preserves its
+    `station` column, so the result's `.station` property derives straight
+    from that filtered frame, never from `series.station` re-supplied as an
+    argument. The `isinstance` checks are not merely a `MaskedGaugeSeries`/
+    else dispatch: something that duck-types a `.frame`/`.station` pair
+    without actually being a `MaskedGaugeSeries` or `PairedSeries` (for
+    instance, a `PairedRetainedSubset` passed back in by mistake) is
+    rejected outright, rather than silently re-subset — this is what makes
+    it impossible to launder an unconditioned subset through `subset()` a
+    second time and have it come out looking freshly taken."""
     filtered = series.frame.filter(predicate)
     if isinstance(series, MaskedGaugeSeries):
-        return GaugeRetainedSubset(frame=filtered, station=series.station, scale=scale)
+        return GaugeRetainedSubset(frame=filtered, scale=scale)
     if isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
         series, PairedSeries
     ):
-        return PairedRetainedSubset(frame=filtered, station=series.station, scale=scale)
+        return PairedRetainedSubset(frame=filtered, scale=scale)
     raise TypeError(
         f"subset() requires a MaskedGaugeSeries or PairedSeries, got {type(series)}"
     )
@@ -340,9 +490,8 @@ def build_gauge_masked_population(
 
     by_station = {
         station: MaskedGaugeSeries(
-            station=station,
             frame=retained_all.filter(pl.col("station") == str(station)).select(
-                "timestamp", "value_mm"
+                "station", "timestamp", "value_mm"
             ),
         )
         for station in sorted(live_stations - excluded_stations)
@@ -417,15 +566,39 @@ def discover_precip_bundle(
     )
 
 
-def _read_era5_nearest_frames(series_path: Path) -> dict[Station, pl.DataFrame]:
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Era5NearestSeries:
+    """One station's ERA5-Land NEAREST series, already finite-filtered by
+    the caller (`_read_era5_nearest_frames`). `station` is derived from the
+    frame's own `station` column — the SAME `_frame_station` mechanism
+    `MaskedGaugeSeries`/`PairedSeries` use, not a parallel one (Plan 184
+    phase 2 round 2, change 3) — so a Station-B ERA5 frame can never be
+    silently paired under Station-A's label; `pair_with_era5` verifies the
+    two sides agree instead of trusting the gauge side's label for both."""
+
+    frame: pl.DataFrame
+    """Columns `(station, timestamp, era5_nearest_mm_per_h)`."""
+
+    def __post_init__(self) -> None:
+        _ = self.station
+
+    @property
+    def station(self) -> Station:
+        return _frame_station(self.frame, type_name="Era5NearestSeries")
+
+
+def _read_era5_nearest_frames(series_path: Path) -> dict[Station, Era5NearestSeries]:
     """One read of `series_nearest.nc` — D1's declared NEAREST operator,
     the PRIMARY series (`series_bilinear.nc` is never read here). Each
     station's frame is filtered to FINITE values only: D2's pairing must
-    drop an hour ERA5 lacks, never carry a NaN through the join."""
+    drop an hour ERA5 lacks, never carry a NaN through the join. Each
+    frame carries its own `station` column (round 2, module docstring) so
+    the identity `pair_with_era5` checks is the SAME data the join itself
+    reads, not a dict key supplied alongside it."""
     with xr.open_dataset(series_path, engine="h5netcdf") as ds:
         loaded = ds.load()
     valid_time = loaded["valid_time"].values
-    frames: dict[Station, pl.DataFrame] = {}
+    series: dict[Station, Era5NearestSeries] = {}
     for station_name in loaded["station"].to_numpy():
         station = Station(str(station_name))
         values = (
@@ -434,26 +607,44 @@ def _read_era5_nearest_frames(series_path: Path) -> dict[Station, pl.DataFrame]:
             .to_numpy()
             .astype("float64")
         )
-        frame = pl.DataFrame({"timestamp": valid_time, "era5_nearest_mm_per_h": values})
-        frames[station] = frame.filter(pl.col("era5_nearest_mm_per_h").is_finite())
-    return frames
+        frame = pl.DataFrame(
+            {
+                "station": [str(station)] * len(valid_time),
+                "timestamp": valid_time,
+                "era5_nearest_mm_per_h": values,
+            }
+        ).filter(pl.col("era5_nearest_mm_per_h").is_finite())
+        series[station] = Era5NearestSeries(frame=frame)
+    return series
 
 
-def pair_with_era5(gauge: MaskedGaugeSeries, era5_frame: pl.DataFrame) -> PairedSeries:
+def pair_with_era5(gauge: MaskedGaugeSeries, era5: Era5NearestSeries) -> PairedSeries:
     """D2 — inner-join `gauge.frame` (already M-A3-retained) against
-    `era5_frame` (already finite-filtered by the caller) on exact
+    `era5.frame` (already finite-filtered by the caller) on exact
     timestamp. An hour survives only when BOTH sides already kept it: an
     hour the gauge mask alone would have retained, but ERA5 lacks (or vice
     versa), is dropped HERE — this is what makes the pairing genuinely
-    commonly-retained rather than gauge-only."""
+    commonly-retained rather than gauge-only.
+
+    `gauge.station` and `era5.station` are each derived from their OWN
+    frame — this function REJECTS a mismatch between the two rather than
+    labelling the result from the gauge side alone (Plan 184 phase 2 round
+    2, change 3: a Station-B ERA5 frame must never silently pair with
+    Station-A gauge data and emit as A)."""
+    if gauge.station != era5.station:
+        raise StationSetMismatchError(
+            f"gauge series is {gauge.station!r} but era5 series is "
+            f"{era5.station!r} — pair_with_era5 refuses to pair mismatched "
+            "station identities"
+        )
     gauge_frame = gauge.frame.rename({"value_mm": "gauge_value_mm"})
-    era5_aligned = era5_frame.with_columns(
+    era5_aligned = era5.frame.select("timestamp", "era5_nearest_mm_per_h").with_columns(
         pl.col("timestamp").cast(gauge_frame.schema["timestamp"])
     )
     paired = gauge_frame.join(era5_aligned, on="timestamp", how="inner").sort(
         "timestamp"
     )
-    return PairedSeries(station=gauge.station, frame=paired)
+    return PairedSeries(frame=paired)
 
 
 def build_paired_population(
@@ -464,15 +655,15 @@ def build_paired_population(
     applied there) against the SAME published bundle's NEAREST series.
     Never re-reads or re-derives the mask."""
     series_path = precip_bundle_dir / _ERA5_NEAREST_SERIES_FILENAME
-    era5_frames = _read_era5_nearest_frames(series_path)
+    era5_series = _read_era5_nearest_frames(series_path)
     paired: dict[Station, PairedSeries] = {}
     for station, gauge_series in gauge_population.by_station.items():
-        era5_frame = era5_frames.get(station)
-        if era5_frame is None:
+        era5_for_station = era5_series.get(station)
+        if era5_for_station is None:
             raise StationSetMismatchError(
                 f"{station!r} is present in the gauge-masked population but "
                 f"absent from the ERA5-Land bundle's station set at "
                 f"{series_path}"
             )
-        paired[station] = pair_with_era5(gauge_series, era5_frame)
+        paired[station] = pair_with_era5(gauge_series, era5_for_station)
     return paired
