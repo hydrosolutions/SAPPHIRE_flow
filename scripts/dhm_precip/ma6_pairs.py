@@ -80,6 +80,12 @@ label for both."""
 # pyright: reportUnknownArgumentType=false
 # Precedent: era5_extract.py:12 — xarray ships partial type stubs; the same
 # three rules are relaxed repo-wide for every module that touches it.
+#
+# Declared non-goals (Plan 184 T3 round 7, owner decision): passing a `str`
+# where a `Scale` enum is annotated (pyright catches this statically) and
+# mutating a `pl.DataFrame` in place after it is inside a frozen dataclass
+# (outside the threat model — an analyst wiring a consumer wrong, not one
+# deliberately defeating a frozen object's own internals).
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -178,40 +184,56 @@ def _frame_station(frame: pl.DataFrame, *, type_name: str) -> Station:
             f"{type_name}'s frame must carry exactly one distinct station, "
             f"got {sorted(str(s) for s in stations)}"
         )
-    return Station(str(stations[0]))
+    (value,) = stations
+    # A2 fix: a single distinct value passes the count check above even
+    # when that value is null or blank — `Station(str(None))` would
+    # otherwise silently mint the literal station "None". Null/empty is
+    # not a station identity, real or degenerate.
+    if value is None or not str(value).strip():
+        raise StationIdentityError(
+            f"{type_name}'s frame's 'station' column carries a null or "
+            f"empty value — not a real station identity: {value!r}"
+        )
+    return Station(str(value))
 
 
 class ScaleConsistencyError(ValueError):
     """A `GaugeRetainedSubset`/`PairedRetainedSubset` was constructed with a
     `scale` its own frame's timestamps do not actually satisfy — e.g.
-    `Scale.JJAS` requires every retained hour's month to be in {6, 7, 8, 9}.
-    `scale` cannot be derived the way `station` is (a JJAS subset's own
-    sub-subset is still JJAS-consistent, so there is no single "the" scale
-    a frame implies), but it IS exactly checkable against the frame it
-    claims to describe — so it is checked, not merely trusted (Plan 184
-    phase 2, round 2 root-cause fix)."""
+    `Scale.JJAS` requires every retained hour's month to be in
+    `params.jjas_months`. `scale` cannot be derived the way `station` is (a
+    JJAS subset's own sub-subset is still JJAS-consistent, so there is no
+    single "the" scale a frame implies), but it IS exactly checkable
+    against the frame it claims to describe — so it is checked, not merely
+    trusted (Plan 184 phase 2, round 2 root-cause fix)."""
 
 
-_SCALE_MONTHS: dict[Scale, frozenset[int]] = {
-    Scale.JJAS: frozenset({6, 7, 8, 9}),
-    Scale.DJF: frozenset({12, 1, 2}),
-}
-"""DAILY/MONTHLY carry no entry — D12's categorical grain is reported over
-the whole record, with no season restriction to check (module docstring's
-scope decision)."""
+def _scale_months(scale: Scale, params: DhmPrecipParams) -> frozenset[int] | None:
+    """DAILY/MONTHLY return `None` — D12's categorical grain is reported
+    over the whole record, with no season restriction to check (module
+    docstring's scope decision). JJAS/DJF read `params.jjas_months`/
+    `params.djf_months` — the SAME field `ma6_estimands.season_membership_
+    predicate` builds its selecting predicate from — never a private copy
+    (A1 fix, Plan 184 T3 round 7: a validator must not re-derive the
+    computation it is checking)."""
+    if scale is Scale.JJAS:
+        return frozenset(params.jjas_months)
+    if scale is Scale.DJF:
+        return frozenset(params.djf_months)
+    return None
 
 
 def _check_scale_consistency(
-    frame: pl.DataFrame, scale: Scale, *, type_name: str
+    frame: pl.DataFrame, scale: Scale, params: DhmPrecipParams, *, type_name: str
 ) -> None:
-    """DAILY/MONTHLY have no entry in `_SCALE_MONTHS` — nothing is checked
-    for those two scales. An EMPTY frame is deliberately treated as
-    vacuously consistent with any scale, not rejected: a legitimately
-    empty subset (e.g. a station with no DJF hours at all) is already
-    flagged by its own `EmptySubsetError` downstream (`ma6_estimands.py`);
-    this check exists to catch a scale that disagrees with data that IS
-    there, not to duplicate the emptiness check."""
-    months = _SCALE_MONTHS.get(scale)
+    """DAILY/MONTHLY have no month restriction — nothing is checked for
+    those two scales. An EMPTY frame is deliberately treated as vacuously
+    consistent with any scale, not rejected: a legitimately empty subset
+    (e.g. a station with no DJF hours at all) is already flagged by its own
+    `EmptySubsetError` downstream (`ma6_estimands.py`); this check exists
+    to catch a scale that disagrees with data that IS there, not to
+    duplicate the emptiness check."""
+    months = _scale_months(scale, params)
     if months is None or frame.height == 0:
         return
     bad = frame.filter(~pl.col("timestamp").dt.month().is_in(months))
@@ -261,11 +283,27 @@ class GaugeMaskedPopulation:
     exactly to the input observation count, `qc_mask.ReconciliationError`
     otherwise), so a caller sees `excluded == ()` next to a populated
     `accounting` and knows the empty list is a MEASURED result, not a
-    skipped step."""
+    skipped step.
+
+    A3 fix (Plan 184 T3 round 7): `__post_init__` verifies every
+    `by_station` entry's KEY against that entry's own frame-derived
+    `.station` — a consumer that looks a series up by key (e.g.
+    `ma6_representativeness.compute_within_cell_pair`) is trusting the key,
+    not the data, unless this holds; checking it ONCE here, for every
+    entry, fixes it for every such consumer at once rather than at one
+    call site."""
 
     by_station: dict[Station, MaskedGaugeSeries]
     excluded: tuple[qc_mask.ExclusionListEntry, ...]
     accounting: tuple[qc_mask.RemovalAccountingRow, ...]
+
+    def __post_init__(self) -> None:
+        for key, series in self.by_station.items():
+            if series.station != key:
+                raise StationIdentityError(
+                    f"GaugeMaskedPopulation.by_station key {key!r} does not "
+                    f"match its series' own derived station {series.station!r}"
+                )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -312,10 +350,18 @@ class GaugeRetainedSubset:
     a `@property` derived from the frame's own `station` column
     (`_frame_station`), read LAZILY (never eagerly checked here) so a
     legitimately empty subset stays constructible; only reading `.station`
-    on one raises `StationIdentityError`."""
+    on one raises `StationIdentityError`.
+
+    `params` is the SAME `DhmPrecipParams` `subset()` was called with,
+    stamped here for exactly one purpose: `_check_scale_consistency` reads
+    `params.jjas_months`/`params.djf_months` from it, the identical source
+    `ma6_estimands.season_membership_predicate` reads to build the
+    predicate this subset was filtered by (A1 fix, Plan 184 T3 round 7) —
+    never a private, independently-maintained copy of the season months."""
 
     scale: Scale
     frame: pl.DataFrame
+    params: DhmPrecipParams = DEFAULT_PARAMS
 
     def __post_init__(self) -> None:
         if _PAIRED_ONLY_COLUMN in self.frame.columns:
@@ -331,7 +377,7 @@ class GaugeRetainedSubset:
                 f"frame, got columns {self.frame.columns}"
             )
         _check_scale_consistency(
-            self.frame, self.scale, type_name="GaugeRetainedSubset"
+            self.frame, self.scale, self.params, type_name="GaugeRetainedSubset"
         )
 
     @property
@@ -367,10 +413,14 @@ class PairedRetainedSubset:
     legitimately empty subset stays constructible; only reading `.station`
     on one raises `StationIdentityError`. Every T3 estimand built from this
     subset derives its own `station`/`scale` from these, never accepting
-    them as independent arguments."""
+    them as independent arguments.
+
+    `params` — see `GaugeRetainedSubset`'s own docstring; the identical
+    role here (A1 fix, Plan 184 T3 round 7)."""
 
     scale: Scale
     frame: pl.DataFrame
+    params: DhmPrecipParams = DEFAULT_PARAMS
 
     def __post_init__(self) -> None:
         if _PAIRED_ONLY_COLUMN not in self.frame.columns:
@@ -387,7 +437,7 @@ class PairedRetainedSubset:
                 f"frame, got columns {self.frame.columns}"
             )
         _check_scale_consistency(
-            self.frame, self.scale, type_name="PairedRetainedSubset"
+            self.frame, self.scale, self.params, type_name="PairedRetainedSubset"
         )
 
     @property
@@ -401,18 +451,30 @@ class PairedRetainedSubset:
 
 @overload
 def subset(
-    series: MaskedGaugeSeries, predicate: pl.Expr, *, scale: Scale
+    series: MaskedGaugeSeries,
+    predicate: pl.Expr,
+    *,
+    scale: Scale,
+    params: DhmPrecipParams = DEFAULT_PARAMS,
 ) -> GaugeRetainedSubset: ...
 
 
 @overload
 def subset(
-    series: PairedSeries, predicate: pl.Expr, *, scale: Scale
+    series: PairedSeries,
+    predicate: pl.Expr,
+    *,
+    scale: Scale,
+    params: DhmPrecipParams = DEFAULT_PARAMS,
 ) -> PairedRetainedSubset: ...
 
 
 def subset(
-    series: MaskedGaugeSeries | PairedSeries, predicate: pl.Expr, *, scale: Scale
+    series: MaskedGaugeSeries | PairedSeries,
+    predicate: pl.Expr,
+    *,
+    scale: Scale,
+    params: DhmPrecipParams = DEFAULT_PARAMS,
 ) -> GaugeRetainedSubset | PairedRetainedSubset:
     """The one way T3+ take a season/scale/period slice of either named
     output. The RETURN TYPE tracks the INPUT type — a `MaskedGaugeSeries`
@@ -427,7 +489,12 @@ def subset(
     docstring) — filtering `series.frame` on `predicate` preserves its
     `station` column, so the result's `.station` property derives straight
     from that filtered frame, never from `series.station` re-supplied as an
-    argument. The `isinstance` checks are not merely a `MaskedGaugeSeries`/
+    argument. `params` is likewise stamped onto the result — the season
+    consistency check `__post_init__` runs reads its months from THIS
+    `params`, the same object a caller's own `predicate` was (typically)
+    built from (`ma6_estimands.season_membership_predicate`), so the
+    selector and the validator can never disagree (A1 fix, Plan 184 T3
+    round 7). The `isinstance` checks are not merely a `MaskedGaugeSeries`/
     else dispatch: something that duck-types a `.frame`/`.station` pair
     without actually being a `MaskedGaugeSeries` or `PairedSeries` (for
     instance, a `PairedRetainedSubset` passed back in by mistake) is
@@ -436,11 +503,11 @@ def subset(
     second time and have it come out looking freshly taken."""
     filtered = series.frame.filter(predicate)
     if isinstance(series, MaskedGaugeSeries):
-        return GaugeRetainedSubset(frame=filtered, scale=scale)
+        return GaugeRetainedSubset(frame=filtered, scale=scale, params=params)
     if isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
         series, PairedSeries
     ):
-        return PairedRetainedSubset(frame=filtered, scale=scale)
+        return PairedRetainedSubset(frame=filtered, scale=scale, params=params)
     raise TypeError(
         f"subset() requires a MaskedGaugeSeries or PairedSeries, got {type(series)}"
     )

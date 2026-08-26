@@ -223,6 +223,7 @@ from scripts.dhm_precip.ma6_pairs import (
     subset,
 )
 from scripts.dhm_precip.numeric import as_float, as_int
+from scripts.dhm_precip.params import DEFAULT_PARAMS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -375,7 +376,9 @@ def scale_subset(
     """The one way this module takes a scale slice of a station's
     `PairedSeries` — always through T1's own `subset()`, so the result's
     `n_common_retained` is always T1's, never re-derived here."""
-    return subset(paired, season_membership_predicate(scale, params), scale=scale)
+    return subset(
+        paired, season_membership_predicate(scale, params), scale=scale, params=params
+    )
 
 
 def wet_scale_subset(
@@ -388,7 +391,7 @@ def wet_scale_subset(
     predicate = season_membership_predicate(scale, params) & wet_predicate(
         "gauge_value_mm", params
     )
-    return subset(paired, predicate, scale=scale)
+    return subset(paired, predicate, scale=scale, params=params)
 
 
 def joint_wet_scale_subset(
@@ -407,7 +410,7 @@ def joint_wet_scale_subset(
         & wet_predicate("gauge_value_mm", params)
         & wet_predicate("era5_nearest_mm_per_h", params)
     )
-    return subset(paired, predicate, scale=scale)
+    return subset(paired, predicate, scale=scale, params=params)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -427,7 +430,12 @@ class MatchedHourMeanDifference:
     structural fix, module docstring) — so a subset taken for station A at
     JJAS can never be reported as station B or DJF: there is no `station=`/
     `scale=` argument through which a caller could attach a label the
-    subset does not itself carry."""
+    subset does not itself carry.
+
+    The zero-commonly-retained-hours refusal used to live only in the
+    `matched_hour_mean_difference` factory (Task B, Plan 184 T3 round 7) —
+    it is enforced here now, so direct construction is exactly as safe as
+    going through the factory."""
 
     subset: PairedRetainedSubset
 
@@ -448,6 +456,16 @@ class MatchedHourMeanDifference:
             raise ScaleNotSupportedError(
                 f"matched-hour mean difference is scoped to {_MAGNITUDE_SCALES}, "
                 f"got {self.scale}"
+            )
+        if self.subset.n_common_retained == 0:
+            # No `.station` here: an empty subset's frame carries zero
+            # rows, so its station column carries zero values too —
+            # genuinely unknowable (`ma6_pairs.StationIdentityError`), not
+            # merely unchecked. `.scale` remains available (a plain field,
+            # not frame-derived).
+            raise EmptySubsetError(
+                f"at {self.scale}: zero commonly-retained hours — no "
+                "matched-hour mean difference is computable"
             )
 
     @property
@@ -474,15 +492,9 @@ class MatchedHourMeanDifference:
 def matched_hour_mean_difference(
     paired_subset: PairedRetainedSubset,
 ) -> MatchedHourMeanDifference:
-    if paired_subset.n_common_retained == 0:
-        # No `.station` here: an empty subset's frame carries zero rows, so
-        # its station column carries zero values too — genuinely unknowable
-        # (`ma6_pairs.StationIdentityError`), not merely unchecked. `.scale`
-        # remains available (a plain field, not frame-derived).
-        raise EmptySubsetError(
-            f"at {paired_subset.scale}: zero commonly-retained hours — no "
-            "matched-hour mean difference is computable"
-        )
+    """The emptiness refusal lives in `MatchedHourMeanDifference.
+    __post_init__` now — this factory has nothing left to check that the
+    type does not already enforce itself."""
     return MatchedHourMeanDifference(subset=paired_subset)
 
 
@@ -498,9 +510,16 @@ class WetHourConditionalIntensityBias:
 
     `station` and `scale` are `@property`s read off `self.subset.station`/
     `self.subset.scale` — NOT constructor fields (root-cause structural
-    fix, module docstring)."""
+    fix, module docstring).
+
+    The emptiness and gauge-wet-conditioning refusals used to live only in
+    the `wet_hour_conditional_intensity_bias` factory (Task B, Plan 184 T3
+    round 7) — both are enforced here now, against `self.params` (default
+    `DEFAULT_PARAMS`), so direct construction is exactly as safe as going
+    through the factory."""
 
     subset: PairedRetainedSubset
+    params: DhmPrecipParams = DEFAULT_PARAMS
 
     def __post_init__(self) -> None:
         # Dataclasses do not enforce field types at runtime — this guard
@@ -519,6 +538,24 @@ class WetHourConditionalIntensityBias:
             raise ScaleNotSupportedError(
                 f"wet-hour conditional intensity bias is scoped to "
                 f"{_MAGNITUDE_SCALES}, got {self.scale}"
+            )
+        if self.subset.n_common_retained == 0:
+            # No `.station` here — see MatchedHourMeanDifference's own
+            # empty branch: an empty subset's station is genuinely
+            # unknowable.
+            raise EmptySubsetError(
+                f"at {self.scale}: zero gauge-wet commonly-retained hours "
+                "— no wet-hour conditional intensity bias is computable"
+            )
+        all_gauge_wet = self.subset.frame.select(
+            wet_predicate("gauge_value_mm", self.params).all()
+        ).item()
+        if not all_gauge_wet:
+            raise UnconditionedSubsetError(
+                f"{self.subset.station!r} at {self.scale}: subset contains "
+                "at least one gauge-dry hour — WetHourConditionalIntensityBias "
+                "requires a subset already restricted to gauge-wet hours "
+                "(wet_scale_subset's output)"
             )
 
     @property
@@ -545,31 +582,10 @@ class WetHourConditionalIntensityBias:
 def wet_hour_conditional_intensity_bias(
     wet_paired_subset: PairedRetainedSubset, *, params: DhmPrecipParams
 ) -> WetHourConditionalIntensityBias:
-    """Requires `wet_paired_subset` to ALREADY be gauge-wet-conditioned
-    (`wet_scale_subset`'s output) — verified structurally, against the
-    subset's own `frame`, through the SAME `wet_predicate` `wet_scale_
-    subset` itself uses to build one in the first place, not merely
-    assumed from which function produced it. An unconditioned subset (for
-    instance `scale_subset`'s output, carrying dry hours too) is refused
-    here — `UnconditionedSubsetError`, not silently accepted."""
-    if wet_paired_subset.n_common_retained == 0:
-        # No `.station` here — see matched_hour_mean_difference's own empty
-        # branch: an empty subset's station is genuinely unknowable.
-        raise EmptySubsetError(
-            f"at {wet_paired_subset.scale}: zero gauge-wet commonly-retained "
-            "hours — no wet-hour conditional intensity bias is computable"
-        )
-    all_gauge_wet = wet_paired_subset.frame.select(
-        wet_predicate("gauge_value_mm", params).all()
-    ).item()
-    if not all_gauge_wet:
-        raise UnconditionedSubsetError(
-            f"{wet_paired_subset.station!r} at {wet_paired_subset.scale}: "
-            "subset contains at least one gauge-dry hour — "
-            "wet_hour_conditional_intensity_bias requires a subset already "
-            "restricted to gauge-wet hours (wet_scale_subset's output)"
-        )
-    return WetHourConditionalIntensityBias(subset=wet_paired_subset)
+    """The emptiness and gauge-wet-conditioning refusals live in
+    `WetHourConditionalIntensityBias.__post_init__` now — this factory has
+    nothing left to check that the type does not already enforce itself."""
+    return WetHourConditionalIntensityBias(subset=wet_paired_subset, params=params)
 
 
 class JointWetConditionality(StrEnum):
@@ -613,9 +629,16 @@ class JointWetHourConditionalIntensityBias:
 
     `station` and `scale` are likewise `@property`s read off `self.subset.
     station`/`self.subset.scale` — NOT constructor fields (root-cause
-    structural fix, module docstring)."""
+    structural fix, module docstring).
+
+    The emptiness and joint-wet-conditioning refusals used to live only in
+    the `joint_wet_hour_conditional_intensity_bias` factory (Task B, Plan
+    184 T3 round 7) — both are enforced here now, against `self.params`
+    (default `DEFAULT_PARAMS`), so direct construction is exactly as safe
+    as going through the factory."""
 
     subset: PairedRetainedSubset
+    params: DhmPrecipParams = DEFAULT_PARAMS
 
     joint_conditionality: ClassVar[JointWetConditionality] = (
         JointWetConditionality.CONDITIONAL_ON_RETENTION_AND_ERA5_WET_CLASSIFICATION
@@ -635,6 +658,29 @@ class JointWetHourConditionalIntensityBias:
             raise ScaleNotSupportedError(
                 f"joint wet-hour conditional intensity bias is scoped to "
                 f"{_MAGNITUDE_SCALES}, got {self.scale}"
+            )
+        if self.subset.n_common_retained == 0:
+            # No `.station` here — see MatchedHourMeanDifference's own
+            # empty branch: an empty subset's station is genuinely
+            # unknowable.
+            raise EmptySubsetError(
+                f"at {self.scale}: zero jointly-wet commonly-retained "
+                "hours — no joint wet-hour conditional intensity bias is "
+                "computable"
+            )
+        all_jointly_wet = self.subset.frame.select(
+            (
+                wet_predicate("gauge_value_mm", self.params)
+                & wet_predicate("era5_nearest_mm_per_h", self.params)
+            ).all()
+        ).item()
+        if not all_jointly_wet:
+            raise UnconditionedSubsetError(
+                f"{self.subset.station!r} at {self.scale}: subset contains "
+                "at least one hour that is not jointly wet — "
+                "JointWetHourConditionalIntensityBias requires a subset "
+                "already restricted to jointly-wet hours "
+                "(joint_wet_scale_subset's output)"
             )
 
     @property
@@ -661,38 +707,13 @@ class JointWetHourConditionalIntensityBias:
 def joint_wet_hour_conditional_intensity_bias(
     joint_wet_paired_subset: PairedRetainedSubset, *, params: DhmPrecipParams
 ) -> JointWetHourConditionalIntensityBias:
-    """Requires `joint_wet_paired_subset` to ALREADY be jointly-wet-
-    conditioned (`joint_wet_scale_subset`'s output) — verified
-    structurally, against the subset's own `frame`, through the SAME
-    `wet_predicate` `joint_wet_scale_subset` itself uses (applied to BOTH
-    `gauge_value_mm` and `era5_nearest_mm_per_h`), not merely assumed from
-    which function produced it. An unconditioned (or only gauge-wet-
-    conditioned) subset is refused here — `UnconditionedSubsetError`, not
-    silently accepted."""
-    if joint_wet_paired_subset.n_common_retained == 0:
-        # No `.station` here — see matched_hour_mean_difference's own empty
-        # branch: an empty subset's station is genuinely unknowable.
-        raise EmptySubsetError(
-            f"at {joint_wet_paired_subset.scale}: zero jointly-wet "
-            "commonly-retained hours — no joint wet-hour conditional "
-            "intensity bias is computable"
-        )
-    all_jointly_wet = joint_wet_paired_subset.frame.select(
-        (
-            wet_predicate("gauge_value_mm", params)
-            & wet_predicate("era5_nearest_mm_per_h", params)
-        ).all()
-    ).item()
-    if not all_jointly_wet:
-        raise UnconditionedSubsetError(
-            f"{joint_wet_paired_subset.station!r} at "
-            f"{joint_wet_paired_subset.scale}: subset contains at least "
-            "one hour that is not jointly wet — "
-            "joint_wet_hour_conditional_intensity_bias requires a subset "
-            "already restricted to jointly-wet hours "
-            "(joint_wet_scale_subset's output)"
-        )
-    return JointWetHourConditionalIntensityBias(subset=joint_wet_paired_subset)
+    """The emptiness and joint-wet-conditioning refusals live in
+    `JointWetHourConditionalIntensityBias.__post_init__` now — this
+    factory has nothing left to check that the type does not already
+    enforce itself."""
+    return JointWetHourConditionalIntensityBias(
+        subset=joint_wet_paired_subset, params=params
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -926,7 +947,15 @@ class ConditionalAccumulatedDifference:
 
     `station` and `scale` are likewise `@property`s read off `self.subset.
     station`/`self.subset.scale` — NOT constructor fields (root-cause
-    structural fix, module docstring)."""
+    structural fix, module docstring).
+
+    The zero-commonly-retained-hours refusal used to live only in the
+    `conditional_accumulated_difference` factory (Task B, Plan 184 T3
+    round 7) — it is enforced here now, so direct construction is exactly
+    as safe as going through the factory. `mean_period_difference_mm`'s
+    own zero-periods check stays as defence-in-depth: it guards
+    `_compute_periods`'s own bucketing arithmetic, not this constructor
+    input."""
 
     subset: PairedRetainedSubset
 
@@ -942,6 +971,14 @@ class ConditionalAccumulatedDifference:
             raise EstimandSubsetTypeError(
                 "ConditionalAccumulatedDifference.subset must be a real "
                 f"PairedRetainedSubset, got {type(self.subset)}"
+            )
+        if self.subset.n_common_retained == 0:
+            # No `.station` here — see MatchedHourMeanDifference's own
+            # empty branch: an empty subset's station is genuinely
+            # unknowable.
+            raise EmptySubsetError(
+                f"at {self.scale}: zero commonly-retained hours — no "
+                "conditional accumulated difference is computable"
             )
 
     @property
@@ -981,13 +1018,9 @@ class ConditionalAccumulatedDifference:
 def conditional_accumulated_difference(
     paired_subset: PairedRetainedSubset,
 ) -> ConditionalAccumulatedDifference:
-    if paired_subset.n_common_retained == 0:
-        # No `.station` here — see matched_hour_mean_difference's own empty
-        # branch: an empty subset's station is genuinely unknowable.
-        raise EmptySubsetError(
-            f"at {paired_subset.scale}: zero commonly-retained hours — no "
-            "conditional accumulated difference is computable"
-        )
+    """The emptiness refusal lives in `ConditionalAccumulatedDifference.
+    __post_init__` now — this factory has nothing left to check that the
+    type does not already enforce itself."""
     return ConditionalAccumulatedDifference(subset=paired_subset)
 
 
@@ -1153,32 +1186,6 @@ def categorical_scores(
     return CategoricalScores(accumulated=accumulated, params=params)
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
-class ElevationBandEstimand:
-    """D4a — the band value is the UNWEIGHTED MEAN of its member stations'
-    own estimand values (D5a's discipline). `member_ns` carries each
-    member's own `n` so retention variation across the band's stations
-    stays visible (D13) rather than being hidden behind one pooled count."""
-
-    band: ElevationBand
-    scale: Scale
-    station_count: int
-    member_ns: tuple[int, ...]
-    mean_value: float
-
-    def __post_init__(self) -> None:
-        if self.station_count != len(self.member_ns):
-            raise ValueError(
-                f"{self.band}: station_count={self.station_count} does not "
-                f"match len(member_ns)={len(self.member_ns)}"
-            )
-        if self.station_count == 0:
-            raise EmptySubsetError(
-                f"{self.band} at {self.scale}: zero member stations — no "
-                "band estimand is computable"
-            )
-
-
 def _verify_band_membership(
     band: ElevationBand,
     stations: tuple[Station, ...],
@@ -1187,10 +1194,9 @@ def _verify_band_membership(
     """The ONE place D4a band membership is verified — re-derived through
     `assign_elevation_band` (D4a's own edges), never a separately-
     suppliable band label a caller could attach independently of the
-    stations actually being aggregated. Shared by every band factory
-    (`band_matched_hour_mean_difference`, `band_conditional_accumulated_
-    difference`, `band_wet_hour_conditional_intensity_bias_comparison`),
-    never re-implemented per factory (Plan 184 phase 2 round 2, change 4)."""
+    stations actually being aggregated. Shared by `ElevationBandEstimand.
+    __post_init__` and `ElevationBandWetHourConditionalIntensityBias
+    Comparison.__post_init__`, never re-implemented per type."""
     for station in stations:
         if station not in station_elev_m:
             raise BandMembershipError(
@@ -1206,18 +1212,80 @@ def _verify_band_membership(
             )
 
 
-def _band_estimand(
-    band: ElevationBand, scale: Scale, values_and_ns: tuple[tuple[float, int], ...]
-) -> ElevationBandEstimand:
-    values = tuple(v for v, _n in values_and_ns)
-    ns = tuple(n for _v, n in values_and_ns)
-    return ElevationBandEstimand(
-        band=band,
-        scale=scale,
-        station_count=len(values_and_ns),
-        member_ns=ns,
-        mean_value=sum(values) / len(values),
-    )
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BandMember:
+    """One member station's own value feeding a band aggregate — the
+    common shape every band factory extracts from its own source estimand
+    (`MatchedHourMeanDifference`, `ConditionalAccumulatedDifference`,
+    `WetHourConditionalIntensityBias`/`JointWetHourConditionalIntensityBias`),
+    each of which names its value differently
+    (`mean_difference_mm_per_h`/`mean_period_difference_mm`/
+    `mean_intensity_bias_mm_per_h`)."""
+
+    station: Station
+    scale: Scale
+    value: float
+    n: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ElevationBandEstimand:
+    """D4a — the band value is the UNWEIGHTED MEAN of its member stations'
+    own estimand values (D5a's discipline). `member_ns` carries each
+    member's own `n` so retention variation across the band's stations
+    stays visible (D13) rather than being hidden behind one pooled count.
+
+    Root-cause fix (Task B, Plan 184 T3 round 7): this type used to accept
+    `scale`, `station_count`, `member_ns` and `mean_value` as independently
+    -suppliable constructor fields, reconciling only `station_count`
+    against `len(member_ns)` — nothing bound `mean_value` to the member
+    results at all, so a `<700 m`/JJAS value was constructible under an
+    `ABOVE_3000M`/DJF label. It now stores exactly `band`,
+    `members: tuple[BandMember, ...]` and `station_elev_m`; `scale`,
+    `station_count`, `member_ns` and `mean_value` are all `@property`s
+    DERIVED from `members` — there is no argument through which a caller
+    could attach any of them independently, and the arithmetic is exactly
+    `sum(values) / len(values)`. Duplicate-station, scale-consistency and
+    band-membership — every check that used to live only in a band
+    FACTORY function — are enforced here, in `__post_init__`, so direct
+    construction is exactly as safe as going through a factory."""
+
+    band: ElevationBand
+    members: tuple[BandMember, ...]
+    station_elev_m: Mapping[Station, float]
+
+    def __post_init__(self) -> None:
+        if not self.members:
+            raise EmptySubsetError(
+                f"{self.band}: zero member stations — no band estimand is computable"
+            )
+        stations = tuple(m.station for m in self.members)
+        if len(set(stations)) != len(stations):
+            raise DuplicateBandMemberError(
+                f"{self.band}: members carries a repeated station: {stations}"
+            )
+        scales = {m.scale for m in self.members}
+        if len(scales) > 1:
+            raise ScaleNotSupportedError(
+                f"{self.band}: members span more than one scale: {scales}"
+            )
+        _verify_band_membership(self.band, stations, self.station_elev_m)
+
+    @property
+    def scale(self) -> Scale:
+        return self.members[0].scale
+
+    @property
+    def station_count(self) -> int:
+        return len(self.members)
+
+    @property
+    def member_ns(self) -> tuple[int, ...]:
+        return tuple(m.n for m in self.members)
+
+    @property
+    def mean_value(self) -> float:
+        return sum(m.value for m in self.members) / len(self.members)
 
 
 def band_matched_hour_mean_difference(
@@ -1233,29 +1301,18 @@ def band_matched_hour_mean_difference(
     fix, 2026-08-24 — the old `Mapping` design aggregated `.values()` and
     never looked at its own keys).
 
-    `station_elev_m` gets the SAME band-membership verification
-    `band_wet_hour_conditional_intensity_bias_comparison` already applies
-    (`_verify_band_membership`) — a member whose own elevation places it
-    outside `band`'s D4a edges is refused, not silently averaged in (Plan
-    184 phase 2 round 2, change 4)."""
-    if not results:
-        raise EmptySubsetError(
-            f"{band}: zero member results — no band estimand is computable"
+    Emptiness, duplicate-station, scale-consistency and band-membership are
+    all enforced by `ElevationBandEstimand.__post_init__` now (Task B,
+    Plan 184 T3 round 7) — this factory has nothing left to check that the
+    type does not already enforce itself."""
+    members = tuple(
+        BandMember(
+            station=r.station, scale=r.scale, value=r.mean_difference_mm_per_h, n=r.n
         )
-    stations = tuple(r.station for r in results)
-    if len(set(stations)) != len(stations):
-        raise DuplicateBandMemberError(
-            f"{band}: results carries a repeated station: {stations}"
-        )
-    _verify_band_membership(band, stations, station_elev_m)
-    scales = {r.scale for r in results}
-    if len(scales) > 1:
-        raise ScaleNotSupportedError(
-            f"{band}: member results span more than one scale: {scales}"
-        )
-    scale = next(iter(scales))
-    return _band_estimand(
-        band, scale, tuple((r.mean_difference_mm_per_h, r.n) for r in results)
+        for r in results
+    )
+    return ElevationBandEstimand(
+        band=band, members=members, station_elev_m=station_elev_m
     )
 
 
@@ -1314,24 +1371,32 @@ class ElevationBandWetHourConditionalIntensityBiasComparison:
 
     @property
     def gauge_alone(self) -> ElevationBandEstimand:
-        return _band_estimand(
-            self.band,
-            self.scale,
-            tuple(
-                (c.gauge_alone.mean_intensity_bias_mm_per_h, c.gauge_alone.n)
-                for c in self.comparisons
-            ),
+        members = tuple(
+            BandMember(
+                station=c.station,
+                scale=c.scale,
+                value=c.gauge_alone.mean_intensity_bias_mm_per_h,
+                n=c.gauge_alone.n,
+            )
+            for c in self.comparisons
+        )
+        return ElevationBandEstimand(
+            band=self.band, members=members, station_elev_m=self.station_elev_m
         )
 
     @property
     def joint(self) -> ElevationBandEstimand:
-        return _band_estimand(
-            self.band,
-            self.scale,
-            tuple(
-                (c.joint.mean_intensity_bias_mm_per_h, c.joint.n)
-                for c in self.comparisons
-            ),
+        members = tuple(
+            BandMember(
+                station=c.station,
+                scale=c.scale,
+                value=c.joint.mean_intensity_bias_mm_per_h,
+                n=c.joint.n,
+            )
+            for c in self.comparisons
+        )
+        return ElevationBandEstimand(
+            band=self.band, members=members, station_elev_m=self.station_elev_m
         )
 
 
@@ -1377,29 +1442,16 @@ def band_conditional_accumulated_difference(
     fix, 2026-08-24 — the old `Mapping` design aggregated `.values()` and
     never looked at its own keys).
 
-    `station_elev_m` gets the SAME band-membership verification
-    `band_wet_hour_conditional_intensity_bias_comparison` already applies
-    (`_verify_band_membership`) — a member whose own elevation places it
-    outside `band`'s D4a edges is refused, not silently averaged in (Plan
-    184 phase 2 round 2, change 4)."""
-    if not results:
-        raise EmptySubsetError(
-            f"{band}: zero member results — no band estimand is computable"
+    Emptiness, duplicate-station, scale-consistency and band-membership are
+    all enforced by `ElevationBandEstimand.__post_init__` now (Task B,
+    Plan 184 T3 round 7) — this factory has nothing left to check that the
+    type does not already enforce itself."""
+    members = tuple(
+        BandMember(
+            station=r.station, scale=r.scale, value=r.mean_period_difference_mm, n=r.n
         )
-    stations = tuple(r.station for r in results)
-    if len(set(stations)) != len(stations):
-        raise DuplicateBandMemberError(
-            f"{band}: results carries a repeated station: {stations}"
-        )
-    _verify_band_membership(band, stations, station_elev_m)
-    scales = {r.scale for r in results}
-    if len(scales) > 1:
-        raise ScaleNotSupportedError(
-            f"{band}: member results span more than one scale: {scales}"
-        )
-    scale = next(iter(scales))
-    return _band_estimand(
-        band,
-        scale,
-        tuple((r.mean_period_difference_mm, r.n) for r in results),
+        for r in results
+    )
+    return ElevationBandEstimand(
+        band=band, members=members, station_elev_m=station_elev_m
     )

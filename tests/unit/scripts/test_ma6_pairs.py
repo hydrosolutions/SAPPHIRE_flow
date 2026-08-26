@@ -530,6 +530,32 @@ class TestStationIdentityIsDerivedNeverStated:
         with pytest.raises(StationIdentityError, match="'station' column"):
             MaskedGaugeSeries(frame=no_station_col)
 
+    def test_a_frame_with_a_null_station_value_is_unconstructible(self) -> None:
+        # A2 (Plan 184 T3 round 7): a single ALL-NULL station column passes
+        # the "exactly one distinct value" count check (the one distinct
+        # value is None), so `Station(str(None))` would otherwise silently
+        # mint the literal station "None" — a null is not a degenerate but
+        # real station identity, and must be rejected the same way an
+        # absent/multi-valued column already is.
+        null_station = pl.DataFrame(
+            {
+                "station": pl.Series("station", [None], dtype=pl.Utf8),
+                "timestamp": [1],
+                "value_mm": [1.0],
+            }
+        )
+        with pytest.raises(StationIdentityError, match="null or empty"):
+            MaskedGaugeSeries(frame=null_station)
+
+    def test_a_frame_with_an_empty_string_station_value_is_unconstructible(
+        self,
+    ) -> None:
+        blank_station = _with_station(
+            pl.DataFrame({"timestamp": [1], "value_mm": [1.0]}), Station("")
+        )
+        with pytest.raises(StationIdentityError, match="null or empty"):
+            MaskedGaugeSeries(frame=blank_station)
+
     def test_a_gauge_retained_subset_filtered_to_zero_rows_stays_constructible(
         self,
     ) -> None:
@@ -713,6 +739,41 @@ class TestRetainedSubsetSchemaGuard:
 
         with pytest.raises(RetainedSubsetSchemaError, match="'station' column"):
             PairedRetainedSubset(frame=no_station_col, scale=Scale.MONTHLY)
+
+
+class TestGaugeMaskedPopulationVerifiesKeyIdentity:
+    """A3 (Plan 184 T3 round 7): a consumer that looks a series up by its
+    `by_station` KEY (e.g. `ma6_representativeness.compute_within_cell_
+    pair`) is trusting that key, not the series' own data, unless
+    `GaugeMaskedPopulation.__post_init__` verifies the two agree — fixed
+    ONCE here for every such consumer, not at one call site."""
+
+    def test_a_series_filed_under_the_wrong_station_key_is_rejected(self) -> None:
+        series_for_b = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1], "value_mm": [1.0]}), Station("B")
+            ),
+        )
+
+        with pytest.raises(StationIdentityError, match="'A'"):
+            GaugeMaskedPopulation(
+                by_station={Station("A"): series_for_b},  # key says A, data says B
+                excluded=(),
+                accounting=(),
+            )
+
+    def test_a_correctly_keyed_population_is_unaffected(self) -> None:
+        series_for_a = MaskedGaugeSeries(
+            frame=_with_station(
+                pl.DataFrame({"timestamp": [1], "value_mm": [1.0]}), Station("A")
+            ),
+        )
+
+        population = GaugeMaskedPopulation(
+            by_station={Station("A"): series_for_a}, excluded=(), accounting=()
+        )
+
+        assert population.by_station[Station("A")].station == Station("A")
 
 
 def _write_series_nearest_nc(

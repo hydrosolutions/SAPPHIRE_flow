@@ -16,12 +16,14 @@ import pytest
 
 from scripts.dhm_precip.domain_types import Station
 from scripts.dhm_precip.ma6_estimands import (
+    BandMember,
     BandMembershipError,
     CategoricalGrainRefusedError,
     CategoricalScores,
     ConditionalAccumulatedDifference,
     DuplicateBandMemberError,
     ElevationBand,
+    ElevationBandEstimand,
     ElevationBandWetHourConditionalIntensityBiasComparison,
     EmptySubsetError,
     EstimandSubsetTypeError,
@@ -48,7 +50,7 @@ from scripts.dhm_precip.ma6_estimands import (
     wet_hour_conditional_intensity_bias_comparison,
     wet_scale_subset,
 )
-from scripts.dhm_precip.ma6_pairs import MaskedGaugeSeries, PairedSeries, subset
+from scripts.dhm_precip.ma6_pairs import PairedSeries, RetainedSubsetSchemaError
 from scripts.dhm_precip.params import DEFAULT_PARAMS
 
 
@@ -117,6 +119,53 @@ class TestScaleIsImportedNotDuplicated:
         result = matched_hour_mean_difference(jjas)
 
         assert result.scale is Scale.JJAS
+
+
+class TestScaleConsistencyReadsTheSameParamsTheSelectorDoes:
+    """A1 (Plan 184 T3 round 7): `season_membership_predicate` (the
+    SELECTOR) reads `params.jjas_months`/`params.djf_months`; the
+    `ScaleConsistencyError` VALIDATOR used to read its own private,
+    hardcoded `{6,7,8,9}`/`{12,1,2}` copy instead of `params` — so moving
+    May into a configured `jjas_months` made the selector pick a May row
+    the validator then rejected. This test would have caught that: it
+    configures a NON-default season partition and asserts the selector and
+    validator agree, not merely that the default partition round-trips."""
+
+    def test_a_configured_season_partition_is_honoured_not_just_the_default(
+        self,
+    ) -> None:
+        # May moved from MAM into JJAS — a partition the private
+        # module-level copy in ma6_pairs.py never knew about. `mam_months`
+        # is adjusted too so the season partition still covers 1..12
+        # exactly (DhmPrecipParams.__post_init__'s own invariant).
+        custom_params = dataclasses.replace(
+            DEFAULT_PARAMS, jjas_months=(5, 6, 7, 8, 9), mam_months=(3, 4)
+        )
+        paired = _make_paired_series(
+            Station("A"), datetime(2024, 5, 15, 0), 1, gauge=[1.0], era5=[1.0]
+        )
+
+        # The selector (season_membership_predicate, via scale_subset)
+        # picks the May row under the configured partition...
+        result = scale_subset(paired, scale=Scale.JJAS, params=custom_params)
+
+        # ...and the validator (_check_scale_consistency, ma6_pairs.py)
+        # must agree it belongs — construction must NOT raise
+        # ScaleConsistencyError, and the row must actually be retained.
+        assert result.n_common_retained == 1
+
+    def test_the_same_may_row_is_rejected_under_the_default_partition(self) -> None:
+        # Control: under the DEFAULT partition (May not in jjas_months),
+        # the selector excludes the May row entirely — scale_subset filters
+        # it out rather than raising, since the resulting subset is simply
+        # empty, not scale-inconsistent.
+        paired = _make_paired_series(
+            Station("A"), datetime(2024, 5, 15, 0), 1, gauge=[1.0], era5=[1.0]
+        )
+
+        result = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+
+        assert result.n_common_retained == 0
 
 
 class TestAssignElevationBand:
@@ -249,6 +298,24 @@ class TestWetHourConditionalIntensityBias:
             "mismatched-population failure mode this track keeps hitting"
         )
 
+    def test_empty_subset_raises(self) -> None:
+        # Task B audit (Plan 184 T3 round 7): this refusal used to live
+        # only in the `wet_hour_conditional_intensity_bias` factory and had
+        # no dedicated test at all — an empty subset trivially satisfies
+        # `wet_predicate(...).all()` (vacuous truth), so without this check
+        # an empty, gauge-wet-conditioned subset would silently construct.
+        station = Station("A")
+        # Every gauge value is dry -> wet_scale_subset's own JJAS output is
+        # empty, but still genuinely "gauge-wet-conditioned" (vacuously).
+        paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 2, gauge=[0.0, 0.0], era5=[0.0, 0.0]
+        )
+        empty_wet = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        assert empty_wet.n_common_retained == 0
+
+        with pytest.raises(EmptySubsetError):
+            wet_hour_conditional_intensity_bias(empty_wet, params=DEFAULT_PARAMS)
+
 
 class TestJointWetHourConditionalIntensityBias:
     def test_restricted_to_both_sides_wet_hours_only(self) -> None:
@@ -307,6 +374,24 @@ class TestJointWetHourConditionalIntensityBias:
         # under the mask (singly conditional) — over-caveating it with the
         # doubly-conditional marker would misrepresent it.
         assert not hasattr(gauge_alone_result, "joint_conditionality")
+
+    def test_empty_subset_raises(self) -> None:
+        # Task B audit (Plan 184 T3 round 7) — see WetHourConditionalIntensity
+        # Bias's own test of the same name for why this needs a dedicated
+        # test: an empty subset vacuously satisfies the joint-wet predicate.
+        station = Station("A")
+        paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 2, gauge=[0.0, 0.0], era5=[0.0, 0.0]
+        )
+        empty_joint = joint_wet_scale_subset(
+            paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
+        )
+        assert empty_joint.n_common_retained == 0
+
+        with pytest.raises(EmptySubsetError):
+            joint_wet_hour_conditional_intensity_bias(
+                empty_joint, params=DEFAULT_PARAMS
+            )
 
 
 class TestUnconditionedSubsetIsRefusedByTheWetFactories:
@@ -1014,6 +1099,62 @@ class TestElevationBandEstimand:
                 station_elev_m={station_a: 500.0},
             )
 
+    def test_direct_construction_cannot_label_a_below_700m_value_as_above_3000m(
+        self,
+    ) -> None:
+        # Task B (Plan 184 T3 round 7): before this round, `mean_value`,
+        # `band` and `station_count`/`member_ns` were independently-
+        # suppliable fields with nothing binding them to each other or to
+        # `station_elev_m` — a <700 m JJAS value was constructible under an
+        # ABOVE_3000M/DJF label. `members`/`station_elev_m` are now the
+        # only inputs; band-membership is re-derived and verified in
+        # `__post_init__`, so this is unconstructible, full stop.
+        station_a = Station("A")
+
+        with pytest.raises(BandMembershipError, match="A"):
+            ElevationBandEstimand(
+                band=ElevationBand.ABOVE_3000M,
+                members=(
+                    BandMember(station=station_a, scale=Scale.JJAS, value=2.0, n=40),
+                ),
+                station_elev_m={
+                    station_a: 500.0
+                },  # 500 m -> BELOW_700M, not ABOVE_3000M
+            )
+
+    def test_direct_construction_derives_mean_value_from_members_not_a_field(
+        self,
+    ) -> None:
+        # `mean_value` has no constructor field to attach a mismatched
+        # number through any more — it is `sum(values) / len(values)`,
+        # computed live from `members`.
+        station_a = Station("A")
+        station_b = Station("B")
+
+        band = ElevationBandEstimand(
+            band=ElevationBand.BELOW_700M,
+            members=(
+                BandMember(station=station_a, scale=Scale.JJAS, value=2.0, n=40),
+                BandMember(station=station_b, scale=Scale.JJAS, value=10.0, n=4),
+            ),
+            station_elev_m={station_a: 500.0, station_b: 600.0},
+        )
+
+        assert band.mean_value == pytest.approx(6.0)
+        assert band.station_count == 2
+        assert band.member_ns == (40, 4)
+        assert band.scale is Scale.JJAS
+
+        with pytest.raises(TypeError, match="mean_value"):
+            ElevationBandEstimand(
+                band=ElevationBand.BELOW_700M,
+                members=(
+                    BandMember(station=station_a, scale=Scale.JJAS, value=2.0, n=40),
+                ),
+                station_elev_m={station_a: 500.0},
+                mean_value=999.0,  # type: ignore[call-arg]
+            )
+
 
 class TestBandConditionalAccumulatedDifferenceVerifiesMembership:
     """Change 4 (Plan 184 phase 2 round 2): `band_conditional_accumulated_
@@ -1514,14 +1655,22 @@ class TestSubsetSchemaGuardStillAppliesThroughThisModule:
     gauge-only frame in where a paired subset is required."""
 
     def test_scale_subset_on_a_gauge_only_series_raises(self) -> None:
-        # Fix (Plan 184 phase 2 round 2, change 5): the original version of
-        # this test omitted the now-required `scale=` keyword, so
-        # `subset()` raised `TypeError` on the missing argument and the
-        # broad `pytest.raises(Exception)` swallowed it — the schema guard
-        # this test claims to exercise (a caller cannot treat a
-        # GaugeRetainedSubset's frame as if it carried the PAIRED columns)
-        # was never actually reached.
-        gauge_only = MaskedGaugeSeries(
+        # Fix (Plan 184 T3 round 7): despite its name, the previous version
+        # of this test never called `scale_subset` — it called the generic
+        # `subset()` directly, then asked polars for a nonexistent column;
+        # the asserted `ColumnNotFoundError` only proved a gauge frame
+        # lacks `gauge_value_mm`, a fact unrelated to any guard.
+        #
+        # This version smuggles a gauge-SHAPED frame into a `PairedSeries`
+        # — `PairedSeries.__post_init__` checks only its `station` column,
+        # not paired-specific ones, so this construction succeeds despite
+        # violating T1's own contract — and calls `scale_subset` on it.
+        # `season_membership_predicate` touches only `timestamp`, so the
+        # smuggled frame survives filtering unchanged; T1's OWN
+        # `PairedRetainedSubset.__post_init__` schema guard is what
+        # actually catches it, raising `RetainedSubsetSchemaError` — the
+        # real guard this test's name claims to exercise.
+        gauge_shaped = PairedSeries(
             frame=_with_station(
                 pl.DataFrame(
                     {"timestamp": [datetime(2024, 7, 1, 0)], "value_mm": [1.0]}
@@ -1529,10 +1678,8 @@ class TestSubsetSchemaGuardStillAppliesThroughThisModule:
                 Station("A"),
             ),
         )
-        with pytest.raises(pl.exceptions.ColumnNotFoundError, match="gauge_value_mm"):
-            subset(
-                gauge_only, pl.col("timestamp").dt.month() == 7, scale=Scale.JJAS
-            ).frame.select("gauge_value_mm")
+        with pytest.raises(RetainedSubsetSchemaError, match="era5_nearest_mm_per_h"):
+            scale_subset(gauge_shaped, scale=Scale.JJAS, params=DEFAULT_PARAMS)
 
 
 if __name__ == "__main__":
