@@ -30,6 +30,8 @@ from scripts.dhm_precip.ma6_estimands import (
     JointWetConditionality,
     JointWetHourConditionalIntensityBias,
     MatchedHourMeanDifference,
+    MixedEstimandKindError,
+    MixedSelectionParamsError,
     NonFiniteElevationError,
     RetentionConditionality,
     Scale,
@@ -1296,6 +1298,62 @@ class TestElevationBandEstimand:
                 members=(BandMember(estimand=result_a),),
                 station_elev_m={station_a: 500.0},
                 mean_value=999.0,  # type: ignore[call-arg]
+            )
+
+
+class TestElevationBandEstimandRejectsIncommensurableMembers:
+    """M-A6 final round: duplicate-station, scale and band-membership
+    checks alone do not catch a band mean averaging members that are
+    individually genuine but not COMMENSURABLE — a rate mixed with a total,
+    or members drawn from differently-selected populations."""
+
+    def test_mixing_estimand_kinds_is_rejected(self) -> None:
+        station_a = Station("A")
+        station_b = Station("B")
+        paired_a = _make_paired_series(
+            station_a, datetime(2024, 7, 1, 0), 4, gauge=[2.0] * 4, era5=[0.0] * 4
+        )
+        paired_b = _make_paired_series(
+            station_b, datetime(2024, 7, 1, 0), 4, gauge=[8.0] * 4, era5=[0.0] * 4
+        )
+        subset_a = scale_subset(paired_a, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        subset_b = scale_subset(paired_b, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        matched = matched_hour_mean_difference(subset_a)  # mm/h, a rate
+        accumulated = conditional_accumulated_difference(subset_b)  # mm, a total
+
+        with pytest.raises(MixedEstimandKindError, match="MatchedHourMeanDifference"):
+            ElevationBandEstimand(
+                band=ElevationBand.BELOW_700M,
+                members=(
+                    BandMember(estimand=matched),
+                    BandMember(estimand=accumulated),
+                ),
+                station_elev_m={station_a: 500.0, station_b: 600.0},
+            )
+
+    def test_mixing_selection_params_is_rejected(self) -> None:
+        station_a = Station("A")
+        station_b = Station("B")
+        paired_a = _make_paired_series(
+            station_a, datetime(2024, 7, 1, 0), 4, gauge=[2.0] * 4, era5=[0.0] * 4
+        )
+        paired_b = _make_paired_series(
+            station_b, datetime(2024, 7, 1, 0), 4, gauge=[8.0] * 4, era5=[0.0] * 4
+        )
+        other_params = dataclasses.replace(DEFAULT_PARAMS, wet_threshold_mm_per_h=0.05)
+        subset_a = scale_subset(paired_a, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        subset_b = scale_subset(paired_b, scale=Scale.JJAS, params=other_params)
+        result_a = matched_hour_mean_difference(subset_a)
+        result_b = matched_hour_mean_difference(subset_b)
+
+        with pytest.raises(MixedSelectionParamsError):
+            ElevationBandEstimand(
+                band=ElevationBand.BELOW_700M,
+                members=(
+                    BandMember(estimand=result_a),
+                    BandMember(estimand=result_b),
+                ),
+                station_elev_m={station_a: 500.0, station_b: 600.0},
             )
 
 

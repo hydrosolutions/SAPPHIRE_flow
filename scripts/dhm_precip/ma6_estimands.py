@@ -320,6 +320,24 @@ class NonFiniteElevationError(ValueError):
     (`domain_types.py`), which refuses one at the loader boundary."""
 
 
+class MixedEstimandKindError(TypeError):
+    """`ElevationBandEstimand.members` carried source estimands of more
+    than one concrete type — e.g. a `MatchedHourMeanDifference` (mm/h,
+    a rate) alongside a `ConditionalAccumulatedDifference` (mm, a total).
+    Duplicate-station, scale and band-membership checks alone do not catch
+    this: every member can be individually genuine and still be drawn from
+    an incommensurable estimand, so `sum(values) / len(values)` would
+    average a rate with a total (M-A6 final round)."""
+
+
+class MixedSelectionParamsError(ValueError):
+    """`ElevationBandEstimand.members` carried source estimands selected
+    under different `DhmPrecipParams` (read off each member's own
+    `estimand.subset.params`, never a hand-picked field of it) — a band
+    mean would then publish one number over two differently-selected
+    populations (M-A6 final round)."""
+
+
 _MAGNITUDE_SCALES = (Scale.JJAS, Scale.DJF)
 _GRAIN_SCALES = (Scale.DAILY, Scale.MONTHLY)
 
@@ -1316,7 +1334,17 @@ class ElevationBandEstimand:
     `sum(values) / len(values)`. Duplicate-station, scale-consistency and
     band-membership — every check that used to live only in a band
     FACTORY function — are enforced here, in `__post_init__`, so direct
-    construction is exactly as safe as going through a factory."""
+    construction is exactly as safe as going through a factory.
+
+    **Commensurability (M-A6 final round):** matching stations and scale
+    is not enough — `__post_init__` also refuses members whose source
+    estimands are not all the SAME concrete type (`MixedEstimandKindError`;
+    e.g. averaging a mm/h rate with an mm total is not meaningful) and
+    refuses members selected under different `DhmPrecipParams`
+    (`MixedSelectionParamsError`, checked against each member's own
+    `estimand.subset.params` — the full params object, not a hand-picked
+    field of it) — publishing one mean over two differently-selected
+    populations."""
 
     band: ElevationBand
     members: tuple[BandMember, ...]
@@ -1336,6 +1364,19 @@ class ElevationBandEstimand:
         if len(scales) > 1:
             raise ScaleNotSupportedError(
                 f"{self.band}: members span more than one scale: {scales}"
+            )
+        kinds = {type(m.estimand) for m in self.members}
+        if len(kinds) > 1:
+            raise MixedEstimandKindError(
+                f"{self.band}: members mix estimand kinds "
+                f"{sorted(k.__name__ for k in kinds)} — a band mean is only "
+                "commensurable across members of the SAME estimand kind"
+            )
+        selection_params = {m.estimand.subset.params for m in self.members}
+        if len(selection_params) > 1:
+            raise MixedSelectionParamsError(
+                f"{self.band}: members were selected under different "
+                f"DhmPrecipParams: {selection_params}"
             )
         _verify_band_membership(self.band, stations, self.station_elev_m)
 
