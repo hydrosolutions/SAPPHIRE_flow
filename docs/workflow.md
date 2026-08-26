@@ -395,7 +395,7 @@ Notes:
   several times a day and a hard stop there would be disabled within a day. A commit-time
   nudge (`unpushed-main-nudge`, `.pre-commit-config.yaml`, `post-commit` stage) separately
   warns — never blocks — when local `main` carries commits `origin/main` doesn't have yet;
-  silent on every other branch. See `docs/plans/200-workflows-refuse-a-stale-spec.md`.
+  silent on every other branch. See `docs/plans/archive/200-workflows-refuse-a-stale-spec.md`.
 
 ## Task Exit Gate
 

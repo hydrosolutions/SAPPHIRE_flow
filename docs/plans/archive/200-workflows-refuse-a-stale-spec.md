@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-24
 plan: 200
 title: A workflow must refuse to build from a stale copy of its plan
@@ -12,6 +12,20 @@ source: PR #201 post-mortem; worktree-hygiene incidents 2026-08-20/21/24
 # Plan 200 — a workflow must refuse to build from a stale copy of its plan
 
 ## Status
+
+**COMPLETE 2026-08-26** — merged as PR #206, tagged `v0.1.798`.
+
+**Proved against the real incident rather than a synthetic case.** Replaying the gate over actual
+history: at Plan 194's finalize the branch did **not** contain the review commit **and** its plan copy
+differed → the gate fires, catching exactly the failure it was built for. Control: Plan 199's branch
+**did** contain its latest plan → silent, no false positive.
+
+The review loop completed for the first time in four attempts (Codex 0 failed rounds) once the
+`< /dev/null` stdin fix landed. It escalated with 3 majors, all resolved in the fixer round: the gate
+now reads the **worktree** file rather than the committed blob (decisive for `plan.js`, which edits the
+plan in place without committing), fails closed via `checkOk` with expected-vs-error distinction, and
+the setup instructions in `README.md`/`AGENTS.md` register the post-commit hook — without which D4
+would have silently not existed for anyone following the documented setup.
 
 **READY** — owner flip 2026-08-24. All decisions ratified (D1-D5); the root cause was corrected and independently verified.
 
