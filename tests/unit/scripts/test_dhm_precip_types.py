@@ -75,6 +75,33 @@ class TestStationCoordinate:
         )
         assert coord.station == "Khumaltar"
 
+    def test_rejects_non_finite_elevation(self) -> None:
+        # Plan 184 round 8, Task 4: unlike the lat/lon checks above (whose
+        # "not (in range)" form already rejects NaN, since every
+        # comparison against NaN is False), the elevation check used to be
+        # an "out of range" form (`< -420 or > 9000`) — both comparisons
+        # are False for NaN too, so a NaN elevation silently passed this
+        # boundary and, downstream (`ma6_estimands.assign_elevation_band`),
+        # fell through every `<` edge into the >= 3,000 m band.
+        with pytest.raises(ValueError, match="not finite"):
+            StationCoordinate(
+                station=Station("X"),
+                excel_col="X (mm)",
+                lat=27.0,
+                lon=85.0,
+                elev_m=float("nan"),
+            )
+
+    def test_rejects_infinite_elevation(self) -> None:
+        with pytest.raises(ValueError, match="not finite"):
+            StationCoordinate(
+                station=Station("X"),
+                excel_col="X (mm)",
+                lat=27.0,
+                lon=85.0,
+                elev_m=float("inf"),
+            )
+
 
 class TestStationCoordinateTable:
     def test_rejects_empty_table(self) -> None:
