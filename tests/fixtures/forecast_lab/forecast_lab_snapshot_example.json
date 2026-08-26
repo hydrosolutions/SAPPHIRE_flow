@@ -1,0 +1,241 @@
+{
+  "schema_version": "forecast-lab-snapshot/v1",
+  "snapshot_id": "fls1-20260821T104500Z",
+  "generated_at": "2026-08-21T10:45:00Z",
+  "data_cutoff_at": "2026-08-21T10:40:00Z",
+  "status": {
+    "overall": "partial",
+    "observations": {
+      "status": "ok",
+      "latest_available_at": "2026-08-21T10:40:00Z",
+      "message": null
+    },
+    "bafu_forecasts": {
+      "status": "error",
+      "latest_available_at": "2026-08-21T03:00:00Z",
+      "message": "1 of 2 stations missing a BAFU run in the requested window"
+    },
+    "sapphire_forecasts": {
+      "status": "ok",
+      "latest_available_at": "2026-08-21T06:00:06Z",
+      "message": null
+    }
+  },
+  "comparison_semantics": {
+    "variable": "discharge",
+    "unit": "m3/s",
+    "display_run_rule": "latest available run from each source",
+    "daily_aggregation": "UTC mean over [day_start, next_day_start)",
+    "bafu_daily_completeness_minimum": 22,
+    "observation_daily_completeness_minimum": 130,
+    "sapphire_quantile_method": "linear"
+  },
+  "stations": [
+    {
+      "station": {
+        "code": "2009",
+        "network": "bafu",
+        "name": "Porte_du_Scex",
+        "display_name": null,
+        "river": null,
+        "location": {
+          "longitude": 6.89,
+          "latitude": 46.35,
+          "crs": "EPSG:4326"
+        },
+        "basin_area_km2": 5239.4,
+        "active": true
+      },
+      "availability": {
+        "observations": true,
+        "bafu_forecast": true,
+        "sapphire_forecast": true
+      },
+      "observations": {
+        "variable": "discharge",
+        "unit": "m3/s",
+        "native_step_seconds": 600,
+        "window_start": "2026-08-14T10:40:00Z",
+        "window_end": "2026-08-21T10:40:00Z",
+        "latest_available_at": "2026-08-21T10:40:00Z",
+        "points": [
+          {
+            "valid_time": "2026-08-21T10:40:00Z",
+            "value": 293.67,
+            "qc_status": "qc_passed"
+          }
+        ]
+      },
+      "bafu_forecast": {
+        "available": true,
+        "source": "bafu",
+        "source_product": "hydrodaten_plot",
+        "station_code": "2009",
+        "variable": "discharge",
+        "unit": "m3/s",
+        "run_id": "2009_q_forecast_20260821T030000Z",
+        "issued_at": "2026-08-21T03:00:00Z",
+        "inventory_produced_at": "2026-08-21T05:58:09Z",
+        "licence_status": "unresolved",
+        "native_step_seconds": 3600,
+        "horizon_start": "2026-08-21T03:00:00Z",
+        "horizon_end": "2026-08-26T00:00:00Z",
+        "point_count": 118,
+        "quality_flags": [],
+        "points": [
+          {
+            "valid_time": "2026-08-21T03:00:00Z",
+            "minimum": 315.1,
+            "p25": 315.1,
+            "median": 315.1,
+            "p75": 315.1,
+            "maximum": 315.1
+          }
+        ]
+      },
+      "sapphire_forecasts": [
+        {
+          "available": true,
+          "source": "sapphire",
+          "forecast_id": "6a8f4412-d3fa-4d2e-928b-523707eb6067",
+          "model": {
+            "key": "nwp_regression",
+            "display_name": "Nwp Regression",
+            "artifact_id": "8b37b548-32a4-4c20-871c-22bf97797fd3",
+            "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "code_or_image_version": null,
+            "is_primary": true
+          },
+          "variable": "discharge",
+          "unit": "m3/s",
+          "issued_at": "2026-08-21T06:00:06Z",
+          "observation_staleness_hours": 0.2766,
+          "native_step_seconds": 86400,
+          "ensemble_size": 21,
+          "horizon_start": "2026-08-22T00:00:00Z",
+          "horizon_end": "2026-08-26T00:00:00Z",
+          "points": [
+            {
+              "valid_time": "2026-08-22T00:00:00Z",
+              "minimum": 287.03,
+              "p25": 287.36,
+              "median": 287.85,
+              "p75": 288.16,
+              "maximum": 288.96
+            }
+          ]
+        },
+        {
+          "available": false,
+          "model": {
+            "key": "nwp_rainfall_runoff"
+          },
+          "reason": "no_forecast"
+        }
+      ],
+      "aligned_daily_comparison": [
+        {
+          "day_start": "2026-08-22T00:00:00Z",
+          "day_end": "2026-08-23T00:00:00Z",
+          "observation": {
+            "value": null,
+            "sample_count": 0,
+            "complete": false
+          },
+          "bafu": {
+            "minimum": 265.0,
+            "p25": 272.0,
+            "median": 280.0,
+            "p75": 291.0,
+            "maximum": 305.0,
+            "hour_count": 24,
+            "complete": true
+          },
+          "sapphire": {
+            "nwp_regression": {
+              "minimum": 287.03,
+              "p25": 287.36,
+              "median": 287.85,
+              "p75": 288.16,
+              "maximum": 288.96,
+              "complete": true
+            }
+          }
+        }
+      ],
+      "verification": {
+        "status": "insufficient_data",
+        "window_start": null,
+        "window_end": null,
+        "method_version": "forecast-comparison/v1",
+        "limitations": [
+          "Verification is not computed in v1 (Plan 111 gate G1 \u2014 no BAFU-derived benchmark before licence clarity).",
+          "Only two operational SAPPHIRE stations.",
+          "Short comparison period."
+        ]
+      }
+    },
+    {
+      "station": {
+        "code": "2091",
+        "network": "bafu",
+        "name": "Chancy",
+        "display_name": null,
+        "river": null,
+        "location": {
+          "longitude": 5.99,
+          "latitude": 46.15,
+          "crs": "EPSG:4326"
+        },
+        "basin_area_km2": null,
+        "active": true
+      },
+      "availability": {
+        "observations": true,
+        "bafu_forecast": false,
+        "sapphire_forecast": true
+      },
+      "observations": {
+        "variable": "discharge",
+        "unit": "m3/s",
+        "native_step_seconds": 600,
+        "window_start": "2026-08-14T10:40:00Z",
+        "window_end": "2026-08-21T10:40:00Z",
+        "latest_available_at": "2026-08-21T10:30:00Z",
+        "points": [
+          {
+            "valid_time": "2026-08-21T10:30:00Z",
+            "value": 71.2,
+            "qc_status": "qc_passed"
+          }
+        ]
+      },
+      "bafu_forecast": {
+        "available": false,
+        "reason": "no_matching_run",
+        "message": "no q_forecast archived for station 2091 in the requested window"
+      },
+      "sapphire_forecasts": [
+        {
+          "available": false,
+          "model": {
+            "key": "linear_regression_daily"
+          },
+          "reason": "unsupported_representation"
+        }
+      ],
+      "aligned_daily_comparison": [],
+      "verification": {
+        "status": "insufficient_data",
+        "window_start": null,
+        "window_end": null,
+        "method_version": "forecast-comparison/v1",
+        "limitations": [
+          "Verification is not computed in v1 (Plan 111 gate G1 \u2014 no BAFU-derived benchmark before licence clarity).",
+          "Only two operational SAPPHIRE stations.",
+          "Short comparison period."
+        ]
+      }
+    }
+  ]
+}

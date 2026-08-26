@@ -274,6 +274,11 @@ services:
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_UI_URL: http://prefect-server:4200
       SAPPHIRE_DATA_DIR: /data
+      # Plan 198 T7/D2: the API needs its own DeploymentConfig to resolve
+      # bafu_forecast_archive_path (the Forecast Lab snapshot route's
+      # quarantine gate) — no route under src/sapphire_flow/api/ called
+      # load_config() before this (F2).
+      SAPPHIRE_CONFIG: /app/config.toml
       # Plan 147 Slice C: "*" is REJECTED at startup once auth is enforced
       # (a wildcard origin would let any site's JS ride a browser-held
       # bearer token — security.md § CORS/CSRF). Empty (the default) means
@@ -307,6 +312,12 @@ services:
     networks: [backend, frontend]
     volumes:
       - model_artifacts:/data/artifacts:ro
+      # Plan 198 O1/D2/T7: the Forecast Lab snapshot route reads the
+      # quarantined BAFU forecast archive read-only — same volume
+      # `prefect-worker` writes, mounted :ro here so the API can serve it
+      # but never write to it. No ModelId is minted from it and nothing
+      # here flows into the operational DB (Plan 111 quarantine).
+      - bafu_forecast_archive:/data/bafu_forecasts:ro
       - ./config.toml:/app/config.toml:ro
     logging:
       driver: json-file

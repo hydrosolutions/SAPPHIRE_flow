@@ -91,7 +91,11 @@ app.include_router(models_router, dependencies=[Depends(require_admin)])
 import sapphire_flow.api.routes.api_alerts as _api_alerts  # noqa: E402
 import sapphire_flow.api.routes.api_forecasts as _api_fcst  # noqa: E402
 import sapphire_flow.api.routes.api_stations as _api_stn  # noqa: E402
+import sapphire_flow.api.routes.forecast_lab as _forecast_lab  # noqa: E402
 
 app.include_router(_api_stn.router, dependencies=[Depends(require_principal)])
 app.include_router(_api_fcst.router, dependencies=[Depends(require_principal)])
 app.include_router(_api_alerts.router, dependencies=[Depends(require_principal)])
+# Plan 198 T5 — Forecast Lab snapshot export, same auth surface as the
+# other `/api/v1/...` consumer routes above.
+app.include_router(_forecast_lab.router, dependencies=[Depends(require_principal)])

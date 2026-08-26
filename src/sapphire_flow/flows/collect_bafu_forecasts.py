@@ -310,6 +310,23 @@ def _write_raw_payload(
     return path
 
 
+def _inventory_payload_path(base_path: Path, produced_at: UtcDatetime) -> Path:
+    # Plan 198 T9a: keyed on the inventory's OWN produced_at (not our fetch
+    # clock, same convention as the per-station raw payloads above), so a
+    # second run with an unchanged inventory writes to the same path rather
+    # than duplicating a file forever.
+    stem = f"inventory_{produced_at.strftime('%Y%m%dT%H%M%SZ')}"
+    return base_path / "raw" / f"{stem}.json"
+
+
+def _write_inventory_payload(
+    base_path: Path, produced_at: UtcDatetime, payload: dict[str, Any]
+) -> Path:
+    path = _inventory_payload_path(base_path, produced_at)
+    _atomic_write(path, lambda tmp: tmp.write_text(json.dumps(payload)))
+    return path
+
+
 def _rows_to_dataframe(rows: list[BafuForecastRow]) -> pl.DataFrame:
     data = [
         {
@@ -543,6 +560,23 @@ def collect_bafu_forecasts_flow(
             skipped_count=inventory.skipped_count,
             produced_at=inventory.produced_at.isoformat(),
         )
+
+        # Plan 198 T9a/O3: preserve the raw inventory GeoJSON — it is
+        # fetched hourly and otherwise discarded (F7), and it is the only
+        # irreversible loss on this whole plan. No parsing, no reader — see
+        # T9b (deferred). Best-effort: a write failure here must not abort
+        # the (already-fetched) station forecast collection below.
+        if inventory.raw_payload is not None:
+            try:
+                _write_inventory_payload(
+                    archive_base_path, inventory.produced_at, inventory.raw_payload
+                )
+            except OSError as exc:
+                log.warning(
+                    "bafu_forecast.inventory_archive_write_failed",
+                    produced_at=inventory.produced_at.isoformat(),
+                    error=str(exc),
+                )
 
         result = _collect_forecasts_task(
             adapter_t,
