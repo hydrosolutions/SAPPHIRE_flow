@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DONE
 created: 2026-08-21
 plan: 198
 title: Forecast Lab snapshot — a versioned, read-only JSON export for SAPPHIRE-flow-map
@@ -13,7 +13,21 @@ source: SAPPHIRE-flow-map integration request 2026-08-21; grounded in the Flow M
 
 ## Status
 
-**READY — set by the owner 2026-08-21.** Every owner fork is RESOLVED and no blockers remain. O1 DO IT · O3 SPLIT (T9a now, T9b deferred) · O4 DON'T ·
+**DONE — merged 2026-08-26 as PR #210 (`36e6b4d`, v0.1.802).** Built in worktree
+`sapphire-198`, gated (ruff clean, pyright ratchet 404 <= 432, pytest 4294 passed / 5 skipped),
+reviewed by three independent `codex exec` passes over the committed diff, and merged by the owner.
+
+Two genuine defects were found post-build and fixed: non-finite floats could reach the emitted
+JSON as bare `NaN` tokens (closed at the boundary type plus source sanitisation), and eight
+acceptance tests did not actually lock their criteria (AC4, AC7, AC14, AC15, AC19, AC28 among
+them). One reported blocker — a NaN-accepting `GeoCoord` guard — was verified and REJECTED; the
+code uses `not (-180.0 <= lon <= 180.0)`, which rejects NaN, and a regression test now pins that.
+
+**Still outstanding, neither a code defect:** the export has never run against the real database
+or the live archive (unit tests use fakes, per repo convention), and T7's compose changes need the
+mac-mini redeploy to be verified in place.
+
+Every owner fork was RESOLVED before READY. O1 DO IT · O3 SPLIT (T9a now, T9b deferred) · O4 DON'T ·
 O5 CONFIRMED · O6 DO IT, alongside the earlier O7 (T4 cut, raw BAFU export proceeds). The
 independent Codex pass was consulted on the open forks and agreed on three of four; its dissent on
 O3 was accepted for the fields and split from the irreversible preservation half. The one blocker, **O7**, was resolved by the owner on
