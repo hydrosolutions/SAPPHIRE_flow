@@ -967,7 +967,7 @@ burning fixer rounds reformatting alembic migrations.
     Phase 3.** Groups contain ordinary operational station ids (`flows/run_forecast_cycle.py:2768,2774` — re-anchored
     2026-08-26 from the stale `:2457,2489`), so the two
     re-scoping rules can collide on one station. Group assembly holds no in-memory Phase A payload — it reads each
-    member **from the store** at the single legacy `nwp_readback_cycle_time` (`:2553`,
+    member **from the store** at the single legacy `nwp_readback_cycle_time` (declared `:2365`, passed to group assembly `:2836`;
     `services/run_group_forecast.py:129`) — so suppressing Phase A's write would drop that member from the group
     unless per-track resolution happened to land on the same cycle, which nothing guarantees. **Rule:** an overlapping
     station is **excluded from the per-track path** and served entirely by legacy Phase A. This follows directly from
