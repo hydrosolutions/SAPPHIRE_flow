@@ -293,7 +293,34 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   fetch → Phase B stations → Phase B2 groups → alert-eligibility partition →
   Phase C alerting → result assembly)
 - STATION dispatch: `run_all_station_forecasts` (executor) with
-  `run_station_forecast` (PRIMARY selector) over `_run_single_model`
+  `run_station_forecast` (PRIMARY selector) over `_run_single_model` — this is
+  the LEGACY route: MeteoSwiss, group-CONTROL-overlap stations (D30-overlap),
+  and any legacy (non-candidate-aware) adapter.
+- **Per-track dispatch (Plan 151 T8b, D6/D12/D30) — a SEPARATE route, not a
+  variant of the one above.** Gated by `per_track_eligible_stations(adapter,
+  station_ids, group_store)`: a station is eligible iff its adapter satisfies
+  `CandidateAwareForecastSource` (`isinstance` check, `@runtime_checkable`) AND
+  it belongs to NO station group. Eligible stations are excluded from Phase A's
+  legacy fetch (D7 — "Phase A must not persist partial candidates for migrated
+  stations") and instead go through, once per resolved-cycle: track projection
+  + dedup (`services/track_projection.py`: `project_forcing_requirement` +
+  `resolve_tracks`) → per-track walk-back resolution
+  (`services/track_resolution.py`: `resolve_candidate` + `commit_track`,
+  wrapped by the flow's `_resolve_per_track_run_inputs`) → per-assignment
+  assembly (`services/track_assembly.py::assemble_assignment_inputs`) → run
+  via `run_all_station_forecasts_per_track` (the per-track counterpart of
+  `run_all_station_forecasts` above — NOT a drop-in replacement; it takes a
+  per-assignment `dict[ModelId, AssignmentRunInput]`, not one shared
+  `inputs`/`nwp_cycle_reference_time`). The cross-cycle combination preflight
+  (`resolve_combined_forcing_cycle`, D11) runs ONCE per per-track station,
+  before EITHER the single-model or the pooled-combination persist branch — a
+  mismatch across combinable results skips ALL writes for that station this
+  cycle. A fatal typed error during resolution (`RecapAuthError` /
+  `RecapConfigurationError` / `RecapPayloadIntegrityError` / `StoreError`)
+  propagates out of the whole flow via `emit_freshness_on_fatal_exit` after
+  emitting one forced-CRITICAL `FORECAST_FRESHNESS` record (Plan 116). See
+  `docs/design/forecast-cycle-redesign.md` build-sequence item 3 and
+  `docs/operations/recap-gateway-runbook.md` § Shared-forcing-track freshness.
 - per-assignment warm-up state (Plan 148, READ side): `_run_single_model`
   loads THIS assignment's own state — `load_warm_up_state(model_state_store,
   station_id, assignment.model_id, clock)` — uniformly, after the

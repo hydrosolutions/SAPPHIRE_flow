@@ -30,6 +30,7 @@ from sapphire_flow.adapters.recap_gateway import (
     RecapAuthError,
     RecapConfigurationError,
     RecapDataUnavailableError,
+    RecapPayloadIntegrityError,
     RecapTransientError,
 )
 from sapphire_flow.config.recap_gateway import DEFAULT_CYCLE_CADENCE_HOURS
@@ -68,6 +69,7 @@ from sapphire_flow.types.ids import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+    from uuid import UUID
 
     from prefect.client.schemas.objects import State, TaskRun
     from prefect.tasks import Task
@@ -77,7 +79,10 @@ if TYPE_CHECKING:
         RecapClientLike,
     )
     from sapphire_flow.config.deployment import DeploymentConfig
-    from sapphire_flow.protocols.adapters import WeatherForecastSource
+    from sapphire_flow.protocols.adapters import (
+        WeatherForecastSource,
+        WeatherReanalysisSource,
+    )
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.grid_extractor import GridExtractor
     from sapphire_flow.protocols.stores import (
@@ -96,15 +101,25 @@ if TYPE_CHECKING:
         WeatherForecastStore,
     )
     from sapphire_flow.services.run_station_forecast import StationForecastResult
+    from sapphire_flow.services.track_assembly import AssignmentRunInput
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import ForecastQcRuleSet
     from sapphire_flow.types.ensemble import ForecastEnsemble
-    from sapphire_flow.types.forcing_track import ForcingTrackKey, RawFetchOutcome
+    from sapphire_flow.types.forcing_track import (
+        ForcingTrackKey,
+        RawFetchOutcome,
+        ResolvedTrackRequest,
+        TrackProjection,
+    )
     from sapphire_flow.types.forecast import OperationalForecast
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.rating_curve import RatingCurve
-    from sapphire_flow.types.station import StationConfig, StationWeatherSource
+    from sapphire_flow.types.station import (
+        ModelAssignment,
+        StationConfig,
+        StationWeatherSource,
+    )
 
 log = structlog.get_logger(__name__)
 
@@ -1769,6 +1784,198 @@ def per_track_eligible_stations(
 
 
 # ---------------------------------------------------------------------------
+# Plan 151 T8b — activation: the isinstance dispatch, Phase-A re-scoping,
+# per-cycle track projection/resolution/assembly orchestration.
+# ---------------------------------------------------------------------------
+
+
+def _nominal_cycle_source(
+    candidate_cycle: UtcDatetime, nominal_cycle: UtcDatetime
+) -> NwpCycleSource:
+    """PRIMARY iff the walk-back accepted the cadence-floored nominal cycle
+    on the FIRST try; any older accepted candidate is FALLBACK — mirrors the
+    legacy Phase A fallback-fact convention (``NwpCycleSource.FALLBACK`` iff
+    ``nwp_outcome.fallback_used``)."""
+    return (
+        NwpCycleSource.PRIMARY
+        if candidate_cycle == nominal_cycle
+        else NwpCycleSource.FALLBACK
+    )
+
+
+def _resolve_per_track_run_inputs(
+    *,
+    eligible_station_ids: frozenset[StationId],
+    active_model_assignments: Mapping[StationId, list[ModelAssignment]],
+    models: dict[ModelId, ForecastModel],
+    forecast_bindings: dict[StationId, StationWeatherSource],
+    adapter: CandidateAwareForecastSource,
+    policy: ForcingResolutionPolicy,
+    resolved_cycle_time: UtcDatetime,
+    obs_store: ObservationStore,
+    station_store: StationStore,
+    basin_store: BasinStore,
+    forcing_source: WeatherReanalysisSource,
+    weather_forecast_store: WeatherForecastStore,
+    clock: Callable[[], UtcDatetime],
+    id_gen: Callable[[], UUID],
+) -> dict[StationId, dict[ModelId, AssignmentRunInput]]:
+    """Plan 151 T8b: per-cycle orchestration of T3 (projection + dedup), T5
+    (walk-back resolution) and T6 (per-assignment assembly) for every
+    per-track-eligible station's ACTIVE assignments. Runs ONCE per resolved
+    track (D5) — never per station, never per assignment. A fatal typed
+    error (``RecapAuthError`` / ``RecapConfigurationError`` /
+    ``RecapPayloadIntegrityError``, D7/D31) or a ``StoreError`` raised during
+    ``commit_track``'s persist/readback propagates UNCAUGHT — the caller
+    wraps this call in T8a's ``emit_freshness_on_fatal_exit``.
+    """
+    from sapphire_flow.services.track_assembly import (
+        MissingTrackContext,
+        assemble_assignment_inputs,
+    )
+    from sapphire_flow.services.track_projection import (
+        project_forcing_requirement,
+        resolve_tracks,
+    )
+    from sapphire_flow.services.track_resolution import commit_track, resolve_candidate
+    from sapphire_flow.types.forcing_track import ForcingRequired, NoForcingRequired
+
+    def _assigned_models_for(sid: StationId) -> list[object]:
+        return [
+            m
+            for a in active_model_assignments.get(sid, [])
+            if (m := models.get(a.model_id)) is not None
+        ]
+
+    projections: dict[tuple[StationId, ModelId], TrackProjection] = {}
+    required: list[ForcingRequired] = []
+    for sid in eligible_station_ids:
+        source = forecast_bindings[sid]
+        for assignment in active_model_assignments.get(sid, []):
+            model = models.get(assignment.model_id)
+            if model is None:
+                continue
+            projection = project_forcing_requirement(
+                assignment,
+                model,  # type: ignore[arg-type]
+                source,
+            )
+            projections[(sid, assignment.model_id)] = projection
+            if isinstance(projection, ForcingRequired):
+                required.append(projection)
+
+    resolved_tracks = resolve_tracks(required)
+
+    run_inputs: dict[StationId, dict[ModelId, AssignmentRunInput]] = {}
+
+    for (sid, mid), projection in projections.items():
+        if isinstance(projection, NoForcingRequired):
+            run_inputs.setdefault(sid, {})[mid] = assemble_assignment_inputs(
+                station_id=sid,
+                model_id=mid,
+                model=models[mid],  # type: ignore[arg-type]
+                projection=projection,
+                track_outcome=None,
+                issue_time=resolved_cycle_time,
+                obs_store=obs_store,
+                station_store=station_store,
+                basin_store=basin_store,
+                forcing_source=forcing_source,
+                clock=clock,
+                static_naming_models=_assigned_models_for(sid),
+            )
+
+    for track in resolved_tracks:
+        in_scope_ids = frozenset(
+            sid for sid, _mid in (item.assignment for item in track.assignments)
+        )
+        stations_in_scope = [
+            forecast_bindings[sid] for sid in sorted(in_scope_ids, key=str)
+        ]
+        expected_member_ids = adapter.expected_member_ids(track.key)
+
+        def _fetch_candidate(
+            candidate_cycle: UtcDatetime,
+            *,
+            _track: ResolvedTrackRequest = track,
+            _stations: list[StationWeatherSource] = stations_in_scope,
+        ) -> RawFetchOutcome:
+            return fetch_forcing_candidate_task.with_options(
+                retries=policy.max_retries
+            )(adapter, _track.key, _stations, candidate_cycle)
+
+        accepted = resolve_candidate(
+            track,
+            fetch_candidate=_fetch_candidate,
+            expected_member_ids=expected_member_ids,
+            nominal_cycle_source=_nominal_cycle_source,
+            nominal_now=resolved_cycle_time,
+            issue_time=resolved_cycle_time,
+            cycle_cadence_hours=policy.cycle_cadence_hours,
+            max_cycle_age_hours=policy.max_cycle_age_hours,
+            clock=clock,
+            id_gen=id_gen,
+        )
+        track_result = (
+            None
+            if accepted is None
+            else commit_track(
+                accepted,
+                in_scope_station_ids=in_scope_ids,
+                weather_forecast_store=weather_forecast_store,
+                nwp_source=track.key.nwp_source,
+                track_features=track.key.features,
+            )
+        )
+
+        for item in track.assignments:
+            sid, mid = item.assignment
+            if track_result is None:
+                run_input: AssignmentRunInput = MissingTrackContext(
+                    assignment=item.assignment
+                )
+            else:
+                run_input = assemble_assignment_inputs(
+                    station_id=sid,
+                    model_id=mid,
+                    model=models[mid],  # type: ignore[arg-type]
+                    projection=item,
+                    track_outcome=track_result.station_outcomes[sid],
+                    issue_time=resolved_cycle_time,
+                    obs_store=obs_store,
+                    station_store=station_store,
+                    basin_store=basin_store,
+                    forcing_source=forcing_source,
+                    clock=clock,
+                    static_naming_models=_assigned_models_for(sid),
+                    expected_member_ids=expected_member_ids,
+                )
+            run_inputs.setdefault(sid, {})[mid] = run_input
+
+    return run_inputs
+
+
+def _nwp_cycle_source_for_combined(
+    combined_cycle: UtcDatetime | None,
+    combinable_results: Mapping[ModelId, StationForecastResult],
+) -> NwpCycleSource:
+    """The combined forecast's own ``nwp_cycle_source`` (D11): read off
+    whichever combinable result's own forecast(s) actually carry the agreed
+    ``combined_cycle`` — the cross-cycle preflight already guarantees at
+    most one distinct non-null cycle exists across the group. ``None``
+    (every combinable result was trackless) maps to ``RUNOFF_ONLY``, mirroring
+    the legacy no-NWP convention.
+    """
+    if combined_cycle is None:
+        return NwpCycleSource.RUNOFF_ONLY
+    for result in combinable_results.values():
+        for fc in result.forecasts:
+            if fc.provenance.nwp_cycle_reference_time == combined_cycle:
+                return fc.provenance.nwp_cycle_source
+    return NwpCycleSource.RUNOFF_ONLY
+
+
+# ---------------------------------------------------------------------------
 # Flow
 # ---------------------------------------------------------------------------
 
@@ -2178,7 +2385,23 @@ def run_forecast_cycle_flow(
                 stations_failed += 1
                 failed_station_ids.add(s.id)
 
-        flat_weather_configs = list(forecast_bindings.values())
+        # Plan 151 T8b (D30): stations served by the per-track path (a
+        # CANDIDATE-AWARE adapter AND no station-group membership, D30-overlap)
+        # are excluded from the LEGACY Phase A fetch — D7 "Phase A must not
+        # persist partial candidates for migrated stations". A legacy
+        # (non-candidate-aware) adapter yields the empty set here, so
+        # ``flat_weather_configs`` is UNCHANGED for every deployment that
+        # does not migrate an adapter (D6: recap_gateway only).
+        eligible_station_ids = per_track_eligible_stations(
+            adapter,
+            forecast_bindings.keys(),
+            cast("StationGroupStore | None", group_store),
+        )
+        flat_weather_configs = [
+            source
+            for sid, source in forecast_bindings.items()
+            if sid not in eligible_station_ids
+        ]
 
         # Build station→basin map for GridExtractor
         station_basins: dict[StationId, Basin] = {}
@@ -2207,6 +2430,52 @@ def run_forecast_cycle_flow(
         from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 
         qc_checker = ForecastOutputQualityChecker()
+
+        # Plan 151 T8b: resolve forcing tracks + assemble per-assignment run
+        # inputs for every per-track-eligible station, ONCE per resolved
+        # track (D5) — before Phase A/B so a heterogeneous station's own
+        # per-assignment cycles are available when Phase B reaches it. A
+        # fatal typed error propagating out of resolution (D7/D31: auth,
+        # config, payload-integrity) or a `StoreError` from `commit_track`'s
+        # persist/readback is candidate-FATAL — emit the one forced-CRITICAL
+        # freshness record Plan 116 requires, then re-raise unchanged so the
+        # cycle still aborts loudly instead of silently degrading.
+        per_track_run_inputs: dict[StationId, dict[ModelId, AssignmentRunInput]] = {}
+        if eligible_station_ids:
+            resolution_policy = (
+                forcing_resolution_policy or _DEFAULT_FORCING_RESOLUTION_POLICY
+            )
+            try:
+                per_track_run_inputs = _resolve_per_track_run_inputs(
+                    eligible_station_ids=eligible_station_ids,
+                    active_model_assignments=active_model_assignments,
+                    models=models,
+                    forecast_bindings=forecast_bindings,
+                    adapter=cast("CandidateAwareForecastSource", adapter),
+                    policy=resolution_policy,
+                    resolved_cycle_time=resolved_cycle_time,
+                    obs_store=obs_store,
+                    station_store=station_store,
+                    basin_store=basin_store,
+                    forcing_source=forcing_source,
+                    weather_forecast_store=weather_forecast_store,
+                    clock=clock,
+                    id_gen=uuid4,
+                )
+            except (
+                RecapAuthError,
+                RecapConfigurationError,
+                RecapPayloadIntegrityError,
+                StoreError,
+            ) as exc:
+                emit_freshness_on_fatal_exit(
+                    pipeline_health_store,
+                    cycle_time_param=cycle_time,
+                    resolved_cycle_time=resolved_cycle_time,
+                    forecasts_stored=0,
+                    checked_at=clock(),
+                    exc=exc,
+                )
 
         # Plan 145 D3.1: per-station required future-snow variables, computed
         # BEFORE Phase A submission from the already-loaded ACTIVE assignments +
@@ -2381,6 +2650,7 @@ def run_forecast_cycle_flow(
         )
         from sapphire_flow.services.run_station_forecast import (
             run_all_station_forecasts,
+            run_all_station_forecasts_per_track,
             run_station_forecast,
         )
         from sapphire_flow.types.enums import ModelCombinationStrategy
@@ -2411,6 +2681,193 @@ def run_forecast_cycle_flow(
 
             # Use time_step from first active assignment (priority-sorted)
             sorted_assignments = sorted(assignments, key=lambda a: a.priority)
+
+            if sid in eligible_station_ids:
+                # Plan 151 T8b (D12/D30): the per-track route. Each
+                # assignment carries its OWN resolved cycle via
+                # `per_track_run_inputs` — no shared superset assembly, no
+                # single station-wide `nwp_cycle_reference_time`.
+                multi_result = run_all_station_forecasts_per_track(
+                    station_id=sid,
+                    run_inputs=per_track_run_inputs.get(sid, {}),
+                    assignments=sorted_assignments,
+                    models=models,
+                    artifact_store=artifact_store,  # type: ignore[arg-type]
+                    qc_checker=qc_checker,
+                    qc_rules=qc_rules,
+                    qc_overrides=[],
+                    baselines=all_baselines[sid],
+                    config=config,
+                    clock=clock,
+                    id_gen=uuid4,
+                    rng=rng,
+                    model_state_store=model_state_store,  # type: ignore[arg-type]
+                    water_level_datum_masl=water_level_datums_masl.get(sid),
+                )
+
+                # D11: the cross-cycle combination preflight — installed
+                # BEFORE every in-scope persist call for this station
+                # (single-model AND combination arms both), never at the
+                # combination point itself, so a mismatch never leaves a
+                # partial write already committed.
+                cycle_check = resolve_combined_forcing_cycle(
+                    multi_result.combinable_results
+                )
+                if isinstance(cycle_check, CrossCycleMismatch):
+                    log.error(
+                        "forecast_cycle.cross_cycle_mismatch",
+                        station_id=str(sid),
+                        cycles=sorted(c.isoformat() for c in cycle_check.cycles),
+                    )
+                    errors.append(
+                        f"Cross-cycle mismatch for {sid}: "
+                        f"{sorted(c.isoformat() for c in cycle_check.cycles)}"
+                    )
+                    stations_failed += 1
+                    structlog.contextvars.unbind_contextvars("station_id")
+                    continue
+
+                if multi_result.primary_model_id is None:
+                    _record_station_dark(
+                        pipeline_health_store,
+                        station_id=sid,
+                        reason="all_models_failed",
+                        assigned_models=[a.model_id for a in sorted_assignments],
+                        nwp_enabled=nwp_enabled,
+                        checked_at=clock(),
+                        cycle_time=resolved_cycle_time,
+                    )
+                    errors.append(
+                        f"Station {sid} produced zero forecasts: all_models_failed"
+                    )
+                    stations_failed += 1
+                    structlog.contextvars.unbind_contextvars("station_id")
+                    continue
+
+                if (
+                    config.forecast_combination_strategy
+                    == ModelCombinationStrategy.PRIMARY
+                ):
+                    primary_result = multi_result.results[multi_result.primary_model_id]
+                    for fc in primary_result.forecasts:
+                        fc = _bind_rating_curve(fc, active_rating_curves)
+                        try:
+                            forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                            forecasts_stored += 1
+                        except Exception as exc:
+                            log.warning(
+                                "forecast_cycle.store_forecast_failed", error=str(exc)
+                            )
+                            errors.append(f"Store failed for {sid}: {exc}")
+                    if primary_result.new_state is not None:
+                        try:
+                            model_state_store.store_state(  # type: ignore[union-attr]
+                                sid,
+                                primary_result.model_id,
+                                resolved_cycle_time,
+                                primary_result.new_state,
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "forecast_cycle.store_state_failed", error=str(exc)
+                            )
+                    all_ensembles[sid] = {
+                        multi_result.primary_model_id: dict(primary_result.ensembles)
+                    }
+                else:
+                    for mid, mresult in multi_result.results.items():
+                        for fc in mresult.forecasts:
+                            fc = _bind_rating_curve(fc, active_rating_curves)
+                            try:
+                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                                forecasts_stored += 1
+                            except Exception as exc:
+                                log.warning(
+                                    "forecast_cycle.store_forecast_failed",
+                                    error=str(exc),
+                                )
+                                errors.append(f"Store failed for {sid}: {exc}")
+                        if (
+                            mid == multi_result.primary_model_id
+                            and mresult.new_state is not None
+                        ):
+                            try:
+                                model_state_store.store_state(  # type: ignore[union-attr]
+                                    sid,
+                                    mid,
+                                    resolved_cycle_time,
+                                    mresult.new_state,
+                                )
+                            except Exception as exc:
+                                log.warning(
+                                    "forecast_cycle.store_state_failed", error=str(exc)
+                                )
+
+                    combined_cycle = cycle_check
+                    combined_source = _nwp_cycle_source_for_combined(
+                        combined_cycle, multi_result.combinable_results
+                    )
+                    combined_forecasts = build_combined_forecasts(
+                        station_id=sid,
+                        multi_result=multi_result,
+                        strategy=config.forecast_combination_strategy,
+                        nwp_cycle_reference_time=combined_cycle,
+                        nwp_cycle_source=combined_source,
+                        clock=clock,
+                        uuid_factory=uuid4,
+                    )
+                    if combined_forecasts:
+                        for fc in combined_forecasts:
+                            fc = _bind_rating_curve(fc, active_rating_curves)
+                            try:
+                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                                forecasts_stored += 1
+                            except Exception as exc:
+                                log.warning(
+                                    "forecast_cycle.store_forecast_failed",
+                                    error=str(exc),
+                                )
+                                errors.append(f"Store failed for {sid}: {exc}")
+                        log.info(
+                            "forecast_cycle.combined_forecast_stored",
+                            n_models=len(multi_result.combinable_results),
+                            strategy=config.forecast_combination_strategy.value,
+                        )
+                    else:
+                        log.warning(
+                            "forecast_cycle.combined_forecast_skipped",
+                            reason="fewer than 2 combinable models",
+                            n_models=len(multi_result.combinable_results),
+                        )
+
+                    all_ensembles[sid] = {
+                        mid: dict(mresult.ensembles)
+                        for mid, mresult in multi_result.results.items()
+                    }
+
+                stations_succeeded += 1
+                duration_ms = round((time.perf_counter() - station_t0) * 1000, 1)
+                for mid, param_ensembles in all_ensembles.get(sid, {}).items():
+                    if not param_ensembles:
+                        continue
+                    primary_ensemble = next(iter(param_ensembles.values()))
+                    structlog.contextvars.bind_contextvars(model_id=str(mid))
+                    try:
+                        log.info(
+                            "forecast.run_completed",
+                            duration_ms=duration_ms,
+                            ensemble_size=primary_ensemble.member_count,
+                            lead_time_hours=(
+                                primary_ensemble.forecast_horizon_steps
+                                * primary_ensemble.time_step.total_seconds()
+                                / 3600
+                            ),
+                        )
+                    finally:
+                        structlog.contextvars.unbind_contextvars("model_id")
+                structlog.contextvars.unbind_contextvars("station_id")
+                continue
+
             assembly_assignment = sorted_assignments[0]
             if effective_runoff_only:
                 assembly_assignment = next(

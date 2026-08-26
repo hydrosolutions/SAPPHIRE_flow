@@ -42,6 +42,12 @@ from sapphire_flow.models.climatology_fallback import (
     ClimatologyArtifact,
     ClimatologyFallbackModel,
 )
+from sapphire_flow.services.run_station_forecast import (
+    run_all_station_forecasts,
+    run_all_station_forecasts_per_track,
+)
+from sapphire_flow.services.track_assembly import assemble_assignment_inputs
+from sapphire_flow.services.track_resolution import commit_track, resolve_candidate
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
@@ -99,6 +105,7 @@ from sapphire_flow.types.weather import (
     BasinAverageForecast,
     ElevationBandForecast,
     GriddedForecast,
+    PointForecast,
     WeatherForecastRecord,
 )
 from tests.conftest import (
@@ -8380,21 +8387,807 @@ class TestPerTrackEligibleStations:
         assert eligible == frozenset({sid})
 
 
-class TestT8aDormancy:
-    """Plan 151 T8a's defining property: the exit gate itself. Every new
-    T5-T8a entry point must have ZERO production call sites from the flow's
-    cycle body."""
-
-    def test_no_per_track_entry_point_called_from_the_flow_body(self) -> None:
-        import re
-        from pathlib import Path as _Path
-
-        flow_source = _Path("src/sapphire_flow/flows/run_forecast_cycle.py").read_text()
-        pattern = re.compile(
-            r"resolve_candidate|commit_track|assemble_assignment_inputs|"
-            r"run_all_station_forecasts_per_track"
+def _point_forecast_result(
+    cycle_time: UtcDatetime,
+    *,
+    n_steps: int = 10,
+    members: frozenset[int] = frozenset({0}),
+    features: tuple[str, ...] = ("precipitation", "temperature"),
+    nwp_source: str = _NWP_SOURCE,
+) -> PointForecast:
+    """Builds a pre-extracted per-station forecast payload -- the shape
+    ``fetch_requirement`` returns (D31) -- with hourly valid_times starting
+    one step after ``cycle_time``, mirroring ``_make_nwp_records``'s own
+    cadence so the SAME underlying values reach the model whichever route
+    (legacy pre-seeded store vs. per-track adapter fetch) delivers them."""
+    rows: list[dict[str, object]] = []
+    for step in range(n_steps):
+        vt = ensure_utc(
+            datetime.fromtimestamp(cycle_time.timestamp() + (step + 1) * 3600, tz=UTC)
         )
-        assert not pattern.search(flow_source), (
-            "T8a must add zero production call sites for the T5-T7 "
-            "per-track entry points"
+        for param in features:
+            for m in sorted(members):
+                rows.append(
+                    {
+                        "valid_time": vt,
+                        "parameter": param,
+                        "member_id": m,
+                        "value": float(step + m),
+                    }
+                )
+    return PointForecast(
+        nwp_source=nwp_source, cycle_time=cycle_time, values=pl.DataFrame(rows)
+    )
+
+
+class _FakeCandidateAwareSource:
+    """A FUNCTIONAL ``CandidateAwareForecastSource`` fake for flow-level
+    goldens (Plan 151 T8b) -- returns real per-station payloads (mirroring
+    recap's pre-extracted dict shape, D31) so the per-track path genuinely
+    projects, resolves, commits and assembles, rather than merely proving a
+    dispatch decision on a stub."""
+
+    def __init__(
+        self,
+        *,
+        results_by_cycle: dict[UtcDatetime, dict[StationId, object]] | None = None,
+        member_ids: frozenset[int] = frozenset({0}),
+        raise_on_cycle: dict[UtcDatetime, Callable[[], BaseException]] | None = None,
+    ) -> None:
+        self._results_by_cycle = results_by_cycle or {}
+        self._member_ids = member_ids
+        self._raise_on_cycle = raise_on_cycle or {}
+        self.fetch_calls: list[UtcDatetime] = []
+
+    def fetch_forecasts(
+        self,
+        station_configs: list[StationWeatherSource],
+        cycle_time: UtcDatetime,
+    ) -> dict[StationId, object]:
+        # A migrated adapter satisfies BOTH `CandidateAwareForecastSource`
+        # AND the base `WeatherForecastSource` (D6) -- a group-member
+        # station stays on the LEGACY Phase A path (D30-overlap), which
+        # calls this method, not `fetch_requirement`.
+        return {
+            sc.station_id: _point_forecast_result(cycle_time) for sc in station_configs
+        }
+
+    def fetch_requirement(
+        self,
+        track: ForcingTrackKey,
+        stations: list[object],
+        nominal_cycle: UtcDatetime,
+    ) -> RawFetchOutcome:
+        self.fetch_calls.append(nominal_cycle)
+        if nominal_cycle in self._raise_on_cycle:
+            raise self._raise_on_cycle[nominal_cycle]()
+        stations_result = self._results_by_cycle.get(nominal_cycle)
+        if not stations_result:
+            return RawFetchOutcome(
+                status=RawFetchStatus.ABSENT_AT_CYCLE, cycle=nominal_cycle, stations={}
+            )
+        return RawFetchOutcome(
+            status=RawFetchStatus.FETCHED,
+            cycle=nominal_cycle,
+            stations=stations_result,  # type: ignore[arg-type]
         )
+
+    def expected_member_ids(self, track: ForcingTrackKey) -> frozenset[int]:
+        return self._member_ids
+
+
+def _make_full_stores() -> dict[str, object]:
+    return {
+        "station_store": FakeStationStore(),
+        "obs_store": FakeObservationStore(),
+        "nwp_store": FakeWeatherForecastStore(),
+        "artifact_store": FakeModelArtifactStore(),
+        "forecast_store": FakeForecastStore(),
+        "state_store": FakeModelStateStore(),
+        "alert_store": FakeAlertStore(),
+        "baseline_store": FakeClimBaselineStore(),
+        "basin_store": FakeBasinStore(),
+        "forcing_store": FakeHistoricalForcingStore(),
+    }
+
+
+def _run_cycle_with_stores(
+    stores: dict[str, object], *, adapter: object, models: dict, **overrides: object
+) -> ForecastCycleResult:
+    kwargs: dict[str, object] = {
+        "station_store": stores["station_store"],
+        "obs_store": stores["obs_store"],
+        "weather_forecast_store": stores["nwp_store"],
+        "forecast_store": stores["forecast_store"],
+        "model_state_store": stores["state_store"],
+        "artifact_store": stores["artifact_store"],
+        "alert_store": stores["alert_store"],
+        "baseline_store": stores["baseline_store"],
+        "basin_store": stores["basin_store"],
+        "forcing_store": stores["forcing_store"],
+        "adapter": adapter,
+        "models": models,
+        "config": _make_config(),
+        "qc_rules": _empty_qc_rules(),
+        "clock": _clock,
+        "rng": random.Random(42),
+    }
+    kwargs.update(overrides)
+    return run_forecast_cycle_flow(**kwargs)  # type: ignore[arg-type]
+
+
+class TestT8bPerTrackRouting:
+    """Plan 151 T8b golden -- ROUTING (D12/D30), both directions named
+    explicitly. Output equality alone cannot distinguish a mis-routed
+    station from a correctly-routed one on homogeneous data, so each
+    direction asserts on the CALL as well as the output."""
+
+    def test_candidate_aware_non_grouped_station_takes_the_per_track_route(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
+        )
+        source = _FakeCandidateAwareSource(
+            results_by_cycle={_NOW: {sid: _point_forecast_result(_NOW)}}
+        )
+
+        with (
+            patch(
+                "sapphire_flow.services.run_station_forecast."
+                "run_all_station_forecasts_per_track",
+                wraps=run_all_station_forecasts_per_track,
+            ) as per_track_spy,
+            patch(
+                "sapphire_flow.services.run_station_forecast.run_all_station_forecasts",
+                wraps=run_all_station_forecasts,
+            ) as legacy_spy,
+        ):
+            result = _run_cycle_with_stores(
+                stores, adapter=source, models={_MODEL_ID: _SmallFakeModel()}
+            )
+
+        per_track_spy.assert_called_once()
+        legacy_spy.assert_not_called()
+        assert result.stations_succeeded == 1
+        stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+        assert len(stored) == 1
+        assert stored[0].nwp_cycle_reference_time == _NOW
+        assert stored[0].nwp_cycle_source is NwpCycleSource.PRIMARY
+
+    def test_legacy_adapter_station_never_reaches_a_per_track_entry_point(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+        )
+
+        with (
+            patch(
+                "sapphire_flow.services.track_resolution.resolve_candidate",
+                wraps=resolve_candidate,
+            ) as resolve_spy,
+            patch(
+                "sapphire_flow.services.track_resolution.commit_track",
+                wraps=commit_track,
+            ) as commit_spy,
+            patch(
+                "sapphire_flow.services.track_assembly.assemble_assignment_inputs",
+                wraps=assemble_assignment_inputs,
+            ) as assemble_spy,
+            patch(
+                "sapphire_flow.services.run_station_forecast."
+                "run_all_station_forecasts_per_track",
+                wraps=run_all_station_forecasts_per_track,
+            ) as per_track_spy,
+            patch(
+                "sapphire_flow.services.run_station_forecast.run_all_station_forecasts",
+                wraps=run_all_station_forecasts,
+            ) as legacy_spy,
+        ):
+            result = _run_cycle_with_stores(
+                stores,
+                adapter=FakeWeatherForecastSource(result={}),
+                models={_MODEL_ID: _SmallFakeModel()},
+            )
+
+        resolve_spy.assert_not_called()
+        commit_spy.assert_not_called()
+        assemble_spy.assert_not_called()
+        per_track_spy.assert_not_called()
+        legacy_spy.assert_called_once()
+        assert result.stations_succeeded == 1
+
+
+class TestT8bMemberSetThreading:
+    """Plan 151 T8b golden -- MEMBER SET (R3). The source-derived exact
+    member set is obtained ONCE per track and threaded into BOTH
+    `resolve_candidate` and every `assemble_assignment_inputs` call for that
+    track. This test fails RED if the `expected_member_ids=` argument is
+    omitted from the `assemble_assignment_inputs` call -- the specific
+    regression it exists to catch."""
+
+    def test_expected_member_ids_reaches_assemble_assignment_inputs(self) -> None:
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
+        )
+        expected = frozenset({0, 1, 2})
+        source = _FakeCandidateAwareSource(
+            results_by_cycle={
+                _NOW: {sid: _point_forecast_result(_NOW, members=expected)}
+            },
+            member_ids=expected,
+        )
+
+        with patch(
+            "sapphire_flow.services.track_assembly.assemble_assignment_inputs",
+            wraps=assemble_assignment_inputs,
+        ) as assemble_spy:
+            result = _run_cycle_with_stores(
+                stores, adapter=source, models={_MODEL_ID: _SmallFakeModel()}
+            )
+
+        assert result.stations_succeeded == 1
+        assert assemble_spy.call_count >= 1
+        for call in assemble_spy.call_args_list:
+            assert call.kwargs["expected_member_ids"] == expected
+
+
+class TestT8bFailureRoutes:
+    """Plan 151 T8b golden -- THE TWO NEWLY-ACTIVATED FAILURE ROUTES (R4).
+    T8b owns the mapping from track results into run inputs; both cases
+    assert the cause AND that the fallback chain still produced a station
+    forecast."""
+
+    def _two_assignment_station(
+        self, stores: dict[str, object], sid: StationId
+    ) -> None:
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
+        )
+        fallback_id = ModelId("fake_fallback_model")
+        stores["station_store"].store_model_assignment(  # type: ignore[attr-defined]
+            ModelAssignment(
+                station_id=sid,
+                model_id=fallback_id,
+                time_step=timedelta(hours=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=2,
+                created_at=_NOW,
+            )
+        )
+        stores["artifact_store"].store_artifact(  # type: ignore[attr-defined]
+            model_id=fallback_id,
+            artifact_bytes=b"fake_artifact_fallback",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+
+    def test_walkback_exhaustion_records_missing_context_and_fallback_succeeds(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        self._two_assignment_station(stores, sid)
+        # Every candidate cycle is absent -> walk-back exhausts within the
+        # (small) configured bound.
+        source = _FakeCandidateAwareSource(results_by_cycle={})
+
+        result = _run_cycle_with_stores(
+            stores,
+            adapter=source,
+            models={
+                _MODEL_ID: _SmallFakeModel(),
+                ModelId("fake_fallback_model"): _NativeFakeModel(),
+            },
+        )
+
+        assert result.stations_succeeded == 1
+        stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+        assert len(stored) >= 1
+        assert {f.model_id for f in stored} == {ModelId("fake_fallback_model")}
+
+    def test_station_unavailable_at_resolved_cycle_records_track_unavailable(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        other_sid = StationId(uuid4())
+        stores = _make_full_stores()
+        self._two_assignment_station(stores, sid)
+        # A SIBLING station completes the candidate so the track resolves,
+        # but `sid` itself is absent from the fetched payload -> resolved
+        # track, THIS station unavailable (TRACK_UNAVAILABLE, not
+        # MISSING_CONTEXT).
+        source = _FakeCandidateAwareSource(
+            results_by_cycle={_NOW: {other_sid: _point_forecast_result(_NOW)}}
+        )
+
+        result = _run_cycle_with_stores(
+            stores,
+            adapter=source,
+            models={
+                _MODEL_ID: _SmallFakeModel(),
+                ModelId("fake_fallback_model"): _NativeFakeModel(),
+            },
+        )
+
+        assert result.stations_succeeded == 1
+        stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+        assert {f.model_id for f in stored} == {ModelId("fake_fallback_model")}
+
+
+class TestT8bFreshnessOnFatalResolution:
+    """Plan 151 T8b golden -- FRESHNESS ON EVERY FATAL RESOLUTION EXIT,
+    PARAMETERISED (R5). Each of the four fatal classes propagates out of
+    `resolve_candidate`'s `fetch_candidate` call (auth/config/payload-
+    integrity, D7's locked mapping) or `commit_track`'s persist (store
+    failure) and must emit EXACTLY ONE forced-CRITICAL FORECAST_FRESHNESS
+    record before re-raising."""
+
+    @pytest.mark.parametrize(
+        "make_exc",
+        [
+            lambda: RecapAuthError("unauthorized", status_code=401),
+            lambda: RecapConfigurationError("bad hru", field="hru_code"),
+            lambda: RecapPayloadIntegrityError("corrupt payload"),
+        ],
+        ids=["RecapAuthError", "RecapConfigurationError", "RecapPayloadIntegrityError"],
+    )
+    def test_fatal_fetch_error_emits_one_critical_record_and_propagates(
+        self, make_exc: Callable[[], BaseException]
+    ) -> None:
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
+        )
+        exc = make_exc()
+        source = _FakeCandidateAwareSource(raise_on_cycle={_NOW: lambda: exc})
+        health_store = FakePipelineHealthStore()
+
+        with pytest.raises(type(exc)):
+            _run_cycle_with_stores(
+                stores,
+                adapter=source,
+                models={_MODEL_ID: _SmallFakeModel()},
+                pipeline_health_store=health_store,
+            )
+
+        records = health_store.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+
+    def test_fatal_store_failure_during_commit_emits_one_critical_record(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
+        )
+        source = _FakeCandidateAwareSource(
+            results_by_cycle={_NOW: {sid: _point_forecast_result(_NOW)}}
+        )
+        health_store = FakePipelineHealthStore()
+
+        class _RaisingWeatherForecastStore:
+            """Delegates to a real fake for everything EXCEPT the
+            per-track commit's persist call, which fails fatally --
+            composition (not a raising ``__getattr__``) so introspection by
+            Prefect/pydantic on unrelated dunder attributes stays inert."""
+
+            def __init__(self, inner: FakeWeatherForecastStore) -> None:
+                self._inner = inner
+
+            def store_weather_forecasts(self, records: object) -> None:
+                raise StoreError("simulated store outage")
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._inner, name)
+
+        with pytest.raises(StoreError):
+            _run_cycle_with_stores(
+                stores,
+                adapter=source,
+                models={_MODEL_ID: _SmallFakeModel()},
+                pipeline_health_store=health_store,
+                weather_forecast_store=_RaisingWeatherForecastStore(
+                    stores["nwp_store"]  # type: ignore[arg-type]
+                ),
+            )
+
+        records = health_store.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+
+
+class TestT8bCrossCyclePreflight:
+    """Plan 151 T8b golden -- CROSS-CYCLE PREFLIGHT (D11 + Plan 116). Two
+    combinable assignments resolving to DIFFERENT cycles fail loud with
+    ZERO forecast/state writes for that station, and (Plan 116's contract)
+    the cycle's own `forecasts_stored == 0` yields a CRITICAL
+    FORECAST_FRESHNESS record at normal completion."""
+
+    def test_mismatched_cycles_write_nothing_and_force_critical_freshness(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
+        )
+        model_id_b = ModelId("fake_model_b")
+        stores["station_store"].store_model_assignment(  # type: ignore[attr-defined]
+            ModelAssignment(
+                station_id=sid,
+                model_id=model_id_b,
+                time_step=timedelta(hours=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=2,
+                created_at=_NOW,
+            )
+        )
+        stores["artifact_store"].store_artifact(  # type: ignore[attr-defined]
+            model_id=model_id_b,
+            artifact_bytes=b"fake_artifact_b",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+        older_cycle = ensure_utc(datetime(2026, 3, 31, 18, 0, tzinfo=UTC))
+        # Model A's track resolves at the NOMINAL cycle; model B's own
+        # StationWeatherSource carries a DIFFERENT nwp_source, so its
+        # per-track projection lands on a DISTINCT track that only ever
+        # resolves one cycle back -- two combinable assignments end up on
+        # two different resolved cycles.
+        stores["station_store"].store_weather_source(  # type: ignore[attr-defined]
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="other_ifs_source",
+                extraction_type=SpatialRepresentation.POINT,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.FORECAST,
+            )
+        )
+
+        class _TwoTrackSource(_FakeCandidateAwareSource):
+            def fetch_requirement(
+                self,
+                track: ForcingTrackKey,
+                stations: list[object],
+                nominal_cycle: UtcDatetime,
+            ) -> RawFetchOutcome:
+                self.fetch_calls.append(nominal_cycle)
+                if track.nwp_source == "other_ifs_source":
+                    if nominal_cycle == older_cycle:
+                        return RawFetchOutcome(
+                            status=RawFetchStatus.FETCHED,
+                            cycle=nominal_cycle,
+                            stations={sid: _point_forecast_result(nominal_cycle)},
+                        )
+                    return RawFetchOutcome(
+                        status=RawFetchStatus.ABSENT_AT_CYCLE,
+                        cycle=nominal_cycle,
+                        stations={},
+                    )
+                if nominal_cycle == _NOW:
+                    return RawFetchOutcome(
+                        status=RawFetchStatus.FETCHED,
+                        cycle=nominal_cycle,
+                        stations={sid: _point_forecast_result(nominal_cycle)},
+                    )
+                return RawFetchOutcome(
+                    status=RawFetchStatus.ABSENT_AT_CYCLE,
+                    cycle=nominal_cycle,
+                    stations={},
+                )
+
+        source = _TwoTrackSource()
+        health_store = FakePipelineHealthStore()
+
+        result = _run_cycle_with_stores(
+            stores,
+            adapter=source,
+            models={_MODEL_ID: _SmallFakeModel(), model_id_b: _SmallFakeModel()},
+            config=_make_config(
+                forecast_combination_strategy=ModelCombinationStrategy.POOLED
+            ),
+            pipeline_health_store=health_store,
+        )
+
+        assert result.forecasts_stored == 0
+        stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+        assert stored == []
+        records = health_store.fetch_recent(PipelineCheckType.FORECAST_FRESHNESS)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+
+
+class TestT8bGroupOverlapStaysLegacy:
+    """Plan 151 T8b golden -- D30-overlap-deferral. A station that is BOTH
+    group-member and per-track-eligible stays on the LEGACY path in Phase 3;
+    only its ungrouped sibling is served per-track."""
+
+    def test_grouped_station_excluded_from_eligible_set_at_flow_level(self) -> None:
+        grouped_sid = StationId(uuid4())
+        ungrouped_sid = StationId(uuid4())
+        stores = _make_full_stores()
+        for sid in (grouped_sid, ungrouped_sid):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                stores["station_store"],  # type: ignore[arg-type]
+                stores["obs_store"],  # type: ignore[arg-type]
+                stores["nwp_store"],  # type: ignore[arg-type]
+                stores["artifact_store"],  # type: ignore[arg-type]
+                stores["forcing_store"],  # type: ignore[arg-type]
+                seed_nwp=False,
+            )
+        group_store = FakeStationGroupStore()
+        group_store.store_group(
+            StationGroup(
+                id=StationGroupId(uuid4()),
+                name="overlap-group",
+                station_ids=frozenset({grouped_sid}),
+                description=None,
+                created_at=_NOW,
+            )
+        )
+        source = _FakeCandidateAwareSource(
+            results_by_cycle={
+                _NOW: {
+                    grouped_sid: _point_forecast_result(_NOW),
+                    ungrouped_sid: _point_forecast_result(_NOW),
+                }
+            }
+        )
+
+        with patch(
+            "sapphire_flow.services.run_station_forecast."
+            "run_all_station_forecasts_per_track",
+            wraps=run_all_station_forecasts_per_track,
+        ) as per_track_spy:
+            _run_cycle_with_stores(
+                stores,
+                adapter=source,
+                models={_MODEL_ID: _SmallFakeModel()},
+                group_store=group_store,
+            )
+
+        per_track_stations = {
+            call.kwargs["station_id"] for call in per_track_spy.call_args_list
+        }
+        assert ungrouped_sid in per_track_stations
+        assert grouped_sid not in per_track_stations
+
+
+def _fi_heterogeneous_requirement() -> object:
+    from sapphire_flow.adapters import forecast_interface as fi_boundary
+
+    return fi_boundary.InputRequirement(
+        targets={
+            "discharge": fi_boundary.TargetSpec(
+                unit=fi_boundary.Unit.M3_PER_S,
+                representations=frozenset(
+                    {fi_boundary.OutputRepresentation.DETERMINISTIC}
+                ),
+            )
+        },
+        dynamic={
+            timedelta(hours=1): fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: (
+                        fi_boundary.DynamicInputSpec(
+                            future_known={
+                                "nwp": {
+                                    "precipitation": fi_boundary.FutureKnownVariable(
+                                        future_steps=2,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.MM,
+                                    ),
+                                    "temperature": fi_boundary.FutureKnownVariable(
+                                        future_steps=10,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.DEG_C,
+                                    ),
+                                }
+                            },
+                        )
+                    )
+                }
+            )
+        },
+    )
+
+
+class _HeterogeneousFakeFIModel:
+    """A REAL FI model (per ``docs/model_interface.md``) whose only branch
+    declares TWO future_known variables at DIFFERENT ``future_steps`` --
+    D10a's flagship shape. ``predict`` returns a genuine
+    ``fi_boundary.ModelSuccess`` so the golden proves delivery, not merely
+    construction."""
+
+    def __init__(self) -> None:
+        from sapphire_flow.adapters import forecast_interface as fi_boundary
+
+        self._input_requirement = _fi_heterogeneous_requirement()
+        self.artifact_scope = fi_boundary.FIArtifactScope.STATION
+
+    @property
+    def input_requirement(self) -> object:
+        return self._input_requirement
+
+    def train(self, *args: object, **kwargs: object) -> object:
+        raise NotImplementedError
+
+    def predict(
+        self,
+        artifact: object,
+        *,
+        inputs: object,
+        issue_datetime: UtcDatetime,
+        rng: random.Random,
+    ) -> object:
+        from sapphire_flow.adapters import forecast_interface as fi_boundary
+
+        values = [10.0 + step for step in range(10)]
+        data = pl.DataFrame(
+            {
+                "issue_datetime": [issue_datetime] * len(values),
+                "datetime": [
+                    ensure_utc(
+                        datetime.fromtimestamp(
+                            issue_datetime.timestamp() + (step + 1) * 3600, tz=UTC
+                        )
+                    )
+                    for step in range(len(values))
+                ],
+                "value": values,
+            }
+        ).with_columns(
+            pl.col("issue_datetime").cast(pl.Datetime("us", "UTC")),
+            pl.col("datetime").cast(pl.Datetime("us", "UTC")),
+        )
+        variable = fi_boundary.VariableOutput(
+            metadata=fi_boundary.VariableMetadata(
+                unit=fi_boundary.Unit.M3_PER_S,
+                timedelta=timedelta(hours=1),
+                forecast_horizon=len(values),
+                offset=0,
+            ),
+            deterministic=fi_boundary.DeterministicData(data=data),
+            flags=frozenset(),
+            status=fi_boundary.VariableStatus.SUCCESS,
+        )
+        return fi_boundary.ModelSuccess(
+            output=fi_boundary.ModelOutput(
+                model_name="hetero-fi",
+                issue_datetime=issue_datetime,
+                variables={"station": {"discharge": variable}},
+            )
+        )
+
+    def serialize_artifact(self, artifact: object) -> bytes:
+        return b"artifact"
+
+    def deserialize_artifact(self, raw: bytes) -> object:
+        return raw
+
+
+class TestT8bHeterogeneousStation:
+    """Plan 151 T8b golden -- HETEROGENEOUS STATION (D10a). Reachable ONLY
+    because the runner's per-feature coverage reads the per-track CONTRACT
+    instead of the scalar ``model.data_requirements`` -- with the legacy
+    scalar path this station would fail `INSUFFICIENT_COVERAGE` on its
+    short (2-step) feature even though its long (10-step) feature is fully
+    covered."""
+
+    def test_heterogeneous_horizons_reach_predict_and_succeed(self) -> None:
+        from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+
+        sid = StationId(uuid4())
+        stores = _make_full_stores()
+        model_id = ModelId("fi_hetero_model")
+        _build_station_and_stores(
+            sid,
+            model_id,
+            stores["station_store"],  # type: ignore[arg-type]
+            stores["obs_store"],  # type: ignore[arg-type]
+            stores["nwp_store"],  # type: ignore[arg-type]
+            stores["artifact_store"],  # type: ignore[arg-type]
+            stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
+        )
+        adapter_model = ForecastInterfaceAdapter(
+            _HeterogeneousFakeFIModel(),  # type: ignore[arg-type]
+            station_code_resolver=lambda _sid: "TEST-001",
+        )
+        adapter_model.alert_eligibility = AlertEligibility.SKILL_FORECAST  # type: ignore[attr-defined]
+        # precipitation's own series is a strict 2-step PREFIX of
+        # temperature's 10-step series (both start at cycle + 1h) -- the
+        # straightforward "differently-truncated" shape, not the staggered
+        # one T2's own fixer round separately locks.
+        payload = PointForecast(
+            nwp_source=_NWP_SOURCE,
+            cycle_time=_NOW,
+            values=pl.concat(
+                [
+                    _point_forecast_result(
+                        _NOW, n_steps=2, features=("precipitation",)
+                    ).values,
+                    _point_forecast_result(
+                        _NOW, n_steps=10, features=("temperature",)
+                    ).values,
+                ]
+            ),
+        )
+        source = _FakeCandidateAwareSource(results_by_cycle={_NOW: {sid: payload}})
+
+        result = _run_cycle_with_stores(
+            stores, adapter=source, models={model_id: adapter_model}
+        )
+
+        assert result.stations_succeeded == 1
+        stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+        assert len(stored) == 1
+        assert stored[0].model_id == model_id
+        assert stored[0].ensemble.forecast_horizon_steps == 10
