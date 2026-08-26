@@ -74,11 +74,41 @@ All decisions are now made.
   mean difference**, **conditional accumulated difference**, **wet-hour conditional intensity bias**.
   Frequency and categorical scores only as conditional-on-retention estimands. **No annualisation.**
 
+  **AMENDED 2026-08-26 — BOTH wet-hour conditionings are reported.** *(Owner, 2026-08-24.)* D1 as
+  originally written left the conditioning ambiguous, and the two readings answer different questions:
+
+  - **gauge-alone** — conditioned on the GAUGE being wet: *when the gauge says it rained, how far off is
+    ERA5's amount?* This includes hours where ERA5 says **zero**, so it is partly measuring **detection
+    failure** rather than intensity.
+  - **joint** — conditioned on BOTH being wet: *when both agree it is raining, how do the intensities
+    compare?* This isolates intensity from detection, but conditions additionally on ERA5's own
+    behaviour, making it **doubly conditional** under Rule 1 — label it as such.
+
+  Report both, each carrying its own `n`. ⛔ **Their difference is NOT a decomposition and must not be
+  presented as "the detection contribution".** The populations are **nested** (joint ⊆ gauge-alone), not
+  orthogonal, so the difference partitions nothing — it is the effect of removing ERA5-dry hours from the
+  conditioning set, and that is all it may be called. *(An earlier draft of this amendment asserted a
+  decomposition; withdrawn.)*
+
 - **D2 — Apply the M-A3 mask IDENTICALLY to both sides at pairing time.** Masking one side measures
   selection, not weather. Carry the **common-retained-hour count** on every statistic.
 
 - **D3 — Never headline an hourly matched pair.** One gauge vs one 0.1° cell (~110 km²) is dominated by
   representativeness error at that scale. Aggregate, and state the scale beside every number.
+
+  **AMENDED 2026-08-26 — the estimand/grain assignment is named, and it is deliberately NOT symmetric.**
+  The two hourly-difference estimands (matched-hour mean difference, wet-hour conditional intensity bias)
+  are reported at **JJAS and DJF only**; the conditional accumulated difference is reported at **all four
+  grains**. A daily *mean of hourly differences* is the very figure D3 refuses, wearing a new label —
+  averaging the differences does not average away the representativeness error that makes an hourly pair
+  unheadlineable. The accumulated difference is a **mass** statistic that does mean something at daily
+  grain, and D12's categorical scores need those buckets regardless. *(T3 built it this way; this records
+  the decision rather than changing it.)*
+
+  **JJAS/DJF accumulated differences are pooled over the whole record, and must be LABELLED pooled.**
+  Per-year reporting would multiply the outputs sixfold for what is a characterisation. The label is not
+  a formality: Khumaltar swings **294 → 1,504 mm between 2023 and 2024** (D8, cause undocumented), so a
+  pooled figure that reads as a typical year is actively misleading.
 
 - **D4 — ⛔ THE CALENDAR CARVE-OUT IS DELETED. Every magnitude estimand carries a measured
   sub-freezing mass fraction instead.** *(Owner, grill-me 2026-08-19 — this REPLACES "warm season
@@ -135,9 +165,35 @@ All decisions are now made.
   band carries Plan 193's recorded limit: three stations, one of them Olangchunggola, whose 03 UTC
   peak is unexplained.
 
+  **AMENDED 2026-08-26 — a band value is the UNWEIGHTED MEAN of its member stations, never a pooled hour
+  count.** This follows from **D13**, not merely from Plan 193's precedent: pooling raw hours lets a
+  high-retention station dominate its band, making the band figure partly a function of **retention** —
+  precisely what D13 forbids when it requires stratifying BY retention rather than filtering ON it. T4
+  measured both and they genuinely diverge. Every band product therefore carries its **station count**
+  beside its value, and its members must be **commensurable**: one estimand kind and one selection
+  parameterisation, refused at construction rather than checked by the caller.
+
 - **D5 — Representativeness is characterised, not decomposed.** One point vs one cell cannot separate
   grid error from model error. Use M-A5's operator-sensitivity envelope, the elevation mismatch, and
   neighbouring-cell variability — and label it a characterisation.
+
+  **AMENDED 2026-08-26 — "neighbouring-cell variability" is OPERATIONALISED here, and the
+  operationalisation is a DECLARED METHOD CHOICE, not a pre-registered one.** D5 named the quantity and
+  gave no formula — no stencil, no statistic, no period. A different implementer choosing cardinal-4
+  neighbours, or wet-hour intensity instead of period total, would produce materially different numbers
+  with equally good textual justification. T4 chose; this plan now owns the choice:
+
+  - **stencil** — the **Chebyshev-8** neighbourhood (queen adjacency) of the station's own cell;
+  - **quantity** — **period-total precipitation in mm**, matching the accumulated estimand;
+  - **statistic** — the **range** and the **population coefficient of variation** (scale-free, so it
+    compares across wet and dry stations).
+
+  ⛔ **Report these as this task's operationalisation, chosen with the data in hand — never as
+  pre-registered.** Vision D8 forbids pre-registered thresholds; it does not licence presenting a post-hoc
+  choice as though it were prior. The defect being fixed is not the choice itself but that the earlier text
+  read as if the numbers followed from the decision. Measured: CV highest exactly at the high-mismatch
+  stations — Olangchunggola **0.312**, Humde **0.257**, Lukla **0.255**, Syangboche **0.248** — against
+  Rajbiraj **0.022**.
 
 - **D6 — Sign every result.** Each figure carries its estimand, the retained fraction it rests on, and
   the undercatch caveat — stated as a property of **catch efficiency**, not of the observed total:
@@ -175,6 +231,10 @@ All decisions are now made.
   (Plan 174 permits the label only). *(Codex review 2026-08-20 — an earlier draft said the lapse step
   "fixes the mean offset" and invented a ±30–50 m datum figure; both are withdrawn.)*
 
+  **Scope note (2026-08-26): this temperature extension concerns D14/T2/T5's work, not T4.** T4 uses the
+  elevation mismatch as a descriptive covariate only; nothing in T4 pairs a cell temperature with gauge
+  precipitation mass.
+
 - **D8 — The within-cell pair is DESCRIPTIVE. Do not convert it into a bound.** Kirtipur and Khumaltar
   share one cell, 4.33 km apart; ERA5 returns one identical series for both. Compute the discrepancy on
   hours retained for **both** and **report it as an observed quantity, full stop.**
@@ -185,10 +245,23 @@ All decisions are now made.
   **error-free aggregates**, not merely unbiased ones — which we do not have, least of all here:
   Khumaltar swings **294 → 1,504 mm** (2023→2024), cause undocumented. **n = 1 pair.**
 
+  **AMENDED 2026-08-26 — "each station's own exposure" means WHOLE-RECORD retained counts**, matching T1's
+  season-agnostic substrate rather than a season-sliced count. Measured: Kirtipur **93.12 %**, Khumaltar
+  **92.77 %**, retained in common **90.06 %** — the common-hour requirement costs only ~3 points against
+  either station alone, so the pair's **47,377** hours are not a thin remnant. Observed totals **7,758.6
+  vs 5,672.0 mm**; accumulated difference **+2,086.6 mm**. Still descriptive, still n = 1 pair, still no
+  bound.
+
 - **D9 — Read the sensitivity schema from the artefact.** Verified on the real bundle:
   `statistic ∈ {QUANTILE, WET_MEAN_INTENSITY, WET_FREQUENCY}` — absolute/ratio/sign-agreement are
   **columns**, not statistic values — and `sign_agreement_fraction` is legitimately **null** on
   `STATION` rows. A validator demanding it non-null rejects every valid station row.
+
+  **AMENDED 2026-08-26 — validation of that artefact is STRUCTURAL ONLY.** Check column presence and the
+  `statistic` domain; do **not** assert value domains. D9 exists to stop a validator rejecting valid rows,
+  and a value-domain assertion is the same defect one level down — a future fourth statistic, or a column
+  legitimately null on a subset of rows, would fail a check that was never measuring correctness.
+  *(T4 built it this way.)*
 
 - **D10 — M-D3 RESOLVED 2026-08-18: DHM hourly values are SUMS.** Reported by the students who supplied
   the data (**provenance is second-hand, not a DHM statement — record it as such**). Magnitude
