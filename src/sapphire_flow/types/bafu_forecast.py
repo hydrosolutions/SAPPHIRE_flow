@@ -102,6 +102,14 @@ class BafuStationInventory:
     # existing construction sites (tests, and any future caller building an
     # inventory directly) do not need to name it.
     skipped_count: int = 0
+    # Plan 198 T9a/O3: the raw inventory GeoJSON payload, preserved so the
+    # flow can archive it (the collector fetches it hourly and otherwise
+    # discards it — every hour without this is station-inventory history
+    # that cannot be recovered, F7). Defaults to None so existing
+    # construction sites that build an inventory directly (tests) need not
+    # name it. Not parsed or used here — see T9b (deferred) for
+    # river/display_name extraction.
+    raw_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -114,10 +122,14 @@ class BafuForecastRow:
     valid_time: UtcDatetime
     trace_name: str
     # Position of this point within its trace. The "25.-75. Percentile" band is
-    # a Plotly area polygon (forward upper edge then backward lower edge), so the
-    # same valid_time appears twice with different values; point_index preserves
-    # the polygon order so p25/p75 stay reconstructable from the parquet alone,
-    # independent of any downstream row re-ordering.
+    # a Plotly area polygon (forward LOWER edge — p25 — then backward UPPER
+    # edge — p75; measured 2026-08-21 on three live runs across three
+    # stations and corroborated by the checked-in reference fixture,
+    # Plan 198 F3 — an earlier version of this comment had the two edges
+    # backwards), so the same valid_time appears twice with different
+    # values; point_index preserves the polygon order so p25/p75 stay
+    # reconstructable from the parquet alone, independent of any downstream
+    # row re-ordering.
     point_index: int
     value: float | None
 

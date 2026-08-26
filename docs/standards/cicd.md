@@ -489,7 +489,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 1 | `lint` | `uv sync --frozen` | — | `uv sync` (developers typically have a synced venv already) | No |
 | 1 | `lint` | `uv run ruff check src/ tests/` | — | `uv run ruff check src/ tests/` (also via `uv run check` and pre-commit) | No |
 | 1 | `lint` | `uv run ruff format --check src/ tests/` | — | `uv run ruff format --check src/ tests/` (also via `uv run check` and pre-commit) | No |
-| 1 | `lint` | `shellcheck scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/bootstrap-mac-mini.sh` | — | Same command (also via pre-commit `shellcheck`) | No |
+| 1 | `lint` | `shellcheck -x scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/launchd/prune-docker.sh scripts/launchd/run-nepal-forcing.sh scripts/launchd/docker-endpoint.sh scripts/bootstrap-mac-mini.sh` (Plan 199 T2: `-x` follows the `source docker-endpoint.sh` line in four wrappers — plain shellcheck flags it SC1091; `prune-docker.sh`/`run-nepal-forcing.sh`/`docker-endpoint.sh` were previously omitted from this list) | — | Same command (also via pre-commit `shellcheck`, which also passes `-x`) | No |
 | 1 | `lint` | `uv run pyright --outputjson src/ > /tmp/pyright.json \|\| true` | — | `uv run pyright src/` | No |
 | 1 | `lint` | `uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json` | — | `uv run pyright src/` (then compare against `tools/pyright_baseline.json`) | No |
 | 1 | `lint` | `aquasecurity/trivy-action` (fs scan, `uses:`) | — | `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .` | No (but requires trivy installed) |
@@ -863,6 +863,19 @@ The external provider (Healthchecks.io) alerts through Slack + email when the he
 healthy": an unhealthy stack still pings, and only a tick that raises before persisting withholds the
 heartbeat. See `docs/plans/archive/163-watchdog-deadman-and-http-hardening.md` and
 `docs/deployment/mac-mini-staging.md` § Dead-man's switch isn't pinging.
+
+**Plan 199 T1 — free-disk-space alert** (salvaged from the never-merged Plan 158 D14): the watchdog
+also checks free space on the disk containing `/` (`config.disk_path`), alerting when it drops below
+**5% of that same volume's total capacity** (`DISK_FREE_THRESHOLD_PCT`, Plan 199 D1) — deliberately
+NOT an absolute byte count, so the rule travels to any host regardless of disk size. `free` and `total`
+come from one `shutil.disk_usage()` call so the ratio is never computed across two different instants.
+Same transition-latched shape as the Plan 194 backup-device check (`_disk_notification_kind` mirrors
+`_backup_device_notification_kind`): alerts only on TRANSITION (`disk space LOW` / `... RECOVERED`),
+never every tick, with its own persisted counter (`consecutive_disk_low_ticks`) and pending-notification
+kind (`disk_notification_pending`) — independent of every other check, so a simultaneous disk-low and
+backup-device-unverified tick alerts on both, not one swallowing the other. The alert message reports
+both the percentage and the underlying bytes (e.g. "4.1% free (152 GB of 3654 GB)") since the percentage
+alone is not actionable. See `docs/plans/archive/199-salvage-plan-158.md`.
 
 ## Access-token pepper + probe-token rotation (Plan 147 Slice C, REALIZED)
 

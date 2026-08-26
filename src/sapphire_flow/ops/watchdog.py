@@ -66,6 +66,14 @@ OUTCOME (an unhealthy stack still pings — Slack is the channel for
 before it can report anything) but conditional on the tick having reached
 persistence: anything that raises earlier in the tick correctly suppresses
 the heartbeat, since a missing heartbeat is the intended failure signal.
+Plan 199 T1 (salvaged from the never-merged Plan 158 D14) adds a FOURTH
+independent condition: free space on ``config.disk_path`` (default ``/``),
+alerting when it drops below 5% of that same volume's total capacity (Plan
+199 D1 — the source branch's absolute 20 GiB threshold was rejected).
+Same transition-latched shape as the backup-device check (Plan 194 D6): a
+distinct persisted counter and pending-notification kind, alerting only on
+transition, never every tick.
+
 Plan 163 also hardens every outbound HTTP call (health probe, BAFU-detail
 probe, Slack POST, dead-man POST) against more than ``httpx.HTTPError`` —
 malformed hand-pasted URLs (``httpx.InvalidURL``, not an ``HTTPError``
@@ -82,6 +90,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import shutil
 import socket
 import stat
 import sys
@@ -100,6 +109,10 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_HEALTH_URL = "http://localhost:8000/api/v1/health"
 DEFAULT_BACKUP_DIR = Path("/Volumes/sapphire-backup/pg_dumps")
+# Plan 199 T1 (salvaged from Plan 158 D14): filesystem path checked for free
+# space. `/` on the mac mini is the boot volume — the same volume the
+# database, dumps and forecasts all ultimately share.
+DEFAULT_DISK_PATH = Path("/")
 DEFAULT_STATE_PATH = Path.home() / ".sapphire-watchdog-state.json"
 DEFAULT_SLACK_PATH = Path("./secrets/slack_webhook_url")
 # Plan 147 Slice C: `/health/detail` is admin-only once auth is enforced.
@@ -153,6 +166,14 @@ def _forecast_freshness_url_from_health(health_url: str) -> str:
     return f"{base}/health/detail?check_type=forecast_freshness&limit=1"
 
 
+# Plan 199 D1: 5% of the volume's OWN total capacity (from the SAME
+# `shutil.disk_usage()` call as the free bytes, so the ratio is never
+# computed from two different instants) — NOT an absolute byte count. The
+# branch this was salvaged from (Plan 158 D14) used a fixed 20 GiB, which is
+# 0.55% of the mac mini's 3.6 TB volume: it would fire far too late to be
+# actionable. 5% of that same volume is a ~184 GB floor, which the host has
+# already crossed in living memory (95% used, 214 GB free, nothing alerted).
+DISK_FREE_THRESHOLD_PCT = 0.05
 BACKUP_STALE_THRESHOLD = timedelta(hours=26)
 # The BAFU collector runs hourly (Plan 111) — no heartbeat in 3h means it has
 # stopped, not merely running slow.
@@ -201,6 +222,13 @@ BackupNotificationKind = Literal["stale", "recovered"]
 # meant for the other's format function.
 BackupDeviceNotificationKind = Literal["unverified", "verified"]
 
+DiskNotificationKind = Literal["low", "recovered"]
+# Plan 199 T1: a condition independent of both backup checks above (free
+# space on `config.disk_path`, default `/`) — its own Literal so it can
+# never be confused for a value meant for the backup conditions' format
+# functions, same reasoning as `BackupDeviceNotificationKind` vs
+# `BackupNotificationKind`.
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WatchdogState:
@@ -236,6 +264,11 @@ class WatchdogState:
     # together, so the two can never suppress or duplicate each other.
     consecutive_backup_device_unverified_ticks: int = 0
     backup_device_notification_pending: BackupDeviceNotificationKind | None = None
+    # Plan 199 T1: hysteresis for the free-disk-space condition, same shape
+    # as the two backup-device fields above but tracking a different
+    # failure mode (disk space, not backup device) — never folded together.
+    consecutive_disk_low_ticks: int = 0
+    disk_notification_pending: DiskNotificationKind | None = None
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -255,6 +288,10 @@ class WatchdogState:
             device_pending_raw
             if device_pending_raw in ("unverified", "verified")
             else None
+        )
+        disk_pending_raw = raw.get("disk_notification_pending")
+        disk_pending: DiskNotificationKind | None = (
+            disk_pending_raw if disk_pending_raw in ("low", "recovered") else None
         )
         legacy_alert_iso = raw.get("last_backup_alert_iso")
         stale_failures_raw = raw.get("consecutive_backup_stale_failures")
@@ -297,6 +334,10 @@ class WatchdogState:
                 raw.get("consecutive_backup_device_unverified_ticks", 0)
             ),
             backup_device_notification_pending=device_pending,
+            # Backward compatible with state files written before Plan 199's
+            # disk-space check: absent key defaults to 0/None.
+            consecutive_disk_low_ticks=int(raw.get("consecutive_disk_low_ticks", 0)),
+            disk_notification_pending=disk_pending,
         )
 
     def dump(self, path: Path) -> None:
@@ -316,6 +357,8 @@ class WatchdogState:
             "backup_device_notification_pending": (
                 self.backup_device_notification_pending
             ),
+            "consecutive_disk_low_ticks": self.consecutive_disk_low_ticks,
+            "disk_notification_pending": self.disk_notification_pending,
         }
         path.write_text(json.dumps(payload, indent=2))
 
@@ -657,6 +700,44 @@ def default_backup_target_verifier(backup_dir: Path) -> bool:
     return backup_target_verified(backup_dir, data_dir=Path.home())
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class DiskSpaceResult:
+    ok: bool
+    free_bytes: int | None
+    total_bytes: int | None
+    error: str | None = None
+
+
+def _disk_space_ok(*, free_bytes: int, total_bytes: int) -> bool:
+    """True iff `free_bytes` is at least `DISK_FREE_THRESHOLD_PCT` of
+    `total_bytes` (Plan 199 D1). `total_bytes <= 0` cannot yield a
+    meaningful ratio and is treated as NOT ok — fail-safe, matching
+    `probe_disk_free`'s own "unreadable counts as ok=False" convention."""
+    if total_bytes <= 0:
+        return False
+    return (free_bytes / total_bytes) >= DISK_FREE_THRESHOLD_PCT
+
+
+def probe_disk_free(path: Path) -> DiskSpaceResult:
+    """Free space on the filesystem containing `path`, checked against
+    `DISK_FREE_THRESHOLD_PCT` of that SAME volume's total capacity (Plan
+    199 D1) — `free` and `total` come from one `shutil.disk_usage()` call,
+    so the ratio can never be computed from two different instants. Never
+    raises: an unreadable/missing path counts as ok=False (fail-safe: a
+    false alert is better than a silently-skipped check)."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError as exc:
+        return DiskSpaceResult(
+            ok=False, free_bytes=None, total_bytes=None, error=str(exc)
+        )
+    return DiskSpaceResult(
+        ok=_disk_space_ok(free_bytes=usage.free, total_bytes=usage.total),
+        free_bytes=usage.free,
+        total_bytes=usage.total,
+    )
+
+
 def newest_backup_mtime(backup_dir: Path) -> datetime | None:
     """Return the newest *evidence-backed* `sapphire_*.dump` mtime as a UTC
     datetime, or None if none exist (Plan 162 T4).
@@ -858,6 +939,22 @@ def _backup_device_notification_kind(
     return None
 
 
+def _disk_notification_kind(
+    *, was_low: bool, is_low: bool, pending: DiskNotificationKind | None
+) -> DiskNotificationKind | None:
+    """Same shape as `_backup_device_notification_kind` (Plan 199, mirroring
+    Plan 194 D6): alert on TRANSITION only — never every tick (the mini's
+    condition can stay true for days), and never resend a stale `pending`
+    kind once the condition has moved on."""
+    if pending is not None:
+        return "low" if is_low else "recovered"
+    if is_low and not was_low:
+        return "low"
+    if was_low and not is_low:
+        return "recovered"
+    return None
+
+
 def _format_health_alert(
     *, hostname: str, now: datetime, probe: HealthProbeResult
 ) -> str:
@@ -905,6 +1002,33 @@ def _format_backup_device_alert(*, backup_dir: Path) -> str:
 def _format_backup_device_recovery_alert(*, hostname: str, now: datetime) -> str:
     return (
         f"[SAPPHIRE staging] backup volume VERIFIED — host: {hostname}, "
+        f"time: {now.isoformat()}"
+    )
+
+
+def _format_disk_space_alert(
+    *, hostname: str, path: Path, result: DiskSpaceResult
+) -> str:
+    """The percentage is the contract (Plan 199 D1); the bytes are reported
+    alongside because "4.1% free" alone is not actionable — the operator
+    needs "4.1% free (152 GB of 3654 GB)" to judge urgency."""
+    if result.free_bytes is not None and result.total_bytes:
+        pct = 100.0 * result.free_bytes / result.total_bytes
+        free_gb = result.free_bytes / (1024**3)
+        total_gb = result.total_bytes / (1024**3)
+        space_str = f"{pct:.1f}% free ({free_gb:.0f} GB of {total_gb:.0f} GB)"
+    else:
+        space_str = "unknown"
+    detail = f", error: {result.error}" if result.error else ""
+    return (
+        f"[SAPPHIRE staging] disk space LOW — host: {hostname}, path: {path}, "
+        f"{space_str}, threshold: {DISK_FREE_THRESHOLD_PCT * 100:.0f}%{detail}"
+    )
+
+
+def _format_disk_space_recovery_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        f"[SAPPHIRE staging] disk space RECOVERED — host: {hostname}, "
         f"time: {now.isoformat()}"
     )
 
@@ -1042,6 +1166,9 @@ class WatchdogConfig:
     probe_token_path: Path = DEFAULT_PROBE_TOKEN_PATH
     # Plan 163: dead-man's-switch ping URL.
     deadman_url_path: Path = DEFAULT_DEADMAN_PATH
+    # Plan 199 T1 (salvaged from Plan 158 D14): filesystem path checked for
+    # free space.
+    disk_path: Path = DEFAULT_DISK_PATH
 
 
 def _safe_slack_post(poster: SlackPoster, url: str, message: str) -> bool:
@@ -1085,6 +1212,10 @@ def run_once(
     # other probe above so tests can stub the OS-level device/mount checks
     # without a real distinct device.
     backup_device_verifier: Callable[[Path], bool] = default_backup_target_verifier,
+    # Plan 199 T1: the free-disk-space probe, injected like every other
+    # probe above so tests can stub the OS-level disk_usage() call without
+    # a real filesystem in the required state.
+    disk_probe: Callable[[Path], DiskSpaceResult] = probe_disk_free,
 ) -> WatchdogState:
     """Single watchdog tick. Returns the updated state (also persisted)."""
     now = clock()
@@ -1477,6 +1608,71 @@ def run_once(
     else:
         state = replace(state, consecutive_forecast_freshness_failures=0)
 
+    # --- Free disk space (Plan 199 T1, salvaged from Plan 158 D14) ----------
+    # A condition independent of every check above: 5% of the volume's OWN
+    # total capacity (Plan 199 D1), not an absolute byte count, so the rule
+    # travels to any host. Same transition-latched shape as the backup
+    # device check (Plan 194 D6) — alert on TRANSITION only, never every
+    # tick, and never resend a stale pending kind once the condition has
+    # moved on. Distinct persisted counter and pending kind: no collision
+    # with `backup_device_notification_pending`, because it never shares
+    # state with it.
+    disk_result = disk_probe(config.disk_path)
+    is_disk_low = not disk_result.ok
+    log.info(
+        "watchdog.disk_space_check_completed",
+        path=str(config.disk_path),
+        free_bytes=disk_result.free_bytes,
+        total_bytes=disk_result.total_bytes,
+        ok=disk_result.ok,
+        error=disk_result.error,
+    )
+
+    was_disk_low = state.consecutive_disk_low_ticks > 0
+    disk_pending = state.disk_notification_pending
+    disk_notification_kind = _disk_notification_kind(
+        was_low=was_disk_low,
+        is_low=is_disk_low,
+        pending=disk_pending,
+    )
+
+    if disk_notification_kind is not None:
+        if disk_notification_kind == "low":
+            disk_message = _format_disk_space_alert(
+                hostname=host, path=config.disk_path, result=disk_result
+            )
+            log.warning("watchdog.disk_space_low_alert", message=disk_message)
+        else:
+            disk_message = _format_disk_space_recovery_alert(hostname=host, now=now)
+            log.info("watchdog.disk_space_recovery_alert", message=disk_message)
+
+        if webhook:
+            disk_posted = _safe_slack_post(slack_poster, webhook, disk_message)
+            log.info("watchdog.slack_post_attempted", posted=disk_posted)
+            state = replace(
+                state,
+                disk_notification_pending=(
+                    None if disk_posted else disk_notification_kind
+                ),
+            )
+        elif disk_pending is not None:
+            # Same delivery-loss reasoning as the backup-device block above:
+            # a webhook merely absent/unreadable RIGHT NOW must not be
+            # treated as delivery of an already-pending notification.
+            log.info("watchdog.slack_skipped_pending_retry_deferred")
+            state = replace(state, disk_notification_pending=disk_notification_kind)
+        else:
+            log.info("watchdog.slack_skipped_log_only")
+            state = replace(state, disk_notification_pending=None)
+
+    if is_disk_low:
+        state = replace(
+            state,
+            consecutive_disk_low_ticks=state.consecutive_disk_low_ticks + 1,
+        )
+    else:
+        state = replace(state, consecutive_disk_low_ticks=0)
+
     state.dump(config.state_path)
 
     # --- Dead-man's switch heartbeat (Plan 163) -----------------------------
@@ -1572,6 +1768,15 @@ def main(argv: list[str] | None = None) -> int:
             f"-> no ping, no error (default: {DEFAULT_DEADMAN_PATH})"
         ),
     )
+    parser.add_argument(
+        "--disk-path",
+        default=str(DEFAULT_DISK_PATH),
+        help=(
+            "Filesystem path to check free space on, alerting below "
+            f"{DISK_FREE_THRESHOLD_PCT * 100:.0f}% of that volume's total "
+            f"capacity (default: {DEFAULT_DISK_PATH})"
+        ),
+    )
     args = parser.parse_args(argv)
 
     configure_cli_logging("INFO")
@@ -1586,6 +1791,7 @@ def main(argv: list[str] | None = None) -> int:
         forecast_freshness_health_detail_url=args.forecast_freshness_health_detail_url,
         probe_token_path=Path(args.probe_token_path),
         deadman_url_path=Path(args.deadman_url_path),
+        disk_path=Path(args.disk_path),
     )
 
     probe_token = read_probe_token(config.probe_token_path)

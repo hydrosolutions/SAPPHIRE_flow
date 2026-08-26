@@ -453,6 +453,102 @@ class TestCollection:
         assert clock.calls == 1
 
 
+class TestInventoryArchival:
+    """Plan 198 T9a/O3: preserve the raw inventory GeoJSON (fetched hourly,
+    otherwise discarded — F7). No reader, no parsing — just the write."""
+
+    def test_run_writes_exactly_one_inventory_file(self, tmp_path: Path) -> None:
+        station = _river_station("2135")
+        inventory = BafuStationInventory(
+            stations=[station],
+            produced_at=_PRODUCED_AT,
+            raw_payload={"features": [{"key": "2135"}], "meta": {"x": 1}},
+        )
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=1),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+
+        collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+        )
+
+        stamp = _PRODUCED_AT.strftime("%Y%m%dT%H%M%SZ")
+        inventory_path = tmp_path / "raw" / f"inventory_{stamp}.json"
+        assert inventory_path.exists()
+        assert json.loads(inventory_path.read_text()) == {
+            "features": [{"key": "2135"}],
+            "meta": {"x": 1},
+        }
+        # Exactly one inventory file — no other raw/inventory_*.json.
+        inventory_files = list((tmp_path / "raw").glob("inventory_*.json"))
+        assert len(inventory_files) == 1
+
+    def test_second_run_with_unchanged_inventory_does_not_crash_or_duplicate(
+        self, tmp_path: Path
+    ) -> None:
+        station = _river_station("2135")
+        inventory = BafuStationInventory(
+            stations=[station],
+            produced_at=_PRODUCED_AT,
+            raw_payload={"features": [{"key": "2135"}], "meta": {"x": 1}},
+        )
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=1),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+
+        collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+        )
+        # Second run — dedup on the per-station forecast means the adapter's
+        # variant fetch is skipped, but inventory fetch/write always runs
+        # (it has no dedup gate of its own; keyed on produced_at, so an
+        # unchanged inventory simply overwrites the same file).
+        collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+        )
+
+        inventory_files = list((tmp_path / "raw").glob("inventory_*.json"))
+        assert len(inventory_files) == 1
+
+    def test_no_raw_payload_is_not_written(self, tmp_path: Path) -> None:
+        # An inventory built without raw_payload (e.g. an older/foreign
+        # adapter) must not crash the flow — nothing to archive.
+        station = _river_station("2135")
+        inventory = BafuStationInventory(stations=[station], produced_at=_PRODUCED_AT)
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=1),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+
+        collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+        )
+        inventory_dir = tmp_path / "raw"
+        inventory_files = (
+            list(inventory_dir.glob("inventory_*.json"))
+            if inventory_dir.is_dir()
+            else []
+        )
+        assert inventory_files == []
+
+
 class _RaisingHealthStore:
     def append_health_record(self, record: object) -> None:
         raise RuntimeError("db unavailable")

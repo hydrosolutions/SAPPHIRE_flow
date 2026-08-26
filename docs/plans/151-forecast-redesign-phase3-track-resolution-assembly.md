@@ -58,8 +58,8 @@ calls **none** of the new T5–T7 entry points. **T1–T7 are therefore all merg
 **THIS DOCUMENT NOW DRIVES THE T8 RUN — the LAST task, and the only one that flips the switch.** T8 is split into
 **T8a (dormant)** and **T8b (activation)** per **D36**, after an independent Codex review of the T8 task spec returned
 **NO — not ready to build** (one blocker, four majors, two minors, all folded into the task text below). **D35** (the
-earlier T5–T7 / T8 split) and **D36** (the T8a/T8b split) both sit under *Open items → Requires owner re-ratification*
-and are the owner's to confirm.
+earlier T5–T7 / T8 split) sits under *Open items* and is the owner's to confirm. **D36** (the T8a/T8b split) is
+**RATIFIED** (owner, 2026-08-19, re-confirmed 2026-08-26) and is NOT among them.
 
 Phase 3 of the forecast-cycle redesign (`docs/design/forecast-cycle-redesign.md`, build-sequence item 3).
 This is the **one atomic phase** the redesign refuses to split: a per-`(track,station)` cycle has no coherent consumer
@@ -172,7 +172,11 @@ plan is now wrong because `main` moved 142 commits?* Not whether the design is t
   `D34-atmost-guard-unreachable`). Those three are **the owner's to settle, not a reviewer's**. Do not propose answers
   to them as findings.
 - **D1–D31 are settled, as are D33 and the D10a coverage rule. Do not reopen, re-argue, or "strengthen" them.**
-  (D21 / D32 / D34 are the owner's three open items above — the ONLY unsettled decisions in this document.) A finding that reduces to preferring a
+  ⚠️ **STALE PROSE, corrected 2026-08-26: D21, D32 and D34 are NOT open — the owner RATIFIED all three in commit
+  `1a02e24` ("Plan 151 READY — owner ratifies D21/D32/D34", 2026-08-18), consistent with lines 22-36 and 162.** This
+  paragraph pre-dates that commit. A grounding pass on 2026-08-26 read the stale wording and flagged D34 as
+  "contradicting itself and the owner's to settle" — that flag was WRONG and reopened a settled decision; it has been
+  removed. The only decision genuinely awaiting confirmation is **D35**. A finding that reduces to preferring a
   different design is out of scope by construction.
 - The **atomic 8-task phase shape**, the **phase dependency graph**, and every **Non-goal** are **fixed for this round**.
   *(That round is CLOSED. Since 2026-08-19 the graph carries NINE nodes — T8 split into T8a → T8b under D36 — and the
@@ -916,9 +920,25 @@ burning fixer rounds reformatting alembic migrations.
     T8a's retrying candidate task + `resolve_candidate` / `commit_track`, assemble per assignment via
     `assemble_assignment_inputs`, and run via **`run_all_station_forecasts_per_track`**
     (`src/sapphire_flow/services/run_station_forecast.py:657`) — **behind the `isinstance` dispatch**. Install T8a's
-    cross-cycle preflight at the **top of the per-station persist block**, before the individual-forecast store
-    (`flows/run_forecast_cycle.py:2354-2367`) and the state store (`:2368-2383`) — **not** at the combination point
-    (`:2386`), where a mismatch would leave partial writes committed. Install T8a's freshness-on-fatal helper at every
+    cross-cycle preflight **before EVERY in-scope persist call — there are THREE arms today, not one.**
+    ⚠️ **SPEC GAP found by independent review 2026-08-26, not a renumber.** The original instruction ("before the
+    individual-forecast store and the state store, not at the combination point") described a simpler structure and
+    names only the **single-model** arm. `flows/run_forecast_cycle.py` now has **seven** store call sites across
+    three arms:
+    - **single-model arm (IN SCOPE):** forecast store `:2562`, state store `:2572`
+    - **combination arm (IN SCOPE):** individual forecasts `:2636`, primary state `:2651`, combined forecast `:2676`
+    - **group arm (OUT OF SCOPE):** `:2891`, `:2934` — a group-member station stays on the LEGACY path per D30's
+      overlap rule, so T8b must not install the preflight there
+    Installing it before `:2562`/`:2572` alone leaves the combination arm unguarded — **precisely the "partial writes
+    committed" failure the instruction exists to prevent**, because a per-track-served station in combination mode
+    would persist individual forecasts at `:2636` before any check ran. The preflight must gate the single-model and
+    combination arms both, and must NOT gate the group arm.
+    *(The durable statement of intent is T8a's own docstring at `:1718-1733`; anchor to that prose, not to the digits,
+    if they drift again — this file grew 2793 → 3070 lines between 2026-08-19 and 2026-08-26.)*
+    *(Re-anchored 2026-08-26: the file grew 2793 → 3070 lines after T8a/T5–T7 merged, so the 2026-08-19 numbers
+    2354/2368/2386 now land on `NwpCycleSource.FALLBACK` and unrelated code. The CONTRACT is unchanged and is also
+    stated in prose in T8a's own docstring at `:1718-1733` — anchor to that text, not to the digits, if they drift
+    again.)* Install T8a's freshness-on-fatal helper at every
     new fatal resolution exit. Apply T8a's D30 helper to gate the dispatch **and** to re-scope Phase A so it no longer
     fetches/persists for per-track-served stations while still covering group-member stations (D7). Thread the
     `ForcingResolutionPolicy` from T8a into the resolver. The four canonical log events
@@ -944,10 +964,11 @@ burning fixer rounds reformatting alembic migrations.
     **and every corresponding `assemble_assignment_inputs(expected_member_ids=…)` call** for that track — the same
     frozenset object, never re-derived per assignment.
   - **Overlap rule (D30) — a station that is BOTH group-member and per-track-eligible stays on the LEGACY path in
-    Phase 3.** Groups contain ordinary operational station ids (`flows/run_forecast_cycle.py:2457,2489`), so the two
+    Phase 3.** Groups contain ordinary operational station ids (`flows/run_forecast_cycle.py:2768,2774` — re-anchored
+    2026-08-26 from the stale `:2457,2489`), so the two
     re-scoping rules can collide on one station. Group assembly holds no in-memory Phase A payload — it reads each
-    member **from the store** at the single legacy `nwp_readback_cycle_time` (`:2553`,
-    `services/run_group_forecast.py:128`) — so suppressing Phase A's write would drop that member from the group
+    member **from the store** at the single legacy `nwp_readback_cycle_time` (declared `:2365`, passed to group assembly `:2836`;
+    `services/run_group_forecast.py:129`) — so suppressing Phase A's write would drop that member from the group
     unless per-track resolution happened to land on the same cycle, which nothing guarantees. **Rule:** an overlapping
     station is **excluded from the per-track path** and served entirely by legacy Phase A. This follows directly from
     the ratified D8-group. **Cost:** overlapping stations get no Phase-3 benefit until Phase 4. Recorded as
@@ -989,11 +1010,11 @@ burning fixer rounds reformatting alembic migrations.
     into run inputs; T7's unit tests cannot detect a flow that drops the assignment, picks the wrong reason, or
     starves the fallback chain. Both cases assert the cause **and** that the chain still produced a station forecast:
     - **Walk-back exhaustion.** `resolve_candidate` returns `None` when the bound is exhausted
-      (`services/track_resolution.py:180`); the caller must construct `MissingTrackContext` (`track_assembly.py:170`).
+      (`services/track_resolution.py:292`); the caller must construct `MissingTrackContext` (`track_assembly.py:121`, `class MissingTrackContext`).
       Golden: the affected assignment records **`MISSING_CONTEXT`** and the station's lower-priority fallback still
       **succeeds** (the station is not darkened).
     - **Accepted track, station unavailable.** A committed track can still yield a per-station
-      `StationTrackUnavailable` (`services/track_resolution.py:314`), which T7 handles on a **different** arm
+      `StationTrackUnavailable` (`services/track_resolution.py:336`), which T7 handles on a **different** arm
       (`services/run_station_forecast.py:708`). Golden: the affected assignment records **`TRACK_UNAVAILABLE`** and
       the fallback still **succeeds**.
   - **Red-first / golden — FRESHNESS ON EVERY FATAL RESOLUTION EXIT, PARAMETERISED (R5).** The criterion is
@@ -1001,7 +1022,7 @@ burning fixer rounds reformatting alembic migrations.
     **CRITICAL**, with the correct `forecasts_stored` count: **(i) auth** (`RecapAuthError`,
     `adapters/recap_gateway.py:302`), **(ii) configuration/resolution** (`RecapConfigurationError`, `:259`),
     **(iii) payload integrity** (`RecapPayloadIntegrityError`, `:288`) — explicitly candidate-**fatal** by D7's locked
-    mapping, and `resolve_candidate` catches **only** `RecapTransientError` (`services/track_resolution.py:185`), so
+    mapping, and `resolve_candidate` catches **only** `RecapTransientError` (`services/track_resolution.py:223`), so
     every one of these propagates — and **(iv) store failure** during commit/readback. Earlier revisions tested only
     (i) and (iv); (ii) and (iii) were missing and are the ones D7 spent the most review effort pinning as fatal.
   - **Red-first / golden — CROSS-CYCLE PREFLIGHT (D11 + Plan 116).** Two combinable assignments on **different**
@@ -1013,7 +1034,10 @@ burning fixer rounds reformatting alembic migrations.
     fail `INSUFFICIENT_COVERAGE` inside `_run_single_model`).
   - **REGRESSION gates, EXPECTED to stay GREEN** (they preserve behaviour that already works and do **not** satisfy
     T8b's red-first requirement): same-cycle combination unchanged (tested at
-    `tests/unit/flows/test_run_forecast_cycle.py:5368`); the **trackless** and all-trackless combination cases; the
+    `tests/unit/flows/test_run_forecast_cycle.py:5613`,
+    `TestForecastCycle::test_pooled_combination_stores_individual_and_combined` — **corrected 2026-08-26: the old
+    `:5368` now falls inside `test_group_path_skips_overlapping_same_model_members`, a different concern entirely, so
+    this gate was pointing at the wrong test, not merely a stale line**); the **trackless** and all-trackless combination cases; the
     **group-only** Phase A case (a group-only feature is still fetched via the re-scoped Phase A and the group
     forecast succeeds at its shared readback cycle); the **D30 OVERLAP** case (a station that is both group-member and
     per-track-eligible is routed LEGACY — absent from the resolved track set, Phase A still writes its rows, the group
@@ -1025,7 +1049,7 @@ burning fixer rounds reformatting alembic migrations.
     **`passed >= 4550`** with no baseline test regressing; `pyright` at or below the ratcheted **432**
     over `src/`; `ruff check` with no new findings beyond the 12 pre-existing alembic `E501`s. **Plus**
     `uv run pytest tests/integration/test_e2e_pipeline.py -m slow -q`, overriding the default `not slow` exclusion
-    (`pyproject.toml:134`; the `slow` marker is declared at `:131`) — **as a RUNNER-level regression gate only.** That
+    (`pyproject.toml:134` — the default `not slow` exclusion; the `slow` marker itself is declared at `:132`; `:131` is `live_recap`) — **as a RUNNER-level regression gate only.** That
     file calls `run_station_forecast` directly (`tests/integration/test_e2e_pipeline.py:653`) and never references
     `run_forecast_cycle_flow`, so it **cannot** exercise the dispatch T8b activates; it proves the legacy direct-call
     entry point still works. **The dispatch protection is the flow-level goldens above — nothing else.**
@@ -1046,7 +1070,7 @@ burning fixer rounds reformatting alembic migrations.
   ]
 }
 ```
-**T8 is split into T8a → T8b (2026-08-19, D36 — awaiting owner ratification).** The seam is
+**T8 is split into T8a → T8b (2026-08-19, D36 — RATIFIED by the owner; re-confirmed 2026-08-26).** The seam is
 dormant-helper / activation: T8a builds the policy carrier, the retrying task, the freshness-on-fatal helper, the
 cross-cycle preflight and the D30 discovery helper with **no** production call site; T8b lands the `isinstance`
 dispatch, the Phase-A re-scoping, the flow-level goldens and the docs. Authoring the safety goldens in the same patch

@@ -16,8 +16,9 @@
 # on it rather than abort on the first non-zero command.
 set -uo pipefail
 
-DOCKER="${DOCKER_CMD:-/usr/local/bin/docker}"
-export DOCKER_HOST=unix:///var/run/docker.sock
+# shellcheck source=scripts/launchd/docker-endpoint.sh
+source "$(dirname "${BASH_SOURCE[0]}")/docker-endpoint.sh"
+DOCKER="${DOCKER_CMD:-${DOCKER_BIN}}"
 
 # Host-side paths are env-overridable so the wrapper is testable off-host;
 # production values are the defaults.

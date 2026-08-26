@@ -1,7 +1,7 @@
 # Review Protocol: Scoping Review of ML for Operational Sub-Daily Flood Forecasting
 
-**Status**: Draft working protocol  
-**Folder**: `docs/publication/paper-0/`  
+**Status**: Draft working protocol
+**Folder**: `docs/publication/paper-0/`
 **Applies to**: the scoping review outlined in
 [outline.md](outline.md)
 
@@ -347,4 +347,3 @@ This review is ready for a high-quality peer-review process when:
    "first/only/no study" statements.
 4. The resulting synthesis can stand alone even if Paper 2 ultimately changes
    direction.
-

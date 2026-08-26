@@ -25,15 +25,11 @@
 # first non-zero command.
 set -uo pipefail
 
-# Docker binary: absolute path in production (Docker Desktop symlinks its
-# CLI there). DOCKER_CMD lets tests inject a fake docker stub — the same
-# mechanism tests/unit/ops/test_launchd_prune_docker.py uses, not PATH
-# injection.
-DOCKER="${DOCKER_CMD:-/usr/local/bin/docker}"
-
-# The value the live deployment uses and that produced records under
-# launchd on 2026-07-20 (proven).
-export DOCKER_HOST=unix:///var/run/docker.sock
+# shellcheck source=scripts/launchd/docker-endpoint.sh
+source "$(dirname "${BASH_SOURCE[0]}")/docker-endpoint.sh"
+# DOCKER_CMD lets tests inject a fake docker stub — the same mechanism
+# tests/unit/ops/test_launchd_prune_docker.py uses, not PATH injection.
+DOCKER="${DOCKER_CMD:-${DOCKER_BIN}}"
 
 CONTAINER="sapphire_flow-prefect-worker-1"
 

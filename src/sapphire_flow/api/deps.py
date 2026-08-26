@@ -44,6 +44,7 @@ def get_stores(
 ) -> dict[str, Any]:
     from sapphire_flow.config.paths import resolve_artifact_dir
     from sapphire_flow.store.alert_store import PgAlertStore
+    from sapphire_flow.store.basin_store import PgBasinStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
     from sapphire_flow.store.forecast_store import PgForecastStore
@@ -51,6 +52,7 @@ def get_stores(
     from sapphire_flow.store.historical_forcing_store import (
         PgHistoricalForcingStore,
     )
+    from sapphire_flow.store.model_artifact_provenance import PgArtifactProvenanceStore
     from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
     from sapphire_flow.store.model_store import PgModelStore
     from sapphire_flow.store.observation_store import PgObservationStore
@@ -75,4 +77,9 @@ def get_stores(
         "forecast_store": PgForecastStore(conn),
         "alert_store": PgAlertStore(conn),
         "pipeline_health_store": PgPipelineHealthStore(conn),
+        # Plan 198 T5 — the Forecast Lab snapshot route's read-only DB
+        # readers (services/forecast_lab/db_sources.py) need these two;
+        # nothing else in the API used them before.
+        "basin_store": PgBasinStore(conn),
+        "provenance_store": PgArtifactProvenanceStore(conn),
     }
