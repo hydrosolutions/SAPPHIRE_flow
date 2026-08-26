@@ -30,6 +30,7 @@ from scripts.dhm_precip.ma6_estimands import (
     JointWetConditionality,
     JointWetHourConditionalIntensityBias,
     MatchedHourMeanDifference,
+    NonFiniteElevationError,
     RetentionConditionality,
     Scale,
     ScaleNotSupportedError,
@@ -177,6 +178,20 @@ class TestAssignElevationBand:
         assert assign_elevation_band(2999.9) is ElevationBand.B2000_3000M
         assert assign_elevation_band(3000.0) is ElevationBand.ABOVE_3000M
 
+    def test_nan_elevation_is_refused_not_silently_binned_above_3000m(self) -> None:
+        # Task 4 (round 8): every `<` comparison against NaN is False, so
+        # without this guard `assign_elevation_band(nan)` would fall
+        # through every edge check into the final `return` and land in
+        # ABOVE_3000M — the band this research track exists to
+        # characterise. Confirmed as a live defect before the fix (probe
+        # in the round 8 plan).
+        with pytest.raises(NonFiniteElevationError):
+            assign_elevation_band(float("nan"))
+
+    def test_infinite_elevation_is_refused(self) -> None:
+        with pytest.raises(NonFiniteElevationError):
+            assign_elevation_band(float("inf"))
+
 
 class TestMatchedHourMeanDifference:
     def test_mean_over_all_matched_hours_wet_and_dry(self) -> None:
@@ -273,7 +288,7 @@ class TestWetHourConditionalIntensityBias:
         )
         wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
 
-        result = wet_hour_conditional_intensity_bias(wet_jjas, params=DEFAULT_PARAMS)
+        result = wet_hour_conditional_intensity_bias(wet_jjas)
 
         assert result.n == 2
         assert result.mean_intensity_bias_mm_per_h == pytest.approx((0.5 + 2.0) / 2)
@@ -314,7 +329,7 @@ class TestWetHourConditionalIntensityBias:
         assert empty_wet.n_common_retained == 0
 
         with pytest.raises(EmptySubsetError):
-            wet_hour_conditional_intensity_bias(empty_wet, params=DEFAULT_PARAMS)
+            wet_hour_conditional_intensity_bias(empty_wet)
 
 
 class TestJointWetHourConditionalIntensityBias:
@@ -336,9 +351,7 @@ class TestJointWetHourConditionalIntensityBias:
             paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
 
-        result = joint_wet_hour_conditional_intensity_bias(
-            joint_wet_jjas, params=DEFAULT_PARAMS
-        )
+        result = joint_wet_hour_conditional_intensity_bias(joint_wet_jjas)
 
         assert result.n == 1
         assert result.mean_intensity_bias_mm_per_h == pytest.approx(1.5)
@@ -359,12 +372,8 @@ class TestJointWetHourConditionalIntensityBias:
         )
         wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
 
-        joint_result = joint_wet_hour_conditional_intensity_bias(
-            joint_wet_jjas, params=DEFAULT_PARAMS
-        )
-        gauge_alone_result = wet_hour_conditional_intensity_bias(
-            wet_jjas, params=DEFAULT_PARAMS
-        )
+        joint_result = joint_wet_hour_conditional_intensity_bias(joint_wet_jjas)
+        gauge_alone_result = wet_hour_conditional_intensity_bias(wet_jjas)
 
         expected_conditionality = (
             JointWetConditionality.CONDITIONAL_ON_RETENTION_AND_ERA5_WET_CLASSIFICATION
@@ -389,9 +398,58 @@ class TestJointWetHourConditionalIntensityBias:
         assert empty_joint.n_common_retained == 0
 
         with pytest.raises(EmptySubsetError):
-            joint_wet_hour_conditional_intensity_bias(
-                empty_joint, params=DEFAULT_PARAMS
-            )
+            joint_wet_hour_conditional_intensity_bias(empty_joint)
+
+
+class TestWetEstimandsValidateAgainstTheirOwnSubsetParams:
+    """Task 1, round 8: `WetHourConditionalIntensityBias`/
+    `JointWetHourConditionalIntensityBias` used to accept `params` as an
+    independently-suppliable constructor field, defaulting to
+    `DEFAULT_PARAMS` — so a subset SELECTED under a non-default
+    `wet_threshold_mm_per_h` could be validated/published under a
+    silently-different one. The fix reads `self.subset.params` (the SAME
+    object the subset was selected with), never a caller-suppliable
+    argument — proven here by a subset selected under a LOOSER threshold
+    than `DEFAULT_PARAMS`'s: under the old bug this would have been
+    wrongly refused as unconditioned (validated against the stricter
+    default), since `wet_threshold_mm_per_h=0.1` is wet under the loose
+    0.05 selection but DRY under the 0.2 default."""
+
+    def test_gauge_alone_is_validated_under_its_own_selection_params_not_default(
+        self,
+    ) -> None:
+        station = Station("A")
+        paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 1, gauge=[0.1], era5=[0.05]
+        )
+        loose_params = dataclasses.replace(DEFAULT_PARAMS, wet_threshold_mm_per_h=0.05)
+        loose_wet_subset = wet_scale_subset(
+            paired, scale=Scale.JJAS, params=loose_params
+        )
+        assert loose_wet_subset.n_common_retained == 1
+
+        result = wet_hour_conditional_intensity_bias(loose_wet_subset)
+
+        assert result.n == 1
+        assert result.mean_intensity_bias_mm_per_h == pytest.approx(0.05)
+
+    def test_joint_is_validated_under_its_own_selection_params_not_default(
+        self,
+    ) -> None:
+        station = Station("A")
+        paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 1, gauge=[0.1], era5=[0.08]
+        )
+        loose_params = dataclasses.replace(DEFAULT_PARAMS, wet_threshold_mm_per_h=0.05)
+        loose_joint_subset = joint_wet_scale_subset(
+            paired, scale=Scale.JJAS, params=loose_params
+        )
+        assert loose_joint_subset.n_common_retained == 1
+
+        result = joint_wet_hour_conditional_intensity_bias(loose_joint_subset)
+
+        assert result.n == 1
+        assert result.mean_intensity_bias_mm_per_h == pytest.approx(0.02)
 
 
 class TestUnconditionedSubsetIsRefusedByTheWetFactories:
@@ -420,7 +478,7 @@ class TestUnconditionedSubsetIsRefusedByTheWetFactories:
         unconditioned = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
 
         with pytest.raises(UnconditionedSubsetError):
-            wet_hour_conditional_intensity_bias(unconditioned, params=DEFAULT_PARAMS)
+            wet_hour_conditional_intensity_bias(unconditioned)
 
     def test_wet_factory_accepts_a_genuinely_wet_conditioned_subset(self) -> None:
         # The positive case: wet_scale_subset's own output — every row
@@ -428,7 +486,7 @@ class TestUnconditionedSubsetIsRefusedByTheWetFactories:
         paired = self._mixed_wet_and_dry_paired()
         conditioned = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
 
-        result = wet_hour_conditional_intensity_bias(conditioned, params=DEFAULT_PARAMS)
+        result = wet_hour_conditional_intensity_bias(conditioned)
 
         assert result.n == 1
 
@@ -437,9 +495,7 @@ class TestUnconditionedSubsetIsRefusedByTheWetFactories:
         unconditioned = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
 
         with pytest.raises(UnconditionedSubsetError):
-            joint_wet_hour_conditional_intensity_bias(
-                unconditioned, params=DEFAULT_PARAMS
-            )
+            joint_wet_hour_conditional_intensity_bias(unconditioned)
 
     def test_joint_factory_rejects_a_gauge_wet_only_subset(self) -> None:
         # A subset conditioned on gauge-wet ALONE (wet_scale_subset's
@@ -458,9 +514,7 @@ class TestUnconditionedSubsetIsRefusedByTheWetFactories:
         assert gauge_wet_only.n_common_retained == 1
 
         with pytest.raises(UnconditionedSubsetError):
-            joint_wet_hour_conditional_intensity_bias(
-                gauge_wet_only, params=DEFAULT_PARAMS
-            )
+            joint_wet_hour_conditional_intensity_bias(gauge_wet_only)
 
     def test_joint_factory_accepts_a_genuinely_jointly_wet_conditioned_subset(
         self,
@@ -470,9 +524,7 @@ class TestUnconditionedSubsetIsRefusedByTheWetFactories:
             paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
 
-        result = joint_wet_hour_conditional_intensity_bias(
-            conditioned, params=DEFAULT_PARAMS
-        )
+        result = joint_wet_hour_conditional_intensity_bias(conditioned)
 
         assert result.n == 1
 
@@ -502,6 +554,26 @@ class TestWetHourConditionalIntensityBiasComparison:
         return wet_hour_conditional_intensity_bias_comparison(
             paired, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
+
+    def test_direct_construction_refuses_an_entirely_dry_paired_series_too(
+        self,
+    ) -> None:
+        # Task 3, round 8: the emptiness refusal used to fire only through
+        # `wet_hour_conditional_intensity_bias_comparison` (the factory
+        # forced `.gauge_alone`/`.joint` after construction) — direct
+        # construction of the SAME dataclass with an entirely-dry
+        # `PairedSeries` used to succeed silently, since neither property
+        # was ever accessed. `__post_init__` now forces both itself, so
+        # both paths refuse identically.
+        station = Station("A")
+        all_dry_paired = _make_paired_series(
+            station, datetime(2024, 7, 1, 0), 2, gauge=[0.0, 0.0], era5=[0.0, 0.0]
+        )
+
+        with pytest.raises(EmptySubsetError):
+            WetHourConditionalIntensityBiasComparison(
+                scale=Scale.JJAS, paired=all_dry_paired, params=DEFAULT_PARAMS
+            )
 
     def test_joint_n_is_strictly_less_than_gauge_alone_n_on_real_shaped_data(
         self,
@@ -718,9 +790,7 @@ class TestWetHourConditionalIntensityBiasComparison:
             paired_y, scale=Scale.JJAS, params=DEFAULT_PARAMS
         )
         assert subset_x.n_common_retained == subset_y.n_common_retained == 2
-        result_from_x = joint_wet_hour_conditional_intensity_bias(
-            subset_x, params=DEFAULT_PARAMS
-        )
+        result_from_x = joint_wet_hour_conditional_intensity_bias(subset_x)
         value_from_x = result_from_x.mean_intensity_bias_mm_per_h
 
         with pytest.raises(TypeError, match="mean_intensity_bias_mm_per_h"):
@@ -1042,6 +1112,66 @@ class TestCategoricalScoresHonoursWetThresholdSide:
         assert scores.csi == pytest.approx(0.0)
 
 
+class TestBandMemberDerivesFromItsSourceEstimand:
+    """Task 2, round 8: `BandMember` used to accept `station`, `scale`,
+    `value` and `n` as four independently-suppliable constructor fields
+    with no link to any source estimand at all — the exact probe below was
+    ACCEPTED before this fix, publishing `mean_value=999.0` into a band
+    that no real computation produced. It now stores exactly the source
+    `estimand`; the four are `@property`s read off it."""
+
+    def test_the_round_8_probe_is_now_rejected(self) -> None:
+        station_a = Station("A")
+        paired = _make_paired_series(
+            station_a, datetime(2024, 7, 1, 0), 4, gauge=[2.0] * 4, era5=[0.0] * 4
+        )
+        subset = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        result = matched_hour_mean_difference(subset)
+
+        with pytest.raises(TypeError, match="station"):
+            BandMember(
+                station=station_a,  # type: ignore[call-arg]
+                scale=Scale.JJAS,  # type: ignore[call-arg]
+                value=999.0,  # type: ignore[call-arg]
+                n=123,  # type: ignore[call-arg]
+            )
+        # The only legitimate construction path — from a real estimand —
+        # is unaffected, and derives the true value, not 999.0.
+        member = BandMember(estimand=result)
+        assert member.station == station_a
+        assert member.scale is Scale.JJAS
+        assert member.n == 4
+        assert member.value == pytest.approx(2.0)
+
+    def test_rejects_an_estimand_of_the_wrong_type(self) -> None:
+        with pytest.raises(EstimandSubsetTypeError):
+            BandMember(estimand="not an estimand")  # type: ignore[arg-type]
+
+    def test_derives_value_from_a_conditional_accumulated_difference(self) -> None:
+        station_a = Station("A")
+        paired = _make_paired_series(
+            station_a, datetime(2024, 7, 1, 0), 4, gauge=[3.0] * 4, era5=[1.0] * 4
+        )
+        subset = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        result = conditional_accumulated_difference(subset)
+
+        member = BandMember(estimand=result)
+
+        assert member.value == pytest.approx(result.mean_period_difference_mm)
+
+    def test_derives_value_from_a_wet_hour_conditional_intensity_bias(self) -> None:
+        station_a = Station("A")
+        paired = _make_paired_series(
+            station_a, datetime(2024, 7, 1, 0), 1, gauge=[1.0], era5=[0.5]
+        )
+        wet_subset = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        result = wet_hour_conditional_intensity_bias(wet_subset)
+
+        member = BandMember(estimand=result)
+
+        assert member.value == pytest.approx(result.mean_intensity_bias_mm_per_h)
+
+
 class TestElevationBandEstimand:
     def test_band_value_is_the_unweighted_mean_of_member_station_values(self) -> None:
         # Station A: 40 gauge hours (high retention). Station B: 4 hours
@@ -1099,6 +1229,20 @@ class TestElevationBandEstimand:
                 station_elev_m={station_a: 500.0},
             )
 
+    @staticmethod
+    def _matched_result_for(
+        station: Station, n: int, gauge_value: float
+    ) -> MatchedHourMeanDifference:
+        paired = _make_paired_series(
+            station,
+            datetime(2024, 7, 1, 0),
+            n,
+            gauge=[gauge_value] * n,
+            era5=[0.0] * n,
+        )
+        subset = scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
+        return matched_hour_mean_difference(subset)
+
     def test_direct_construction_cannot_label_a_below_700m_value_as_above_3000m(
         self,
     ) -> None:
@@ -1110,13 +1254,12 @@ class TestElevationBandEstimand:
         # only inputs; band-membership is re-derived and verified in
         # `__post_init__`, so this is unconstructible, full stop.
         station_a = Station("A")
+        result_a = self._matched_result_for(station_a, n=40, gauge_value=2.0)
 
         with pytest.raises(BandMembershipError, match="A"):
             ElevationBandEstimand(
                 band=ElevationBand.ABOVE_3000M,
-                members=(
-                    BandMember(station=station_a, scale=Scale.JJAS, value=2.0, n=40),
-                ),
+                members=(BandMember(estimand=result_a),),
                 station_elev_m={
                     station_a: 500.0
                 },  # 500 m -> BELOW_700M, not ABOVE_3000M
@@ -1130,12 +1273,14 @@ class TestElevationBandEstimand:
         # computed live from `members`.
         station_a = Station("A")
         station_b = Station("B")
+        result_a = self._matched_result_for(station_a, n=40, gauge_value=2.0)
+        result_b = self._matched_result_for(station_b, n=4, gauge_value=10.0)
 
         band = ElevationBandEstimand(
             band=ElevationBand.BELOW_700M,
             members=(
-                BandMember(station=station_a, scale=Scale.JJAS, value=2.0, n=40),
-                BandMember(station=station_b, scale=Scale.JJAS, value=10.0, n=4),
+                BandMember(estimand=result_a),
+                BandMember(estimand=result_b),
             ),
             station_elev_m={station_a: 500.0, station_b: 600.0},
         )
@@ -1148,9 +1293,7 @@ class TestElevationBandEstimand:
         with pytest.raises(TypeError, match="mean_value"):
             ElevationBandEstimand(
                 band=ElevationBand.BELOW_700M,
-                members=(
-                    BandMember(station=station_a, scale=Scale.JJAS, value=2.0, n=40),
-                ),
+                members=(BandMember(estimand=result_a),),
                 station_elev_m={station_a: 500.0},
                 mean_value=999.0,  # type: ignore[call-arg]
             )
@@ -1320,6 +1463,31 @@ class TestStationAndScaleAreDerivedNotAccepted:
                 scale=Scale.DJF,  # type: ignore[call-arg]
             )
 
+    def test_wet_hour_conditional_intensity_bias_rejects_params_kwarg(self) -> None:
+        # Task 1, round 8: `params` used to be an independently-suppliable
+        # constructor field (defaulting to `DEFAULT_PARAMS`), which let a
+        # subset SELECTED under one `params` be validated/reported under a
+        # silently-defaulted DIFFERENT one. The fix deletes the field
+        # entirely — there is no argument through which a caller could
+        # even attempt to supply one any more.
+        wet_subset = wet_scale_subset(
+            _make_paired_series(
+                Station("A"),
+                datetime(2024, 7, 1, 0),
+                2,
+                gauge=[1.0, 1.0],
+                era5=[0.0, 0.0],
+            ),
+            scale=Scale.JJAS,
+            params=DEFAULT_PARAMS,
+        )
+
+        with pytest.raises(TypeError, match="params"):
+            WetHourConditionalIntensityBias(
+                subset=wet_subset,
+                params=DEFAULT_PARAMS,  # type: ignore[call-arg]
+            )
+
     def test_joint_wet_hour_conditional_intensity_bias_rejects_station_and_scale_kwargs(
         self,
     ) -> None:
@@ -1344,6 +1512,28 @@ class TestStationAndScaleAreDerivedNotAccepted:
             JointWetHourConditionalIntensityBias(
                 subset=joint_subset,
                 scale=Scale.DJF,  # type: ignore[call-arg]
+            )
+
+    def test_joint_wet_hour_conditional_intensity_bias_rejects_params_kwarg(
+        self,
+    ) -> None:
+        # Task 1, round 8 — see the gauge-alone test of the same name.
+        joint_subset = joint_wet_scale_subset(
+            _make_paired_series(
+                Station("A"),
+                datetime(2024, 7, 1, 0),
+                2,
+                gauge=[1.0, 1.0],
+                era5=[0.5, 0.5],
+            ),
+            scale=Scale.JJAS,
+            params=DEFAULT_PARAMS,
+        )
+
+        with pytest.raises(TypeError, match="params"):
+            JointWetHourConditionalIntensityBias(
+                subset=joint_subset,
+                params=DEFAULT_PARAMS,  # type: ignore[call-arg]
             )
 
     def test_a_djf_subset_cannot_be_reported_as_jjas(self) -> None:
@@ -1414,9 +1604,7 @@ class TestValueCannotBeAttachedFromADifferentPopulation:
         self,
     ) -> None:
         subset_x, subset_y = self._two_equal_sized_but_different_subsets()
-        result_from_x = wet_hour_conditional_intensity_bias(
-            subset_x, params=DEFAULT_PARAMS
-        )
+        result_from_x = wet_hour_conditional_intensity_bias(subset_x)
         value_from_x = result_from_x.mean_intensity_bias_mm_per_h
 
         with pytest.raises(TypeError, match="mean_intensity_bias_mm_per_h"):
@@ -1493,9 +1681,7 @@ class TestCategoricalScoresRetentionConditionalityLabel:
         wet_jjas = wet_scale_subset(paired, scale=Scale.JJAS, params=DEFAULT_PARAMS)
 
         mean_result = matched_hour_mean_difference(jjas)
-        wet_result = wet_hour_conditional_intensity_bias(
-            wet_jjas, params=DEFAULT_PARAMS
-        )
+        wet_result = wet_hour_conditional_intensity_bias(wet_jjas)
 
         assert not hasattr(mean_result, "retention_conditionality")
         assert not hasattr(wet_result, "retention_conditionality")
@@ -1569,7 +1755,6 @@ class TestElevationBandWetHourConditionalIntensityBiasComparison:
         with pytest.raises(TypeError, match="gauge_alone"):
             ElevationBandWetHourConditionalIntensityBiasComparison(
                 band=ElevationBand.BELOW_700M,
-                scale=Scale.JJAS,
                 comparisons=(comp_a, comp_b),
                 station_elev_m=self._BELOW_700M_ELEV_M,
                 gauge_alone=band.gauge_alone,  # type: ignore[call-arg]
@@ -1577,10 +1762,27 @@ class TestElevationBandWetHourConditionalIntensityBiasComparison:
         with pytest.raises(TypeError, match="joint"):
             ElevationBandWetHourConditionalIntensityBiasComparison(
                 band=ElevationBand.BELOW_700M,
-                scale=Scale.JJAS,
                 comparisons=(comp_a, comp_b),
                 station_elev_m=self._BELOW_700M_ELEV_M,
                 joint=band.joint,  # type: ignore[call-arg]
+            )
+
+    def test_scale_has_no_field_to_attach_through(self) -> None:
+        # Round 8 audit (Task 1): `scale` used to be an independently-
+        # suppliable constructor field, checked (not derived) against
+        # `{c.scale for c in comparisons}` — a caller could still ATTEMPT a
+        # mismatched scale, only caught at runtime. It is now a `@property`
+        # reading `self.comparisons[0].scale` — there is no argument
+        # through which a caller could even attempt to supply one.
+        comp_a = self._comparison_for(Station("A"))
+        comp_b = self._comparison_for(Station("B"))
+
+        with pytest.raises(TypeError, match="scale"):
+            ElevationBandWetHourConditionalIntensityBiasComparison(
+                band=ElevationBand.BELOW_700M,
+                comparisons=(comp_a, comp_b),
+                station_elev_m=self._BELOW_700M_ELEV_M,
+                scale=Scale.JJAS,  # type: ignore[call-arg]
             )
 
     def test_duplicate_station_in_comparisons_is_rejected(self) -> None:
@@ -1620,7 +1822,6 @@ class TestElevationBandWetHourConditionalIntensityBiasComparison:
         with pytest.raises(ScaleNotSupportedError):
             ElevationBandWetHourConditionalIntensityBiasComparison(
                 band=ElevationBand.BELOW_700M,
-                scale=Scale.JJAS,
                 comparisons=(comp_jjas, comp_djf),
                 station_elev_m=self._BELOW_700M_ELEV_M,
             )

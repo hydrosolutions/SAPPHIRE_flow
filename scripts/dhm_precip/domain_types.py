@@ -6,6 +6,7 @@ pure type definitions, consumed by every other module in this package.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, NewType
@@ -141,6 +142,16 @@ class StationCoordinate:
             raise ValueError(f"latitude {self.lat} out of range for {self.station}")
         if not (-180.0 <= self.lon <= 180.0):
             raise ValueError(f"longitude {self.lon} out of range for {self.station}")
+        if not math.isfinite(self.elev_m):
+            # Round 8, Task 4: unlike the "not (in range)" lat/lon checks
+            # above (already NaN-safe), the elevation check below is an
+            # "out of range" form — both its comparisons are False for NaN
+            # too, so a non-finite value used to pass silently and later
+            # fall through every `<` edge in `assign_elevation_band` into
+            # ABOVE_3000M. Refused here, at the boundary.
+            raise ValueError(
+                f"elevation {self.elev_m!r} is not finite for {self.station}"
+            )
         if self.elev_m < -420.0 or self.elev_m > 9000.0:
             # Dead Sea shore to above Everest — a generous sanity band, not a
             # Nepal-specific bound (D12 only requires "inside Nepal").
