@@ -2687,96 +2687,72 @@ def run_forecast_cycle_flow(
                 # assignment carries its OWN resolved cycle via
                 # `per_track_run_inputs` — no shared superset assembly, no
                 # single station-wide `nwp_cycle_reference_time`.
-                multi_result = run_all_station_forecasts_per_track(
-                    station_id=sid,
-                    run_inputs=per_track_run_inputs.get(sid, {}),
-                    assignments=sorted_assignments,
-                    models=models,
-                    artifact_store=artifact_store,  # type: ignore[arg-type]
-                    qc_checker=qc_checker,
-                    qc_rules=qc_rules,
-                    qc_overrides=[],
-                    baselines=all_baselines[sid],
-                    config=config,
-                    clock=clock,
-                    id_gen=uuid4,
-                    rng=rng,
-                    model_state_store=model_state_store,  # type: ignore[arg-type]
-                    water_level_datum_masl=water_level_datums_masl.get(sid),
-                )
-
-                # D11: the cross-cycle combination preflight — installed
-                # BEFORE every in-scope persist call for this station
-                # (single-model AND combination arms both), never at the
-                # combination point itself, so a mismatch never leaves a
-                # partial write already committed.
-                cycle_check = resolve_combined_forcing_cycle(
-                    multi_result.combinable_results
-                )
-                if isinstance(cycle_check, CrossCycleMismatch):
-                    log.error(
-                        "forecast_cycle.cross_cycle_mismatch",
-                        station_id=str(sid),
-                        cycles=sorted(c.isoformat() for c in cycle_check.cycles),
-                    )
-                    errors.append(
-                        f"Cross-cycle mismatch for {sid}: "
-                        f"{sorted(c.isoformat() for c in cycle_check.cycles)}"
-                    )
-                    stations_failed += 1
-                    structlog.contextvars.unbind_contextvars("station_id")
-                    continue
-
-                if multi_result.primary_model_id is None:
-                    _record_station_dark(
-                        pipeline_health_store,
+                try:
+                    multi_result = run_all_station_forecasts_per_track(
                         station_id=sid,
-                        reason="all_models_failed",
-                        assigned_models=[a.model_id for a in sorted_assignments],
-                        nwp_enabled=nwp_enabled,
-                        checked_at=clock(),
-                        cycle_time=resolved_cycle_time,
+                        run_inputs=per_track_run_inputs.get(sid, {}),
+                        assignments=sorted_assignments,
+                        models=models,
+                        artifact_store=artifact_store,  # type: ignore[arg-type]
+                        qc_checker=qc_checker,
+                        qc_rules=qc_rules,
+                        qc_overrides=[],
+                        baselines=all_baselines[sid],
+                        config=config,
+                        clock=clock,
+                        id_gen=uuid4,
+                        rng=rng,
+                        model_state_store=model_state_store,  # type: ignore[arg-type]
+                        water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
-                    errors.append(
-                        f"Station {sid} produced zero forecasts: all_models_failed"
-                    )
-                    stations_failed += 1
-                    structlog.contextvars.unbind_contextvars("station_id")
-                    continue
 
-                if (
-                    config.forecast_combination_strategy
-                    == ModelCombinationStrategy.PRIMARY
-                ):
-                    primary_result = multi_result.results[multi_result.primary_model_id]
-                    for fc in primary_result.forecasts:
-                        fc = _bind_rating_curve(fc, active_rating_curves)
-                        try:
-                            forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                            forecasts_stored += 1
-                        except Exception as exc:
-                            log.warning(
-                                "forecast_cycle.store_forecast_failed", error=str(exc)
-                            )
-                            errors.append(f"Store failed for {sid}: {exc}")
-                    if primary_result.new_state is not None:
-                        try:
-                            model_state_store.store_state(  # type: ignore[union-attr]
-                                sid,
-                                primary_result.model_id,
-                                resolved_cycle_time,
-                                primary_result.new_state,
-                            )
-                        except Exception as exc:
-                            log.warning(
-                                "forecast_cycle.store_state_failed", error=str(exc)
-                            )
-                    all_ensembles[sid] = {
-                        multi_result.primary_model_id: dict(primary_result.ensembles)
-                    }
-                else:
-                    for mid, mresult in multi_result.results.items():
-                        for fc in mresult.forecasts:
+                    # D11: the cross-cycle combination preflight — installed
+                    # BEFORE every in-scope persist call for this station
+                    # (single-model AND combination arms both), never at the
+                    # combination point itself, so a mismatch never leaves a
+                    # partial write already committed.
+                    cycle_check = resolve_combined_forcing_cycle(
+                        multi_result.combinable_results
+                    )
+                    if isinstance(cycle_check, CrossCycleMismatch):
+                        log.error(
+                            "forecast_cycle.cross_cycle_mismatch",
+                            station_id=str(sid),
+                            cycles=sorted(c.isoformat() for c in cycle_check.cycles),
+                        )
+                        errors.append(
+                            f"Cross-cycle mismatch for {sid}: "
+                            f"{sorted(c.isoformat() for c in cycle_check.cycles)}"
+                        )
+                        stations_failed += 1
+                        structlog.contextvars.unbind_contextvars("station_id")
+                        continue
+
+                    if multi_result.primary_model_id is None:
+                        _record_station_dark(
+                            pipeline_health_store,
+                            station_id=sid,
+                            reason="all_models_failed",
+                            assigned_models=[a.model_id for a in sorted_assignments],
+                            nwp_enabled=nwp_enabled,
+                            checked_at=clock(),
+                            cycle_time=resolved_cycle_time,
+                        )
+                        errors.append(
+                            f"Station {sid} produced zero forecasts: all_models_failed"
+                        )
+                        stations_failed += 1
+                        structlog.contextvars.unbind_contextvars("station_id")
+                        continue
+
+                    if (
+                        config.forecast_combination_strategy
+                        == ModelCombinationStrategy.PRIMARY
+                    ):
+                        primary_result = multi_result.results[
+                            multi_result.primary_model_id
+                        ]
+                        for fc in primary_result.forecasts:
                             fc = _bind_rating_curve(fc, active_rating_curves)
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
@@ -2787,63 +2763,102 @@ def run_forecast_cycle_flow(
                                     error=str(exc),
                                 )
                                 errors.append(f"Store failed for {sid}: {exc}")
-                        if (
-                            mid == multi_result.primary_model_id
-                            and mresult.new_state is not None
-                        ):
+                        if primary_result.new_state is not None:
                             try:
                                 model_state_store.store_state(  # type: ignore[union-attr]
                                     sid,
-                                    mid,
+                                    primary_result.model_id,
                                     resolved_cycle_time,
-                                    mresult.new_state,
+                                    primary_result.new_state,
                                 )
                             except Exception as exc:
                                 log.warning(
                                     "forecast_cycle.store_state_failed", error=str(exc)
                                 )
-
-                    combined_cycle = cycle_check
-                    combined_source = _nwp_cycle_source_for_combined(
-                        combined_cycle, multi_result.combinable_results
-                    )
-                    combined_forecasts = build_combined_forecasts(
-                        station_id=sid,
-                        multi_result=multi_result,
-                        strategy=config.forecast_combination_strategy,
-                        nwp_cycle_reference_time=combined_cycle,
-                        nwp_cycle_source=combined_source,
-                        clock=clock,
-                        uuid_factory=uuid4,
-                    )
-                    if combined_forecasts:
-                        for fc in combined_forecasts:
-                            fc = _bind_rating_curve(fc, active_rating_curves)
-                            try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                forecasts_stored += 1
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
-                        log.info(
-                            "forecast_cycle.combined_forecast_stored",
-                            n_models=len(multi_result.combinable_results),
-                            strategy=config.forecast_combination_strategy.value,
-                        )
+                        all_ensembles[sid] = {
+                            multi_result.primary_model_id: dict(
+                                primary_result.ensembles
+                            )
+                        }
                     else:
-                        log.warning(
-                            "forecast_cycle.combined_forecast_skipped",
-                            reason="fewer than 2 combinable models",
-                            n_models=len(multi_result.combinable_results),
-                        )
+                        for mid, mresult in multi_result.results.items():
+                            for fc in mresult.forecasts:
+                                fc = _bind_rating_curve(fc, active_rating_curves)
+                                try:
+                                    forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                                    forecasts_stored += 1
+                                except Exception as exc:
+                                    log.warning(
+                                        "forecast_cycle.store_forecast_failed",
+                                        error=str(exc),
+                                    )
+                                    errors.append(f"Store failed for {sid}: {exc}")
+                            if (
+                                mid == multi_result.primary_model_id
+                                and mresult.new_state is not None
+                            ):
+                                try:
+                                    model_state_store.store_state(  # type: ignore[union-attr]
+                                        sid,
+                                        mid,
+                                        resolved_cycle_time,
+                                        mresult.new_state,
+                                    )
+                                except Exception as exc:
+                                    log.warning(
+                                        "forecast_cycle.store_state_failed",
+                                        error=str(exc),
+                                    )
 
-                    all_ensembles[sid] = {
-                        mid: dict(mresult.ensembles)
-                        for mid, mresult in multi_result.results.items()
-                    }
+                        combined_cycle = cycle_check
+                        combined_source = _nwp_cycle_source_for_combined(
+                            combined_cycle, multi_result.combinable_results
+                        )
+                        combined_forecasts = build_combined_forecasts(
+                            station_id=sid,
+                            multi_result=multi_result,
+                            strategy=config.forecast_combination_strategy,
+                            nwp_cycle_reference_time=combined_cycle,
+                            nwp_cycle_source=combined_source,
+                            clock=clock,
+                            uuid_factory=uuid4,
+                        )
+                        if combined_forecasts:
+                            for fc in combined_forecasts:
+                                fc = _bind_rating_curve(fc, active_rating_curves)
+                                try:
+                                    forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                                    forecasts_stored += 1
+                                except Exception as exc:
+                                    log.warning(
+                                        "forecast_cycle.store_forecast_failed",
+                                        error=str(exc),
+                                    )
+                                    errors.append(f"Store failed for {sid}: {exc}")
+                            log.info(
+                                "forecast_cycle.combined_forecast_stored",
+                                n_models=len(multi_result.combinable_results),
+                                strategy=config.forecast_combination_strategy.value,
+                            )
+                        else:
+                            log.warning(
+                                "forecast_cycle.combined_forecast_skipped",
+                                reason="fewer than 2 combinable models",
+                                n_models=len(multi_result.combinable_results),
+                            )
+
+                        all_ensembles[sid] = {
+                            mid: dict(mresult.ensembles)
+                            for mid, mresult in multi_result.results.items()
+                        }
+                except Exception as exc:
+                    log.warning(
+                        "forecast_cycle.station_forecast_failed", error=str(exc)
+                    )
+                    errors.append(f"Forecast failed for {sid}: {exc}")
+                    stations_failed += 1
+                    structlog.contextvars.unbind_contextvars("station_id")
+                    continue
 
                 stations_succeeded += 1
                 duration_ms = round((time.perf_counter() - station_t0) * 1000, 1)

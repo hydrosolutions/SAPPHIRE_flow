@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import builtins
+import dataclasses
+import enum
+import json
 import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import numpy as np
@@ -42,6 +45,7 @@ from sapphire_flow.models.climatology_fallback import (
     ClimatologyArtifact,
     ClimatologyFallbackModel,
 )
+from sapphire_flow.services.forecast_combination import build_combined_forecasts
 from sapphire_flow.services.run_station_forecast import (
     run_all_station_forecasts,
     run_all_station_forecasts_per_track,
@@ -8516,6 +8520,107 @@ def _run_cycle_with_stores(
     return run_forecast_cycle_flow(**kwargs)  # type: ignore[arg-type]
 
 
+# Plan 151 T8b golden -- the CANONICAL PERSISTED-OUTPUT SNAPSHOT (plan
+# `docs/plans/151-forecast-redesign-phase3-track-resolution-assembly.md`
+# ~line 982). Frozen from the pre-T8 tree (main `351bac3`, before any T8b
+# dispatch code exists) by running this exact station/model/forcing scenario
+# through the (then-only) legacy route -- committed as data, never
+# regenerated from post-T8b code. A fixed station id (rather than
+# `uuid4()`) is required so BOTH routing goldens below produce output that
+# can be compared field-for-field against this one file.
+_T8B_ROUTING_STATION_ID = StationId(UUID("11111111-1111-1111-1111-111111111111"))
+_T8B_CANONICAL_SNAPSHOT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "fixtures"
+    / "plan151_t8b_canonical_snapshot.json"
+)
+# Excluded as identity/clock noise per the plan: id, created_at, updated_at.
+_T8B_CANONICAL_FIELDS = (
+    "station_id",
+    "model_id",
+    "nwp_cycle_reference_time",
+    "nwp_cycle_source",
+    "representation",
+    "status",
+    "warm_up_source",
+    "observation_staleness_hours",
+    "input_quality",
+    "input_quality_flags",
+    "qc_status",
+    "qc_flags",
+    "combination_strategy",
+    "source_model_ids",
+)
+
+
+def _plain(obj: object) -> object:
+    """Recursively reduces enums/dataclasses/datetimes to JSON-comparable
+    plain values -- mirrors the serialisation used to freeze the canonical
+    snapshot itself, so both sides of the comparison go through the same
+    reduction."""
+    if isinstance(obj, enum.Enum):
+        return obj.value
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: _plain(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+    if isinstance(obj, datetime):
+        return ensure_utc(obj).isoformat()
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [_plain(v) for v in obj]
+    if isinstance(obj, dict):
+        return {str(k): _plain(v) for k, v in obj.items()}
+    return obj
+
+
+def _forecast_to_canonical_dict(fc: OperationalForecast) -> dict[str, object]:
+    out: dict[str, object] = {
+        field: _plain(getattr(fc, field)) for field in _T8B_CANONICAL_FIELDS
+    }
+    out["station_id"] = str(fc.station_id)
+    out["model_id"] = str(fc.model_id)
+    out["source_model_ids"] = (
+        sorted(str(m) for m in fc.source_model_ids) if fc.source_model_ids else []
+    )
+    ens = fc.ensemble
+    vdf = ens.values.sort(["member_id", "valid_time"])
+    out["ensemble_member_ids"] = sorted(set(vdf["member_id"].to_list()))
+    out["ensemble_valid_times"] = [
+        ensure_utc(t).isoformat() for t in vdf["valid_time"].to_list()
+    ]
+    out["ensemble_values"] = vdf["value"].to_list()
+    return out
+
+
+def _assert_matches_canonical_snapshot(
+    forecast_store: FakeForecastStore,
+    pipeline_health_store: FakePipelineHealthStore,
+    result: ForecastCycleResult,
+) -> None:
+    """Plan 151 T8b golden -- full-field comparison against the frozen
+    pre-T8 canonical snapshot (plan ~line 982). Output equality alone
+    cannot distinguish a mis-routed station from a correctly-routed one on
+    homogeneous data -- this is the "byte-identical" half of that
+    requirement; the CALL assertions in each test are the other half."""
+    canonical = json.loads(_T8B_CANONICAL_SNAPSHOT_PATH.read_text())
+
+    stored = sorted(
+        forecast_store._forecasts.values(),  # type: ignore[attr-defined]
+        key=lambda fc: (str(fc.station_id), str(fc.model_id)),
+    )
+    actual_forecasts = [_forecast_to_canonical_dict(fc) for fc in stored]
+    assert actual_forecasts == canonical["forecasts"]
+    assert result.forecasts_stored == canonical["forecasts_stored"]
+
+    freshness_records = pipeline_health_store.fetch_recent(
+        check_type=PipelineCheckType.FORECAST_FRESHNESS
+    )
+    actual_freshness = [
+        {"level": r.status.value, "forecasts_stored": r.detail.get("forecasts_stored")}
+        for r in freshness_records
+    ]
+    assert len(freshness_records) == canonical["freshness_count"]
+    assert actual_freshness == canonical["freshness"]
+
+
 class TestT8bPerTrackRouting:
     """Plan 151 T8b golden -- ROUTING (D12/D30), both directions named
     explicitly. Output equality alone cannot distinguish a mis-routed
@@ -8525,8 +8630,9 @@ class TestT8bPerTrackRouting:
     def test_candidate_aware_non_grouped_station_takes_the_per_track_route(
         self,
     ) -> None:
-        sid = StationId(uuid4())
+        sid = _T8B_ROUTING_STATION_ID
         stores = _make_full_stores()
+        pipeline_health_store = FakePipelineHealthStore()
         _build_station_and_stores(
             sid,
             _MODEL_ID,
@@ -8553,7 +8659,10 @@ class TestT8bPerTrackRouting:
             ) as legacy_spy,
         ):
             result = _run_cycle_with_stores(
-                stores, adapter=source, models={_MODEL_ID: _SmallFakeModel()}
+                stores,
+                adapter=source,
+                models={_MODEL_ID: _SmallFakeModel()},
+                pipeline_health_store=pipeline_health_store,
             )
 
         per_track_spy.assert_called_once()
@@ -8563,12 +8672,24 @@ class TestT8bPerTrackRouting:
         assert len(stored) == 1
         assert stored[0].nwp_cycle_reference_time == _NOW
         assert stored[0].nwp_cycle_source is NwpCycleSource.PRIMARY
+        _assert_matches_canonical_snapshot(
+            stores["forecast_store"],  # type: ignore[arg-type]
+            pipeline_health_store,
+            result,
+        )
 
     def test_legacy_adapter_station_never_reaches_a_per_track_entry_point(
         self,
     ) -> None:
-        sid = StationId(uuid4())
+        # Same station id, same underlying forcing content (mirroring
+        # `_point_forecast_result`'s shape via the legacy `fetch_forecasts`
+        # protocol method rather than `fetch_requirement`) as the per-track
+        # golden above -- the ONLY thing that should differ is which route
+        # carries it, so both must reduce to the SAME frozen canonical
+        # snapshot.
+        sid = _T8B_ROUTING_STATION_ID
         stores = _make_full_stores()
+        pipeline_health_store = FakePipelineHealthStore()
         _build_station_and_stores(
             sid,
             _MODEL_ID,
@@ -8577,6 +8698,7 @@ class TestT8bPerTrackRouting:
             stores["nwp_store"],  # type: ignore[arg-type]
             stores["artifact_store"],  # type: ignore[arg-type]
             stores["forcing_store"],  # type: ignore[arg-type]
+            seed_nwp=False,
         )
 
         with (
@@ -8604,8 +8726,11 @@ class TestT8bPerTrackRouting:
         ):
             result = _run_cycle_with_stores(
                 stores,
-                adapter=FakeWeatherForecastSource(result={}),
+                adapter=FakeWeatherForecastSource(
+                    result={sid: _point_forecast_result(_NOW)}
+                ),
                 models={_MODEL_ID: _SmallFakeModel()},
+                pipeline_health_store=pipeline_health_store,
             )
 
         resolve_spy.assert_not_called()
@@ -8614,6 +8739,105 @@ class TestT8bPerTrackRouting:
         per_track_spy.assert_not_called()
         legacy_spy.assert_called_once()
         assert result.stations_succeeded == 1
+        _assert_matches_canonical_snapshot(
+            stores["forecast_store"],  # type: ignore[arg-type]
+            pipeline_health_store,
+            result,
+        )
+
+
+class TestT8bStationExceptionContainment:
+    """Plan 151 T8b fixer round -- major finding: the per-track branch had
+    no station-level exception containment, unlike the legacy branch right
+    below it in the same loop. An unanticipated exception ANYWHERE in the
+    per-track combination arm (here: `build_combined_forecasts`, called
+    unguarded) must degrade to ONE failed station, never crash the whole
+    `run_forecast_cycle_flow` run for every station in the cycle."""
+
+    def test_unexpected_exception_in_per_track_combination_fails_one_station_only(
+        self,
+    ) -> None:
+        sid_broken = StationId(uuid4())
+        sid_healthy = StationId(uuid4())
+        stores = _make_full_stores()
+        for sid in (sid_broken, sid_healthy):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                stores["station_store"],  # type: ignore[arg-type]
+                stores["obs_store"],  # type: ignore[arg-type]
+                stores["nwp_store"],  # type: ignore[arg-type]
+                stores["artifact_store"],  # type: ignore[arg-type]
+                stores["forcing_store"],  # type: ignore[arg-type]
+                seed_nwp=False,
+            )
+        model_id_b = ModelId("fake_model_b")
+        for sid in (sid_broken, sid_healthy):
+            stores["station_store"].store_model_assignment(  # type: ignore[attr-defined]
+                ModelAssignment(
+                    station_id=sid,
+                    model_id=model_id_b,
+                    time_step=timedelta(hours=1),
+                    status=ModelAssignmentStatus.ACTIVE,
+                    priority=2,
+                    created_at=_NOW,
+                )
+            )
+            stores["artifact_store"].store_artifact(  # type: ignore[attr-defined]
+                model_id=model_id_b,
+                artifact_bytes=b"fake_artifact_b",
+                training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+                training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+                trained_at=_NOW,
+                station_id=sid,
+                status=ModelArtifactStatus.ACTIVE,
+            )
+        # Both models share the SAME nwp_source track -> same resolved cycle
+        # -> the D11 cross-cycle preflight passes and the POOLED combination
+        # arm (the one calling `build_combined_forecasts`) is reached for
+        # BOTH stations.
+        source = _FakeCandidateAwareSource(
+            results_by_cycle={
+                _NOW: {
+                    sid_broken: _point_forecast_result(_NOW),
+                    sid_healthy: _point_forecast_result(_NOW),
+                }
+            }
+        )
+
+        with patch(
+            "sapphire_flow.services.forecast_combination.build_combined_forecasts",
+            side_effect=lambda *a, **kw: (
+                (_ for _ in ()).throw(RuntimeError("boom"))
+                if kw.get("station_id") == sid_broken
+                else build_combined_forecasts(*a, **kw)
+            ),
+        ):
+            result = _run_cycle_with_stores(
+                stores,
+                adapter=source,
+                models={_MODEL_ID: _SmallFakeModel(), model_id_b: _SmallFakeModel()},
+                config=_make_config(
+                    forecast_combination_strategy=ModelCombinationStrategy.POOLED
+                ),
+            )
+
+        # The crash in ONE station's combination arm must not propagate out
+        # of the flow (that is the whole point of the finding) -- and the
+        # OTHER station must still succeed, not be darkened by the first
+        # station's bug. (Before the fix, this RuntimeError propagated out
+        # of `run_forecast_cycle_flow` entirely -- this assertion set is
+        # simply never reached, the test errors instead of failing.)
+        assert result.stations_failed == 1
+        assert result.stations_succeeded == 1
+        assert any(str(sid_broken) in e for e in result.errors)
+        combined_forecasts_by_station = {
+            fc.station_id
+            for fc in stores["forecast_store"]._forecasts.values()  # type: ignore[attr-defined]
+            if fc.combination_strategy is not None
+        }
+        assert sid_healthy in combined_forecasts_by_station
+        assert sid_broken not in combined_forecasts_by_station
 
 
 class TestT8bMemberSetThreading:

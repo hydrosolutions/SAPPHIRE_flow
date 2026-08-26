@@ -321,6 +321,17 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   emitting one forced-CRITICAL `FORECAST_FRESHNESS` record (Plan 116). See
   `docs/design/forecast-cycle-redesign.md` build-sequence item 3 and
   `docs/operations/recap-gateway-runbook.md` § Shared-forcing-track freshness.
+  **Station-level exception containment (T8b fixer round, major):** the
+  ENTIRE per-track branch body — from `run_all_station_forecasts_per_track`
+  through both persist arms — is wrapped in the SAME `try/except Exception`
+  pattern as the legacy branch below it (`forecast_cycle.station_forecast_failed`
+  logged, appended to `errors`, `stations_failed` incremented, loop
+  `continue`s). An unanticipated bug anywhere in that call chain (including
+  the unguarded `build_combined_forecasts` call) degrades to one failed
+  station, never crashes the whole flow run for every station in the cycle —
+  this is DISTINCT from the fatal-typed-error re-raise above, which is a
+  deliberate all-or-nothing contract for a narrow, *anticipated* taxonomy,
+  not a substitute for unanticipated-bug containment.
 - per-assignment warm-up state (Plan 148, READ side): `_run_single_model`
   loads THIS assignment's own state — `load_warm_up_state(model_state_store,
   station_id, assignment.model_id, clock)` — uniformly, after the
