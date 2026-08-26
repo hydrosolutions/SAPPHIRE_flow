@@ -163,6 +163,142 @@ function codexDiffPrompt(round) {
   )
 }
 
+// ── STALENESS GATE (Plan 200) ────────────────────────────────────────────────
+// PR #201 postmortem: a plan-doc correction made AFTER a build started, and never
+// pushed, could not reach the running branch before it merged — the branch built
+// (faithfully) from a plan an hour stale. A preflight-only check would NOT have
+// caught it (nothing was stale when the build started); the gate must also run at
+// FINALIZE, the only point where the workflow could still have seen the correction.
+//
+// D1 — CONTAINMENT, not equality, against BOTH origin/main and local main. Plain
+// equality false-escalates on every legitimate run (`/plan` edits the plan doc in
+// place by design). The predicate: the branch must CONTAIN the latest plan-changing
+// commit from each ref. Escalate only when that commit is ABSENT from the branch
+// AND the branch's own copy of the plan differs from that ref's version — the
+// signature of a correction the branch never saw, while still allowing edits the
+// branch itself made on top of the latest plan.
+//
+// NOTE — this check is pinned to `main`/`origin/main` specifically, INDEPENDENT of
+// `baseBranch` (below): plan docs in this repo are committed directly to `main`, never
+// to a feature `baseBranch` (see CLAUDE.md "Plans direct to main; PRs for code"), so
+// `main` is the only ref a plan correction can land on. `checkBaseBehind`, further
+// down, IS parameterized on `baseBranch` — that check is about the actual diff base,
+// which legitimately can differ from `main`.
+//
+// The content comparison is against the WORKTREE file, never HEAD's committed blob:
+// a fixer/planner round can edit files without an intervening commit, so at FINALIZE
+// the on-disk file can already differ from HEAD. Diffing HEAD's blob against a ref
+// would false-escalate when the worktree independently already matches the ref, and
+// could equally miss real staleness if the worktree drifted from a HEAD that still
+// happens to match the ref.
+//
+// D3 — fetch origin FIRST; a failed fetch, or ANY other git command erroring instead
+// of returning one of its EXPECTED results, fails CLOSED (checkOk=false) rather than
+// silently reading as "not stale" (an unavailable check must not resemble a passing
+// one). `git log -1 -- <path>` returning a SHA does NOT mean the path exists now — a
+// deleted/archived plan still has a deletion commit — so existence is checked with
+// `cat-file -e` against the ref's current tip, not `log`.
+const STALE_PLAN = {
+  type: 'object',
+  required: ['fetchOk', 'checkOk', 'stale', 'staleRefs'],
+  properties: {
+    fetchOk: { type: 'boolean' },
+    checkOk: { type: 'boolean' }, // false = a git command errored; treat as unverifiable, NOT as "not stale"
+    stale: { type: 'boolean' },   // informational only — the caller derives staleness from staleRefs itself
+    staleRefs: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' },
+  },
+}
+// NOTE — this gate is deliberately MAIN-ONLY, and does not follow `baseBranch`.
+// Plan documents live on `main` (docs/plans/), so `main`/`origin/main` is where a
+// plan correction lands regardless of which branch a diff is measured against. A
+// run invoked with `baseBranch: 'release-v1'` still checks the plan against main,
+// which is intended: the spec's authority is main, not the integration target.
+function stalePlanPromptText(stage) {
+  return (
+    `Check whether the CURRENT branch in repo ${repo} has gone stale against the plan doc at ${planPath}, ` +
+    `at the ${stage} stage of a build. Throughout, distinguish an EXPECTED git result (empty output, "not an ` +
+    `ancestor", "no diff") from a git COMMAND ERROR (a non-zero exit for any reason OTHER than the one ` +
+    `documented expected-negative below) — a command error means the check could NOT run and MUST fail closed ` +
+    `(checkOk=false), never be read as "not stale". Steps:\n` +
+    `1. Run \`git -C ${repo} fetch origin main --quiet\`. If it FAILS (offline/auth/no such remote/etc.), STOP ` +
+    `and return {"fetchOk": false, "checkOk": false, "stale": false, "staleRefs": [], "notes": "<what failed>"} ` +
+    `— do NOT compare against a possibly-stale origin/main.\n` +
+    `2. Check whether ${planPath} exists in the CURRENT WORKTREE right now: \`test -f ${repo}/${planPath}\`.\n` +
+    `3. For EACH of these two refs — "origin/main" and "main" — first check whether the plan file exists AT ` +
+    `THAT REF'S CURRENT TIP: \`git -C ${repo} cat-file -e <ref>:${planPath}\` (exit 0 = exists there now, ` +
+    `non-zero = absent there now). Do NOT use \`git log -1 -- <path>\` non-empty output as a proxy for "exists" ` +
+    `— a plan later DELETED or ARCHIVED (e.g. moved to docs/plans/archive/) still has history touching the ` +
+    `path, so \`log\` finds its deletion commit even though the blob is gone at that ref now; only \`cat-file ` +
+    `-e\` tells you whether it exists THERE NOW.\n` +
+    `   - ABSENT at the ref AND ABSENT in the worktree (step 2): consistent, SKIP this ref (not stale for it).\n` +
+    `   - ABSENT at the ref but PRESENT in the worktree: that ref no longer has this plan (likely archived or ` +
+    `moved upstream) while the branch still does — record this ref in staleRefs with a note that it was ` +
+    `removed there; do NOT attempt a content diff against a blob that no longer exists.\n` +
+    `   - PRESENT at the ref: continue to step 4.\n` +
+    `4. Find the latest commit on that ref that touched the file: \`git -C ${repo} log -1 --format=%H <ref> -- ` +
+    `${planPath}\`. Step 3 already confirmed the blob exists at the ref's tip, so this MUST return a SHA; if it ` +
+    `errors or returns empty anyway, that is a COMMAND ERROR — checkOk=false.\n` +
+    `5. Check containment: \`git -C ${repo} merge-base --is-ancestor <sha> HEAD\`. Exit 0 = contained (not ` +
+    `stale for this ref). Exit 1 = NOT contained — this is the EXPECTED negative, not an error; go to step 6. ` +
+    `Any OTHER exit code (e.g. an invalid SHA) is a COMMAND ERROR — checkOk=false.\n` +
+    `6. If NOT contained, compare the ACTUAL WORKTREE FILE — not HEAD's last commit; the current branch may ` +
+    `have UNCOMMITTED edits to the plan — against that ref's content: \`git -C ${repo} diff <ref> -- ` +
+    `${planPath}\`. An EMPTY diff (exit 0, no output) means the worktree copy ALREADY matches that ref's ` +
+    `content — NOT stale for it (a branch whose own working copy already carries an equivalent edit must not ` +
+    `false-escalate), even if the committed HEAD blob differs. A NON-EMPTY diff means that ref is STALE against ` +
+    `what is actually on disk — record its name ("origin/main" or "main") in staleRefs. Plain \`git diff\` (no ` +
+    `--exit-code) exits non-zero ONLY on a real error, never merely for having a diff — so any non-zero exit ` +
+    `here is a COMMAND ERROR — checkOk=false.\n` +
+    `Return fetchOk=true, checkOk=(false if ANY step above hit a command error, true otherwise), ` +
+    `stale=(staleRefs is non-empty) — informational; the caller derives staleness from staleRefs itself, not ` +
+    `from this field — staleRefs, and notes explaining what you found (the SHAs compared, which ref(s) were ` +
+    `stale vs current, and why).`
+  )
+}
+// D5 — a stale BASE (the branch is behind origin/${baseBranch}) WARNS and proceeds; it
+// never escalates. A hard refusal fires on essentially every branch (a base branch
+// moves several times a day) and would be disabled within a day — the same failure as
+// a blocking commit hook (D4). This is deliberately weaker than a refusal to a stale
+// PLAN. Unlike the plan-staleness check above, this IS parameterized on `baseBranch`
+// (default 'main') — it measures drift against the actual branch the diff will be
+// compared to, which the caller may override.
+const BASE_BEHIND = {
+  type: 'object',
+  required: ['behindCount'],
+  properties: { behindCount: { type: 'number' }, notes: { type: 'string' } },
+}
+async function checkBaseBehind(phaseTitle) {
+  const baseBehind = await agent(
+    `In repo ${repo}, fetch the base branch fresh (\`git -C ${repo} fetch origin ${baseBranch} --quiet\`; if ` +
+    `that fails, proceed with whatever origin/${baseBranch} is already known locally) and report how many ` +
+    `commits origin/${baseBranch} has that the current branch (HEAD) lacks: \`git -C ${repo} rev-list --count ` +
+    `HEAD..origin/${baseBranch}\`. Return behindCount as a number (0 if the command errors, e.g. no such ` +
+    `remote-tracking ref). Do not edit anything.`,
+    { label: 'base-behind', phase: phaseTitle, model: 'sonnet', effort: 'low', schema: BASE_BEHIND },
+  )
+  if (baseBehind && baseBehind.behindCount > 0) {
+    log(`⚠️ WARN — this branch is ${baseBehind.behindCount} commit(s) behind origin/${baseBranch}. Proceeding, ` +
+        `but review against the current diff and run \`git merge origin/${baseBranch}\` before opening the PR.`)
+  }
+  return baseBehind
+}
+// The caller derives staleness itself from fetchOk/checkOk/staleRefs — never trusting
+// the agent-reported `stale` boolean on its own, since a structurally-valid-but-wrong
+// {stale:false} alongside a non-empty staleRefs must still be treated as stale.
+function isPlanStale(check) {
+  return !check || !check.fetchOk || !check.checkOk || !Array.isArray(check.staleRefs) || check.staleRefs.length > 0
+}
+function staleEscalation(check, stage) {
+  if (!check || !check.fetchOk) {
+    return `plan-staleness check could not run at ${stage} (${check?.notes || 'git fetch failed'})`
+  }
+  if (!check.checkOk) {
+    return `plan-staleness check hit a git error at ${stage} and produced no trustworthy verdict — treating as stale (${check.notes || 'see notes'})`
+  }
+  return `plan at ${planPath} is STALE at ${stage} against ${(check.staleRefs || []).join(', ')}: ${check.notes || ''}`
+}
+
 phase('Implement')
 
 // PREFLIGHT — NEVER implement a plan that is not READY. A DRAFT is a proposal, not an
@@ -187,6 +323,24 @@ if (!preflight || !preflight.isReady) {
     implementerReport: null, verify: null, final: null,
   }
 }
+
+// PREFLIGHT STALENESS — D1/D3/D5 (Plan 200). Runs AFTER the READY check (no point
+// staleness-checking a plan that isn't buildable yet) and BEFORE any implementation work.
+const staleAtPreflight = await agent(
+  stalePlanPromptText('PREFLIGHT'),
+  { label: 'stale-plan-preflight', phase: 'Implement', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
+)
+if (isPlanStale(staleAtPreflight)) {
+  const reason = staleEscalation(staleAtPreflight, 'PREFLIGHT')
+  log(`⚠️ ESCALATION — ${reason}. Refusing to build from an unverifiable or superseded spec (PR #201 postmortem).`)
+  return {
+    planPath, rounds: 0, converged: false, stalled: false, exhausted: false,
+    escalated: true, escalationReason: reason,
+    residualBlockerCount: 0, residualMajorCount: 0, residualFindings: [], codexFailedRounds: 0,
+    implementerReport: null, verify: null, final: null,
+  }
+}
+await checkBaseBehind('Implement')
 
 // Capture HEAD BEFORE implementing, so verification can prove a NEW commit actually
 // landed — a false `committed:true` over a pre-existing/stale branch diff must NOT pass.
@@ -450,27 +604,50 @@ if (escalated) {
 }
 
 phase('Finalize')
+
+// FINALIZE STALENESS — D1 re-checked (Plan 200). The PR #201 correction landed on
+// local `main` an HOUR into the run; a preflight-only check would have passed and
+// then gone stale DURING the build. This is the only point left where the workflow
+// can still catch it, before recommending the diff for a PR against a superseded spec.
+const staleAtFinalize = await agent(
+  stalePlanPromptText('FINALIZE'),
+  { label: 'stale-plan-finalize', phase: 'Finalize', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
+)
+const planWentStale = isPlanStale(staleAtFinalize)
+if (planWentStale) {
+  log(`⚠️ ESCALATION at FINALIZE — ${staleEscalation(staleAtFinalize, 'FINALIZE')}. Do NOT open a PR from this ` +
+      `commit — the spec moved out from under it; the work is not lost, it just must not be proposed as-is.`)
+}
+
 const final = await agent(
   `Read the plan at ${planPath} and the final \`git diff ${baseBranch}...HEAD\` (repo ${repo}). ` +
   `The review loop ended: converged=${converged}, stalled=${stalled}, exhausted=${exhausted}, ` +
   `residual blockers=${residualBlockers.length}, residual majors=${residualMajors.length}, ` +
-  `rounds where the Codex pass failed=${codexFailedRounds}, red-first acceptance achieved=${!redFirstMissed}. ` +
+  `rounds where the Codex pass failed=${codexFailedRounds}, red-first acceptance achieved=${!redFirstMissed}, ` +
+  `plan went STALE during the build=${planWentStale}. ` +
   `Return: (1) 'summary' — a <=6-line summary of what was built + how it was verified; ` +
   `(2) 'residualRisks' — anything a human PR reviewer should still eyeball` +
-  (redFirstMissed ? ` — you MUST include that red-first acceptance was NOT achieved (a human should confirm the acceptance tests genuinely lock the spec, or hand-author them)` : ``) + `; ` +
+  (redFirstMissed ? ` — you MUST include that red-first acceptance was NOT achieved (a human should confirm the acceptance tests genuinely lock the spec, or hand-author them)` : ``) +
+  (planWentStale ? ` — you MUST include that the plan went stale during the build and this diff must be rebuilt against the current spec before a PR` : ``) + `; ` +
   `(3) 'recommendation' — 'PR-READY' (ready for a HUMAN to open/approve the PR — NOT auto-mergeable) only if ` +
-  `no residual blockers/majors AND the exit gates passed; else 'NOT-READY'. ` +
+  `no residual blockers/majors, the exit gates passed, AND the plan did NOT go stale during the build; else 'NOT-READY'. ` +
   `Remember: hold-at-PR — you are NOT merging; only the human merges. This is advice to the PR owner.`,
   { label: 'finalize', phase: 'Finalize', model: 'sonnet', effort: 'medium', schema: FINAL },
 )
 
-// PR-READY requires ACTUAL convergence (no residual blockers/majors on a complete panel).
-// An escalated run — stalled, exhausted, or a failed reviewer — is NOT-READY no matter
-// what the finalize agent inferred from a possibly-partial finding set.
-if (final && !converged && final.recommendation !== 'NOT-READY') {
-  log(`Overriding finalize recommendation → NOT-READY (converged=false, escalated=${escalated}).`)
+// PR-READY requires ACTUAL convergence (no residual blockers/majors on a complete panel)
+// AND a plan that did not go stale during the build. An escalated run — stalled,
+// exhausted, a failed reviewer, or a finalize-time staleness hit — is NOT-READY no
+// matter what the finalize agent inferred from a possibly-partial finding set.
+if (final && (!converged || planWentStale) && final.recommendation !== 'NOT-READY') {
+  log(`Overriding finalize recommendation → NOT-READY (converged=${converged}, planWentStale=${planWentStale}).`)
   final.recommendation = 'NOT-READY'
 }
+
+const finalEscalated = escalated || planWentStale
+const finalEscalationReason = planWentStale
+  ? (escalationReason ? `${escalationReason}; also: ${staleEscalation(staleAtFinalize, 'FINALIZE')}` : staleEscalation(staleAtFinalize, 'FINALIZE'))
+  : escalationReason
 
 return {
   planPath,
@@ -478,13 +655,14 @@ return {
   converged,
   stalled,
   exhausted,
-  escalated,
-  escalationReason,
+  escalated: finalEscalated,
+  escalationReason: finalEscalationReason,
   residualBlockerCount: residualBlockers.length,
   residualMajorCount: residualMajors.length,
   residualFindings: lastFindings,
   codexFailedRounds,
   redFirstMissed,
+  planWentStale,
   implementerReport,
   verify,
   final,

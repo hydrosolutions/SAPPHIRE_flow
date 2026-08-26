@@ -17,6 +17,15 @@
 # docs/plans/070-precommit-and-gate-parity.md for the rationale
 # (auto-fix conflicts with the mandatory bump-my-version commit sequence
 # documented in CLAUDE.md §Version Bumping).
+#
+# default_install_hook_types: a bare `pre-commit install` (no --hook-type
+# flags) now registers pre-commit + pre-push + post-commit, so a NEW clone
+# gets the Plan 200 D4 unpushed-main nudge without needing the long-form
+# command from CLAUDE.md/README.md/AGENTS.md. An EXISTING clone that already
+# ran the old two-type install must still re-run that command once (or
+# `pre-commit install` again) to pick up post-commit -- pre-commit only
+# registers the hook types actually requested at install time.
+default_install_hook_types: [pre-commit, pre-push, post-commit]
 
 repos:
   # ── ruff: lint + format check (fastest; check-only per D8) ──────────────
@@ -60,6 +69,23 @@ repos:
         entry: bash -c 'command -v plutil >/dev/null 2>&1 || exit 0; plutil -lint "$@"' --
         language: system
         files: ^scripts/launchd/.*\.plist$
+
+  # ── unpushed-main nudge: warns, never blocks (Plan 200 D4) ───────────────
+  # Work stranded on one local checkout recurred 3x in 4 days (Plan 200). Runs
+  # POST-commit (the new commit must exist to be counted) so it fires on the
+  # FIRST unpushed commit, not only the second+ -- a pre-commit-stage version
+  # would stay silent in exactly that case. Silent on every branch but `main`,
+  # and always exits 0: a hard block on "commits exist that aren't pushed" would
+  # fire on nearly every ordinary commit sequence and be disabled within a day.
+  - repo: local
+    hooks:
+      - id: unpushed-main-nudge
+        name: unpushed commits on main nudge
+        language: system
+        stages: [post-commit]
+        always_run: true
+        pass_filenames: false
+        entry: bash -c 'b=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); [ "$b" = "main" ] || exit 0; git rev-parse --verify -q origin/main >/dev/null 2>&1 || exit 0; n=$(git rev-list --count origin/main..main 2>/dev/null); [ -n "$n" ] && [ "$n" -gt 0 ] || exit 0; echo "note -- $n commit(s) on main not yet pushed -- remember, git push origin main"; exit 0'
 
   # ── pyright ratchet: slower type gate, so run before push ───────────────
   - repo: local
