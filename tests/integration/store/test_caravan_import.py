@@ -21,6 +21,7 @@ from shapely.geometry import MultiPolygon, Polygon
 
 from sapphire_flow.db.metadata import basin_versions
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.store._helpers import require_real_transaction
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.caravan_import import (
     import_caravan_attributes,
@@ -949,6 +950,36 @@ class TestTransactionGuard:
     shape; this one does not." Mirrors
     `test_basin_importer_persistence.py::TestTransactionGuard` via the
     shared `store/_helpers.py::require_real_transaction`."""
+
+    def test_engine_level_autocommit_is_also_refused(
+        self, db_engine: sa.Engine
+    ) -> None:
+        """Independent review 2026-08-27. The sibling test above covers
+        `conn.execution_options(isolation_level="AUTOCOMMIT")` — what
+        production does (`flows/_db.py:84`). It does NOT cover
+        `create_engine(..., isolation_level="AUTOCOMMIT")`, which never
+        surfaces in `get_execution_options()` on either the connection or the
+        engine (both measured as `{}`) while `conn.begin()` still makes
+        `in_transaction()` true. Both original checks passed on a DBAPI
+        connection that commits every statement — so `SELECT ... FOR UPDATE`
+        released its lock immediately and T3's concurrency guarantee was void.
+
+        No current caller builds an engine that way, so this is hardening
+        rather than a live bug; it is tested because a guard whose whole
+        purpose is to be unbypassable should be." """
+        autocommit_engine = sa.create_engine(
+            db_engine.url, isolation_level="AUTOCOMMIT"
+        )
+        try:
+            with autocommit_engine.begin() as conn:
+                # Both original signals look innocent here — this is exactly
+                # why the DBAPI attribute is the one that must be consulted.
+                assert conn.in_transaction()
+                assert conn.get_execution_options().get("isolation_level") is None
+                with pytest.raises(RuntimeError, match="autocommit"):
+                    require_real_transaction(conn, caller="probe")
+        finally:
+            autocommit_engine.dispose()
 
     def test_autocommit_connection_refused_before_any_write(
         self, db_engine: sa.Engine, tmp_path

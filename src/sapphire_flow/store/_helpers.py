@@ -32,6 +32,27 @@ def require_real_transaction(conn: sa.Connection, *, caller: str) -> None:
     DOES roll back correctly, because ordinary Postgres transactions are
     atomic by construction. ``caller`` names the function in the error
     message so a misuse is traceable to its call site."""
+    # Independent review 2026-08-27: the execution-options check below catches
+    # `conn.execution_options(isolation_level="AUTOCOMMIT")` (what production
+    # actually does, `flows/_db.py:84`) but NOT
+    # `create_engine(..., isolation_level="AUTOCOMMIT")` -- that never appears
+    # in `get_execution_options()` on either the connection OR the engine
+    # (measured: both return `{}`), while `conn.begin()` still makes
+    # `in_transaction()` true. Both checks would pass on a DBAPI connection
+    # that commits every statement. The DBAPI attribute is the only reliable
+    # discriminator (measured: True for an AUTOCOMMIT engine, False for a
+    # normal one, with every other accessor identical). `getattr` defaults keep
+    # this inert for a driver that does not expose it.
+    driver_conn = getattr(conn.connection, "driver_connection", None)
+    if getattr(driver_conn, "autocommit", False):
+        raise RuntimeError(
+            f"{caller} refuses to run on a connection whose DBAPI is in "
+            "autocommit mode (engine created with "
+            'isolation_level="AUTOCOMMIT") -- each statement commits '
+            "independently and SELECT ... FOR UPDATE releases its lock "
+            "immediately, so neither atomicity nor row locking holds. Use an "
+            "engine without an AUTOCOMMIT isolation level."
+        )
     if conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
         raise RuntimeError(
             f"{caller} refuses to run on an AUTOCOMMIT-isolation connection "

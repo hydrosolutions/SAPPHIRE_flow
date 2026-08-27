@@ -127,7 +127,7 @@ class TestPinnedManifestConstant:
 
 class TestCleanRun:
     def test_a_clean_run_reports_every_manifest_station_matched_and_exits_0(
-        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch
+        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch, capsys
     ) -> None:
         _seed_station_with_basin(db_engine, code="T188CLI-CLEAN")
         parquet = _write_parquet(
@@ -154,6 +154,13 @@ class TestCleanRun:
         result = mod.main(["--parquet", str(parquet)])
 
         assert result == 0
+        # The name promises it REPORTS every manifest station matched — assert
+        # the count actually reaches the operator's stdout, not just the exit
+        # code (independent review 2026-08-27). The CLI prints counts, not
+        # codes, so this pins the count line rather than the station name.
+        out = capsys.readouterr().out
+        assert "Matched:" in out
+        assert "Missing from manifest:  0" in out
         with db_engine.connect() as check_conn:
             basin = PgStationStore(check_conn).fetch_station_by_code(
                 "T188CLI-CLEAN", "bafu"
@@ -286,7 +293,7 @@ class TestManifestMismatch:
 
 class TestModelAbsentPreflight:
     def test_model_absent_from_registry_fails_naming_the_model_id(
-        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch
+        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch, capsys
     ) -> None:
         # Monkeypatched, not relying on the real environment: the standard
         # `unit`/`integration` CI jobs install `--extra aquacast`
@@ -303,3 +310,7 @@ class TestModelAbsentPreflight:
         result = mod.main(["--parquet", str(parquet)])
 
         assert result == 1
+        # The test name promises the message NAMES the model; asserting only
+        # the exit code would pass against a generic failure that tells the
+        # operator nothing (independent review 2026-08-27).
+        assert "cmal_pool_pt" in capsys.readouterr().err

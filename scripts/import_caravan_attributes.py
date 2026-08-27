@@ -371,7 +371,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    log.info("database_connecting", url=database_url.split("@")[-1])
+    # Independent review 2026-08-27: do NOT log any part of the DSN.
+    # `split("@")[-1]` strips a userinfo password but leaks a query-parameter
+    # one -- `postgresql://app@db/sapphire?password=hunter2` logs the password
+    # verbatim (demonstrated). There is nothing here worth the risk: the
+    # operator already knows which database they pointed the CLI at.
+    log.info("database_connecting")
     engine = sa.create_engine(database_url, pool_pre_ping=True)
 
     result: CaravanImportResult | None = None
