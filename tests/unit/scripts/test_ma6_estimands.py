@@ -1114,6 +1114,114 @@ class TestCategoricalScoresHonoursWetThresholdSide:
         assert scores.csi == pytest.approx(0.0)
 
 
+class TestBucketTotalRoundingFixesOrderDependentWetClassification:
+    """Plan 184 M-A6 reproducibility defect: Humde Airport, MONTHLY grain,
+    2020-10 — the gauge's three real DHM hourly tips that month (0.05,
+    0.13, 0.02 mm) sum to a TRUE total of exactly 0.2 mm (the wet
+    threshold), but IEEE-754 float64 summation is order-dependent at this
+    scale, and Polars' own aggregation kernel (confirmed directly, not
+    assumed) sums this exact row order to `0.19999999999999998` —
+    one ULP BELOW the threshold — while other row orders sum to
+    `0.20000000000000001`, one ULP ABOVE it. `_compute_periods` groups an
+    already-multi-threaded-produced frame, so which order a run gets is
+    not controlled by this module — the bucket flipped wet/dry across
+    otherwise byte-identical `ma6_run.py` runs (measured: POD/FAR/CSI
+    moved for exactly this station/grain/row).
+
+    `_confusion_counts` now rounds both `gauge_sum_mm` and `era5_sum_mm`
+    to `_BUCKET_TOTAL_ROUNDING_DECIMALS` places before the wet/dry call —
+    well below the gauge's real 0.1 mm resolution, far above float
+    summation noise — so a bucket whose true total IS the threshold is
+    wet every time, not wet-or-dry depending on thread scheduling."""
+
+    @staticmethod
+    def _true_threshold_accumulated() -> ConditionalAccumulatedDifference:
+        # July bucket: the three real tip values, in the row order
+        # confirmed (by direct probe of `pl.DataFrame.group_by(...).agg(
+        # pl.col(...).sum())`, not assumed) to sum to
+        # 0.19999999999999998 under Polars' own aggregation kernel — the
+        # ULP-below case. ERA5 is unambiguously wet (0.5 mm) so the
+        # bucket is a HIT once the gauge is correctly classified wet, and
+        # a FALSE ALARM if the rounding fix is missing.
+        #
+        # August bucket: gauge unambiguously wet (1.0 mm), ERA5
+        # unambiguously dry (0.0 mm) -> a stable MISS regardless of the
+        # fix, so POD/FAR/CSI move only because of the July bucket.
+        station = Station("A")
+        frame = _paired_frame(
+            [
+                {
+                    "timestamp": datetime(2024, 7, 5, 0),
+                    "gauge_value_mm": 0.05,
+                    "era5_nearest_mm_per_h": 0.5,
+                },
+                {
+                    "timestamp": datetime(2024, 7, 5, 1),
+                    "gauge_value_mm": 0.13,
+                    "era5_nearest_mm_per_h": 0.0,
+                },
+                {
+                    "timestamp": datetime(2024, 7, 5, 2),
+                    "gauge_value_mm": 0.02,
+                    "era5_nearest_mm_per_h": 0.0,
+                },
+                {
+                    "timestamp": datetime(2024, 8, 1, 0),
+                    "gauge_value_mm": 1.0,
+                    "era5_nearest_mm_per_h": 0.0,
+                },
+            ],
+            station=station,
+        )
+        paired = PairedSeries(frame=frame)
+        monthly = scale_subset(paired, scale=Scale.MONTHLY, params=DEFAULT_PARAMS)
+        return conditional_accumulated_difference(monthly)
+
+    def test_gauge_sum_lands_one_ulp_below_the_threshold_before_rounding(
+        self,
+    ) -> None:
+        # Confirms the fixture actually exposes the ULP problem — Polars'
+        # own aggregation, not a re-derivation of it — so this test would
+        # fail loudly if a future Polars version stops reproducing it.
+        accumulated = self._true_threshold_accumulated()
+        july = next(p for p in accumulated.periods if p.period_label == "2024-07")
+        assert july.gauge_sum_mm == 0.19999999999999998
+        assert july.gauge_sum_mm < 0.2
+
+    def test_true_threshold_bucket_classifies_wet_deterministically(self) -> None:
+        accumulated = self._true_threshold_accumulated()
+
+        scores = categorical_scores(accumulated, params=DEFAULT_PARAMS)
+
+        # With the rounding fix: July is a HIT (gauge correctly wet, era5
+        # wet), August is a MISS (gauge wet, era5 dry) -> pod=0.5,
+        # far=0.0, csi=0.5. Without the fix July is a FALSE ALARM instead
+        # (gauge wrongly dry) -> pod=0.0, far=1.0, csi=0.0 (verified by
+        # the mutation test).
+        assert scores.pod == pytest.approx(0.5)
+        assert scores.far == pytest.approx(0.0)
+        assert scores.csi == pytest.approx(0.5)
+
+    def test_repeated_aggregation_and_classification_is_deterministic(self) -> None:
+        # `ConditionalAccumulatedDifference.periods` is a LIVE property —
+        # every access re-runs `_compute_periods`'s own Polars group-by
+        # from scratch — so calling `categorical_scores` repeatedly on the
+        # SAME `accumulated` object genuinely re-aggregates each time,
+        # rather than reading a cached result.
+        accumulated = self._true_threshold_accumulated()
+
+        outcomes = {
+            (
+                categorical_scores(accumulated, params=DEFAULT_PARAMS).pod,
+                categorical_scores(accumulated, params=DEFAULT_PARAMS).far,
+                categorical_scores(accumulated, params=DEFAULT_PARAMS).csi,
+            )
+            for _ in range(50)
+        }
+
+        assert outcomes == {(0.5, 0.0, 0.5)}
+
+
 class TestBandMemberDerivesFromItsSourceEstimand:
     """Task 2, round 8: `BandMember` used to accept `station`, `scale`,
     `value` and `n` as four independently-suppliable constructor fields

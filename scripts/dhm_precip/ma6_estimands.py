@@ -1079,6 +1079,18 @@ class RetentionConditionality(StrEnum):
     CONDITIONAL_ON_RETENTION = "CONDITIONAL_ON_RETENTION"
 
 
+#: Bucket totals are sums of hourly floats and are therefore order-
+#: dependent at IEEE-754 ULP precision (Polars' multi-threaded group-by
+#: does not fix a summation order) — a bucket whose true total sits ON
+#: `wet_threshold_mm_per_h` can land a few 1e-17 either side of it
+#: depending on thread scheduling, flipping its wet/dry call between
+#: otherwise-identical runs. The gauge's own resolution is 0.1 mm (DHM
+#: tips), so rounding to 9 decimal places is far below any real
+#: measurement distinction and far above float summation noise — it
+#: absorbs the ULP jitter without touching any genuine value.
+_BUCKET_TOTAL_ROUNDING_DECIMALS = 9
+
+
 def _confusion_counts(
     accumulated: ConditionalAccumulatedDifference, params: DhmPrecipParams
 ) -> tuple[int, int, int, int]:
@@ -1092,15 +1104,32 @@ def _confusion_counts(
     not a re-implementation of its `>=`/`>` branch — so `wet_threshold_side`
     genuinely governs the aggregated-bucket classification the same way it
     governs every hourly one; a previous version hardcoded `>=` here,
-    silently ignoring a configured `">"` side."""
-    periods_frame = pl.DataFrame(
-        {
-            "gauge_sum_mm": [period.gauge_sum_mm for period in accumulated.periods],
-            "era5_sum_mm": [period.era5_sum_mm for period in accumulated.periods],
-        }
-    ).with_columns(
-        wet_predicate("gauge_sum_mm", params).alias("gauge_wet"),
-        wet_predicate("era5_sum_mm", params).alias("era5_wet"),
+    silently ignoring a configured `">"` side.
+
+    Both `gauge_sum_mm` and `era5_sum_mm` are rounded to
+    `_BUCKET_TOTAL_ROUNDING_DECIMALS` places, symmetrically, before the
+    wet/dry call — NOT by widening the threshold comparison with an
+    epsilon (that would silently shift the threshold and interact badly
+    with `wet_threshold_side`), but by rounding the aggregated total
+    itself to the data's real precision. A bucket whose true total is
+    exactly `wet_threshold_mm_per_h` is then classified wet every run,
+    instead of wet-or-dry depending on summation order (measured on
+    Humde Airport MONTHLY, Plan 184 M-A6 repro)."""
+    periods_frame = (
+        pl.DataFrame(
+            {
+                "gauge_sum_mm": [period.gauge_sum_mm for period in accumulated.periods],
+                "era5_sum_mm": [period.era5_sum_mm for period in accumulated.periods],
+            }
+        )
+        .with_columns(
+            pl.col("gauge_sum_mm").round(_BUCKET_TOTAL_ROUNDING_DECIMALS),
+            pl.col("era5_sum_mm").round(_BUCKET_TOTAL_ROUNDING_DECIMALS),
+        )
+        .with_columns(
+            wet_predicate("gauge_sum_mm", params).alias("gauge_wet"),
+            wet_predicate("era5_sum_mm", params).alias("era5_wet"),
+        )
     )
     hits = periods_frame.filter(pl.col("gauge_wet") & pl.col("era5_wet")).height
     misses = periods_frame.filter(pl.col("gauge_wet") & ~pl.col("era5_wet")).height

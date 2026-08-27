@@ -448,6 +448,121 @@ the same way the precipitation bundle does: a fresh, per-run-unique `<NNNN>-<ide
 in the module solely inside an error message. All six Pyramid RR stations (2,660–5,600 m) do carry `AT`,
 so the data is there and the code is not. That work sits inside Plan 184, not Plan 191.
 
+---
+
+**✅ M-A6 IS COMPLETE — 2026-08-27 (Plan 184, T1–T6; PR #211 merged, PR #212 open).** Regenerate every
+number below with one command:
+`$ENV uv run python scripts/dhm_precip/ma6_run.py --out <dir>` (~40 s). Consumed identities:
+precipitation `0214943312b0…`, t2m `2ceb6a49929c…`, both resolved as the highest `NNNN` whose manifest
+validates. **Sign convention throughout: `gauge − ERA5`.**
+
+#### The headline: the two magnitude estimands have OPPOSITE signs, consistently
+
+Band means, JJAS, unweighted over member stations (D4a), each station's own `n` carried:
+
+| band | stations | matched-hour mean difference | wet-hour bias (gauge-alone) | wet-hour bias (joint) |
+|---|---|---|---|---|
+| `< 700 m` | 9 | **−0.0866** mm/h | **+2.2197** mm/h | **+1.7490** mm/h |
+| `700–2,000 m` | 9 | **−0.2469** | **+1.1530** | **+0.7400** |
+| `2,000–3,000 m` | 5 | **−0.1804** | **+0.9181** | **+0.4813** |
+| `≥ 3,000 m` | 3 | **−0.2361** | **+0.4301** | **+0.0756** |
+
+Read the two columns together. Across **every** band, ERA5-Land is **wetter than the gauge averaged
+over all retained hours** (matched-hour difference negative) yet **less intense than the gauge on the
+hours the gauge calls wet** (wet-hour bias positive). That combination is what it looks like when
+precipitation is spread across more hours at lower intensity.
+
+**⛔ Do not read that as an attribution.** M-A6 cannot separate this from representativeness: a 0.1°
+cell is ~110 km² and a point gauge is not its average, so a cell that rains lightly and often where the
+gauge rains hard and rarely produces the same signature with no model error at all (D5 —
+characterised, not decomposed). What M-A6 establishes is the **pattern and its size**, not its cause.
+
+**The intensity deficit shrinks with elevation** — +2.22 mm/h below 700 m against +0.43 mm/h above
+3,000 m, monotonic across all four bands and in both conditionings. The `≥ 3,000 m` band rests on
+**three stations** (D4a), one of them Olangchunggola whose 03 UTC peak is unexplained (M-A10).
+
+**Both wet-hour conditionings are reported** (D1 as amended). `joint` is lower than `gauge-alone` in
+every band because it drops hours where ERA5 is dry. Their difference is **not** a decomposition — the
+populations are nested (joint ⊆ gauge-alone), not orthogonal.
+
+#### D4's calendar carve-out was deleted, and the measurement justifies it
+
+Sub-freezing mass fraction, 1.5 °C at 6.5 °C/km, on the DJF/JJAS accumulated-difference subsets:
+
+| station | elevation | DJF | JJAS |
+|---|---|---|---|
+| Syangboche | 3,700 m | **0.9596** (n=9,214) | 0.0000 |
+| Humde | 3,401 m | **0.5158** (n=10,532) | 0.0000 |
+| Olangchunggola | 3,119 m | **0.2663** (n=6,876) | 0.0000 |
+| Lukla | 2,860 m | **0.0510** (n=6,248) | 0.0000 |
+
+Monotonic in elevation, zero through the monsoon. The old rule withheld *all* high-altitude DJF
+magnitudes; the measurement shows Syangboche's winter figure rests on 96 % mass the gauge cannot catch
+while Lukla's, 840 m lower, rests on 5 % and is genuinely quantitative. One calendar rule would have
+withheld both. The `≥ 3,000 m` DJF matched-hour difference (**+0.0665** mm/h) is published carrying its
+own mean fraction of **0.5806** — annotated, not withheld, which is D4's whole design.
+
+#### Representativeness, characterised
+
+- **Within-cell pair (D8).** Kirtipur and Khumaltar, one cell (`33_53`), 4.33 km apart, over **47,377**
+  commonly-retained hours: **7,758.6 mm vs 5,672.0 mm**, an accumulated difference of **+2,086.6 mm**.
+  ERA5 returns one identical series for both. Own exposures 48,988 h and 48,804 h. **Descriptive only,
+  no lower bound, n = 1 pair, one valley, one separation.**
+- **Neighbouring-cell variability** (Chebyshev-8 stencil, period-total mm, population CV — a *declared*
+  operationalisation chosen with the data in hand, not pre-registered): highest exactly at the
+  high-mismatch stations — Olangchunggola **0.3123**, Humde **0.2570**, Lukla **0.2551**, Syangboche
+  **0.2476** — against Rajbiraj **0.0216**.
+- **Elevation mismatch** is a descriptive covariate, **datum-unreconciled**, with no number on the datum
+  error (D7, Plan 174).
+
+#### The D14 lapse check (Exit 8)
+
+6.5 °C/km, never fitted. Hour-equalised, paired against Pyramid's own retained timestamps, 2020–2023:
+
+| Pyramid station | elev | correction | discrepancy | n(paired) |
+|---|---|---|---|---|
+| AWS3 Lukla | 2,660 m | +7.82 °C | **+0.91** | 15,774 |
+| AWS5 Namche | 3,570 m | +5.70 | **+1.10** | 19,985 |
+| AWS2 Pheriche | 4,260 m | +4.31 | **+0.53** | 34,875 |
+| AWS1 Pyramid | 5,035 m | +3.55 | **−1.22** | 35,013 |
+| AWS4 Kala Patthar | 5,600 m | −0.12 | **−2.12** | 24,363 |
+
+Discrepancies within ±1.2 °C over a 2,375 m transect, turning negative at the top. AWS1 and AWS4 share
+a cell, giving an observed **+5.21 °C/km** on 24,357 common-retained hours — an observation, never a
+candidate replacement rate (D14). The overlap is **2020–2023 only**; the rate is validated on four of
+the six comparison years, which must be said beside any 2024–2025 figure.
+
+#### Coverage and honesty conditions
+
+- **D11's exclusion list is EMPTY** — worst JJAS retention is Lete (FNEP) at **0.8296** and the 0.50
+  floor never binds. That is a measured result, not a skipped step, and the report says so.
+- **A refusal renders.** Udayapur Gadhi has zero jointly-wet DJF hours and appears as `ABSENT` with its
+  reason; its band reports 8 member stations rather than 9. A band silently shrinking would be the
+  missing-not-at-random error this whole track exists to avoid.
+- **Exit 2 holds structurally.** A magnitude cell is unconstructible without both its `n` and its mass
+  fraction, verified by object identity on the shared subset — the two `n` values cannot disagree
+  because there is only one subset.
+
+#### Two defects that only real data exposed
+
+Both were invisible to a passing unit suite and are recorded because the failure mode generalises.
+
+1. **Negative mass.** `unclassifiable_mass_mm` was computed as `total − classifiable`, two float sums
+   over the same column in different row orders; it went negative on **9 of 52** station-scale
+   combinations (worst −9.09e-13 mm). Now summed directly over the unclassifiable rows. Synthetic test
+   fixtures do not accumulate enough values to reproduce the drift.
+2. **A non-reproducible report.** Running `ma6_run.py` four times on identical inputs gave **three
+   different** values for one D12 categorical row. Two of Humde's monthly gauge buckets sum to exactly
+   the 0.2 mm wet threshold, and IEEE-754 summation order — which Polars' multi-threaded group-by does
+   not fix — put them one ULP either side, flipping wet/dry between runs. Bucket totals are now rounded
+   to 9 decimals (far below the gauge's 0.1 mm resolution, far above float noise) before the wet call.
+   Five consecutive runs are now byte-identical. The fix **corrected three rows** as well as stabilising
+   them — Humde MONTHLY (now the internally consistent 1.000 / 0.107 / 0.893, where FAR = 1 − CSI),
+   Olangchunggola DAILY (FAR 0.230 → 0.229, CSI 0.662 → 0.663) and Syangboche DAILY (POD 0.976 → 0.975,
+   CSI 0.599 → 0.598). Syangboche's scores got *worse*: the reclassified bucket is a genuine miss, so the
+   corrected number is less flattering and more truthful. Nothing else in the 588-line report moved.
+   **Found by running the same command twice and diffing, not by any test.**
+
 ### M-A7 · Temporal characterisation
 **Depends: M-A2, M-A3.** Parallel to M-A5/M-A6.
 
