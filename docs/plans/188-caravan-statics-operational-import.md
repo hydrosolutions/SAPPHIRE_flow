@@ -72,6 +72,20 @@ required_static_names, extractor_version=None, source_dataset_version=None)`.
 | **D3** | **`--dry-run` runs the full gate and rolls back**, implemented by raising a private sentinel from *inside* `with engine.begin():` so the rollback is structural, not a flag the code must remember to honour. |
 | **D4** | **Import now, and add the one missing recovery primitive** (T3). Provenance is not persisted, so the version string writes no durable record; the real constraint is `merge_namespaced_attributes` (`basin_store.py:147`) — identical replay is a no-op, a *changed* value raises per key. **Corrected twice.** The first draft said a corrected parquet means hand-written SQL; a second review then showed the absolute claim behind that was also wrong — `update_basin_from_package` (`basin_store.py:330-379`) replaces the whole `attributes` value, so it *can* remove a `caravan:` key. But it is the **package-correction branch**: it needs a basin package, replaces geometry and area wholesale, and always flags incumbent artifacts. Reaching for it to fix one changed static is a sledgehammer. **Precision (second review):** it returns `material_change=True` **unconditionally** and reports `affected_artifact_ids` for artifacts linked to the superseded basin version — a list that may be empty — but it does **not** mutate artifact records (`store/basin_importer.py:794-803,911-926`). So the cost is a spurious correction event and a wholesale geometry/area replacement, not automatic model invalidation. Still the wrong tool for one static. So the targeted helper is still the right answer, for a better reason than the one first given. The draft also called a helper "untested-until-needed code" — backwards: a helper ships *with* a test, while a runbook recipe is untested by construction and is the one path meant to run live, under pressure, against production. |
 
+## ⛔ Scope of the automated implementation run — T1-T3 ONLY
+
+**T4 is OWNER-EXECUTED and is NOT part of any `/implement` run.** It builds a one-off
+`WITH_AQUACAST=1` image, bind-mounts a parquet that only the owner has, and then **writes Caravan
+statics into the PRODUCTION database on the mac mini**. None of that belongs to an autonomous
+worktree build: the workflow is hold-at-PR and has no business touching a live deployment, and its
+preconditions (two private-repo build secrets, the DB secret, the internal Compose network, the
+resolved image tag) are operator concerns settled at run time.
+
+An implementation run therefore delivers **T1 (the CLI), T2 (the placeholder rename) and T3 (the
+recovery primitive)** with their tests green, and stops. **T4 runs afterwards, by hand, with the
+owner watching the dry-run diff before the real import.** A run that reports T4 "done" has either
+skipped it or done something it should not have.
+
 ## Tasks
 
 ### T1 — the operator CLI
