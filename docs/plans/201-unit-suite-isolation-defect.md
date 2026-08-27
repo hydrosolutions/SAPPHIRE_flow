@@ -138,29 +138,36 @@ captures, or assert less. Those tests are the only check on log-event contracts 
 CI's `-n auto` will keep hiding ordering leaks. **Owner decision required — see below.** Whatever is
 chosen must be one CI change, not a new workflow.
 
-## ⚠️ OPEN DECISION FOR THE OWNER — how much should CI pay to see this?
+## ✅ T3 RESOLVED (owner, 2026-08-27) — layered, not a sequential CI run
 
-**T3 is a real trade-off and the plan does not presume the answer.**
+**All four drafted options were rejected once the costs were measured.** The draft said ~8.5 min; the
+first review corrected it to ~15 min; both were wrong. Measured:
 
-- **(a) Add a sequential `tests/unit/` run to CI.** Catches this class directly. **Cost is HIGHER than
-  the draft implied** *(corrected by review)*: ~8.5 min is a **local** measurement on this machine. CI's
-  own history records the pre-xdist suite at roughly **15 min of a 16-min job** with **fewer** tests than
-  today's 4,429 (`ci.yml:272`). Treat the CI cost as ~15 min, not 8.5.
-- **(b) Run sequentially only on `main` pushes, not PRs.** Keeps PR feedback fast; catches the leak
-  within one merge instead of at the next local run. **Recommended** — it matches how the nightly
-  integration job already trades latency for coverage, and this defect's harm is slow (a misleading
-  local signal), not acute.
-  **Two things (b) must specify, or it is under-defined:** whether the sequential run **replaces** main's
-  parallel run or **runs in addition** to it; and that `ci.yml:3` triggers on **every push to `main`**,
-  not only merges — including the direct plan-document commits this repo makes constantly, each of which
-  would pay the cost.
-- **(c) Fix the leak and accept the blind spot.** Cheapest, and honest only if we accept that the next
-  leak is found by whoever next runs the suite locally — which is how this one was found.
-- **(d) Randomise order and run parallel** (e.g. `pytest-randomly`). Surfaces ordering coupling in
-  general, but makes CI **non-deterministic**, which is a poor trade for a repo whose review process
-  depends on reproducible gates.
+| | |
+|---|---|
+| CI `unit` job today (`-n auto`) | **10-11 min** |
+| Local sequential : local parallel | 506 s : 130 s = **3.9x** |
+| **Extrapolated CI sequential** | **~20-40 min** |
+| Pushes to `main`, last 7 days | **86** — only **18** are PR merges |
 
-**Recommendation: (b).** It buys the detection at a cost paid on merge rather than on every PR.
+Option (b) — the draft's recommendation, and the first review's — looked like 18 runs a week. It is
+**86**, because `ci.yml:3` fires on every push and this repo commits plan docs to `main` constantly. At
+~30 min each that is **~43 CI-hours per week** for one defect class. Rejected.
+
+**RATIFIED — three layers instead:**
+
+1. **T2 fixes the leak** (unchanged).
+2. **A targeted sequential regression check in the existing `unit` job: ~8 seconds.** Run the four-file
+   reproducer sequentially and assert it is green. This locks *this* defect permanently at effectively
+   zero cost, and is only possible because T1 produced a minimal reproducer.
+3. **The full sequential run goes in the existing nightly workflow**
+   (`.github/workflows/integration-nightly.yml`, already `cron: "0 3 * * *"`). This catches *future,
+   unknown* leaks of the same class, costs **nothing** on PRs or merges, and follows the precedent that
+   workflow already sets — trading latency for coverage on expensive checks.
+
+**Accepted costs, named:** a nightly cadence means up to 24 h before a new leak surfaces (acceptable —
+the harm is a misleading local signal, not broken production); and layer 2 guards only the *known*
+interaction, so if T2's fix is properly general it becomes a canary rather than the defence.
 
 ## Non-goals
 
