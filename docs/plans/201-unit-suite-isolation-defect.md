@@ -50,71 +50,63 @@ no way to know they are spurious. That erodes the signal the whole review proces
 already cost real time: this was found while checking whether Plan 151 T8b had regressed the baseline,
 and answering "no" required a full comparison run against `main`.
 
-## What is known about the mechanism
+## ⭐ ROOT CAUSE LOCALISED — a 4-file, 8-second reproducer (2026-08-27)
 
-All 13 failures are **log-assertion tests** (`test_coverage_log_message`, `test_fallback_warning`,
-`test_short_lookback_warning`, the `TestPerAssignmentWarmUpState` cases). They capture emitted events
-with `structlog.testing.capture_logs()` and assert on them.
+**T1 is essentially done.** An empirical shrink-bisect from the full 255-file collected order produced
+a **minimal reproducer that runs in 8 seconds**, replacing the 8.5-minute full-suite signal:
 
-The first failure asserts `len(coverage_events) == 1` and gets **`0 == 1` where `0 = len([])`** —
-**nothing is captured at all**, rather than the wrong thing being captured. The run also emits
-**`ValueError: I/O operation on closed file.`**
+```bash
+uv run pytest \
+  tests/unit/cli/test_export_forecast_lab.py \
+  tests/unit/flows/test_compute_skills.py \
+  tests/unit/scripts/test_backfill_meteoswiss_history_script.py \
+  tests/unit/services/skill/test_combined_skill.py
+# -> 1 failed, 27 passed   (deterministic: 3/3 runs identical)
+```
 
-**Leading hypothesis (NOT yet proven — proving it is T1):** something reconfigures structlog with
-`cache_logger_on_first_use=True` during the run. `src/sapphire_flow/logging.py` has four configurators;
-**three set `cache_logger_on_first_use=True`** (`:40`) and only `configure_test_logging()` sets it
-`False` (`:107`). Once loggers are cached, a later `capture_logs()` cannot see through them and returns
-`[]`. `configure_cli_logging` is called at **8 sites** in `src/` — five CLI modules, two tools, and
-`ops/watchdog.py:1782`, which calls it as `configure_cli_logging("INFO")` and is missed by a naive
-`configure_cli_logging()` grep. Any test exercising one of those can trigger it.
+**Control:** drop the first file and it is **23 passed** — green. The trigger is
+`tests/unit/cli/test_export_forecast_lab.py`, which arrived with **Plan 198 inside the two-day window**,
+matching the "it is recent" evidence exactly.
 
-**A striking fact:** `configure_test_logging()` — the one configurator that is capture-safe — has
-**ZERO callers** anywhere in `src/` or `tests/`. It appears to have been written for exactly this
-problem and never wired up.
+**It is a THREE-WAY interaction, which is why eleven build-up attempts failed.** All three are required:
 
-**Ruled out by measurement, so the plan does not re-tread them:** it is not random ordering; it is not
-one directory poisoning another (five pairings all pass); it is not `tests/unit/test_logging_override.py`
-alone poisoning `test_combined_skill.py` (that pairing passes, 18 tests).
-
-**⚠️ A SECOND, MORE DETAILED HYPOTHESIS WAS ALSO TESTED AND DISPROVED (2026-08-27).** An independent
-review proposed this specific chain: `tests/unit/cli/test_export_forecast_lab.py` calls a `main()` that
-invokes `configure_cli_logging()` (`cli/export_forecast_lab.py:175`, caching ON) → flow/service tests
-then cache the affected loggers → `tests/unit/scripts/test_acquire_era5_cli.py:546`
-(`test_hostile_transient_error_never_leaks_through_main`) runs `main()` under `capsys`, so the
-`StreamHandler` at `logging.py:53` binds to a temporary stderr that is closed at teardown → later
-`capture_logs()` sees `[]` and stdlib routing hits the closed stream.
-
-**It is a coherent story with real citations, and it does NOT reproduce.** Measured:
-`test_export_forecast_lab.py` + `test_acquire_era5_cli.py` + `test_combined_skill.py` → **41 passed**.
-Adding the caching step (`+ services/test_operational_inputs.py`, in chain order) → **78 passed**.
-So the mechanism needs something further, and **T1 remains a real investigation, not a formality.** The
-chain is recorded because its components are verified even though the whole is not: the two tests do
-call those configurators, and `logging.py:53` does bind a `StreamHandler`.
-
-## Reproduction attempts that FAILED — do not re-tread these (2026-08-27)
-
-Eleven combinations were measured. **None reproduce outside a full sequential `tests/unit/` run.** The
-trigger appears to need broad state accumulation across the suite, not one bad neighbour:
-
-| Attempt | Result |
+| Role | File |
 |---|---|
-| The 4 affected files alone | 124 passed |
-| `tests/unit/services/` alone | 1003 passed |
-| `ops` + victims / `scripts` + victims / `api` + victims / `adapters` + victims | all passed |
-| `flows` + victim | 526 passed |
-| `test_logging_override.py` + victim | 18 passed |
-| `cli` + `tools` + `ops` + victim | 403 passed |
-| The review's chain (`export_forecast_lab` + `acquire_era5_cli` + victim) | 41 passed |
-| …plus the caching step (`+ services/test_operational_inputs.py`) | 78 passed |
-| A ddmin candidate subset (config + flows + `acquire_era5_cli` + victim) | 119 passed |
+| **Trigger** | `tests/unit/cli/test_export_forecast_lab.py` — calls a `main()` that runs `configure_cli_logging()` |
+| **Sensitiser** | `tests/unit/flows/test_compute_skills.py` — exercises the skill-service logger the victim later asserts on |
+| **Any following work** | `tests/unit/scripts/test_backfill_meteoswiss_history_script.py` — one file suffices; several others do NOT, so this slot is not purely "bulk" |
+| **Victim** | `tests/unit/services/skill/test_combined_skill.py` — `capture_logs()` returns `[]` |
 
-**An independent Codex agent was given a writable sandbox to bisect the collected order empirically. Its
-run DIED on a network failure (websocket/DNS) partway through**, leaving only a partial delta-debugging
-candidate set — which, tested by hand, also did not reproduce.
+Removing **any one** of the three makes it pass. That is why no pair, no directory pairing and no
+theory-driven chain ever reproduced it.
 
-**What this tells T1:** the bisect must run against the FULL collected order and shrink from there
-(pytest `--deselect` over halves), not build up from suspects. Building up has now failed eleven times.
-Budget for it accordingly — each full sequential iteration is ~8.5 min locally.
+**Method note for anyone re-running this.** Eleven BUILD-UP attempts (pairing suspects with the victim)
+all failed before the shrink-from-full-order approach worked in ~10 iterations. Build-up cannot find a
+three-way interaction. Also: **zsh does not word-split unquoted variables** — an early bisect run passed
+its whole file list to pytest as ONE argument and reported "no tests ran", which was misread as a pass.
+Use `${=VAR}`, and always confirm the run actually collected tests.
+
+## ⚠️ Two mechanism hypotheses are DISPROVED by instrumentation — do not re-adopt them
+
+A probe was injected at the END of both a failing and a passing run, reporting structlog's global state:
+
+```
+FAILING:  root_handlers=3  cache_on_first_use=True  closed_streams=0
+PASSING:  root_handlers=3  cache_on_first_use=True  closed_streams=0
+```
+
+**Identical.** Therefore:
+
+- **`cache_logger_on_first_use=True` is NOT the discriminator.** It is left set in passing runs too. The
+  draft's leading hypothesis, and the first review's variant of it, are both **insufficient** — the
+  global config is the same either way.
+- **No closed stream survives to the end** (`closed_streams=0`), so the `ValueError: I/O operation on
+  closed file` is **transient, mid-run** — not the terminal state the fix must target.
+
+**What remains to explain (the real T1 remainder):** why the *particular* skill-service logger the
+victim asserts on is left bypassing `capture_logs()`, when global structlog config is identical between
+passing and failing runs. The three-way structure points at **which loggers were cached, and in what
+order** — per-logger state, not global config.
 
 ## Tasks
 
