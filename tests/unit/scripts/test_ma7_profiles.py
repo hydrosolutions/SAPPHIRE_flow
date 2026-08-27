@@ -13,6 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from scripts.dhm_precip.circular import circular_range_hours
 from scripts.dhm_precip.domain_types import Station
 from scripts.dhm_precip.ma6_estimands import ElevationBand
 from scripts.dhm_precip.ma6_pairs import MaskedGaugeSeries
@@ -209,8 +210,7 @@ class TestBootstrapStationPeakHour:
         r1 = bootstrap_station_peak_hour(profile, rng=random.Random(7), n_resamples=200)
         r2 = bootstrap_station_peak_hour(profile, rng=random.Random(7), n_resamples=200)
         assert r1.resampled_peak_hours == r2.resampled_peak_hours
-        assert r1.ci_low_hour == r2.ci_low_hour
-        assert r1.ci_high_hour == r2.ci_high_hour
+        assert r1.spread_hours == r2.spread_hours
 
     def test_different_seed_gives_a_different_resample_sequence(self) -> None:
         rows = []
@@ -258,6 +258,73 @@ class TestBootstrapStationPeakHour:
         )
         with pytest.raises(NoSeasonYearsError):
             bootstrap_station_peak_hour(profile, rng=random.Random(0), n_resamples=50)
+
+
+class TestPeakHourBootstrapIsCircular:
+    """The measured defect: hour-of-day is circular, so a distribution of
+    resampled peak hours straddling midnight must report a SMALL spread —
+    never a near-24h one, the number a linear percentile interval would
+    have produced."""
+
+    def _straddling_midnight_profile(self) -> StationDiurnalProfile:
+        # Five season-years, each with a single dominant hour (10.0 mm)
+        # against a flat 0.1 mm background at every other hour of day.
+        # The five dominant hours are exactly the straddling-midnight set
+        # from the measured defect: 23, 0, 1, 22, 2. Every other hour of
+        # day never accumulates more than 0.1 * 5 = 0.5 mm summed across
+        # any resample draw, so a resampled peak hour can ONLY ever be one
+        # of these five — a fact used below to bound the spread exactly,
+        # independent of which seed is used.
+        peak_hour_by_year = {2019: 23, 2020: 0, 2021: 1, 2022: 22, 2023: 2}
+        rows: list[dict[str, object]] = []
+        for year, peak_hour in peak_hour_by_year.items():
+            values_by_hour = {h: 0.1 for h in range(24)}
+            values_by_hour[peak_hour] = 10.0
+            rows += _jjas_rows(year, values_by_hour=values_by_hour)
+        return StationDiurnalProfile(
+            series=_series(_STATION_A, rows), season=Season.JJAS
+        )
+
+    def test_straddling_midnight_resamples_report_a_small_circular_spread(
+        self,
+    ) -> None:
+        profile = self._straddling_midnight_profile()
+        result = bootstrap_station_peak_hour(
+            profile, rng=random.Random(0), n_resamples=500
+        )
+        # Every resampled peak hour is confined to the straddling-midnight
+        # set by construction (see docstring above), so the circular range
+        # over ANY non-empty subset of {22, 23, 0, 1, 2} is at most 4.0h —
+        # the range of the full set — never anywhere near 24h.
+        assert set(result.resampled_peak_hours) <= {22, 23, 0, 1, 2}
+        assert result.spread_hours <= 4.0
+        # The number a linear interval construction would have produced
+        # instead, for the same resamples — the defect this locks.
+        naive_linear_range = max(result.resampled_peak_hours) - min(
+            result.resampled_peak_hours
+        )
+        assert naive_linear_range >= 20
+        assert result.spread_hours < naive_linear_range
+
+    def test_spread_is_computed_over_the_resamples_not_the_point_estimate(
+        self,
+    ) -> None:
+        profile = self._straddling_midnight_profile()
+        result = bootstrap_station_peak_hour(
+            profile, rng=random.Random(0), n_resamples=500
+        )
+        # A tie among all five dominant hours (each contributes the same
+        # season-total mass) breaks toward the LARGEST hour, so the point
+        # estimate is 23 — a single hour, spread 0. The reported spread
+        # must come from the resampled distribution, not from repeating
+        # this point estimate.
+        assert profile.peak_hour == 23
+        assert result.peak_hour == 23
+        assert len(set(result.resampled_peak_hours)) > 1
+        assert result.spread_hours == circular_range_hours(
+            [float(h) for h in result.resampled_peak_hours]
+        )
+        assert result.spread_hours > 0.0
 
 
 def _band_members(
@@ -378,8 +445,8 @@ class TestBandDiurnalProfile:
         assert result.adequate_sample is False
 
 
-class TestBootstrapDeterminismNumpyPercentile:
-    def test_percentile_bounds_are_reproducible_across_two_in_process_runs(
+class TestBootstrapDeterminismCircularSpread:
+    def test_circular_spread_is_reproducible_across_two_in_process_runs(
         self,
     ) -> None:
         rows = []
@@ -396,8 +463,7 @@ class TestBootstrapDeterminismNumpyPercentile:
         b = bootstrap_station_peak_hour(
             profile, rng=random.Random(99), n_resamples=2000
         )
-        assert a.ci_low_hour == b.ci_low_hour
-        assert a.ci_high_hour == b.ci_high_hour
+        assert a.spread_hours == b.spread_hours
         assert np.array_equal(
             np.array(a.resampled_peak_hours), np.array(b.resampled_peak_hours)
         )

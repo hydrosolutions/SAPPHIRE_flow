@@ -24,8 +24,15 @@ pooled form is exposed separately as a named sensitivity. Band adequacy
 their union.
 
 D9 PINNED — the bootstrap resamples whole season-years (never individual
-hours — serial correlation), with a percentile-method 2.5/97.5 interval
-over `params.ma7_bootstrap_resamples` resamples and an injected seeded RNG.
+hours — serial correlation), over `params.ma7_bootstrap_resamples` resamples
+and an injected seeded RNG. Peak hour is CIRCULAR (hour-of-day), so the
+interval is `circular.circular_range_hours` over the resampled peak hours —
+`coloc_bootstrap.BootstrapPeakSpread`'s own construction — never a linear
+percentile low/high pair (2026-08-27 correction: a linear 2.5/97.5 interval
+on the `< 700 m` band measured 21.0 h wide against a 6.0 h circular spread,
+for resamples straddling midnight). The percentile-method 2.5/97.5 interval
+stays correct for `ma7_intensity`'s LINEAR q50/q99 bootstraps — this
+correction is peak-hour-only.
 
 D7 — Olangchunggola's open 03 UTC anomaly is recorded, not adjudicated.
 """
@@ -35,9 +42,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import numpy as np
 import polars as pl
 
+from scripts.dhm_precip.circular import circular_range_hours
 from scripts.dhm_precip.domain_types import Station
 from scripts.dhm_precip.ma6_estimands import ElevationBand, assign_elevation_band
 from scripts.dhm_precip.ma6_pairs import MaskedGaugeSeries
@@ -292,23 +299,29 @@ class StationDiurnalProfile:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class PeakHourBootstrap:
-    """D9 PINNED — a percentile-method (2.5/97.5) bootstrap interval on the
-    peak hour, resampling whole season-years. `adequate_sample` is
+    """D9 (2026-08-27 corrected) — a CIRCULAR bootstrap spread on the peak
+    hour, resampling whole season-years. Hour-of-day is a point on a 24h
+    circle, never a linear scalar, so the spread is `circular.
+    circular_range_hours` over `resampled_peak_hours` — `coloc_bootstrap.
+    BootstrapPeakSpread`'s own construction — never a linear percentile
+    low/high pair (measured: a linear 2.5/97.5 interval read 21.0h on a
+    distribution whose true circular spread is 6.0h). `adequate_sample` is
     `n_season_years >= min_season_years_for_adequacy` (Plan 182 D5's own
-    bar, 5) — a caller must gate on THIS, never on interval width alone."""
+    bar, 5) — a caller must gate on THIS, never on spread width alone."""
 
     peak_hour: int | None
     """The POINT ESTIMATE's own peak hour (the full season, not a
     resample) — `None` exactly when the underlying profile's is."""
     resampled_peak_hours: tuple[int, ...]
-    ci_low_hour: float
-    ci_high_hour: float
+    spread_hours: float
     n_season_years: int
     adequate_sample: bool
 
     def __post_init__(self) -> None:
         if self.n_season_years < 0:
             raise ValueError(f"n_season_years must be >= 0, got {self.n_season_years}")
+        if self.spread_hours < 0:
+            raise ValueError(f"spread_hours must be >= 0, got {self.spread_hours}")
 
 
 def _bootstrap_peak_hour_from_year_table(
@@ -318,8 +331,6 @@ def _bootstrap_peak_hour_from_year_table(
     rng: random.Random,
     n_resamples: int,
     min_season_years_for_adequacy: int,
-    percentile_low: float,
-    percentile_high: float,
 ) -> PeakHourBootstrap:
     if n_resamples < 1:
         raise NonPositiveResampleCountError(
@@ -349,13 +360,11 @@ def _bootstrap_peak_hour_from_year_table(
         raise EmptyBootstrapResultError(
             "every bootstrap resample produced no observed hour"
         )
-    lo = float(np.percentile(peak_hours, percentile_low))
-    hi = float(np.percentile(peak_hours, percentile_high))
+    spread = circular_range_hours([float(h) for h in peak_hours])
     return PeakHourBootstrap(
         peak_hour=point_estimate_peak_hour,
         resampled_peak_hours=tuple(peak_hours),
-        ci_low_hour=lo,
-        ci_high_hour=hi,
+        spread_hours=spread,
         n_season_years=n_season_years,
         adequate_sample=n_season_years >= min_season_years_for_adequacy,
     )
@@ -387,8 +396,6 @@ def bootstrap_station_peak_hour(
         rng=rng,
         n_resamples=n_resamples,
         min_season_years_for_adequacy=min_season_years_for_adequacy,
-        percentile_low=profile.params.ma7_bootstrap_percentile_low,
-        percentile_high=profile.params.ma7_bootstrap_percentile_high,
     )
 
 
@@ -549,6 +556,4 @@ def bootstrap_band_peak_hour(
         rng=rng,
         n_resamples=n_resamples,
         min_season_years_for_adequacy=min_season_years_for_adequacy,
-        percentile_low=profile.params.ma7_bootstrap_percentile_low,
-        percentile_high=profile.params.ma7_bootstrap_percentile_high,
     )

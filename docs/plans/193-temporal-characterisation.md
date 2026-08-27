@@ -183,6 +183,18 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   forbids reaching for module-level randomness in logic that must be testable). A report that cannot be
   reproduced bit-for-bit fails the same Exit condition M-A6's report failed on 2026-08-27.
 
+  **⛔ CORRECTED 2026-08-27 (measured defect) — the pin over-generalised across two quantities of
+  different kinds.** Percentile 2.5/97.5 is correct for T2's q50/q99 **intensity** bootstraps — those
+  are linear. It is WRONG for T1's **peak-hour** bootstrap — hour-of-day is circular, and `coloc_
+  bootstrap` (the precedent this decision names) already knows it: it reports `circular_range_hours`
+  of the resampled peak hours, not a linear low/high pair. Measured on the real archive, JJAS, the
+  `< 700 m` band's resampled peak hours cluster tightly across midnight (`{22: 640, 23: 49, 0: 368,
+  1: 799, 2: 87, 20: 57}`) — six hours wide by the clock, but the linear percentile interval this pin
+  specified reports `[0.0, 21.0]`, 21 hours: effectively "sometime today," on the band carrying this
+  milestone's headline result. Fix: T1's peak-hour bootstrap reports a `circular_range_hours` spread
+  over `resampled_peak_hours`, exactly as `coloc_bootstrap.BootstrapPeakSpread` does; T2's quantile
+  bootstraps keep the linear percentile interval unchanged.
+
 - **D10 — Consume Plan 184 T1's GAUGE-ONLY masked population; do not build a second one, and do not
   depend on the rest of Plan 184.** *(The one cross-plan coupling, deliberate and narrow.)* Two
   independent implementations of "the masked series" would drift invisibly — both looking right in
