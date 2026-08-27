@@ -237,6 +237,16 @@ class DhmPrecipParams:
     tripwire on the boundary input. If a delivery legitimately changes size,
     this number is updated here, once, as a visible decision."""
 
+    # --- Plan 193 (M-A7) D9 pinned — season-year percentile bootstrap ---
+    ma7_bootstrap_resamples: int = 2000
+    """D9 PINNED (2026-08-27) — every M-A7 season-year bootstrap (peak hour,
+    q50, q99) resamples whole season-years this many times. The precedent
+    (`coloc_bootstrap`) fixed the resampling unit and the adequacy flag but
+    left the interval construction itself undefined; this is that fix."""
+    ma7_bootstrap_percentile_low: float = 2.5
+    ma7_bootstrap_percentile_high: float = 97.5
+    """D9 PINNED — percentile-method bounds, 2.5/97.5."""
+
     def __post_init__(self) -> None:
         if self.expected_station_count < 1:
             raise ValueError(
@@ -289,6 +299,20 @@ class DhmPrecipParams:
             raise ValueError("coloc_min_season_years_for_adequacy must be >= 1")
         if self.coloc_bootstrap_resamples < 1:
             raise ValueError("coloc_bootstrap_resamples must be >= 1")
+        # --- Plan 193 (M-A7) ---
+        if self.ma7_bootstrap_resamples < 1:
+            raise ValueError("ma7_bootstrap_resamples must be >= 1")
+        if not (
+            0.0
+            <= self.ma7_bootstrap_percentile_low
+            < self.ma7_bootstrap_percentile_high
+            <= 100.0
+        ):
+            raise ValueError(
+                "ma7_bootstrap_percentile_low must be < ma7_bootstrap_percentile_high, "
+                f"both in [0, 100], got low={self.ma7_bootstrap_percentile_low} "
+                f"high={self.ma7_bootstrap_percentile_high}"
+            )
         ladder = self.coloc_threshold_ladder_mm
         if not ladder:
             raise ValueError("coloc_threshold_ladder_mm must have at least one rung")

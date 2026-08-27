@@ -130,6 +130,15 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   side and **explicitly declines the attribution**, handing M-A8 the material rather than pre-empting
   its conclusion.
 
+  **Checked 2026-08-27 (T3), NOT a defect — resolution-group membership may be inferred on the
+  UNMASKED `on_grid` population.** D1 requires every derived statistic to come from the masked series,
+  and `infer_reporting_resolution` documents `on_grid` as its input, so this looked like a conflict —
+  especially on a track where M-A10 traced Lukla's anomaly to sentinels normalised over unmasked data.
+  Measured both ways: **zero of 26 stations change `group` or `resolution_mm`**, and the split stays
+  20/6, even though the mask removes 47 % of rows (1,925,073 → 1,021,316). Group membership is a
+  property of the instrument's reporting increment, not of the retained weather. Recorded so it is not
+  re-raised.
+
 - **D7 — Olangchunggola's 03 UTC peak is REPORTED, not adjudicated.** M-A10 retired Lukla's anomaly but
   left this one open on different grounds: zero sentinels, immovable across the ablation ladder, and
   **no co-located station exists**, so no gauge-vs-gauge adjudication is possible. M-A7 records its
@@ -182,6 +191,36 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   **percentile method, 2.5 / 97.5 bounds, 2,000 resamples, and an INJECTED seeded RNG** (CLAUDE.md
   forbids reaching for module-level randomness in logic that must be testable). A report that cannot be
   reproduced bit-for-bit fails the same Exit condition M-A6's report failed on 2026-08-27.
+
+  **⛔ CORRECTED 2026-08-27 (measured defect) — the pin over-generalised across two quantities of
+  different kinds.** Percentile 2.5/97.5 is correct for T2's q50/q99 **intensity** bootstraps — those
+  are linear. It is WRONG for T1's **peak-hour** bootstrap — hour-of-day is circular, and `coloc_
+  bootstrap` (the precedent this decision names) already knows it: it reports `circular_range_hours`
+  of the resampled peak hours, not a linear low/high pair. Measured on the real archive, JJAS, the
+  `< 700 m` band's resampled peak hours cluster tightly across midnight (`{21: 640, 23: 49, 0: 368,
+  1: 799, 2: 87, 20: 57}`) — six hours wide by the clock, but the linear percentile interval this pin
+  specified reports `[0.0, 21.0]`, 21 hours: effectively "sometime today," on the band carrying this
+  milestone's headline result. Fix: T1's peak-hour bootstrap reports a `circular_range_hours` spread
+  over `resampled_peak_hours`, exactly as `coloc_bootstrap.BootstrapPeakSpread` does; T2's quantile
+  bootstraps keep the linear percentile interval unchanged.
+
+  **⛔ CORRECTED 2026-08-27 (owner decision) — band resampling draws from the UNION of member
+  season-years, not their intersection.** D9 pinned the adequacy bar but never the resampling
+  POPULATION, so the implementer chose the intersection and disclosed it. Measured, that choice made
+  **all four bands inadequate** while 22 of 26 stations are individually adequate, and collapsed
+  `700–2,000 m` to **one** common season-year — Udayapur Gadhi's 2-year record against a union of six.
+  The decisive objection is not conservatism: the band POINT ESTIMATE uses each station's FULL record,
+  so an intersection-based interval quantifies a population the reported number does not come from.
+  Draw from the union; each drawn year's cell is the station-equal mean across whichever members have
+  data for it — machinery that already existed. Measured after: adequacy **6 / 6 / 6 / 5**, all four
+  bands adequate.
+
+  *Note on the statistic itself:* `circular_range_hours` is a RANGE — the smallest arc containing every
+  resampled value — so it is driven by which hours appear at all, not how often. Both bands' spreads
+  stayed at 6.0 h and 11.0 h under the union even though the resample weights moved substantially, and
+  the `≥ 3,000 m` band's 11 h is stretched by hour 3 (Olangchunggola's open anomaly, D7) appearing in
+  151 of 2,000 resamples. That is the precedent's own statistic and is kept, but it is support-based,
+  not density-based; read it as "the peak fell somewhere in this arc", never as a 95 % interval.
 
 - **D10 — Consume Plan 184 T1's GAUGE-ONLY masked population; do not build a second one, and do not
   depend on the rest of Plan 184.** *(The one cross-plan coupling, deliberate and narrow.)* Two
@@ -244,6 +283,42 @@ restate history. **Out:** any
 disaggregator design or Phase-2 recommendation.
 **Verify:** `$ENV uv run python scripts/dhm_precip/ma7_run.py --out <dir>` then
 `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
+
+**PINNED 2026-08-27 — seven points T4's text leaves open.** Reviewed before implementation, as T3's
+predecessor milestone learned to do the expensive way (Plan 184 shipped T3/T4/T5 first and paid twelve
+amendments afterwards).
+
+- **P1 — THE BOOTSTRAP SEED IS FIXED AND RECORDED IN THE REPORT.** T1, T2 and T3 all take an injected
+  RNG. A report built on an unseeded bootstrap is non-reproducible **by construction**, and
+  regenerability is an Exit condition. `ma7_run.py` seeds from a single named constant, prints it in
+  the report header, and the same command twice must produce a byte-identical report (modulo a
+  generated-at timestamp). M-A6's report failed reproducibility for a far subtler reason and it cost a
+  release; this one would fail trivially.
+- **P2 — the table inventory is fixed**, one table per Exit clause it serves: (a) per-station diurnal
+  profiles with per-hour exposure and peak hour; (b) per-band profiles with station counts;
+  (c) per-station intensity distributions with q50/q99, wet-hour and total retained counts;
+  (d) per-band intensity distributions; (e) transferability — the elevation cut and the
+  resolution-group cut **side by side**; (f) Olangchunggola's open 03 UTC status (D7); (g) consumed
+  inputs and the seed.
+- **P3 — `spread_hours` IS NOT A CONFIDENCE INTERVAL and must never be labelled as one.**
+  `circular_range_hours` is the smallest arc containing EVERY resampled value, so it is driven by which
+  hours occur at all, not by how often — the `≥ 3,000 m` band's 11 h is set by hour 3 appearing in 151
+  of 2,000 resamples. Render it as "resampled peak hours spanned this arc", with the resample count
+  beside it.
+- **P4 — an inadequate result is LABELLED, never suppressed** (D9). Four of 26 stations are below the
+  ≥5 season-year bar (Udayapur Gadhi 2; Lete, Num, Olangchunggola 4). They appear with their
+  `n_season_years` and an explicit inadequate marker. **Do not filter on adequacy** — that is the
+  filter-on-retention error D13 forbids.
+- **P5 — a refusal renders.** Any statistic that legitimately cannot be computed appears in its row as
+  an explicit absence with its reason, never as a blank, a zero, or a dropped row. A dropped row tells
+  a reader coverage is complete when it is not — the same MNAR error Rule 1 exists to forbid.
+- **P6 — all four seasons, every station, no omission** (D8 as corrected). The report is large by
+  construction; that is the cost of not setting a completeness threshold.
+- **P7 — the locked headline set is SMALL and NAMED**, not the whole matrix: the four band-level
+  leave-one-out prediction errors (median_abs_error and within_25pct_fraction), the two
+  resolution-group errors, the four band station-equal JJAS peak hours, and the four band
+  `n_season_years`. Nothing else. A snapshot of every station × season × statistic would break on any
+  legitimate change and read as a regression.
 
 ```json
 {

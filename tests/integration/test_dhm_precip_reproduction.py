@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 
 import polars as pl
 import pytest
@@ -44,9 +45,17 @@ from scripts.dhm_precip.ma6_run import (
     _production_inputs,
     run_ma6_comparison,
 )
+from scripts.dhm_precip.ma7_run import (
+    REPORT_SEED,
+    BootstrapRefusal,
+    Ma7Report,
+    run_ma7_report,
+)
+from scripts.dhm_precip.ma7_run import _production_inputs as _ma7_production_inputs
 from scripts.dhm_precip.manifest_io import read_manifest
 from scripts.dhm_precip.params import DEFAULT_PARAMS
 from scripts.dhm_precip.run import run as run_pipeline
+from scripts.dhm_precip.seasons import Season
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DHM_PRECIP_XLSX"),
@@ -481,3 +490,90 @@ class TestMa6ReportHeadlineNumbers:
         mf = self._djf_mass_fraction(report, station_name="Lukla Airport")
         assert mf.sub_freezing_mass_fraction == pytest.approx(0.0510, abs=1e-4)
         assert mf.n == 6248
+
+
+class TestMa7ReportHeadlineNumbers:
+    """Plan 193 (M-A7) T4 P7 — the SMALL, NAMED headline set, and nothing
+    else: the four band-level leave-one-out prediction errors, the two
+    resolution-group errors, the four band station-equal JJAS peak hours,
+    and the four band `n_season_years`. Computed ONCE (`run_ma7_report`
+    over the real production wiring, `REPORT_SEED`) and reused across every
+    assertion below, since the full 26-station, 4-season, 2000-resample
+    bootstrap is expensive. A snapshot of the whole result matrix would
+    break on any legitimate change and read as a regression; this locks
+    only the specific numbers a reader would quote (P7). The prediction
+    errors and peak hours are themselves RNG-independent (point estimates
+    and a deterministic pooled-ratio comparison, never resampled), so this
+    also incidentally re-proves P1: `REPORT_SEED` is threaded through
+    without perturbing them."""
+
+    @pytest.fixture(scope="class")
+    def report(self) -> Ma7Report:
+        inputs = _ma7_production_inputs()
+        return run_ma7_report(
+            inputs=inputs, rng=random.Random(REPORT_SEED), seed=REPORT_SEED
+        )
+
+    _BANDS = (
+        ElevationBand.BELOW_700M,
+        ElevationBand.B700_2000M,
+        ElevationBand.B2000_3000M,
+        ElevationBand.ABOVE_3000M,
+    )
+
+    def test_band_prediction_error_below_700m(self, report: Ma7Report) -> None:
+        error = report.transferability.by_elevation_band[ElevationBand.BELOW_700M]
+        assert error.median_abs_error == pytest.approx(0.1222, abs=1e-4)
+        assert error.within_25pct_fraction == pytest.approx(0.8889, abs=1e-4)
+
+    def test_band_prediction_error_700_2000m(self, report: Ma7Report) -> None:
+        error = report.transferability.by_elevation_band[ElevationBand.B700_2000M]
+        assert error.median_abs_error == pytest.approx(0.1329, abs=1e-4)
+        assert error.within_25pct_fraction == pytest.approx(1.0, abs=1e-4)
+
+    def test_band_prediction_error_2000_3000m(self, report: Ma7Report) -> None:
+        error = report.transferability.by_elevation_band[ElevationBand.B2000_3000M]
+        assert error.median_abs_error == pytest.approx(0.4599, abs=1e-4)
+        assert error.within_25pct_fraction == pytest.approx(0.0, abs=1e-4)
+
+    def test_band_prediction_error_above_3000m(self, report: Ma7Report) -> None:
+        error = report.transferability.by_elevation_band[ElevationBand.ABOVE_3000M]
+        assert error.median_abs_error == pytest.approx(0.0877, abs=1e-4)
+        assert error.within_25pct_fraction == pytest.approx(1.0, abs=1e-4)
+
+    def test_resolution_group_prediction_error_a(self, report: Ma7Report) -> None:
+        error = report.transferability.by_resolution_group["A"]
+        assert error.median_abs_error == pytest.approx(0.1822, abs=1e-4)
+        assert error.within_25pct_fraction == pytest.approx(0.6667, abs=1e-4)
+
+    def test_resolution_group_prediction_error_b(self, report: Ma7Report) -> None:
+        error = report.transferability.by_resolution_group["B"]
+        assert error.median_abs_error == pytest.approx(0.0622, abs=1e-4)
+        assert error.within_25pct_fraction == pytest.approx(0.8000, abs=1e-4)
+
+    def test_band_station_equal_jjas_peak_hours(self, report: Ma7Report) -> None:
+        peak_hours = {
+            band: report.band_profiles[
+                band, Season.JJAS
+            ].profile.station_equal_peak_hour
+            for band in self._BANDS
+        }
+        assert peak_hours == {
+            ElevationBand.BELOW_700M: 23,
+            ElevationBand.B700_2000M: 19,
+            ElevationBand.B2000_3000M: 19,
+            ElevationBand.ABOVE_3000M: 19,
+        }
+
+    def test_band_n_season_years(self, report: Ma7Report) -> None:
+        n_season_years: dict[ElevationBand, int] = {}
+        for band in self._BANDS:
+            bootstrap = report.band_profiles[band, Season.JJAS].bootstrap
+            assert not isinstance(bootstrap, BootstrapRefusal)
+            n_season_years[band] = bootstrap.n_season_years
+        assert n_season_years == {
+            ElevationBand.BELOW_700M: 6,
+            ElevationBand.B700_2000M: 6,
+            ElevationBand.B2000_3000M: 6,
+            ElevationBand.ABOVE_3000M: 5,
+        }
