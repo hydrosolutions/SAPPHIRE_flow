@@ -267,7 +267,14 @@ class PgBasinStore:
         in ``attributes`` must carry the hardcoded ``"caravan:"`` prefix
         (D15) -- not a caller-suppliable parameter -- so this remains
         structurally incapable of touching a non-namespaced attribute
-        (e.g. ``area``) even by mistake.
+        (e.g. ``area``) even by mistake. It also refuses any key that is
+        NOT already present on the basin: "replace" means correcting an
+        already-imported value (T3's stated purpose -- a re-delivered,
+        corrected parquet), never inserting a new one -- that is
+        ``merge_namespaced_attributes``'s job. Without this check a typo'd
+        key (``caravan:areaa``) would commit silently via the JSONB ``||``
+        merge instead of raising, because ``||`` adds any prefixed key
+        regardless of whether it already existed.
 
         Unlike ``merge_namespaced_attributes``, this method calls
         ``require_real_transaction`` itself rather than trusting an
@@ -298,7 +305,9 @@ class PgBasinStore:
         require_real_transaction(self._conn, caller="replace_namespaced_attributes")
         locked = (
             self._conn.execute(
-                sa.select(basins.c.id).where(basins.c.id == basin_id).with_for_update()
+                sa.select(basins.c.attributes)
+                .where(basins.c.id == basin_id)
+                .with_for_update()
             )
             .mappings()
             .one_or_none()
@@ -306,6 +315,17 @@ class PgBasinStore:
         if locked is None:
             raise ValueError(
                 f"replace_namespaced_attributes: basin {basin_id} not found"
+            )
+        current_attrs: dict[str, Any] = locked["attributes"] or {}
+        absent_keys = sorted(k for k in attributes if k not in current_attrs)
+        if absent_keys:
+            raise ConfigurationError(
+                f"replace_namespaced_attributes: basin {basin_id} does not "
+                f"already carry key(s) {absent_keys} -- this is a "
+                "REPLACEMENT primitive for correcting an already-imported "
+                "value, not an insertion path; use "
+                "merge_namespaced_attributes to add a genuinely new key "
+                "(or check for a typo in the requested key)"
             )
         result = self._conn.execute(
             sa.update(basins)

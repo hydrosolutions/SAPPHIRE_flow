@@ -77,17 +77,175 @@ _DROPPED_GAMPELEN_ZIHLBRUECKE_CODE: Final[str] = "2446"
 # SET EXACTLY, not merely in cardinality -- a fleet that loses one station
 # and gains another would pass a `len(...) == 148` check silently.
 #
-# NOT POPULATED HERE. The concrete 148-code list lives only in the
-# PRODUCTION database (station config is DB-seeded, never TOML/repo-checked
-# -- CLAUDE.md "Station+model config in DB"); this dev checkout has no
-# access to it, and only Plan 155's 21-station EXCLUSION list (20 lakes +
-# `2446`) is published in-repo -- the base 169-station set it is drawn from
-# is not. Populate this constant from the production DB before running T4
-# (`SELECT code FROM stations WHERE ...` -- the query
-# `derive_swiss_caravan_manifest` below runs, read back and pinned), review
-# it once against Plan 155's published table, then remove the `main()` guard
-# below that refuses to run while this is empty.
-SWISS_CARAVAN_MANIFEST_CODES: Final[frozenset[str]] = frozenset()
+# Derived (not hand-typed) from `config.toml`'s `[onboarding] basin_ids`
+# (169 codes, the onboarding manifest) minus Plan 155 T0a's two published
+# exclusion sets: the 20 lake-typed gauges (zero observed discharge, listed
+# by code in docs/plans/155-swiss-data-readiness-for-aquacast.md, "T0a
+# result") and the one owner-dropped regulated canal, `2446`
+# Gampelen-Zihlbrücke (`_DROPPED_GAMPELEN_ZIHLBRUECKE_CODE` above). 169 - 20
+# - 1 = 148, matching T0a's frozen result exactly (Plan 188 fixer round,
+# 2026-08-27, cross-checked against the published table). A future change
+# to the onboarding manifest must update this literal by the same
+# derivation, not by hand-editing individual codes.
+SWISS_CARAVAN_MANIFEST_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "2009",
+        "2011",
+        "2016",
+        "2018",
+        "2019",
+        "2020",
+        "2024",
+        "2029",
+        "2033",
+        "2041",
+        "2044",
+        "2056",
+        "2063",
+        "2068",
+        "2084",
+        "2085",
+        "2086",
+        "2087",
+        "2091",
+        "2099",
+        "2104",
+        "2106",
+        "2109",
+        "2110",
+        "2112",
+        "2116",
+        "2117",
+        "2119",
+        "2122",
+        "2126",
+        "2130",
+        "2132",
+        "2135",
+        "2139",
+        "2141",
+        "2143",
+        "2152",
+        "2155",
+        "2160",
+        "2167",
+        "2170",
+        "2174",
+        "2176",
+        "2179",
+        "2181",
+        "2185",
+        "2187",
+        "2199",
+        "2200",
+        "2202",
+        "2203",
+        "2206",
+        "2210",
+        "2215",
+        "2219",
+        "2232",
+        "2239",
+        "2243",
+        "2251",
+        "2252",
+        "2256",
+        "2262",
+        "2263",
+        "2265",
+        "2268",
+        "2269",
+        "2276",
+        "2283",
+        "2288",
+        "2289",
+        "2290",
+        "2300",
+        "2303",
+        "2305",
+        "2307",
+        "2308",
+        "2312",
+        "2319",
+        "2321",
+        "2342",
+        "2343",
+        "2346",
+        "2347",
+        "2355",
+        "2356",
+        "2364",
+        "2366",
+        "2368",
+        "2369",
+        "2370",
+        "2371",
+        "2372",
+        "2374",
+        "2378",
+        "2392",
+        "2409",
+        "2410",
+        "2412",
+        "2414",
+        "2416",
+        "2417",
+        "2418",
+        "2419",
+        "2420",
+        "2426",
+        "2430",
+        "2433",
+        "2434",
+        "2457",
+        "2458",
+        "2461",
+        "2471",
+        "2473",
+        "2474",
+        "2475",
+        "2477",
+        "2478",
+        "2480",
+        "2481",
+        "2485",
+        "2486",
+        "2488",
+        "2490",
+        "2491",
+        "2493",
+        "2494",
+        "2497",
+        "2498",
+        "2500",
+        "2602",
+        "2603",
+        "2604",
+        "2605",
+        "2607",
+        "2608",
+        "2609",
+        "2610",
+        "2612",
+        "2613",
+        "2615",
+        "2617",
+        "2620",
+        "2623",
+        "2629",
+        "2630",
+        "2631",
+        "2634",
+        "2640",
+    }
+)
+# Fail fast on a typo'd literal above rather than silently drift from T0a's
+# frozen 148-station count.
+assert len(SWISS_CARAVAN_MANIFEST_CODES) == 148, (  # noqa: S101
+    "SWISS_CARAVAN_MANIFEST_CODES must carry exactly 148 codes (Plan 155 "
+    f"T0a: 169 onboarding codes - 20 lakes - 1 dropped canal), got "
+    f"{len(SWISS_CARAVAN_MANIFEST_CODES)}"
+)
 
 
 def derive_swiss_caravan_manifest(station_store: StationStore) -> frozenset[str]:
@@ -198,15 +356,6 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-
-    if not SWISS_CARAVAN_MANIFEST_CODES:
-        print(
-            "ERROR: SWISS_CARAVAN_MANIFEST_CODES is an empty placeholder -- "
-            "populate it from the production DB before running this CLI "
-            "(see the constant's docstring in this script, Plan 188 D1).",
-            file=sys.stderr,
-        )
-        return 1
 
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:

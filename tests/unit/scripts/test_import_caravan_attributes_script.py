@@ -137,10 +137,19 @@ class TestResolveRequiredStaticNames:
     absent from `discover_models()`, rather than a bare KeyError or an
     empty static set."""
 
-    def test_model_absent_from_registry_raises_naming_the_model_id(self, mod) -> None:
-        # Real, unmocked discover_models(): this dev checkout has no
-        # `aquacast` extra installed, so `cmal_pool_pt` is genuinely
-        # absent -- exercising the real D2 preflight, not a fake.
+    def test_model_absent_from_registry_raises_naming_the_model_id(
+        self, mod, monkeypatch
+    ) -> None:
+        # Monkeypatched, not real: the standard `unit` CI job installs
+        # `--extra aquacast` (.github/workflows/ci.yml), so `cmal_pool_pt`
+        # IS genuinely registered there -- relying on the real
+        # discover_models() to be absent-by-omission only holds on a dev
+        # checkout without the extra, and fails red in CI. Force absence
+        # explicitly so this test is true in both environments.
+        monkeypatch.setattr(
+            "sapphire_flow.services.model_registry.discover_models",
+            MagicMock(return_value={}),
+        )
         with pytest.raises(ConfigurationError, match=AQUACAST_CMAL_POOL_PT_MODEL_ID):
             mod.resolve_required_static_names()
 

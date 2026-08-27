@@ -102,14 +102,27 @@ class TestMissingPreconditions:
         monkeypatch.setattr(mod, "SWISS_CARAVAN_MANIFEST_CODES", frozenset({"x"}))
         assert mod.main(["--parquet", "unused.parquet"]) == 1
 
-    def test_main_refuses_to_run_while_pinned_manifest_constant_is_unpopulated(
-        self, mod, monkeypatch
+
+class TestPinnedManifestConstant:
+    """Plan 188 D1 blocker fix (review 2026-08-27): the CLI ships with the
+    real, reviewed 148-station roster, not an empty placeholder that always
+    fails main(). Locks that the committed literal is the T0a set, not
+    merely non-empty."""
+
+    def test_pinned_manifest_is_populated_with_exactly_148_codes(self, mod) -> None:
+        assert len(mod.SWISS_CARAVAN_MANIFEST_CODES) == 148
+
+    def test_pinned_manifest_excludes_the_dropped_gampelen_zihlbruecke_code(
+        self, mod
     ) -> None:
-        monkeypatch.setenv("DATABASE_URL", "postgresql://stub")
-        # SWISS_CARAVAN_MANIFEST_CODES is frozenset() by default -- ships
-        # unpopulated (Plan 188 D1 deviation note).
-        assert not mod.SWISS_CARAVAN_MANIFEST_CODES
-        assert mod.main(["--parquet", "unused.parquet"]) == 1
+        assert "2446" not in mod.SWISS_CARAVAN_MANIFEST_CODES
+
+    def test_pinned_manifest_is_a_subset_of_the_onboarding_basin_ids(self, mod) -> None:
+        import tomllib
+
+        config = tomllib.loads((Path(__file__).parents[3] / "config.toml").read_text())
+        onboarding_codes = frozenset(config["onboarding"]["basin_ids"])
+        assert mod.SWISS_CARAVAN_MANIFEST_CODES.issubset(onboarding_codes)
 
 
 class TestCleanRun:
@@ -153,7 +166,7 @@ class TestCleanRun:
 
 class TestManifestStationMissingFromParquet:
     def test_exits_nonzero_and_names_the_missing_station(
-        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch
+        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch, capsys
     ) -> None:
         _seed_station_with_basin(db_engine, code="T188CLI-PRESENT")
         _seed_station_without_basin(db_engine, code="T188CLI-ABSENT")
@@ -178,6 +191,12 @@ class TestManifestStationMissingFromParquet:
         result = mod.main(["--parquet", str(parquet)])
 
         assert result == 1
+        # Review finding (2026-08-27): this test previously asserted only
+        # `result == 1`, so a regression that dropped the diagnostic detail
+        # from the CLI's error print (e.g. simplifying `except
+        # ConfigurationError` to a generic message) would still pass.
+        captured = capsys.readouterr()
+        assert "T188CLI-ABSENT" in captured.err
 
 
 class TestDryRun:
@@ -224,7 +243,7 @@ class TestDryRun:
 
 class TestManifestMismatch:
     def test_a_one_out_one_in_swap_fails_preflight_and_prints_symmetric_difference(
-        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch
+        self, mod, db_engine: sa.Engine, tmp_path, monkeypatch, capsys
     ) -> None:
         _seed_station_with_basin(db_engine, code="T188CLI-SWAP-A")
         _seed_station_with_basin(db_engine, code="T188CLI-SWAP-B")
@@ -248,6 +267,13 @@ class TestManifestMismatch:
         result = mod.main(["--parquet", str(parquet)])
 
         assert result == 1
+        # Review finding (2026-08-27): must actually contain the symmetric
+        # difference, not just fail -- a regression that dropped the
+        # diagnostic detail from the error print would still pass a bare
+        # `result == 1` check.
+        captured = capsys.readouterr()
+        assert "T188CLI-SWAP-B" in captured.err  # only in derived
+        assert "T188CLI-SWAP-NONEXISTENT" in captured.err  # only in pinned
         with db_engine.connect() as check_conn:
             station = PgStationStore(check_conn).fetch_station_by_code(
                 "T188CLI-SWAP-B", "bafu"
@@ -262,9 +288,15 @@ class TestModelAbsentPreflight:
     def test_model_absent_from_registry_fails_naming_the_model_id(
         self, mod, db_engine: sa.Engine, tmp_path, monkeypatch
     ) -> None:
-        # No monkeypatch of resolve_required_static_names: this dev
-        # checkout genuinely has no `aquacast` extra installed, so the
-        # REAL D2 preflight fires against the REAL discover_models().
+        # Monkeypatched, not relying on the real environment: the standard
+        # `unit`/`integration` CI jobs install `--extra aquacast`
+        # (.github/workflows/ci.yml), so `cmal_pool_pt` IS genuinely
+        # registered there. Force absence explicitly so the D2 preflight
+        # is exercised whether or not the extra happens to be installed.
+        monkeypatch.setattr(
+            "sapphire_flow.services.model_registry.discover_models",
+            lambda: {},
+        )
         monkeypatch.setattr(mod, "SWISS_CARAVAN_MANIFEST_CODES", frozenset({"unused"}))
         parquet = _write_parquet(tmp_path, [])
 

@@ -156,6 +156,18 @@ commits. `tests/integration/store/test_caravan_import.py:879-918` already does e
 merge path, and documents why: without the injected delay the two threads serialise by GIL luck, so
 the barrier alone is "timing-luck, not a reliable proof". Reuse that pattern.
 
+**Fixer round (2026-08-27): resolved a T1 blocker.** The initial implementation shipped
+`SWISS_CARAVAN_MANIFEST_CODES` as an empty placeholder with a `main()` guard that always returned 1
+— the operator CLI could never run T4. The 148-code roster is in fact derivable in-repo:
+`config.toml`'s `[onboarding] basin_ids` (169 codes) minus Plan 155 T0a's two published exclusion
+sets (the 20 lake codes and the one dropped `2446` canal, both listed by code in Plan 155's "T0a
+result") reproduces the frozen 148-station set exactly. The constant is now populated from that
+derivation, cross-checked against Plan 155's table, with a module-load `assert len(...) == 148`
+guarding against a future typo. The same round fixed a `replace_namespaced_attributes` bug (T3): the
+JSONB `||` write inserted any prefixed key regardless of whether it already existed, so a typo'd key
+(`caravan:areaa`) would commit silently instead of raising — it now selects current attributes
+`FOR UPDATE` and rejects any requested key not already present.
+
 ### T4 — run it on the mini
 The Swiss fleet is onboarded there (owner-confirmed); the dev box has 2 stations and cannot exercise
 this. Reading statics from the adapter (D2) needs the aquacast extra, which the deployed worker image

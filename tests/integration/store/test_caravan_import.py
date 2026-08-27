@@ -1033,6 +1033,34 @@ class TestReplaceNamespacedAttributes:
         assert fetched is not None
         assert fetched.attributes["area"] == 100.0  # rejected call touched nothing
 
+    def test_rejects_a_caravan_key_that_is_not_already_present(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Review finding (2026-08-27): "replace" must correct an
+        already-present key, never silently INSERT a new one -- the JSONB
+        ``||`` merge used to write the value would otherwise add any
+        prefixed key regardless of a typo, e.g. ``caravan:areaa`` instead
+        of ``caravan:area``. `test_replaces_a_changed_caravan_value` above
+        always seeds the key first via `merge_namespaced_attributes` and so
+        never exercises this path."""
+        store = PgBasinStore(db_connection)
+        basin = _make_basin(
+            code="T188-REPL-ABSENT", attributes={"area": 100.0, "caravan:area": 250.0}
+        )
+        store.store_basin(basin)
+
+        with pytest.raises(ConfigurationError, match="caravan:areaa"):
+            store.replace_namespaced_attributes(
+                basin.id, attributes={"caravan:areaa": 999.0}
+            )
+
+        fetched = store.fetch_basin(basin.id)
+        assert fetched is not None
+        # Neither the typo'd key was inserted nor the real one touched.
+        assert "caravan:areaa" not in fetched.attributes
+        assert fetched.attributes["caravan:area"] == 250.0
+        assert fetched.attributes["area"] == 100.0
+
     def test_refuses_an_autocommit_connection(self, db_engine: sa.Engine) -> None:
         basin_id = BasinId(uuid.uuid4())
         with db_engine.connect() as seed_conn:
@@ -1049,6 +1077,39 @@ class TestReplaceNamespacedAttributes:
                 )
         finally:
             conn.close()
+
+    def test_refuses_a_connection_with_no_open_transaction(
+        self, db_engine: sa.Engine
+    ) -> None:
+        """An ordinary (non-AUTOCOMMIT) connection with no explicit
+        `conn.begin()` still discriminates: this is the OTHER half of
+        `require_real_transaction`'s guard. Without this test, an
+        implementation that ran its first SELECT before calling the guard
+        would auto-begin an implicit transaction on that SELECT and pass
+        every other test here while never actually checking
+        `in_transaction()` up front."""
+        basin_id = BasinId(uuid.uuid4())
+        with db_engine.connect() as seed_conn:
+            PgBasinStore(seed_conn).store_basin(
+                _make_basin(code="T188-REPL-NOTXN", basin_id=basin_id)
+            )
+            seed_conn.commit()
+
+        conn = db_engine.connect()
+        try:
+            assert not conn.in_transaction()
+            with pytest.raises(RuntimeError, match="transaction"):
+                PgBasinStore(conn).replace_namespaced_attributes(
+                    basin_id, attributes={"caravan:area": 1.0}
+                )
+        finally:
+            conn.rollback()
+            conn.close()
+
+        with db_engine.connect() as check_conn:
+            fetched = PgBasinStore(check_conn).fetch_basin(basin_id)
+        assert fetched is not None
+        assert "caravan:area" not in fetched.attributes
 
     def test_concurrent_replacements_serialise_a_then_b_never_interleave(
         self, db_engine: sa.Engine
@@ -1072,7 +1133,7 @@ class TestReplaceNamespacedAttributes:
                 _make_basin(
                     code="T188-REPL-CONCURRENCY",
                     basin_id=basin_id,
-                    attributes={"caravan:elevation": 500.0},
+                    attributes={"caravan:elevation": 500.0, "caravan:area": 0.0},
                 )
             )
             seed_conn.commit()
