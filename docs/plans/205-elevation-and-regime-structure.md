@@ -212,7 +212,20 @@ forbids.
 
 **PINNED — three mechanics T2's text would otherwise leave to the implementer:**
 - **P1 — the time population is ONE COMMON WINDOW across the stations in the fit.** Pyramid records do
-  not coincide: **AWS0 ends in 2005** while the other five overlap 2020–2023. Fitting across stations
+  not coincide, and the window is **computed from the archive, never assumed**. **⛔ CORRECTED
+  2026-08-27 (measured during T1/T2):** an earlier revision of this pin said AWS0 ends in 2005 "while
+  the other five overlap 2020–2023". AWS0's end is right; the rest is not. Measured `RR` spans:
+  AWS1 2000-10→2023-12, AWS2 2001-10→2023-12, AWS3 2002-11→2023-12, AWS5 2001-10→2023-12, but
+  **AWS4 — the TOP of the transect at 5,600 m — stops reporting `RR` on 2018-05-09** (its `AT` does
+  continue to 2023, which is why M-A6's D14 note about a 2020–2023 overlap held for temperature and
+  does not transfer to precipitation). The real five-station common window is therefore
+  **2009-01-01 → 2018-05-09**.
+
+  That forces a trade-off the plan did not anticipate, and the report must state which side it took:
+  keeping AWS4 preserves the full **2,940 m** transect but costs 2018–2023 for everyone else; dropping
+  it buys the recent period but lowers the transect's top to AWS2 at 4,260 m, losing 1,340 m of the
+  relief the gradient exists to measure. **Keep AWS4 and the full transect**, and say plainly that the
+  gradient is fitted on 2009–2018 rather than on a recent period. Fitting across stations
   with disjoint eras would read an era difference as an elevation gradient. Fit on the common window,
   **name it and name every station excluded for not covering it**. AWS0 is therefore NOT in the
   cross-station fit; its only role is D6's same-elevation contrast with AWS1.
