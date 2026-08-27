@@ -284,6 +284,42 @@ disaggregator design or Phase-2 recommendation.
 **Verify:** `$ENV uv run python scripts/dhm_precip/ma7_run.py --out <dir>` then
 `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
 
+**PINNED 2026-08-27 — seven points T4's text leaves open.** Reviewed before implementation, as T3's
+predecessor milestone learned to do the expensive way (Plan 184 shipped T3/T4/T5 first and paid twelve
+amendments afterwards).
+
+- **P1 — THE BOOTSTRAP SEED IS FIXED AND RECORDED IN THE REPORT.** T1, T2 and T3 all take an injected
+  RNG. A report built on an unseeded bootstrap is non-reproducible **by construction**, and
+  regenerability is an Exit condition. `ma7_run.py` seeds from a single named constant, prints it in
+  the report header, and the same command twice must produce a byte-identical report (modulo a
+  generated-at timestamp). M-A6's report failed reproducibility for a far subtler reason and it cost a
+  release; this one would fail trivially.
+- **P2 — the table inventory is fixed**, one table per Exit clause it serves: (a) per-station diurnal
+  profiles with per-hour exposure and peak hour; (b) per-band profiles with station counts;
+  (c) per-station intensity distributions with q50/q99, wet-hour and total retained counts;
+  (d) per-band intensity distributions; (e) transferability — the elevation cut and the
+  resolution-group cut **side by side**; (f) Olangchunggola's open 03 UTC status (D7); (g) consumed
+  inputs and the seed.
+- **P3 — `spread_hours` IS NOT A CONFIDENCE INTERVAL and must never be labelled as one.**
+  `circular_range_hours` is the smallest arc containing EVERY resampled value, so it is driven by which
+  hours occur at all, not by how often — the `≥ 3,000 m` band's 11 h is set by hour 3 appearing in 151
+  of 2,000 resamples. Render it as "resampled peak hours spanned this arc", with the resample count
+  beside it.
+- **P4 — an inadequate result is LABELLED, never suppressed** (D9). Four of 26 stations are below the
+  ≥5 season-year bar (Udayapur Gadhi 2; Lete, Num, Olangchunggola 4). They appear with their
+  `n_season_years` and an explicit inadequate marker. **Do not filter on adequacy** — that is the
+  filter-on-retention error D13 forbids.
+- **P5 — a refusal renders.** Any statistic that legitimately cannot be computed appears in its row as
+  an explicit absence with its reason, never as a blank, a zero, or a dropped row. A dropped row tells
+  a reader coverage is complete when it is not — the same MNAR error Rule 1 exists to forbid.
+- **P6 — all four seasons, every station, no omission** (D8 as corrected). The report is large by
+  construction; that is the cost of not setting a completeness threshold.
+- **P7 — the locked headline set is SMALL and NAMED**, not the whole matrix: the four band-level
+  leave-one-out prediction errors (median_abs_error and within_25pct_fraction), the two
+  resolution-group errors, the four band station-equal JJAS peak hours, and the four band
+  `n_season_years`. Nothing else. A snapshot of every station × season × statistic would break on any
+  legitimate change and read as a regression.
+
 ```json
 {
   "phases": [
