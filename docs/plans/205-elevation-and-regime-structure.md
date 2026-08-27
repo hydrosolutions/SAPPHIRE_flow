@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DRAFT
 created: 2026-08-27
 plan: 205
 title: M-A8 — elevation and regime structure, and the rain-phase gradient
@@ -13,9 +13,7 @@ source: docs/design/dhm-precipitation-milestones.md § M-A8
 
 ## Status
 
-**READY** (owner, 2026-08-27). Three independent review rounds, twelve findings folded; two of them
-overturned decisions in the first draft — D1 wrongly forbade the within-group elevation analysis, and a
-proposed low-wind test of the catch confound was cut as unidentified.
+**DRAFT.** Not for implementation until the owner confirms.
 
 ## ⛔ PROPORTIONALITY IS BINDING, AS IT WAS ON 184 AND 193
 
@@ -26,7 +24,7 @@ defect, not a missing feature.
 
 **Most of this milestone's DHM half is already computed.** M-A6 produced per-band bias estimands and
 M-A7 produced per-band intensity and diurnal statistics. M-A8 assembles what exists and answers one
-question about it, calling their own public constructors rather than re-implementing any estimand (D2).
+question about it. It does not recompute them.
 
 ## ⭐ WHAT IS IDENTIFIED, AND WHAT IS NOT
 
@@ -77,28 +75,15 @@ either. n = 5.
 - **D1 — Elevation is analysed WITHIN each reporting-resolution group; only the BETWEEN-group
   contrast is reported as unidentified.** Group B (20 stations, 67–2,147 m) is the primary elevation
   analysis and Group A (6 stations, 2,490–3,700 m) is reported beside it, each at fixed resolution, each
-  carrying its own `n`. **Group A is analysed PER STATION, not per band** — it occupies exactly two
-  D5a bands with three stations each, so a band-level "relationship" there is two points and must not be
-  presented as a trend.
-
-  **⛔ A within-group elevation relationship is DESCRIPTIVE too.** Holding reporting resolution constant
-  removes one confound, not all: exposure, siting, catchment character and monsoon dynamics all co-vary
-  with elevation across Group B's 2,080 m. Report the relationship; do not call it an elevation
-  *effect*. **⛔ Do not fit a model with both elevation and group as terms across the whole
+  carrying its own `n`. **⛔ Do not fit a model with both elevation and group as terms across the whole
   sample** — the groups' elevation ranges do not overlap, so no data constrains the group term against
   an elevation jump at the gap, and the fit reports an assumption rather than a measurement. **⛔ Do not compare a Group A number to a
   Group B number and attribute the difference to either factor.** The between-group statement is a
   result in its own right, not a failure: M-A8's exit permits exactly it.
 
 - **D2 — Elevation relationships are reported DESCRIPTIVELY, carrying M-A6's and M-A7's existing
-  per-band and per-station numbers.** M-A8 **calls M-A6's and M-A7's own public constructors and
-  factories** (`ma6_estimands`, `ma6_mass_fraction`, `ma7_profiles`, `ma7_intensity`, `ma7_transfer`) and
-  **⛔ re-implements no estimand**. That distinction is the whole of this decision: the ban is on a
-  SECOND IMPLEMENTATION, which would drift invisibly from the first, not on executing the existing one.
-  *(Per-station values are not persisted — both predecessor CLIs build them in memory before rendering
-  Markdown — so "assemble, never recompute" taken literally would have forced either a Markdown parser
-  or a reimplementation. Neither is wanted; calling the existing code is.)*
-  Every assembled number keeps the conditions it was published with — its `n`, its retained exposure, its sub-freezing mass fraction
+  per-band numbers.** M-A8 assembles; it does not recompute. Every assembled number keeps the
+  conditions it was published with — its `n`, its retained exposure, its sub-freezing mass fraction
   where M-A6 attached one (Plan 184 Exit 2 binds here too), and its adequacy designation where M-A7
   attached one. **⛔ A number may not be re-quoted stripped of its companions.**
 
@@ -113,9 +98,7 @@ either. n = 5.
   **rain-only screening is what makes the claim legitimate**, because it is the condition under which
   M-A10's "undercatch largely cancels" is actually true. Screen on **Pyramid's OWN `AT`** — every RR station
   carries it, so this needs no cross-source pairing and inherits none of Plan 184 D7's cell-vs-point
-  caveat — at D4/D14's 1.5 °C with M-A6's 0 °C and 2 °C sensitivity **extended upward to 4 °C** —
-  1.5 °C still admits wet snow and mixed phase, which catch poorly, so the upward leg tests whether the
-  gradient survives an unambiguous rain screen; restrict to JJAS;
+  caveat — at D4/D14's 1.5 °C with the 0 °C and 2 °C sensitivity M-A6 already uses; restrict to JJAS;
   and **⛔ never extrapolate above the rain line.**
 
   *This screen DEFINES the estimand (a rain-phase gradient); it does not gate a reported magnitude.*
@@ -134,15 +117,7 @@ either. n = 5.
   transect, so observed precipitation declines FASTER than true precipitation
   (`d log(obs)/dz = d log(true)/dz + d log(CE)/dz`, second term negative). The apparent gradient is
   therefore an **UPPER bound in magnitude on any true decline** — the true decline is no steeper than
-  the apparent one, and could in principle be nil, with the whole apparent decline being catch.
-
-  **⛔ (iii) The confound cannot be tested away with the data available, and the plan does not pretend
-  otherwise.** Pyramid's files do carry wind (`…;AT;RR;AP;RH;WS;WD`) and the loader is column-generic,
-  so a low-wind stratification would be cheap to compute — but it would not identify anything. Low wind
-  does not select the same precipitation under better catch; it selects **different precipitation**
-  (stratiform rather than convective, different moisture sources), which has its own elevation response.
-  A gradient that changed as wind fell would be confounded with regime, so neither "flattens ⇒ catch"
-  nor "holds ⇒ precipitation" follows. The upper bound stands as the honest deliverable. The snow-dominated high basins —
+  the apparent one, and could in principle be nil, with the whole apparent decline being catch. The snow-dominated high basins —
   where the flood interest sits — remain out of reach by this route, and the report says so.
 
 - **D5 — The gradient is signed as a RAIN-PHASE gradient, never as "the precipitation lapse rate".**
@@ -182,7 +157,7 @@ either. n = 5.
 
 ## Tasks
 
-Three tasks, two phases. `$ENV` abbreviates
+Three tasks, three phases. `$ENV` abbreviates
 `DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx`.
 
 ### T1 — the confound bound (depends: nothing new)
@@ -202,8 +177,8 @@ elevation ranges do not overlap on the current population.
 ### T2 — the Pyramid rain-phase gradient (depends: nothing new)
 **In:** the **apparent rain-phase gradient, uncorrected for wind catch** (D4's mandatory name) over
 the Pyramid RR stations sharing P1's common window — **five stations, AWS0 excluded** (its record ends
-2005) — rain-screened per D4 with its 0 °C / 2 °C / **4 °C** sensitivity, hour-of-day exposure equalised (D9),
-carrying its own `n` per station, reported beside D6's **observed** AWS0/AWS1 same-elevation
+2005) — rain-screened per D4 with the 0 °C / 2 °C sensitivity, hour-of-day exposure equalised (D9),
+carrying its own `n` per station, and reported beside D6's **observed** AWS0/AWS1 same-elevation
 discrepancy with that pair's own caveats.
 **The rain line is MEASURED, not assumed** — report the
 per-station rain-phase hour counts up the transect and let them show where the estimate stops being
@@ -257,8 +232,8 @@ analysis at fixed reporting resolution** — Group B (20 stations, 2,080 m of re
 contrast is unidentified in this sample**, supported by the non-overlapping group ranges and by the
 one band containing both; and the **apparent rain-phase gradient,
 uncorrected for wind catch**, fitted on P1's common window over the five qualifying Pyramid stations,
-signed as an **upper bound in magnitude** on any true decline; and the **observed** AWS0/AWS1 same-elevation discrepancy with that pair's n = 1 and
-older-window caveats attached.
+signed as an **upper bound in magnitude** on any true decline, and reported beside the **observed**
+AWS0/AWS1 same-elevation discrepancy with that pair's n = 1 and older-window caveats attached.
 
 ## Non-goals
 

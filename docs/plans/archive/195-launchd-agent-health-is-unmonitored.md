@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-20
 plan: 195
 title: A launchd agent that cannot run must not look healthy
@@ -13,8 +13,26 @@ source: launchd audit 2026-08-20; see docs/plans/164-watchdog-system-domain.md �
 
 ## Status
 
-**READY** — owner confirmed 2026-08-21, after three independent Codex rounds converged
-(1 blocker + 4 majors → 1 blocker + 3 majors → **0 blockers** + 2 majors, all folded).
+**COMPLETE** — shipped 2026-08-27 in **PR #216** (`6af4aa0`), auto-tagged `v0.1.817`. Verified on
+`main`: `parse_launchctl_list_output` at `src/sapphire_flow/ops/watchdog.py:848`,
+`probe_launchd_agents` at `:923`, `MONITORED_LAUNCHD_LABELS` threaded through `run_once`.
+
+Four Codex rounds in total — three on this document (1 blocker + 4 majors → 1 blocker + 3 majors →
+0 blockers + 2 majors) and one on the implementation (0 blockers + 2 majors). Every finding folded;
+each was verified against the repo before being accepted, and several of the reviewer's own line
+citations had drifted and were re-derived rather than copied.
+
+**Two findings were errors introduced while fixing earlier findings** — D3/D4 contradicted each other
+on UNKNOWN because two round-1 fixes were made independently and never reconciled. Worth remembering
+about this loop: its value was less in catching a sloppy draft than in catching the second-order
+damage from careful revision.
+
+**Two properties were asserted but not locked**, and only mutation testing found them: the timeout
+test compared the captured kwarg against the constant itself, so a "finite" 300 s — which would have
+consumed the watchdog's whole `StartInterval` — passed cleanly; and the `UnicodeError` containment
+fix passed the entire suite before its test existed. Both are now pinned.
+
+⚠️ **Not yet deployed.** The detection only works once the mini runs this code.
 
 **Revised 2026-08-21 after an independent Codex review** (NEEDS_CHANGES: 1 blocker, 4 majors, 1 minor;
 every finding verified against the repo before folding). What changed: the latch is **per label**, not
