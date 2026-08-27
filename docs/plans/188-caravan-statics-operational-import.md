@@ -42,6 +42,13 @@ roughly its current length.** A round that adds a task, a module, or new infra h
   four indices exist only under bare CAMELS-CH names with different semantics (`high_prec_freq`
   18.41 days/year vs Caravan's ~0.033 fraction). T3 skips every basin.
 
+**Confirmed in PRODUCTION 2026-08-27** (mac mini, `sapphire-flow:0.1.806`), not just on the dev box:
+`select count(*) from basins, jsonb_object_keys(attributes) k where k like 'caravan:%'` → **0**, and
+`basin_static_packages` → **0 rows**. The basins do carry ~50 HydroATLAS-style statics, but under
+bare names from the Plan 117/120 importer — which strict `StaticNaming.CARAVAN` resolution
+(`models/aquacast/_shim.py:467`, no bare-name fallback) cannot see. So on the deployment this plan
+targets, the position is not "partially covered", it is **zero coverage**.
+
 ## What already exists — do not rebuild
 
 `run_operational_caravan_import(path, *, station_store, basin_store, expected_codes,
