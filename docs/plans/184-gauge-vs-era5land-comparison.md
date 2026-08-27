@@ -154,6 +154,38 @@ All decisions are now made.
   This is **not** licence to refit: D14's "use 6.5, never fit to Pyramid" stands, and a reported
   sensitivity is neither a refit nor a decision threshold (vision D8 is unaffected).
 
+  **✅ DELIVERED (T5, 2026-08-26) — and the measurement vindicates deleting the carve-out.** Computed
+  over the JJAS and DJF accumulated-difference subsets on the real archive, at 1.5 °C / 6.5 °C/km:
+
+  | station | elevation | DJF fraction | JJAS fraction |
+  |---|---|---|---|
+  | Syangboche | 3,700 m | **0.9596** (n=9,214) | 0.0000 |
+  | Humde | 3,401 m | **0.5158** (n=10,532) | 0.0000 |
+  | Olangchunggola | 3,119 m | **0.2663** (n=6,876) | 0.0000 |
+  | Lukla | 2,860 m | **0.0510** (n=6,248) | 0.0000 |
+
+  Monotonic in elevation, zero through the monsoon. **The old calendar rule would have withheld
+  Syangboche and Lukla identically in DJF** — the measured fraction shows Syangboche's winter figure is
+  96 % mass the gauge cannot catch while Lukla's, 840 m lower, is 5 % and genuinely quantitative. D4's
+  "wrong in both directions" is now a measurement, not an argument.
+
+  **FOUR OPERATIONALISATIONS PINNED (T5, 2026-08-26)** — T5's text left these open and an implementer
+  had to choose; recorded here so T6 and M-A7 inherit them rather than re-inventing:
+
+  1. **Every D1 magnitude kind carries a fraction** — matched-hour mean difference, conditional
+     accumulated difference, and the wet-hour conditional intensity bias in **BOTH** conditionings
+     (D1 as amended reports both, so there are four magnitude kinds, not three).
+  2. **A band fraction is the UNWEIGHTED MEAN of its member stations' fractions**, carrying its station
+     count — never mass pooled across the band, which would let a high-mass station dominate and make
+     the band figure partly a function of retention (D4a, D13).
+  3. **The two sensitivities are reported ONE-AT-A-TIME, never as a 3×3 grid.** Primary is 1.5 °C at
+     6.5 °C/km; threshold varies over {0.0, 1.5, 2.0} with lapse held at 6.5, lapse varies over
+     {5.0, 6.5, 9.8} with threshold held at 1.5. **Five** combinations sharing the primary.
+  4. **Unclassifiable mass is reported explicitly, never dropped and never rescaled into the
+     denominator** (D13). A retained hour carrying gauge mass but no finite corrected temperature is
+     counted as unclassifiable; the denominator stays the subset's whole mass. Expected 0.0, but
+     measured rather than assumed.
+
 - **D4a — The elevation bands are Plan 193 D5a's, not a second set.** `< 700 m` / `700–2,000 m` /
   `2,000–3,000 m` / `≥ 3,000 m`, giving **9 / 9 / 5 / 3** of the 26 stations. *(Added 2026-08-21.)*
   Both this plan's Exit and T3 require results "per elevation stratum" without ever defining the
@@ -526,6 +558,41 @@ locked in
 magnitude missing either companion is a hard failure), then end-to-end:
 `$ENV uv run python scripts/dhm_precip/ma6_run.py --out <dir>` followed by
 `$ENV uv run pytest tests/integration/test_dhm_precip_era5_extraction.py tests/integration/test_dhm_precip_reproduction.py -q`
+
+**PINNED 2026-08-27 — six points T6's text left open.** T3, T4 and T5 each shipped with four
+underspecified points apiece; each read as a complete instruction and was not one. Closed here before
+implementation rather than after.
+
+- **P1 — the locked headline set is SMALL and NAMED, not the whole matrix.** Lock exactly: the four
+  band-level wet-hour conditional intensity biases already locked by phase 2 (gauge-alone and joint at
+  `< 700 m` and `≥ 3,000 m`, JJAS, with their `n`); the D8 within-cell pair (both totals, the
+  accumulated difference, all three retention percentages, the common-hour count); and the four
+  sub-freezing mass fractions in D4's delivered table with their `n`. Nothing else. A snapshot of every
+  station × estimand × grain × sensitivity would break on any legitimate change and would be read as a
+  regression; **a lock exists to catch an unintended change in a number a reader would quote.**
+- **P2 — the report's table inventory is fixed**, one table per Exit condition it serves: (a) per-station
+  magnitudes at the D3 grains, (b) per-band magnitudes with station counts, (c) categorical scores at
+  daily and monthly grain (D12), (d) the retention stratification (Exit 4), (e) representativeness —
+  operator envelope, elevation mismatch, neighbouring-cell CV (Exit 6), (f) the within-cell pair
+  (Exit 7), (g) the D14 lapse transect with its Pyramid check (Exit 8), (h) consumed identities
+  (Exit 9). Every magnitude cell in (a) and (b) carries its `n` and its mass fraction — Exit 2.
+- **P3 — a refusal RENDERS, it never vanishes.** An estimand that legitimately cannot be computed —
+  an empty subset, zero mass, zero classifiable mass — appears in its row as an explicit absence with
+  its reason, never as a blank, a zero, or an omitted row. Silently dropping such a row tells the
+  reader coverage is complete when it is not, which is the same missing-not-at-random error Rule 1 and
+  D13 exist to forbid. This is distinct from D11's exclusions (Exit 5), which are reported separately
+  and by name.
+- **P4 — Exit 2 is ENFORCED in the renderer as a hard failure; the other eight are covered by tests
+  asserting the report carries what they require.** The placement rule is the one that must be
+  structurally impossible to violate, because it is D4's stated mitigation for choosing annotation over
+  withholding.
+- **P5 — the milestones fold is a HUMAN step, not the runner's.** `ma6_run.py` writes only under
+  `--out`. It must never write into `docs/design/dhm-precipitation-milestones.md` or any tracked
+  document: that file is this track's only durable record, and a runner that rewrites it would let a
+  rerun silently restate history.
+- **P6 — render both sensitivities WITHOUT comparing them.** No "spread" column, no ordering, no
+  wording implying one matters more — D4 forbids ranking them, and how much either moves the fraction
+  depends on where mass sits in the temperature distribution, which is an output of this analysis.
 
 ```json
 {
