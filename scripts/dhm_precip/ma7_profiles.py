@@ -523,24 +523,26 @@ def bootstrap_band_peak_hour(
     n_resamples: int = DEFAULT_PARAMS.ma7_bootstrap_resamples,
     min_season_years_for_adequacy: int = _DEFAULT_MIN_SEASON_YEARS,
 ) -> PeakHourBootstrap:
-    """D5a — band adequacy (D9) uses the season-years COMMON to every
-    member station, not their union: each resample draws from that
-    intersection, and each drawn year's per-hour value is the station-equal
-    mean across whichever members have data for that (year, hour) cell."""
+    """D5a — band adequacy (D9) uses the UNION of member stations'
+    season-years (owner decision 2026-08-27), and each drawn year's per-hour
+    value is the station-equal mean across whichever members have data for
+    that (year, hour) cell. An INTERSECTION would quantify a population the
+    reported point estimate does not come from: the point estimate uses each
+    station's FULL record, so restricting resamples to common years made the
+    interval describe different data than the number it annotates — and it
+    collapsed `700-2,000 m` to ONE common season-year against a union of six."""
     per_member_year_hour = [
         _year_hour_dict(
             per_season_year_hourly_means(m.series.frame, profile.season, profile.params)
         )
         for m in profile.members
     ]
-    common_years: set[int] = (
-        set(per_member_year_hour[0]) if per_member_year_hour else set()
-    )
-    for d in per_member_year_hour[1:]:
-        common_years &= set(d)
+    union_years: set[int] = set()
+    for d in per_member_year_hour:
+        union_years |= set(d)
 
     band_year_hour: dict[int, dict[int, float]] = {}
-    for year in sorted(common_years):
+    for year in sorted(union_years):
         row: dict[int, float] = {}
         for hour in _HOURS:
             values = [

@@ -424,12 +424,14 @@ class TestBandDiurnalProfile:
                 station_elev_m=self._ELEV,
             )
 
-    def test_bootstrap_adequacy_uses_intersection_of_season_years_not_union(
+    def test_bootstrap_adequacy_uses_union_of_season_years_not_intersection(
         self,
     ) -> None:
         # Station A has 5 season-years (2019-2023); station B only shares 2
         # of those (2019, 2020) plus 2 more of its own (2024, 2025) — union
-        # is 7, intersection is 2.
+        # is 7, intersection is 2. The band point estimate already draws on
+        # each station's FULL record, so adequacy (and the resample) must
+        # be measured against the union (Plan 193 D9 correction).
         rows_a = []
         for year in range(2019, 2024):
             rows_a += _jjas_rows(year, values_by_hour={6: 5.0})
@@ -441,8 +443,36 @@ class TestBandDiurnalProfile:
             per_station_rows={_STATION_A: rows_a, _STATION_B: rows_b},
         )
         result = bootstrap_band_peak_hour(band, rng=random.Random(0), n_resamples=100)
-        assert result.n_season_years == 2  # intersection, not the union (7)
-        assert result.adequate_sample is False
+        assert result.n_season_years == 7  # union, not the intersection (2)
+        assert result.adequate_sample is True
+
+    def test_a_short_record_member_does_not_collapse_the_union(self) -> None:
+        # A and B span 8 overlapping years each (2015-2022 / 2016-2023); a
+        # THIRD member (Gamma) has just one season-year (2020, shared with
+        # both). Under the old intersection mechanics the whole band would
+        # collapse to Gamma's single year. Under the union, Gamma's short
+        # record must not drag the other two members down.
+        station_c = Station("Gamma")
+        rows_a = []
+        for year in range(2015, 2023):  # 2015..2022, 8 years
+            rows_a += _jjas_rows(year, values_by_hour={6: 5.0})
+        rows_b = []
+        for year in range(2016, 2024):  # 2016..2023, 8 years
+            rows_b += _jjas_rows(year, values_by_hour={6: 5.0})
+        rows_c = _jjas_rows(2020, values_by_hour={6: 5.0})
+        elev = {_STATION_A: 1000.0, _STATION_B: 1500.0, station_c: 1800.0}
+        band = _band_members(
+            station_elev_m=elev,
+            per_station_rows={
+                _STATION_A: rows_a,
+                _STATION_B: rows_b,
+                station_c: rows_c,
+            },
+        )
+        result = bootstrap_band_peak_hour(band, rng=random.Random(0), n_resamples=100)
+        # Union of {2015..2022} | {2016..2023} | {2020} == {2015..2023}: 9.
+        assert result.n_season_years == 9
+        assert result.adequate_sample is True
 
 
 class TestBootstrapDeterminismCircularSpread:

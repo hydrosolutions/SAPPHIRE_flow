@@ -430,9 +430,11 @@ def bootstrap_band_quantile(
     n_resamples: int = DEFAULT_PARAMS.ma7_bootstrap_resamples,
     min_season_years_for_adequacy: int = _DEFAULT_MIN_SEASON_YEARS,
 ) -> QuantileBootstrap:
-    """D5a — band adequacy (D9) uses the season-years COMMON to every
-    member station, not their union. Each resample draws from that
-    intersection; each drawn year's pooled sample gives every member
+    """D5a — band adequacy (D9) uses the UNION of member stations'
+    season-years (owner decision 2026-08-27; an intersection would quantify a
+    population the point estimate does not come from, and collapsed
+    `700-2,000 m` to one common year against a union of six). Each drawn
+    year's pooled sample gives every member
     station EQUAL PROBABILITY MASS within that year (weight `1 /
     n_station_that_year`), the same station-equal discipline as the point
     estimate."""
@@ -442,13 +444,13 @@ def bootstrap_band_quantile(
         )
         for m in distribution.members
     ]
-    common_years: set[int] = set(per_member_by_year[0]) if per_member_by_year else set()
-    for d in per_member_by_year[1:]:
-        common_years &= set(d)
-    years = sorted(common_years)
+    union_years: set[int] = set()
+    for d in per_member_by_year:
+        union_years |= set(d)
+    years = sorted(union_years)
     n_season_years = len(years)
     if n_season_years == 0:
-        raise NoSeasonYearsError("zero season-years common to every band member")
+        raise NoSeasonYearsError("zero season-years across all band members")
     if n_resamples < 1:
         raise NonPositiveResampleCountError(
             f"n_resamples must be >= 1, got {n_resamples}"

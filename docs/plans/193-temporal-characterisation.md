@@ -188,12 +188,30 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   are linear. It is WRONG for T1's **peak-hour** bootstrap — hour-of-day is circular, and `coloc_
   bootstrap` (the precedent this decision names) already knows it: it reports `circular_range_hours`
   of the resampled peak hours, not a linear low/high pair. Measured on the real archive, JJAS, the
-  `< 700 m` band's resampled peak hours cluster tightly across midnight (`{22: 640, 23: 49, 0: 368,
+  `< 700 m` band's resampled peak hours cluster tightly across midnight (`{21: 640, 23: 49, 0: 368,
   1: 799, 2: 87, 20: 57}`) — six hours wide by the clock, but the linear percentile interval this pin
   specified reports `[0.0, 21.0]`, 21 hours: effectively "sometime today," on the band carrying this
   milestone's headline result. Fix: T1's peak-hour bootstrap reports a `circular_range_hours` spread
   over `resampled_peak_hours`, exactly as `coloc_bootstrap.BootstrapPeakSpread` does; T2's quantile
   bootstraps keep the linear percentile interval unchanged.
+
+  **⛔ CORRECTED 2026-08-27 (owner decision) — band resampling draws from the UNION of member
+  season-years, not their intersection.** D9 pinned the adequacy bar but never the resampling
+  POPULATION, so the implementer chose the intersection and disclosed it. Measured, that choice made
+  **all four bands inadequate** while 22 of 26 stations are individually adequate, and collapsed
+  `700–2,000 m` to **one** common season-year — Udayapur Gadhi's 2-year record against a union of six.
+  The decisive objection is not conservatism: the band POINT ESTIMATE uses each station's FULL record,
+  so an intersection-based interval quantifies a population the reported number does not come from.
+  Draw from the union; each drawn year's cell is the station-equal mean across whichever members have
+  data for it — machinery that already existed. Measured after: adequacy **6 / 6 / 6 / 5**, all four
+  bands adequate.
+
+  *Note on the statistic itself:* `circular_range_hours` is a RANGE — the smallest arc containing every
+  resampled value — so it is driven by which hours appear at all, not how often. Both bands' spreads
+  stayed at 6.0 h and 11.0 h under the union even though the resample weights moved substantially, and
+  the `≥ 3,000 m` band's 11 h is stretched by hour 3 (Olangchunggola's open anomaly, D7) appearing in
+  151 of 2,000 resamples. That is the precedent's own statistic and is kept, but it is support-based,
+  not density-based; read it as "the peak fell somewhere in this arc", never as a 95 % interval.
 
 - **D10 — Consume Plan 184 T1's GAUGE-ONLY masked population; do not build a second one, and do not
   depend on the rest of Plan 184.** *(The one cross-plan coupling, deliberate and narrow.)* Two
