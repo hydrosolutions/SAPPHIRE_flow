@@ -12,11 +12,33 @@ supersedes: []
 # Plan 155 — Swiss data readiness for aquacast
 
 ## Status
-**READY** (owner, 2026-08-13). Split out of **Plan 152** (tasks T1, T1b, T1c) on 2026-08-12.
+
+**READY — PARTIALLY MERGED. T1 + T1b + T2 are on `main`; T0b and T3 are not built.**
+*(Bookkeeping corrected 2026-08-27: this block previously read a bare `READY` plus "Committed on
+`feat/plan-155-caravan-statics` (hold-at-PR)", which had been true and then stopped being true. The
+branch merged and the header was never updated, so the plan read as unstarted while half of it was
+live in production. Nothing about the plan changed — only the record of it.)*
+
+| task | state | evidence |
+|---|---|---|
+| **T0a** freeze the candidate manifest | ✅ **DONE** (executed 2026-08-13) | recorded at § T0 below |
+| **T1** import Caravan CAMELS-CH attributes | ✅ **MERGED** | `aca60e8` (PR #151) — `store/caravan_import.py`, `adapters/caravan_attributes.py` |
+| **T1b** onboarding design (no clobbering) | ✅ **MERGED** | same PR |
+| **T2** Caravan↔HydroATLAS alias map + D15/D16 static resolution | ✅ **MERGED** | same PR — `services/caravan_statics.py` |
+| **T0b** | ❌ **NOT BUILT** | "T0b, T3 remain out of scope for this pass, per plan" (§ below) |
+| **T3** gap-free 210-day forcing depth (G1) | ❌ **NOT BUILT** | as above; depends on **Plan 130** (READY, unimplemented) |
+
+**What merging T1/T2 did NOT do — and this is the operationally important part.** It shipped the
+*machinery* to import Caravan statics; it did not *run* an import and it did not add an operator
+entrypoint. Measured on the mac mini 2026-08-27: **0 basins carry a `caravan:`-prefixed key** and
+`basin_static_packages` holds **0 rows**. Because `cmal_pool_pt` declares
+`StaticNaming.CARAVAN` (`models/aquacast/_shim.py:467`) — strict namespaced resolution, no bare-name
+fallback — it currently resolves **none** of its ~50 statics on that deployment. Closing that is
+**Plan 188**, not this plan.
 
 **Fixer round 3 (2026-08-14)** addressed round-2's BLOCKER (manifest-scoped exit gate) and its 4
 majors (atomicity, compatibility/frame resolver divergence, test surface, docs) — see that section
-below for detail. Committed on `feat/plan-155-caravan-statics` (hold-at-PR).
+below for detail. Rounds 3 and 4 are in the merged history (`bc8f5d1`, `de150f4`).
 
 **Independent review status — 2026-08-14: THREE passes have run, the last a GO/NO-GO over the whole
 branch.** The round-3 fixes came back **no blockers, no majors** (4 minors, all closed in `2ab2dc8`).
