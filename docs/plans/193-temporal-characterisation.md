@@ -130,6 +130,15 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   side and **explicitly declines the attribution**, handing M-A8 the material rather than pre-empting
   its conclusion.
 
+  **Checked 2026-08-27 (T3), NOT a defect — resolution-group membership may be inferred on the
+  UNMASKED `on_grid` population.** D1 requires every derived statistic to come from the masked series,
+  and `infer_reporting_resolution` documents `on_grid` as its input, so this looked like a conflict —
+  especially on a track where M-A10 traced Lukla's anomaly to sentinels normalised over unmasked data.
+  Measured both ways: **zero of 26 stations change `group` or `resolution_mm`**, and the split stays
+  20/6, even though the mask removes 47 % of rows (1,925,073 → 1,021,316). Group membership is a
+  property of the instrument's reporting increment, not of the retained weather. Recorded so it is not
+  re-raised.
+
 - **D7 — Olangchunggola's 03 UTC peak is REPORTED, not adjudicated.** M-A10 retired Lukla's anomaly but
   left this one open on different grounds: zero sentinels, immovable across the ablation ladder, and
   **no co-located station exists**, so no gauge-vs-gauge adjudication is possible. M-A7 records its
