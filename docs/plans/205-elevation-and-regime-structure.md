@@ -227,6 +227,31 @@ it was published with (D2).
 outputs proven non-empty before comparison, byte-identical apart from the generated-at line (D8); then
 `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`.
 
+**PINNED 2026-08-27 — four points T3's text leaves open.** Its two predecessors needed the same block;
+this one is shorter because the plan already pins the science.
+- **Q1 — fixed table inventory**, one per Exit clause: (a) the within-Group-B elevation relationship;
+  (b) Group A per station; (c) the group × band cross-tabulation with the non-overlapping ranges and
+  the between-group unidentified statement; (d) the `2,000–3,000 m` band's group-split q99/q50 ratios
+  as D3's only evidence; (e) the apparent rain-phase gradient with all four sensitivity legs and
+  per-station rain-hour counts; (f) the observed AWS0/AWS1 same-elevation discrepancy; (g) consumed
+  inputs, the fit window, and the seed if one is used.
+- **Q2 — the locked headline set is SMALL and NAMED**: the within-Group-B correlation for each of the
+  two assembled quantities; the apparent gradient at all four screens with its intervals; the fit
+  window endpoints; and the AWS0/AWS1 wet-hour-count and rain-amount ratios. Nothing else. A snapshot
+  of every station × quantity would break on any legitimate change and read as a regression.
+- **Q3 — if the report renders ANY bootstrap-derived quantity** (M-A7 adequacy designations and
+  intervals are bootstrap-derived, and D2 requires assembled numbers to keep their companions),
+  **it seeds from one named constant and prints it**, as `ma7_run.REPORT_SEED` does. Phase 1 uses no
+  RNG; if T3 introduces none either, say so in the report rather than leaving it ambiguous.
+- **Q4 — the gradient is rendered with D4's mandatory name and P1's window.** "Apparent rain-phase
+  gradient, uncorrected for wind catch", fitted **2009-01-01 → 2018-05-09**, with AWS0 named as
+  excluded and AWS4 named as the station that sets the window's end. ⛔ Never "the precipitation
+  gradient", and never without the period.
+
+Refusals and inadequate values render as explicit absences with their reasons, never as blanks, zeros
+or dropped rows — the convention Plan 184 T6 P3 and Plan 193 T4 P5 already establish; it is not
+restated here.
+
 ```json
 {
   "phases": [
