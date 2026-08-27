@@ -1,5 +1,19 @@
 enable_observation_alerts = true
 
+# Plan 026 multi-model combination, enabled on this deployment 2026-08-27.
+# `primary` (the default) runs the priority fallback chain and stops at the
+# first success — one forecast per station per cycle, so a lower-priority
+# model only ever runs when a higher-priority one FAILS. `pooled` runs EVERY
+# assigned model and additionally stores a `_pooled` grand ensemble
+# (`combination_strategy`/`source_model_ids`, fallback-tier models excluded
+# from the combination by ModelTier, not by priority).
+#
+# Enabled because the Forecast Lab export (Plan 198) exists to COMPARE models,
+# and under `primary` it could only ever see one. Measured cost on this box:
+# 2 -> 12 forecasts per cycle for +40s (425.0s -> 465.5s), because the cycle is
+# ~95% NWP download, which is fixed per cycle and independent of model count.
+forecast_combination_strategy = "pooled"
+
 # Plan 111 route-C BAFU forecast collector. Setting this path ENABLES the
 # hourly collect-bafu-forecasts flow (gated: unset = no-op). Quarantined,
 # host-persistent named volume (docker-compose.yml `bafu_forecast_archive`);
