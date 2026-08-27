@@ -32,6 +32,18 @@ from scripts.dhm_precip.evaluate import (
     validate_expectation_coverage,
 )
 from scripts.dhm_precip.expectations import load_expectations
+from scripts.dhm_precip.ma6_estimands import ElevationBand
+from scripts.dhm_precip.ma6_pairs import Scale
+from scripts.dhm_precip.ma6_run import (
+    DEFAULT_PRECIP_DATA_ROOT,
+    DEFAULT_PYRAMID_DIR,
+    DEFAULT_T2M_DATA_ROOT,
+    BandMagnitudeCell,
+    MagnitudeKind,
+    StationMagnitudeCell,
+    _production_inputs,
+    run_ma6_comparison,
+)
 from scripts.dhm_precip.manifest_io import read_manifest
 from scripts.dhm_precip.params import DEFAULT_PARAMS
 from scripts.dhm_precip.run import run as run_pipeline
@@ -368,3 +380,104 @@ class TestColocRunnerReachesItsReportAgainstTheRealWorkbook:
         for pair in COLOCATED_PAIRS:
             assert f"### {pair.dhm_station} vs {pair.pyramid_station}" in text
         assert "n DHM retained (this window)" in text
+
+
+class TestMa6ReportHeadlineNumbers:
+    """Plan 184 (M-A6) T6 P1 — the SMALL, NAMED headline set, and nothing
+    else. Computed ONCE (`run_ma6_comparison` over the real production
+    wiring) and reused across every assertion below, since the full
+    26-station M-A6 pipeline is expensive to run: real orography, t2m and
+    neighbouring-cell reads. A snapshot of the whole result matrix would
+    break on any legitimate change and read as a regression; this locks
+    only the specific numbers a reader would quote (P1)."""
+
+    @pytest.fixture(scope="class")
+    def report(self):
+        inputs = _production_inputs(
+            precip_data_root=DEFAULT_PRECIP_DATA_ROOT,
+            t2m_data_root=DEFAULT_T2M_DATA_ROOT,
+            pyramid_dir=DEFAULT_PYRAMID_DIR,
+        )
+        return run_ma6_comparison(inputs)
+
+    def _band_cell(self, report, *, band: ElevationBand, kind: MagnitudeKind):
+        return next(
+            c
+            for c in report.band_magnitudes
+            if isinstance(c, BandMagnitudeCell)
+            and c.band == band
+            and c.scale == Scale.JJAS
+            and c.kind == kind
+        )
+
+    def test_band_wet_hour_bias_gauge_alone_below_700m(self, report) -> None:
+        cell = self._band_cell(
+            report,
+            band=ElevationBand.BELOW_700M,
+            kind=MagnitudeKind.WET_HOUR_CONDITIONAL_INTENSITY_BIAS_GAUGE_ALONE,
+        )
+        assert cell.mean_value == pytest.approx(2.21973, abs=1e-4)
+
+    def test_band_wet_hour_bias_gauge_alone_above_3000m(self, report) -> None:
+        cell = self._band_cell(
+            report,
+            band=ElevationBand.ABOVE_3000M,
+            kind=MagnitudeKind.WET_HOUR_CONDITIONAL_INTENSITY_BIAS_GAUGE_ALONE,
+        )
+        assert cell.mean_value == pytest.approx(0.43005, abs=1e-4)
+
+    def test_band_wet_hour_bias_joint_below_700m(self, report) -> None:
+        cell = self._band_cell(
+            report,
+            band=ElevationBand.BELOW_700M,
+            kind=MagnitudeKind.WET_HOUR_CONDITIONAL_INTENSITY_BIAS_JOINT,
+        )
+        assert cell.mean_value == pytest.approx(1.74897, abs=1e-4)
+        assert sum(cell.member_ns) == 9673
+
+    def test_band_wet_hour_bias_joint_above_3000m(self, report) -> None:
+        cell = self._band_cell(
+            report,
+            band=ElevationBand.ABOVE_3000M,
+            kind=MagnitudeKind.WET_HOUR_CONDITIONAL_INTENSITY_BIAS_JOINT,
+        )
+        assert cell.mean_value == pytest.approx(0.07561, abs=1e-4)
+        assert sum(cell.member_ns) == 4464
+
+    def test_within_cell_pair_kirtipur_khumaltar(self, report) -> None:
+        pair = report.within_cell_pair
+        assert pair.sum_a_mm == pytest.approx(7758.6, abs=0.1)
+        assert pair.sum_b_mm == pytest.approx(5672.0, abs=0.1)
+        assert pair.accumulated_difference_mm == pytest.approx(2086.6, abs=0.1)
+        assert pair.n_common_retained == 47_377
+
+    def _djf_mass_fraction(self, report, *, station_name: str):
+        cell = next(
+            c
+            for c in report.station_magnitudes
+            if isinstance(c, StationMagnitudeCell)
+            and str(c.station) == station_name
+            and c.scale == Scale.DJF
+            and c.kind == MagnitudeKind.CONDITIONAL_ACCUMULATED_DIFFERENCE
+        )
+        return cell.mass_fraction
+
+    def test_djf_sub_freezing_mass_fraction_syangboche(self, report) -> None:
+        mf = self._djf_mass_fraction(report, station_name="Syangboche Airport")
+        assert mf.sub_freezing_mass_fraction == pytest.approx(0.9596, abs=1e-4)
+        assert mf.n == 9214
+
+    def test_djf_sub_freezing_mass_fraction_humde(self, report) -> None:
+        mf = self._djf_mass_fraction(report, station_name="Humde Airport")
+        assert mf.sub_freezing_mass_fraction == pytest.approx(0.5158, abs=1e-4)
+        assert mf.n == 10532
+
+    def test_djf_sub_freezing_mass_fraction_olangchunggola(self, report) -> None:
+        mf = self._djf_mass_fraction(report, station_name="Olangchunggola")
+        assert mf.sub_freezing_mass_fraction == pytest.approx(0.2663, abs=1e-4)
+        assert mf.n == 6876
+
+    def test_djf_sub_freezing_mass_fraction_lukla(self, report) -> None:
+        mf = self._djf_mass_fraction(report, station_name="Lukla Airport")
+        assert mf.sub_freezing_mass_fraction == pytest.approx(0.0510, abs=1e-4)
+        assert mf.n == 6248
