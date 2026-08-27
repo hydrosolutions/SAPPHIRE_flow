@@ -91,6 +91,31 @@ So the mechanism needs something further, and **T1 remains a real investigation,
 chain is recorded because its components are verified even though the whole is not: the two tests do
 call those configurators, and `logging.py:53` does bind a `StreamHandler`.
 
+## Reproduction attempts that FAILED — do not re-tread these (2026-08-27)
+
+Eleven combinations were measured. **None reproduce outside a full sequential `tests/unit/` run.** The
+trigger appears to need broad state accumulation across the suite, not one bad neighbour:
+
+| Attempt | Result |
+|---|---|
+| The 4 affected files alone | 124 passed |
+| `tests/unit/services/` alone | 1003 passed |
+| `ops` + victims / `scripts` + victims / `api` + victims / `adapters` + victims | all passed |
+| `flows` + victim | 526 passed |
+| `test_logging_override.py` + victim | 18 passed |
+| `cli` + `tools` + `ops` + victim | 403 passed |
+| The review's chain (`export_forecast_lab` + `acquire_era5_cli` + victim) | 41 passed |
+| …plus the caching step (`+ services/test_operational_inputs.py`) | 78 passed |
+| A ddmin candidate subset (config + flows + `acquire_era5_cli` + victim) | 119 passed |
+
+**An independent Codex agent was given a writable sandbox to bisect the collected order empirically. Its
+run DIED on a network failure (websocket/DNS) partway through**, leaving only a partial delta-debugging
+candidate set — which, tested by hand, also did not reproduce.
+
+**What this tells T1:** the bisect must run against the FULL collected order and shrink from there
+(pytest `--deselect` over halves), not build up from suspects. Building up has now failed eleven times.
+Budget for it accordingly — each full sequential iteration is ~8.5 min locally.
+
 ## Tasks
 
 ### T1 — Name the polluter
