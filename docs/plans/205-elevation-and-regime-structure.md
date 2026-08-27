@@ -75,7 +75,14 @@ either. n = 5.
 - **D1 — Elevation is analysed WITHIN each reporting-resolution group; only the BETWEEN-group
   contrast is reported as unidentified.** Group B (20 stations, 67–2,147 m) is the primary elevation
   analysis and Group A (6 stations, 2,490–3,700 m) is reported beside it, each at fixed resolution, each
-  carrying its own `n`. **⛔ Do not fit a model with both elevation and group as terms across the whole
+  carrying its own `n`. **Group A is analysed PER STATION, not per band** — it occupies exactly two
+  D5a bands with three stations each, so a band-level "relationship" there is two points and must not be
+  presented as a trend.
+
+  **⛔ A within-group elevation relationship is DESCRIPTIVE too.** Holding reporting resolution constant
+  removes one confound, not all: exposure, siting, catchment character and monsoon dynamics all co-vary
+  with elevation across Group B's 2,080 m. Report the relationship; do not call it an elevation
+  *effect*. **⛔ Do not fit a model with both elevation and group as terms across the whole
   sample** — the groups' elevation ranges do not overlap, so no data constrains the group term against
   an elevation jump at the gap, and the fit reports an assumption rather than a measurement. **⛔ Do not compare a Group A number to a
   Group B number and attribute the difference to either factor.** The between-group statement is a
@@ -98,7 +105,9 @@ either. n = 5.
   **rain-only screening is what makes the claim legitimate**, because it is the condition under which
   M-A10's "undercatch largely cancels" is actually true. Screen on **Pyramid's OWN `AT`** — every RR station
   carries it, so this needs no cross-source pairing and inherits none of Plan 184 D7's cell-vs-point
-  caveat — at D4/D14's 1.5 °C with the 0 °C and 2 °C sensitivity M-A6 already uses; restrict to JJAS;
+  caveat — at D4/D14's 1.5 °C with M-A6's 0 °C and 2 °C sensitivity **extended upward to 4 °C** —
+  1.5 °C still admits wet snow and mixed phase, which catch poorly, so the upward leg tests whether the
+  gradient survives an unambiguous rain screen; restrict to JJAS;
   and **⛔ never extrapolate above the rain line.**
 
   *This screen DEFINES the estimand (a rain-phase gradient); it does not gate a reported magnitude.*
@@ -117,7 +126,17 @@ either. n = 5.
   transect, so observed precipitation declines FASTER than true precipitation
   (`d log(obs)/dz = d log(true)/dz + d log(CE)/dz`, second term negative). The apparent gradient is
   therefore an **UPPER bound in magnitude on any true decline** — the true decline is no steeper than
-  the apparent one, and could in principle be nil, with the whole apparent decline being catch. The snow-dominated high basins —
+  the apparent one, and could in principle be nil, with the whole apparent decline being catch.
+
+  **⛔ (iii) DO NOT stop at the caveat — TEST the confound, because the data to do it is already in
+  hand.** Pyramid's own files carry wind: the header is `year;month;day;hour;AT;RR;AP;RH;WS;WD`, and
+  `pyramid_loader` is column-generic (`PRECIP_COLUMN = "RR"` and `AIR_TEMP_COLUMN = "AT"` are constants
+  passed to one reader), so `WS` costs a constant and a call, not an ingestion workstream. Rain catch
+  efficiency approaches 1 at low wind more or less regardless of elevation, so **recompute the gradient
+  on successively lower-wind subsets and report whether it converges** (P4). If the gradient flattens as
+  wind falls, the apparent decline was substantially catch; if it is stable, it is substantially
+  precipitation. That converts an untestable caveat into a measurement, and it is the difference between
+  a bound that admits zero and a number that could inform a forcing correction. The snow-dominated high basins —
   where the flood interest sits — remain out of reach by this route, and the report says so.
 
 - **D5 — The gradient is signed as a RAIN-PHASE gradient, never as "the precipitation lapse rate".**
@@ -178,8 +197,9 @@ elevation ranges do not overlap on the current population.
 **In:** the **apparent rain-phase gradient, uncorrected for wind catch** (D4's mandatory name) over
 the Pyramid RR stations sharing P1's common window — **five stations, AWS0 excluded** (its record ends
 2005) — rain-screened per D4 with the 0 °C / 2 °C sensitivity, hour-of-day exposure equalised (D9),
-carrying its own `n` per station, and reported beside D6's **observed** AWS0/AWS1 same-elevation
-discrepancy with that pair's own caveats.
+carrying its own `n` per station, reported beside D6's **observed** AWS0/AWS1 same-elevation
+discrepancy with that pair's own caveats, and accompanied by **P4's low-wind convergence series** with
+its per-step rain-hour counts.
 **The rain line is MEASURED, not assumed** — report the
 per-station rain-phase hour counts up the transect and let them show where the estimate stops being
 supportable; pre-registering an elevation would be exactly the pre-registered threshold vision D8
@@ -197,6 +217,14 @@ forbids.
 - **P3 — the fit is an ordinary least-squares line of `log(rain-phase mean hourly intensity)` on station
   elevation, reported as **% per km** with its interval, alongside the raw per-station values and their
   `n`. One form, named, so two implementations are comparable.
+- **P4 — the wind test is a CONVERGENCE SERIES, not a threshold.** Recompute P3's fit on successively
+  lower-wind subsets and report the sequence of slopes, so a reader sees whether the gradient flattens
+  (catch-dominated) or holds (precipitation-dominated). **⛔ Do not pre-register a wind cut-off** —
+  vision D8 forbids it, and the series is more informative than any single one would be.
+  **Feasibility is reported BEFORE the fit**: give the low-wind rain-hour count per station in the
+  common window at each step of the series, so a reader can see where the top of the transect runs out
+  of support. If it runs out immediately, say so — that is a result, and the all-wind upper bound stands
+  as the honest deliverable.
 **Out:** any extrapolation above the rain line; any snow-phase or all-phase gradient; any claim framed
 as "the precipitation lapse rate" (D5); any comparison to an ERA5-Land-derived gradient (D5).
 **Verify:** `uv run pytest tests/unit/scripts/test_ma8_gradient.py -q`, including a test that an
@@ -232,8 +260,10 @@ analysis at fixed reporting resolution** — Group B (20 stations, 2,080 m of re
 contrast is unidentified in this sample**, supported by the non-overlapping group ranges and by the
 one band containing both; and the **apparent rain-phase gradient,
 uncorrected for wind catch**, fitted on P1's common window over the five qualifying Pyramid stations,
-signed as an **upper bound in magnitude** on any true decline, and reported beside the **observed**
-AWS0/AWS1 same-elevation discrepancy with that pair's n = 1 and older-window caveats attached.
+signed as an **upper bound in magnitude** on any true decline; **the low-wind convergence series that
+tests how much of that apparent decline is catch rather than precipitation**, with its per-step support
+counts; and the **observed** AWS0/AWS1 same-elevation discrepancy with that pair's n = 1 and
+older-window caveats attached.
 
 ## Non-goals
 
