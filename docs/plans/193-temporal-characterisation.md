@@ -65,8 +65,22 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   on a divergence or a prediction error, never on an r. *(This track withdrew an r = 0.998 result as a
   quantile-vector artefact; that error must not recur in a new costume.)*
 
+  **PINNED 2026-08-27 (independent review) — the headline IS `leave_one_out_tail_prediction_error`,
+  which already exists.** `scripts/dhm_precip/stats_precision.py:169` predicts each held-out station's
+  **q99** as `median_i × pooled_ratio(excluding i)` and returns `median_abs_error`, `min_error`,
+  `max_error`, `within_25pct_fraction`. Use it. "A divergence **or** a prediction error" left the
+  support, the target and the pooling population open, so two compliant implementations would publish
+  incomparable headlines — and reusing the repo's own formulation also keeps M-A7 comparable with the
+  work that precedes it. Compute it on the MASKED series (D1); shape similarity stays a secondary
+  statistic.
+
 - **D4 — Frequency statistics use the 0.2 mm/h harmonised floor; mass statistics use unthresholded
   values** (vision D5). Never mixed, and which is which is stated beside every number.
+
+  **PINNED 2026-08-27 — the mass estimand is the station's TOTAL RETAINED PRECIPITATION MASS in mm**
+  over the reported period, unthresholded, carrying its retained-hour `n`. "A mass statistic" admitted
+  a total, a mass-weighted distribution or a mass fraction, each satisfying the text and producing a
+  different number.
 
 - **D5 — Body and tail reported separately with bootstrap uncertainty. M-A7 MEASURES tail
   transferability; it inherits no number.** **⛔ Do NOT cite "−49 % to +241 %" as established** — it is
@@ -74,6 +88,12 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   **unmasked** data, and assigned to *this* milestone (vision `:47` bars such figures until M-A7
   lands); a masked recomputation differs materially. **No figure is pre-registered** (vision D8): M-A7
   computes the range and that becomes the first reproducible value.
+
+  **PINNED 2026-08-27 — the body/tail split is q50 / q99**, matching
+  `stats_precision.py:169`'s own choice. D5 required the two to be reported separately without saying
+  where one ends; q95, q99 and q99.9 are all defensible and would materially change the reported
+  transferability. **Body = the distribution up to q50; tail = q99.** One definition, and it is the one
+  the precursor already uses.
 
 - **D5a — The elevation bands are NAMED HERE, once, chosen a priori from the cited literature.**
   `< 700 m` / `700–2,000 m` / `2,000–3,000 m` / `≥ 3,000 m`, giving **9 / 9 / 5 / 3** of the 26
@@ -128,6 +148,16 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   mislabels D9's adequacy flag: measured, **Lete reads 4/inadequate instead of 5/adequate, and
   Olangchunggola 5/adequate instead of 4/inadequate.**
 
+  **⛔ CORRECTED 2026-08-27 (independent review) — "where retention supports them" IS a completeness
+  threshold, and this decision forbids completeness thresholds in the same breath.** The two halves
+  contradict each other, and an implementer could legitimately report a different set of seasons per
+  station. **Resolved in favour of the no-threshold rule:** report **all four seasons — MAM, JJAS, ON,
+  DJF — for every station**, each carrying its own exposure, its `n_season_years` and its adequacy
+  designation. A season resting on few retained hours is **labelled**, never omitted, because omitting
+  it silently tells a reader the season was not informative when in fact it was not reported. JJAS
+  stays *primary* in the sense that it leads the report and carries the headline — not in the sense
+  that other seasons are conditional on passing a bar.
+
 - **D9 — Bootstrap by resampling whole SEASON-YEARS, and carry the precedent's ADEQUACY FLAG.**
   Precipitation is strongly serially correlated, so hour-level resampling would break serial
   dependence and return falsely tight intervals. Follow `coloc_bootstrap`'s season-year precedent —
@@ -144,6 +174,14 @@ first (`coloc_run.py:440`). The contamination claim above stands on its own.
   So: every interval carries its `n_season_years` and its adequacy designation, and an inadequate
   interval is labelled, never suppressed. **Do NOT filter stations on it** — that is exactly the
   filter-on-retention error Plan 184 D13 forbids; stratify and label instead.
+
+  **PINNED 2026-08-27 — the interval construction is named, because the precedent does not supply it.**
+  `coloc_bootstrap` returns a circular range of peak hours and takes caller-supplied RNG and resample
+  settings, so "follow the precedent" fixes the RESAMPLING UNIT (whole season-years) and the ADEQUACY
+  FLAG (≥ 5 season-years, Plan 182 D5) but leaves the interval itself undefined. Fix all three:
+  **percentile method, 2.5 / 97.5 bounds, 2,000 resamples, and an INJECTED seeded RNG** (CLAUDE.md
+  forbids reaching for module-level randomness in logic that must be testable). A report that cannot be
+  reproduced bit-for-bit fails the same Exit condition M-A6's report failed on 2026-08-27.
 
 - **D10 — Consume Plan 184 T1's GAUGE-ONLY masked population; do not build a second one, and do not
   depend on the rest of Plan 184.** *(The one cross-plan coupling, deliberate and narrow.)* Two
@@ -181,6 +219,10 @@ reported separately with season-year bootstrap intervals carrying their adequacy
 **Verify:** `uv run pytest tests/unit/scripts/test_ma7_intensity.py -q`, including a test that asserts
 the **value** of a mass statistic equals the unthresholded computation and differs from the
 thresholded one — assert on the number, not on input provenance, for the same reason as T1.
+**Exposure (added 2026-08-27, independent review):** every distribution carries its **retained wet-hour
+count and its total retained-hour count**, exactly as T1's profiles carry per-hour exposure. The Exit
+requires exposure on distributions AND profiles; without this, the tasks did not entail the Exit and an
+implementer could satisfy every task and still miss the milestone.
 
 ### T3 — transferability and elevation stratification (depends: T1, T2)
 **In:** the quantified statement of what transfers between stations, expressed as a divergence or a
@@ -195,7 +237,10 @@ would contradict D3, which permits profile-shape correlation as a secondary stat
 ### T4 — report and Exit (depends: T1–T3)
 **In:** one runner writing the markdown report and tables to `--out` (M-A10 shape), every profile and
 distribution carrying its exposure, every result labelled conditional-on-retention; results folded into
-`docs/design/dhm-precipitation-milestones.md`, this track's only durable record. **Out:** any
+`docs/design/dhm-precipitation-milestones.md`, this track's only durable record.
+⛔ **The runner writes ONLY under `--out`; folding results into the milestones document is a HUMAN
+step** (Plan 184 T6 P5). A runner that rewrites this track's only durable record lets a rerun silently
+restate history. **Out:** any
 disaggregator design or Phase-2 recommendation.
 **Verify:** `$ENV uv run python scripts/dhm_precip/ma7_run.py --out <dir>` then
 `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`
