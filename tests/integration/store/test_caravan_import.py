@@ -353,7 +353,7 @@ class TestImportCaravanAttributes:
         )
 
         assert result.provenance.source_dataset_version == (
-            "unconfirmed@delivered-2026-08-13"
+            "initial@delivered-2026-08-13"
         )
 
     def test_content_fingerprint_is_stable_across_identical_imports(
@@ -990,3 +990,157 @@ class TestTransactionGuard:
         finally:
             conn.rollback()
             conn.close()
+
+
+class TestReplaceNamespacedAttributes:
+    """Plan 188 T3 (D4) -- the one missing recovery primitive:
+    ``merge_namespaced_attributes`` refuses a changed value under an
+    already-merged ``caravan:`` key by design; this is the targeted
+    correction helper for the rare re-delivered-parquet case."""
+
+    def test_replaces_a_changed_caravan_value(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgBasinStore(db_connection)
+        # A code distinct from "2009": `TestMergeNamespacedAttributesConcurrency`
+        # (above) commits a REAL basin under "2009" on the shared session-scoped
+        # `db_engine`, permanently, so a later `db_connection`-rolled-back test
+        # reusing that code would collide on `uq_basins_network_code`.
+        basin = _make_basin(code="T188-REPL-3", attributes={"area": 100.0})
+        store.store_basin(basin)
+        store.merge_namespaced_attributes(basin.id, attributes={"caravan:area": 250.0})
+
+        store.replace_namespaced_attributes(
+            basin.id, attributes={"caravan:area": 999.0}
+        )
+
+        fetched = store.fetch_basin(basin.id)
+        assert fetched is not None
+        assert fetched.attributes["caravan:area"] == 999.0
+        assert fetched.attributes["area"] == 100.0  # incumbent untouched
+
+    def test_rejects_a_key_without_the_prefix(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgBasinStore(db_connection)
+        basin = _make_basin(code="T188-REPL-4", attributes={"area": 100.0})
+        store.store_basin(basin)
+
+        with pytest.raises(ValueError, match="caravan:"):
+            store.replace_namespaced_attributes(basin.id, attributes={"area": 999.0})
+
+        fetched = store.fetch_basin(basin.id)
+        assert fetched is not None
+        assert fetched.attributes["area"] == 100.0  # rejected call touched nothing
+
+    def test_refuses_an_autocommit_connection(self, db_engine: sa.Engine) -> None:
+        basin_id = BasinId(uuid.uuid4())
+        with db_engine.connect() as seed_conn:
+            PgBasinStore(seed_conn).store_basin(
+                _make_basin(code="T188-REPL-AUTOCOMMIT", basin_id=basin_id)
+            )
+            seed_conn.commit()
+
+        conn = db_engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            with pytest.raises(RuntimeError, match="AUTOCOMMIT"):
+                PgBasinStore(conn).replace_namespaced_attributes(
+                    basin_id, attributes={"caravan:area": 1.0}
+                )
+        finally:
+            conn.close()
+
+    def test_concurrent_replacements_serialise_a_then_b_never_interleave(
+        self, db_engine: sa.Engine
+    ) -> None:
+        """Real two-connection concurrency (mirrors
+        `TestMergeNamespacedAttributesConcurrency` above): unlike the merge
+        path, replace does not raise on a differing concurrent value -- it
+        REPLACES -- so the property to prove is ORDERING, not mutual
+        exclusion: B's write must land on top of A's already-committed
+        value, never an interleaved read-modify-write of a stale
+        snapshot. A delay injected right after each thread's first
+        `execute()` (its `SELECT ... FOR UPDATE`) forces a genuine
+        interleaving attempt; without the lock, both threads would read
+        the pre-write snapshot and the loser's commit would silently
+        overwrite the winner's with no trace that the OTHER key
+        (`caravan:elevation`, untouched by either thread) survives intact.
+        """
+        basin_id = BasinId(uuid.uuid4())
+        with db_engine.connect() as seed_conn:
+            PgBasinStore(seed_conn).store_basin(
+                _make_basin(
+                    code="T188-REPL-CONCURRENCY",
+                    basin_id=basin_id,
+                    attributes={"caravan:elevation": 500.0},
+                )
+            )
+            seed_conn.commit()
+
+        barrier = threading.Barrier(2)
+        # `lock_acquired_at` is stamped the instant each thread's FIRST
+        # statement (the `SELECT ... FOR UPDATE`) returns -- i.e. the
+        # instant Postgres actually grants that thread the row lock,
+        # whether it was free immediately or the thread had to block on
+        # it. This is the timestamp that discriminates "genuinely
+        # serialised" from "both raced through": a working lock forces
+        # the SECOND thread's SELECT to return only after the FIRST
+        # thread's commit releases it.
+        lock_acquired_at: dict[str, float] = {}
+        committed_at: dict[str, float] = {}
+
+        def _attempt(value: float, key: str) -> None:
+            with db_engine.connect() as conn:
+                conn.begin()
+                orig_execute = conn.execute
+                state = {"first_call_done": False}
+
+                def _delayed_execute(*args: object, **kwargs: object) -> object:
+                    result = orig_execute(*args, **kwargs)  # type: ignore[arg-type]
+                    if not state["first_call_done"]:
+                        state["first_call_done"] = True
+                        lock_acquired_at[key] = time.monotonic()
+                        time.sleep(0.05)
+                    return result
+
+                conn.execute = _delayed_execute  # type: ignore[method-assign]
+                store = PgBasinStore(conn)
+                barrier.wait(timeout=10)
+                store.replace_namespaced_attributes(
+                    basin_id, attributes={"caravan:area": value}
+                )
+                conn.commit()
+                committed_at[key] = time.monotonic()
+
+        t_a = threading.Thread(target=_attempt, args=(100.0, "a"))
+        t_b = threading.Thread(target=_attempt, args=(200.0, "b"))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=15)
+        t_b.join(timeout=15)
+
+        assert not t_a.is_alive() and not t_b.is_alive(), "race threads hung"
+        assert set(committed_at) == {"a", "b"}
+
+        # Serialised, not interleaved: the second thread's lock-acquire
+        # (its `SELECT ... FOR UPDATE` returning) happened only after the
+        # FIRST thread already committed -- proof the row lock actually
+        # blocked it, rather than both threads racing through the read
+        # window concurrently (which the merge-path test's docstring
+        # calls out as "timing-luck, not a reliable proof" without this
+        # injected delay).
+        first, second = sorted(committed_at, key=lambda k: committed_at[k])
+        assert lock_acquired_at[second] >= committed_at[first], (
+            f"{second}'s lock acquire was not blocked by {first}'s lock: "
+            f"lock_acquired_at={lock_acquired_at}, committed_at={committed_at}"
+        )
+
+        with db_engine.connect() as check_conn:
+            fetched = PgBasinStore(check_conn).fetch_basin(basin_id)
+        assert fetched is not None
+        # The later committer's value wins -- ordering, not a raise.
+        winning_value = 100.0 if second == "a" else 200.0
+        assert fetched.attributes["caravan:area"] == winning_value
+        # The untouched sibling key survives -- proves this used a JSONB
+        # merge, not a wholesale attributes replacement.
+        assert fetched.attributes["caravan:elevation"] == 500.0

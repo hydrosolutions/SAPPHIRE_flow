@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from sapphire_flow.db.metadata import basin_versions, basins
 from sapphire_flow.exceptions import ConfigurationError
-from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store._helpers import require_real_transaction, utc_from_row
 from sapphire_flow.types.basin import Basin, BasinCorrectionResult
 from sapphire_flow.types.ids import BasinId, BasinVersionId, PackageId
 
@@ -246,6 +246,81 @@ class PgBasinStore:
         )
         if result.first() is None:
             raise ValueError(f"merge_namespaced_attributes: basin {basin_id} not found")
+
+    def replace_namespaced_attributes(
+        self,
+        basin_id: BasinId,
+        *,
+        attributes: dict[str, Any],
+    ) -> None:
+        """Plan 188 T3 (D4) -- the ONE missing recovery primitive:
+        ``merge_namespaced_attributes`` refuses a changed value under an
+        already-merged ``caravan:``-namespaced key by design; this is its
+        sibling for the rare case a delivered value genuinely needs
+        correcting (a re-delivered, corrected parquet). It is deliberately
+        NOT ``update_basin_from_package`` (the correction branch) -- that
+        replaces `attributes`/geometry/area wholesale and always flags
+        incumbent artifacts as `material_change`, a sledgehammer for one
+        changed static.
+
+        Same structural guard as ``merge_namespaced_attributes``: every key
+        in ``attributes`` must carry the hardcoded ``"caravan:"`` prefix
+        (D15) -- not a caller-suppliable parameter -- so this remains
+        structurally incapable of touching a non-namespaced attribute
+        (e.g. ``area``) even by mistake.
+
+        Unlike ``merge_namespaced_attributes``, this method calls
+        ``require_real_transaction`` itself rather than trusting an
+        upstream orchestrator to have checked it: there is no
+        ``run_operational_...`` wrapper in front of this recovery
+        primitive, so the guard has to live here or it would silently not
+        exist for a direct caller. ``SELECT ... FOR UPDATE`` locks this
+        basin's row for the remainder of the caller's transaction (same
+        mechanism as ``merge_namespaced_attributes``'s TOCTOU fix) so a
+        second concurrent caller blocks until the first commits; because
+        this method does not compare against the current value (it
+        REPLACES, it does not refuse), the two callers do not raise on
+        each other -- they serialise, and the later committer's value
+        wins for any overlapping key. This is NOT "not last-write-wins"
+        (that guarantee is unachievable once replacement is permitted at
+        all, Plan 188 T3) -- what the lock buys is ORDERING: B's own
+        ``UPDATE`` is guaranteed to run against A's already-committed
+        row, never an interleaved read-modify-write of a stale snapshot.
+        """
+        bad_keys = sorted(k for k in attributes if not k.startswith(_CARAVAN_PREFIX))
+        if bad_keys:
+            raise ValueError(
+                f"replace_namespaced_attributes refuses key(s) without the "
+                f"{_CARAVAN_PREFIX!r} prefix: {bad_keys} -- this recovery path is "
+                "guarded to be structurally incapable of touching an "
+                "existing (non-namespaced) attribute"
+            )
+        require_real_transaction(self._conn, caller="replace_namespaced_attributes")
+        locked = (
+            self._conn.execute(
+                sa.select(basins.c.id).where(basins.c.id == basin_id).with_for_update()
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if locked is None:
+            raise ValueError(
+                f"replace_namespaced_attributes: basin {basin_id} not found"
+            )
+        result = self._conn.execute(
+            sa.update(basins)
+            .where(basins.c.id == basin_id)
+            .values(
+                attributes=sa.func.coalesce(
+                    basins.c.attributes, sa.cast(sa.literal("{}"), JSONB)
+                ).op("||")(sa.literal(attributes, type_=JSONB))
+            )
+            .returning(basins.c.id)
+        )
+        if result.first() is None:
+            raise ValueError(
+                f"replace_namespaced_attributes: basin {basin_id} not found"
+            )
 
     def update_basin_from_package(
         self,
