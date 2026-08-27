@@ -93,8 +93,9 @@ import json
 import shutil
 import socket
 import stat
+import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -199,7 +200,27 @@ SLACK_POST_TIMEOUT_S = 5.0
 # the plist's 300 s `StartInterval` even in the all-failing, all-alerting
 # case (~45s), so a slow dead-man endpoint cannot cause tick overlap.
 DEADMAN_POST_TIMEOUT_S = 5.0
+# Plan 195 D4: `launchctl list` timeout. "Finite" alone was too weak — a
+# timeout anywhere near the plist's 300 s `StartInterval` would consume the
+# whole cadence and delay every later probe (BAFU, forecast freshness,
+# state persistence, dead-man). 5.0 s matches the budget above.
+LAUNCHD_PROBE_TIMEOUT_S = 5.0
 ALERT_REPEAT_EVERY = 6  # every 6th consecutive failure (~30 min at 5 min tick)
+
+# Plan 195 D2: the installer-managed launchd labels this watchdog monitors —
+# scripts/launchd/install-launchd.sh's PLISTS, minus the watchdog's own
+# label (it cannot observe its own failure; Plan 163's dead-man switch
+# covers that separately, within ~20 min). `-recap-probe` and
+# `-nepal-forcing` are deliberately excluded: manually bootstrapped, not
+# installer-managed (docs/operations/recap-probe-runbook.md,
+# docs/operations/nepal-forcing-runbook.md). An explicit constant, not a
+# read of the installer script at runtime (Bash array, not Python-
+# importable) — kept honest by a parity test in test_watchdog.py that
+# fails the suite if PLISTS gains a label this constant does not also gain.
+MONITORED_LAUNCHD_LABELS: tuple[str, ...] = (
+    "ch.hydrosolutions.sapphire",
+    "ch.hydrosolutions.sapphire-docker-prune",
+)
 
 # Plan 163 T1: the exception set an outbound HTTP call site must contain so
 # a malformed URL or transport failure can never kill a watchdog tick.
@@ -228,6 +249,17 @@ DiskNotificationKind = Literal["low", "recovered"]
 # never be confused for a value meant for the backup conditions' format
 # functions, same reasoning as `BackupDeviceNotificationKind` vs
 # `BackupNotificationKind`.
+LaunchdNotificationKind = Literal["failing", "recovered"]
+# Plan 195 D3: per-label transition-latched notification kind for a
+# monitored launchd agent's last-exit-status verdict — same shape as
+# BackupNotificationKind above, deliberately a separate Literal so the two
+# conditions (backup staleness vs. agent health) can never be confused for
+# one another's format function.
+LaunchdProbeNotificationKind = Literal["unreadable", "readable"]
+# Plan 195 D4: the launchd probe ITSELF being unreadable (timeout, missing
+# `launchctl`, or unparseable output) is a condition DISTINCT from any
+# per-label verdict — latched separately so "the monitor stopped
+# monitoring" can never present as "no agents failing".
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -269,6 +301,21 @@ class WatchdogState:
     # failure mode (disk space, not backup device) — never folded together.
     consecutive_disk_low_ticks: int = 0
     disk_notification_pending: DiskNotificationKind | None = None
+    # Plan 195 D3: the set of monitored launchd labels currently FAILING or
+    # ABSENT, persisted as a sorted tuple (JSON has no set type, and a
+    # frozen dataclass field default must be immutable). Transition-latched
+    # membership, not a per-tick flag — see `_launchd_notification_kind`.
+    failing_launchd_labels: tuple[str, ...] = ()
+    # Plan 195 D3: per-label pending notification, as sorted (label, kind)
+    # pairs — the per-label equivalent of `backup_notification_pending`,
+    # since two labels can be simultaneously pending and one's failed Slack
+    # post must never suppress or swallow the other's.
+    launchd_notification_pending: tuple[tuple[str, LaunchdNotificationKind], ...] = ()
+    # Plan 195 D4: hysteresis for the probe-unreadable condition, same shape
+    # as `consecutive_backup_device_unverified_ticks` — counts consecutive
+    # ticks the launchd probe itself could not be read.
+    launchd_probe_unreadable_ticks: int = 0
+    launchd_probe_notification_pending: LaunchdProbeNotificationKind | None = None
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -292,6 +339,36 @@ class WatchdogState:
         disk_pending_raw = raw.get("disk_notification_pending")
         disk_pending: DiskNotificationKind | None = (
             disk_pending_raw if disk_pending_raw in ("low", "recovered") else None
+        )
+        failing_labels_raw = raw.get("failing_launchd_labels")
+        failing_launchd_labels: tuple[str, ...] = (
+            tuple(
+                sorted(str(label) for label in cast("list[object]", failing_labels_raw))
+            )
+            if isinstance(failing_labels_raw, list)
+            else ()
+        )
+        launchd_pending_raw = raw.get("launchd_notification_pending")
+        launchd_notification_pending: tuple[
+            tuple[str, LaunchdNotificationKind], ...
+        ] = (
+            tuple(
+                sorted(
+                    (str(label), kind)
+                    for label, kind in cast(
+                        "dict[object, object]", launchd_pending_raw
+                    ).items()
+                    if kind in ("failing", "recovered")
+                )
+            )
+            if isinstance(launchd_pending_raw, dict)
+            else ()
+        )
+        launchd_probe_pending_raw = raw.get("launchd_probe_notification_pending")
+        launchd_probe_notification_pending: LaunchdProbeNotificationKind | None = (
+            launchd_probe_pending_raw
+            if launchd_probe_pending_raw in ("unreadable", "readable")
+            else None
         )
         legacy_alert_iso = raw.get("last_backup_alert_iso")
         stale_failures_raw = raw.get("consecutive_backup_stale_failures")
@@ -338,6 +415,14 @@ class WatchdogState:
             # disk-space check: absent key defaults to 0/None.
             consecutive_disk_low_ticks=int(raw.get("consecutive_disk_low_ticks", 0)),
             disk_notification_pending=disk_pending,
+            # Backward compatible with state files written before Plan 195's
+            # launchd-agent-health check: absent key defaults to ()/0/None.
+            failing_launchd_labels=failing_launchd_labels,
+            launchd_notification_pending=launchd_notification_pending,
+            launchd_probe_unreadable_ticks=int(
+                raw.get("launchd_probe_unreadable_ticks", 0)
+            ),
+            launchd_probe_notification_pending=launchd_probe_notification_pending,
         )
 
     def dump(self, path: Path) -> None:
@@ -359,6 +444,12 @@ class WatchdogState:
             ),
             "consecutive_disk_low_ticks": self.consecutive_disk_low_ticks,
             "disk_notification_pending": self.disk_notification_pending,
+            "failing_launchd_labels": list(self.failing_launchd_labels),
+            "launchd_notification_pending": dict(self.launchd_notification_pending),
+            "launchd_probe_unreadable_ticks": self.launchd_probe_unreadable_ticks,
+            "launchd_probe_notification_pending": (
+                self.launchd_probe_notification_pending
+            ),
         }
         path.write_text(json.dumps(payload, indent=2))
 
@@ -738,6 +829,143 @@ def probe_disk_free(path: Path) -> DiskSpaceResult:
     )
 
 
+LaunchdVerdictKind = Literal["ok", "failing", "absent", "unknown"]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class LaunchdVerdict:
+    """Plan 195 D1: per-label read of `launchctl list`'s documented
+    two-column format (`launchctl(1)`, NOT `print`, whose structure Apple
+    explicitly disclaims: "Do NOT rely on the structure or information
+    emitted for ANY reason."). `status` is only meaningful when `kind ==
+    "failing"` — it carries the raw second-column value, which may be
+    negative (the negation of the stopping signal, e.g. `-15` == SIGTERM)."""
+
+    kind: LaunchdVerdictKind
+    status: int | None = None
+
+
+def parse_launchctl_list_output(
+    output: str, labels: Sequence[str]
+) -> dict[str, LaunchdVerdict]:
+    """Pure parser (Plan 195 D1) for `launchctl list`'s three whitespace-
+    separated columns (PID, last exit status, label):
+
+    - a label present with status `0` -> OK. This conflates never-run with
+      succeeded, deliberately: a periodic agent that has not yet fired is
+      normal, and only a non-zero status is evidence of failure.
+    - a label present with a non-zero status (including negative) -> FAILING.
+    - a label the output does not mention at all -> ABSENT, itself treated
+      as failing by the caller (D1: an unloaded agent is the loudest
+      version of this defect, not a reason for silence).
+    - output containing no parseable data row at all -> every requested
+      label degrades to UNKNOWN, never guessed at as ABSENT.
+    - a row that HAS the documented three-column shape but fails to
+      validate (PID is neither `-` nor an integer, or status is not an
+      integer) -> that label, specifically, degrades to UNKNOWN. It is
+      mentioned in the output, so it must never silently fall through to
+      ABSENT (which would misreport a structurally-malformed row as "not
+      loaded") — see `_valid_launchctl_pid`.
+    """
+    entries: dict[str, int] = {}
+    malformed_labels: set[str] = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            # A row we cannot parse STRUCTURALLY must not let its label fall
+            # through to ABSENT either (D1: unparseable -> UNKNOWN). The
+            # pid/status guard below already covers three-column rows; a row
+            # with an unexpected column count reaches only here, and
+            # `launchctl list` output that mentions a monitored label is
+            # evidence the agent exists, not evidence it is unloaded.
+            malformed_labels.update(token for token in parts if token in labels)
+            continue
+        pid, status_str, label = parts
+        if pid == "PID" and status_str == "Status" and label == "Label":
+            continue  # header row
+        if not _valid_launchctl_pid(pid) or not _is_int(status_str):
+            malformed_labels.add(label)
+            continue
+        entries[label] = int(status_str)
+
+    if not entries and not malformed_labels:
+        return {label: LaunchdVerdict(kind="unknown") for label in labels}
+
+    verdicts: dict[str, LaunchdVerdict] = {}
+    for label in labels:
+        if label in malformed_labels:
+            verdicts[label] = LaunchdVerdict(kind="unknown")
+        elif label not in entries:
+            verdicts[label] = LaunchdVerdict(kind="absent")
+        elif entries[label] == 0:
+            verdicts[label] = LaunchdVerdict(kind="ok")
+        else:
+            verdicts[label] = LaunchdVerdict(kind="failing", status=entries[label])
+    return verdicts
+
+
+def _is_int(value: str) -> bool:
+    try:
+        int(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _valid_launchctl_pid(value: str) -> bool:
+    """`launchctl list`'s documented PID column is either `-` (not
+    running) or a numeric PID — anything else means the row does not
+    actually have the documented shape, even though it split into three
+    whitespace-separated fields."""
+    return value == "-" or _is_int(value)
+
+
+def probe_launchd_agents(
+    labels: Sequence[str] = MONITORED_LAUNCHD_LABELS,
+    *,
+    timeout: float = LAUNCHD_PROBE_TIMEOUT_S,
+) -> dict[str, LaunchdVerdict]:
+    """Injectable probe (Plan 195 T1) — same seam as `backup_device_verifier`:
+    tests inject a fake so they never shell out to the real `launchctl`.
+    Never raises: a missing executable, a timeout, or a non-zero exit all
+    degrade every requested label to UNKNOWN, exactly like unparseable
+    stdout does inside `parse_launchctl_list_output`.
+    """
+    try:
+        # Fixed argv, no shell, no user-controlled input.
+        completed = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+        # UnicodeError: `text=True` decodes stdout, and launchctl output is
+        # not guaranteed valid UTF-8. It is neither an OSError nor a
+        # TimeoutExpired, so without it a decode failure would propagate out
+        # of `run_once` and skip BAFU, forecast freshness, disk, the state
+        # dump and the dead-man ping — D4's "must never abort the tick".
+        log.warning("watchdog.launchd_probe_failed", error=str(exc))
+        return {label: LaunchdVerdict(kind="unknown") for label in labels}
+    except Exception as exc:  # defensive containment boundary, never BaseException
+        # Same final boundary the HTTP probes use: an unanticipated failure
+        # in the probe must degrade to UNKNOWN, never take the tick down.
+        log.error("watchdog.launchd_probe_unexpected_error", error=str(exc))
+        return {label: LaunchdVerdict(kind="unknown") for label in labels}
+    if completed.returncode != 0:
+        # `check=False` means a non-zero exit does NOT raise — stdout from
+        # a failed invocation is not the documented table and must never
+        # be trusted as healthy just because it happens to parse.
+        log.warning(
+            "watchdog.launchd_probe_failed",
+            error="non-zero exit",
+            returncode=completed.returncode,
+        )
+        return {label: LaunchdVerdict(kind="unknown") for label in labels}
+    return parse_launchctl_list_output(completed.stdout, labels)
+
+
 def newest_backup_mtime(backup_dir: Path) -> datetime | None:
     """Return the newest *evidence-backed* `sapphire_*.dump` mtime as a UTC
     datetime, or None if none exist (Plan 162 T4).
@@ -955,6 +1183,40 @@ def _disk_notification_kind(
     return None
 
 
+def _launchd_notification_kind(
+    *, was_failing: bool, is_failing: bool, pending: LaunchdNotificationKind | None
+) -> LaunchdNotificationKind | None:
+    """Same shape as `_backup_notification_kind`, per launchd label (Plan
+    195 D3): alert on TRANSITION only, and never resend a stale `pending`
+    kind once the condition has moved on — same reasoning as the backup
+    blocks' equivalents applies here."""
+    if pending is not None:
+        return "failing" if is_failing else "recovered"
+    if is_failing and not was_failing:
+        return "failing"
+    if was_failing and not is_failing:
+        return "recovered"
+    return None
+
+
+def _launchd_probe_notification_kind(
+    *,
+    was_unreadable: bool,
+    is_unreadable: bool,
+    pending: LaunchdProbeNotificationKind | None,
+) -> LaunchdProbeNotificationKind | None:
+    """Same shape again, for the probe-unreadable condition (Plan 195 D4) —
+    distinct from every per-label verdict, so a dead probe cannot present
+    as "no agents failing"."""
+    if pending is not None:
+        return "unreadable" if is_unreadable else "readable"
+    if is_unreadable and not was_unreadable:
+        return "unreadable"
+    if was_unreadable and not is_unreadable:
+        return "readable"
+    return None
+
+
 def _format_health_alert(
     *, hostname: str, now: datetime, probe: HealthProbeResult
 ) -> str:
@@ -1030,6 +1292,48 @@ def _format_disk_space_recovery_alert(*, hostname: str, now: datetime) -> str:
     return (
         f"[SAPPHIRE staging] disk space RECOVERED — host: {hostname}, "
         f"time: {now.isoformat()}"
+    )
+
+
+def _format_launchd_alert(
+    *, hostname: str, now: datetime, label: str, verdict: LaunchdVerdict
+) -> str:
+    # D1: "last run failed", never "is failing now" — a KeepAlive agent can
+    # be RUNNING right now while its last-exit-status column still shows a
+    # previous invocation's non-zero code (measured on the mini: the
+    # stack-starter shows `state = running`, `last exit code = 1`).
+    # ABSENT is a distinct condition (unloaded entirely, no exit status to
+    # report) and gets its own word, not a fabricated exit code.
+    if verdict.kind == "absent":
+        return (
+            f"[SAPPHIRE staging] launchd agent ABSENT — label: {label}, "
+            f"host: {hostname}, time: {now.isoformat()}"
+        )
+    return (
+        f"[SAPPHIRE staging] launchd agent LAST RUN FAILED — label: {label}, "
+        f"last exit status: {verdict.status}, host: {hostname}, "
+        f"time: {now.isoformat()}"
+    )
+
+
+def _format_launchd_recovery_alert(*, hostname: str, now: datetime, label: str) -> str:
+    return (
+        f"[SAPPHIRE staging] launchd agent RECOVERED — label: {label}, "
+        f"host: {hostname}, time: {now.isoformat()}"
+    )
+
+
+def _format_launchd_probe_unreadable_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        "[SAPPHIRE staging] launchd probe UNREADABLE — agent health cannot "
+        f"be verified, host: {hostname}, time: {now.isoformat()}"
+    )
+
+
+def _format_launchd_probe_recovery_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        "[SAPPHIRE staging] launchd probe RECOVERED — agent health checks "
+        f"resumed, host: {hostname}, time: {now.isoformat()}"
     )
 
 
@@ -1216,6 +1520,11 @@ def run_once(
     # probe above so tests can stub the OS-level disk_usage() call without
     # a real filesystem in the required state.
     disk_probe: Callable[[Path], DiskSpaceResult] = probe_disk_free,
+    # Plan 195: the launchd-agent-health predicate, injected like every
+    # other probe above so tests never shell out to the real `launchctl`.
+    launchd_probe: Callable[
+        [Sequence[str]], dict[str, LaunchdVerdict]
+    ] = probe_launchd_agents,
 ) -> WatchdogState:
     """Single watchdog tick. Returns the updated state (also persisted)."""
     now = clock()
@@ -1402,6 +1711,148 @@ def run_once(
         )
     else:
         state = replace(state, consecutive_backup_stale_failures=0)
+
+    # --- Launchd agent health (Plan 195) -------------------------------------
+    # D1: probed via `launchctl list` (documented format), never `print`
+    # (explicitly disclaimed by Apple). D2: only the installer-managed
+    # labels in MONITORED_LAUNCHD_LABELS. D3: one distinct condition,
+    # latched PER LABEL — the currently-failing-label SET, alerting on
+    # entry/exit, never every tick. D4: the probe being unreadable at all
+    # (timeout, missing `launchctl`, unparseable output) is its OWN
+    # latched condition, separate from every per-label verdict, and
+    # per-label state is held UNCHANGED while the probe is unreadable.
+    launchd_verdicts = launchd_probe(MONITORED_LAUNCHD_LABELS)
+    probe_readable = any(
+        launchd_verdicts.get(label, LaunchdVerdict(kind="unknown")).kind != "unknown"
+        for label in MONITORED_LAUNCHD_LABELS
+    )
+    log.info(
+        "watchdog.launchd_probe_completed",
+        readable=probe_readable,
+        verdicts={
+            label: launchd_verdicts.get(label, LaunchdVerdict(kind="unknown")).kind
+            for label in MONITORED_LAUNCHD_LABELS
+        },
+    )
+
+    if probe_readable:
+        prev_failing = set(state.failing_launchd_labels)
+        prev_pending = dict(state.launchd_notification_pending)
+        new_failing: set[str] = set()
+        new_pending: dict[str, LaunchdNotificationKind] = {}
+
+        for label in MONITORED_LAUNCHD_LABELS:
+            verdict = launchd_verdicts.get(label, LaunchdVerdict(kind="unknown"))
+            was_failing = label in prev_failing
+
+            if verdict.kind == "unknown":
+                # Mixed-result probe (Plan 195 fixer round): the probe AS A
+                # WHOLE returned something readable (`probe_readable` is
+                # True), but THIS label's own row was individually
+                # unparseable/absent-from-the-parse. Resolving that to
+                # "not failing" would fabricate a spurious RECOVERED for an
+                # incident that never actually cleared, and resolving it to
+                # "failing" would fabricate a spurious FAILING with no
+                # evidence. Carry the label's prior membership and pending
+                # payload forward UNCHANGED and skip notification entirely
+                # — exactly the same contract D4 applies to the WHOLE probe
+                # being unreadable, applied per-label here.
+                if was_failing:
+                    new_failing.add(label)
+                if label in prev_pending:
+                    new_pending[label] = prev_pending[label]
+                continue
+
+            is_failing = verdict.kind in ("failing", "absent")
+            if is_failing:
+                new_failing.add(label)
+
+            kind = _launchd_notification_kind(
+                was_failing=was_failing,
+                is_failing=is_failing,
+                pending=prev_pending.get(label),
+            )
+            if kind is None:
+                continue
+
+            if kind == "failing":
+                message = _format_launchd_alert(
+                    hostname=host, now=now, label=label, verdict=verdict
+                )
+                log.warning("watchdog.launchd_agent_failing_alert", message=message)
+            else:
+                message = _format_launchd_recovery_alert(
+                    hostname=host, now=now, label=label
+                )
+                log.info("watchdog.launchd_agent_recovery_alert", message=message)
+
+            if webhook:
+                posted = _safe_slack_post(slack_poster, webhook, message)
+                log.info("watchdog.slack_post_attempted", posted=posted)
+                if not posted:
+                    new_pending[label] = kind
+            elif prev_pending.get(label) is not None:
+                # Same delivery-loss reasoning as the backup blocks above:
+                # the webhook merely being absent/unreadable RIGHT NOW must
+                # not be treated as a successful delivery of an
+                # already-pending notification.
+                log.info("watchdog.slack_skipped_pending_retry_deferred")
+                new_pending[label] = kind
+            else:
+                log.info("watchdog.slack_skipped_log_only")
+
+        state = replace(
+            state,
+            failing_launchd_labels=tuple(sorted(new_failing)),
+            launchd_notification_pending=tuple(sorted(new_pending.items())),
+        )
+
+    was_probe_unreadable = state.launchd_probe_unreadable_ticks > 0
+    is_probe_unreadable = not probe_readable
+    probe_pending = state.launchd_probe_notification_pending
+    probe_notification_kind = _launchd_probe_notification_kind(
+        was_unreadable=was_probe_unreadable,
+        is_unreadable=is_probe_unreadable,
+        pending=probe_pending,
+    )
+
+    if probe_notification_kind is not None:
+        if probe_notification_kind == "unreadable":
+            probe_message = _format_launchd_probe_unreadable_alert(
+                hostname=host, now=now
+            )
+            log.warning(
+                "watchdog.launchd_probe_unreadable_alert", message=probe_message
+            )
+        else:
+            probe_message = _format_launchd_probe_recovery_alert(hostname=host, now=now)
+            log.info("watchdog.launchd_probe_recovery_alert", message=probe_message)
+
+        if webhook:
+            probe_posted = _safe_slack_post(slack_poster, webhook, probe_message)
+            log.info("watchdog.slack_post_attempted", posted=probe_posted)
+            state = replace(
+                state,
+                launchd_probe_notification_pending=(
+                    None if probe_posted else probe_notification_kind
+                ),
+            )
+        elif probe_pending is not None:
+            log.info("watchdog.slack_skipped_pending_retry_deferred")
+            state = replace(
+                state, launchd_probe_notification_pending=probe_notification_kind
+            )
+        else:
+            log.info("watchdog.slack_skipped_log_only")
+            state = replace(state, launchd_probe_notification_pending=None)
+
+    if is_probe_unreadable:
+        state = replace(
+            state,
+            launchd_probe_unreadable_ticks=state.launchd_probe_unreadable_ticks + 1,
+        )
+    else:
+        state = replace(state, launchd_probe_unreadable_ticks=0)
 
     # --- BAFU forecast collector freshness (Flow 4 staleness hook) ---
     bafu_url = config.bafu_health_detail_url or _bafu_url_from_health(config.health_url)

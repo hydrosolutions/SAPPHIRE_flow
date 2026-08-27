@@ -249,14 +249,13 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   this one (Codex failed 3 of 4 rounds); it was reconstructed and reviewed by hand. Carried forward:
   the device predicate now exists in **three** independent copies (`bootstrap-mac-mini.sh`,
   `start-sapphire.sh`, `watchdog.py`) — verified identical 2026-08-21, but nothing keeps them so.
-- **195** — A launchd agent that cannot run must not look healthy — `DRAFT` — the stack-starter
-  `ch.hydrosolutions.sapphire` has **never** worked in 119 days (launchd's default PATH cannot resolve
-  `/usr/local/bin/docker`; `docker info` → 127), and **nothing monitors launchd agent health** — no
-  `launchctl` anywhere in `watchdog.py`. One probe, one transition-latched condition. Sequenced after 194
-  T3, which rewrites the same region of the watchdog. Needs owner confirmation before build.
-
-## Active — dev experience / dashboard (C)
-
+- **195** — A launchd agent that cannot run must not look healthy — `COMPLETE`, archived — shipped in
+  PR #216 (`6af4aa0`, `v0.1.817`). The watchdog now probes `launchctl list` (never `print`, whose
+  output Apple explicitly disclaims) for the installer-managed labels, latched per label, with
+  probe-unreadability latched separately so "the monitor stopped monitoring" cannot present as "no
+  agents failing". Four Codex rounds; two blockers were errors introduced *while fixing* earlier
+  findings, and two properties were asserted-but-unlocked until mutation testing exposed them.
+  ⚠️ **Not yet deployed to the mini.**
 - **102** — Dashboard multi-parameter observation visibility — `READY`.
 - **104** — Dashboard hardening (links, chart defaults, skill-chart) — `READY`.
 - **099** — Dashboard display timezone — **P1 shipped** (UTC axis labels, #59); **P2
