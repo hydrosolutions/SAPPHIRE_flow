@@ -24,7 +24,7 @@ defect, not a missing feature.
 
 **Most of this milestone's DHM half is already computed.** M-A6 produced per-band bias estimands and
 M-A7 produced per-band intensity and diurnal statistics. M-A8 assembles what exists and answers one
-question about it. It does not recompute them.
+question about it, calling their own public constructors rather than re-implementing any estimand (D2).
 
 ## ⭐ WHAT IS IDENTIFIED, AND WHAT IS NOT
 
@@ -89,8 +89,14 @@ either. n = 5.
   result in its own right, not a failure: M-A8's exit permits exactly it.
 
 - **D2 — Elevation relationships are reported DESCRIPTIVELY, carrying M-A6's and M-A7's existing
-  per-band numbers.** M-A8 assembles; it does not recompute. Every assembled number keeps the
-  conditions it was published with — its `n`, its retained exposure, its sub-freezing mass fraction
+  per-band and per-station numbers.** M-A8 **calls M-A6's and M-A7's own public constructors and
+  factories** (`ma6_estimands`, `ma6_mass_fraction`, `ma7_profiles`, `ma7_intensity`, `ma7_transfer`) and
+  **⛔ re-implements no estimand**. That distinction is the whole of this decision: the ban is on a
+  SECOND IMPLEMENTATION, which would drift invisibly from the first, not on executing the existing one.
+  *(Per-station values are not persisted — both predecessor CLIs build them in memory before rendering
+  Markdown — so "assemble, never recompute" taken literally would have forced either a Markdown parser
+  or a reimplementation. Neither is wanted; calling the existing code is.)*
+  Every assembled number keeps the conditions it was published with — its `n`, its retained exposure, its sub-freezing mass fraction
   where M-A6 attached one (Plan 184 Exit 2 binds here too), and its adequacy designation where M-A7
   attached one. **⛔ A number may not be re-quoted stripped of its companions.**
 
@@ -128,15 +134,13 @@ either. n = 5.
   therefore an **UPPER bound in magnitude on any true decline** — the true decline is no steeper than
   the apparent one, and could in principle be nil, with the whole apparent decline being catch.
 
-  **⛔ (iii) DO NOT stop at the caveat — TEST the confound, because the data to do it is already in
-  hand.** Pyramid's own files carry wind: the header is `year;month;day;hour;AT;RR;AP;RH;WS;WD`, and
-  `pyramid_loader` is column-generic (`PRECIP_COLUMN = "RR"` and `AIR_TEMP_COLUMN = "AT"` are constants
-  passed to one reader), so `WS` costs a constant and a call, not an ingestion workstream. Rain catch
-  efficiency approaches 1 at low wind more or less regardless of elevation, so **recompute the gradient
-  on successively lower-wind subsets and report whether it converges** (P4). If the gradient flattens as
-  wind falls, the apparent decline was substantially catch; if it is stable, it is substantially
-  precipitation. That converts an untestable caveat into a measurement, and it is the difference between
-  a bound that admits zero and a number that could inform a forcing correction. The snow-dominated high basins —
+  **⛔ (iii) The confound cannot be tested away with the data available, and the plan does not pretend
+  otherwise.** Pyramid's files do carry wind (`…;AT;RR;AP;RH;WS;WD`) and the loader is column-generic,
+  so a low-wind stratification would be cheap to compute — but it would not identify anything. Low wind
+  does not select the same precipitation under better catch; it selects **different precipitation**
+  (stratiform rather than convective, different moisture sources), which has its own elevation response.
+  A gradient that changed as wind fell would be confounded with regime, so neither "flattens ⇒ catch"
+  nor "holds ⇒ precipitation" follows. The upper bound stands as the honest deliverable. The snow-dominated high basins —
   where the flood interest sits — remain out of reach by this route, and the report says so.
 
 - **D5 — The gradient is signed as a RAIN-PHASE gradient, never as "the precipitation lapse rate".**
@@ -176,7 +180,7 @@ either. n = 5.
 
 ## Tasks
 
-Three tasks, three phases. `$ENV` abbreviates
+Three tasks, two phases. `$ENV` abbreviates
 `DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx`.
 
 ### T1 — the confound bound (depends: nothing new)
@@ -196,10 +200,9 @@ elevation ranges do not overlap on the current population.
 ### T2 — the Pyramid rain-phase gradient (depends: nothing new)
 **In:** the **apparent rain-phase gradient, uncorrected for wind catch** (D4's mandatory name) over
 the Pyramid RR stations sharing P1's common window — **five stations, AWS0 excluded** (its record ends
-2005) — rain-screened per D4 with the 0 °C / 2 °C sensitivity, hour-of-day exposure equalised (D9),
+2005) — rain-screened per D4 with its 0 °C / 2 °C / **4 °C** sensitivity, hour-of-day exposure equalised (D9),
 carrying its own `n` per station, reported beside D6's **observed** AWS0/AWS1 same-elevation
-discrepancy with that pair's own caveats, and accompanied by **P4's low-wind convergence series** with
-its per-step rain-hour counts.
+discrepancy with that pair's own caveats.
 **The rain line is MEASURED, not assumed** — report the
 per-station rain-phase hour counts up the transect and let them show where the estimate stops being
 supportable; pre-registering an elevation would be exactly the pre-registered threshold vision D8
@@ -217,14 +220,6 @@ forbids.
 - **P3 — the fit is an ordinary least-squares line of `log(rain-phase mean hourly intensity)` on station
   elevation, reported as **% per km** with its interval, alongside the raw per-station values and their
   `n`. One form, named, so two implementations are comparable.
-- **P4 — the wind test is a CONVERGENCE SERIES, not a threshold.** Recompute P3's fit on successively
-  lower-wind subsets and report the sequence of slopes, so a reader sees whether the gradient flattens
-  (catch-dominated) or holds (precipitation-dominated). **⛔ Do not pre-register a wind cut-off** —
-  vision D8 forbids it, and the series is more informative than any single one would be.
-  **Feasibility is reported BEFORE the fit**: give the low-wind rain-hour count per station in the
-  common window at each step of the series, so a reader can see where the top of the transect runs out
-  of support. If it runs out immediately, say so — that is a result, and the all-wind upper bound stands
-  as the honest deliverable.
 **Out:** any extrapolation above the rain line; any snow-phase or all-phase gradient; any claim framed
 as "the precipitation lapse rate" (D5); any comparison to an ERA5-Land-derived gradient (D5).
 **Verify:** `uv run pytest tests/unit/scripts/test_ma8_gradient.py -q`, including a test that an
@@ -260,9 +255,7 @@ analysis at fixed reporting resolution** — Group B (20 stations, 2,080 m of re
 contrast is unidentified in this sample**, supported by the non-overlapping group ranges and by the
 one band containing both; and the **apparent rain-phase gradient,
 uncorrected for wind catch**, fitted on P1's common window over the five qualifying Pyramid stations,
-signed as an **upper bound in magnitude** on any true decline; **the low-wind convergence series that
-tests how much of that apparent decline is catch rather than precipitation**, with its per-step support
-counts; and the **observed** AWS0/AWS1 same-elevation discrepancy with that pair's n = 1 and
+signed as an **upper bound in magnitude** on any true decline; and the **observed** AWS0/AWS1 same-elevation discrepancy with that pair's n = 1 and
 older-window caveats attached.
 
 ## Non-goals
