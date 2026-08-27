@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-27
 plan: 205
 title: M-A8 — elevation and regime structure, and the rain-phase gradient
@@ -13,7 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md § M-A8
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** (owner, 2026-08-27). Three independent review rounds, twelve findings folded; two of them
+overturned decisions in the first draft — D1 wrongly forbade the within-group elevation analysis, and a
+proposed low-wind test of the catch confound was cut as unidentified.
 
 ## ⛔ PROPORTIONALITY IS BINDING, AS IT WAS ON 184 AND 193
 
