@@ -57,6 +57,17 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 _HOURS: tuple[int, ...] = tuple(range(24))
+#: Hourly means are sums-over-count and are therefore order-dependent at
+#: IEEE-754 ULP precision — Polars' multi-threaded group-by fixes no
+#: summation order, so two identical runs can differ in the low bits and
+#: round to DIFFERENT displayed values (measured: `Ilam Tea Estate` hour 05
+#: rendered 0.088 and 0.087 across two runs of `ma7_run.py`, and
+#: `Aiselukhark` hour 03 rendered 0.007 and 0.008). The gauge resolves to
+#: 0.1 mm (0.01 mm for group A), so rounding to 9 decimals sits far below any
+#: real measurement distinction and far above the float noise it absorbs.
+#: Same fix, same reason as `ma6_estimands._BUCKET_TOTAL_ROUNDING_DECIMALS`.
+_HOURLY_MEAN_ROUNDING_DECIMALS = 9
+
 _DEFAULT_MIN_SEASON_YEARS = DEFAULT_PARAMS.coloc_min_season_years_for_adequacy
 """Plan 182 D5's own adequacy bar (>= 5 season-years), reused verbatim
 (D9 pinned: "the ADEQUACY FLAG... Plan 182 D5") -- module-level alias only
@@ -179,7 +190,10 @@ def per_season_year_hourly_means(
         pl.col("timestamp").dt.hour().alias("hour"),
     )
     return with_year_hour.group_by(["season_year", "hour"]).agg(
-        pl.col("value_mm").mean().alias("mean_value_mm")
+        pl.col("value_mm")
+        .mean()
+        .round(_HOURLY_MEAN_ROUNDING_DECIMALS)
+        .alias("mean_value_mm")
     )
 
 
@@ -263,7 +277,10 @@ class StationDiurnalProfile:
             self._season_frame.with_columns(pl.col("timestamp").dt.hour().alias("hour"))
             .group_by("hour")
             .agg(
-                pl.col("value_mm").mean().alias("mean_value_mm"),
+                pl.col("value_mm")
+                .mean()
+                .round(_HOURLY_MEAN_ROUNDING_DECIMALS)
+                .alias("mean_value_mm"),
                 pl.len().alias("n_retained"),
             )
         )
