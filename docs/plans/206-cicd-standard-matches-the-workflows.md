@@ -15,6 +15,11 @@ source: drift audit 2026-08-27, prompted by the Plan 201 investigation
 
 **DRAFT.** Not for implementation until the owner confirms.
 
+**Independent Codex review 2026-08-27 after reconstruction: BLOCKER clean, MAJOR clean, MINOR clean —
+"Ready to implement: yes."** It verified the six drift items, the Plan 064 analysis (including the
+17-of-17 SHA-pinning claim, which it re-counted), and that T1 would not write anything false into the
+standard.
+
 **Reconstructed by hand 2026-08-27.** A `/plan` round grew this from 85 to 247 lines and escalated. Its
 substantive findings are kept; its narration of its own drafting history is not. Same treatment as
 Plans 184 and 188 — re-running the loop on an over-expanded plan does not shrink it.
