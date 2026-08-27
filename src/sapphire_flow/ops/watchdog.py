@@ -872,6 +872,13 @@ def parse_launchctl_list_output(
     for line in output.splitlines():
         parts = line.split()
         if len(parts) != 3:
+            # A row we cannot parse STRUCTURALLY must not let its label fall
+            # through to ABSENT either (D1: unparseable -> UNKNOWN). The
+            # pid/status guard below already covers three-column rows; a row
+            # with an unexpected column count reaches only here, and
+            # `launchctl list` output that mentions a monitored label is
+            # evidence the agent exists, not evidence it is unloaded.
+            malformed_labels.update(token for token in parts if token in labels)
             continue
         pid, status_str, label = parts
         if pid == "PID" and status_str == "Status" and label == "Label":
@@ -933,8 +940,18 @@ def probe_launchd_agents(
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+        # UnicodeError: `text=True` decodes stdout, and launchctl output is
+        # not guaranteed valid UTF-8. It is neither an OSError nor a
+        # TimeoutExpired, so without it a decode failure would propagate out
+        # of `run_once` and skip BAFU, forecast freshness, disk, the state
+        # dump and the dead-man ping — D4's "must never abort the tick".
         log.warning("watchdog.launchd_probe_failed", error=str(exc))
+        return {label: LaunchdVerdict(kind="unknown") for label in labels}
+    except Exception as exc:  # defensive containment boundary, never BaseException
+        # Same final boundary the HTTP probes use: an unanticipated failure
+        # in the probe must degrade to UNKNOWN, never take the tick down.
+        log.error("watchdog.launchd_probe_unexpected_error", error=str(exc))
         return {label: LaunchdVerdict(kind="unknown") for label in labels}
     if completed.returncode != 0:
         # `check=False` means a non-zero exit does NOT raise — stdout from

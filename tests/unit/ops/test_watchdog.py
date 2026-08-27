@@ -685,6 +685,35 @@ class TestProbeLaunchdAgents:
         verdicts = probe_launchd_agents(MONITORED_LAUNCHD_LABELS)
         assert all(v.kind == "unknown" for v in verdicts.values())
 
+    def test_undecodable_output_degrades_to_unknown_not_a_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`text=True` decodes stdout, and launchctl output is not guaranteed
+        valid UTF-8. UnicodeDecodeError is neither OSError nor TimeoutExpired,
+        so an uncaught one would propagate out of `run_once` and skip BAFU,
+        forecast freshness, disk, the state dump and the dead-man ping — D4's
+        "must never abort the tick"."""
+
+        def _raise_decode(*_args: object, **_kwargs: object) -> object:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        monkeypatch.setattr(subprocess, "run", _raise_decode)
+        verdicts = probe_launchd_agents(MONITORED_LAUNCHD_LABELS)
+        assert {v.kind for v in verdicts.values()} == {"unknown"}, verdicts
+
+    def test_unexpected_probe_error_degrades_to_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The final defensive boundary: any unanticipated failure in the
+        probe degrades to UNKNOWN rather than taking the whole tick down."""
+
+        def _raise_odd(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("something unforeseen")
+
+        monkeypatch.setattr(subprocess, "run", _raise_odd)
+        verdicts = probe_launchd_agents(MONITORED_LAUNCHD_LABELS)
+        assert {v.kind for v in verdicts.values()} == {"unknown"}, verdicts
+
     def test_subprocess_call_receives_the_configured_timeout(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -714,6 +743,31 @@ class TestProbeLaunchdAgents:
         # every later probe — the exact weakness Plan 195 D4 was revised to
         # close. 5.0 matches the sibling *_TIMEOUT_S budgets.
         assert LAUNCHD_PROBE_TIMEOUT_S == 5.0
+
+
+class TestLaunchdParserRobustness:
+    """D1 contract corners the first Codex round on the implementation named."""
+
+    def test_extra_column_row_is_unknown_not_absent(self) -> None:
+        """A monitored label on a structurally malformed row must degrade to
+        UNKNOWN. Falling through to ABSENT would open a false 'agent
+        unloaded' incident from nothing but an unexpected column."""
+        label = MONITORED_LAUNCHD_LABELS[0]
+        other = MONITORED_LAUNCHD_LABELS[1]
+        out = f"-\t0\t{other}\n-\t0\textra\t{label}\n"
+        verdicts = parse_launchctl_list_output(out, MONITORED_LAUNCHD_LABELS)
+        assert verdicts[label].kind == "unknown", verdicts
+        assert verdicts[other].kind == "ok", verdicts
+
+    def test_never_run_dash_pid_with_spaces_is_ok(self) -> None:
+        """The real never-run shape is `-  0  <label>` (measured on the mini
+        2026-08-21: docker-prune reads `runs = 0` under `print` and `-  0`
+        under `list`), and columns may be space- rather than tab-separated."""
+        label = MONITORED_LAUNCHD_LABELS[0]
+        verdicts = parse_launchctl_list_output(
+            f"-   0   {label}\n", MONITORED_LAUNCHD_LABELS
+        )
+        assert verdicts[label].kind == "ok", verdicts
 
 
 # ---------- MONITORED_LAUNCHD_LABELS parity with the installer (Plan 195 D2) --
