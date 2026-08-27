@@ -4,7 +4,7 @@ created: 2026-08-18
 revised: 2026-08-18
 plan: 188
 title: Run the Caravan statics import for real — the operator entrypoint Plan 155 never got
-scope: Plan 155 built and tested `run_operational_caravan_import` but nothing calls it, so no basin in any deployment carries a single `caravan:`-prefixed attribute. Write the operator CLI, add the one missing recovery primitive, run it on the mac mini where the Swiss fleet is onboarded. This unblocks BOTH `cmal_pool_PT` (its 50 declared statics resolve through the `caravan:` namespace) and Plan 183's T3 parity check (it compares against `caravan:` climate indices that do not exist yet).
+scope: Plan 155 built and tested `run_operational_caravan_import` but nothing calls it, so no basin in any deployment carries a single `caravan:`-prefixed attribute. Write the operator CLI, add the one missing recovery primitive, run it on the mac mini where the Swiss fleet is onboarded. This unblocks BOTH `cmal_pool_pt` (its 50 declared statics resolve through the `caravan:` namespace) and Plan 183's T3 parity check (it compares against `caravan:` climate indices that do not exist yet).
 depends_on: [155]
 blocks: [152, 183]
 supersedes: []
@@ -35,7 +35,7 @@ roughly its current length.** A round that adds a task, a module, or new infra h
 
 ## Why this blocks two other plans
 
-- **`cmal_pool_PT`** declares `StaticNaming.CARAVAN`, so all 50 of its statics resolve through the
+- **`cmal_pool_pt`** declares `StaticNaming.CARAVAN`, so all 50 of its statics resolve through the
   `caravan:` prefix. Without the import it has no static inputs at all.
 - **Plan 183 T3** compares recomputed climate indices against `caravan:` reference values. Probed on
   the dev box 2026-08-18: both local basins carry **300 attributes and zero `caravan:` keys**; the
@@ -67,8 +67,8 @@ required_static_names, extractor_version=None, source_dataset_version=None)`.
 
 | # | Decision |
 |---|---|
-| **D1** | **Derive the manifest live, cross-check against one pinned literal.** T0a's rule: `discharge` in both `forecast_targets` and `measured_parameters`, scoped to `network == "bafu"` (the importer hardcodes the `("bafu", code)` join — `store/caravan_import.py:157`), `StationKind.RIVER` (`types/enums.py:144-147`) and the `sapphire` tenant, minus **2446 Gampelen-Zihlbrücke** (owner-dropped: the regulated Zihlkanal outflow). **Review finding, kept: the check is SET IDENTITY, not cardinality** — `len(...) == 148` also passes a fleet that loses one station and gains another. The pinned side is a single `SWISS_CARAVAN_MANIFEST_CODES` constant in the CLI module, reviewed once against Plan 155's published table when the PR lands. *Not* re-derived at runtime, and *not* re-derived again in a test: a second derivation pipeline is not an independent reference. |
-| **D2** | **Read required statics from the DISCOVERED ADAPTER.** The model object constructs its own `ModelDataRequirements.static_features` (`adapters/forecast_interface.py:450-455`, `models/linear_regression_daily.py:52-63`); `discover_models()` (`services/model_registry.py:101-127`) instantiates and adapts it. Either way the values exist only at runtime — the DB `ModelRecord` has **no requirements field** (`types/model.py:258-264`), so "read from the registered model" means the adapter, never the `models` table. The first draft implied otherwise. Discovery **swallows an entry-point import failure and omits the model from the returned dict** (`model_registry.py:122-127`), so a missing aquacast extra makes the model simply absent. The CLI does an explicit named preflight (`if model_id not in discover_models(): raise ConfigurationError(...)`) naming the id and the aquacast requirement. **Correction (review, 2026-08-19): this preflight buys a clear message, NOT safety.** The earlier draft claimed a missing extra would yield an empty static set that "passes the gate silently"; that is false — `run_operational_caravan_import` rejects an empty `required_static_names` before any read or write (`store/caravan_import.py:279-294`, locked by `tests/integration/store/test_caravan_import.py:772-797`). The failure mode is a `KeyError` or a loud `ConfigurationError`, never a silent empty-set import. The preflight is worth its three lines for the operator-facing message; it is not load-bearing. **Known limitation (second review):** the importer checks no model identity (`caravan_import.py:287-302`), so a WRONG-but-non-empty static set — wrong model id, or a stale installed model — still passes. Nothing in this plan closes that; the gate validates coverage, not provenance of the requirement list. |
+| **D1** | **Derive the manifest live, cross-check against one pinned literal.** T0a's rule: `discharge` in both `forecast_targets` and `measured_parameters`, scoped to `network == "bafu"` (the importer hardcodes the `("bafu", code)` join — `store/caravan_import.py:157`), `StationKind.RIVER` (`types/enums.py:164-167`) and the `sapphire` tenant, minus **2446 Gampelen-Zihlbrücke** (owner-dropped: the regulated Zihlkanal outflow). **Review finding, kept: the check is SET IDENTITY, not cardinality** — `len(...) == 148` also passes a fleet that loses one station and gains another. The pinned side is a single `SWISS_CARAVAN_MANIFEST_CODES` constant in the CLI module, reviewed once against Plan 155's published table when the PR lands. *Not* re-derived at runtime, and *not* re-derived again in a test: a second derivation pipeline is not an independent reference. |
+| **D2** | **Read required statics from the DISCOVERED ADAPTER.** The CLI must resolve the model by the **registry ID constant** `AQUACAST_CMAL_POOL_PT_MODEL_ID` (`types/ids.py:51` -> `"cmal_pool_pt"`, matching the `pyproject.toml:177` entry point), never a hand-typed literal — the artifact is *displayed* as `cmal_pool_PT` and that spelling resolves to nothing, so a preflight written from the display name would always report the model absent. The model object constructs its own `ModelDataRequirements.static_features` (`adapters/forecast_interface.py:446-456 (projection at :645-650)`, `models/linear_regression_daily.py:52-63`); `discover_models()` (`services/model_registry.py:101-127`) instantiates and adapts it. Either way the values exist only at runtime — the DB `ModelRecord` has **no requirements field** (`types/model.py:265-270 (`ModelDataRequirements` at :274-283)`), so "read from the registered model" means the adapter, never the `models` table. The first draft implied otherwise. Discovery **swallows an entry-point import failure and omits the model from the returned dict** (`model_registry.py:122-127`), so a missing aquacast extra makes the model simply absent. The CLI does an explicit named preflight (`if model_id not in discover_models(): raise ConfigurationError(...)`) naming the id and the aquacast requirement. **Correction (review, 2026-08-19): this preflight buys a clear message, NOT safety.** The earlier draft claimed a missing extra would yield an empty static set that "passes the gate silently"; that is false — `run_operational_caravan_import` rejects an empty `required_static_names` before any read or write (`store/caravan_import.py:279-294`, locked by `tests/integration/store/test_caravan_import.py:772-797`). The failure mode is a `KeyError` or a loud `ConfigurationError`, never a silent empty-set import. The preflight is worth its three lines for the operator-facing message; it is not load-bearing. **Known limitation (second review):** the importer checks no model identity (`caravan_import.py:287-302`), so a WRONG-but-non-empty static set — wrong model id, or a stale installed model — still passes. Nothing in this plan closes that; the gate validates coverage, not provenance of the requirement list. |
 | **D3** | **`--dry-run` runs the full gate and rolls back**, implemented by raising a private sentinel from *inside* `with engine.begin():` so the rollback is structural, not a flag the code must remember to honour. |
 | **D4** | **Import now, and add the one missing recovery primitive** (T3). Provenance is not persisted, so the version string writes no durable record; the real constraint is `merge_namespaced_attributes` (`basin_store.py:147`) — identical replay is a no-op, a *changed* value raises per key. **Corrected twice.** The first draft said a corrected parquet means hand-written SQL; a second review then showed the absolute claim behind that was also wrong — `update_basin_from_package` (`basin_store.py:330-379`) replaces the whole `attributes` value, so it *can* remove a `caravan:` key. But it is the **package-correction branch**: it needs a basin package, replaces geometry and area wholesale, and always flags incumbent artifacts. Reaching for it to fix one changed static is a sledgehammer. **Precision (second review):** it returns `material_change=True` **unconditionally** and reports `affected_artifact_ids` for artifacts linked to the superseded basin version — a list that may be empty — but it does **not** mutate artifact records (`store/basin_importer.py:794-803,911-926`). So the cost is a spurious correction event and a wholesale geometry/area replacement, not automatic model invalidation. Still the wrong tool for one static. So the targeted helper is still the right answer, for a better reason than the one first given. The draft also called a helper "untested-until-needed code" — backwards: a helper ships *with* a test, while a runbook recipe is untested by construction and is the one path meant to run live, under pressure, against production. |
 
@@ -83,7 +83,7 @@ entrypoint, print matched/unmatched/`stations_without_basin`, exit non-zero on t
 `--dry-run` and `--parquet <path>`.
 
 **Two cuts taken from review, deliberately:** no Alembic run (the deployment's `init` service already
-migrates — `docker-compose.yml:353-361` — and this plan adds no schema), and no coverage-gap count
+migrates — `docker-compose.yml:364-372` — and this plan adds no schema), and no coverage-gap count
 (success proves it is zero, and a failure raises before returning a result that carries no coverage
 field).
 
@@ -112,8 +112,26 @@ assertions; not kept because it buys safety.
 already-present key instead of refusing. ~15 lines.
 
 **Acceptance:** replaces a changed `caravan:` value; **refuses a non-prefixed key** (the guard is
-hardcoded, not a parameter — a caller must not be able to reach `area`); and concurrent callers
-serialise on the row lock rather than last-write-wins.
+hardcoded, not a parameter — a caller must not be able to reach `area`); and two concurrent callers
+**serialise on the row lock** — B blocks until A commits, then rereads and applies its own
+replacement, so the final value is A-then-B rather than an interleaved read-modify-write.
+
+**"Rather than last-write-wins" was wrong and is removed** *(independent review, 2026-08-27)*. The
+existing merge avoids last-write-wins only by **refusing** a differing value — `ConfigurationError`,
+"refusing a" overwrite (`store/basin_store.py:225-235`). A helper whose entire purpose is to
+**permit** replacement cannot also prevent the later writer from winning: once replacement is
+allowed, serialising the two callers just puts the overwrites in order. Ordering is the property
+worth asserting; "not last-write-wins" is not achievable here and asserting it would have sent an
+implementer looking for a guarantee the design cannot give.
+
+*(If preventing a blind overwrite is ever genuinely wanted, that is a compare-and-set —
+`replace_if_current_equals(expected)` — not a lock. Out of scope: nothing in this plan needs it, and
+the import is a single serial operator run.)*
+
+**A real transaction is REQUIRED, not incidental.** `SELECT ... FOR UPDATE` is a no-op under
+AUTOCOMMIT, so the helper must refuse an AUTOCOMMIT connection the same way
+`require_real_transaction` already guards the import path — otherwise the lock silently does nothing
+and the acceptance test above passes for the wrong reason.
 
 **How that test must be built — a real transaction is NOT enough** (second review; my first fold got
 this wrong). `FOR UPDATE` is a no-op under AUTOCOMMIT, but merely running inside a transaction still
