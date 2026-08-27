@@ -566,10 +566,21 @@ implementation rather than after.
 - **P1 — the locked headline set is SMALL and NAMED, not the whole matrix.** Lock exactly: the four
   band-level wet-hour conditional intensity biases already locked by phase 2 (gauge-alone and joint at
   `< 700 m` and `≥ 3,000 m`, JJAS, with their `n`); the D8 within-cell pair (both totals, the
-  accumulated difference, all three retention percentages, the common-hour count); and the four
+  accumulated difference, the common-hour count, and each station's own retained count); and the four
   sub-freezing mass fractions in D4's delivered table with their `n`. Nothing else. A snapshot of every
   station × estimand × grain × sensitivity would break on any legitimate change and would be read as a
   regression; **a lock exists to catch an unintended change in a number a reader would quote.**
+
+  **⛔ CORRECTED 2026-08-27, during T6 implementation.** P1 originally named "all three retention
+  percentages" (93.12 / 92.77 / 90.06 %) among the locked numbers. **They are not lockable.**
+  `WithinCellPairResult` carries counts only — `n_common_retained`, `n_a_gauge_retained`,
+  `n_b_gauge_retained` — and the percentages need the whole-record axis length (52,608 h) as their
+  denominator, which that type does not expose and which the report layer should not reach into T1's
+  axis construction to obtain. **Lock the counts instead**: Exit 7 asks for "each station's own
+  exposure", and the counts ARE that exposure. The percentages stay in D8 as prose, hand-computed
+  against 52,608 h so a reader can check them (48,988 / 52,608 = 0.9312). *(T6's implementer hit this,
+  declined to invent a denominator, removed the wrong percentage and reported it — the right response,
+  and the reason this is a correction to the plan rather than a wrong number in the report.)*
 - **P2 — the report's table inventory is fixed**, one table per Exit condition it serves: (a) per-station
   magnitudes at the D3 grains, (b) per-band magnitudes with station counts, (c) categorical scores at
   daily and monthly grain (D12), (d) the retention stratification (Exit 4), (e) representativeness —
