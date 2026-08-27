@@ -475,12 +475,16 @@ def _fmt_spread(bootstrap: PeakHourOutcome) -> str:
 def _fmt_quantile_ci(bootstrap: QuantileOutcome) -> str:
     """Unlike `_fmt_spread`, this IS a 95% CI (D9: percentile method, linear
     — the pin holds for T2's quantile bootstraps, corrected only for T1's
-    circular peak hour)."""
+    circular peak hour). T4 P4 — an inadequate result is LABELLED, never
+    suppressed: every interval carries its `n_season_years` and adequacy
+    marker, same wording as `_fmt_bootstrap_n_adequate`'s peak-hour path."""
     if isinstance(bootstrap, BootstrapRefusal):
         return f"refused — {bootstrap.reason}"
+    n_season_years, adequate = _fmt_bootstrap_n_adequate(bootstrap)
     return (
         f"{_fmt_mm(bootstrap.point_estimate_mm_per_h)} "
-        f"[{bootstrap.ci_low_mm_per_h:.3f}, {bootstrap.ci_high_mm_per_h:.3f}] 95% CI"
+        f"[{bootstrap.ci_low_mm_per_h:.3f}, {bootstrap.ci_high_mm_per_h:.3f}] 95% CI "
+        f"(n={n_season_years} season-years, {adequate})"
     )
 
 

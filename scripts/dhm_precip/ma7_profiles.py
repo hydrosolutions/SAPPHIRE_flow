@@ -20,8 +20,9 @@ mislabels Lete's and Olangchunggola's DJF adequacy).
 D5a — a band profile is the UNWEIGHTED MEAN of its member stations' own
 profiles (station-equal), never a pooled, retention-weighted mean; the
 pooled form is exposed separately as a named sensitivity. Band adequacy
-(D9) is computed over the season-years COMMON to every member station, not
-their union.
+(D9) is computed over the UNION of member stations' season-years, never
+their intersection — an intersection would quantify a population the
+point estimate (each station's full record) does not come from.
 
 D9 PINNED — the bootstrap resamples whole season-years (never individual
 hours — serial correlation), over `params.ma7_bootstrap_resamples` resamples

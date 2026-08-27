@@ -338,6 +338,43 @@ class TestP4InadequateLabelledNeverSuppressed:
         _write_report(path, report)
         assert "NO (< 5 season-years)" in path.read_text()
 
+    def test_below_bar_station_quantile_ci_still_shows_its_count_and_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """Defect 2 regression: the intensity q50/q99 CI must be LABELLED
+        with its `n_season_years` and adequacy marker (T4 P4), exactly as
+        the peak-hour path already is — never rendered as if ordinary."""
+        inputs = _inputs(
+            series_by_station={
+                _STATION_A: _diurnal_series(
+                    _STATION_A, years=range(2022, 2024), peak_hour=21
+                ),  # 2 season-years, below the 5-season bar
+                _STATION_B: _diurnal_series(
+                    _STATION_B, years=range(2018, 2024), peak_hour=14
+                ),
+                _STATION_OLANG: _diurnal_series(
+                    _STATION_OLANG, years=range(2018, 2024), peak_hour=3
+                ),
+            }
+        )
+        report = run_ma7_report(
+            inputs=inputs,
+            rng=random.Random(REPORT_SEED),
+            seed=REPORT_SEED,
+            clock=_clock,
+        )
+        bootstrap = report.station_intensities[_STATION_A, Season.JJAS].q50_bootstrap
+        assert not isinstance(bootstrap, BootstrapRefusal)
+        assert bootstrap.n_season_years == 2
+        assert bootstrap.adequate_sample is False
+
+        path = tmp_path / "report.md"
+        _write_report(path, report)
+        text = path.read_text()
+        # Not filtered — the row still appears — and labelled, not
+        # rendered as if it were an ordinary (adequate) CI.
+        assert "95% CI (n=2 season-years, NO (< 5 season-years))" in text
+
 
 class TestP5RefusalRenders:
     def test_zero_season_years_becomes_a_refusal_not_a_crash(

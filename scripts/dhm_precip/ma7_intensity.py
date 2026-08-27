@@ -433,11 +433,13 @@ def bootstrap_band_quantile(
     """D5a — band adequacy (D9) uses the UNION of member stations'
     season-years (owner decision 2026-08-27; an intersection would quantify a
     population the point estimate does not come from, and collapsed
-    `700-2,000 m` to one common year against a union of six). Each drawn
-    year's pooled sample gives every member
-    station EQUAL PROBABILITY MASS within that year (weight `1 /
-    n_station_that_year`), the same station-equal discipline as the point
-    estimate."""
+    `700-2,000 m` to one common year against a union of six). Within each
+    resample, every member station's values are gathered across the drawn
+    years WITH MULTIPLICITY and weighted so the station carries EQUAL TOTAL
+    PROBABILITY MASS in that resample (weight `1 /
+    n_station_values_this_resample`) — the same station-equal discipline as
+    the point estimate, never station-YEAR-equal (a member drawn in more
+    years must not outweigh one drawn in fewer)."""
     per_member_by_year = [
         _wet_values_by_season_year(
             m.series.frame, distribution.season, distribution.params
@@ -461,14 +463,13 @@ def bootstrap_band_quantile(
         drawn = [rng.choice(years) for _ in range(n_season_years)]
         values: list[float] = []
         weights: list[float] = []
-        for year in drawn:
-            for member_years in per_member_by_year:
-                year_values = member_years.get(year, [])
-                n = len(year_values)
-                if n == 0:
-                    continue
-                values.extend(year_values)
-                weights.extend([1.0 / n] * n)
+        for member_years in per_member_by_year:
+            member_values = [v for year in drawn for v in member_years.get(year, [])]
+            n = len(member_values)
+            if n == 0:
+                continue
+            values.extend(member_values)
+            weights.extend([1.0 / n] * n)
         if not values:
             continue
         resampled.append(_weighted_quantile(values, weights, quantile))

@@ -22,6 +22,8 @@ from scripts.dhm_precip.ma7_intensity import (
     MixedSeasonError,
     MixedSelectionParamsError,
     StationIntensityDistribution,
+    _weighted_quantile,
+    _wet_values_by_season_year,
     bootstrap_band_quantile,
     bootstrap_station_quantile,
 )
@@ -308,6 +310,81 @@ class TestBandIntensityDistribution:
         # Union of {2015..2022} | {2016..2023} | {2020} == {2015..2023}: 9.
         assert result.n_season_years == 9
         assert result.adequate_sample is True
+
+    def test_bootstrap_weights_each_member_equally_per_resample_not_by_station_year(
+        self,
+    ) -> None:
+        """D5a regression: the CI must quantify the SAME station-equal
+        estimand as the point estimate. `Long` has 6 season-years (one
+        small value each); `Short` has 2 season-years (both a large
+        outlier). The pre-fix bootstrap weighted each (station, year)
+        CELL equally, so a member drawn in more of the resampled years
+        carried more total mass — station-YEAR-equal, not station-equal.
+        Reconstructing that exact drawn sequence and feeding it through
+        both weighting schemes (via the same `_weighted_quantile` combining
+        primitive the production code uses) proves the fix changed WHICH
+        estimand is quantified, not just its numeric noise."""
+        rows_long = []
+        for i, year in enumerate(range(2018, 2024)):  # 6 season-years
+            rows_long += _jjas_rows(year, [float(i + 1)])  # 1.0 .. 6.0
+        rows_short = []
+        for year in (2018, 2019):  # 2 season-years — the short record
+            rows_short += _jjas_rows(year, [100.0])
+        band = _band(
+            station_elev_m=self._ELEV,
+            per_station_rows={_STATION_A: rows_long, _STATION_B: rows_short},
+        )
+        seed = 42
+        result = bootstrap_band_quantile(
+            band, quantile=0.5, rng=random.Random(seed), n_resamples=1
+        )
+
+        # Reconstruct the SAME drawn-years sequence `bootstrap_band_quantile`
+        # drew internally: same seed, same `years` (sorted union), same
+        # number of sequential `.choice()` calls on ONE shared RNG instance.
+        per_member_by_year = [
+            _wet_values_by_season_year(m.series.frame, band.season, band.params)
+            for m in band.members
+        ]
+        union_years: set[int] = set()
+        for d in per_member_by_year:
+            union_years |= set(d)
+        years = sorted(union_years)
+        scratch_rng = random.Random(seed)
+        drawn = [scratch_rng.choice(years) for _ in range(len(years))]
+
+        # Station-equal (the fix): each member's values, gathered across
+        # `drawn` WITH MULTIPLICITY, weighted `1 / n_this_resample` so the
+        # member carries total mass 1.
+        new_values: list[float] = []
+        new_weights: list[float] = []
+        for member_years in per_member_by_year:
+            member_values = [v for year in drawn for v in member_years.get(year, [])]
+            n = len(member_values)
+            if n == 0:
+                continue
+            new_values.extend(member_values)
+            new_weights.extend([1.0 / n] * n)
+        expected_station_equal = _weighted_quantile(new_values, new_weights, 0.5)
+
+        # Station-year-equal (the pre-fix bug): weight `1 / n` per
+        # (member, drawn-year) cell.
+        old_values: list[float] = []
+        old_weights: list[float] = []
+        for year in drawn:
+            for member_years in per_member_by_year:
+                year_values = member_years.get(year, [])
+                n = len(year_values)
+                if n == 0:
+                    continue
+                old_values.extend(year_values)
+                old_weights.extend([1.0 / n] * n)
+        station_year_equal = _weighted_quantile(old_values, old_weights, 0.5)
+
+        actual = result.resampled_values_mm_per_h[0]
+        assert actual == pytest.approx(expected_station_equal)
+        assert actual == pytest.approx(37.33333333, abs=1e-6)
+        assert actual != pytest.approx(station_year_equal)
 
 
 class TestExposureTravelsWithEveryDistribution:
