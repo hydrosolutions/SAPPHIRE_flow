@@ -582,6 +582,113 @@ between stations — **reported by elevation band as well as per station**. *Mar
 inform but do not suffice to design a disaggregator — that needs temporal dependence structure, which
 is a Phase-2 question.*
 
+---
+
+**✅ M-A7 IS COMPLETE — 2026-08-27 (Plan 193, T1–T4).** One command regenerates every number below:
+`$ENV uv run python scripts/dhm_precip/ma7_run.py --out <dir>` (~85 s, 3,309-line report). The
+bootstrap seed is fixed at `REPORT_SEED = 193` and printed in the report; three consecutive runs hash
+identically. Computed on Plan 184 T1's M-A3-masked gauge series (D1/D10) — **no second masked
+series exists**.
+
+#### The headline: tail behaviour transfers everywhere EXCEPT the Lesser Himalaya transition
+
+Leave-one-out tail prediction error (D3, pinned to `stats_precision.leave_one_out_tail_prediction_error`
+— predict each held-out station's q99 as `median_i × pooled_ratio(excluding i)`), JJAS:
+
+| elevation band | stations | median abs error | within 25 % |
+|---|---|---|---|
+| `< 700 m` | 9 | 0.122 | 0.889 |
+| `700–2,000 m` | 9 | 0.133 | **1.000** |
+| **`2,000–3,000 m`** | 5 | **0.460** | **0.000** |
+| `≥ 3,000 m` | 3 | 0.088 | **1.000** |
+
+**Zero of five stations in the 2,000–3,000 m band predict within 25 %**, while the bands above and
+below it transfer perfectly. The cause is visible in the ratio the method predicts:
+
+| station | elevation | q50 | q99 | **q99/q50** |
+|---|---|---|---|---|
+| Aiselukhark | 2,064 m | 0.60 | 19.20 | **32.00** |
+| Nagarkot | 2,147 m | 0.80 | 25.08 | **31.35** |
+| Lete (FNEP) | 2,490 m | 0.82 | 7.84 | **9.56** |
+| Ghorepani | 2,742 m | 0.90 | 14.59 | 16.21 |
+| Lukla Airport | 2,860 m | 1.00 | 12.02 | 12.02 |
+
+A **3.3× spread** in tail-to-body ratio inside one band. This is heterogeneity, not sampling noise —
+the band is the Lesser Himalaya transition zone, where the literature already places a regime change.
+
+#### Both cuts, side by side — and the attribution DECLINED
+
+| reporting-resolution group | stations | median abs error | within 25 % |
+|---|---|---|---|
+| A (0.01 mm) | 6 | 0.182 | 0.667 |
+| B (0.2 mm) | 20 | 0.062 | 0.800 |
+
+Group A transfers ~3× worse than Group B. ⛔ **M-A7 declines to attribute** (D6): Group A is
+*simultaneously* the 0.01 mm subset and the high-altitude subset, and bounding that confound is
+**M-A8's exit**. The refusal is carried as a checked field on the result type, not as prose a reader
+can drop when quoting the number.
+
+**Checked, not a defect:** group membership is inferred on the UNMASKED `on_grid` population, which
+looked like a D1 conflict — not idle on a track where M-A10 traced Lukla's anomaly to sentinels
+normalised over unmasked data. Measured both ways: **zero of 26 stations change group**, split stays
+20/6, though the mask removes 47 % of rows (1,925,073 → 1,021,316).
+
+#### Diurnal structure — the elevation hypothesis is HALF confirmed
+
+JJAS station-equal peak hour by band (NPT = UTC + 5:45):
+
+| band | peak (UTC) | peak (NPT) | resampled arc | `n_season_years` |
+|---|---|---|---|---|
+| `< 700 m` | 23 | **≈ 04:45** | 6.0 h | 6 · adequate |
+| `700–2,000 m` | 19 | ≈ 00:45 | — | 6 · adequate |
+| `2,000–3,000 m` | 19 | ≈ 00:45 | — | 6 · adequate |
+| `≥ 3,000 m` | 19 | ≈ 00:45 | 11.0 h | 5 · adequate |
+
+The **southern-margin early-morning peak reproduces**. But the three upper bands do **not** peak
+afternoon–evening as the cited literature predicts — they sit together just after midnight, ~4 h
+earlier — and **there is no gradient among them**. That is a step change at the southern margin, not
+the monotonic shift the exploratory `r = −0.486` implied. The `< 700 m` band's pooled peak is 21 UTC
+against 23 station-equal, so the lowest band is itself operator-sensitive.
+
+⚠️ **The arc is NOT a confidence interval.** `circular_range_hours` is the smallest arc containing
+*every* resampled value, driven by which hours occur at all rather than how often: the `≥ 3,000 m`
+band's 11 h is set by hour 3 appearing in **151 of 2,000** resamples — Olangchunggola's open anomaly.
+Read it as "resampled peak hours spanned this arc".
+
+#### Coverage, adequacy and refusals
+
+- **All four seasons for every station, none omitted** (D8 as corrected — "report where retention
+  supports them" was itself the completeness threshold the same decision forbids). Syangboche, for
+  example: MAM 464/10,735 wet hours · JJAS 2,770/14,052 · ON 228/6,947 · **DJF 110/9,214** — thin, and
+  reported.
+- **Four of 26 stations are below the ≥5 season-year bar** (Udayapur Gadhi 2; Lete, Num,
+  Olangchunggola 4). They render with `n_season_years` and an explicit inadequate marker; **never
+  filtered**, which would be the filter-on-retention error D13 forbids. All four *bands* are adequate
+  (6/6/6/5) because band resampling draws from the **union** of member season-years — an intersection
+  quantified a population the point estimate does not come from, and collapsed `700–2,000 m` to one
+  common year.
+- **Olangchunggola's 03 UTC peak is recorded as OPEN** (D7) — reported, not adjudicated.
+- Cross-check with M-A6: Syangboche JJAS mass 3,487.9 mm and DJF wet-hour count 110 match its report
+  exactly, so both milestones read the same masked series.
+
+#### Three defects that only measurement exposed
+
+None was caught by 1,152 passing tests; all three were found by asking what the numbers were.
+
+1. **A 21-hour confidence interval.** T1's peak-hour bootstrap used a LINEAR percentile on a CIRCULAR
+   quantity. The `< 700 m` resamples cluster tightly across midnight, so the interval read `[0.0, 21.0]`
+   where the circular range is **6.0 h** — on the band carrying the headline. The plan caused it: D9
+   pinned "percentile 2.5/97.5" without distinguishing linear from circular, and `coloc_bootstrap`,
+   the precedent D9 names, is *titled* "circular bootstrap on the diurnal peak hour".
+2. **A one-year bootstrap.** Band resampling used the intersection of member season-years, making all
+   four bands inadequate and reducing `700–2,000 m` to a single common year. D9 pinned the adequacy
+   *bar* but not the resampling *population*.
+3. **A non-reproducible report.** Hourly means are sums-over-count and Polars' multi-threaded group-by
+   fixes no summation order, so two runs rendered `Ilam Tea Estate` hour 05 as 0.088 and 0.087. Both
+   aggregation sites now round to 9 decimals — the same fix and reason as M-A6's bucket totals.
+   **It passed a two-run diff twice before being caught**: once by the implementer, once by M-A6's
+   equivalent check. An intermittent nondeterminism passes sampling; the mechanism must be argued.
+
 ### ⭐ M-A10 · Co-located gauge-vs-gauge adjudication (Pyramid network) — NEW 2026-08-18
 **Depends: M-A3.** *(Needs the QC mask; does NOT need ERA5-Land, so it can run in parallel with M-A5/M-A6.)*
 
