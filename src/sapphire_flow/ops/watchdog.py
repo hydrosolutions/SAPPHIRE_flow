@@ -827,6 +827,8 @@ def probe_disk_free(path: Path) -> DiskSpaceResult:
         free_bytes=usage.free,
         total_bytes=usage.total,
     )
+
+
 LaunchdVerdictKind = Literal["ok", "failing", "absent", "unknown"]
 
 

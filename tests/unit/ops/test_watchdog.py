@@ -708,6 +708,12 @@ class TestProbeLaunchdAgents:
 
         assert captured["args"] == (["launchctl", "list"],)
         assert captured["kwargs"]["timeout"] == LAUNCHD_PROBE_TIMEOUT_S  # type: ignore[index]
+        # Lock the VALUE, not just the wiring: comparing only against the
+        # constant passes for any value, including a "finite" 300 s that
+        # would consume the watchdog's whole 300 s StartInterval and delay
+        # every later probe — the exact weakness Plan 195 D4 was revised to
+        # close. 5.0 matches the sibling *_TIMEOUT_S budgets.
+        assert LAUNCHD_PROBE_TIMEOUT_S == 5.0
 
 
 # ---------- MONITORED_LAUNCHD_LABELS parity with the installer (Plan 195 D2) --
@@ -5025,6 +5031,7 @@ class TestRunOnceDiskSpace:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert state.consecutive_disk_low_ticks == 1
         assert len(slack1.calls) == 1
@@ -5047,6 +5054,7 @@ class TestRunOnceDiskSpace:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert state.consecutive_disk_low_ticks == 2
         assert slack2.calls == []
@@ -5063,6 +5071,7 @@ class TestRunOnceDiskSpace:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._ok_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert state.consecutive_disk_low_ticks == 0
         assert len(slack3.calls) == 1
@@ -5089,6 +5098,7 @@ class TestRunOnceDiskSpace:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: False,  # unverified too
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
 
         messages = [msg for _, msg in slack.calls]
@@ -5131,6 +5141,7 @@ class TestRunOnceDiskSpace:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,  # device fine; backup STALE
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
 
         messages = [msg for _, msg in slack.calls]
@@ -5156,6 +5167,7 @@ class TestRunOnceDiskSpace:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._ok_probe,
+            launchd_probe=_launchd_ok_probe,
         )
 
         assert slack.calls == []
@@ -5182,6 +5194,7 @@ class TestRunOnceDiskSpace:
             bafu_obs_probe=_bafu_obs_ok_probe,
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             disk_probe=_spy_probe,
+            launchd_probe=_launchd_ok_probe,
         )
 
         assert received == [custom_path]
@@ -5218,6 +5231,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert len(failing_slack.calls) == 1
         assert "disk space LOW" in failing_slack.calls[0][1]
@@ -5239,6 +5253,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert len(retry_slack.calls) == 1
         assert "disk space LOW" in retry_slack.calls[0][1]
@@ -5257,6 +5272,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert quiet_slack.calls == []
 
@@ -5297,6 +5313,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
             deadman_poster=deadman,
+            launchd_probe=_launchd_ok_probe,
         )
 
         # The tick completed and persisted (state reflects the low tick),
@@ -5333,6 +5350,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert len(opening.calls) == 1
         assert "disk space LOW" in opening.calls[0][1]
@@ -5353,6 +5371,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
+            launchd_probe=_launchd_ok_probe,
         )
         assert len(failing_recovery.calls) == 1
         assert state.disk_notification_pending == "recovered", (
@@ -5373,6 +5392,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
+            launchd_probe=_launchd_ok_probe,
         )
         assert len(retry.calls) == 1
         assert "disk space RECOVERED" in retry.calls[0][1]
@@ -5390,6 +5410,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
+            launchd_probe=_launchd_ok_probe,
         )
         assert quiet.calls == []
 
@@ -5424,6 +5445,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=self._low_probe,
+            launchd_probe=_launchd_ok_probe,
         )
         assert len(failing_slack.calls) == 1
         assert "disk space LOW" in failing_slack.calls[0][1]
@@ -5442,6 +5464,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
+            launchd_probe=_launchd_ok_probe,
         )
         assert len(retry_slack.calls) == 1
         assert "disk space RECOVERED" in retry_slack.calls[0][1]
@@ -5460,6 +5483,7 @@ class TestRunOnceDiskSpaceNotificationStateMachine:
             forecast_freshness_probe=_forecast_freshness_ok_probe,
             backup_device_verifier=lambda _: True,
             disk_probe=_ok_probe_local,
+            launchd_probe=_launchd_ok_probe,
         )
         assert quiet_slack.calls == []
 
