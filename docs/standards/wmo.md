@@ -17,7 +17,7 @@ WMO sets international standards for operational hydrology — covering data col
 | 168 Vol I & II | Guide to Hydrological Practices (2 vols) | 6th ed. | Data collection, QC, forecasting | [Vol I](https://unstats.un.org/unsd/envaccounting/waterGuidelines/Material/WMO_Guide_168_Vol_I_en_hydrological_practices.pdf) / [Vol II](https://www.hydrology.nl/images/docs/hwrp/WMO_Guide_168_Vol_II_en.pdf) |
 | 1150 | Guidelines on Multi-Hazard Impact-Based Forecast and Warning Services | 2015/2021 | Alert system design | [link](https://library.wmo.int/records/item/54669-wmo-guidelines-on-multi-hazard-impact-based-forecast-and-warning-services) |
 | 1109 | Guidelines for Implementation of Common Alerting Protocol | — | Alert format standard (CAP) | [link](https://etrp.wmo.int/pluginfile.php/17980/mod_resource/content/1/wmo_1109_en.pdf) |
-| 1131 | WMO Solid Precipitation Intercomparison Experiment (SPICE) — final report | 2018 | Gauge catch efficiency, wind-induced undercatch | [link](https://library.wmo.int/records/item/56317-wmo-solid-precipitation-intercomparison-experiment-spice-2012-2015) |
+| IOM-131 | WMO Solid Precipitation Intercomparison Experiment (SPICE) — final report | 2018 | Gauge catch efficiency, wind-induced undercatch. **Note the series:** this is an *Instruments and Observing Methods* (IOM) report, **not** a WMO-No. publication | [SPICE](https://community.wmo.int/en/activity-areas/imop/intercomparisons/spice) · [IOM series](https://community.wmo.int/en/activity-areas/imop/publications-and-iom-reports) |
 | — | Quality Management Framework — Hydrology (QMF-H) | — | Pipeline quality assurance | [link](https://community.wmo.int/en/activity-areas/hydrology-and-water-resources/quality-management-framework-hydrology) |
 | 49 Vol. III | Technical Regulations — Hydrology | 2006/2022 | Station classification | [link](https://library.wmo.int/records/item/35631-technical-regulations-volume-iii-hydrology) |
 | 1192 | WIGOS Metadata Standard | — | Station metadata interoperability | [link](https://repository.oceanbestpractices.org/bitstream/handle/11329/1379/1192_en.pdf) |
@@ -65,7 +65,7 @@ Maps to: `QualityChecker` Protocol, QC flag enum, observation ingest pipeline.
 
 #### Precipitation gauge catch efficiency
 
-- **WMO-168 Vol I, Ch. 6** (precipitation measurement) and **WMO-SPICE** (No. 1131) establish that a
+- **WMO-168 Vol I, Ch. 3** (precipitation measurement) and **WMO-SPICE** (IOM Report No. 131) establish that a
   precipitation gauge under-catches, that the deficit **grows with wind speed**, and that it is far
   larger for solid than liquid precipitation — unheated gauges in cold, exposed sites being the worst
   case.

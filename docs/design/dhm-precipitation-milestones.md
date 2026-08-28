@@ -1156,15 +1156,19 @@ dataset from source via M-A1/M-A3.
 ### M-I3 · WMO standards inventory
 **Depends: —** Small, independent, start now.
 
-Add gauge catch efficiency to `docs/standards/wmo.md`: WMO-168 Vol I Ch.6, WMO-SPICE. Record that
+Add gauge catch efficiency to `docs/standards/wmo.md`: WMO-168 Vol I **Ch. 3** (precipitation
+measurement) and **WMO-SPICE, IOM Report No. 131**. ⛔ *Corrected 2026-08-28: this line previously
+read "Ch.6", and SPICE was cited into the standards file as "WMO No. 1131" — SPICE is an
+Instruments and Observing Methods report, not a WMO-No. publication. Both verified against the
+WMO library before correction.* Record that
 SAPPHIRE applies no numeric catch correction and why (D6).
 
 **Exit:** doc updated; the D6 position reachable from the standards inventory and cross-linked from
 the vision.
 
-**✅ COMPLETE 2026-08-28.** `docs/standards/wmo.md` gains **WMO-SPICE (No. 1131)** in the document
-inventory and a **§ Precipitation gauge catch efficiency** subsection under Observation QC: WMO-168
-Vol I Ch. 6 and SPICE on wind-induced undercatch; why SAPPHIRE applies no numeric correction (a
+**✅ COMPLETE 2026-08-28.** `docs/standards/wmo.md` gains **WMO-SPICE (IOM Report No. 131)** in the
+document inventory and a **§ Precipitation gauge catch efficiency** subsection under Observation QC:
+WMO-168 Vol I Ch. 3 and SPICE on wind-induced undercatch; why SAPPHIRE applies no numeric correction (a
 defensible transfer function needs wind at gauge height, gauge/shield type and phase — the Nepali
 network supplies none of the three); the signed catch-efficiency caveat that replaces it; and the
 ⛔ that it is **never** a lower bound on a reported total, since a physical-impossibility QC gate lets
