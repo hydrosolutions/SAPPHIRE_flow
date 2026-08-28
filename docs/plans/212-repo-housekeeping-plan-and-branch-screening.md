@@ -128,38 +128,53 @@ than useless here, because it would argue against deleting branches that are gen
   a real dependency addition, say. It would report clean and be deleted. Proven with a probe branch
   carrying a version-only change: under the old filter it classified as "merged".
 
-**Never exclude a file from the comparison. Exclude it only from the verdict.** Classify with:
+**Never exclude a file from the comparison. Exclude it only from the verdict.** And never build the
+pathspec by word-splitting: this repo contains filenames with spaces (`docs/requirements/DFL_Dummy
+Station A.txt` and two siblings), present on the `backup/*` branches among others, so `${=files}`
+splits one path into two pathspecs that match nothing — and an unmerged new file then reads as
+`CONTENT_ON_MAIN`. Compare one NUL-delimited path at a time:
 
 ```bash
-classify() {                      # zsh; in bash use "$files" without the =
-  local b=$1 base files diff sub
+classify() {                                  # POSIX-safe; no word-splitting anywhere
+  local b=$1 base n del out sub
   base=$(git merge-base origin/main "$b" 2>/dev/null) \
-    || { echo "$b :: NO MERGE BASE — unrelated history or deleted upstream; INSPECT"; return; }
-  files=$(git diff --name-only "$base" "$b")
-  [ -z "$files" ] && { echo "$b :: NO UNIQUE WORK"; return; }
-  diff=$(git diff --name-only origin/main "$b" -- ${=files})
-  [ -z "$diff" ] && { echo "$b :: CONTENT ON MAIN"; return; }
-  sub=$(printf '%s\n' "$diff" | grep -vE '^(uv\.lock|pyproject\.toml|src/sapphire_flow/__init__\.py)$')
-  [ -z "$sub" ] && { echo "$b :: VERSION-CHURN ONLY — INSPECT, do not auto-delete"; return; }
-  echo "$b :: DIFFERS ($(printf '%s\n' "$sub" | grep -c .) files) — real work"
+    || { echo "NO_MERGE_BASE $b — unrelated history or deleted upstream; INSPECT"; return; }
+  n=$(git diff --name-only -z "$base" "$b" | tr -cd '\0' | wc -c | tr -d ' ')
+  [ "$n" -eq 0 ] && { echo "NO_UNIQUE_WORK $b"; return; }
+  del=$(git diff --name-status -z "$base" "$b" | tr '\0' '\n' | grep -c '^[DR]')
+  out=$(git diff --name-only -z "$base" "$b" | while IFS= read -r -d '' f; do
+          git diff --quiet origin/main "$b" -- "$f" || printf '%s\n' "$f"
+        done)
+  if [ -z "$out" ]; then
+    [ "$del" -gt 0 ] && { echo "INSPECT_DELETES_OR_RENAMES $b"; return; }
+    echo "CONTENT_ON_MAIN $b"; return
+  fi
+  sub=$(printf '%s\n' "$out" | grep -vE '^(uv\.lock|pyproject\.toml|src/sapphire_flow/__init__\.py)$')
+  [ -z "$sub" ] && { echo "VERSION_CHURN_ONLY $b"; return; }
+  echo "DIFFERS($(printf '%s\n' "$sub" | grep -c .)) $b"
 }
 ```
 
-Four verdicts, and only the first two are deletable:
+Verdicts, of which only two are deletable:
 
 | verdict | meaning | action |
 |---|---|---|
-| `NO UNIQUE WORK` | branch adds nothing over its merge base | delete |
-| `CONTENT ON MAIN` | every file it touched is byte-identical to `main` | delete |
-| `VERSION-CHURN ONLY` | differs *only* in version/lock files | **inspect by hand** — this is the trap above |
-| `DIFFERS` / `NO MERGE BASE` | real work, or history that cannot be compared | keep |
+| `NO_UNIQUE_WORK` | adds nothing over its merge base | delete (recoverably — see B2) |
+| `CONTENT_ON_MAIN` | every file it touched is byte-identical to `main`, and it deletes/renames nothing | delete (recoverably) |
+| `VERSION_CHURN_ONLY` | differs *only* in version/lock files | **inspect** |
+| `INSPECT_DELETES_OR_RENAMES` | looks clean, but the branch deletes or renames a path | **inspect** |
+| `DIFFERS` / `NO_MERGE_BASE` | real work, or history that cannot be compared | keep |
 
-Verified 2026-08-28 against known answers: `feat/plan-151-t8b` → DIFFERS (10 files; its 1,946
-unpushed insertions), `fix/plan-202-token-list-crash` → DIFFERS, `backup/plan-174-pre-rebase` →
-DIFFERS, `docs/fix-mi3-cimo` and `docs/housekeeping` → NO UNIQUE WORK, and a purpose-built
-version-only probe branch → VERSION-CHURN ONLY. The squash-merge case was verified earlier on
-`feat/plan-204-forecast-lab-v2`, which has since been deleted upstream — a branch that no longer
-exists now yields `NO MERGE BASE`, which is why that verdict means *inspect*, not *delete*.
+`INSPECT_DELETES_OR_RENAMES` exists because a comparison keyed on paths cannot see a *deletion* that
+`main` resolved by renaming instead: base has `old`, the branch deletes `old`, `main` moves `old` →
+`new`, and both sides then lack `old`, so the naive answer is "identical". `docs/plans/` is renamed
+constantly here — eight files in one commit during this very audit — so the case is live, not
+theoretical.
+
+Verified 2026-08-28 against known answers: `feat/plan-151-t8b` → DIFFERS (10 files, its 1,946 unpushed
+insertions), `backup/plan-174-pre-rebase` (which carries the space-containing paths) → DIFFERS,
+`docs/fix-mi3-cimo` → NO_UNIQUE_WORK, `test/live-recap-127-forecast-xfail` → VERSION_CHURN_ONLY. Full
+sweep: **14 NO_UNIQUE_WORK, 1 VERSION_CHURN_ONLY, 52 DIFFERS.**
 
 **Two traps, both hit while writing this plan — do not re-introduce them:**
 
@@ -167,8 +182,9 @@ exists now yields `NO MERGE BASE`, which is why that verdict means *inspect*, no
    list as ONE pathspec, which matches nothing, so `git diff` comes back empty and **every branch
    reports as merged.** In a plan that ends in `git branch -D`, that mistake deletes unmerged work.
    It reported `feat/plan-151-t8b` — 1,946 unpushed insertions — as "content on main". Use `${=files}`.
-2. Do not "simplify" the classifier by filtering the file list before the diff. That is precisely the
-   destructive hole described above, and it is how the first two drafts of this section were wrong.
+2. Do not "simplify" the classifier by filtering the file list before the diff, and do not collapse
+   the per-path loop back into one pathspec. Those are exactly the holes that made drafts two and
+   three of this section unsafe.
 
 **A clean comparison is still not proof.** It says the content matches `main` *today*; it cannot tell
 a merge from a revert-then-rewrite. Anything the owner is unsure about stays.
@@ -176,13 +192,36 @@ a merge from a revert-then-rewrite. Anything the owner is unsure about stays.
 **Exit:** every remote-less branch is in exactly one bucket, with a one-line reason and the command
 output that put it there.
 
-### B2 — owner confirms, then delete
+### B2 — owner confirms, then retire recoverably
 
-Deletion is destructive and the owner has previously required an independent cross-check before
-deleting superseded branches. Present B1's list; delete only the confirmed set; leave `backup/*`
-and any unmerged branch alone unless explicitly named.
+**Three independent reviews found three different ways for this classifier to call unmerged work
+deletable** — patch-id vs squash-merge, an empty pathspec comparing whole trees, a filter hiding
+version-only work, a split path matching nothing, a deletion masked by a rename on `main`. Each fix
+was correct and each time a new edge appeared. The conclusion is not "write a fourth classifier".
 
-**Exit:** `git branch` lists only `main`, live work, and whatever the owner chose to keep.
+**Stop relying on the classifier being right. Make being wrong cheap.**
+
+Do not run `git branch -D` against anything. Retire a branch by first pinning its tip, then dropping
+the branch:
+
+```bash
+git tag "pruned/$b" "$b"     # a real ref: keeps every object alive and reachable
+git branch -D "$b"           # only after the tag exists
+```
+
+Restoring a mistake is then `git branch "$b" "pruned/$b"` — nothing is lost, ever. The `pruned/`
+namespace is deliberate: it cannot collide with the `v*` tags that `tag-main.yml` creates on every
+push to `main`. Keep the tags local unless the owner wants them pushed.
+
+With deletion made reversible, the classifier's job drops from "must never be wrong" to "sorts the
+list so a human reads a short one". That is a job it can actually do.
+
+**Still required:** owner confirmation on the specific list; `backup/*` and anything `DIFFERS`,
+`VERSION_CHURN_ONLY`, `INSPECT_DELETES_OR_RENAMES` or `NO_MERGE_BASE` untouched unless the owner
+names it; and `feat/plan-151-t8b` retained until its work is pushed or deliberately abandoned.
+
+**Exit:** every retired branch has a `pruned/<name>` tag pointing at its old tip, and
+`git branch` lists only `main`, live work, and what the owner chose to keep.
 
 ## C — worktrees
 
