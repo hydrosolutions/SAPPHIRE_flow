@@ -34,10 +34,6 @@ pattern, never an attribution: a 0.1° cell (~110 km²) that rains lightly and o
 rains hard and rarely produces the same signature with no model error at all (D5 — characterised, not
 decomposed).
 
-*(The frequently-quoted "ERA5-Land never reached DHM's 60 mm/1 h warning level" is NOT an M-A6 output —
-it came from the student-bundle README. ⛔ Either re-derive it inside M-A6's own pipeline or drop it;
-do not carry it into a decision document on the strength of a data-transfer note.)*
-
 **M-A7 — tail behaviour transfers between stations everywhere EXCEPT the Lesser Himalaya transition.**
 Leave-one-out prediction error within 25 %: 0.889 below 700 m, **1.000** at 700–2,000 m, **0.000** at
 2,000–3,000 m, **1.000** above 3,000 m. Inside that failing band the q99/q50 ratio spans **9.56 to
@@ -74,25 +70,23 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
   that is the failure mode of every summary document.
 
 - **D3 — FIVE candidate uses are named and assessed separately.** They fail and succeed for different
-  reasons and must not be collapsed:
-  1. **⭐ Elevation-banded DIURNAL TIMING correction** — take M-A7's observed elevation-banded diurnal
-     profiles, weight by each basin's band `area_km2`, collapse to an observation-derived expected
-     basin-average diurnal shape, and compare with the IFS basin-average shape. **A redistribution in
-     time of an UNCHANGED daily total** — it moves rain to the right hours and never changes how much
-     fell, which is what keeps it orthogonal to the decisions forbidding magnitude adjustment.
+  reasons and must not be collapsed. **Use 1 is first because the track puts it on the critical path** —
+  the milestone doc calls the elevation-banded observation-derived diurnal profile "the only defensible
+  sub-daily timing source we have, because no available model of this class gets the phase right":
+  1. **Elevation-banded DIURNAL TIMING correction** — the milestone doc defines an operator weighting
+     M-A7's banded diurnal profiles by each basin's band `area_km2`, compared against the IFS
+     basin-average shape, as a redistribution in time of an unchanged daily total.
+     **⛔ Assess it; do NOT prescribe that operator.** Area-weighting M-A7's profiles as published
+     weights **unnormalised mean mm/h**, importing exactly the magnitude information D6/D9 forbid
+     touching; normalising each band first instead assumes equal precipitation per unit area. **Neither
+     variant is supported by M-A7's result** — a step at the southern margin, no gradient among the
+     three upper bands, operator sensitivity in the lowest band (pooled 21 UTC vs station-equal 23 UTC)
+     and an 11-hour resampled span in the high band. ⇒ **M-A7 does not presently licence deploying this
+     correction**; the document says so and states what would have to be true.
   2. **Gap-filling the gauge record** (use ERA5-Land where DHM is missing);
   3. **Bias-correcting ERA5-Land forcing** with a gauge-derived adjustment;
   4. **Elevation-band forcing correction** (the lapse-rate use);
   5. **Operational ingest of DHM real-time observations** for forecasting.
-
-  **⛔ Use 1 is FIRST because the track already puts it on the critical path**, and an earlier revision
-  of this plan omitted it entirely — the four uses it listed were all magnitude corrections, and the
-  timing correction is M-A7's principal operational use. The milestone doc states the operator, states
-  that M-A7 "moves onto the critical path", and calls the elevation-banded observation-derived diurnal
-  profile "the only defensible sub-daily timing source we have, because no available model of this
-  class gets the phase right". ⇒ **The document must assess use 1 at least as carefully as the other
-  four**, and M-A7's own half-confirmed diurnal result (southern-margin peak reproduces; the three
-  upper bands sit together with no gradient among them) is the evidence that bears on it.
 
 - **D4 — Use 4 (the lapse rate) is already answered NO by M-A8, and the document says so plainly.** ⛔ Do not re-open it
   or soften it into "promising but uncertain".
@@ -120,19 +114,19 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
   around Early before it is worth executing; **(ii)** the ~4 h latency is what makes an operational role
   possible at all — a better-calibrated product arriving 3.5 months late cannot correct a nowcast.
 
-  **⛔ CORRECTED 2026-08-28 (independent review) — an earlier revision said Early is "not
-  gauge-calibrated" and that Final figures are therefore an UPPER BOUND on Early. Both are wrong for
-  V07.** Per the [NASA IMERG V07 ATBD](https://gpm.nasa.gov/sites/default/files/2023-07/IMERG_V07_ATBD_final_230712.pdf),
-  V07 Early's standard precipitation field **does** receive Final-derived **climatological**
-  calibration. The real differences are **forward-only morphing** and **fewer microwave inputs**, not
-  an absence of calibration. So the correct statement is that **Final results are NON-TRANSFERABLE
-  evidence about Early — not a guaranteed bound in either direction**, and every quoted figure must be
-  attributed to the run it was measured on.
 
-  **And a trap specific to operational evaluation:** *retrospectively downloaded* Early can contain
-  inputs that were not available in live operation, so even Early-based published skill can **overstate
-  live Early performance**. ⇒ Any future evaluation must state whether its Early data was retrospective
-  or captured in real time.
+  **⛔ Early is NOT simply "Final without calibration".** Per the
+  [NASA IMERG V07 ATBD](https://gpm.nasa.gov/sites/default/files/2023-07/IMERG_V07_ATBD_final_230712.pdf),
+  V07 Early's standard precipitation field **does** receive Final-derived **climatological**
+  calibration. Differences **include** forward-only morphing and fewer microwave inputs — and also
+  climatological versus contemporaneous GPCC adjustment, different GPROF/CORRA products and calibration
+  windows, motion-vector sources, Kalman windows, phase inputs and manual QC. ⇒ **Final results are
+  NON-TRANSFERABLE evidence about Early, not a bound in either direction**, and every quoted figure
+  must be attributed to the run it was measured on.
+
+  **A trap specific to operational evaluation:** *retrospectively downloaded* Early can contain inputs
+  unavailable in live operation, so even Early-based published skill can **overstate live Early
+  performance**. Any evaluation must state whether its Early data was retrospective or captured live.
 
 - **D8 — The known Himalayan limitation is stated up front, because it lands exactly where we need
   help.** Published validation over Nepal finds satellite products correlate well in the **southern
@@ -148,8 +142,10 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
   considerably better than precise sub-daily rainfall** — and this track's operational resolution is
   **3-hourly**, which is exactly the regime where that weakness bites. An earlier revision of this plan
   made the geographic asymmetry decision-determining and omitted the temporal one entirely. ⇒ **The
-  document must weigh BOTH**, and should be explicit that a product which is good daily and weak
-  sub-daily is a poor fit for a 3-hourly correction *regardless* of where our gauges happen to be.
+  document must weigh BOTH.** ⛔ State the temporal limitation at the scale the evidence supports: it
+  concerns **event-level** sub-daily rainfall and does **not** by itself establish that a **long-record
+  climatological diurnal shape** is poor — precisely the scope the proposed timing correction operates
+  at. Over-generalising it would pre-register the IMERG verdict D9 forbids.
 
 - **D9 — No pre-registered verdict on IMERG** (vision D8). T1 states the conditions; the owner decides
   whether M-A5b is worth writing.
@@ -159,7 +155,7 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
 Two tasks, two phases.
 
 ### T1 — the synthesis and recommendation document (depends: nothing new)
-**In:** one document under `docs/design/` consolidating M-A6/M-A7/M-A8 against D3's four candidate
+**In:** one document under `docs/design/` consolidating M-A6/M-A7/M-A8 against D3's **five** candidate
 uses, each with what would have to be true and whether the evidence supports it, every number carrying
 its companions (D2); the IMERG assessment per D6–D8 including the **Final-vs-Early mismatch in M-A5b's
 current text**; and an explicit recommendation on whether to write an M-A5b plan.
@@ -170,22 +166,18 @@ with one command. ⛔ A number that cannot be traced is a defect.
 
 ### T2 — the IMERG Early retrievability and latency probe (depends: nothing new)
 **In:** a read-only probe answering the two questions the literature cannot, for **IMERG Early V07**
-(`GPM_3IMERGHH_E`, field `precipitation`, half-hourly): **(a)** are granules for our window and
+(NASA short name **`GPM_3IMERGHHE_07`**, field `precipitation`, half-hourly): **(a)** are granules for our window and
 bounding box actually retrievable with the credentials we have, and **(b)** what is the **observed**
 latency between a granule's nominal time and its availability, measured over a handful of recent
 granules — not the documented ~4 h, the measured one.
 **Out:** any extraction at station cells, any regridding, any archive publication, any comparison
 against the gauges, any skill claim. **⛔ This is a retrievability and timing check, NOT acquisition**
 (M-A5b owns that), and it writes nothing under `data/dhm_precip/`.
-**Verify:** `uv run pytest tests/unit/scripts/test_imerg_probe.py -q` for the pure parts (latency
-arithmetic, granule-name construction) with no network; then the probe run once by hand, reporting a
-table of granule name, nominal time, observed availability time, and measured lag. ⛔ A
-network-dependent assertion must NOT enter the unit suite.
-
-*(⛔ **CUT 2026-08-28 (independent review):** an earlier revision also asked for the fraction of values
-in a "snow/ice-flagged regime". **The standard IMERG fields do not supply such a binary flag**, and a
-station-weighted fraction would not have established the sparse-mountain coverage asymmetry it was
-meant to support. D8's limitation stands on the published validation, not on a probe we cannot run.)*
+**Verify:** run once as a **heredoc analysis** (CLAUDE.md's mandated form for one-time work — this is
+not reusable logic and must not become a committed module or test file), reporting a table of granule
+name, nominal time, observed availability time and measured lag. **Name the access endpoint whose
+timestamp defines "available"**, since latency is meaningless without it. ⛔ No network-dependent
+assertion enters the unit suite.
 
 
 ```json
@@ -202,15 +194,11 @@ actually retrievable here, not assuming it.*
 
 ## Exit
 
-A written recommendation stating, for each of D3's **five** candidate uses — the elevation-banded
-diurnal TIMING correction first, since the track puts it on the critical path — what would have to be
-true and whether the evidence supports it, explicitly permitting "no operational use"; every number
-carrying the conditions it was published with and traceable to a regenerable source; the IMERG
-assessment separating Early/Late/Final by latency, naming the Final-vs-Early mismatch in M-A5b's
-current text, stating that Final evidence is **non-transferable** to Early rather than bounding it, and
-weighing the **geographic** asymmetry against the **temporal** one (daily better than sub-daily,
-against a 3-hourly operational resolution); and a recommendation on whether an
-M-A5b plan is worth writing. **The owner decides (M-DEC); this plan does not.**
+A written recommendation satisfying D1–D9: each of D3's five candidate uses assessed for what would
+have to be true and whether the evidence supports it (explicitly permitting "no operational use"),
+every number carrying its published conditions and traceable to a regenerable source, and a
+recommendation on whether an M-A5b plan built around IMERG **Early** is worth writing.
+**The owner decides (M-DEC); this plan does not.**
 
 ## Non-goals
 
