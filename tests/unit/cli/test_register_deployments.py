@@ -217,7 +217,7 @@ class TestBafuObservationCadenceProperties:
     measurement, below D1's own "tighten if under ~8 min" pre-commitment),
     min gap >=2 min (RELAXED from D1's original >=3 — `max<=3` AND `min>=3`
     together are arithmetically incompatible with "no minute divisible by
-    5", see docs/plans/189-audit-window-edge-and-poll-bound.md § T2), and
+    5", see docs/plans/archive/189-audit-window-edge-and-poll-bound.md § T2), and
     every minute non-divisible by 5 (never shares a minute with
     ingest-observations' `*/5` tick)."""
 

@@ -13,7 +13,8 @@ This is a MANUAL pre-flip gate, run against the LIVE deployment DB — repo
 review alone cannot settle it (today's shipped models declare no past-dynamic
 features that overlap the affected parameter set, as far as the source code
 shows, but that is an INFERENCE from the code, not a fact about what is
-actually ACTIVE on a given deployment; see docs/plans/115b4-reader-flip-cutover.md
+actually ACTIVE on a given deployment; see
+docs/plans/archive/115b4-reader-flip-cutover.md
 §5C). Run this before Release A ships on a deployment, and disposition any
 flagged model (retrain on the MeteoSwiss-sourced series, or hold the flip for
 the affected stations/groups) BEFORE flipping ``reanalysis_source``.

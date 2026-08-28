@@ -4,7 +4,8 @@
 # job timeout is too short for this test's default duration).
 """Plan 176 T7 — extended LINDAS publish-lag measurement.
 
-D1's <=4 min max-poll-gap sizing (`docs/plans/176-lindas-archive-completeness.md`)
+D1's <=4 min max-poll-gap sizing
+(`docs/plans/archive/176-lindas-archive-completeness.md`)
 rests on a SINGLE clean publish gap (10.8 min) observed during that plan's
 evidence-gathering. This test polls the live whole-graph endpoint at a fixed
 cadence over a LONGER window, records each new network slot's first-sighting

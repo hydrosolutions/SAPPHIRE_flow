@@ -14,7 +14,7 @@
 # avoid surprises on notebooks/, data/, etc.
 #
 # All ruff hooks are CHECK-ONLY (no auto-fix). See D8 in
-# docs/plans/070-precommit-and-gate-parity.md for the rationale
+# docs/plans/archive/070-precommit-and-gate-parity.md for the rationale
 # (auto-fix conflicts with the mandatory bump-my-version commit sequence
 # documented in CLAUDE.md §Version Bumping).
 #

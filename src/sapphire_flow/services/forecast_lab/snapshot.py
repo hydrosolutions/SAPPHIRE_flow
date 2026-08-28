@@ -681,7 +681,7 @@ def _aggregate_source_status(
     """D16a per-source status, rolled up over every station in this
     request: `ok` if every eligible station has this source available,
     `missing` if none do (including zero eligible stations), `error` if
-    some but not all do. See docs/plans/198-forecast-lab-snapshot-export.md
+    some but not all do. See docs/plans/archive/198-forecast-lab-snapshot-export.md
     D16a and docs/spec/forecast-lab-snapshot.md for the consumer-facing
     rule and its N=1 degenerate case."""
     total = len(available_flags)

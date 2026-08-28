@@ -2,7 +2,7 @@
 
 Red-first acceptance tests locked from
 ``docs/requirements/04-basin-static-artifact-contract.md`` §9 and
-``docs/plans/120-basin-static-importer.md`` Task 1A/1B. Uses the real,
+``docs/plans/archive/120-basin-static-importer.md`` Task 1A/1B. Uses the real,
 contract-compliant fixture at
 ``tests/fixtures/basin_static/nepal-dhm-basins/`` (copied per-test into a
 tmp dir and mutated to build discriminating negative fixtures).

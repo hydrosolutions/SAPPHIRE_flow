@@ -123,7 +123,7 @@ basins = sa.Table(
 # Plan 120 Task 0A: append-only version history for `basins`, keyed to the
 # STABLE `basins.id` (inbound FKs from `stations.basin_id` and the §5a table
 # stay valid across corrections — see "Versioned basin state" in
-# docs/plans/120-basin-static-importer.md). `basins` keeps projecting the
+# docs/plans/archive/120-basin-static-importer.md). `basins` keeps projecting the
 # CURRENT version (readers unchanged); this table is the audit trail +
 # lineage-join target. `package_id` NULLable — legacy/non-package rows carry
 # NULL (Task 0A "Legacy backfill" / "Ongoing non-package basin inserts").

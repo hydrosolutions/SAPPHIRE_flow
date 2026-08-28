@@ -6,7 +6,7 @@ Create Date: 2026-07-22
 
 Adds the persistence layer docs/requirements/04-basin-static-artifact-contract.md
 §5a (`:305-310`) requires before Nepal production enablement — see
-docs/plans/120-basin-static-importer.md "Versioned basin state" for the full
+docs/plans/archive/120-basin-static-importer.md "Versioned basin state" for the full
 design rationale. All additive; no existing column is redefined.
 
 * `basin_static_packages` — provenance for an accepted package (producer-declared
