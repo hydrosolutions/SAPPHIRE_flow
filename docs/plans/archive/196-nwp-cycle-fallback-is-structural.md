@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: COMPLETE
 created: 2026-08-21
 plan: 196
 title: Measure ICON-CH2-EPS publication latency before trusting the 105-minute guess
@@ -13,10 +13,14 @@ source: Flow Map integration audit 2026-08-21 § B; cut down from the four-task 
 
 ## Status
 
-**DRAFT — T1 CLOSED, T2 OUTSTANDING.** T1 was authorised and run on 2026-08-28; its finding is
-recorded under `## T1 result` and it needs no further work. T2 (record the coupling in
-`docs/standards/orchestration.md` + a REVISIT note on Plan 090) remains, and now has a measured
-figure to carry. No code, schedule or config was changed, per D2.
+**COMPLETE 2026-08-28.** Both tasks done; exit gates met (`## T1 result` carries the sample size
+and window; T2's paragraph carries the measured figure; the diff touched only `docs/`).
+
+**T1 CLOSED, T2 DONE.** T1 was authorised and run on 2026-08-28; its finding is
+recorded under `## T1 result` and it needs no further work. T2 recorded the coupling in `docs/standards/orchestration.md`, added a
+dated REVISIT note to the archived Plan 090, and corrected `architecture-context.md`. No code,
+schedule or config was changed, per D2 — **acting on the measured number remains a separate
+plan that has not been drafted.**
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT ON THIS PLAN AND ON ITS REVIEW
 
