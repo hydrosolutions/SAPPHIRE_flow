@@ -23,7 +23,21 @@ source: the 2026-08-28 stale-status audit (main b1e1b516); the audit's own limit
   `docker-compose.yml:404` path this plan predicted no grep would see. **Gate verified clean on
   `main` after the merge: every cited plan path in the repo now resolves.**
 - **B1 — reported below.** 13 retirable, 1 inspect, 53 keep.
-- **B2 and C — blocked on owner confirmation by design.**
+- **B2 — owner set a cutoff: retire only branches last worked on 2026-08-25 or earlier; nothing from
+  yesterday or today.** Applied 2026-08-28 → **exactly ONE of the 13 qualified**:
+  `docs/plan-192-recap-second-stack` (last activity 2026-08-20). Retired recoverably —
+  `pruned/docs-plan-192-recap-second-stack` → `19c3ab3f`, restore verified live. The other 12 are
+  held: `docs/plan-205-ma8` is from yesterday and **eleven were touched TODAY** by other sessions
+  (`docs/housekeeping` committed at 14:03, `docs/plan-ma9` at 10:57). The cutoff earned its keep.
+- **C — worktree pass done; nothing removed.** Under the same cutoff no worktree qualifies: all nine
+  non-main worktrees are clean, but every one either holds real work (`DIFFERS`) or was active today.
+  `git worktree prune` was a no-op — no stale registrations. `sapphire-plan192`'s worktree WAS removed
+  (unforced, clean) as the prerequisite for retiring its branch.
+
+**Method note for anyone repeating this:** a `NO_UNIQUE_WORK` branch points at a commit already on
+`main`, so `git log -1 <branch>` returns **main's** date, not when the branch was worked on. Use the
+**reflog** (`git reflog show --date=short <branch>`) — it records when the ref itself moved. Using the
+commit date would have declared all 13 retirable, including eleven under active edit.
 
 **READY — owner flip 2026-08-28**, after three independent Codex passes. Passes 1-3 each found a
 blocker in §B1's branch-classification method; all were folded and re-verified. The final change was
