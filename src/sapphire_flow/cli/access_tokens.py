@@ -188,7 +188,7 @@ def _print_token_row(t: AccessToken) -> None:
     status = "disabled" if t.disabled_at is not None else "active"
     print(  # noqa: T201 - CLI output, not application logging
         f"{t.id}  {t.name!r:30}  role={t.role.value:8}  "
-        f"tenant={t.tenant_id or '-':36}  {status:8}  "
+        f"tenant={t.tenant_id or '-'!s:36}  {status:8}  "
         f"expires={t.expires_at.isoformat()}  scope={len(t.station_ids)} station(s)"
     )
 
