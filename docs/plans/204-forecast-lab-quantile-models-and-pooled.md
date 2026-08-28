@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-27
 plan: 204
 title: Forecast Lab shows 3 of 6 forecasts once POOLED is on — quantile models and `_pooled` are both invisible
@@ -13,7 +13,8 @@ source: Surfaced 2026-08-27 by the `forecast_combination_strategy = pooled` tria
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner confirmed 2026-08-28, after the seam review against the SAPPHIRE-flow-map
+consumer returned `PLAN 204 IS ORTHOGONAL`. Cleared for `/implement`.
 
 Scope is three tasks (T1/T2/T3) and has not grown across the review rounds: no new abstraction, no
 backfill, no performance work, no verification metrics. The body below states only the **current**
