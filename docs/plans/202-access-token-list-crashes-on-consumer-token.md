@@ -15,11 +15,34 @@ source: Found 2026-08-27 while minting the Plan 198 consumer token for SAPPHIRE-
 
 **DRAFT.** Not for implementation until the owner confirms.
 
-## ⛔ Proportionality
+## ⛔ Proportionality is a binding constraint on this plan AND on its review
+
+> **Owner directive, 2026-08-28: do not over-engineer this.**
+> Recorded here, in the plan doc, because per-run scope passed as a workflow argument is silently
+> discarded — the workflow reads only `planPath`, `repo`, `maxRounds` and `codexTimeoutMs`
+> (`.claude/workflows/plan.js`). Every reviewer and every revision round is bound by what follows.
 
 **This is a one-line fix and one test.** It is a genuine crash on `main`, not a design question.
-Reviewers: "no findings" is a complete review; a finding must name a concrete failure. Do not
-propose reworking the CLI's output format, adding a `--json` mode, or touching the auth model.
+The whole change is `str()` around one value in one f-string, plus a regression test that fails
+without it.
+
+**This plan should LEAVE review at or below its current length (~110 lines).** A round that adds a
+task, a module, a decision table, or a second concern has misread the assignment. Deleting is a
+valid outcome; growing is not.
+
+### Rules binding every reviewer
+
+- **"No findings" is a complete and welcome review** — and for a change this size it is the most
+  likely correct answer. Do not manufacture findings to justify the pass.
+- **A finding must name a CONCRETE FAILURE** — an input, a state, and the wrong output or crash.
+  "Consider also…", "while we're here…", "future-proof by…" are not findings.
+- **Explicitly out of scope, do not propose:** reworking the CLI's output format; a `--json` or
+  `--format` mode; pagination; colourisation; touching `create` / `create-admin` / `revoke`; the
+  `AccessToken` type; anything in `api/security.py` or the auth model; a migration; new tooling.
+- **Do not widen the fix.** Other `f"{...:N}"` uses elsewhere in the repo are not this plan's
+  business unless a reviewer can show one crashes today.
+- **The measured facts are settled**: the crash was reproduced locally and on the mac mini
+  2026-08-27. Challenge them only with contrary evidence, not reasoning.
 
 ## The defect
 
