@@ -442,6 +442,18 @@ def _build_combined_forecast(
     if forecast is None:
         return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
 
+    # The SAME `_is_renderable` predicate the per-model path uses (T2). The
+    # combined block is not exempt: a QUANTILES combination whose levels are
+    # not the RECOGNISED SET would otherwise reach
+    # `_quantile_envelope_points()` directly and export `available: true`
+    # with `null` quartiles, while daily alignment still marked it
+    # `complete: true` — precisely the mislabelling D5's guard exists to
+    # prevent, and precisely the drift `_is_renderable`'s docstring forbids.
+    # Unreachable while Plan 026 emits members; a latent trap the moment it
+    # does not.
+    if not _is_renderable(forecast):
+        return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
+
     # Reproduces the persisted DB provenance exactly (AC4) — no independent
     # claim about which model contributed to which parameter. Both fields
     # are nullable in storage, but the combination writer
@@ -476,9 +488,10 @@ def _build_combined_forecast(
             horizon_end=points[-1].valid_time,
             points=points,
         )
-    # QUANTILES — not reachable today (Plan 026 combination emits members),
-    # but the type is the same nested union as the per-model entry (T2) so
-    # the two cannot drift.
+    # QUANTILES — not reachable today (Plan 026 combination emits members).
+    # `_is_renderable` above has already proved the RECOGNISED SET, exactly
+    # as it does for the per-model entry (T2), so neither the type nor the
+    # validation can drift between the two paths.
     quantile_points = _quantile_envelope_points(ensemble.values)
     return CombinedForecastQuantilesSchema(
         forecast_id=str(forecast.id),

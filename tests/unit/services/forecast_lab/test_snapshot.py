@@ -28,6 +28,7 @@ from sapphire_flow.api.forecast_lab_schemas import (
     BafuForecastAvailableSchema,
     CombinedForecastAvailableSchema,
     CombinedForecastMembersSchema,
+    CombinedForecastQuantilesSchema,
     CombinedForecastUnavailableSchema,
     ForecastLabSnapshot,
     QuantileEnvelopeSchema,
@@ -1386,6 +1387,101 @@ class TestCombinedForecastDailyAlignment:
         assert "_pooled" in rows[2].sapphire
         # Day 3 has no per-model coverage, only the combined block.
         assert "nwp_regression" not in rows[2].sapphire
+
+
+class TestCombinedQuantileRecognisedSet:
+    """Round-4 major (independent Codex pass over the committed diff): the
+    combined block bypassed `_is_renderable`, so a QUANTILES combination whose
+    levels are not the RECOGNISED SET was exported `available: true` with
+    `null` quartiles while daily alignment still called it `complete`. The
+    per-model path (T2) has always gated on the predicate; the combined path
+    must use the SAME one."""
+
+    @staticmethod
+    def _seed(rows_for: Any) -> Any:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        vt = _EPOCH + timedelta(days=1)
+        ensemble = _quantiles_ensemble_from_rows(
+            station.id,
+            issued_at=_EPOCH,
+            rows=rows_for(vt),
+            model_id=POOLED_MODEL_ID,
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+        return build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+    def test_recognised_quantile_combination_renders_with_null_extremes(self) -> None:
+        snapshot = self._seed(lambda vt: _recognised_rows(vt))
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastQuantilesSchema)
+        assert combined.quantile_level_count == 7
+        point = combined.points[0]
+        assert point.p25 == 1.0
+        assert point.median == 2.0
+        assert point.p75 == 3.0
+        # The whole point of the guard: extremes are never invented from
+        # 0.05/0.95, on the combined path exactly as on the per-model one.
+        assert point.minimum is None
+        assert point.maximum is None
+
+    def test_unrecognised_quantile_combination_is_not_exported(self) -> None:
+        """RED before the fix: this rendered `available: true` with null
+        quartiles. A nine-level set is the realistic case — a model emitting a
+        different level grid, which `from_quantiles()` accepts (it enforces
+        only a >=7 unique-level floor, `types/ensemble.py:97-100`) and which
+        carries no 0.25/0.75, so p25 and p75 would both silently become null
+        while the block still claimed to be a forecast."""
+
+        def _nine_levels(vt: UtcDatetime) -> list[dict[str, Any]]:
+            levels = (0.02, 0.10, 0.20, 0.30, 0.50, 0.70, 0.80, 0.90, 0.98)
+            return [
+                {"valid_time": vt, "quantile": q, "value": 10.0 + i}
+                for i, q in enumerate(levels)
+            ]
+
+        snapshot = self._seed(_nine_levels)
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+        # And it must not leak into the derived views either.
+        station = snapshot.stations[0]
+        for row in station.aligned_daily_comparison:
+            assert str(POOLED_MODEL_ID) not in row.sapphire
+
+    def test_duplicate_level_combination_is_not_exported(self) -> None:
+        """Set-equality alone would accept this: all seven levels present,
+        plus a second 0.25 row leaving two candidate values for p25."""
+
+        def _duplicate_p25(vt: UtcDatetime) -> list[dict[str, Any]]:
+            rows = _recognised_rows(vt)
+            return [*rows, {"valid_time": vt, "quantile": 0.25, "value": 42.0}]
+
+        snapshot = self._seed(_duplicate_p25)
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
 
 
 class TestCombinedForecastStrategyDispatch:

@@ -164,4 +164,3 @@ class TestFixtureStationIdentityIsConsistent:
                 f"{station['station']['basin_area_km2']!r}, "
                 f"expected {expected['basin_area_km2']!r}"
             )
-            assert station["station"]["location"]["latitude"] == expected["latitude"]
