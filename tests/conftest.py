@@ -8,12 +8,14 @@ from uuid import UUID
 
 import polars as pl
 import pytest
+import structlog
 
 # Plan 147 Slice C: the API fails closed at startup without a readable
 # access_token_pepper (R1). Tests never talk to Docker secrets, so provide
 # the env-var fallback process-wide for any TestClient(app) instantiation.
 os.environ.setdefault("ACCESS_TOKEN_PEPPER", "test-only-pepper-do-not-use-in-prod")
 
+from sapphire_flow.logging import configure_test_logging
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import (
     GeoCoord,
@@ -48,6 +50,8 @@ from sapphire_flow.types.ids import (
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.types.alert import Alert
     from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -78,6 +82,74 @@ def _utc(year: int = 2025, month: int = 1, day: int = 1, hour: int = 0) -> UtcDa
 
 def _uuid(rng: random.Random) -> UUID:
     return UUID(int=rng.getrandbits(128), version=4)
+
+
+@pytest.fixture(autouse=True)
+def _reset_structlog_config_before_each_test() -> Iterator[None]:
+    """Plan 201: force known structlog global config before AND during every test.
+
+    Any test that exercises a real entry point (``main()`` in a CLI module,
+    a flow, ...) calls one of ``configure_cli_logging`` /
+    ``configure_api_logging`` / ``configure_prefect_logging``, which mutates
+    structlog's PROCESS-GLOBAL config via ``structlog.configure(...,
+    cache_logger_on_first_use=True)``. That flag is not just a config value:
+    per ``structlog._config.BoundLoggerLazyProxy.bind``, the FIRST time a
+    module-level ``log = structlog.get_logger(__name__)`` proxy is bound
+    while the flag reads True, the proxy permanently monkeypatches its own
+    ``.bind`` to a closure over the processors active at that moment. No
+    later ``structlog.configure()`` call — including the one
+    ``structlog.testing.capture_logs()`` performs internally — can undo
+    that: it is per-proxy state, not global state, so re-configuring
+    afterwards has no effect on a logger that already cached itself.
+
+    Concretely (Plan 201 T1's minimal reproducer): a CLI test calls
+    ``configure_cli_logging()`` (cache=True); a later, unrelated test is the
+    first to log through ``sapphire_flow.services.skill.combined_skill``'s
+    module logger while that flag is still True, permanently caching it;
+    a still-later test's ``capture_logs()`` then silently observes `[]`
+    because the cached logger never routes through the capturing
+    processors. Resetting to the test-safe config (cache=False) before
+    EVERY test closes the *inter-test* window: no logger can ever be
+    first-bound while a flag leaked from a PRIOR test's body is live.
+
+    That reset-at-setup alone leaves an *intra-test* window open: nothing
+    stops a test's own body from calling a production configurator
+    (cache=True) and then first-binding some logger before that same test
+    (or the one right after) reads it back via ``capture_logs()`` — the
+    cache takes effect on the very next bind, not at the next fixture
+    setup. Closing that requires forcing the flag for the whole test, not
+    just at its start: every ``structlog.configure()`` call made anywhere
+    during the test — including ones production code issues via
+    ``configure_cli_logging()`` and friends — has
+    ``cache_logger_on_first_use`` forced to False here, restored
+    automatically by ``monkeypatch`` at teardown. Both call sites
+    (``src/sapphire_flow/logging.py``) do ``import structlog`` then call
+    ``structlog.configure(...)``, an attribute lookup at call time, so
+    patching the ``structlog.configure`` name catches them regardless of
+    which module made the call. ``structlog.testing.capture_logs()`` is
+    unaffected: it holds its own ``from structlog import configure``
+    binding captured at ``structlog.testing`` import time, a different
+    name pointing at the same underlying function — and it never passes
+    ``cache_logger_on_first_use`` anyway, only ``processors``.
+    """
+    configure_test_logging()
+
+    real_configure = structlog.configure
+
+    def _test_safe_configure(*args: object, **kwargs: object) -> None:
+        kwargs["cache_logger_on_first_use"] = False
+        real_configure(*args, **kwargs)
+
+    # A DEDICATED MonkeyPatch context, not the shared ``monkeypatch`` fixture.
+    # Plan 201 review (major): the shared instance is undone wholesale by any
+    # test that calls ``monkeypatch.undo()`` — and one does, at
+    # ``tests/unit/ops/test_watchdog.py:5031``. That would silently restore the
+    # real ``structlog.configure`` mid-test and re-open the very window this
+    # guard exists to close, with no failure to show for it. An owned context
+    # is invisible to that call and is still unwound here at teardown.
+    with pytest.MonkeyPatch.context() as guard:
+        guard.setattr(structlog, "configure", _test_safe_configure)
+        yield
 
 
 @pytest.fixture
