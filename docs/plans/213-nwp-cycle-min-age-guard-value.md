@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-28
 plan: 213
 title: Raise nwp_cycle_min_age_minutes above the measured publication latency
@@ -13,7 +13,7 @@ source: Plan 196 T1 — measured publication latency 160.0-168.4 min against a g
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-28: "ok, yes. we change it".
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
