@@ -19,7 +19,36 @@ supersedes: []
 | **T1** operator CLI | ✅ **MERGED** | PR #217, `a8b83bb` — `scripts/import_caravan_attributes.py` |
 | **T2** provenance placeholder rename | ✅ **MERGED** | same PR |
 | **T3** `replace_namespaced_attributes` | ✅ **MERGED** | same PR — `store/basin_store.py` |
-| **T4** run the import on the mini | ❌ **NOT RUN — owner-executed** | see § Scope of the automated implementation run |
+| **T4** run the import on the mini | ⛔ **BLOCKED — cannot run** | its stated precondition is false; see below |
+
+### ⛔ T4's premise is FALSE — measured 2026-08-28
+
+T4 reads: *"The Swiss fleet is onboarded there (owner-confirmed); the dev box has 2 stations and
+cannot exercise this."* **The mini also has 2 stations.** Proved against the production database
+using the CLI's own `derive_swiss_caravan_manifest`:
+
+```
+river stations in DB : 2
+DERIVED manifest     : 2   ['2009', '2091']
+PINNED manifest      : 148
+D1 preflight         : FAIL -- 146 missing
+```
+
+`derive_swiss_caravan_manifest` reads `fetch_all_stations(kind=RIVER)` from the **database** (not
+from `config.toml`, which lists 169 *candidates*), and `check_manifest_matches_pinned` requires
+**set identity**. So T4 aborts at the D1 preflight before reading the parquet or writing anything.
+The CLI is behaving exactly as designed — the gate fires first — but the task cannot complete.
+
+**T4's real precondition is that the Swiss BAFU fleet is ONBOARDED**, which is a separate operation
+with its own data requirements (basin geometries, forcing depth), not a step inside T4. The mini has
+**2 basins**; the manifest needs 148.
+
+Everything *else* T4 needs is in place, verified the same day: the delivered parquet
+(`296 x 216`, all `caravan_camels_ch_*`), both build secrets on the host, a current backup, and a
+clean baseline of **0** `caravan:` keys.
+
+**The premise was marked "owner-confirmed" and had never been checked against the box.** Worth
+asking where else that assumption is load-bearing.
 
 **The blocker this plan exists to remove is still in place.** Merging T1-T3 shipped the *entrypoint*;
 it did not import anything. Re-measured on the mac mini 2026-08-27: **0 basins carry a `caravan:`
