@@ -2,8 +2,8 @@
 arithmetic and missing-granule accounting, exercised entirely against a fake
 HTTP client (no network in CI). The one real network probe permitted by the
 plan (the D1 contract observation) was run manually against the live GES
-DISC archive during implementation — see the module docstring's DEVIATION
-note in `imerg_acquire.py`; it is not repeated here.
+DISC archive during implementation — see the module docstring's residual-
+risk note in `imerg_acquire.py`; it is not repeated here.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ def _write_fake_granule(
     value_at_station: float = 1.5,
     lat_count: int = 1800,
     lon_count: int = 3600,
+    product_version: str = "07B",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lat = np.round(np.linspace(-89.95, 89.95, lat_count), 6).astype(np.float32)
@@ -42,6 +43,10 @@ def _write_fake_granule(
     # to find without depending on exact index arithmetic
     precip[0, lon_count // 2, lat_count // 2] = value_at_station
     with h5py.File(path, "w") as f:
+        f.attrs["FileHeader"] = (
+            f"FileName={path.name};\nAlgorithmVersion=3IMERGHH;\n"
+            f"ProductVersion={product_version};\n"
+        ).encode()
         grid = f.create_group("Grid")
         grid.attrs["GridHeader"] = (
             b"BinMethod=ARITHMETIC_MEAN;\nRegistration=CENTER;\n"
@@ -100,8 +105,8 @@ class TestGranuleIdentity:
     def test_filename_matches_the_observed_gesdisc_naming_pattern(self) -> None:
         granule = ia.ImergGranuleId(start=datetime(2026, 8, 28, 7, 0, tzinfo=UTC))
         assert (
-            granule.filename(revision="V07C")
-            == "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07C.HDF5"
+            granule.filename(revision="V07B")
+            == "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07B.HDF5"
         )
 
     def test_remote_url_uses_year_and_day_of_year_directory(self) -> None:
@@ -207,7 +212,7 @@ class TestReadContract:
         self, tmp_path: Path
     ) -> None:
         path = tmp_path / (
-            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07C.HDF5"
+            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07B.HDF5"
         )
         _write_fake_granule(path)
         contract = ia.observe_read_contract(path)
@@ -216,12 +221,13 @@ class TestReadContract:
         assert contract.coordinate_registration == "CENTER"
         assert contract.longitude_convention == "SIGNED_180"
         assert contract.units == "mm/hr"
-        assert contract.granule_revision == "V07C"
+        assert contract.granule_revision == "V07B"
+        assert contract.file_header_product_version == "07B"
         assert contract.grid_shape == (1, 3600, 1800)
 
     def test_a_wrong_units_attribute_is_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / (
-            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07C.HDF5"
+            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07B.HDF5"
         )
         _write_fake_granule(path)
         with h5py.File(path, "a") as f:
@@ -239,23 +245,78 @@ class TestReadContract:
         contract = ia.observe_read_contract(path)
         ia.assert_contract_consistent(contract, frozen=contract)
 
-    def test_assert_contract_consistent_raises_on_a_revision_mismatch(
-        self, tmp_path: Path
-    ) -> None:
-        path_b = tmp_path / (
-            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07B.HDF5"
+    def test_assert_contract_consistent_raises_on_a_revision_mismatch(self) -> None:
+        """Constructed directly (not via `observe_read_contract`, which now
+        enforces the D1 pin and would reject a V07C-revision granule before
+        this intra-run consistency check is ever reached) — this test is
+        about `assert_contract_consistent`'s own drift-within-a-run
+        behaviour, orthogonal to the pin."""
+        base_kwargs = dict(
+            hdf5_variable_path=ia.HDF5_VARIABLE_PATH,
+            dimension_names=("time", "lon", "lat"),
+            coordinate_registration="CENTER",
+            longitude_convention="SIGNED_180",
+            units="mm/hr",
+            fill_value=-9999.9,
+            grid_shape=ia.EXPECTED_GRID_SHAPE,
+            lat_vector=tuple(
+                round(v, 6) for v in np.linspace(-89.95, 89.95, 1800).tolist()
+            ),
+            lon_vector=tuple(
+                round(v, 6) for v in np.linspace(-179.95, 179.95, 3600).tolist()
+            ),
+            grid_spacing_deg=0.1,
+            file_header_product_version="07B",
         )
-        path_c = tmp_path / (
-            "3B-HHR-E.MS.MRG.3IMERG.20260828-S073000-E075959.0450.V07C.HDF5"
-        )
-        _write_fake_granule(path_b)
-        _write_fake_granule(path_c)
-        frozen = ia.observe_read_contract(path_b)
-        observed = ia.observe_read_contract(path_c)
+        frozen = ia.ImergReadContract(granule_revision="V07B", **base_kwargs)
+        observed = ia.ImergReadContract(granule_revision="V07C", **base_kwargs)
         with pytest.raises(
             ia.ImergRevisionMismatchError, match="V07C.*V07B|V07B.*V07C"
         ):
             ia.assert_contract_consistent(observed, frozen=frozen)
+
+
+class TestRevisionPin:
+    """D1 (locking) — 'Current Early is V07B; if a granule carries another
+    revision, stop and report rather than blending.' The pin is ENFORCED,
+    not documentary."""
+
+    def test_observe_read_contract_rejects_a_granule_whose_revision_is_not_v07b(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07C.HDF5"
+        )
+        _write_fake_granule(path, product_version="07C")
+        with pytest.raises(
+            ia.ImergRevisionMismatchError, match="V07C.*V07B|V07B.*V07C"
+        ):
+            ia.observe_read_contract(path)
+
+    def test_observe_read_contract_rejects_a_filename_header_disagreement(
+        self, tmp_path: Path
+    ) -> None:
+        """The filename says the pinned V07B, but the granule's own
+        FileHeader.ProductVersion disagrees — must not be trusted from the
+        filename alone."""
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07B.HDF5"
+        )
+        _write_fake_granule(path, product_version="07C")
+        with pytest.raises(ia.ImergReadContractError, match="disagrees"):
+            ia.observe_read_contract(path)
+
+    def test_a_granule_missing_the_file_header_attribute_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07B.HDF5"
+        )
+        _write_fake_granule(path)
+        with h5py.File(path, "a") as f:
+            del f.attrs["FileHeader"]
+        with pytest.raises(ia.ImergReadContractError, match="FileHeader"):
+            ia.observe_read_contract(path)
 
 
 # --- D10 disk projection ---
@@ -286,12 +347,17 @@ class TestAcquisitionManifest:
         manifest = ia.ImergAcquisitionManifest(
             route=ia.ROUTE,
             collection_short_name=ia.COLLECTION_SHORT_NAME,
-            granule_revision="V07C",
-            window_start=ia.FIRST_GRANULE_START,
-            window_end=ia.LAST_GRANULE_START,
+            granule_revision="V07B",
+            completeness=ia.AcquisitionCompleteness.COMPLETE,
+            requested_window_start=ia.FIRST_GRANULE_START,
+            requested_window_end=ia.LAST_GRANULE_START,
             box=ia.STUDY_BOX,
             read_contract={"units": "mm/hr"},
+            requested=1,
+            retrieved=1,
+            missing=(),
             granule_checksums={"a.HDF5": "deadbeef"},
+            granule_retrieved_at={"a.HDF5": _clock()},
             retrospective=True,
             generated_at=_clock(),
         )
@@ -299,12 +365,22 @@ class TestAcquisitionManifest:
         ia.write_acquisition_manifest(manifest, path)
         reread = ia.read_acquisition_manifest(path)
         assert reread is not None
-        assert reread.granule_revision == "V07C"
+        assert reread.granule_revision == "V07B"
+        assert reread.completeness == ia.AcquisitionCompleteness.COMPLETE
         assert reread.retrospective is True
         assert reread.granule_checksums == {"a.HDF5": "deadbeef"}
 
     def test_read_returns_none_when_absent(self, tmp_path: Path) -> None:
         assert ia.read_acquisition_manifest(tmp_path / "missing.json") is None
+
+    def test_lives_outside_the_disposable_raw_dir(self, tmp_path: Path) -> None:
+        """D10 — 'the acquisition manifest is PERMANENT'; the raw granules
+        are disposable. The manifest must not live INSIDE the raw dir, or
+        discarding the raw dir takes the manifest with it."""
+        data_root = tmp_path / "data_root"
+        manifest_path = ia.acquisition_manifest_path(data_root)
+        raw_dir = ia.imerg_raw_dir(data_root)
+        assert raw_dir not in manifest_path.parents
 
 
 # --- missing-granule accounting (D4's upstream half — a window retrieval
@@ -336,7 +412,7 @@ class TestRetrieveWindow:
             # means "absent from that shared day's listing" — never listing
             # it, rather than marking the whole directory unreachable.
             if start in good_granules:
-                filename = granule.filename(revision="V07C")
+                filename = granule.filename(revision="V07B")
                 client.listings[directory_url] = (
                     client.listings.get(directory_url, "") + filename + "\n"
                 )
@@ -367,7 +443,7 @@ class TestRetrieveWindow:
         granule = ia.ImergGranuleId(start=start)
         fixture = tmp_path / "fixture.h5"
         _write_fake_granule(fixture)
-        filename = granule.filename(revision="V07C")
+        filename = granule.filename(revision="V07B")
         client = FakeImergHttpClient(
             listings={granule.directory_url(): filename},
             granule_bytes={f"{granule.directory_url()}{filename}": fixture},
@@ -389,7 +465,7 @@ class TestRetrieveWindow:
         granule = ia.ImergGranuleId(start=start)
         fixture = tmp_path / "fixture.h5"
         _write_fake_granule(fixture)
-        filename = granule.filename(revision="V07C")
+        filename = granule.filename(revision="V07B")
         client = FakeImergHttpClient(
             listings={granule.directory_url(): filename},
             granule_bytes={f"{granule.directory_url()}{filename}": fixture},
@@ -413,6 +489,64 @@ class TestRetrieveWindow:
         # ⚠️ "Retrieve once; never re-download what is on disk" (plan Verify)
         assert client.download_calls == [f"{granule.directory_url()}{filename}"]
 
+    def test_writes_the_permanent_acquisition_manifest(self, tmp_path: Path) -> None:
+        """D9/D10 (locking) — `retrieve_window` itself must write the
+        acquisition manifest; T2 (and any future bulk-retrieval caller)
+        depends on it being written HERE, not merely returned in memory."""
+        start = datetime(2026, 8, 28, 7, 0, tzinfo=UTC)
+        granule = ia.ImergGranuleId(start=start)
+        fixture = tmp_path / "fixture.h5"
+        _write_fake_granule(fixture)
+        filename = granule.filename(revision="V07B")
+        client = FakeImergHttpClient(
+            listings={granule.directory_url(): filename},
+            granule_bytes={f"{granule.directory_url()}{filename}": fixture},
+        )
+        data_root = tmp_path / "data_root"
+        ia.retrieve_window(
+            iter([start]),
+            client=client,
+            data_root=data_root,
+            clock=_clock,
+            sleep=_sleep,
+        )
+        manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert manifest is not None
+        assert manifest.requested == 1
+        assert manifest.retrieved == 1
+        assert manifest.granule_checksums
+        assert filename in manifest.granule_retrieved_at
+        # A single-granule `retrieve_window` call is a PARTIAL window, never
+        # COMPLETE — only a call spanning the whole pinned D5 window is.
+        assert manifest.completeness == ia.AcquisitionCompleteness.PARTIAL
+
+    def test_a_full_window_retrieval_is_marked_complete(self, tmp_path: Path) -> None:
+        starts = [
+            ia.FIRST_GRANULE_START,
+            ia.FIRST_GRANULE_START + timedelta(minutes=30),
+        ]
+        fixture = tmp_path / "fixture.h5"
+        _write_fake_granule(fixture)
+        client = FakeImergHttpClient()
+        for start in starts:
+            granule = ia.ImergGranuleId(start=start)
+            filename = granule.filename(revision="V07B")
+            client.listings[granule.directory_url()] = filename
+            client.granule_bytes[f"{granule.directory_url()}{filename}"] = fixture
+        data_root = tmp_path / "data_root"
+        ia.retrieve_window(
+            iter(starts),
+            client=client,
+            data_root=data_root,
+            clock=_clock,
+            sleep=_sleep,
+        )
+        manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert manifest is not None
+        # requested (2) != EXPECTED_GRANULE_COUNT (105,216) -> PARTIAL, not
+        # COMPLETE, even though every requested granule was retrieved.
+        assert manifest.completeness == ia.AcquisitionCompleteness.PARTIAL
+
 
 class TestRunProbe:
     def test_probe_downloads_exactly_one_granule_and_writes_the_manifest(
@@ -422,7 +556,7 @@ class TestRunProbe:
         granule = ia.ImergGranuleId(start=start)
         fixture = tmp_path / "fixture.h5"
         _write_fake_granule(fixture)
-        filename = granule.filename(revision="V07C")
+        filename = granule.filename(revision="V07B")
         client = FakeImergHttpClient(
             listings={granule.directory_url(): filename},
             granule_bytes={f"{granule.directory_url()}{filename}": fixture},
@@ -440,5 +574,41 @@ class TestRunProbe:
         assert result["filename"] == filename
         manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
         assert manifest is not None
-        assert manifest.granule_revision == "V07C"
+        assert manifest.granule_revision == "V07B"
         assert manifest.retrospective is True
+        assert manifest.completeness == ia.AcquisitionCompleteness.PROBE
+        # A probe's requested window is its OWN single granule, never the
+        # full pinned D5 window — D9's "a mandated recent probe outside the
+        # 2020-2025 window must not [be mistaken for a complete acquisition
+        # covering it]".
+        assert manifest.requested_window_start == start
+        assert manifest.requested_window_end == start
+
+
+class TestCliBoundaryParsing:
+    """Minor findings: naive `--granule-start` values must be rejected, not
+    silently interpreted in the host timezone; disk-free must be measured
+    against `--data-root`, not `.`."""
+
+    def test_parse_cli_utc_timestamp_rejects_a_naive_value(self) -> None:
+        with pytest.raises(ValueError, match="UTC offset"):
+            ia.parse_cli_utc_timestamp("2026-08-28T07:00:00")
+
+    def test_parse_cli_utc_timestamp_accepts_an_explicit_offset(self) -> None:
+        parsed = ia.parse_cli_utc_timestamp("2026-08-28T07:00:00+00:00")
+        assert parsed == datetime(2026, 8, 28, 7, 0, tzinfo=UTC)
+
+    def test_parse_cli_utc_timestamp_accepts_a_trailing_z(self) -> None:
+        parsed = ia.parse_cli_utc_timestamp("2026-08-28T07:00:00Z")
+        assert parsed == datetime(2026, 8, 28, 7, 0, tzinfo=UTC)
+
+    def test_nearest_existing_ancestor_walks_up_to_an_existing_directory(
+        self, tmp_path: Path
+    ) -> None:
+        missing = tmp_path / "not" / "yet" / "created"
+        assert ia._nearest_existing_ancestor(missing) == tmp_path.resolve()
+
+    def test_nearest_existing_ancestor_is_identity_for_an_existing_path(
+        self, tmp_path: Path
+    ) -> None:
+        assert ia._nearest_existing_ancestor(tmp_path) == tmp_path.resolve()

@@ -371,10 +371,16 @@ ERA5-Land side. Split from M-A5 by Plan 174 (2026-08-16): the milestone doc prev
 (`scripts/dhm_precip/imerg_acquire.py`, `scripts/dhm_precip/imerg_extract.py`) is built and unit-tested
 no-network; exactly one granule was downloaded from the live GES DISC archive as the D1 contract probe,
 freezing the read contract. **⛔ That probe found the live archive serving revision `V07C`, not the
-`V07B` Plan 211 D1 pinned** (both measured the same day) — an open residual risk for the owner, not
-resolved unilaterally; see Plan 211's implementation report. **The bulk retrieval (105,216 granules,
-projected ~848 GB against 896 GB free) was NOT performed** — Plan 211's per-run scope stops at the
-projection gate; bulk retrieval is the owner's call.
+`V07B` Plan 211 D1 pinned** (both measured the same day). **Post-review fixer pass (2026-08-28) made
+the pin ENFORCED, not merely documentary**: `assert_revision_matches_plan_and_header` rejects any
+granule whose filename revision differs from `V07B`, and independently cross-checks the filename
+against the granule's own embedded `FileHeader.ProductVersion`. Consequence: a live acquisition run
+against the archive **as observed 2026-08-28** will raise `ImergRevisionMismatchError` and halt — D1's
+own required behaviour ("stop and report rather than blending"), not a bug; resolving the halt
+(confirming V07B has returned, or re-confirming the READY plan for V07C) is the owner's call, not
+something this pipeline resolves unilaterally. **The bulk retrieval (105,216 granules, projected
+~848 GB against 896 GB free) was NOT performed** — Plan 211's per-run scope stops at the projection
+gate; bulk retrieval is the owner's call.
 
 **Exit:** extracted IMERG **Early** series + named operator + the per-station cell-centre/elevation
 record above (no DEM mismatch table) + the operator-sensitivity comparison + the manifest marked

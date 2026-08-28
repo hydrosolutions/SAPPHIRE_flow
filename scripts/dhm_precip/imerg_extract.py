@@ -29,6 +29,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -48,7 +49,11 @@ from pydantic import BaseModel  # noqa: E402
 
 from sapphire_flow.logging import configure_cli_logging  # noqa: E402
 from scripts.dhm_precip.domain_types import (  # noqa: E402
+    AccumulationConvention,
     ExtractionOperator,
+    SensitivityDeltaUnit,
+    SensitivityScope,
+    SensitivityStatistic,
     Station,
     StationCoordinateTable,
     VerticalDatum,
@@ -66,19 +71,20 @@ from scripts.dhm_precip.era5_extract import (  # noqa: E402
     load_expected_station_coordinates,
 )
 from scripts.dhm_precip.era5_extract_manifest import (  # noqa: E402
+    SENSITIVITY_REQUIRED_COLUMNS,
     assert_payload_checksum_matches,
 )
 from scripts.dhm_precip.era5_manifest import checksum_file  # noqa: E402
 from scripts.dhm_precip.era5_request import STUDY_YEARS  # noqa: E402
 from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
-    COLLECTION_SHORT_NAME,
-    FIRST_GRANULE_START,
     MEASURED_ACQUISITION_LATENCY,
-    ROUTE,
-    STUDY_BOX,
+    AcquisitionCompleteness,
+    ImergAcquisitionManifest,
     ImergReadContract,
+    acquisition_manifest_path,
     assert_contract_consistent,
     parse_granule_filename,
+    read_acquisition_manifest,
 )
 from scripts.dhm_precip.loader import (  # noqa: E402
     PRODUCTION_SOURCE_SHA256,
@@ -158,30 +164,42 @@ def aggregate_half_hourly_to_hourly(
     *,
     first_hour: datetime = FIRST_HOUR,
     last_hour: datetime = LAST_HOUR,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """D3/D4/D5 — one row per hour of a COMPLETE axis. `precip_mm_per_h[i]`
     is the mean of the two half-hourly rates whose `E` falls in
     `(hour-1, hour]`, i.e. the granules starting at `hour - 1h` and
-    `hour - 30min` (D5). Fewer than two FINITE contributing granules ->
-    NaN, never synthesised from one (D4); `granule_count[i]` is exactly how
-    many of the two were present and finite. Returns
-    `(valid_time, precip_mm_per_h, granule_count)`."""
+    `hour - 30min` (D5).
+
+    `granule_count[i]` (0/1/2) counts how many of the two granules EXIST for
+    this hour — a key present in `half_hourly`, regardless of whether the
+    value at this station's cell is finite. `non_finite_cell_count[i]`
+    (0/1/2) counts, of the EXISTING granules, how many carried a non-finite
+    (fill-value) reading at this station's cell — D4's "a granule that
+    exists but whose station cell is non-finite is likewise NaN, counted
+    SEPARATELY [from a missing granule]". `precip_mm_per_h[i]` is non-NaN
+    IFF `granule_count[i] == 2 and non_finite_cell_count[i] == 0` — never
+    synthesised from one granule, and never averaged over a non-finite
+    reading. Returns
+    `(valid_time, precip_mm_per_h, granule_count, non_finite_cell_count)`."""
     hours = hourly_axis(first_hour=first_hour, last_hour=last_hour)
     values = np.full(len(hours), np.nan, dtype=np.float64)
     counts = np.zeros(len(hours), dtype=np.int64)
+    non_finite_counts = np.zeros(len(hours), dtype=np.int64)
     for i, hour in enumerate(hours):
         r1 = half_hourly.get(hour - timedelta(hours=1))
         r2 = half_hourly.get(hour - timedelta(minutes=30))
-        finite = [r for r in (r1, r2) if r is not None and np.isfinite(r)]
-        counts[i] = len(finite)
-        if len(finite) == 2:  # noqa: PLR2004 - exactly D4's "two" threshold
+        existing = [r for r in (r1, r2) if r is not None]
+        counts[i] = len(existing)
+        non_finite = [r for r in existing if not np.isfinite(r)]
+        non_finite_counts[i] = len(non_finite)
+        if len(existing) == 2 and len(non_finite) == 0:  # noqa: PLR2004
             values[i] = round(
-                (finite[0] + finite[1]) / 2.0, _HOURLY_MEAN_ROUNDING_DECIMALS
+                (existing[0] + existing[1]) / 2.0, _HOURLY_MEAN_ROUNDING_DECIMALS
             )
     valid_time = np.array(
         [np.datetime64(h.replace(tzinfo=None)) for h in hours], dtype="datetime64[s]"
     )
-    return valid_time, values, counts
+    return valid_time, values, counts, non_finite_counts
 
 
 # --- D6 — the cell/elevation record (no DEM, no mismatch table) ---
@@ -237,11 +255,18 @@ def read_granule(path: Path) -> tuple[xr.Dataset, ImergReadContract]:
 
     from scripts.dhm_precip.imerg_acquire import (
         HDF5_VARIABLE_PATH,
+        assert_revision_matches_plan_and_header,
         parse_grid_header_field,
+        read_file_header_product_version,
     )
 
     granule, revision = parse_granule_filename(path.name)
     with h5py.File(path, "r") as f:
+        file_header_product_version = read_file_header_product_version(f)
+        assert_revision_matches_plan_and_header(
+            filename_revision=revision,
+            file_header_product_version=file_header_product_version,
+        )
         grid = f["Grid"]
         precip_ds = grid["precipitation"]
         dim_names_raw = precip_ds.attrs["DimensionNames"]
@@ -279,6 +304,7 @@ def read_granule(path: Path) -> tuple[xr.Dataset, ImergReadContract]:
         lon_vector=tuple(round(float(v), 6) for v in lon),
         grid_spacing_deg=spacing,
         granule_revision=revision,
+        file_header_product_version=file_header_product_version,
     )
     precip = precip[0]  # (lon, lat)
     precip = np.where(np.isclose(precip, fill_value, atol=1e-3), np.nan, precip)
@@ -395,37 +421,158 @@ def _canonical_json(obj: object) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def imerg_extraction_identity(
-    *,
-    operator_id: str,
-    coordinate_table_sha256: str,
-    granule_checksums: Mapping[str, str],
-    window_start: str,
-    window_end: str,
-    box: tuple[int, int, int, int],
-    read_contract: Mapping[str, object],
-    output_schema_version: str = IMERG_OUTPUT_SCHEMA_VERSION,
-    extraction_code_version: str = IMERG_EXTRACTION_CODE_VERSION,
-) -> str:
-    """D9/P7a — hashed over exactly what T2 READ: the acquisition
-    manifest's granule checksums, the station table, the window, the box,
-    the named operator and the frozen read contract. Never wall-clock time,
-    output paths or hostname (those are provenance, recorded but not
-    hashed)."""
-    canonical = _canonical_json(
-        {
-            "operator_id": operator_id,
-            "coordinate_table_sha256": coordinate_table_sha256,
-            "granule_checksums": dict(sorted(granule_checksums.items())),
-            "window_start": window_start,
-            "window_end": window_end,
-            "box": list(box),
-            "read_contract": dict(read_contract),
-            "output_schema_version": output_schema_version,
-            "extraction_code_version": extraction_code_version,
+#: D5 — the exact literal every published manifest must carry, mirroring
+#: `era5_extract._EXPECTED_PERIOD_ENDING_CONVENTION`'s own shape.
+EXPECTED_PERIOD_ENDING_CONVENTION = (
+    "hour t covers t-1 -> t (UTC): built from the two half-hourly granules "
+    "whose E falls in (t-1, t]"
+)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ImergIdentityInputs:
+    """P7a — the COMPLETE canonical snapshot `imerg_extraction_identity`
+    hashes, split into `value_inputs` (everything the computation actually
+    reads — including D1a's sensitivity parameter snapshot, which affects
+    `operator_sensitivity.csv`'s content) and `invalidation_inputs` (version
+    bumps that force regeneration on a behaviour-neutral change). Persisted
+    verbatim in `ImergExtractionManifest.identity_inputs` so a reader can
+    recompute the digest without having been the writer
+    (`recompute_imerg_extraction_identity`) — mirroring
+    `era5_extract_manifest.ExtractionIdentityInputs`."""
+
+    operator_id: str
+    coordinate_table_sha256: str
+    granule_checksums: Mapping[str, str]
+    route: str
+    collection_short_name: str
+    granule_revision: str
+    requested_window_start: str
+    requested_window_end: str
+    box: tuple[int, int, int, int]
+    read_contract: Mapping[str, object]
+    jjas_months: tuple[int, ...]
+    djf_months: tuple[int, ...]
+    mam_months: tuple[int, ...]
+    on_months: tuple[int, ...]
+    wet_threshold_mm_per_h: float
+    wet_threshold_side: str
+    zero_policy: str
+    quantile_definition: str
+    quantile_grid: tuple[float, ...]
+    output_schema_version: str = IMERG_OUTPUT_SCHEMA_VERSION
+    extraction_code_version: str = IMERG_EXTRACTION_CODE_VERSION
+
+    def canonical_payload(self) -> dict[str, object]:
+        value_inputs: dict[str, object] = {
+            "operator_id": self.operator_id,
+            "coordinate_table_sha256": self.coordinate_table_sha256,
+            "granule_checksums": dict(sorted(self.granule_checksums.items())),
+            "route": self.route,
+            "collection_short_name": self.collection_short_name,
+            "granule_revision": self.granule_revision,
+            "requested_window_start": self.requested_window_start,
+            "requested_window_end": self.requested_window_end,
+            "box": list(self.box),
+            "read_contract": dict(self.read_contract),
+            "seasons": {
+                "jjas_months": list(self.jjas_months),
+                "djf_months": list(self.djf_months),
+                "mam_months": list(self.mam_months),
+                "on_months": list(self.on_months),
+            },
+            "wet_threshold_mm_per_h": self.wet_threshold_mm_per_h,
+            "wet_threshold_side": self.wet_threshold_side,
+            "zero_policy": self.zero_policy,
+            "quantile_definition": self.quantile_definition,
+            "quantile_grid": list(self.quantile_grid),
         }
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+        invalidation_inputs: dict[str, object] = {
+            "output_schema_version": self.output_schema_version,
+            "extraction_code_version": self.extraction_code_version,
+        }
+        return {
+            "value_inputs": value_inputs,
+            "invalidation_inputs": invalidation_inputs,
+        }
+
+    def digest(self) -> str:
+        return hashlib.sha256(
+            _canonical_json(self.canonical_payload()).encode()
+        ).hexdigest()
+
+
+def imerg_extraction_identity(inputs: ImergIdentityInputs) -> str:
+    """D9/P7a — hashed over exactly what T2 READ, including the D1a
+    sensitivity parameters that affect `operator_sensitivity.csv`'s
+    content. Never wall-clock time, output paths or hostname (those are
+    provenance, recorded but not hashed)."""
+    return inputs.digest()
+
+
+def recompute_imerg_extraction_identity(identity_inputs: Mapping[str, object]) -> str:
+    """The recomputation half of P7a: given the canonical `{"value_inputs":
+    ..., "invalidation_inputs": ...}` payload a manifest records
+    (`ImergExtractionManifest.identity_inputs`), recompute the digest a
+    reader can compare against `extraction_identity` WITHOUT having been
+    the writer."""
+    return hashlib.sha256(_canonical_json(identity_inputs).encode()).hexdigest()
+
+
+_EXPECTED_VALUE_INPUT_KEYS: frozenset[str] = frozenset(
+    {
+        "operator_id",
+        "coordinate_table_sha256",
+        "granule_checksums",
+        "route",
+        "collection_short_name",
+        "granule_revision",
+        "requested_window_start",
+        "requested_window_end",
+        "box",
+        "read_contract",
+        "seasons",
+        "wet_threshold_mm_per_h",
+        "wet_threshold_side",
+        "zero_policy",
+        "quantile_definition",
+        "quantile_grid",
+    }
+)
+_EXPECTED_INVALIDATION_INPUT_KEYS: frozenset[str] = frozenset(
+    {"output_schema_version", "extraction_code_version"}
+)
+
+
+def assert_identity_inputs_complete(identity_inputs: Mapping[str, object]) -> None:
+    """A published bundle must carry the COMPLETE canonical snapshot its
+    `extraction_identity` was computed from, not merely the digest string —
+    mirroring `era5_extract_manifest.assert_identity_inputs_complete`."""
+    if set(identity_inputs) != {"value_inputs", "invalidation_inputs"}:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's identity_inputs has top-level "
+            f"key(s) {sorted(identity_inputs)}, expected exactly "
+            "{'value_inputs', 'invalidation_inputs'} (D9/P7a)"
+        )
+    value_inputs = identity_inputs["value_inputs"]
+    invalidation_inputs = identity_inputs["invalidation_inputs"]
+    if not isinstance(value_inputs, dict) or not isinstance(invalidation_inputs, dict):
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's identity_inputs.value_inputs/"
+            "invalidation_inputs must both be objects (D9/P7a)"
+        )
+    missing_value = _EXPECTED_VALUE_INPUT_KEYS - set(value_inputs)
+    if missing_value:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's identity_inputs.value_inputs is "
+            f"missing key(s) {sorted(missing_value)} (D9/P7a)"
+        )
+    missing_invalidation = _EXPECTED_INVALIDATION_INPUT_KEYS - set(invalidation_inputs)
+    if missing_invalidation:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's identity_inputs.invalidation_inputs "
+            f"is missing key(s) {sorted(missing_invalidation)} (D9/P7a)"
+        )
 
 
 class ImergExtractionManifest(BaseModel):
@@ -441,14 +588,25 @@ class ImergExtractionManifest(BaseModel):
     route: str
     collection_short_name: str
     granule_revision: str
-    window_start: datetime
-    window_end: datetime
+    acquisition_window_start: datetime
+    acquisition_window_end: datetime
+    """The RETRIEVAL (half-hourly granule) boundary, sourced from the D9
+    acquisition manifest T1 wrote — NOT the output axis (D5's finding: the
+    two must never be conflated)."""
+    output_axis_start: datetime
+    output_axis_end: datetime
+    """The hourly OUTPUT axis boundary (D5) — the axis's first hour needs
+    granules starting one hour before `acquisition_window_start`, so these
+    are deliberately distinct fields from the acquisition window above."""
+    timestamp_convention: AccumulationConvention
+    period_ending_convention: str
     box: tuple[int, int, int, int]
     read_contract: dict[str, object]
     retrospective: bool
     measured_acquisition_latency: str
     payload_sha256s: dict[str, str] = {}
     station_accounting: dict[str, dict[str, object]] = {}
+    identity_inputs: dict[str, object] = {}
     n_stations: int
     n_hours: int
     generated_at: datetime
@@ -480,6 +638,11 @@ _REQUIRED_NEAREST_COLUMNS: tuple[str, ...] = (
     "timestamp_utc",
     "precip_mm_per_h",
     "granule_count",
+    "non_finite_cell_count",
+    "grid_lat",
+    "grid_lon",
+    "station_elev_m",
+    "station_elevation_datum",
 )
 _REQUIRED_STATION_CELL_COLUMNS: tuple[str, ...] = (
     "station",
@@ -490,6 +653,40 @@ _REQUIRED_STATION_CELL_COLUMNS: tuple[str, ...] = (
     "station_elev_m",
     "station_elevation_datum",
 )
+_STATION_ACCOUNTING_COMPONENT_KEYS: tuple[str, ...] = (
+    "n_hours_complete",
+    "n_hours_partial",
+    "n_hours_missing_granule",
+    "n_hours_non_finite_cell",
+)
+
+_PUBLISHED_RUN_NUMBER_RE = re.compile(rf"^\d{{{_RUN_NUMBER_WIDTH}}}$")
+
+_VALID_SENSITIVITY_SCOPES: frozenset[str] = frozenset(m.value for m in SensitivityScope)
+_VALID_SENSITIVITY_STATISTICS: frozenset[str] = frozenset(
+    m.value for m in SensitivityStatistic
+)
+_VALID_SENSITIVITY_DELTA_UNITS: frozenset[str] = frozenset(
+    m.value for m in SensitivityDeltaUnit
+)
+
+
+def _directory_declares_identity(directory: Path, *, identity: str) -> bool:
+    """EXACT match against one of the two forms a bundle directory takes —
+    staged (`<identity>--<token>`, P1a) or published (`NNNN-<identity>`,
+    P1). A substring match (the previous check) would wrongly accept a
+    directory whose name merely CONTAINS the identity as a fragment of
+    something else."""
+    name = directory.name
+    if "--" in name:
+        declared, _, _token = name.partition("--")
+        return declared == identity
+    prefix, sep, rest = name.partition("-")
+    return (
+        bool(sep)
+        and bool(_PUBLISHED_RUN_NUMBER_RE.fullmatch(prefix))
+        and rest == identity
+    )
 
 
 def validate_imerg_bundle(
@@ -502,14 +699,27 @@ def validate_imerg_bundle(
     """D9 — ONE validation predicate, applied identically by publication
     and discovery (never two implementations of the same rules — the
     ERA5-Land precedent's own P4 finding)."""
-    if manifest.extraction_identity not in directory.name:
+    if not _directory_declares_identity(
+        directory, identity=manifest.extraction_identity
+    ):
         raise ExtractionPostConditionError(
             f"manifest extraction_identity {manifest.extraction_identity!r} "
-            f"is not present in its own directory name {directory.name!r} (D9)"
+            f"does not exactly match its own directory name {directory.name!r} "
+            "(D9)"
         )
     if manifest.retrospective is not True:
         raise ExtractionPostConditionError(
             "IMERG extraction manifest must be marked RETROSPECTIVE (D7)"
+        )
+    if manifest.timestamp_convention is not AccumulationConvention.PERIOD_ENDING:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's timestamp_convention must be "
+            "PERIOD_ENDING (D5)"
+        )
+    if manifest.period_ending_convention != EXPECTED_PERIOD_ENDING_CONVENTION:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's period_ending_convention != the "
+            f"expected literal {EXPECTED_PERIOD_ENDING_CONVENTION!r} (D5)"
         )
     for name in IMERG_PAYLOAD_FILES:
         assert_payload_checksum_matches(directory, manifest, name)
@@ -527,30 +737,51 @@ def validate_imerg_bundle(
             f"{_NEAREST_SERIES_FILENAME} has {len(stations_present)} distinct "
             f"stations, expected {expected_station_count} (D9)"
         )
-    per_station_rows = nearest.group_by("station_id").len()
-    bad_counts = per_station_rows.filter(pl.col("len") != expected_hour_count)
-    if bad_counts.height:
-        raise ExtractionPostConditionError(
-            f"{_NEAREST_SERIES_FILENAME} has station(s) with a row count != "
-            f"expected_hour_count {expected_hour_count}: {bad_counts.to_dicts()} (D9)"
-        )
+    # D9/D5 — the EXACT expected hourly axis, per station, not merely a row
+    # count: a duplicate timestamp and a missing one can share a count.
+    expected_axis = [
+        str(np.datetime64(h.replace(tzinfo=None), "s"))
+        for h in hourly_axis()[:expected_hour_count]
+    ]
+    for _station_id, group in nearest.sort("timestamp_utc").group_by(
+        "station_id", maintain_order=True
+    ):
+        actual_axis = group.sort("timestamp_utc")["timestamp_utc"].to_list()
+        if actual_axis != expected_axis:
+            raise ExtractionPostConditionError(
+                f"{_NEAREST_SERIES_FILENAME} station {_station_id!r} does not "
+                "carry the exact expected hourly axis (D5/D9)"
+            )
     bad_granule_count = nearest.filter(~pl.col("granule_count").is_in([0, 1, 2]))
     if bad_granule_count.height:
         raise ExtractionPostConditionError(
             f"{_NEAREST_SERIES_FILENAME}.granule_count has value(s) outside "
             "{0, 1, 2} (D4/D9)"
         )
-    # D4 — an hour with granule_count < 2 must be NaN; granule_count == 2
-    # must be finite. Both directions checked: a value present under a
-    # partial count would be silently invented data.
+    bad_non_finite_count = nearest.filter(
+        ~pl.col("non_finite_cell_count").is_in([0, 1, 2])
+    )
+    if bad_non_finite_count.height:
+        raise ExtractionPostConditionError(
+            f"{_NEAREST_SERIES_FILENAME}.non_finite_cell_count has value(s) "
+            "outside {0, 1, 2} (D4/D9)"
+        )
+    # D4 — precip_mm_per_h is non-null IFF granule_count == 2 AND
+    # non_finite_cell_count == 0. Both directions checked: a value present
+    # under a partial/non-finite hour would be invented data; a null value
+    # when both granules genuinely exist and are finite would be wrongly
+    # discarded data.
+    complete_and_finite = (pl.col("granule_count") == 2) & (  # noqa: PLR2004
+        pl.col("non_finite_cell_count") == 0
+    )
     inconsistent = nearest.filter(
-        ((pl.col("granule_count") < 2) & pl.col("precip_mm_per_h").is_not_null())
-        | ((pl.col("granule_count") == 2) & pl.col("precip_mm_per_h").is_null())
+        (complete_and_finite & pl.col("precip_mm_per_h").is_null())
+        | (~complete_and_finite & pl.col("precip_mm_per_h").is_not_null())
     )
     if inconsistent.height:
         raise ExtractionPostConditionError(
             f"{_NEAREST_SERIES_FILENAME} has {inconsistent.height} row(s) whose "
-            "precip_mm_per_h/granule_count disagree (D4)"
+            "precip_mm_per_h/granule_count/non_finite_cell_count disagree (D4)"
         )
 
     station_cell = pl.read_csv(directory / _STATION_CELL_FILENAME)
@@ -565,6 +796,51 @@ def validate_imerg_bundle(
             f"{_STATION_CELL_FILENAME} has {station_cell.height} rows, "
             f"expected {expected_station_count} (D9)"
         )
+    station_cell_stations = station_cell["station"].to_list()
+    if len(set(station_cell_stations)) != len(station_cell_stations):
+        raise ExtractionPostConditionError(
+            f"{_STATION_CELL_FILENAME} has duplicate station(s) (D9)"
+        )
+    if set(station_cell_stations) != set(stations_present):
+        raise ExtractionPostConditionError(
+            f"{_STATION_CELL_FILENAME}'s station set does not match "
+            f"{_NEAREST_SERIES_FILENAME}'s (D9)"
+        )
+
+    sensitivity = pl.read_csv(directory / _SENSITIVITY_FILENAME)
+    missing_sensitivity_cols = set(SENSITIVITY_REQUIRED_COLUMNS) - set(
+        sensitivity.columns
+    )
+    if missing_sensitivity_cols:
+        raise ExtractionPostConditionError(
+            f"{_SENSITIVITY_FILENAME} is missing column(s) "
+            f"{sorted(missing_sensitivity_cols)} (D1a/D9)"
+        )
+    bad_scope = sensitivity.filter(
+        ~pl.col("scope").is_in(list(_VALID_SENSITIVITY_SCOPES))
+    )
+    if bad_scope.height:
+        raise ExtractionPostConditionError(
+            f"{_SENSITIVITY_FILENAME}.scope has value(s) outside "
+            f"{sorted(_VALID_SENSITIVITY_SCOPES)} (D1a/D9)"
+        )
+    bad_statistic = sensitivity.filter(
+        ~pl.col("statistic").is_in(list(_VALID_SENSITIVITY_STATISTICS))
+    )
+    if bad_statistic.height:
+        raise ExtractionPostConditionError(
+            f"{_SENSITIVITY_FILENAME}.statistic has value(s) outside "
+            f"{sorted(_VALID_SENSITIVITY_STATISTICS)} (D1a/D9)"
+        )
+    bad_delta_unit = sensitivity.filter(
+        pl.col("delta_unit").is_not_null()
+        & ~pl.col("delta_unit").is_in(list(_VALID_SENSITIVITY_DELTA_UNITS))
+    )
+    if bad_delta_unit.height:
+        raise ExtractionPostConditionError(
+            f"{_SENSITIVITY_FILENAME}.delta_unit has value(s) outside "
+            f"{sorted(_VALID_SENSITIVITY_DELTA_UNITS)} (D1a/D9)"
+        )
 
     if not manifest.station_accounting:
         raise ExtractionPostConditionError(
@@ -574,6 +850,38 @@ def validate_imerg_bundle(
         raise ExtractionPostConditionError(
             "IMERG extraction manifest's station_accounting station set does "
             "not match the published series' station set (D9)"
+        )
+    for station_id, accounting in manifest.station_accounting.items():
+        missing_keys = set(_STATION_ACCOUNTING_COMPONENT_KEYS) - set(accounting)
+        if missing_keys:
+            raise ExtractionPostConditionError(
+                f"IMERG extraction manifest's station_accounting[{station_id!r}] "
+                f"is missing key(s) {sorted(missing_keys)} (D4/D9)"
+            )
+        total = sum(int(accounting[key]) for key in _STATION_ACCOUNTING_COMPONENT_KEYS)  # type: ignore[arg-type]
+        if total != expected_hour_count:
+            raise ExtractionPostConditionError(
+                f"IMERG extraction manifest's station_accounting[{station_id!r}] "
+                f"components sum to {total}, expected expected_hour_count "
+                f"{expected_hour_count} (D4/D9)"
+            )
+    if manifest.n_stations != expected_station_count:
+        raise ExtractionPostConditionError(
+            f"IMERG extraction manifest's n_stations {manifest.n_stations} != "
+            f"expected_station_count {expected_station_count} (D9)"
+        )
+    if manifest.n_hours != expected_hour_count:
+        raise ExtractionPostConditionError(
+            f"IMERG extraction manifest's n_hours {manifest.n_hours} != "
+            f"expected_hour_count {expected_hour_count} (D9)"
+        )
+
+    assert_identity_inputs_complete(manifest.identity_inputs)
+    recomputed = recompute_imerg_extraction_identity(manifest.identity_inputs)
+    if recomputed != manifest.extraction_identity:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's extraction_identity does not match "
+            "the digest recomputed from its own identity_inputs (D9/P7a)"
         )
 
 
@@ -590,6 +898,13 @@ def publish_imerg_bundle(
         raise ExtractionPostConditionError(
             f"staged IMERG bundle at {staged_dir} is missing a readable "
             f"{manifest_filename()}"
+        )
+    if identity != manifest.extraction_identity:
+        raise ExtractionPostConditionError(
+            f"publish identity {identity!r} != the staged manifest's own "
+            f"extraction_identity {manifest.extraction_identity!r} (D9) — "
+            "refusing to publish a bundle under a label that disagrees with "
+            "its own manifest"
         )
     validate_imerg_bundle(
         staged_dir,
@@ -661,7 +976,21 @@ DEFAULT_IMERG_DATA_ROOT = Path("data/dhm_precip/imerg_early")
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="imerg_extract", description=__doc__)
     parser.add_argument("--data-root", type=Path, default=Path("data/dhm_precip"))
-    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            "Copy the published bundle's full contents (manifest.json + the "
+            "three payload CSVs) here — a plain directory copy, so two runs' "
+            "--out directories can be diffed directly for D8 determinism "
+            "(excluding the manifest's generated_at field, which is "
+            "time-bearing by construction). The bundle ALWAYS publishes to "
+            "the identity-addressed directory under --data-root regardless "
+            "of --out (D9) — this is a copy, never the publish location "
+            "itself, and no separate report format is written."
+        ),
+    )
     return parser
 
 
@@ -673,6 +1002,7 @@ def run(
     expected_stations: frozenset[Station] | None = None,
     params: DhmPrecipParams | None = None,
     granule_paths: list[Path] | None = None,
+    acquisition_manifest: ImergAcquisitionManifest | None = None,
 ) -> int:
     from scripts.dhm_precip.imerg_acquire import imerg_raw_dir
 
@@ -695,14 +1025,41 @@ def run(
     )
     coordinate_table_sha256 = checksum_file(resolved_coords_path)
 
+    # D9 — the T1->T2 handoff IS the acquisition manifest. T2 must not
+    # re-derive the granule set, the revision or the route by re-listing
+    # the raw directory: the manifest is the single source of truth for
+    # what was actually retrieved.
+    resolved_acquisition_manifest = (
+        acquisition_manifest
+        if acquisition_manifest is not None
+        else read_acquisition_manifest(acquisition_manifest_path(data_root))
+    )
+    if resolved_acquisition_manifest is None:
+        raise ExtractionInputAbsentError(
+            f"no IMERG acquisition manifest at "
+            f"{acquisition_manifest_path(data_root)} — T1 must run first (D9)"
+        )
+    if (
+        resolved_acquisition_manifest.completeness
+        is not AcquisitionCompleteness.COMPLETE
+    ):
+        raise ExtractionInputAbsentError(
+            "IMERG acquisition manifest's completeness is "
+            f"{resolved_acquisition_manifest.completeness} — T2 must not "
+            "extract from a PROBE or PARTIAL acquisition (D9)"
+        )
+
     resolved_granule_paths = (
         granule_paths
         if granule_paths is not None
-        else sorted(imerg_raw_dir(data_root).glob("3B-HHR-E.*.HDF5"))
+        else [
+            imerg_raw_dir(data_root) / name
+            for name in sorted(resolved_acquisition_manifest.granule_checksums)
+        ]
     )
     if not resolved_granule_paths:
         raise ExtractionInputAbsentError(
-            f"no IMERG granule files found under {imerg_raw_dir(data_root)}"
+            "the IMERG acquisition manifest records no retrieved granules (D9)"
         )
 
     half_hourly_nearest: dict[Station, dict[datetime, float]] = {
@@ -716,12 +1073,43 @@ def run(
     granule_checksums: dict[str, str] = {}
 
     for path in resolved_granule_paths:
+        if not path.exists():
+            raise ExtractionInputAbsentError(
+                f"granule {path.name} listed in the acquisition manifest is "
+                "absent from disk (D9)"
+            )
+        expected_checksum = resolved_acquisition_manifest.granule_checksums.get(
+            path.name
+        )
+        if expected_checksum is None:
+            raise ExtractionPostConditionError(
+                f"granule {path.name} on disk is not recorded in the "
+                "acquisition manifest's granule_checksums (D9) — refusing to "
+                "extract an unaccounted-for file"
+            )
+        actual_checksum = checksum_file(path)
+        if actual_checksum != expected_checksum:
+            raise ExtractionPostConditionError(
+                f"granule {path.name} checksum {actual_checksum} != the "
+                f"acquisition manifest's recorded {expected_checksum} (D9) — "
+                "the file was modified after T1 acquired it"
+            )
         ds, contract = read_granule(path)
         if frozen_contract is None:
             frozen_contract = contract
+            if (
+                frozen_contract.granule_revision
+                != resolved_acquisition_manifest.granule_revision
+            ):
+                raise ExtractionPostConditionError(
+                    "the first read granule's revision "
+                    f"{frozen_contract.granule_revision!r} != the acquisition "
+                    "manifest's granule_revision "
+                    f"{resolved_acquisition_manifest.granule_revision!r} (D9)"
+                )
         else:
             assert_contract_consistent(contract, frozen=frozen_contract)
-        granule_checksums[path.name] = checksum_file(path)
+        granule_checksums[path.name] = actual_checksum
         granule_start = (
             ds["valid_time"]
             .values[0]
@@ -743,10 +1131,11 @@ def run(
     nearest_hourly: dict[Station, ExtractedSeries] = {}
     bilinear_hourly: dict[Station, ExtractedSeries] = {}
     granule_counts_by_station: dict[Station, np.ndarray] = {}
+    non_finite_counts_by_station: dict[Station, np.ndarray] = {}
     station_accounting: dict[str, dict[str, object]] = {}
     for station in stations.stations:
         grid_lat, grid_lon = grid_cell_by_station[station]
-        valid_time, values, counts = aggregate_half_hourly_to_hourly(
+        valid_time, values, counts, non_finite_counts = aggregate_half_hourly_to_hourly(
             half_hourly_nearest[station]
         )
         n_finite = int(np.isfinite(values).sum())
@@ -763,9 +1152,10 @@ def run(
             n_nan=int(values.size - n_finite),
         )
         granule_counts_by_station[station] = counts
+        non_finite_counts_by_station[station] = non_finite_counts
 
-        b_valid_time, b_values, _b_counts = aggregate_half_hourly_to_hourly(
-            half_hourly_bilinear[station]
+        b_valid_time, b_values, _b_counts, _b_nf_counts = (
+            aggregate_half_hourly_to_hourly(half_hourly_bilinear[station])
         )
         b_n_finite = int(np.isfinite(b_values).sum())
         bilinear_hourly[station] = ExtractedSeries(
@@ -781,30 +1171,63 @@ def run(
             n_nan=int(b_values.size - b_n_finite),
         )
 
+        n_hours_complete = int(np.sum((counts == 2) & (non_finite_counts == 0)))  # noqa: PLR2004
+        n_hours_non_finite_cell = int(np.sum((counts == 2) & (non_finite_counts > 0)))  # noqa: PLR2004
         station_accounting[str(station)] = {
             "n_hours": int(counts.size),
-            "n_hours_complete": int(np.sum(counts == 2)),  # noqa: PLR2004
+            "n_hours_complete": n_hours_complete,
             "n_hours_partial": int(np.sum(counts == 1)),
             "n_hours_missing_granule": int(np.sum(counts == 0)),
-            "n_nan_hours": int(np.sum(counts < 2)),  # noqa: PLR2004
+            "n_hours_non_finite_cell": n_hours_non_finite_cell,
+            "n_nan_hours": int(counts.size - n_hours_complete),
         }
 
     station_cell_rows = build_station_cell_table(
         stations, nearest_by_station=grid_cell_by_station
     )
+    station_cell_by_station = {row.station: row for row in station_cell_rows}
     sensitivity = build_operator_sensitivity_table(
         nearest_hourly, bilinear_hourly, params=resolved_params
     )
 
-    identity = imerg_extraction_identity(
+    first_station = stations.stations[0]
+    output_axis_start = (
+        nearest_hourly[first_station]
+        .valid_time[0]
+        .astype("datetime64[s]")
+        .item()
+        .replace(tzinfo=UTC)
+    )
+    output_axis_end = (
+        nearest_hourly[first_station]
+        .valid_time[-1]
+        .astype("datetime64[s]")
+        .item()
+        .replace(tzinfo=UTC)
+    )
+
+    identity_inputs = ImergIdentityInputs(
         operator_id=str(ExtractionOperator.NEAREST),
         coordinate_table_sha256=coordinate_table_sha256,
         granule_checksums=granule_checksums,
-        window_start=FIRST_GRANULE_START.isoformat(),
-        window_end=nearest_hourly[stations.stations[0]].valid_time[-1].astype(str),
-        box=STUDY_BOX,
+        route=resolved_acquisition_manifest.route,
+        collection_short_name=resolved_acquisition_manifest.collection_short_name,
+        granule_revision=frozen_contract.granule_revision,
+        requested_window_start=resolved_acquisition_manifest.requested_window_start.isoformat(),
+        requested_window_end=resolved_acquisition_manifest.requested_window_end.isoformat(),
+        box=resolved_acquisition_manifest.box,
         read_contract=frozen_contract.as_manifest_dict(),
+        jjas_months=resolved_params.jjas_months,
+        djf_months=resolved_params.djf_months,
+        mam_months=resolved_params.mam_months,
+        on_months=resolved_params.on_months,
+        wet_threshold_mm_per_h=resolved_params.wet_threshold_mm_per_h,
+        wet_threshold_side=resolved_params.wet_threshold_side,
+        zero_policy=resolved_params.zero_policy,
+        quantile_definition=resolved_params.quantile_definition,
+        quantile_grid=resolved_params.quantile_grid,
     )
+    identity = imerg_extraction_identity(identity_inputs)
 
     root = imerg_points_root(data_root)
     staged_dir = prepare_staging_dir(root, identity=identity)
@@ -815,8 +1238,29 @@ def run(
                     {
                         "station_id": [str(station)] * series.values.size,
                         "timestamp_utc": [str(t) for t in series.valid_time],
-                        "precip_mm_per_h": series.values,
+                        "precip_mm_per_h": pl.Series(
+                            values=[
+                                None if not np.isfinite(v) else float(v)
+                                for v in series.values
+                            ],
+                            dtype=pl.Float64,
+                        ),
                         "granule_count": granule_counts_by_station[station],
+                        "non_finite_cell_count": non_finite_counts_by_station[station],
+                        "grid_lat": [station_cell_by_station[station].grid_lat]
+                        * series.values.size,
+                        "grid_lon": [station_cell_by_station[station].grid_lon]
+                        * series.values.size,
+                        "station_elev_m": [
+                            station_cell_by_station[station].station_elev_m
+                        ]
+                        * series.values.size,
+                        "station_elevation_datum": [
+                            str(
+                                station_cell_by_station[station].station_elevation_datum
+                            )
+                        ]
+                        * series.values.size,
                     }
                 )
                 for station, series in nearest_hourly.items()
@@ -848,21 +1292,22 @@ def run(
             extraction_identity=identity,
             operator_id=str(ExtractionOperator.NEAREST),
             coordinate_table_sha256=coordinate_table_sha256,
-            route=ROUTE,
-            collection_short_name=COLLECTION_SHORT_NAME,
+            route=resolved_acquisition_manifest.route,
+            collection_short_name=resolved_acquisition_manifest.collection_short_name,
             granule_revision=frozen_contract.granule_revision,
-            window_start=FIRST_GRANULE_START,
-            window_end=nearest_hourly[stations.stations[0]]
-            .valid_time[-1]
-            .astype("datetime64[s]")
-            .item()
-            .replace(tzinfo=UTC),
-            box=STUDY_BOX,
+            acquisition_window_start=resolved_acquisition_manifest.requested_window_start,
+            acquisition_window_end=resolved_acquisition_manifest.requested_window_end,
+            output_axis_start=output_axis_start,
+            output_axis_end=output_axis_end,
+            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
+            period_ending_convention=EXPECTED_PERIOD_ENDING_CONVENTION,
+            box=resolved_acquisition_manifest.box,
             read_contract=frozen_contract.as_manifest_dict(),
             retrospective=True,
             measured_acquisition_latency=MEASURED_ACQUISITION_LATENCY,
             payload_sha256s=payload_sha256s,
             station_accounting=station_accounting,
+            identity_inputs=identity_inputs.canonical_payload(),
             n_stations=len(stations.stations),
             n_hours=EXPECTED_HOUR_COUNT,
             generated_at=resolved_clock(),
@@ -879,16 +1324,10 @@ def run(
         shutil.rmtree(staged_dir, ignore_errors=True)
 
     if args.out is not None:
+        if args.out.exists():
+            shutil.rmtree(args.out)
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(
-            json.dumps(
-                {
-                    "extraction_identity": identity,
-                    "published_dir": str(final_dir),
-                },
-                indent=2,
-            )
-        )
+        shutil.copytree(final_dir, args.out)
     log.info("imerg_extract.cli.published", extraction_identity=identity)
     return 0
 
