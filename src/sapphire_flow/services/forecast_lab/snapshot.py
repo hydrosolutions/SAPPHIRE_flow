@@ -442,12 +442,23 @@ def _build_combined_forecast(
     if forecast is None:
         return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
 
-    # Reproduces the persisted DB provenance exactly — no independent claim
-    # about which model contributed to which parameter (AC4).
-    combination_strategy_value = (
-        forecast.combination_strategy or combination_strategy.value
-    )
-    source_model_ids = [str(m) for m in (forecast.source_model_ids or [])]
+    # Reproduces the persisted DB provenance exactly (AC4) — no independent
+    # claim about which model contributed to which parameter. Both fields
+    # are nullable in storage, but the combination writer
+    # (forecast_combination.py) always sets them on any row it writes for
+    # a `_pooled`/`_bma` model id, so a NULL here means the row is corrupt
+    # or was written by something other than the combination writer. Either
+    # way, substituting the requested strategy or an empty source list would
+    # silently fabricate lineage — fail loudly instead.
+    if forecast.combination_strategy is None or forecast.source_model_ids is None:
+        raise ValueError(
+            "combined forecast row is missing provenance: "
+            f"forecast_id={forecast.id} model_id={model_id} "
+            f"combination_strategy={forecast.combination_strategy!r} "
+            f"source_model_ids={forecast.source_model_ids!r}"
+        )
+    combination_strategy_value = forecast.combination_strategy
+    source_model_ids = [str(m) for m in forecast.source_model_ids]
     ensemble = forecast.ensemble
 
     if forecast.representation is EnsembleRepresentation.MEMBERS:

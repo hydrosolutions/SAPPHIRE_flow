@@ -216,8 +216,8 @@ def _combined_forecast(
     model_id: ModelId,
     ensemble: ForecastEnsemble,
     issued_at: UtcDatetime,
-    combination_strategy: str,
-    source_model_ids: list[ModelId],
+    combination_strategy: str | None,
+    source_model_ids: list[ModelId] | None,
 ) -> OperationalForecast:
     return OperationalForecast(
         id=ForecastId(uuid4()),
@@ -1262,6 +1262,73 @@ class TestCombinedForecastPositivePath:
         assert not hasattr(combined, "quantile_level_count")
 
 
+class TestCombinedForecastMissingProvenanceFailsLoudly:
+    """A `_pooled`/`_bma` row with a NULL `combination_strategy` or a NULL
+    `source_model_ids` is corrupt or was written by something other than
+    the combination writer (`forecast_combination.py` always sets both).
+    Substituting the requested strategy for a missing
+    `combination_strategy`, or an empty list for a missing
+    `source_model_ids`, would silently fabricate lineage that never
+    matches the persisted row (AC4) — the snapshot builder must fail
+    loudly instead of rendering a plausible-looking fake."""
+
+    def test_null_combination_strategy_raises(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(3), n_members=92
+        )
+        forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy=None,
+            source_model_ids=[ModelId("nwp_regression")],
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(forecast)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        with pytest.raises(ValueError, match="missing provenance"):
+            build_snapshot(
+                stores,
+                stations=[station],
+                archive_base_path=None,
+                combination_strategy=ModelCombinationStrategy.POOLED,
+                clock=_frozen_clock(),
+            )
+
+    def test_null_source_model_ids_raises(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(3), n_members=92
+        )
+        forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="pooled",
+            source_model_ids=None,
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(forecast)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        with pytest.raises(ValueError, match="missing provenance"):
+            build_snapshot(
+                stores,
+                stations=[station],
+                archive_base_path=None,
+                combination_strategy=ModelCombinationStrategy.POOLED,
+                clock=_frozen_clock(),
+            )
+
+
 class TestCombinedForecastDailyAlignment:
     def test_combined_forecast_joins_daily_alignment_and_extends_horizon(self) -> None:
         station = make_station_config(code="2009")
@@ -1558,14 +1625,28 @@ class TestQuantileEnvelopeMapping:
         return snapshot.stations[0].sapphire_forecasts[0]
 
     def test_distinct_stored_levels_map_to_p25_median_p75(self) -> None:
-        vt = ensure_utc(_EPOCH + timedelta(days=1))
-        rows = _recognised_rows(vt, p25=1.0, median=2.0, p75=3.0)
+        # Two valid_times with DIFFERENT p25/median/p75 values: a subtly
+        # broken implementation that performs one global lookup and
+        # repeats those values across the whole horizon would pass a
+        # single-timestep version of this test, so both steps are
+        # asserted independently here.
+        vt1 = ensure_utc(_EPOCH + timedelta(days=1))
+        vt2 = ensure_utc(_EPOCH + timedelta(days=2))
+        rows = _recognised_rows(vt1, p25=1.0, median=2.0, p75=3.0) + _recognised_rows(
+            vt2, p25=10.0, median=20.0, p75=30.0
+        )
         entry = self._build_single_quantile_entry(rows)
         assert isinstance(entry, SapphireForecastQuantilesSchema)
-        point = entry.points[0]
-        assert point.p25 == 1.0
-        assert point.median == 2.0
-        assert point.p75 == 3.0
+        assert len(entry.points) == 2
+        point1, point2 = entry.points
+        assert point1.valid_time == vt1
+        assert point1.p25 == 1.0
+        assert point1.median == 2.0
+        assert point1.p75 == 3.0
+        assert point2.valid_time == vt2
+        assert point2.p25 == 10.0
+        assert point2.median == 20.0
+        assert point2.p75 == 30.0
 
     def test_extremes_are_null_not_filled_from_0p05_0p95(self) -> None:
         vt = ensure_utc(_EPOCH + timedelta(days=1))
