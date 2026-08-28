@@ -50,6 +50,8 @@ from sapphire_flow.types.ids import (
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.types.alert import Alert
     from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -83,7 +85,7 @@ def _uuid(rng: random.Random) -> UUID:
 
 
 @pytest.fixture(autouse=True)
-def _reset_structlog_config_before_each_test(monkeypatch: pytest.MonkeyPatch) -> None:
+def _reset_structlog_config_before_each_test() -> Iterator[None]:
     """Plan 201: force known structlog global config before AND during every test.
 
     Any test that exercises a real entry point (``main()`` in a CLI module,
@@ -138,7 +140,16 @@ def _reset_structlog_config_before_each_test(monkeypatch: pytest.MonkeyPatch) ->
         kwargs["cache_logger_on_first_use"] = False
         real_configure(*args, **kwargs)
 
-    monkeypatch.setattr(structlog, "configure", _test_safe_configure)
+    # A DEDICATED MonkeyPatch context, not the shared ``monkeypatch`` fixture.
+    # Plan 201 review (major): the shared instance is undone wholesale by any
+    # test that calls ``monkeypatch.undo()`` — and one does, at
+    # ``tests/unit/ops/test_watchdog.py:5031``. That would silently restore the
+    # real ``structlog.configure`` mid-test and re-open the very window this
+    # guard exists to close, with no failure to show for it. An owned context
+    # is invisible to that call and is still unwound here at teardown.
+    with pytest.MonkeyPatch.context() as guard:
+        guard.setattr(structlog, "configure", _test_safe_configure)
+        yield
 
 
 @pytest.fixture

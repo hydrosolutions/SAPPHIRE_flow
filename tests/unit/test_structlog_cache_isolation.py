@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
 from structlog.testing import capture_logs
 
+if TYPE_CHECKING:
+    import pytest
+
 from sapphire_flow.logging import configure_cli_logging, configure_test_logging
+
+# Bound at import time, before conftest's autouse guard patches the name.
+_REAL_STRUCTLOG_CONFIGURE = structlog.configure
 
 
 class TestStructlogCacheNeverSticksMidTest:
@@ -55,3 +63,29 @@ class TestStructlogCacheNeverSticksMidTest:
 
         events = [entry["event"] for entry in captured]
         assert events == ["captured event"]
+
+    def test_guard_is_not_removable_by_monkeypatch_undo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The guard must survive a test calling ``monkeypatch.undo()``.
+
+        Plan 201 review (major): the guard was installed through the SHARED
+        ``monkeypatch`` fixture, which any test can strip wholesale with
+        ``monkeypatch.undo()`` — and one really does, at
+        ``tests/unit/ops/test_watchdog.py:5031``. It now lives in its own
+        ``pytest.MonkeyPatch.context()``.
+
+        This asserts the MECHANISM, not a downstream symptom, and that is
+        deliberate: an attempt to write the behavioural version (undo, then
+        configure/bind/capture) passed against BOTH the vulnerable and the
+        fixed conftest, so it locked nothing. Measured directly instead —
+        against the shared-fixture version this assertion fails, because
+        ``structlog.configure`` is restored to the real function.
+        """
+        monkeypatch.undo()
+
+        assert structlog.configure is not _REAL_STRUCTLOG_CONFIGURE, (
+            "monkeypatch.undo() restored the real structlog.configure — the "
+            "isolation guard is installed on the shared monkeypatch fixture "
+            "and any test can strip it"
+        )

@@ -102,6 +102,19 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - run: uv sync --frozen
+      # Run both the slow-marked tests from the main integration tree and
+       # every test under tests/integration/live (path-based, so we don't
+       # depend on any particular `live*` marker name staying consistent).
+      - run: uv run pytest tests/integration/ -v -m "slow" --timeout=3600
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
+      # Path-based selection under tests/integration/live/ — override the
+      # default addopts marker exclusion (which strips live/live_lindas/
+      # live_stac) so every test under that directory runs regardless of
+      # which live* marker it carries.
+      - run: uv run pytest tests/integration/live -v --timeout=3600 --override-ini "addopts="
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
       # Plan 201 T3 layer 3 — the full unit suite run SEQUENTIALLY (no
       # `-n auto`). ci.yml's `unit` job runs `-n auto`, and xdist workers
       # each execute sequential CHUNKS, so a test-ordering / global-state
@@ -130,16 +143,3 @@ jobs:
       # expansion of a plan whose own proportionality constraint rules that
       # out (see docs/plans/201-unit-suite-isolation-defect.md).
       - run: uv run pytest tests/unit/ -q
-      # Run both the slow-marked tests from the main integration tree and
-       # every test under tests/integration/live (path-based, so we don't
-       # depend on any particular `live*` marker name staying consistent).
-      - run: uv run pytest tests/integration/ -v -m "slow" --timeout=3600
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
-      # Path-based selection under tests/integration/live/ — override the
-      # default addopts marker exclusion (which strips live/live_lindas/
-      # live_stac) so every test under that directory runs regardless of
-      # which live* marker it carries.
-      - run: uv run pytest tests/integration/live -v --timeout=3600 --override-ini "addopts="
-        env:
-          DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
