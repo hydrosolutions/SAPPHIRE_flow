@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-27
 plan: 205
 title: M-A8 — elevation and regime structure, and the rain-phase gradient
@@ -13,7 +13,7 @@ source: docs/design/dhm-precipitation-milestones.md § M-A8
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** (owner, 2026-08-27) — **and COMPLETE**: T1–T3 shipped in PR #218.
 
 ## ⛔ PROPORTIONALITY IS BINDING, AS IT WAS ON 184 AND 193
 
