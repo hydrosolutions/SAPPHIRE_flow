@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-28
 plan: 211
 title: M-A5b — IMERG Early acquisition and point extraction
@@ -13,7 +13,7 @@ source: docs/design/dhm-precipitation-milestones.md § M-A5b
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-28, after two independent review rounds.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
@@ -147,6 +147,23 @@ Measured 2026-08-28 (Plan 209 T2), against the **GES DISC HTTPS archive**:
     same rules. ⛔ Otherwise a bundle passes publication and is then invisible to discovery — the
     failure is silent, and it looks like data loss rather than a validator disagreement.
 
+- **D10 — The RAW GRANULES ARE DISPOSABLE; the acquisition manifest is PERMANENT.** Raised by the owner
+  at READY: this archive may have to be discarded sooner than originally intended. That is safe, but
+  only in one direction. The extracted bundle is **26 stations × hourly ≈ 1.4 M rows** — tens of MB —
+  while the raw granules are **105,216 global files**, projected in T1 at hundreds of GB. ⛔ Do not
+  restate that projection as a fact: T1 measures one granule and multiplies, and the ratio is whatever
+  that measurement says. The raw data is the only part whose disk cost is ever in question.
+  ⇒ **What must survive discard is the acquisition manifest** (D9): route, collection, revision, window,
+  box, the observed read contract, and **every per-granule checksum**. It is kilobytes. ⛔ Discarding
+  raw granules *without* it makes the bundle unfalsifiable — nothing could ever confirm which bytes
+  produced it.
+  ⚠️ **After discard, bit-for-bit regeneration depends on GES DISC not having revised the granules**
+  (V07A→V07B is precedent). The retained checksums do not prevent that; they make it **detectable** on
+  re-download, which is the honest guarantee and the one worth keeping. State it in the manifest rather
+  than implying reproducibility the archive cannot promise.
+  ⇒ **This raises the value of server-side subsetting (T1)**: a subset over the frozen box is ~4,500
+  cells per granule, which would make retention a non-question rather than a decision.
+
 ## Tasks
 
 Two tasks, two phases. `$ENV` abbreviates the Earthdata-authenticated environment.
@@ -220,7 +237,8 @@ Extracted IMERG **Early** series at the 26 stations, hourly, mm/h, period-ending
 operator recorded in the manifest and never implied by code; the per-station **cell centre lat/lon**
 and station elevation with its vertical-datum enum (D6 — ⛔ no DEM mismatch table, and the milestone
 text updated to match); the operator-sensitivity envelope against bilinear; and the manifest marked
-**RETROSPECTIVE** — all regenerable from the committed pipeline into an identity-addressed bundle. **The same shape as M-A5's exit, for IMERG Early.**
+**RETROSPECTIVE** — all regenerable from the committed pipeline into an identity-addressed bundle,
+with the acquisition manifest retained independently of the raw granules (D10). **The same shape as M-A5's exit, for IMERG Early.**
 
 ## Non-goals
 
