@@ -11,16 +11,24 @@ excluded, indistinguishable from a typo).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import pytest
 
 from sapphire_flow.api import app
-from sapphire_flow.api.routes.forecast_lab import get_bafu_forecast_archive_path
+from sapphire_flow.api.routes.forecast_lab import (
+    get_bafu_forecast_archive_path,
+    get_forecast_combination_strategy,
+)
 from sapphire_flow.api.security import Principal, require_principal
-from sapphire_flow.types.enums import AccessTokenRole, StationKind
-from sapphire_flow.types.ids import AccessTokenId, StationId
+from sapphire_flow.types.enums import (
+    AccessTokenRole,
+    ModelCombinationStrategy,
+    StationKind,
+)
+from sapphire_flow.types.ids import AccessTokenId, ModelId, StationId
 from tests.conftest import make_station_config
 
 if TYPE_CHECKING:
@@ -46,6 +54,20 @@ def _no_archive(monkeypatch: pytest.MonkeyPatch) -> None:
     app.dependency_overrides[get_bafu_forecast_archive_path] = lambda: None
     yield
     app.dependency_overrides.pop(get_bafu_forecast_archive_path, None)
+
+
+@pytest.fixture(autouse=True)
+def _primary_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-Plan-204 behaviour by default — same reason `build_snapshot()`
+    defaults to `PRIMARY` (avoids `load_config()` needing `SAPPHIRE_CONFIG`
+    in every unrelated test). `TestCombinationStrategyPropagation` below
+    overrides this explicitly to prove the route actually forwards a
+    non-`PRIMARY` value."""
+    app.dependency_overrides[get_forecast_combination_strategy] = lambda: (
+        ModelCombinationStrategy.PRIMARY
+    )
+    yield
+    app.dependency_overrides.pop(get_forecast_combination_strategy, None)
 
 
 def _set_principal(principal: Principal) -> None:
@@ -137,3 +159,83 @@ class TestAdminUnknownCodeStill404s:
     ) -> None:
         resp = client.get("/api/v1/forecast-lab/snapshot?station_code=does-not-exist")
         assert resp.status_code == 404
+
+
+class TestCombinationStrategyPropagation:
+    """Plan 204 T1 propagation lock (independent Codex pass, round 6) —
+    `combination_strategy` must actually reach `build_snapshot()` through
+    the route's `Depends()`, not silently fall back to its `PRIMARY`
+    default. Patched to POOLED (never PRIMARY) — a caller that drops the
+    argument passes `build_snapshot()`'s own default and this test would be
+    green against exactly the bug it targets."""
+
+    def test_pooled_strategy_is_forwarded_and_renders_combined_block(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        import random
+        from datetime import timedelta
+        from uuid import uuid4
+
+        import polars as pl
+
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import ForecastStatus, NwpCycleSource
+        from sapphire_flow.types.forecast import OperationalForecast
+        from sapphire_flow.types.ids import POOLED_MODEL_ID, ForecastId
+
+        station = make_station_config(code="2009", station_id=StationId(UUID(int=1)))
+        fake_stores["station_store"].store_station(station)
+
+        issued_at = ensure_utc(datetime(2026, 8, 21, 6, 0, 0, tzinfo=UTC))
+        vt = ensure_utc(issued_at + timedelta(days=1))
+        rng = random.Random(9)
+        rows = [
+            {"valid_time": vt, "member_id": m, "value": rng.uniform(10.0, 100.0)}
+            for m in range(5)
+        ]
+        df = pl.DataFrame(rows).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        ensemble = ForecastEnsemble.from_members(
+            station_id=station.id,
+            issued_at=issued_at,
+            parameter="discharge",
+            units="m3/s",
+            time_step=timedelta(days=1),
+            values=df,
+            model_id=POOLED_MODEL_ID,
+        )
+        forecast = OperationalForecast(
+            id=ForecastId(uuid4()),
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            model_artifact_id=None,
+            issued_at=issued_at,
+            nwp_cycle_reference_time=issued_at,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            representation=ensemble.representation,
+            status=ForecastStatus.RAW,
+            version=1,
+            warm_up_source=None,
+            warm_up_state_age_hours=None,
+            observation_staleness_hours=0.3,
+            ensemble=ensemble,
+            created_at=issued_at,
+            updated_at=issued_at,
+            combination_strategy="pooled",
+            source_model_ids=[ModelId("nwp_regression")],  # type: ignore[list-item]
+        )
+        fake_stores["forecast_store"].store_forecast(forecast)
+
+        app.dependency_overrides[get_forecast_combination_strategy] = lambda: (
+            ModelCombinationStrategy.POOLED
+        )
+
+        resp = client.get("/api/v1/forecast-lab/snapshot?station_code=2009")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["stations"][0]["combined_forecast"]["available"] is True
+        assert body["stations"][0]["combined_forecast"]["model_key"] == "_pooled"

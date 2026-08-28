@@ -47,6 +47,11 @@ from sapphire_flow.services.forecast_lab.db_sources import (
 from sapphire_flow.services.forecast_lab.snapshot import build_snapshot
 from sapphire_flow.types.datetime import ensure_utc
 
+# NOT moved under TYPE_CHECKING, for the same reason as ForecastLabSnapshot
+# above: FastAPI's `Depends()` resolution reads this dependency's own
+# parameter/return annotations at runtime via `typing.get_type_hints()`.
+from sapphire_flow.types.enums import ModelCombinationStrategy  # noqa: TC001
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -79,6 +84,13 @@ def get_bafu_forecast_archive_path() -> Path | None:
     return load_config().bafu_forecast_archive_path
 
 
+def get_forecast_combination_strategy() -> ModelCombinationStrategy:
+    """Plan 204 T1 — a dependency of its own, alongside
+    `get_bafu_forecast_archive_path`, so tests can override it in isolation.
+    Same `load_config()` failure-propagation contract."""
+    return load_config().forecast_combination_strategy
+
+
 def _resolve_requested_stations(
     stores: ForecastLabStores, principal: Principal, station_codes: list[str]
 ) -> list[StationConfig]:
@@ -107,14 +119,15 @@ def _resolve_requested_stations(
 
 @router.get(
     "/forecast-lab/snapshot",
-    summary="Forecast Lab snapshot (forecast-lab-snapshot/v1)",
+    summary="Forecast Lab snapshot (forecast-lab-snapshot/v2)",
     description=(
         "A versioned, read-only JSON export of BAFU observations, archived "
         "BAFU forecasts and SAPPHIRE forecasts for one or more eligible "
-        "stations (Plan 198). See docs/spec/forecast-lab-snapshot.md for "
-        "the full contract — timestamp/quantile conventions, the F3 "
-        "percentile-band sign correction, partial-vs-500 semantics, and "
-        "offline-caching guidance."
+        "stations (Plan 198, extended by Plan 204). See "
+        "docs/spec/forecast-lab-snapshot.md for the full contract — "
+        "timestamp/quantile conventions, the F3 percentile-band sign "
+        "correction, partial-vs-500 semantics, and offline-caching "
+        "guidance."
     ),
 )
 def get_forecast_lab_snapshot(
@@ -133,6 +146,9 @@ def get_forecast_lab_snapshot(
     ),
     stores: dict[str, Any] = Depends(get_stores),
     archive_base_path: Path | None = Depends(get_bafu_forecast_archive_path),
+    combination_strategy: ModelCombinationStrategy = Depends(
+        get_forecast_combination_strategy
+    ),
     principal: Principal = Depends(require_principal),
 ) -> ForecastLabSnapshot:
     """`GET /api/v1/forecast-lab/snapshot` — see the module docstring for
@@ -144,5 +160,6 @@ def get_forecast_lab_snapshot(
         stations=stations,
         archive_base_path=archive_base_path,
         observation_hours=observation_hours,
+        combination_strategy=combination_strategy,
         clock=lambda: ensure_utc(datetime.now(UTC)),
     )
