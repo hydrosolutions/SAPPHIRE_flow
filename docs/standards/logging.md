@@ -272,6 +272,23 @@ Rules:
 | `run_station_forecast.unsupported_stateful_ensemble` | WARNING | Plan 148: either stateful-ensemble reject-guard fired for THIS assignment — `reject_prior_state_for_fanout` (input-side: this assignment's own persisted `prior_state` is non-`None` on an `ENSEMBLE`-mode model) or `reject_stateful_ensemble_states` (output-side: a per-member `predict` returned non-`None` state). Both catch `ModelOutputError` ONLY, at the two guard call sites — never widened to span `predict`, so an FI `ModelFailure` mapped to the same exception class still logs `predict_failed` instead. Assignment-local — recorded in `failed_models`, does NOT abort the station (deliberate correction of the pre-148 behaviour, where either guard's raise escaped the loop and discarded an already-succeeded primary). Kwargs: `station_id`, `model_id`, `error`. |
 | `run_station_forecast.unexpected_exception` | ERROR | Plan 150 D3: SAP3 loop-level backstop in `run_all_station_forecasts` for an *unanticipated* exception escaping `_run_single_model` OUTSIDE its guarded regions (e.g. `artifact_store.fetch_active_artifact_for_station`, `model.data_requirements`/`assess_future_coverage`, `OperationalForecast`/`StationForecastResult` construction). Assignment-local — recorded in `failed_models` as `AssignmentFailure(cause=AssignmentFailureCause.UNEXPECTED_EXCEPTION, ...)`, advances the fallback chain, does NOT darken a station whose higher-priority assignment already succeeded. ERROR (not WARNING) because it is genuinely unanticipated, unlike the eight anticipated causes above. Kwargs: `station_id`, `model_id`, `error`. |
 
+### Per-track forcing resolution events (Plan 151, Nepal v1 / Recap Gateway only)
+
+Emitted while resolving a per-`(track,station)` cycle for a candidate-aware, non-group-member station
+(D6/D12/D30) — a legacy MeteoSwiss/group-CONTROL station never reaches these. `nwp.candidate_rejected` and
+`nwp.track_resolved` are emitted by `services/track_resolution.py` (T5); `forecast.assignment_failed` and
+`forecast.fallback_advanced` are emitted by `services/run_station_forecast.run_all_station_forecasts_per_track`
+(T7). `forecast_cycle.cross_cycle_mismatch` is the one event the flow layer itself adds (T8b) — see D11.
+
+| Event | Level | Notes |
+|---|---|---|
+| `nwp.candidate_rejected` | WARNING | One walk-back candidate cycle was rejected — either `reason="transient_error"` (the source's own retry budget exhausted, walk-back continues), `reason="no_station_complete"` (every in-scope station failed the per-station completeness predicate, D8.2), or `reason="absent_at_cycle"` (the adapter reported the whole candidate absent). Kwargs: `track_features`, `candidate_cycle`, `reason`, and `detail` where applicable. |
+| `nwp.track_resolved` | INFO | A candidate was ACCEPTED — at least one in-scope station passed the per-station completeness predicate (D8.2). Kwargs: `track_features`, `resolved_cycle`, `complete_stations`, `incomplete_at_cycle` (counts). |
+| `nwp.track_walkback_exhausted` | WARNING | `max_cycle_age_hours` was exhausted with no candidate ever accepted — the caller reports `MISSING_CONTEXT` for every assignment on this track (D3-mapping). Kwargs: `track_features`, `nominal_cycle`, `max_cycle_age_hours`. |
+| `forecast.assignment_failed` | WARNING | The per-track runner (`run_all_station_forecasts_per_track`) found no resolved run input at all for this assignment (defensive — should not occur if the flow's own orchestration populated every projected assignment). Kwargs: `station_id`, `model_id`, `cause="MISSING_CONTEXT"`, `detail`. |
+| `forecast.fallback_advanced` | WARNING | This assignment failed locally — either `cause="MISSING_CONTEXT"` (the track never resolved, D3-mapping) or `cause="TRACK_UNAVAILABLE"` (the track resolved, but this station is unavailable at the accepted cycle, carrying `reason` — one of `StationUnavailableReason`'s members). The station's fallback chain advances; a lower-priority assignment may still succeed. Kwargs: `station_id`, `model_id`, `cause`, `reason` (TRACK_UNAVAILABLE only). |
+| `forecast_cycle.cross_cycle_mismatch` | ERROR | Flow-level (D11): the cross-cycle combination preflight found >= 2 distinct non-null forcing cycles among a station's combinable per-track results. NO forecast or state write happens for this station this cycle — it is recorded as failed, `forecasts_stored` is unaffected by it, and the normal end-of-cycle `FORECAST_FRESHNESS` accounting reports CRITICAL if this was the cycle's only station. Kwargs: `station_id`, `cycles` (sorted ISO-8601 strings). |
+
 ### Snow-forecast (JSNOW) events (Plan 145, Nepal v1 / Recap Gateway only)
 
 | Event | Level | Notes |

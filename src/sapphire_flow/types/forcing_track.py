@@ -159,6 +159,10 @@ class StationUnavailableReason(Enum):
     # --- additive, Phase 3 (D8, D27) ---
     INCOMPLETE_AT_CYCLE = auto()
     MISSING_POLYGON_COLUMN = auto()
+    # --- additive, Plan 151 T8b fixer round 2 ---
+    # Per-station context assembly raised. Containment verdict: this ONE
+    # (station, model) is unavailable; every sibling still runs.
+    ASSEMBLY_FAILED = auto()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

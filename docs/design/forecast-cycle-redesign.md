@@ -302,15 +302,23 @@ canonical from the recap adapter · reuse the already-wired `ensemble_fanout`/`F
    > dedicated seam follow-on. Plan 150 still builds `ModelRunContext` internally in `_run_single_model` — it does
    > not migrate the consumption seam.
 3. **`ForcingTrackKey` projection + per-track resolution + per-assignment assembly — ONE atomic phase (round-2
-   merged old 3+4).** A per-`(track,station)` cycle has no coherent consumer while assembly is a single shared
-   frame, so track resolution and per-assignment assembly land **together**: deduplicated tracks, the
-   requirement-aware source contract (`fetch_requirement(...) -> CandidateFetchResult`), candidate-local
-   immutable results, `TrackFetchResult(cycle, station_outcomes)` (no global track→cycle map), per-assignment
-   assembly (drop the station superset; the three horizon types + FI per-variable slice), and exact-51
-   input-completeness + survival checks. **Combined-forecast provenance decided here (round-2):** cross-cycle
-   model combination is **disabled/fail-loud** in this redesign (a richer combined-provenance rule is a
-   follow-on) — `run_forecast_cycle.py:2031,2035` currently exposes one shared cycle ref.
-4. **Remove the legacy station-superset path** once all consumers are on `ModelRunContext`.
+   merged old 3+4). — LANDED (Plan 151, `recap_gateway` only, D6).** A per-`(track,station)` cycle has no
+   coherent consumer while assembly is a single shared frame, so track resolution and per-assignment assembly
+   landed **together**: deduplicated tracks, the requirement-aware source contract
+   (`fetch_requirement(...) -> RawFetchOutcome`, `CandidateFetchResult` constructed services-side per
+   D31-candidate-ownership), candidate-local immutable results, `TrackFetchResult(cycle, station_outcomes)` (no
+   global track→cycle map), per-assignment assembly (drops the station superset for the per-track path; the three
+   horizon types + FI per-variable slice), and exact-member-set input completeness with all-members-or-fail
+   survival (member survival itself is a follow-on, not member-SET exactness). **Combined-forecast provenance
+   decided here (round-2), built as T8a's `resolve_combined_forcing_cycle` + T8b's flow-level installation:**
+   cross-cycle model combination is **fail-loud** as a preflight before any per-station write — a richer
+   combined-provenance rule for differing cycles remains a follow-on. **Scope actually shipped:** the `isinstance`
+   dispatch migrates `recap_gateway`-served, non-group-member stations only (D12/D30); MeteoSwiss and group
+   CONTROL stay on the legacy superset path via the pre-existing Phase A fetch, now re-scoped to exclude
+   per-track-served stations (D7).
+4. **Remove the legacy station-superset path** once all consumers are on `ModelRunContext` — **PENDING (Phase 4)**.
+   The legacy path is still load-bearing for MeteoSwiss, group CONTROL, and any legacy (non-candidate-aware)
+   adapter.
 5. **Follow-ons (separate plans):** group-ensemble requirements + group fan-out (group **control** stays in
    scope via track discovery, see Group models); hindcast/operational parity (`hindcast.py:328,331,354` uses a
    separate assembler + `prior_state=None`, so it won't reproduce ensemble-forcing fan-out — parity needed before
