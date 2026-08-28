@@ -785,6 +785,44 @@ must survive — see the T3 bullet above.)
     assigned models produced nothing renderable, where the combined row is the *only* SAPPHIRE
     forecast present.
 
+## Seam review vs the SAPPHIRE-flow-map consumer (2026-08-28) — verdict: ORTHOGONAL
+
+Run before marking this plan READY, because the consumer's own contract could have changed it.
+An independent `codex exec` pass read **both** repos (the map's uncommitted
+`schemas/forecast-snapshot-v2.schema.json` + `FlowMap.tsx`, and this repo's shipped v1 contract and
+this plan). **Verdict: `PLAN 204 IS ORTHOGONAL`** — nothing in the map's proposed contract
+invalidates T1-T3, and this plan may proceed unchanged.
+
+The reason is a product boundary, not a coincidence. Forecast Lab is a **research comparison**
+export (observations + BAFU + several SAPPHIRE models + daily alignment), explicitly research-only
+with **no alerting** (`docs/spec/forecast-lab-snapshot.md:126-134`, `:199-204`). The map's forecast
+mode is an **operational threshold-risk** product. Same producer, two different products.
+
+**What that review established about the OTHER product — recorded here only so it is not lost, and
+explicitly NOT work for this plan.** The map's schema makes `threshold` (id/label/value_m3s/source),
+`summary.risk_level` and `summary.exceedance_probability` **required**. This deployment cannot
+produce any of them today:
+
+- `station_thresholds` exists (`db/metadata.py:306-334`) but has **no `id` or `label` column** — it
+  stores `danger_level`/`parameter`/`value`/`source`.
+- `PgStationStore.store_thresholds()` (`store/station_store.py:189`) has **zero production callers**
+  — verified repo-wide; only three test modules call it. Onboarding supplies no thresholds
+  (`services/onboarding.py:174-190`).
+- **Live mac-mini DB, verified 2026-08-28: `station_thresholds` = 0 rows, `alerts` = 0 rows.**
+- An exceedance algorithm *does* exist (`services/alert_strategy.py:33-96`), but forecast alerts are
+  disabled in config and persistence keeps probabilities only for *exceeded* levels.
+- The producer's levels are `Low … Very High`; the map's policy is
+  `below_threshold|watch|likely|severe`. Different vocabularies, needing a mapping decision.
+- Trajectory: stored forecasts are **daily** (86400 s), so a 48-hour window holds **two points** —
+  the map's default horizon assumes a sub-daily trajectory.
+
+**Station identity is NOT a mismatch:** the map casts FOEN's `schema:identifier` to `int`, this
+export emits the same BAFU authority code as a string. `2009` and `"2009"` are the same identifier.
+
+None of the above is actionable here. It needs its own plan, and the honest summary is that the
+map's *operational* mode is blocked on a product that does not exist yet, while its *research*
+comparison mode is exactly what this plan delivers.
+
 ## Not in scope
 
 The `_pooled` row's `qc_status` is `raw` while every individual forecast is `qc_passed`
