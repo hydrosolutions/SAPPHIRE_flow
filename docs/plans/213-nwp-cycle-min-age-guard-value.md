@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-28
 plan: 213
 title: Raise nwp_cycle_min_age_minutes above the measured publication latency
-scope: One config value, two regression tests, one pinning the on-time cron path as unchanged, and one doc line. No code change, no schedule change, no schema change.
+scope: One config value, two regression tests, one pinning the on-time cron path as unchanged, and the four documentation surfaces enumerated in T1. No code change, no schedule change, no schema change.
 depends_on: [196]
 blocks: []
 source: Plan 196 T1 — measured publication latency 160.0-168.4 min against a guard of 105
@@ -50,16 +50,30 @@ on a shared work pool is real and documented
 shared pool"). A scheduled run picked up 150 minutes late therefore sees a 150-minute-old
 candidate, and **that is exactly the hazard window**.
 
-**The affected set is therefore: any run with no explicit `cycle_time` that executes when the
-snapped cycle is 105-180 minutes old** — manual triggers, ad-hoc reruns, *and* late-picked-up
-scheduled runs. An on-grid backfill that passes an explicit timestamp stays a zero-age case and
-is unaffected.
+**The affected set, stated exactly: runs on the MeteoSwiss adapter using the shipped
+`config.toml` value, whose resolution instant puts the snapped cycle in `[105, 180)` minutes** —
+half-open because the comparison is `age_minutes < min_age` (`adapters/meteoswiss_nwp.py:512`).
+That covers manual triggers, ad-hoc reruns, *and* late-picked-up scheduled runs. It does **not**
+cover deployments with NWP disabled, the Recap/IFS adapter, injected test adapters, or overlays
+carrying their own value. Note that passing an explicit `cycle_time` does **not** confer immunity:
+`_resolve_cycle_time` accepts any timestamp (`flows/run_forecast_cycle.py:665`), so an explicit
+*off-grid* time such as 14:30 also lands at a 150-minute snapped age. Only an **on-grid** explicit
+timestamp is necessarily a zero-age case.
 
 **That window is real.** Plan 196 T1 measured that the variables the fetch allowlists (`tot_prec`,
 `t_2m` at +120 h) appear in the STAC catalogue **160.0-168.4 minutes** after reference time
 (n = 4, 2026-08-28). The guard is **105**. Between those two figures the guard says "old enough"
-while the cycle is still publishing — and `resolve_cycle` skips *without* probing STAC
-(`adapters/meteoswiss_nwp.py:512`), so nothing else stands in the way. This is precisely the
+while the cycle is still publishing.
+
+**The mechanism, stated correctly** — an earlier draft of this plan had it backwards. The
+"skip *without* probing STAC" path applies only to a candidate *younger* than the guard
+(`adapters/meteoswiss_nwp.py:512`). Once the guard passes, the probe **is** consulted:
+`elif self._cycle_is_published(candidate)` (`:523`). The hazard is therefore not that the probe is
+bypassed — it is that the probe returns `True` on **any** item carrying the target reference
+datetime, so a cycle that has published its first item but not the ones we need reads as available.
+The guard is the only thing standing between us and that partial cycle, which is exactly why its
+value is load-bearing, and exactly why the § Deferred completeness probe is the structural fix. This
+is precisely the
 partial-publication hazard Plan 090 D2c/D4 exists to prevent.
 
 **Two forecasts have already entered that window.** On the mac mini, of 319 forecasts carrying an
@@ -93,9 +107,16 @@ demonstrated defect.
   given.** Plan 196 T1 and `docs/standards/orchestration.md` both say: do not reuse that
   sample's maximum. Deriving 180 straight from 168.4 would violate this plan's own parent
   standard. T1 therefore **re-runs the Plan 196 measurement once** before choosing — same
-  heredoc method, no new apparatus — and the value is chosen from the combined sample with
-  explicit margin. If the fresh measurement agrees with 160-168, 180 ships. **If it does not,
-  stop and report — do not improvise a value.**
+  heredoc method, no new apparatus — and the value is chosen from the combined sample with explicit
+  margin. **The ship/stop rule is mechanical, so two implementers reach the same answer:**
+  1. The fresh run must include **at least two cycles absent from Plan 196's sample**
+     (`2026-08-27T12Z/18Z`, `2026-08-28T00Z/06Z`). Catalogue retention is ~24 h, so any run on a
+     later day satisfies this; if it does not, the measurement is not fresh — stop and report.
+  2. **Ship 180 iff the maximum over the combined sample is ≤ 168 minutes**, i.e. it preserves the
+     ≥ 12 minutes of margin D3b argues for.
+  3. **Any combined maximum above 168 → stop and report.** Do not improvise a larger value: a
+     maximum of 169 or 179 means the margin assumption is wrong, and choosing the new number is a
+     decision for the owner, not for the implementer.
 
 - **D3b — why 180 and not 170.** Plan 196 T1 explicitly refused to license 170 as a safe floor: it clears
   the observed maximum of 168.4 by 1.6 minutes on n = 4 from a single August window. 180 is a round
@@ -135,7 +156,11 @@ demonstrated defect.
      (the file carries 105), GREEN after the edit. Use the established repo-root idiom
      `_REPO_ROOT = Path(__file__).resolve().parents[3]` (`tests/unit/config/test_qc_rules.py:16`);
   2. drive `resolve_cycle` with **that loaded value**, not a literal, so the 150-minute candidate
-     is skipped because the shipped config says so.
+     is skipped because the shipped config says so;
+  3. **make both the 150-minute candidate and the one-step-back cycle appear published.** Otherwise
+     the walk-back could be caused by `not_published` rather than by the age guard, and the
+     assertion would prove nothing about this change. Assert on the reason as well as the outcome:
+     the resolution must report `too_recent`, not `not_published`.
 - **Not a task item, a recorded fact:** `nwp_max_wait_hours` is defined at
   `config/deployment.py:90` and read **nowhere else in `src/`**, so it cannot interact with this
   guard today — and it measures from expected delivery, not cycle time, so it would not collide
@@ -144,6 +169,30 @@ demonstrated defect.
   shipped `config.toml` moves. That keeps `tests/unit/config/test_deployment.py:211` (default =
   105) green; a deployment that omits the key still gets the old guard. Changing the code default
   is a wider blast radius than this plan wants and is deliberately left out.
+
+- **Re-measure before choosing the value (D3).** One heredoc against the live MeteoSwiss STAC
+  catalogue, same method as Plan 196 T1: walk `rel=next` per candidate cycle, filter items to the
+  target `forecast:reference_datetime`, keep those whose id carries a `PARAM_GROUPS` column-0 token
+  (`tot_prec`, `t_2m`) at the +120 h horizon, and take the latest `created`. **No new script file.**
+  If the fresh figures fall inside 160-168 min, 180 ships. If they do not, **stop and report.**
+
+- **Update every surface that states the old value or the disproven latency**, or the change ships
+  with its own documentation contradicting it. The complete list, enumerated by grep on 2026-08-28
+  — T1 must not add to it without saying why:
+  1. `docs/standards/orchestration.md:271` — states the shipped value is 105 and "too small".
+  2. `config/deployment.py:97` — comment still cites "~90-120 min ICON-CH2-EPS publish latency".
+  3. `tests/unit/adapters/test_meteoswiss_nwp.py:362` — the guard test's own docstring repeats
+     "incrementally over ~90-120 min" as its stated rationale.
+  4. `docs/spec/config-reference.toml` and `docs/spec/types-and-protocols.md` — **both omit
+     `nwp_cycle_min_age_minutes` entirely** while documenting its sibling
+     `nwp_max_fallback_age_hours` (`config-reference.toml:36`, `types-and-protocols.md:3926`). The
+     field has never been in the authoritative spec at all. Add it, with the measurement as its
+     citation.
+
+*Scope (out):* the cron · `resolve_cycle` logic · `_cycle_is_published` · `max_fallback_steps` ·
+`nwp_max_fallback_age_hours` · the dataclass default (stays 105) · the Recap/IFS gateway's separate
+`DEFAULT_MAX_CYCLE_AGE_HOURS` · backfilling or re-issuing the forecasts already issued inside the
+window.
 
 *Exit:* both tests green; **RED proof is required for the shipped-config/150-minute test only** —
 the cron-invariance test passes under both 105 and 180 by design, which is the property it pins.
@@ -175,9 +224,8 @@ Recap/IFS gateway. (Single exclusion list — T1 previously repeated most of the
 
 ## Exit gates
 
-- `config.toml` carries 180 with a comment citing the measurement, its date and its `n`,
-  `nwp_max_wait_hours` collision warning.
+- `config.toml` carries 180 with a comment citing the measurement, its date and its `n`.
 - A test pins the cron path as unchanged; a test reads `nwp_cycle_min_age_minutes` **from the
   shipped `config.toml`** and pins the 150-minute candidate as now skipped (RED against 105).
-- `git diff --stat` touches `config.toml`, one test file, the doc surfaces named in T1, and the
-  version-bump files — and nothing else.
+- `git diff --stat` touches `config.toml`, the test file, the four doc surfaces enumerated in T1,
+  and the version-bump files — and nothing else.
