@@ -300,6 +300,164 @@ class TestFailurePathReallyPublishes:
         assert upload_runs
 
 
+class TestSbomSurvivesAGateFailure:
+    """T2 (Plan 207) — the SBOM steps must not inherit the implicit
+    `success()` that follows a gate failure. `Upload SBOM artifact` shares a
+    byte-identical `uses:` pin with `Upload Trivy SARIF artifact`, so this
+    class selects by `id:` (`sbom-generate` / `sbom-upload`), never by
+    `_step_by_uses_prefix`, which would silently return the SARIF upload
+    instead.
+    """
+
+    def _conditions(self) -> tuple[str, str]:
+        job = _build_image_and_scan_job()
+        generate_step = _step_by_id(job, "sbom-generate")
+        upload_step = _step_by_id(job, "sbom-upload")
+        # A future selector regression to the SARIF upload must fail loudly
+        # here, not silently pass the scenarios below against the wrong step.
+        assert upload_step["name"] == "Upload SBOM artifact"
+        # A missing `if:` key resolves to the implicit `success()` GitHub
+        # applies — that default IS the defect, so it must not raise or skip.
+        generate_if = generate_step.get("if", "success()")
+        upload_if = upload_step.get("if", "success()")
+        return generate_if, upload_if
+
+    def test_normal_success_generate_and_upload_both_run(self) -> None:
+        """Row 1."""
+        generate_if, upload_if = self._conditions()
+        outcomes = {
+            "build-image": "success",
+            "trivy-scan": "success",
+            "trivy-gate-table": "success",
+        }
+        generate_runs = _eval_gha_if(
+            generate_if, job_status="success", outcomes=outcomes
+        )
+        assert generate_runs, "the SBOM must be generated on a normal green run"
+        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="success", outcomes=outcomes)
+        assert upload_runs, "the SBOM must be uploaded on a normal green run"
+
+    def test_gate_failed_generate_and_upload_both_still_run(self) -> None:
+        """Row 2 — the defect this plan exists to fix."""
+        generate_if, upload_if = self._conditions()
+        outcomes = {
+            "build-image": "success",
+            "trivy-scan": "success",
+            "trivy-gate-table": "failure",
+        }
+        generate_runs = _eval_gha_if(
+            generate_if, job_status="failure", outcomes=outcomes
+        )
+        assert generate_runs, (
+            "the SBOM must still be generated when the vulnerability gate "
+            "fails — this is the run where the dependency inventory matters most"
+        )
+        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
+        assert upload_runs, "the SBOM must still be uploaded when the gate fails"
+
+    def test_scan_failed_operationally_generate_and_upload_both_still_run(
+        self,
+    ) -> None:
+        """Row 3 — deliberate divergence from the SARIF steps: the SBOM reads
+        the built image, not trivy-image.json, so an operational Trivy
+        failure must not take the inventory down with it."""
+        generate_if, upload_if = self._conditions()
+        outcomes = {"build-image": "success", "trivy-scan": "failure"}
+        generate_runs = _eval_gha_if(
+            generate_if, job_status="failure", outcomes=outcomes
+        )
+        assert generate_runs, (
+            "an operational trivy-scan failure must not skip SBOM generation "
+            "— the SBOM does not depend on trivy-image.json"
+        )
+        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
+        assert upload_runs, (
+            "the SBOM upload must not be taken down by an operational scan failure"
+        )
+
+    def test_build_failed_generate_and_upload_both_skipped(self) -> None:
+        """Row 4."""
+        generate_if, upload_if = self._conditions()
+        outcomes = {"build-image": "failure"}
+        generate_runs = _eval_gha_if(
+            generate_if, job_status="failure", outcomes=outcomes
+        )
+        assert not generate_runs, (
+            "syft must not run against an image that failed to build"
+        )
+        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
+        assert not upload_runs
+
+    def test_build_skipped_generate_and_upload_both_skipped(self) -> None:
+        """Row 5 (round-2 addition) — kills
+        `!cancelled() && steps.build-image.outcome != 'failure'`: a `skipped`
+        build outcome is `!= 'failure'`, so that wrong condition would run
+        syft against an image that was never built at all."""
+        generate_if, upload_if = self._conditions()
+        outcomes = {"build-image": "skipped"}
+        generate_runs = _eval_gha_if(
+            generate_if, job_status="failure", outcomes=outcomes
+        )
+        assert not generate_runs, (
+            "a skipped build (e.g. checkout/setup failed earlier) must not "
+            "let syft run — kills `outcome != 'failure'` as a stand-in for "
+            "`outcome == 'success'`"
+        )
+        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
+        assert not upload_runs
+
+    def test_sbom_generation_failed_upload_skipped(self) -> None:
+        """Row 6 — sbom-generate's outcome is supplied explicitly, not
+        chained from this scenario's own generate evaluation, so the upload
+        assertion is not passing for the wrong reason."""
+        _generate_if, upload_if = self._conditions()
+        outcomes = {"build-image": "success", "sbom-generate": "failure"}
+        upload_runs = _eval_gha_if(upload_if, job_status="failure", outcomes=outcomes)
+        assert not upload_runs, (
+            "a failed syft run must not be uploaded via a confusing "
+            "if-no-files-found: error failure"
+        )
+
+    def test_cancelled_after_a_successful_build_generate_and_upload_skipped(
+        self,
+    ) -> None:
+        """Row 7 (round-2 addition) — kills
+        `always() && steps.build-image.outcome == 'success'`: `always()` is a
+        status function to the evaluator and is unconditionally True, and it
+        is a live nearby pattern in this job (`Upload Trivy SARIF artifact`).
+        Giving the producer `success` here means only `!cancelled()` can
+        reject — a cancelled run must not still generate or upload the SBOM."""
+        generate_if, upload_if = self._conditions()
+        outcomes = {"build-image": "success"}
+        generate_runs = _eval_gha_if(
+            generate_if, job_status="cancelled", outcomes=outcomes
+        )
+        assert not generate_runs, (
+            "a cancelled run must not generate the SBOM even though the "
+            "build already succeeded — kills `always()` in place of `!cancelled()`"
+        )
+        outcomes["sbom-generate"] = "success" if generate_runs else "skipped"
+        upload_runs = _eval_gha_if(upload_if, job_status="cancelled", outcomes=outcomes)
+        assert not upload_runs
+
+    def test_cancelled_after_a_successful_generate_upload_skipped(self) -> None:
+        """Row 8 (round-2 addition) — same `always()` mutant, but on the
+        upload's own producer (sbom-generate), supplied explicitly as
+        `success` rather than chained."""
+        _generate_if, upload_if = self._conditions()
+        outcomes = {"build-image": "success", "sbom-generate": "success"}
+        upload_runs = _eval_gha_if(upload_if, job_status="cancelled", outcomes=outcomes)
+        assert not upload_runs, (
+            "a cancelled run must not upload the SBOM even though generation "
+            "already succeeded — kills `always()` in place of `!cancelled()`"
+        )
+
+
 class TestTrivyignorePolicyIsInternallyConsistent:
     """T3 — .trivyignore's own instruction must not describe an impossible
     case."""

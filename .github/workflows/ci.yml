@@ -455,6 +455,7 @@ jobs:
       # B0 — Build the image and load it into the local docker daemon so the
       # later trivy and syft steps in this same job can reference the tag.
       - name: Build app image
+        id: build-image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
         with:
           context: .
@@ -560,14 +561,25 @@ jobs:
       # run so a future CVE landing has a recoverable "which image contains
       # library X?" trail.
       # Equivalent CLI: syft sapphire-flow:ci-${{ github.sha }} -o cyclonedx-json > sbom.cdx.json
+      # Plan 207: conditioned on the IMAGE BUILD, not trivy-scan — the SBOM reads
+      # the image, not trivy-image.json, so a gate failure (or an operational Trivy
+      # failure) must not delete the inventory. `!cancelled()`, not the implicit
+      # `success()`: the failure-path run is the one where "what else ships this
+      # component?" matters (cicd.md:627, "every run").
       - name: Generate SBOM with syft
+        id: sbom-generate
+        if: ${{ !cancelled() && steps.build-image.outcome == 'success' }}
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
           image: sapphire-flow:ci-${{ github.sha }}
           format: cyclonedx-json
           output-file: sbom.cdx.json
           upload-artifact: false
+      # Keyed on sbom-generate, not build-image: a transient sbom-action fault must
+      # skip the upload, not fail it confusingly via `if-no-files-found: error`.
       - name: Upload SBOM artifact
+        id: sbom-upload
+        if: ${{ !cancelled() && steps.sbom-generate.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: sbom-cyclonedx
