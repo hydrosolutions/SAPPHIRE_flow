@@ -81,8 +81,19 @@ move needs a **code PR**, not a plan-doc commit to `main`.
 branch whose merge base is old, whether or not its content already landed via squash-merge. Only
 one bucket is trustworthy:
 
-- **11 branches show no diff at all** against `origin/main` — squash-merge residue, safe to delete.
-- The rest need a per-branch answer to: *is this content already on `main`?*
+Running the corrected classifier (below) over all remote-less branches on 2026-08-28 gives:
+
+| verdict | count |
+|---|---|
+| `NO_UNIQUE_WORK` — adds nothing over its merge base | **14** |
+| `VERSION_CHURN_ONLY` — differs only in version/lock files | **1** |
+| `DIFFERS` — real content not on `main` | **52** |
+
+The audit's crude first pass said "11 zero-diff"; the correct method says 14 deletable. **B1 must
+re-run the classifier rather than reuse either number** — branches move.
+
+That single `VERSION_CHURN_ONLY` result is why the guard exists: under the discarded filter it would
+have classified as merged and been deleted unexamined. It is `test/live-recap-127-forecast-xfail`.
 
 Two known exceptions that must survive any pruning:
 
@@ -105,18 +116,50 @@ one, so no patch-id matches. Verified on `feat/plan-204-forecast-lab-v2`, squash
 the work is fully landed. In a squash-merge repo `git cherry` marks everything unmerged and is worse
 than useless here, because it would argue against deleting branches that are genuinely done.
 
-**Use a content comparison instead.** For each branch: take the files it touches, then ask whether
-those files still differ from `main`.
+**Use a content comparison instead** — but not the naive one. A second review killed this plan's
+*first* replacement too, for two reasons that both end in deleted work:
+
+- **The empty-list bug.** When the filtered file list is empty, `-- ${=files}` expands to *no
+  pathspec at all*, so `git diff` compares the **entire trees**. Measured: `docs/fix-mi3-cimo` touches
+  zero files yet the command reported **48** differing files. Wrong direction here, but it makes the
+  classifier meaningless.
+- **The excluded-file hole, which IS destructive.** Filtering `pyproject.toml` / `uv.lock` /
+  `__init__.py` out of the *comparison* hides a branch whose only unmerged work lives in one of them —
+  a real dependency addition, say. It would report clean and be deleted. Proven with a probe branch
+  carrying a version-only change: under the old filter it classified as "merged".
+
+**Never exclude a file from the comparison. Exclude it only from the verdict.** Classify with:
 
 ```bash
-b=<branch>
-files=$(git diff --name-only "$(git merge-base origin/main $b)" "$b" \
-        | grep -vE '^(uv\.lock|pyproject\.toml|src/sapphire_flow/__init__\.py)$')
-git diff --name-only origin/main "$b" -- ${=files}   # zsh: ${=files} splits; bash: $files
+classify() {                      # zsh; in bash use "$files" without the =
+  local b=$1 base files diff sub
+  base=$(git merge-base origin/main "$b" 2>/dev/null) \
+    || { echo "$b :: NO MERGE BASE — unrelated history or deleted upstream; INSPECT"; return; }
+  files=$(git diff --name-only "$base" "$b")
+  [ -z "$files" ] && { echo "$b :: NO UNIQUE WORK"; return; }
+  diff=$(git diff --name-only origin/main "$b" -- ${=files})
+  [ -z "$diff" ] && { echo "$b :: CONTENT ON MAIN"; return; }
+  sub=$(printf '%s\n' "$diff" | grep -vE '^(uv\.lock|pyproject\.toml|src/sapphire_flow/__init__\.py)$')
+  [ -z "$sub" ] && { echo "$b :: VERSION-CHURN ONLY — INSPECT, do not auto-delete"; return; }
+  echo "$b :: DIFFERS ($(printf '%s\n' "$sub" | grep -c .) files) — real work"
+}
 ```
 
-Empty output ⇒ every file the branch touched is byte-identical to `main` ⇒ **merged/superseded**.
-Non-empty ⇒ **needs a look** — not automatically unmerged, since the branch may simply be old.
+Four verdicts, and only the first two are deletable:
+
+| verdict | meaning | action |
+|---|---|---|
+| `NO UNIQUE WORK` | branch adds nothing over its merge base | delete |
+| `CONTENT ON MAIN` | every file it touched is byte-identical to `main` | delete |
+| `VERSION-CHURN ONLY` | differs *only* in version/lock files | **inspect by hand** — this is the trap above |
+| `DIFFERS` / `NO MERGE BASE` | real work, or history that cannot be compared | keep |
+
+Verified 2026-08-28 against known answers: `feat/plan-151-t8b` → DIFFERS (10 files; its 1,946
+unpushed insertions), `fix/plan-202-token-list-crash` → DIFFERS, `backup/plan-174-pre-rebase` →
+DIFFERS, `docs/fix-mi3-cimo` and `docs/housekeeping` → NO UNIQUE WORK, and a purpose-built
+version-only probe branch → VERSION-CHURN ONLY. The squash-merge case was verified earlier on
+`feat/plan-204-forecast-lab-v2`, which has since been deleted upstream — a branch that no longer
+exists now yields `NO MERGE BASE`, which is why that verdict means *inspect*, not *delete*.
 
 **Two traps, both hit while writing this plan — do not re-introduce them:**
 
@@ -124,8 +167,8 @@ Non-empty ⇒ **needs a look** — not automatically unmerged, since the branch 
    list as ONE pathspec, which matches nothing, so `git diff` comes back empty and **every branch
    reports as merged.** In a plan that ends in `git branch -D`, that mistake deletes unmerged work.
    It reported `feat/plan-151-t8b` — 1,946 unpushed insertions — as "content on main". Use `${=files}`.
-2. The version-churn files (`uv.lock`, `pyproject.toml`, `__init__.py`) differ on every branch and
-   drown the signal; the filter above drops them.
+2. Do not "simplify" the classifier by filtering the file list before the diff. That is precisely the
+   destructive hole described above, and it is how the first two drafts of this section were wrong.
 
 **A clean comparison is still not proof.** It says the content matches `main` *today*; it cannot tell
 a merge from a revert-then-rewrite. Anything the owner is unsure about stays.
@@ -143,7 +186,9 @@ and any unmerged branch alone unless explicitly named.
 
 ## C — worktrees
 
-`git worktree list` shows **13** (not 10 — the first draft undercounted). The main checkout is shared
+`git worktree list` showed **13** during the 2026-08-28 review (not 10 — the first draft
+undercounted), and 12 an hour later as other sessions finished. Count it again at implementation
+time rather than trusting either number. The main checkout is shared
 by several sessions, and that is an active hazard: during this audit another session's pre-commit
 stash cycle made in-progress edits transiently vanish from the shared tree.
 
@@ -160,8 +205,9 @@ it refuse; a refusal means someone is working there.
 **A branch checked out in a worktree cannot be deleted until that worktree is removed.** Sequence the
 two: worktree first, branch second.
 
-**Exit:** `git worktree prune` run (a no-op is a valid result); every surviving worktree maps to a
-live branch; no worktree removed without confirmation and a clean tree.
+**Exit:** every surviving worktree maps to a live branch; no worktree removed without owner
+confirmation and a clean tree. `git worktree prune` is optional bookkeeping, not a gate — with all
+registrations live it is a no-op, and requiring it here contradicted the paragraph above.
 
 ## D — nine plan paths already dangle
 
