@@ -13,6 +13,15 @@ source: discovered 2026-08-26 while verifying Plan 151 T8b against the plan's "n
 
 ## Status
 
+**IMPLEMENTED — held at PR #220 (2026-08-28).** Branch `fix/plan-201-test-isolation`, v0.1.823. The
+decisive gate: sequential `pytest tests/unit/` went **13 failed → 4707 passed, 0 failed**; `-n auto`
+unchanged at 4707. Two review majors were verified by direct probe and fixed (the guard had been
+installed via the shared `monkeypatch` fixture and was strippable by
+`tests/unit/ops/test_watchdog.py:5031`'s `undo()`; the nightly sequential step ran before the slow and
+live suites and would have skipped them). The reviewer-proposed behavioural regression test passed
+against BOTH the vulnerable and the fixed conftest, so it was replaced with a mechanism-level test
+proven to fail against the vulnerable version.
+
 **READY** — owner flip 2026-08-28. T1 is solved (8-second reproducer); T3 is ratified (layered).
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT
