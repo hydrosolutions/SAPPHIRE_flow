@@ -21,6 +21,18 @@
 
 services:
   prefect-worker:
+    # This host is a 64 GB / 14-core Mac mini, so it can afford far more than
+    # the base file's conservative 8 GiB. Measured 2026-08-28: onboarding ONE
+    # discharge station peaks at 4.67 GiB, and at 8 GiB the worker was
+    # OOM-killed mid-hindcast (exit -9, `OOMKilled=true`) leaving a
+    # half-onboarded station behind. The base limit stays 8 GiB for smaller
+    # deployments; this override is the capability of THIS box.
+    #
+    # Docker Desktop's VM was also raised 7.65 -> 31 GiB the same day; the two
+    # go together, because concurrent flow runs share the CONTAINER limit while
+    # all containers share the VM. 24 GiB leaves the VM ~7 GiB for Postgres,
+    # the API, Caddy and the Prefect server.
+    mem_limit: 24g
     environment:
       SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
       SAPPHIRE_REQUIRE_NWP: "1"
