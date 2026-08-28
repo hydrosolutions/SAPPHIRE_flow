@@ -374,8 +374,11 @@ freezing the read contract. **⛔ That probe found the live archive serving revi
 `V07B` Plan 211 D1 pinned** (both measured the same day). **Post-review fixer pass (2026-08-28) made
 the pin ENFORCED, not merely documentary**: `assert_revision_matches_plan_and_header` rejects any
 granule whose filename revision differs from `V07B`, and independently cross-checks the filename
-against the granule's own embedded `FileHeader.ProductVersion`. Consequence: a live acquisition run
-against the archive **as observed 2026-08-28** will raise `ImergRevisionMismatchError` and halt — D1's
+against the granule's own embedded `FileHeader.FileName`. ⛔ **Not `FileHeader.ProductVersion`** — the
+probe measured `ProductVersion=07B` on a granule whose filename and `FileName` both read `V07C`, so the
+two are different axes and equating them would reject legitimate granules. Consequence: a live
+acquisition run against the archive **as observed 2026-08-28** will raise `ImergReadContractError` and
+halt — D1's
 own required behaviour ("stop and report rather than blending"), not a bug; resolving the halt
 (confirming V07B has returned, or re-confirming the READY plan for V07C) is the owner's call, not
 something this pipeline resolves unilaterally. **The bulk retrieval (105,216 granules, projected
@@ -386,7 +389,19 @@ granule (the exact halt described above) escaped as an unhandled traceback inste
 `imerg_extract.cli.failed` log line + defined exit code T1's `main()` already produces for the same
 hierarchy. Fixed by widening T2's `main()` exception handling to the broad `ImergAcquisitionError` and
 `Era5ExtractionError` bases (mirroring `extract_era5_t2m.py`'s own `_EXIT_BY_ERROR` table), with a
-locking test driving the real `V07B`-filename/`07C`-header drift through `main()` end-to-end.
+locking test driving the real `V07B`-filename/`07C`-header drift through `main()` end-to-end. **Closing
+round (2026-08-28)**: an independent review found the completeness invariant sitting in the wrong layer
+and the pipeline over-built against D9's proportionality bar (2,851 production lines). Fixed and
+simplified together — the pinned-window accounting invariant now lives in the ONE publish/discovery
+predicate D9 requires (a hand-built bundle claiming one requested granule is refused at publication and
+skipped by discovery, not merely rejected inside `run()`); the permanent acquisition record DERIVES both
+its own and an incoming record's completeness on write, so the stored `completeness` label is gone and
+nothing can *claim* COMPLETE; recorded gaps are reconciled against the pinned window; `imerg_extract`'s
+exit-code table honours `ImergStorageError`'s promised exit 5; and `--out` REFUSES an existing non-empty
+directory instead of `rmtree`-ing it. The acquisition manifest is now the sole owner of the full D1 read
+contract and the per-granule checksums — the bundle hashes their canonical digests into its identity
+rather than carrying two more copies of both — and the 26-station/complete-axis invariants are pinned
+rather than passed in.
 
 **Exit:** extracted IMERG **Early** series + named operator + the per-station cell-centre/elevation
 record above (no DEM mismatch table) + the operator-sensitivity comparison + the manifest marked

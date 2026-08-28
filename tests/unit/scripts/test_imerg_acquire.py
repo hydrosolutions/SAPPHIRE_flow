@@ -133,7 +133,6 @@ def _derivation_complete_manifest(
         "route": ia.ROUTE,
         "collection_short_name": ia.COLLECTION_SHORT_NAME,
         "granule_revision": ia.PINNED_GRANULE_REVISION_PER_PLAN,
-        "completeness": ia.AcquisitionCompleteness.COMPLETE,
         "requested_window_start": ia.FIRST_GRANULE_START,
         "requested_window_end": ia.LAST_GRANULE_START,
         "box": ia.STUDY_BOX,
@@ -244,7 +243,10 @@ class TestResolveGranuleFilename:
 
 class TestWindowArithmetic:
     def test_granule_count_equals_the_measured_105216(self) -> None:
-        assert ia.granule_count() == ia.EXPECTED_GRANULE_COUNT == 105_216
+        # DERIVED from the pinned window's arithmetic, never restated as a
+        # bare literal (D10) — and it still has to equal the measured 105,216.
+        starts = list(ia.all_granule_starts())
+        assert ia.EXPECTED_GRANULE_COUNT == len(starts) == 105_216
 
     def test_first_granule_start_is_one_hour_before_the_study_axis(self) -> None:
         # D5: the axis's first hour (2020-01-01 00:00) needs the granules of
@@ -318,9 +320,7 @@ class TestReadContract:
         base_kwargs = _contract_kwargs()
         frozen = ia.ImergReadContract(granule_revision="V07B", **base_kwargs)
         observed = ia.ImergReadContract(granule_revision="V07C", **base_kwargs)
-        with pytest.raises(
-            ia.ImergRevisionMismatchError, match="V07C.*V07B|V07B.*V07C"
-        ):
+        with pytest.raises(ia.ImergReadContractError, match="V07C.*V07B|V07B.*V07C"):
             ia.assert_contract_consistent(observed, frozen=frozen)
 
     def test_a_lat_vector_perturbed_below_six_decimals_is_rejected(self) -> None:
@@ -379,9 +379,7 @@ class TestRevisionPin:
             "3B-HHR-E.MS.MRG.3IMERG.20260828-S070000-E072959.0420.V07C.HDF5"
         )
         _write_fake_granule(path, product_version="07C")
-        with pytest.raises(
-            ia.ImergRevisionMismatchError, match="V07C.*V07B|V07B.*V07C"
-        ):
+        with pytest.raises(ia.ImergReadContractError, match="V07C.*V07B|V07B.*V07C"):
             ia.observe_read_contract(path)
 
     def test_observe_read_contract_rejects_a_path_embedded_name_disagreement(
@@ -462,7 +460,6 @@ class TestAcquisitionManifest:
             route=ia.ROUTE,
             collection_short_name=ia.COLLECTION_SHORT_NAME,
             granule_revision="V07B",
-            completeness=ia.AcquisitionCompleteness.COMPLETE,
             requested_window_start=ia.FIRST_GRANULE_START,
             requested_window_end=ia.LAST_GRANULE_START,
             box=ia.STUDY_BOX,
@@ -480,7 +477,6 @@ class TestAcquisitionManifest:
         reread = ia.read_acquisition_manifest(path)
         assert reread is not None
         assert reread.granule_revision == "V07B"
-        assert reread.completeness == ia.AcquisitionCompleteness.COMPLETE
         assert reread.retrospective is True
         assert reread.granule_checksums == {"a.HDF5": "deadbeef"}
 
@@ -635,17 +631,16 @@ class TestRetrieveWindow:
         assert manifest.retrieved == 1
         assert manifest.granule_checksums
         assert filename in manifest.granule_retrieved_at
-        # A single-granule `retrieve_window` call is a PARTIAL window, never
-        # COMPLETE — only a call spanning the whole pinned D5 window is.
-        assert manifest.completeness == ia.AcquisitionCompleteness.PARTIAL
+        # A single-granule `retrieve_window` call does not account for the
+        # pinned window, so it never DERIVES as complete.
+        assert ia.is_complete_acquisition(manifest) is False
 
     def test_a_two_granule_retrieval_starting_at_the_window_edge_is_partial(
         self, tmp_path: Path
     ) -> None:
-        """⛔ Starting at the pinned window's own first granule is NOT
-        enough to be COMPLETE: `retrieve_window` DERIVES completeness from
-        the record it just built, and two granules do not account for the
-        window's 105,216 half-hour starts."""
+        """⛔ Starting at the pinned window's own first granule is NOT enough
+        to be COMPLETE: completeness is DERIVED from the record, and two
+        granules do not account for the window's 105,216 half-hour starts."""
         starts = [
             ia.FIRST_GRANULE_START,
             ia.FIRST_GRANULE_START + timedelta(minutes=30),
@@ -668,9 +663,9 @@ class TestRetrieveWindow:
         )
         manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
         assert manifest is not None
-        # requested (2) != EXPECTED_GRANULE_COUNT (105,216) -> PARTIAL, not
-        # COMPLETE, even though every requested granule was retrieved.
-        assert manifest.completeness == ia.AcquisitionCompleteness.PARTIAL
+        # requested (2) != EXPECTED_GRANULE_COUNT (105,216) -> not complete,
+        # even though every requested granule was retrieved.
+        assert ia.is_complete_acquisition(manifest) is False
 
 
 class TestRunProbe:
@@ -687,7 +682,7 @@ class TestRunProbe:
             granule_bytes={f"{granule.directory_url()}{filename}": fixture},
         )
         data_root = tmp_path / "data_root"
-        result = ia.run_probe(
+        projection = ia.run_probe(
             granule_start=start,
             client=client,
             data_root=data_root,
@@ -696,12 +691,19 @@ class TestRunProbe:
             free_disk_bytes=10**12,
         )
         assert client.download_calls == [f"{granule.directory_url()}{filename}"]
-        assert result["filename"] == filename
+        # D10 — the projection is MEASURED from this one granule, never
+        # restated: probe size x the pinned window's granule count.
+        assert projection.projected_granule_count == ia.EXPECTED_GRANULE_COUNT
+        assert projection.projected_total_bytes == (
+            projection.probe_granule_bytes * ia.EXPECTED_GRANULE_COUNT
+        )
         manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
         assert manifest is not None
         assert manifest.granule_revision == "V07B"
         assert manifest.retrospective is True
-        assert manifest.completeness == ia.AcquisitionCompleteness.PROBE
+        # A one-granule probe never derives as a complete acquisition, so T2
+        # cannot mistake it for one (D9).
+        assert ia.is_complete_acquisition(manifest) is False
         # A probe's requested window is its OWN single granule, never the
         # full pinned D5 window — D9's "a mandated recent probe outside the
         # 2020-2025 window must not [be mistaken for a complete acquisition
@@ -752,10 +754,7 @@ class TestAcquisitionCompletenessIsDerived:
     def test_a_fully_accounted_window_derives_complete(self) -> None:
         manifest = _derivation_complete_manifest()
         assert ia.acquisition_completeness_violations(manifest) == ()
-        assert (
-            ia.derive_acquisition_completeness(manifest)
-            is ia.AcquisitionCompleteness.COMPLETE
-        )
+        assert ia.is_complete_acquisition(manifest) is True
         ia.assert_acquisition_manifest_complete(manifest)
 
     def test_a_two_granule_one_hour_manifest_labelled_complete_is_rejected(
@@ -776,9 +775,7 @@ class TestAcquisitionCompletenessIsDerived:
             retrieved=2,
             missing=(),
         )
-        with pytest.raises(
-            ia.ImergAcquisitionIncompleteError, match="105216|unaccounted"
-        ):
+        with pytest.raises(ia.ImergRequestFailedError, match="105216|unaccounted"):
             ia.assert_acquisition_manifest_complete(manifest)
 
     def test_a_duplicate_plus_missing_sequence_is_rejected(self) -> None:
@@ -802,7 +799,7 @@ class TestAcquisitionCompletenessIsDerived:
             ),
         )
         with pytest.raises(
-            ia.ImergAcquisitionIncompleteError, match="BOTH retrieved and missing"
+            ia.ImergRequestFailedError, match="BOTH retrieved and missing"
         ):
             ia.assert_acquisition_manifest_complete(manifest)
 
@@ -813,9 +810,7 @@ class TestAcquisitionCompletenessIsDerived:
         manifest = _derivation_complete_manifest(
             requested_window_start=ia.FIRST_GRANULE_START + timedelta(hours=1)
         )
-        with pytest.raises(
-            ia.ImergAcquisitionIncompleteError, match="requested_window_start"
-        ):
+        with pytest.raises(ia.ImergRequestFailedError, match="window start"):
             ia.assert_acquisition_manifest_complete(manifest)
 
     def test_a_checksum_retrieval_time_key_mismatch_is_rejected(self) -> None:
@@ -823,16 +818,21 @@ class TestAcquisitionCompletenessIsDerived:
         manifest = _derivation_complete_manifest(
             granule_checksums={name: "deadbeef"}, granule_retrieved_at={}
         )
-        with pytest.raises(
-            ia.ImergAcquisitionIncompleteError, match="same granule filenames"
-        ):
+        with pytest.raises(ia.ImergRequestFailedError, match="same granule filenames"):
             ia.assert_acquisition_manifest_complete(manifest)
 
-    def test_a_derivation_complete_record_labelled_partial_is_rejected(self) -> None:
+    def test_a_gap_outside_the_pinned_window_is_rejected(self) -> None:
+        """⛔ The counts still add up, but one recorded gap sits outside the
+        pinned D5 window — so the accounting cannot be describing that
+        window, however well its numbers balance."""
+        all_starts = list(ia.all_granule_starts())
         manifest = _derivation_complete_manifest(
-            completeness=ia.AcquisitionCompleteness.PARTIAL
+            missing=(
+                *(s.isoformat() for s in all_starts[:-1]),
+                (ia.LAST_GRANULE_START + timedelta(minutes=30)).isoformat(),
+            )
         )
-        with pytest.raises(ia.ImergAcquisitionIncompleteError, match="labels itself"):
+        with pytest.raises(ia.ImergRequestFailedError, match="inside the"):
             ia.assert_acquisition_manifest_complete(manifest)
 
 
@@ -840,22 +840,36 @@ class TestAcquisitionCompletenessIsDerived:
 
 
 class TestAcquisitionManifestIsPermanent:
-    def test_a_probe_may_not_overwrite_a_complete_record(self, tmp_path: Path) -> None:
+    def test_a_one_granule_record_may_not_overwrite_a_complete_one(
+        self, tmp_path: Path
+    ) -> None:
         """D10 (locking) — discarding the raw granules is only safe because
-        the acquisition manifest survives. A later probe run writing the
-        same fixed path would otherwise replace a 105,216-checksum record
-        with a one-granule one, and nothing could ever confirm which bytes
-        produced the bundle."""
+        the acquisition record survives. A later probe run writing the same
+        fixed path would otherwise replace a 105,216-checksum record with a
+        one-granule one, and nothing could ever confirm which bytes produced
+        the bundle.
+
+        ⛔ The writer must DERIVE the incoming record's completeness. The
+        previous version only refused a record whose stored `completeness`
+        LABEL said PROBE/PARTIAL — so this same one-granule record, labelled
+        COMPLETE, replaced the permanent one. There is no label any more, and
+        the derivation is what refuses it."""
         path = ia.acquisition_manifest_path(tmp_path)
         ia.write_acquisition_manifest(_derivation_complete_manifest(), path)
+        name = ia.ImergGranuleId(start=ia.FIRST_GRANULE_START).filename(revision="V07B")
         probe = _derivation_complete_manifest(
-            completeness=ia.AcquisitionCompleteness.PROBE
+            granule_checksums={name: "deadbeef"},
+            requested_window_end=ia.FIRST_GRANULE_START,
+            requested=1,
+            retrieved=1,
+            missing=(),
         )
         with pytest.raises(ia.ImergStorageError, match="never be downgraded"):
             ia.write_acquisition_manifest(probe, path)
         retained = ia.read_acquisition_manifest(path)
         assert retained is not None
-        assert retained.completeness is ia.AcquisitionCompleteness.COMPLETE
+        assert ia.is_complete_acquisition(retained) is True
+        assert retained.requested == ia.EXPECTED_GRANULE_COUNT
 
     def test_a_redownload_whose_checksums_disagree_is_refused(
         self, tmp_path: Path
@@ -920,27 +934,25 @@ class TestMain:
             granule_bytes={f"{granule.directory_url()}{filename}": fixture},
         )
 
-    def test_a_successful_probe_exits_zero_and_writes_the_out_report(
+    def test_a_successful_probe_exits_zero_and_records_the_acquisition(
         self, tmp_path: Path
     ) -> None:
         start = datetime(2026, 8, 28, 7, 0, tzinfo=UTC)
         client = self._client_for(ia.ImergGranuleId(start=start), tmp_path / "f.h5")
-        out = tmp_path / "report" / "probe.json"
+        data_root = tmp_path / "data_root"
         code = ia.main(
             [
                 "--data-root",
-                str(tmp_path / "data_root"),
+                str(data_root),
                 "--granule-start",
                 start.isoformat(),
-                "--out",
-                str(out),
             ],
             client=client,
             clock=_clock,
             sleep=_sleep,
         )
         assert code == 0
-        assert out.exists()
+        assert ia.acquisition_manifest_path(data_root).exists()
 
     def test_a_missing_granule_exits_3(self, tmp_path: Path) -> None:
         start = datetime(2026, 8, 28, 7, 0, tzinfo=UTC)
@@ -984,24 +996,23 @@ class TestMain:
         )
         assert code == 2  # noqa: PLR2004
 
-    def test_an_unwritable_out_path_is_reported_not_raised(
+    def test_an_unwritable_data_root_is_reported_not_raised(
         self, tmp_path: Path
     ) -> None:
-        """The `--out` write used to sit OUTSIDE `main()`'s guard, so a bad
-        path surfaced as a raw unhandled traceback rather than a typed,
-        exit-coded CLI failure."""
+        """A storage failure anywhere under the probe — here the acquisition
+        manifest's own directory blocked by a FILE — must surface as a typed,
+        exit-coded CLI failure, never a raw unhandled traceback."""
         start = datetime(2026, 8, 28, 7, 0, tzinfo=UTC)
         client = self._client_for(ia.ImergGranuleId(start=start), tmp_path / "f.h5")
-        blocker = tmp_path / "not-a-dir"
-        blocker.write_text("i am a file")
+        data_root = tmp_path / "data_root"
+        ia.imerg_raw_dir(data_root).mkdir(parents=True)
+        ia.acquisition_manifest_path(data_root).mkdir()  # a DIRECTORY, not a file
         code = ia.main(
             [
                 "--data-root",
-                str(tmp_path / "data_root"),
+                str(data_root),
                 "--granule-start",
                 start.isoformat(),
-                "--out",
-                str(blocker / "sub" / "probe.json"),
             ],
             client=client,
             clock=_clock,
