@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-28
 plan: 212
 title: Screen the undecided plans and the dormant branches against the code, once, with evidence
@@ -13,7 +13,9 @@ source: the 2026-08-28 stale-status audit (main b1e1b516); the audit's own limit
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY — owner flip 2026-08-28**, after three independent Codex passes. Passes 1-3 each found a
+blocker in §B1's branch-classification method; all were folded and re-verified. The final change was
+to stop depending on the classifier being right and make deletion recoverable (§B2).
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT
 
