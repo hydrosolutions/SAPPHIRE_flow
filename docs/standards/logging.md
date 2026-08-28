@@ -519,3 +519,49 @@ For tests that exercise the full logging pipeline (e.g., verifying processor beh
 Integration tests running inside Prefect (e.g., end-to-end pipeline tests) use `configure_prefect_logging()` — same as production.
 
 Do NOT assert on log messages as behavioral contracts — logs are diagnostics. Exception: asserting that ERROR-level events are emitted for specific failure modes is acceptable.
+
+### `capture_logs()`'s bypass has one gap: a logger cached before it runs (Plan 201)
+
+The claim above — "`capture_logs()` bypasses processors entirely" — holds only for a
+module-level `log = structlog.get_logger(__name__)` proxy that has **not yet been
+bound**. `structlog._config.BoundLoggerLazyProxy.bind()` permanently monkeypatches
+its own `.bind` the first time it runs while the GLOBAL `cache_logger_on_first_use`
+flag reads `True` — and that patch is **per-proxy, not global state**: no later
+`structlog.configure()` call, including the one `capture_logs()` performs
+internally, can undo it. If some earlier test called `configure_cli_logging()` /
+`configure_api_logging()` / `configure_prefect_logging()` (all of which set
+`cache_logger_on_first_use=True`, matching production) and left that as the live
+global config when a module's logger is bound for the first time, that logger is
+cached against the **pre-capture** processor chain for the rest of the process —
+`capture_logs()` in a much later test then silently observes `[]` instead of the
+event. This is exactly the three-way interaction Plan 201 traced through 13
+sequential-run-only failures: a CLI test's `main()` call left the flag `True`, an
+unrelated test was first to bind the skill-service module logger while it was
+still `True`, and a third test's `capture_logs()` assertion came up empty.
+
+**The fix is process-wide, not per-test**: `tests/conftest.py` has an autouse
+`_reset_structlog_config_before_each_test` fixture that calls
+`configure_test_logging()` (`cache_logger_on_first_use=False`) before every test,
+so no logger can ever be first-bound while a leaked `True` is live. Do not
+"solve" a future recurrence by adding `configure_test_logging()` calls to
+individual tests — the autouse fixture already runs before every test's setup;
+the defect is in *which test first binds a given logger*, not in any one test's
+own setup, and per-test patching cannot close that window.
+
+**A reset only at setup is not sufficient by itself (fixer round, 2026-08-28).**
+It closes the window *between* tests, but nothing stops a test's own body from
+calling a production configurator mid-test and first-binding a logger before
+that same test (or the very next one) reads it back with `capture_logs()` — the
+cache activates on that bind, not at the next fixture setup. The fixture
+therefore also intercepts every `structlog.configure()` call for the duration
+of each test (via `monkeypatch.setattr(structlog, "configure", ...)`) and
+forces `cache_logger_on_first_use=False` on it, regardless of what the caller
+passed — including calls production code issues through
+`configure_cli_logging()` / `configure_api_logging()` / `configure_prefect_logging()`.
+`structlog.testing.capture_logs()` is unaffected: it holds its own
+`from structlog import configure` binding captured at import time, a different
+name pointing at the same function, and it never passes
+`cache_logger_on_first_use` anyway. See
+`tests/unit/test_structlog_cache_isolation.py` for the locking regression
+(production configure → first bind → reconfigure → capture, proven to fail
+against the setup-only version of the fixture).
