@@ -59,6 +59,7 @@ from scripts.dhm_precip.domain_types import (  # noqa: E402
     VerticalDatum,
 )
 from scripts.dhm_precip.era5_errors import (  # noqa: E402
+    Era5ExtractionError,
     Era5StorageError,
     ExtractionInputAbsentError,
     ExtractionPostConditionError,
@@ -79,6 +80,7 @@ from scripts.dhm_precip.era5_request import STUDY_YEARS  # noqa: E402
 from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     MEASURED_ACQUISITION_LATENCY,
     AcquisitionCompleteness,
+    ImergAcquisitionError,
     ImergAcquisitionManifest,
     ImergReadContract,
     acquisition_manifest_path,
@@ -125,6 +127,35 @@ IMERG_PAYLOAD_FILES: tuple[str, ...] = (
     _STATION_CELL_FILENAME,
     _SENSITIVITY_FILENAME,
 )
+
+# Ordered subclass-first (mirrors extract_era5_t2m.py's own `_EXIT_BY_ERROR`
+# table): every `Era5ExtractionError` not covered by the two narrower
+# entries above it (e.g. `StationOutsideGridError`, `NonFiniteExtractionError`,
+# `StationSetMismatchError`, `SourceChecksumMismatchError` — all raised by the
+# reused `load_expected_station_coordinates`/`extract_nearest_series`/
+# `extract_bilinear_series`) is an extraction post-condition failure. Every
+# `ImergAcquisitionError` (D1 read-contract/revision-mismatch violations
+# surfaced by `read_granule` at T2's own read boundary, plus the credentials/
+# transient/storage leaves) gets T1's own `main()` exit code, so a D1
+# violation caught mid-extraction is reported the same way it would be at
+# acquisition time rather than crashing with a raw traceback.
+_EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
+    (DhmPrecipLoaderError, 2),
+    (ExtractionInputAbsentError, 2),
+    (ExtractionPostConditionError, 4),
+    (Era5StorageError, 5),
+    (Era5ExtractionError, 4),
+    (ImergAcquisitionError, 3),
+    # a raw OSError never reaches the typed hierarchy: it is storage.
+    (OSError, 5),
+)
+
+
+def _exit_code_for(exc: Exception) -> int:
+    for exc_type, code in _EXIT_BY_ERROR:
+        if isinstance(exc, exc_type):
+            return code
+    return 1
 
 
 def _default_expected_stations() -> frozenset[Station]:
@@ -1338,21 +1369,17 @@ def main(argv: list[str] | None = None, **kwargs: object) -> int:
     configure_cli_logging()
     try:
         return run(args, **kwargs)  # type: ignore[arg-type]
-    except (DhmPrecipLoaderError, ExtractionInputAbsentError) as exc:
+    except (
+        DhmPrecipLoaderError,
+        Era5ExtractionError,
+        Era5StorageError,
+        ImergAcquisitionError,
+        OSError,
+    ) as exc:
         log.error(
             "imerg_extract.cli.failed", error=str(exc), error_type=type(exc).__name__
         )
-        return 2
-    except ExtractionPostConditionError as exc:
-        log.error(
-            "imerg_extract.cli.failed", error=str(exc), error_type=type(exc).__name__
-        )
-        return 4
-    except (Era5StorageError, OSError) as exc:
-        log.error(
-            "imerg_extract.cli.failed", error=str(exc), error_type=type(exc).__name__
-        )
-        return 5
+        return _exit_code_for(exc)
 
 
 if __name__ == "__main__":

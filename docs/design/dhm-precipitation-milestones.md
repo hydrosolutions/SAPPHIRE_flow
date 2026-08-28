@@ -380,7 +380,13 @@ own required behaviour ("stop and report rather than blending"), not a bug; reso
 (confirming V07B has returned, or re-confirming the READY plan for V07C) is the owner's call, not
 something this pipeline resolves unilaterally. **The bulk retrieval (105,216 granules, projected
 ~848 GB against 896 GB free) was NOT performed** — Plan 211's per-run scope stops at the projection
-gate; bulk retrieval is the owner's call.
+gate; bulk retrieval is the owner's call. **Post-review fixer round 2 (2026-08-28)**: T2's own `main()`
+(`imerg_extract.py`) did not catch `ImergAcquisitionError` — a D1 violation raised while T2 reads a
+granule (the exact halt described above) escaped as an unhandled traceback instead of the structured
+`imerg_extract.cli.failed` log line + defined exit code T1's `main()` already produces for the same
+hierarchy. Fixed by widening T2's `main()` exception handling to the broad `ImergAcquisitionError` and
+`Era5ExtractionError` bases (mirroring `extract_era5_t2m.py`'s own `_EXIT_BY_ERROR` table), with a
+locking test driving the real `V07B`-filename/`07C`-header drift through `main()` end-to-end.
 
 **Exit:** extracted IMERG **Early** series + named operator + the per-station cell-centre/elevation
 record above (no DEM mismatch table) + the operator-sensitivity comparison + the manifest marked

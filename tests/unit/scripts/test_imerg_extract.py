@@ -1049,3 +1049,62 @@ class TestRunEndToEnd:
         del manifest_a["generated_at"]
         del manifest_b["generated_at"]
         assert manifest_a == manifest_b
+
+
+# --- main() must catch a mid-extraction D1 read-contract/revision
+# violation, not let it escape as a raw traceback (fixer round 2) ---
+
+
+class TestMainCatchesMidExtractionD1Violation:
+    def test_a_second_granule_header_revision_mismatch_is_reported_not_raised(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Reproduces the exact drift the module docstring documents as
+        CURRENTLY happening on the live GES DISC archive: a granule's
+        FILENAME carries the D1-pinned revision (V07B) but its own embedded
+        `FileHeader.ProductVersion` disagrees (07C) — raising
+        `ImergReadContractError` out of `read_granule()` while T2 reads the
+        SECOND granule, after the first has already frozen the read
+        contract. `main()` must catch this (via the broad
+        `ImergAcquisitionError`) and report it as a structured
+        `imerg_extract.cli.failed` log line with a defined exit code —
+        never as an unhandled traceback."""
+        from scripts.dhm_precip.imerg_acquire import (
+            FIRST_GRANULE_START,
+            ImergGranuleId,
+            imerg_raw_dir,
+        )
+
+        data_root = tmp_path / "data_root"
+        starts = [FIRST_GRANULE_START, FIRST_GRANULE_START + timedelta(minutes=30)]
+        # The SECOND granule's embedded header disagrees with its own
+        # (still D1-pinned) filename revision.
+        product_versions = ["07B", "07C"]
+        checksums: dict[str, str] = {}
+        for start, product_version in zip(starts, product_versions, strict=True):
+            filename = ImergGranuleId(start=start).filename(revision="V07B")
+            path = imerg_raw_dir(data_root) / filename
+            _write_fake_granule(
+                path,
+                start=start,
+                value_at=(27.05, 85.05),
+                value=2.0,
+                product_version=product_version,
+            )
+            checksums[filename] = checksum_file(path)
+        _write_complete_acquisition_manifest(data_root, granule_checksums=checksums)
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+
+        exit_code = ie.main(
+            ["--data-root", str(data_root)],
+            clock=lambda: datetime(2026, 8, 28, tzinfo=UTC),
+            coords_path=coords_path,
+            expected_stations=frozenset({Station("A")}),
+            params=DEFAULT_PARAMS,
+        )
+
+        assert exit_code not in (0, None)
+        captured = capsys.readouterr()
+        assert "imerg_extract.cli.failed" in captured.err
+        assert "ImergReadContractError" in captured.err
