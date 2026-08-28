@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-14
 plan: 161
 title: DATABASE_URL credential handling — a `/` in the password silently killed every backup
@@ -8,6 +8,11 @@ depends_on: []
 blocks: []
 supersedes: []
 ---
+
+> **Archived 2026-08-28 (stale-status audit).** Status was `READY` while the work is present on
+> `main`; archived on code-artifact evidence. Task-level exit criteria were NOT re-verified one by
+> one — Plan 212 owns that deeper screening if it is wanted.
+
 
 # Plan 161 — DATABASE_URL credential handling
 

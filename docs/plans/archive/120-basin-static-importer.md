@@ -26,7 +26,7 @@ production time only, an accepted basin/static package (Plan 117 contract).
 `docs/requirements/04-basin-static-artifact-contract.md` §5a (`:305-310`) states that
 "the implementation plan for this artifact contract MUST add an equivalent persistence
 target before Nepal production enablement." **Plan 117 is docs-only and builds no
-importer** (`docs/plans/117-basin-static-artifact-architecture.md`) — it records the
+importer** (`docs/plans/archive/117-basin-static-artifact-architecture.md`) — it records the
 boundary and the §5a/provenance gaps but leaves import + persistence to a separate
 plan. This is that plan.
 
@@ -1258,8 +1258,8 @@ question.
 - `docs/requirements/04-basin-static-artifact-contract.md` (§2 `:39-62`, §5 `:283-289`,
   §5a `:291-310`, §6.2a `:415-448`, §7 `:499-548`, §9 `:628-655`, §10 `:657-672`,
   §11 `:674-695`)
-- `docs/plans/117-basin-static-artifact-architecture.md` (docs-only contract alignment)
-- `docs/plans/082-recap-gateway-operational-readiness.md` (Task 2D `:297` — base §5a
+- `docs/plans/archive/117-basin-static-artifact-architecture.md` (docs-only contract alignment)
+- `docs/plans/archive/082-recap-gateway-operational-readiness.md` (Task 2D `:297` — base §5a
   table + resolver this plan populates/extends)
 - `docs/plans/archive/081-recap-dg-client-integration.md:213` (basin-average-only DECISION)
 - `src/sapphire_flow/types/basin.py:11-22`; `src/sapphire_flow/db/metadata.py:42-65`

@@ -1,11 +1,16 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-19
 plan: 129
 title: Continuous precipitation knit (RhiresD → RprelimD → NWP) + a regression model that consumes it (Swiss staging test)
 scope: Prove the RprelimD live-tail knits a CONTINUOUS precipitation series from the definitive past (RhiresD) through the preliminary recent past (RprelimD) into the NWP forecast, and that a model consumes that continuum end-to-end on the mac-mini Swiss deployment. Adds an FI-native regression model (past discharge + season + continuous precip) that is onboarded/trained/promoted, and a coarse unit-error seam gate run as a T1 diagnostic over raw provenance-bearing rows. Temporal seam only — no value-consistency / bias correction (deferred); RprelimD→RhiresD supersession deferred.
 depends_on: [128]
 ---
+
+> **Archived 2026-08-28 (stale-status audit).** Status was `READY` while the work is present on
+> `main`; archived on code-artifact evidence. Task-level exit criteria were NOT re-verified one by
+> one — Plan 212 owns that deeper screening if it is wanted.
+
 
 # Plan 129 — the continuous precipitation knit + a consuming model
 

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-06-25
 plan: 082
 title: recap Gateway operational and training readiness
@@ -8,6 +8,11 @@ depends_on:
   - 081-recap-dg-client-integration
   - 115a-weather-source-identity-schema
 ---
+
+> **Archived 2026-08-28 (stale-status audit).** Status was `READY` while the work is present on
+> `main`; archived on code-artifact evidence. Task-level exit criteria were NOT re-verified one by
+> one — Plan 212 owns that deeper screening if it is wanted.
+
 
 # Plan 082 - recap Gateway operational and training readiness
 
@@ -80,7 +85,7 @@ executable training-readiness coverage gate.
 ## Context Read
 
 - `CLAUDE.md`, `docs/workflow.md`, `docs/conventions.md`
-- Plans 081, 115a; `docs/plans/117-basin-static-artifact-architecture.md` (the `04` contract/§5a); `docs/plans/archive/120-basin-static-importer.md` (the §5a importer 082's resolver reads)
+- Plans 081, 115a; `docs/plans/archive/117-basin-static-artifact-architecture.md` (the `04` contract/§5a); `docs/plans/archive/120-basin-static-importer.md` (the §5a importer 082's resolver reads)
 - `docs/requirements/01-data-gateway-requirements.md`
 - `docs/requirements/04-basin-static-artifact-contract.md` §5a
 - `docs/standards/{orchestration,logging,security,cicd}.md`

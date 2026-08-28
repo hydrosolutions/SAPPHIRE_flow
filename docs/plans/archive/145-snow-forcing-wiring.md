@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-23
 plan: 145
 title: Future-snow (JSNOW) forecast forcing wiring — fetch → store → broadcast, + canonical aggregation
@@ -8,6 +8,11 @@ depends_on: [082]
 blocks: [144]
 supersedes: []
 ---
+
+> **Archived 2026-08-28 (stale-status audit).** Status was `READY` while the work is present on
+> `main`; archived on code-artifact evidence. Task-level exit criteria were NOT re-verified one by
+> one — Plan 212 owns that deeper screening if it is wanted.
+
 
 # Plan 145 — Future-snow forecast forcing wiring
 

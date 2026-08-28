@@ -100,7 +100,7 @@ heading, stating which of these holds:
   and any future re-cron must use the measured figure, not 105.
 
 ### T2 — record the coupling
-*In:* `docs/standards/orchestration.md`, plus a dated REVISIT note in `docs/plans/090-*`.
+*In:* `docs/standards/orchestration.md`, plus a dated REVISIT note in `docs/plans/archive/090-*`.
 
 One paragraph, where the next reader will meet it: **the forecast cron and
 `nwp_cycle_min_age_minutes` are coupled, and changing either without the other silently pins NWP

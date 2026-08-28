@@ -29,7 +29,7 @@ and is filled in when the plan is promoted from stub to DRAFT.
 ## Owned elsewhere — do not re-open here
 
 - **Basin geometry + static catchment attributes** are owned by **Plan 117**
-  (`docs/plans/117-basin-static-artifact-architecture.md`, READY). SAP3 consumes a
+  (`docs/plans/archive/117-basin-static-artifact-architecture.md`, READY). SAP3 consumes a
   validated **basin/static** artifact package from an *adjacent* extraction tool and
   does not integrate that tool's code. Do not add basin delineation or
   static-attribute extraction to this plan's scope.

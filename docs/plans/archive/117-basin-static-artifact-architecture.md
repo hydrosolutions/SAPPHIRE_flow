@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-14
 revised: 2026-07-14
 plan: 117
@@ -8,6 +8,11 @@ scope: Document the adjacent basin/static extraction artifact boundary; no extra
 depends_on: []
 blocks: [047]  # basin/static architecture cleanup only — 047 also needs its own re-scope (Plan 106 §"047 is stale")
 ---
+
+> **Archived 2026-08-28 (stale-status audit).** Status was `READY` while the work is present on
+> `main`; archived on code-artifact evidence. Task-level exit criteria were NOT re-verified one by
+> one — Plan 212 owns that deeper screening if it is wanted.
+
 
 # Plan 117 - Basin/static artifact architecture alignment
 

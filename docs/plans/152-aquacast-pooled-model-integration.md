@@ -1197,7 +1197,7 @@ predict at all.
   **Note:** its "use onboarding as the benchmark harness, not a standalone notebook" premise was cheap
   for EQRN, which carried none of G3–G7's cost. T0c deliberately departs from it for the *early*
   signal, while T4–T6 still honour it for the *final* verdict.
-- `docs/plans/130-temperature-reanalysis-live-tail.md` — READY, unimplemented; T1 dependency under D2
+- `docs/plans/archive/130-temperature-reanalysis-live-tail.md` — READY, unimplemented; T1 dependency under D2
   option (A).
 - `CLAUDE.md` § ForecastInterface Adherence — the FI-gap escalation rule.
 - hydrosolutions/aquacast: `docs/operational/fi_integration.md`, `docs/forecast-interface-usage.md`,

@@ -488,7 +488,7 @@ gateway-binding `BASIN_AVERAGE` validator, live smoke, and dispatch wiring.
 
 > **Note for the owner — no longer a live contradiction.** An earlier draft flagged that Plan
 > 082 Task 2C step (d) says "`_select_nwp_source` itself needs **no** logic change"
-> (`docs/plans/082-recap-gateway-operational-readiness.md:285-287`) against 115a's "retire the
+> (`docs/plans/archive/082-recap-gateway-operational-readiness.md:285-287`) against 115a's "retire the
 > heuristic entirely." 115a has since **landed that retirement in code** (`_select_nwp_source`
 > is gone), so there is no live conflict in 081's dependency chain — the 082 step-(d) text is
 > now simply **082's own stale doc**, to be corrected when 082 is refreshed (082 consumes the
@@ -1128,7 +1128,7 @@ triggered by the discovery that rounds 1–4 had grounded against a stale checko
 
 ## References
 
-- Plan 082: `docs/plans/082-recap-gateway-operational-readiness.md`
+- Plan 082: `docs/plans/archive/082-recap-gateway-operational-readiness.md`
 - `docs/requirements/01-data-gateway-requirements.md`
 - `docs/requirements/00-internal-gap-analysis.md`
 - `docs/v0-scope.md` section I
