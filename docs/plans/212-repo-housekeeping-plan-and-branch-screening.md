@@ -13,6 +13,17 @@ source: the 2026-08-28 stale-status audit (main b1e1b516); the audit's own limit
 
 ## Status
 
+**IN PROGRESS — A1 and D1 done, B1 reported, B2 and C await owner confirmation (2026-08-28).**
+
+- **A1 — done.** All nine statuses settled against named files/symbols. 075 and 084 archived COMPLETE;
+  035, 069, 102, 104, 138 corrected to PARTIAL; 122 confirmed genuinely outstanding; 162 left
+  UNDETERMINED on purpose. Two audit contradictions resolved: 035's "waits for v1" header was stale
+  (`alembic/versions/0034_rating_curves_table.py` is *Plan 035 Task 1*), and 138's T2 *did* land.
+- **D1 — done, held at PR #226.** All nine repointed, including the wrapped
+  `docker-compose.yml:404` path this plan predicted no grep would see.
+- **B1 — reported below.** 13 retirable, 1 inspect, 53 keep.
+- **B2 and C — blocked on owner confirmation by design.**
+
 **READY — owner flip 2026-08-28**, after three independent Codex passes. Passes 1-3 each found a
 blocker in §B1's branch-classification method; all were folded and re-verified. The final change was
 to stop depending on the classifier being right and make deletion recoverable (§B2).
@@ -194,6 +205,16 @@ a merge from a revert-then-rewrite. Anything the owner is unsure about stays.
 **Exit:** every remote-less branch is in exactly one bucket, with a one-line reason and the command
 output that put it there.
 
+**B1 result, 2026-08-28** (re-run before acting — branches move):
+
+- **13 `NO_UNIQUE_WORK`**, i.e. retirable: `docs/fix-205-status`, `docs/fix-mi3-cimo`,
+  `docs/fix-mi3-citations`, `docs/housekeeping`, `docs/plan-192-recap-second-stack`,
+  `docs/plan-205-ma8`, `docs/plan-211-ready`, `docs/plan-ma5b`, `docs/plan-ma5b-r2`,
+  `docs/plan-ma5b-r3`, `docs/plan-ma9`, `docs/track-i-plans`, `status-check`.
+- **1 `VERSION_CHURN_ONLY`** — `test/live-recap-127-forecast-xfail`. Inspect; the discarded filter
+  would have deleted this one unexamined.
+- **53 `DIFFERS`** — keep, including `feat/plan-151-t8b` and all three `backup/*`.
+
 ### B2 — owner confirms, then retire recoverably
 
 **Three independent reviews found three different ways for this classifier to call unmerged work
@@ -302,6 +323,9 @@ uv run pre-commit run --all-files
 # id pattern matches 115b4 and 111b as well as plain 3-digit ids.
 # Verified 2026-08-28: prints the 9 known dangling paths now, nothing after D1,
 # and proven to flag an injected fake path.
-git grep -hoE "docs/plans/(archive/)?[0-9]{3}[a-z]?[0-9]?-[a-z0-9-]+\.md" -- . \
+# ':!' excludes THIS plan: its D table names the broken paths on purpose, so
+# including it would keep the gate red forever.
+git grep -hoE "docs/plans/(archive/)?[0-9]{3}[a-z]?[0-9]?-[a-z0-9-]+\.md" \
+  -- . ':!docs/plans/212-*' \
   | sort -u | while read -r pth; do [ -f "$pth" ] || echo "DANGLING: $pth"; done
 ```
