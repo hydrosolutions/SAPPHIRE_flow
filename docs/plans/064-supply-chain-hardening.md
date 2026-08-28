@@ -1,6 +1,14 @@
 # Plan 064 — Supply-chain hardening
 
-**Status**: READY
+**Status**: PARTIAL — ~90% shipped, NOT outstanding as this header implied until 2026-08-28.
+Verified during the Plan 206 drift audit and re-checked in the stale-status audit:
+B0 `build-image` job **done** (as `build-image-and-scan`), B3 `trivy image` scan **done**,
+D3 SHA-pinned actions **done** (17 of 17). The **e2e tier was never built** — 0 jobs.
+Full-pipeline coverage today is the `@pytest.mark.slow` `test_full_pipeline`
+(`tests/integration/test_e2e_pipeline.py`), run nightly. Reading this plan as fully
+outstanding is what Plan 206 flagged as "worth someone's attention"; that is now fixed.
+**Remaining scope = the e2e tier only**, and Plan 064 gates it on the image build/scan path
+alone (`:245`, `:286`) — NOT on `[unit, integration, build-image-and-scan]`.
 **Date**: 2026-04-20
 **Depends on**: none (independent of Plan 046 staging validation and Plan 054
 doc sweep; coordinates with both via shared files — `docker-compose.yml`,

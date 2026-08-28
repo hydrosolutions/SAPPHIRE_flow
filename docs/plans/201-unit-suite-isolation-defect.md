@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-27
 plan: 201
 title: 13 unit tests fail in a sequential run and CI cannot see it
