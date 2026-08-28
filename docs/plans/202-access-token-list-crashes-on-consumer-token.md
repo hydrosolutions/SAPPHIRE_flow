@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-27
 plan: 202
 title: `access_tokens list` crashes on any consumer token
