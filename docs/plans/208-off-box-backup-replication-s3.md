@@ -92,25 +92,44 @@ Separation on S3 is **architectural, not probeable** — S3 is off-instance by c
 is nothing to verify about separation and everything to verify about *arrival*. Do not build a
 predicate that pretends otherwise.
 
-## Decisions to make (the grill-me)
+## ✅ Decisions — RESOLVED by the owner 2026-08-28
 
-These are genuine forks the owner should settle before this goes READY:
+- **D1 — the mini does NOT replicate. RESOLVED: feature-off.** No sink configured on staging → the
+  replication step is skipped, and its absence is **not** an alert condition (a host with no sink is
+  correctly configured, not degraded). *Accepted consequence, stated rather than hidden:* the sink
+  code therefore ships having never run against a live destination, which is exactly how Plan 194's
+  guard came to be written against a condition nobody had observed. T2/T3 must be exercised against a
+  local MinIO or `moto` fake in tests, and the AWS cutover is the first real execution — treat that
+  cutover as the verification step, not a formality.
+- **D2 — off-box retention: an S3 LIFECYCLE POLICY, set outside this repo.** Not mirrored
+  `keep_count`, not repo code. Local retention is unchanged.
+- **D3 — credential: the INSTANCE/TASK ROLE via botocore's default chain. No credential in the repo.**
+  *(Owner delegated this choice.)* Reasoning:
+  1. **Nothing to rotate or leak.** The `secrets/` convention exists for values that must be files
+     (DB passwords, the Slack webhook). A long-lived AWS key would add another rotatable secret to a
+     host that already had a credential-rotation incident this month; a role has no such object.
+  2. **No code difference and no new config surface.** `botocore` is already present transitively via
+     `s3fs` (`pyproject.toml:48`, Plan 183), and its default credential chain resolves an instance or
+     ECS task role with no arguments. Dev/CI point the same code at MinIO/`moto` through standard
+     `AWS_*`/endpoint env vars. So this is a *deployment* decision, not a field in `config.toml` —
+     which keeps it inside this plan's proportionality guard.
+  3. **Write-only is enforceable, and D2 makes it free.** Grant `s3:PutObject` **only** — no
+     `s3:DeleteObject`. Expiry is the lifecycle policy, which AWS executes as its own principal, so
+     retention still works while our role never holds delete. A compromised host can add backups; it
+     cannot erase history.
+  4. **The role belongs to `prefect-worker-backup`** — already the only container holding a backup
+     credential (162 D2), so the blast radius does not widen.
 
-- **D1 — does the mini replicate at all?** It has no second drive and its sink would be the same
-  disk. Options: (a) feature-off on the mini (no sink configured → skip, no alert), (b) the mini
-  replicates to S3 too, giving real off-box backup for staging today. (b) costs an AWS credential on
-  a staging host; (a) leaves staging unproven until the AWS cutover, which is exactly how Plan 194's
-  guard came to be built against a condition nobody had ever seen.
-- **D2 — retention off-box.** Local retention is `keep_count` (162). Does S3 mirror it, keep more, or
-  defer to an S3 lifecycle policy set outside this repo? A lifecycle policy is the smaller answer.
-- **D3 — credential shape on AWS.** Instance role vs static key in `secrets/`. The watchdog and
-  backup worker are separate processes with different privileges today; say which holds the write
-  credential, and confirm it is write-only (no delete) so a compromised host cannot erase history.
-- **D4 — does a failed replication block or warn?** The dump itself already succeeded and is on local
-  disk. Failing the flow would turn a replication outage into a backup outage. Warn-and-latch mirrors
-  what Plans 194/195 do for every other condition, and is the likely answer.
+  ⚠️ **Concrete deployment gotcha to carry into the AWS work:** on EC2 with Docker, a container
+  reaching IMDSv2 needs the instance's metadata hop limit set to **2**
+  (`--http-put-response-hop-limit 2`). At the default of 1 the credential chain fails *inside* the
+  container while working fine on the host — a silent, host-only-reproducible failure. ECS/Fargate
+  task roles avoid this entirely and are the better landing spot if the AWS design allows.
+- **D4 — a failed replication WARNS, never blocks. RESOLVED.** The dump has already succeeded and is
+  on local disk; failing the flow would convert a replication outage into a backup outage. Same
+  transition-latched shape as the four existing watchdog conditions.
 
-## Sketch of the work (three tasks, pending the decisions above)
+## Tasks
 
 ### T1 — encrypt at publication (162 D5, Phase B)
 `age` encryption as part of the atomic publish, so the artifact is safe before anything moves it.
