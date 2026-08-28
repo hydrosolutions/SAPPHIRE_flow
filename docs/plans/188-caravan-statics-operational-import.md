@@ -12,6 +12,30 @@ supersedes: []
 
 # Plan 188 — run the Caravan statics import for real
 
+## Status — T1-T3 MERGED 2026-08-28; **T4 NOT RUN**. Do not archive this plan.
+
+| task | state | evidence |
+|---|---|---|
+| **T1** operator CLI | ✅ **MERGED** | PR #217, `a8b83bb` — `scripts/import_caravan_attributes.py` |
+| **T2** provenance placeholder rename | ✅ **MERGED** | same PR |
+| **T3** `replace_namespaced_attributes` | ✅ **MERGED** | same PR — `store/basin_store.py` |
+| **T4** run the import on the mini | ❌ **NOT RUN — owner-executed** | see § Scope of the automated implementation run |
+
+**The blocker this plan exists to remove is still in place.** Merging T1-T3 shipped the *entrypoint*;
+it did not import anything. Re-measured on the mac mini 2026-08-27: **0 basins carry a `caravan:`
+key**, `basin_static_packages` **0 rows**. `cmal_pool_pt` still resolves **none** of its ~50 statics
+there, and Plan 183 T3 still skips every basin. **T4 is the whole point and it has not happened.**
+
+*(This block exists because Plan 155 sat at a bare `READY` for two weeks after half of it merged,
+so it read as unstarted while its code was live. Same shape, recorded up front this time.)*
+
+**Landed alongside, from review of the merged diff:** the CLI no longer logs any part of
+`DATABASE_URL` (`split("@")[-1]` leaked a query-parameter password), and
+`require_real_transaction` now also refuses an engine-level
+`create_engine(..., isolation_level="AUTOCOMMIT")` — which passed both prior checks while the DBAPI
+committed every statement, voiding T3's row lock. Neither was reachable from a current caller; both
+are hardening.
+
 ## Status note (2026-08-18): RECONSTRUCTED after a `/plan` round inflated it
 
 The review round produced four genuinely valuable findings (folded below) and then tripled the plan
