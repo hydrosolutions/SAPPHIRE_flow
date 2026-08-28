@@ -347,16 +347,40 @@ Kirtipur/Khumaltar gauge-pair diagnostic (that needs the M-A3 mask, so it moved 
 ### M-A5b · IMERG acquisition + extraction
 **Depends: M-D2.** Mirrors M-A4 → M-A5 for IMERG: acquisition (half-hourly, mm/hr rate convention,
 aggregate to hourly — none of ERA5-Land's deaccumulation logic transfers) then point extraction at the
-26 station locations, using **IMERG Final** (characterisation, not the D4 adjudication role that
-required satellite-only independence — our track dropped adjudication when wholesale zero-run removal
-was chosen). Record the product version and the same grid/elevation diagnostics as M-A5's ERA5-Land
-side. Split from M-A5 by Plan 174 (2026-08-16): the milestone doc previously named this "nearly free
-once the extraction pipeline exists," which undercounted a distinct acquisition shape (see M-A5
-above). No plan has been written for this milestone yet.
+26 station locations. Record the product version and the same grid/elevation diagnostics as M-A5's
+ERA5-Land side. Split from M-A5 by Plan 174 (2026-08-16): the milestone doc previously named this
+"nearly free once the extraction pipeline exists," which undercounted a distinct acquisition shape
+(see M-A5 above).
 
-**Exit:** extracted IMERG series + named operator + per-station elevation mismatch table + the
-operator-sensitivity comparison, all regenerable from the committed pipeline — the same shape as
-M-A5's exit, for IMERG.
+**⛔ SUPERSEDED 2026-08-28 (Plan 211, on two points the milestone text originally got wrong):**
+
+1. **Final → Early.** This section originally specified **IMERG Final**. The owner decided
+   (Plan 209 D7, confirmed at Plan 211 READY) that the operational question is about **IMERG Early**
+   (~4 h latency): Final has ~3.5-month latency and is the one run that can never serve an operational
+   role, so a characterisation built on it would answer a question we do not have. Plan 211 acquires and
+   extracts **Early V07**, not Final, and the manifest records the run as **RETROSPECTIVE** (a
+   retrospectively downloaded Early bundle can contain inputs unavailable in live operation, so any
+   later skill number derived from it may overstate live Early performance).
+2. **No elevation-mismatch table.** ERA5-Land's table quantifies **model**-versus-station mismatch,
+   which is what D14's lapse correction consumes; IMERG is a satellite retrieval with no model surface,
+   so a "mismatch" here has no consumer. Plan 211 D6 instead records, per station, the selected cell's
+   centre lat/lon and the station's own elevation (vertical datum `UNKNOWN`) — never grid indices, and
+   never a DEM-derived comparison (adding a public DEM was out of scope for an acquisition milestone).
+
+**Plan 211 T1 (acquisition) is COMPLETE up to its own projection gate** (2026-08-28): the pipeline
+(`scripts/dhm_precip/imerg_acquire.py`, `scripts/dhm_precip/imerg_extract.py`) is built and unit-tested
+no-network; exactly one granule was downloaded from the live GES DISC archive as the D1 contract probe,
+freezing the read contract. **⛔ That probe found the live archive serving revision `V07C`, not the
+`V07B` Plan 211 D1 pinned** (both measured the same day) — an open residual risk for the owner, not
+resolved unilaterally; see Plan 211's implementation report. **The bulk retrieval (105,216 granules,
+projected ~848 GB against 896 GB free) was NOT performed** — Plan 211's per-run scope stops at the
+projection gate; bulk retrieval is the owner's call.
+
+**Exit:** extracted IMERG **Early** series + named operator + the per-station cell-centre/elevation
+record above (no DEM mismatch table) + the operator-sensitivity comparison + the manifest marked
+**RETROSPECTIVE**, all regenerable from the committed pipeline — the same shape as M-A5's exit, for
+IMERG Early. **Not yet met**: the bulk retrieval and the resulting published bundle are still pending
+the owner's go-ahead on the disk projection above.
 
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC
