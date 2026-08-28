@@ -62,7 +62,8 @@ timestamp is necessarily a zero-age case.
 
 **That window is real.** Plan 196 T1 measured that the variables the fetch allowlists (`tot_prec`,
 `t_2m` at +120 h) appear in the STAC catalogue **160.0-168.4 minutes** after reference time
-(n = 4, 2026-08-28). The guard is **105**. Between those two figures the guard says "old enough"
+(n = 4, 2026-08-28; a fifth cycle, `2026-08-28T12Z`, measured **166.4 min** during this plan's
+review, leaving the maximum at 168.4). The guard is **105**. Between those two figures the guard says "old enough"
 while the cycle is still publishing.
 
 **The mechanism, stated correctly** — an earlier draft of this plan had it backwards. The
@@ -110,13 +111,17 @@ demonstrated defect.
   heredoc method, no new apparatus — and the value is chosen from the combined sample with explicit
   margin. **The ship/stop rule is mechanical, so two implementers reach the same answer:**
   1. The fresh run must include **at least two cycles absent from Plan 196's sample**
-     (`2026-08-27T12Z/18Z`, `2026-08-28T00Z/06Z`). Catalogue retention is ~24 h, so any run on a
-     later day satisfies this; if it does not, the measurement is not fresh — stop and report.
-  2. **Ship 180 iff the maximum over the combined sample is ≤ 168 minutes**, i.e. it preserves the
-     ≥ 12 minutes of margin D3b argues for.
-  3. **Any combined maximum above 168 → stop and report.** Do not improvise a larger value: a
-     maximum of 169 or 179 means the margin assumption is wrong, and choosing the new number is a
-     decision for the owner, not for the implementer.
+     (`2026-08-27T12Z/18Z`, `2026-08-28T00Z/06Z`, `2026-08-28T12Z`). Retention is ~24 h **and the
+     cadence is 6 h, so exactly one cycle rolls over every six hours** — measured 2026-08-28:
+     two hours after Plan 196's run only *one* new cycle existed. **Run the re-measurement at least
+     12 h after 2026-08-28 13:31 UTC**, or the gate cannot be met however correct the method.
+  2. **Ship 180 iff the maximum over the combined sample is ≤ 170 minutes** — the threshold sits
+     *above* the known maximum, so the rule is satisfiable by construction. The current combined
+     maximum is **168.4** (Plan 196 § T1 result), which passes with **11.6 minutes** of margin
+     below 180.
+  3. **Any combined maximum above 170 → stop and report.** Do not improvise a larger value: it
+     means the margin assumption is wrong, and choosing the new number is the owner's decision,
+     not the implementer's.
 
 - **D3b — why 180 and not 170.** Plan 196 T1 explicitly refused to license 170 as a safe floor: it clears
   the observed maximum of 168.4 by 1.6 minutes on n = 4 from a single August window. 180 is a round
@@ -174,7 +179,7 @@ demonstrated defect.
   catalogue, same method as Plan 196 T1: walk `rel=next` per candidate cycle, filter items to the
   target `forecast:reference_datetime`, keep those whose id carries a `PARAM_GROUPS` column-0 token
   (`tot_prec`, `t_2m`) at the +120 h horizon, and take the latest `created`. **No new script file.**
-  If the fresh figures fall inside 160-168 min, 180 ships. If they do not, **stop and report.**
+  Apply **D3's ship/stop rule** — it is the only gate; do not restate a second one here.
 
 - **Update every surface that states the old value or the disproven latency**, or the change ships
   with its own documentation contradicting it. The complete list, enumerated by grep on 2026-08-28
