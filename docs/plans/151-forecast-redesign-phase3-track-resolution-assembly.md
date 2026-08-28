@@ -11,6 +11,36 @@ supersedes: []
 
 # Plan 151 — Forecast-cycle redesign Phase 3: track projection + per-track resolution + per-assignment assembly
 
+## T8b — MERGED 2026-08-28 (PR #227, v0.1.833), NOT YET DEPLOYED
+
+**The switch is landed.** T8b activates per-track dispatch for candidate-aware adapters on non-group
+stations — the first task in this plan to change production behaviour.
+
+It sat unpushed from 2026-08-26 and was rebased over 103 commits. Its stated exit gates all passed on
+the first attempt; the independent review was run anyway and returned **1 blocker + 3 majors**, every
+one verified against the code and real:
+
+- **Containment started too late.** Assembly ran for every eligible station in one pre-loop pass, so
+  one station's failed read aborted the cycle for all siblings. Round 1's containment covered only the
+  later forecast/persist arm. Fixed where the per-station reads actually happen; deployment-wide typed
+  errors still re-raise per D7/D31.
+- **`GatewayResolutionError` was missing from the fatal tuple** — a Recap deployment with an
+  unpopulated polygon table would have died with no `FORECAST_FRESHNESS` record.
+- **The cross-cycle golden could not fail.** Its premise was impossible (a second forecast binding on
+  a station that has exactly one). Rewritten to drive two tracks via differing model feature sets.
+- **A model declaring several supported time steps crashed the cycle.** **Owner ruling 2026-08-28:
+  skip that model for that station, continue the run.** This resolves the tension between D1/D2's
+  single-resolution assumption and `types-and-protocols.md`, which permits multi-valued declarations.
+
+Every fix is locked by a test proven to fail against the unfixed code. Gates at merge: sequential and
+parallel `tests/unit/` both 4756 passed / 0 failed, pyright 404 <= 432, ruff clean beyond the 12
+pre-existing alembic `E501`s.
+
+⚠️ **NOT deployed.** The mac mini still runs 0.1.806 and was deliberately left alone while station
+onboarding runs there. Its `pooled` setting is on MeteoSwiss, which stays on the legacy path, so T8b
+should be inert there — but this is the first behaviour-changing task in the plan, so **watch the
+first forecast cycle after the mini is next deployed** rather than assuming.
+
 ## Status
 **READY — Phase 3 of the forecast-cycle redesign** (owner-ratified 2026-08-11: D26 freshness cost accepted, D31 spec
 edit approved, D21 global sweep confirmed — **no open forks remained**).
