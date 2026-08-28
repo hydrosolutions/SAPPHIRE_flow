@@ -190,7 +190,7 @@ interaction, so if T2's fix is properly general it becomes a canary rather than 
 ## Non-goals
 
 Migrating off `structlog`, redesigning `docs/standards/logging.md`, changing what any of the 13 tests
-assert, touching the integration or nightly suites, and fixing unrelated pre-existing failures.
+assert, touching the integration suite *(the nightly workflow IS touched — T3 layer 3 adds one step there; this Non-goals line predates the ratified T3 decision and is corrected here rather than left to read as a violation)*, and fixing unrelated pre-existing failures.
 
 ## Exit gates
 
