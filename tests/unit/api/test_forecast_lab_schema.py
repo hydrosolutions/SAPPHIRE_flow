@@ -15,7 +15,7 @@ import pytest
 from sapphire_flow.api.forecast_lab_schemas import ForecastLabSnapshot
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_SCHEMA_PATH = _REPO_ROOT / "docs/spec/forecast-lab-snapshot-v1.schema.json"
+_SCHEMA_PATH = _REPO_ROOT / "docs/spec/forecast-lab-snapshot-v2.schema.json"
 _EXAMPLE_PATH = (
     _REPO_ROOT / "tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json"
 )
@@ -32,7 +32,7 @@ class TestCommittedSchemaMatchesModels:
         committed = _load_json(_SCHEMA_PATH)
         generated = ForecastLabSnapshot.model_json_schema()
         assert committed == generated, (
-            "docs/spec/forecast-lab-snapshot-v1.schema.json has drifted from "
+            "docs/spec/forecast-lab-snapshot-v2.schema.json has drifted from "
             "ForecastLabSnapshot.model_json_schema() — regenerate it (D15)"
         )
 
@@ -115,3 +115,52 @@ def _ensure_jsonschema_importable() -> None:
     # in this repo, but assert it explicitly so a missing dep fails with a
     # clear message rather than a confusing collection error downstream.
     import jsonschema  # noqa: F401
+
+
+class TestFixtureStationIdentityIsConsistent:
+    """Plan 204 T3 — a real BAFU code must never wear another station's
+    metadata (external finding, SAPPHIRE-flow-map agent, 2026-08-27: code
+    `2091` was paired with Chancy's name/coordinates). Locks the known-good
+    identity for every code the fixture uses, so this cannot silently
+    regress on the next regeneration."""
+
+    _KNOWN_STATION_IDENTITIES = {
+        "2009": {
+            "name": "Porte_du_Scex",
+            "longitude": 6.89,
+            "latitude": 46.35,
+            "basin_area_km2": 5239.4,
+        },
+        "2091": {
+            "name": "Rheinfelden-Messstation",
+            "longitude": 7.8,
+            "latitude": 47.56,
+            "basin_area_km2": 34479.4,
+        },
+    }
+
+    def test_fixture_uses_exactly_the_known_station_codes(self) -> None:
+        # A silent skip on an unrecognised code would let the regeneration
+        # swap in a different, unmapped real code (or restore 2091's
+        # incorrect data under a code this test never learns about)
+        # without failing anything below.
+        example = _load_json(_EXAMPLE_PATH)
+        fixture_codes = {station["station"]["code"] for station in example["stations"]}
+        assert fixture_codes == set(self._KNOWN_STATION_IDENTITIES)
+
+    def test_fixture_station_codes_and_names_are_mutually_consistent(self) -> None:
+        example = _load_json(_EXAMPLE_PATH)
+        for station in example["stations"]:
+            code = station["station"]["code"]
+            expected = self._KNOWN_STATION_IDENTITIES[code]
+            assert station["station"]["name"] == expected["name"], (
+                f"station {code} carries {station['station']['name']!r}, "
+                f"expected {expected['name']!r}"
+            )
+            assert station["station"]["location"]["longitude"] == expected["longitude"]
+            assert station["station"]["location"]["latitude"] == expected["latitude"]
+            assert station["station"]["basin_area_km2"] == expected["basin_area_km2"], (
+                f"station {code} carries basin_area_km2="
+                f"{station['station']['basin_area_km2']!r}, "
+                f"expected {expected['basin_area_km2']!r}"
+            )

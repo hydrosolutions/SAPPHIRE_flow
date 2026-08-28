@@ -16,7 +16,7 @@ this module never queries `hindcast_forecasts`, `hindcast_values` or
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import polars as pl
@@ -30,6 +30,10 @@ from sapphire_flow.api.forecast_lab_schemas import (
     AvailabilitySchema,
     BafuForecastAvailableSchema,
     BafuForecastUnavailableSchema,
+    CombinedForecastAvailableSchema,
+    CombinedForecastMembersSchema,
+    CombinedForecastQuantilesSchema,
+    CombinedForecastUnavailableSchema,
     ComparisonSemanticsSchema,
     ForecastLabSnapshot,
     GeoCoordSchema,
@@ -37,6 +41,8 @@ from sapphire_flow.api.forecast_lab_schemas import (
     ObservationsSectionSchema,
     QuantileEnvelopeSchema,
     SapphireForecastAvailableSchema,
+    SapphireForecastMembersSchema,
+    SapphireForecastQuantilesSchema,
     SapphireForecastUnavailableSchema,
     SapphireModelRefSchema,
     SapphireModelSchema,
@@ -60,12 +66,18 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_observation_window,
 )
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import EnsembleRepresentation
+from sapphire_flow.types.enums import EnsembleRepresentation, ModelCombinationStrategy
+from sapphire_flow.types.ids import BMA_MODEL_ID, POOLED_MODEL_ID
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
     from pathlib import Path
 
+    from sapphire_flow.api.forecast_lab_schemas import (
+        CombinedForecastEntry,
+        SapphireForecastEntry,
+    )
     from sapphire_flow.services.forecast_lab.db_sources import ForecastLabStores
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast import OperationalForecast
@@ -74,6 +86,23 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+
+class _RenderedSapphireSource(Protocol):
+    """Plan 204 T1 — the structural shape the four derived views actually
+    read (`_days_covered`, `_aligned_sapphire`, `_aligned_daily_comparison`,
+    the roll-up filter). Both a per-model available entry and the combined
+    forecast satisfy this — the combined variants carry `model_key`, not
+    `model.key`, which is why this is a Protocol rather than a shared base
+    class. `datetime`, NOT `UtcDatetime` (a distinct NewType): a Protocol's
+    attributes are invariant, and `SapphireForecastAvailableSchema.issued_at`
+    is statically `datetime` (`Rfc3339Utc` erases to `Annotated[datetime,
+    ...]`), so `UtcDatetime` here would reject every implementer under
+    pyright strict."""
+
+    issued_at: datetime
+    points: list[QuantileEnvelopeSchema]
+
+
 # D14/T3 — comparison_semantics constants (F8/D5).
 _BAFU_DAILY_COMPLETENESS_MIN_HOURS = 22
 _OBSERVATION_DAILY_COMPLETENESS_MIN_SAMPLES = 130
@@ -81,12 +110,24 @@ _OBSERVATION_NATIVE_STEP_SECONDS = 600  # F8 — 10-minute grid
 _DEFAULT_OBSERVATION_HOURS = 168
 
 # D3/O7.1 — the verification sentinel is a static constant, never computed.
+# Version-neutral on purpose (Plan 204 T3): this sentence is about the
+# Plan 111 gate, not the document version, so it should not need touching at
+# every schema_version bump.
 _VERIFICATION_LIMITATIONS = (
-    "Verification is not computed in v1 (Plan 111 gate G1 — no "
+    "Verification is not computed in this release (Plan 111 gate G1 — no "
     "BAFU-derived benchmark before licence clarity).",
     "Only two operational SAPPHIRE stations.",
     "Short comparison period.",
 )
+
+# Plan 204 T2 — the RECOGNISED-SET RULE: the exact stored quantile level set
+# this deployment's fallback-tier models emit. A QUANTILES forecast is
+# rendered only when EVERY `valid_time` carries exactly these seven levels
+# (no missing level, no duplicate row) — anything else keeps the D5 guard.
+# `min_operational_quantile_levels` (config/deployment.py) is a COUNT FLOOR,
+# not a value-set constraint, and does NOT support this exactness — a
+# legitimately onboarded 9-level model still fails this check.
+_RECOGNISED_QUANTILE_LEVELS = frozenset({0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95})
 
 
 def _verification_sentinel() -> VerificationSchema:
@@ -220,6 +261,64 @@ def _ensemble_points(ensemble_values: pl.DataFrame) -> list[QuantileEnvelopeSche
     return points
 
 
+def _is_renderable(forecast: OperationalForecast) -> bool:
+    """Plan 204 T2 — the ONE shared predicate for "can this forecast be
+    rendered": MEMBERS always is; QUANTILES is renderable only when every
+    `valid_time` carries EXACTLY the RECOGNISED-SET RULE's seven levels (no
+    missing level, no duplicate row). Called from BOTH the primary pre-pass
+    and the per-entry render decision in `_sapphire_entries` — a required
+    implementation constraint, not a convenience: a second, independently
+    written check here is exactly the drift the plan warns against."""
+    if forecast.representation is EnsembleRepresentation.MEMBERS:
+        return True
+    if forecast.representation is not EnsembleRepresentation.QUANTILES:
+        return False
+    values = forecast.ensemble.values
+    for vt in values["valid_time"].unique().to_list():
+        levels: list[float] = values.filter(pl.col("valid_time") == vt)[
+            "quantile"
+        ].to_list()
+        # Row-count-plus-uniqueness (not set-equality alone): a duplicate
+        # `0.25` row alongside the full seven-level set satisfies set
+        # equality while leaving two candidate values for `p25`.
+        if len(levels) != len(_RECOGNISED_QUANTILE_LEVELS):
+            return False
+        if set(levels) != set(_RECOGNISED_QUANTILE_LEVELS):
+            return False
+    return True
+
+
+def _quantile_level_value(frame: pl.DataFrame, level: float) -> float | None:
+    matches = frame.filter(pl.col("quantile") == level)["value"]
+    return None if matches.is_empty() else float(matches[0])
+
+
+def _quantile_envelope_points(
+    ensemble_values: pl.DataFrame,
+) -> list[QuantileEnvelopeSchema]:
+    """Plan 204 T2 — a QUANTILES forecast's envelope is an EXACT lookup of
+    the stored `0.25`/`0.50`/`0.75` levels, never `_quantile_summary`'s
+    order-statistic path. `minimum`/`maximum` are always `null` (owner
+    decision, option (a)): a 7-level quantile forecast does not contain the
+    ensemble extremes, and fabricating them from `0.05`/`0.95` is exactly
+    the error D5's guard exists to prevent."""
+    valid_times = sorted(ensemble_values["valid_time"].unique().to_list())
+    points: list[QuantileEnvelopeSchema] = []
+    for vt in valid_times:
+        frame = ensemble_values.filter(pl.col("valid_time") == vt)
+        points.append(
+            QuantileEnvelopeSchema(
+                valid_time=ensure_utc(vt),
+                minimum=None,
+                p25=_quantile_level_value(frame, 0.25),
+                median=_quantile_level_value(frame, 0.50),
+                p75=_quantile_level_value(frame, 0.75),
+                maximum=None,
+            )
+        )
+    return points
+
+
 def _display_name(stores: ForecastLabStores, model_id: ModelId) -> str:
     record = fetch_model_display(stores, model_id)
     if record is not None:
@@ -229,29 +328,24 @@ def _display_name(stores: ForecastLabStores, model_id: ModelId) -> str:
 
 def _sapphire_entries(
     stores: ForecastLabStores, station: StationConfig
-) -> list[SapphireForecastAvailableSchema | SapphireForecastUnavailableSchema]:
-    """D12/D17b/D19/D5/D20 — one entry per ACTIVE assignment, pre-sorted
-    `(priority asc, model_id asc)` by `fetch_active_model_assignments`. The
-    first entry whose forecast is available (representation MEMBERS) wins
-    `is_primary` — a model that cannot be summarised or has no forecast
-    can never win it."""
+) -> list[SapphireForecastEntry]:
+    """D12/D17b/D19/D5/D20, extended by Plan 204 T2 — one entry per ACTIVE
+    assignment, pre-sorted `(priority asc, model_id asc)` by
+    `fetch_active_model_assignments`. The first entry this builder actually
+    RENDERS (`_is_renderable` — members, or a recognised quantile set) wins
+    `is_primary`; a model that cannot be rendered or has no forecast can
+    never win it."""
     assignments = fetch_active_model_assignments(stores, station.id)
     fetched: list[tuple[ModelAssignment, OperationalForecast | None]] = [
         (a, fetch_latest_forecast_for_model(stores, station.id, a.model_id))
         for a in assignments
     ]
     primary_model_id = next(
-        (
-            a.model_id
-            for a, f in fetched
-            if f is not None and f.representation is EnsembleRepresentation.MEMBERS
-        ),
+        (a.model_id for a, f in fetched if f is not None and _is_renderable(f)),
         None,
     )
 
-    entries: list[
-        SapphireForecastAvailableSchema | SapphireForecastUnavailableSchema
-    ] = []
+    entries: list[SapphireForecastEntry] = []
     for assignment, forecast in fetched:
         model_id = assignment.model_id
         if forecast is None:
@@ -262,7 +356,7 @@ def _sapphire_entries(
                 )
             )
             continue
-        if forecast.representation is not EnsembleRepresentation.MEMBERS:
+        if not _is_renderable(forecast):
             entries.append(
                 SapphireForecastUnavailableSchema(
                     model=SapphireModelRefSchema(key=str(model_id)),
@@ -272,31 +366,168 @@ def _sapphire_entries(
             continue
 
         ensemble = forecast.ensemble
-        points = _ensemble_points(ensemble.values)
         artifact_info = fetch_artifact_info(stores, forecast.model_artifact_id)
-        entries.append(
-            SapphireForecastAvailableSchema(
-                forecast_id=str(forecast.id),
-                model=SapphireModelSchema(
-                    key=str(model_id),
-                    display_name=_display_name(stores, model_id),
-                    artifact_id=str(forecast.model_artifact_id)
-                    if forecast.model_artifact_id
-                    else None,
-                    artifact_sha256=artifact_info.artifact_sha256,
-                    code_or_image_version=artifact_info.source_commit,
-                    is_primary=model_id == primary_model_id,
-                ),
-                issued_at=forecast.issued_at,
-                observation_staleness_hours=forecast.observation_staleness_hours,
-                native_step_seconds=int(ensemble.time_step.total_seconds()),
-                ensemble_size=ensemble.member_count,
-                horizon_start=points[0].valid_time,
-                horizon_end=points[-1].valid_time,
-                points=points,
-            )
+        model_schema = SapphireModelSchema(
+            key=str(model_id),
+            display_name=_display_name(stores, model_id),
+            artifact_id=str(forecast.model_artifact_id)
+            if forecast.model_artifact_id
+            else None,
+            artifact_sha256=artifact_info.artifact_sha256,
+            code_or_image_version=artifact_info.source_commit,
+            is_primary=model_id == primary_model_id,
         )
+        if forecast.representation is EnsembleRepresentation.MEMBERS:
+            points = _ensemble_points(ensemble.values)
+            entries.append(
+                SapphireForecastMembersSchema(
+                    forecast_id=str(forecast.id),
+                    model=model_schema,
+                    issued_at=forecast.issued_at,
+                    observation_staleness_hours=forecast.observation_staleness_hours,
+                    native_step_seconds=int(ensemble.time_step.total_seconds()),
+                    ensemble_size=ensemble.member_count,
+                    horizon_start=points[0].valid_time,
+                    horizon_end=points[-1].valid_time,
+                    points=points,
+                )
+            )
+        else:  # QUANTILES — `_is_renderable` already proved the recognised set.
+            points = _quantile_envelope_points(ensemble.values)
+            entries.append(
+                SapphireForecastQuantilesSchema(
+                    forecast_id=str(forecast.id),
+                    model=model_schema,
+                    issued_at=forecast.issued_at,
+                    observation_staleness_hours=forecast.observation_staleness_hours,
+                    native_step_seconds=int(ensemble.time_step.total_seconds()),
+                    quantile_level_count=ensemble.member_count,
+                    horizon_start=points[0].valid_time,
+                    horizon_end=points[-1].valid_time,
+                    points=points,
+                )
+            )
     return entries
+
+
+def _build_combined_forecast(
+    stores: ForecastLabStores,
+    station: StationConfig,
+    *,
+    combination_strategy: ModelCombinationStrategy,
+) -> CombinedForecastEntry:
+    """Plan 204 T1, decision 3 — strategy-gated, never fetched
+    unconditionally: `ForecastStore.fetch_latest_forecast()` has no age or
+    current-mode constraint, so an unconditional fetch would keep exporting
+    a stale `_pooled` row forever after a `pooled` -> `primary` switch.
+    Dispatch is over the WHOLE enum (exhaustive `match`), never a `PRIMARY`
+    special case with an "everything else fetches `_pooled`" tail — that
+    shape would leak a stale `_pooled` row under `BMA`/`CONSENSUS`."""
+    match combination_strategy:
+        case ModelCombinationStrategy.PRIMARY:
+            return CombinedForecastUnavailableSchema(reason="strategy_primary")
+        case ModelCombinationStrategy.POOLED:
+            model_id = POOLED_MODEL_ID
+        case ModelCombinationStrategy.BMA:
+            model_id = BMA_MODEL_ID
+        case ModelCombinationStrategy.CONSENSUS:
+            # Unsupported (the cycle raises NotImplementedError for it, and
+            # `_consensus` is never written) — no query is issued. This is
+            # an implementation note, not an observable requirement: "no
+            # fetch" and "fetch then discard" are indistinguishable in the
+            # document, so it is deliberately not tested.
+            return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
+
+    forecast = fetch_latest_forecast_for_model(stores, station.id, model_id)
+    if forecast is None:
+        return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
+
+    # The SAME `_is_renderable` predicate the per-model path uses (T2). The
+    # combined block is not exempt: a QUANTILES combination whose levels are
+    # not the RECOGNISED SET would otherwise reach
+    # `_quantile_envelope_points()` directly and export `available: true`
+    # with `null` quartiles, while daily alignment still marked it
+    # `complete: true` — precisely the mislabelling D5's guard exists to
+    # prevent, and precisely the drift `_is_renderable`'s docstring forbids.
+    # Unreachable while Plan 026 emits members; a latent trap the moment it
+    # does not.
+    if not _is_renderable(forecast):
+        return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
+
+    # Reproduces the persisted DB provenance exactly (AC4) — no independent
+    # claim about which model contributed to which parameter. Both fields
+    # are nullable in storage, but the combination writer
+    # (forecast_combination.py) always sets them on any row it writes for
+    # a `_pooled`/`_bma` model id, so a NULL here means the row is corrupt
+    # or was written by something other than the combination writer. Either
+    # way, substituting the requested strategy or an empty source list would
+    # silently fabricate lineage — fail loudly instead.
+    if forecast.combination_strategy is None or forecast.source_model_ids is None:
+        raise ValueError(
+            "combined forecast row is missing provenance: "
+            f"forecast_id={forecast.id} model_id={model_id} "
+            f"combination_strategy={forecast.combination_strategy!r} "
+            f"source_model_ids={forecast.source_model_ids!r}"
+        )
+    combination_strategy_value = forecast.combination_strategy
+    source_model_ids = [str(m) for m in forecast.source_model_ids]
+    ensemble = forecast.ensemble
+
+    if forecast.representation is EnsembleRepresentation.MEMBERS:
+        points = _ensemble_points(ensemble.values)
+        return CombinedForecastMembersSchema(
+            forecast_id=str(forecast.id),
+            model_key=str(model_id),
+            combination_strategy=combination_strategy_value,
+            source_model_ids=source_model_ids,
+            issued_at=forecast.issued_at,
+            observation_staleness_hours=forecast.observation_staleness_hours,
+            native_step_seconds=int(ensemble.time_step.total_seconds()),
+            ensemble_size=ensemble.member_count,
+            horizon_start=points[0].valid_time,
+            horizon_end=points[-1].valid_time,
+            points=points,
+        )
+    # QUANTILES — not reachable today (Plan 026 combination emits members).
+    # `_is_renderable` above has already proved the RECOGNISED SET, exactly
+    # as it does for the per-model entry (T2), so neither the type nor the
+    # validation can drift between the two paths.
+    quantile_points = _quantile_envelope_points(ensemble.values)
+    return CombinedForecastQuantilesSchema(
+        forecast_id=str(forecast.id),
+        model_key=str(model_id),
+        combination_strategy=combination_strategy_value,
+        source_model_ids=source_model_ids,
+        issued_at=forecast.issued_at,
+        observation_staleness_hours=forecast.observation_staleness_hours,
+        native_step_seconds=int(ensemble.time_step.total_seconds()),
+        quantile_level_count=ensemble.member_count,
+        horizon_start=quantile_points[0].valid_time,
+        horizon_end=quantile_points[-1].valid_time,
+        points=quantile_points,
+    )
+
+
+def _rendered_sapphire_sources(
+    sapphire_entries: list[SapphireForecastEntry],
+    combined_entry: CombinedForecastEntry,
+) -> list[tuple[str, _RenderedSapphireSource]]:
+    """Plan 204 T1 — the ONE shared "rendered SAPPHIRE sources" list: the
+    available `sapphire_entries` plus, when present, the combined block
+    under its sentinel key (`model_key`). `_days_covered`,
+    `_aligned_sapphire`, `_aligned_daily_comparison` and the roll-up filter
+    in `build_snapshot` all consume THIS list — no view may filter
+    `sapphire_entries` for availability on its own, or a fifth derived view
+    added later forgets the combined block, which has already happened once
+    in this plan's drafting."""
+    sources: list[tuple[str, _RenderedSapphireSource]] = [
+        (e.model.key, e)
+        for e in sapphire_entries
+        if isinstance(e, SapphireForecastAvailableSchema)
+    ]
+    if isinstance(combined_entry, CombinedForecastAvailableSchema):
+        sources.append((combined_entry.model_key, combined_entry))
+    return sources
 
 
 def _day_bounds(day_start: UtcDatetime) -> UtcDatetime:
@@ -305,13 +536,12 @@ def _day_bounds(day_start: UtcDatetime) -> UtcDatetime:
 
 def _days_covered(
     bafu_entry: BafuForecastAvailableSchema | BafuForecastUnavailableSchema,
-    sapphire_entries: list[
-        SapphireForecastAvailableSchema | SapphireForecastUnavailableSchema
-    ],
+    sapphire_sources: list[tuple[str, _RenderedSapphireSource]],
 ) -> list[UtcDatetime]:
-    """D4 — the union of UTC days spanned by the available BAFU run and
-    every available SAPPHIRE forecast's horizon. Empty when neither source
-    has an available run for this station."""
+    """D4, extended by Plan 204 T1 — the union of UTC days spanned by the
+    available BAFU run and every rendered SAPPHIRE source's horizon
+    (per-model entries plus the combined block). Empty when no source has
+    an available run for this station."""
     days: set[UtcDatetime] = set()
     if isinstance(bafu_entry, BafuForecastAvailableSchema):
         for p in bafu_entry.points:
@@ -320,14 +550,13 @@ def _days_covered(
                     p.valid_time.replace(hour=0, minute=0, second=0, microsecond=0)
                 )
             )
-    for entry in sapphire_entries:
-        if isinstance(entry, SapphireForecastAvailableSchema):
-            for p in entry.points:
-                days.add(
-                    ensure_utc(
-                        p.valid_time.replace(hour=0, minute=0, second=0, microsecond=0)
-                    )
+    for _key, source in sapphire_sources:
+        for p in source.points:
+            days.add(
+                ensure_utc(
+                    p.valid_time.replace(hour=0, minute=0, second=0, microsecond=0)
                 )
+            )
     return sorted(days)
 
 
@@ -390,18 +619,18 @@ def _aligned_bafu(
 
 
 def _aligned_sapphire(
-    sapphire_entries: list[
-        SapphireForecastAvailableSchema | SapphireForecastUnavailableSchema
-    ],
+    sapphire_sources: list[tuple[str, _RenderedSapphireSource]],
     *,
     day_start: UtcDatetime,
     day_end: UtcDatetime,
 ) -> dict[str, AlignedDailySapphireEntrySchema]:
+    """D4, extended by Plan 204 T1 — keyed by the render key (`model.key`
+    for an assigned model, the fetched sentinel for the combined block).
+    `AlignedDailySapphireEntrySchema` carries no per-model metadata, so
+    folding the combined block in costs nothing structurally."""
     result: dict[str, AlignedDailySapphireEntrySchema] = {}
-    for entry in sapphire_entries:
-        if not isinstance(entry, SapphireForecastAvailableSchema):
-            continue
-        day_points = [p for p in entry.points if day_start <= p.valid_time < day_end]
+    for key, source in sapphire_sources:
+        day_points = [p for p in source.points if day_start <= p.valid_time < day_end]
         if not day_points:
             continue
 
@@ -411,7 +640,7 @@ def _aligned_sapphire(
             values = [getattr(p, field) for p in pts if getattr(p, field) is not None]
             return float(np.mean(values)) if values else None
 
-        result[entry.model.key] = AlignedDailySapphireEntrySchema(
+        result[key] = AlignedDailySapphireEntrySchema(
             minimum=_mean("minimum"),
             p25=_mean("p25"),
             median=_mean("median"),
@@ -425,12 +654,10 @@ def _aligned_sapphire(
 def _aligned_daily_comparison(
     observations_section: ObservationsSectionSchema,
     bafu_entry: BafuForecastAvailableSchema | BafuForecastUnavailableSchema,
-    sapphire_entries: list[
-        SapphireForecastAvailableSchema | SapphireForecastUnavailableSchema
-    ],
+    sapphire_sources: list[tuple[str, _RenderedSapphireSource]],
 ) -> list[AlignedDailyRowSchema]:
     rows: list[AlignedDailyRowSchema] = []
-    for day_start in _days_covered(bafu_entry, sapphire_entries):
+    for day_start in _days_covered(bafu_entry, sapphire_sources):
         day_end = _day_bounds(day_start)
         rows.append(
             AlignedDailyRowSchema(
@@ -441,7 +668,7 @@ def _aligned_daily_comparison(
                 ),
                 bafu=_aligned_bafu(bafu_entry, day_start=day_start, day_end=day_end),
                 sapphire=_aligned_sapphire(
-                    sapphire_entries, day_start=day_start, day_end=day_end
+                    sapphire_sources, day_start=day_start, day_end=day_end
                 ),
             )
         )
@@ -491,14 +718,18 @@ def build_snapshot(
     stations: list[StationConfig],
     archive_base_path: Path | None,
     observation_hours: int = _DEFAULT_OBSERVATION_HOURS,
+    combination_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY,
     clock: Callable[[], UtcDatetime],
 ) -> ForecastLabSnapshot:
-    """D1 — the single assembly function. `stations` is the already
-    resolved (eligible + scoped, D8/D17) set the caller wants rendered;
-    this function does no HTTP, no scoping, and no station eligibility
-    filtering of its own. `clock` is injected (D20) — `generated_at` and
-    the `snapshot_id` derived from it are fully determined by it, never by
-    `datetime.now()`."""
+    """D1, extended by Plan 204 T1 — the single assembly function.
+    `stations` is the already resolved (eligible + scoped, D8/D17) set the
+    caller wants rendered; this function does no HTTP, no scoping, and no
+    station eligibility filtering of its own. `clock` is injected (D20) —
+    `generated_at` and the `snapshot_id` derived from it are fully
+    determined by it, never by `datetime.now()`. `combination_strategy`
+    defaults to `PRIMARY` — exactly the pre-Plan-204 behaviour (no combined
+    block) — but both real callers (the route, the CLI) inject the
+    deployment-configured value explicitly."""
     generated_at = ensure_utc(clock())
     data_cutoff_at = generated_at
     window_start = ensure_utc(generated_at - timedelta(hours=observation_hours))
@@ -520,15 +751,18 @@ def build_snapshot(
         )
         bafu_entry = _build_bafu_entry(archive_base_path, station, now=data_cutoff_at)
         sapphire_entries = _sapphire_entries(stores, station)
+        combined_entry = _build_combined_forecast(
+            stores, station, combination_strategy=combination_strategy
+        )
+        # The ONE shared "rendered SAPPHIRE sources" list (Plan 204 T1) —
+        # every derived view below consumes this, not `sapphire_entries`
+        # directly, so the combined block cannot be forgotten by a future
+        # view.
+        rendered_sources = _rendered_sapphire_sources(sapphire_entries, combined_entry)
 
         obs_available = len(observations_section.points) > 0
         bafu_available = isinstance(bafu_entry, BafuForecastAvailableSchema)
-        sapphire_available_entries = [
-            e
-            for e in sapphire_entries
-            if isinstance(e, SapphireForecastAvailableSchema)
-        ]
-        sapphire_available = len(sapphire_available_entries) > 0
+        sapphire_available = len(rendered_sources) > 0
 
         obs_flags.append(obs_available)
         if observations_section.latest_available_at is not None:
@@ -537,9 +771,9 @@ def build_snapshot(
         if isinstance(bafu_entry, BafuForecastAvailableSchema):
             bafu_times.append(ensure_utc(bafu_entry.issued_at))
         sapphire_flags.append(sapphire_available)
-        if sapphire_available_entries:
+        if rendered_sources:
             sapphire_times.append(
-                ensure_utc(max(e.issued_at for e in sapphire_available_entries))
+                ensure_utc(max(src.issued_at for _key, src in rendered_sources))
             )
 
         station_entries.append(
@@ -553,8 +787,9 @@ def build_snapshot(
                 observations=observations_section,
                 bafu_forecast=bafu_entry,
                 sapphire_forecasts=sapphire_entries,
+                combined_forecast=combined_entry,
                 aligned_daily_comparison=_aligned_daily_comparison(
-                    observations_section, bafu_entry, sapphire_entries
+                    observations_section, bafu_entry, rendered_sources
                 ),
                 verification=_verification_sentinel(),
             )
@@ -578,7 +813,7 @@ def build_snapshot(
         sapphire_forecasts=status_sapphire,
     )
 
-    snapshot_id = f"fls1-{generated_at.strftime('%Y%m%dT%H%M%SZ')}"
+    snapshot_id = f"fls2-{generated_at.strftime('%Y%m%dT%H%M%SZ')}"
 
     return ForecastLabSnapshot(
         snapshot_id=snapshot_id,

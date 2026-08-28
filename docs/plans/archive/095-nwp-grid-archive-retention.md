@@ -269,7 +269,7 @@ Protocol.
   cycle" and that retention must not prune a cycle P2 would reuse. That is
   **false**. Plan 090 P2 is a *STAC-probe precision refinement*
   ("terminal-valid-time STAC probe per variable/member for exact pre-download
-  coverage", `docs/plans/090-nwp-incomplete-cycle-selection.md:99-101`) — it
+  coverage", `docs/plans/archive/090-nwp-incomplete-cycle-selection.md:99-101`) — it
   introduces **no new zarr-load path** and no cycle cache. No
   retention/reuse-window reconciliation is required, and the earlier "open
   question 5" about reconciling those windows was based on a phantom coupling and

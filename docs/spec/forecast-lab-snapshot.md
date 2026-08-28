@@ -1,17 +1,25 @@
-# Forecast Lab snapshot (`forecast-lab-snapshot/v1`)
+# Forecast Lab snapshot (`forecast-lab-snapshot/v2`)
 
-**Plan 198.** One self-contained, versioned JSON document for the separate
-**SAPPHIRE-flow-map** project: BAFU observations, archived BAFU forecasts and
-SAPPHIRE forecasts at the operational BAFU stations, produced by exactly one
-code path (`services/forecast_lab/snapshot.py::build_snapshot()`) whether it
-is served over the REST route or written by the CLI export. See the plan doc
-(`docs/plans/198-forecast-lab-snapshot-export.md`) for the full design
-rationale (D1–D20) — this page is the consumer/operator-facing reference.
+**Plan 198, extended by Plan 204.** One self-contained, versioned JSON
+document for the separate **SAPPHIRE-flow-map** project: BAFU observations,
+archived BAFU forecasts and SAPPHIRE forecasts (per-model and, since Plan 204,
+the combined `_pooled`/`_bma` forecast) at the operational BAFU stations,
+produced by exactly one code path
+(`services/forecast_lab/snapshot.py::build_snapshot()`) whether it is served
+over the REST route or written by the CLI export. See the plan docs
+(`docs/plans/198-forecast-lab-snapshot-export.md`,
+`docs/plans/204-forecast-lab-quantile-models-and-pooled.md`) for the full
+design rationale — this page is the consumer/operator-facing reference.
+
+**`v2` is a breaking cutover, not a compatible addition** — every boundary
+model forbids unknown fields (`ForecastLabModel`'s `extra: "forbid"`), so a
+`v1` validator rejects a document carrying `combined_forecast` or the new
+per-entry `representation`. No `v1` document is served any more.
 
 ## Document shape
 
 The authoritative shape is the committed JSON Schema
-(`docs/spec/forecast-lab-snapshot-v1.schema.json`), generated from
+(`docs/spec/forecast-lab-snapshot-v2.schema.json`), generated from
 `api/forecast_lab_schemas.py::ForecastLabSnapshot` and checked, in CI, to
 never drift from the model (`tests/unit/api/test_forecast_lab_schema.py`,
 D15). A sanitized two-station example lives at
@@ -20,7 +28,7 @@ D15). A sanitized two-station example lives at
 Top level: `schema_version`, `snapshot_id`, `generated_at`, `data_cutoff_at`,
 `status` (per-source `ok|error|missing` plus an `overall` roll-up),
 `comparison_semantics`, `stations[]`. Per station: `station`, `availability`,
-`observations`, `bafu_forecast`, `sapphire_forecasts[]`,
+`observations`, `bafu_forecast`, `sapphire_forecasts[]`, `combined_forecast`,
 `aligned_daily_comparison[]`, `verification`.
 
 ## Timestamps
@@ -33,16 +41,109 @@ this implementation — there is no grid-truncation step).
 
 ## Quantile / ensemble summary method
 
-SAPPHIRE ensemble members are summarised as `minimum` (min member), `p25`,
+Every available SAPPHIRE entry (per-model or the combined block) carries a
+`representation` discriminator — `"members"` or `"quantiles"` — and the two
+representations are summarised by DIFFERENT rules. This split exists because
+a `QUANTILES` forecast's `ensemble_size`-shaped count is a LEVEL count, not a
+member count (the export never confuses the two: a `"members"` entry has a
+required `ensemble_size` and no `quantile_level_count`; a `"quantiles"` entry
+has a required `quantile_level_count` and no `ensemble_size` — the wrong
+pairing is not just untested, it is unrepresentable).
+
+**`representation: "members"` entries.** `minimum` (min member), `p25`,
 `median`, `p75` (linear-interpolated order statistics — matching
 `numpy.quantile(..., method="linear")` / `polars.quantile_cont`, surfaced
 explicitly as `comparison_semantics.sapphire_quantile_method: "linear"`) and
-`maximum` (max member). A forecast whose `representation` is `"quantiles"`
-rather than `"members"` is **not** relabelled — it is exported as an explicit
+`maximum` (max member). **`sapphire_quantile_method` describes ONLY this
+representation** — a `"quantiles"` entry's envelope is never run through this
+order-statistic path.
+
+**`representation: "quantiles"` entries.** The stored levels are looked up
+directly, never summarised: `p25`/`median`/`p75` are the EXACT stored
+`0.25`/`0.50`/`0.75` values. `minimum` and `maximum` are always `null` — the
+recognised 7-level set (below) does not contain the ensemble extremes, and a
+consumer must not read a `null` extreme as a data error or as zero.
+
+A `QUANTILES` forecast whose stored levels are **not** exactly
+`{0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95}` at **every** `valid_time` (the
+RECOGNISED-SET RULE — an exact match: wrong count, missing level, extra
+level, or a duplicate row at any timestep all disqualify the whole forecast)
+is **not** relabelled — it is exported as an explicit
 `sapphire_forecasts[].reason == "unsupported_representation"` unavailable
 entry, because outer stored quantile levels are not the same statistic as an
 ensemble-member summary and presenting them as such would be silently
-misleading (D5).
+misleading (D5). **This includes a legitimately onboarded model with more
+than seven levels** (e.g. nine): `min_operational_quantile_levels`
+(`config/deployment.py`) is a count FLOOR used elsewhere in the codebase
+(`>=`/`<` comparisons), not a value-set constraint, so clearing it does not
+make a forecast's level set recognised.
+
+**Known, deliberate omission — not free to reverse.** The envelope has no
+slot for the `0.05`/`0.10`/`0.90`/`0.95` levels a recognised quantile
+forecast also carries; the map shows a narrower band for these entries than
+the model actually emits. Accepted "for now, may change later" (owner
+decision) rather than extending the envelope. Adding `p05`/`p95` later is
+**not** an additive change: `QuantileEnvelopeSchema` forbids unknown fields,
+so it would require a `v3`, not a same-version edit.
+
+`is_primary` (on `sapphire_forecasts[].model`) considers BOTH
+representations: it is the first entry — in the assignment's
+`(priority, model_id)` order — that this builder actually RENDERS (members,
+or a recognised quantile set), never merely the first assignment with any
+forecast at all. A higher-priority candidate the builder renders unavailable
+can never win `is_primary`.
+
+## Combined forecast (`combined_forecast`) — Plan 204
+
+A sibling block on each station entry, **always present, discriminated on
+`available`** (mirrors the `bafu_forecast` union) — **not** a
+`sapphire_forecasts[]` entry, because that array is contractually "one entry
+per assigned model" and the deployment's combined (`_pooled`/`_bma`)
+forecast has no assignment row at all.
+
+**Strategy-gated, never fetched unconditionally.** The block reflects the
+deployment's *currently configured* `forecast_combination_strategy`
+(`config/deployment.py`), matched exhaustively:
+
+| strategy | `available` | `reason` (when `false`) | fetched row |
+|---|---|---|---|
+| `primary` | `false` | `"strategy_primary"` | none — no lookup at all |
+| `pooled` | `true`/`false` | `"no_combined_forecast"` | the `_pooled` sentinel |
+| `bma` | `true`/`false` | `"no_combined_forecast"` | the `_bma` sentinel (never `_pooled`) |
+| `consensus` | `false` | `"no_combined_forecast"` | none — unsupported, no lookup |
+
+`"no_combined_forecast"` means **"no exportable combined *discharge* forecast
+is available under the current strategy"** — not "no stored sentinel row
+exists at all". Under `pooled`/`bma` it means the lookup ran (filtered to
+`parameter="discharge"`) and returned nothing; a combined row for a *different*
+parameter may still exist. Under `consensus` it is a static verdict — no
+query is issued (the forecast cycle raises `NotImplementedError` for
+`consensus` today, so no row could exist regardless).
+
+The block follows the same "latest available run from each source" rule
+every other block in this document uses: once *any* combined discharge row
+exists, a later cycle that produces none still shows the previous run rather
+than going empty. Current-cycle matching is not implemented.
+
+**Shape when available:** `representation` (`"members"`/`"quantiles"`,
+same nested-discriminated split as `sapphire_forecasts[]`), `forecast_id`,
+`model_key` (the sentinel actually fetched — `"_pooled"` or `"_bma"`),
+`combination_strategy` and `source_model_ids` **reproduced exactly from the
+persisted DB row** — the export makes no independent claim about which model
+contributed to which parameter — plus the usual `variable`/`unit`/
+`issued_at`/`observation_staleness_hours`/`native_step_seconds`/
+`horizon_start`/`horizon_end`/`points`. No `qc_status` field: the `_pooled`
+row is `raw` while individual forecasts are `qc_passed`, and whether that is
+correct by design or a Plan 026 gap is unresolved — an absent field is
+honest, a `"raw"` a consumer cannot interpret is not.
+
+**Rolls up like any other rendered SAPPHIRE source.** A rendered combined
+forecast counts toward `stations[].availability.sapphire_forecast`, the
+document-level `status.sapphire_forecasts` source status and
+`latest_available_at`, and joins `aligned_daily_comparison[].sapphire` under
+its fetched sentinel key — including on a station whose assigned models
+produced nothing renderable, where the combined block is the *only* SAPPHIRE
+forecast present.
 
 ## BAFU trace normalization — read the sign correction
 
@@ -74,11 +175,16 @@ archive holds no fetch timestamp at all, so there is no `fetched_at` field.
 ## Daily alignment (`aligned_daily_comparison`)
 
 One row per UTC calendar day (`day_start`/`day_end` = `[00:00Z, next
-00:00Z)`), spanning the union of days covered by the BAFU run's horizon and
-every *available* SAPPHIRE forecast's horizon (empty when neither source has
-an available run for that station). `sapphire` is a keyed object by
-`model_key`, never a row per model (avoids duplicating `observation`/`bafu`
-values across models). Completeness gates:
+00:00Z)`), spanning the union of days covered by the BAFU run's horizon,
+every *available* per-model SAPPHIRE forecast's horizon, AND — since
+Plan 204 — the combined forecast's horizon when it is `available`. `sapphire`
+is a keyed object by `model_key` (per-model entries) or the fetched sentinel
+(`"_pooled"`/`"_bma"`, the combined block), never a row per model (avoids
+duplicating `observation`/`bafu` values across models). Under
+`combination_strategy=primary` the combined block is always unavailable, so
+no sentinel key ever appears; T2's quantile rendering can still change this
+row's content on a `primary` deployment (a previously-unavailable quantile
+fallback becoming renderable). Completeness gates:
 `comparison_semantics.bafu_daily_completeness_minimum` (22 hourly points)
 and `.observation_daily_completeness_minimum` (130 ten-minute samples) —
 below the gate the row is still emitted with its computed value(s) and
@@ -147,7 +253,7 @@ Export extension) — not a defect to fix here.
 ## Offline use and caching — there is no server-side dedup signal
 
 There is no `ETag`, `If-None-Match`, `304`, `Last-Modified`, or any
-server-side content hash. `snapshot_id` (`fls1-<generated_at, compact>`) is
+server-side content hash. `snapshot_id` (`fls2-<generated_at, compact>`) is
 a timestamp label, not a content hash — it promises nothing about the body's
 content and must not be used to detect "nothing changed." A consumer that
 wants to avoid redundant work already holds the full response body, so
@@ -186,6 +292,17 @@ python -m sapphire_flow.cli.export_forecast_lab \
   --output /path/to/forecast-lab-snapshot.json \
   [--station-code 2009 --station-code 2091] \
   [--observation-hours 168]
+```
+
+**On a deployed image, this CANNOT be run with a bare `docker exec`.** The
+image entrypoint composes `DATABASE_URL` from `DATABASE_URL_TEMPLATE` +
+`DB_PASSWORD_SECRET` (Plan 161); `docker exec` bypasses it and the export
+dies on `KeyError: 'DATABASE_URL'`. The working invocation on a deployed
+container is:
+
+```bash
+docker exec <api-container> /entrypoint.sh python -m \
+  sapphire_flow.cli.export_forecast_lab --output /path/to/snapshot.json
 ```
 
 Writes atomically (temp file, schema-validated, then `os.replace`) — a

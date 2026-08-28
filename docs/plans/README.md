@@ -3,6 +3,21 @@
 Maintained by hand — update whenever a plan's status changes, a new plan is added,
 or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
+## Status convention (added 2026-08-28 after a stale-status audit)
+
+**A plan's status lives in ONE place: a `status:` key in the YAML frontmatter.** Values:
+`DRAFT` · `READY` · `PARTIAL` · `COMPLETE` · `DEFERRED` · `SUPERSEDED`. When a plan reaches
+COMPLETE, `git mv` it into [archive/](archive/) **and** grep for references first — a plan
+path is cited from other plans and, in at least one case, from a workflow comment; archiving
+Plan 174 once broke a test that read the doc from disk.
+
+**Why this is written down.** An audit on 2026-08-28 scanned for stale statuses and found the
+scan itself could not work: statuses were recorded in three different ways — frontmatter
+`status:`, a legacy `**Status**:` line (27 plans), and 11 plans with no status marker at all.
+A scan keyed on frontmatter silently skips the other 38, which is how Plan 064 sat reading
+`READY` while ~90% shipped. **Do not add a second status marker to a plan that already has
+one**, and do not rely on a status scan that only checks one format.
+
 **Context:** v0 is complete (the mac-mini runs NWP-on operational runoff
 forecasting). We are marching to **v1 = Nepal DHM deployment** (ECMWF IFS via the
 recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tags:

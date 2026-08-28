@@ -484,9 +484,13 @@ while (round < maxRounds) {
       `and translate its verdict verbatim.\n\n` +
       `STEP 1 — write this exact prompt to a scratch file (heredoc, safe quoting) and run it, giving the Bash ` +
       `call a timeout of ${codexTimeoutMs}ms so a hung CLI cannot stall the workflow:\n` +
-      `  codex exec --sandbox read-only --skip-git-repo-check "$(cat <scratch-file>)" < /dev/null\n` +
-      `(the \`< /dev/null\` is MANDATORY — without it \`codex exec\` blocks on "Reading additional input ` +
-      `from stdin..." and the call times out with no verdict.)\n` +
+      `  ./scripts/codex-review.sh <scratch-file>\n` +
+      `(run the SCRIPT — do NOT hand-roll a \`codex exec\` call. The script owns the mandatory ` +
+      `\`< /dev/null\` redirect; without it \`codex exec\` writes its whole review, then blocks on ` +
+      `"Reading additional input from stdin..." until your timeout kills it — the verdict is produced ` +
+      `and thrown away, and the round silently has NO independent reviewer. That is exactly what ` +
+      `happened on 2026-08-28, twice in one run, when this instruction was prose instead of a script. ` +
+      `A non-zero exit from the script means NO usable verdict.)\n` +
       `The prompt is:\n<<<CODEX_PROMPT\n${codexDiffPrompt(round)}\nCODEX_PROMPT\n\n` +
       `STEP 2 — a Bash TIMEOUT, NON-ZERO exit, empty output, or a startup/hang message ALL count as NO usable ` +
       `verdict. In any of those, KILL and retry ONCE. If still nothing, return {"reviewerFailed": true, ` +
