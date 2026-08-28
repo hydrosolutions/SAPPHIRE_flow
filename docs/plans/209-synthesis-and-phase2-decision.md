@@ -90,8 +90,16 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
 - **D7 — The IMERG read must separate the three runs, because only one is operationally usable.**
   IMERG **Early** ≈ 4 h latency (half-hourly, rapid response), **Late** ≈ 14 h, **Final** ≈ 3.5 months
   and gauge-calibrated. ⛔ **A characterisation done on Final says nothing about operational skill**,
-  because Final is the one we could never use in real time — and M-A5b as currently written specifies
-  **IMERG Final**. That mismatch is the first thing the document must surface.
+  because Final is the one we could never use in real time.
+
+  **✅ OWNER DECISION 2026-08-28 — the target run is IMERG EARLY (~4 h latency).** This settles the
+  question and supersedes M-A5b's current text, which specifies **IMERG Final**. Consequences the
+  document must state: **(i)** M-A5b as written answers a question we do not have and must be
+  rewritten around Early before it is worth executing; **(ii)** Early is **not** gauge-calibrated, so
+  every published skill figure obtained on Final is an upper bound on what Early delivers, and figures
+  must be attributed to the run they were measured on; **(iii)** the ~4 h latency is what makes an
+  operational role possible at all, and it is the reason to prefer Early despite (ii) — a
+  better-calibrated product we receive 3.5 months late cannot correct a nowcast.
 
 - **D8 — The known Himalayan limitation is stated up front, because it lands exactly where we need
   help.** Published validation over Nepal finds satellite products correlate well in the **southern
