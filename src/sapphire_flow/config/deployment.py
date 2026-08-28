@@ -94,7 +94,12 @@ class DeploymentConfig(BaseModel):
     # than this (now - cycle_time) is treated as not-yet-adequately-published and
     # the adapter walks back to the next older slot (age-delay selection gate),
     # avoiding an incompletely-uploaded ICON cycle. Default 105 min sits inside the
-    # ~90-120 min ICON-CH2-EPS publish latency window.
+    # Ignore an NWP cycle younger than this; walk back to an older, fully
+    # published slot (Plan 090). This DEFAULT stays 105 for backward
+    # compatibility with deployments that omit the key; the shipped Swiss
+    # value is 210 (`config.toml`) — a deliberate over-estimate above the
+    # measured 160.0-173.1 min (Plan 196 T1, n = 6), not the measurement
+    # itself. Do not read 105 as a recommended value.
     nwp_cycle_min_age_minutes: int = 105
 
     warm_up_snapshot_max_age_hours: float = 48.0

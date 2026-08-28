@@ -3924,6 +3924,10 @@ class DeploymentConfig(BaseModel):
     # --- NWP lateness ---
     nwp_max_wait_hours: float = 3.0            # max wait for expected NWP delivery
     nwp_max_fallback_age_hours: float = 12.0   # max age of fallback NWP cycle
+    # Plan 090 age-delay guard. DEFAULT stays 105 for backward compatibility;
+    # the Swiss deployment ships 210 (Plan 213) — a deliberate over-estimate above
+    # the measured 160.0-173.1 min (Plan 196 T1, n = 6), not the measurement itself.
+    nwp_cycle_min_age_minutes: int = 105       # min cycle age before use (config.toml: 210)
 
     # --- Warm-up state (conceptual models) ---
     warm_up_snapshot_max_age_hours: float = 48.0  # default; season-dependent override below

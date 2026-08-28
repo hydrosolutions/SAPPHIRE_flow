@@ -358,11 +358,15 @@ class TestCycleAgeDelayGuard:
     """Plan 090 D2c/D4: the age-delay selection gate.
 
     A snapped cycle younger than ``cycle_min_age_minutes`` is likely still
-    incompletely uploaded (MeteoSwiss publishes ICON-CH2-EPS lead-times
-    incrementally over ~90-120 min). The adapter must skip it and walk back to
-    the next older, adequately-aged slot even when the fresh cycle IS already
-    (partially) published — preferring a complete older cycle over a truncated
-    newer one.
+    incompletely uploaded. The adapter must skip it and walk back to the next
+    older, adequately-aged slot even when the fresh cycle IS already (partially)
+    published — preferring a complete older cycle over a truncated newer one.
+
+    Measured latency (Plan 196 T1, 2026-08-28, n = 5): the variables the fetch
+    allowlists (``tot_prec``/``t_2m`` at +120 h) appear 160.0-173.1 min after
+    reference time. The earlier "~90-120 min" figure in this docstring was a
+    guess and was wrong low; Plan 213 raised the shipped guard to 210 — a
+    deliberate over-estimate, since the observed max moved with one extra day.
     """
 
     def _make_delay_adapter(
@@ -1540,3 +1544,107 @@ class TestMaxFilesCap:
         assert len(cap_events) == 1
         assert cap_events[0]["files_fetched"] == 0
         assert cap_events[0]["max_files_cap"] == 0
+
+
+class TestShippedCycleMinAgeGuard:
+    """Plan 213: the guard VALUE shipped in ``config.toml``, not the mechanism.
+
+    ``TestCycleAgeDelayGuard`` above covers the mechanism with literal ages, and
+    passes for any value. These two tests pin the value we actually ship — the
+    only thing Plan 213 changes — so they must read it from ``config.toml``
+    rather than from a literal, or they would pass with none of the change
+    applied.
+    """
+
+    @staticmethod
+    def _shipped_min_age(monkeypatch: pytest.MonkeyPatch) -> int:
+        # load_config always applies SAPPHIRE_CONFIG_OVERLAY when set, which
+        # would silently substitute a different value for the base file's.
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        from pathlib import Path as _Path
+
+        from sapphire_flow.config.deployment import load_config
+
+        repo_root = _Path(__file__).resolve().parents[3]
+        return load_config(repo_root / "config.toml").nwp_cycle_min_age_minutes
+
+    def test_shipped_config_clears_the_measured_publication_latency(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Plan 196 T1 measured 160.0-173.1 min (n = 6) for the variables the fetch
+        # needs. 210 is a deliberate over-estimate above that (Plan 213 D3).
+        assert self._shipped_min_age(monkeypatch) == 210
+
+    def test_shipped_value_skips_a_cycle_that_is_published_but_incomplete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
+
+        # 14:30 snaps to 12:00 → age 150 min. Under the old 105 that was
+        # ACCEPTED; measurement says the cycle is still publishing until ~168.
+        # BOTH cycles are published, so a walk-back can only be caused by the
+        # age guard — asserting fallback_reason rules out `not_published`.
+        recent = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        older = ensure_utc(datetime(2026, 4, 19, 6, 0, tzinfo=UTC))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if "datetime=2026-04-19T12:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(recent)})
+            if "datetime=2026-04-19T06:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(older)})
+            return httpx.Response(200, json={"features": []})
+
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=httpx.Client(
+                transport=httpx.MockTransport(handler), base_url="https://dummy"
+            ),
+            cycle_min_age_minutes=self._shipped_min_age(monkeypatch),
+        )
+
+        resolution = adapter.resolve_cycle(
+            ensure_utc(datetime(2026, 4, 19, 14, 30, tzinfo=UTC))
+        )
+        assert isinstance(resolution, CycleResolution)
+        assert resolution.cycle_time == older
+        assert resolution.fallback_used is True
+        assert resolution.fallback_reason == "too_recent"
+
+    @pytest.mark.parametrize("min_age", [105, 210])
+    def test_on_time_cron_run_resolves_identically_under_both_values(
+        self, tmp_path: Path, min_age: int
+    ) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
+
+        # The property Plan 213 must not disturb: at an on-grid cron instant the
+        # candidates are ~0 and ~360 min old, so 105 and 180 decide the same.
+        # This test is expected to pass BEFORE and AFTER the change.
+        on_grid = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        previous = ensure_utc(datetime(2026, 4, 19, 6, 0, tzinfo=UTC))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if "datetime=2026-04-19T12:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(on_grid)})
+            if "datetime=2026-04-19T06:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(previous)})
+            return httpx.Response(200, json={"features": []})
+
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=httpx.Client(
+                transport=httpx.MockTransport(handler), base_url="https://dummy"
+            ),
+            cycle_min_age_minutes=min_age,
+        )
+
+        resolution = adapter.resolve_cycle(on_grid)
+        assert isinstance(resolution, CycleResolution)
+        assert resolution.cycle_time == previous
+        assert resolution.fallback_used is True
+        assert resolution.fallback_reason == "too_recent"
