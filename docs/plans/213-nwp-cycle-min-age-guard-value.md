@@ -13,7 +13,11 @@ source: Plan 196 T1 — measured publication latency 160.0-168.4 min against a g
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-28: "ok, yes. we change it".
+**BLOCKED ON OWNER — D3 gate failed 2026-08-28.** Owner confirmed the change in
+principle ("ok, yes. we change it"), and it is implemented and green on
+`fix/plan-213-nwp-guard-180`. The re-measurement then returned a combined maximum of
+**173.1 min**, above the ≤ 170 gate, so **180 is not shippable as specified** and no PR
+was opened. See § D3 re-measurement result.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -202,6 +206,43 @@ window.
 *Exit:* both tests green; **RED proof is required for the shipped-config/150-minute test only** —
 the cron-invariance test passes under both 105 and 180 by design, which is the property it pins.
 `uv run pytest`, `ruff`, pyright ratchet pass; the deployed config change noted for the next mini deploy.
+
+## D3 re-measurement result — 2026-08-28 21:01 UTC — **GATE FAILED, STOPPED**
+
+Run per D3, verified twice (monitor + independent re-run). Combined sample, minutes after
+`forecast:reference_datetime`, for `tot_prec`/`t_2m` at +120 h:
+
+| cycle | last-needed item |
+|---|---|
+| 2026-08-27T18Z | 168.4 |
+| 2026-08-28T00Z | 166.2 |
+| 2026-08-28T06Z | 160.5 |
+| 2026-08-28T12Z | 166.4 |
+| **2026-08-28T18Z** | **173.1** |
+
+Gate requirement was ≥2 cycles absent from Plan 196's sample (met: `12Z` and `18Z`) **and a combined
+maximum ≤ 170**. The combined maximum is **173.1**. **The gate FAILS. Per D3 step 3 this stops and
+reports; the implementer does not pick a replacement value.**
+
+**Status:** branch `fix/plan-213-nwp-guard-180` (`30359136`, v0.1.833) carries 180 and is pushed.
+**No PR was opened.** All gates on the change itself are green (5374 passed / 0 failed, ratchet
+404 ≤ 432); it is blocked only on the value.
+
+### What the failure actually tells us — this matters more than the number
+
+**One extra day moved the observed maximum by 4.7 minutes (168.4 → 173.1), and the largest value is
+the newest cycle.** The n = 4 sample Plan 196 produced, and that this plan built 180 on, understated
+the spread. 180 would leave **6.9 minutes** of margin, not the 11.6 claimed at D3b.
+
+That is evidence about the *method*, not just the value: **any constant chosen from one day of
+observations is fragile**, and there is no reason to believe a second guess would be better founded
+than the first. The § Deferred completeness probe — checking that the items the fetch needs are
+present, rather than inferring it from an age — needs no constant at all and is the only option here
+that does not depend on the sample being representative. It also transfers to Nepal/IFS, where the
+latency is different and entirely unmeasured.
+
+**Owner decision required.** Erring high is cheap: a run inside the window walks back one cycle and
+uses 6 h older but complete data. Erring low is the hazard this plan exists to close.
 
 ## Deferred (not drafted)
 
