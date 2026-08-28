@@ -77,12 +77,15 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
      M-A7's banded diurnal profiles by each basin's band `area_km2`, compared against the IFS
      basin-average shape, as a redistribution in time of an unchanged daily total.
      **⛔ Assess it; do NOT prescribe that operator.** Area-weighting M-A7's profiles as published
-     weights **unnormalised mean mm/h**, importing exactly the magnitude information D6/D9 forbid
-     touching; normalising each band first instead assumes equal precipitation per unit area. **Neither
+     weights **unnormalised mean mm/h**, importing exactly the magnitude information **vision D6/D9**
+     forbid touching (⛔ not this plan's D6/D9, which concern IMERG scope and verdict); normalising each band first instead assumes equal precipitation per unit area. **Neither
      variant is supported by M-A7's result** — a step at the southern margin, no gradient among the
      three upper bands, operator sensitivity in the lowest band (pooled 21 UTC vs station-equal 23 UTC)
      and an 11-hour resampled span in the high band. ⇒ **M-A7 does not presently licence deploying this
-     correction**; the document says so and states what would have to be true.
+     correction**; the document says so and states what would have to be true. *(Nor are those two the
+     only conceivable variants — normalised band profiles weighted by independent or IFS band-total
+     fractions would avoid both objections — but M-A7 supplies neither those weights nor deployment
+     evidence, so this plan names the space without designing in it.)*
   2. **Gap-filling the gauge record** (use ERA5-Land where DHM is missing);
   3. **Bias-correcting ERA5-Land forcing** with a gauge-derived adjustment;
   4. **Elevation-band forcing correction** (the lapse-rate use);
@@ -161,8 +164,10 @@ its companions (D2); the IMERG assessment per D6–D8 including the **Final-vs-E
 current text**; and an explicit recommendation on whether to write an M-A5b plan.
 **Out:** any correction design; any acquisition; any GO/NO-GO decision (the owner's, M-DEC).
 **Verify:** no code, so no test. Instead: **every number in the document is traceable to a milestone
-fold or to `ma6_run.py`/`ma7_run.py`/`ma8_run.py` output**, and a reviewer can regenerate any of them
-with one command. ⛔ A number that cannot be traced is a defect.
+fold, to `ma6_run.py`/`ma7_run.py`/`ma8_run.py` output, or — for T2's measured latency alone — to T2's
+recorded table**, and a reviewer can regenerate any of them with one command. ⛔ A number that cannot
+be traced is a defect. **T2's table and the access endpoint it measured against are therefore recorded
+IN T1's document**, since a heredoc probe leaves nothing else behind to trace to.
 
 ### T2 — the IMERG Early retrievability and latency probe (depends: nothing new)
 **In:** a read-only probe answering the two questions the literature cannot, for **IMERG Early V07**
