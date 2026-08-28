@@ -59,7 +59,11 @@ from sapphire_flow.types.enums import (
     WeatherSourceRole,
     WeatherSourceStatus,
 )
-from sapphire_flow.types.forcing_track import ForcingResolutionPolicy
+from sapphire_flow.types.forcing_track import (
+    AssignmentKey,
+    ForcingResolutionPolicy,
+    StationUnavailableReason,
+)
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
     FALLBACK_MODEL_IDS,
@@ -1831,6 +1835,7 @@ def _resolve_per_track_run_inputs(
     """
     from sapphire_flow.services.track_assembly import (
         MissingTrackContext,
+        UnavailableTrackContext,
         assemble_assignment_inputs,
     )
     from sapphire_flow.services.track_projection import (
@@ -1839,6 +1844,44 @@ def _resolve_per_track_run_inputs(
     )
     from sapphire_flow.services.track_resolution import commit_track, resolve_candidate
     from sapphire_flow.types.forcing_track import ForcingRequired, NoForcingRequired
+
+    def _contained_assemble(
+        *, sid: StationId, mid: ModelId, assignment_key: AssignmentKey, **kwargs: object
+    ) -> AssignmentRunInput:
+        """Plan 151 T8b fixer round 2 — STATION CONTAINMENT AT ASSEMBLY.
+
+        Assembly performs per-station observation / station / basin / forcing
+        reads. Before this round those ran OUTSIDE the contained station loop,
+        so one station's failed read aborted the whole cycle for every sibling
+        — the containment the first fixer round claimed only ever covered the
+        later forecast/persist arm. Contain it here, where the per-station work
+        actually happens.
+
+        The genuinely cycle-fatal typed errors are re-raised untouched: they
+        are deployment-wide conditions (bad credentials, bad config, corrupt
+        payload, unmapped gateway), not one station's bad luck, and D7/D31
+        require them to abort loudly with a forced-CRITICAL freshness record.
+        """
+        try:
+            return assemble_assignment_inputs(**kwargs)  # type: ignore[arg-type]
+        except (
+            RecapAuthError,
+            RecapConfigurationError,
+            RecapPayloadIntegrityError,
+            GatewayResolutionError,
+        ):
+            raise
+        except Exception:
+            log.exception(
+                "per_track_assembly_failed",
+                station_id=str(sid),
+                model_id=str(mid),
+                contained=True,
+            )
+            return UnavailableTrackContext(
+                assignment=assignment_key,
+                reason=StationUnavailableReason.ASSEMBLY_FAILED,
+            )
 
     def _assigned_models_for(sid: StationId) -> list[object]:
         return [
@@ -1870,10 +1913,13 @@ def _resolve_per_track_run_inputs(
 
     for (sid, mid), projection in projections.items():
         if isinstance(projection, NoForcingRequired):
-            run_inputs.setdefault(sid, {})[mid] = assemble_assignment_inputs(
+            run_inputs.setdefault(sid, {})[mid] = _contained_assemble(
+                sid=sid,
+                mid=mid,
+                assignment_key=AssignmentKey((sid, mid)),
                 station_id=sid,
                 model_id=mid,
-                model=models[mid],  # type: ignore[arg-type]
+                model=models[mid],
                 projection=projection,
                 track_outcome=None,
                 issue_time=resolved_cycle_time,
@@ -1935,10 +1981,13 @@ def _resolve_per_track_run_inputs(
                     assignment=item.assignment
                 )
             else:
-                run_input = assemble_assignment_inputs(
+                run_input = _contained_assemble(
+                    sid=sid,
+                    mid=mid,
+                    assignment_key=item.assignment,
                     station_id=sid,
                     model_id=mid,
-                    model=models[mid],  # type: ignore[arg-type]
+                    model=models[mid],
                     projection=item,
                     track_outcome=track_result.station_outcomes[sid],
                     issue_time=resolved_cycle_time,
@@ -2466,6 +2515,12 @@ def run_forecast_cycle_flow(
                 RecapAuthError,
                 RecapConfigurationError,
                 RecapPayloadIntegrityError,
+                # Plan 151 T8b fixer round 2: the legacy path handles this at
+                # :1249 with a critical NWP-health record; omitting it here
+                # meant a Recap deployment with an unpopulated polygon table
+                # failed the flow WITHOUT the FORECAST_FRESHNESS record Plan
+                # 116 requires — silent exactly where it must be loud.
+                GatewayResolutionError,
                 StoreError,
             ) as exc:
                 emit_freshness_on_fatal_exit(
