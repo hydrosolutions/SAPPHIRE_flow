@@ -1,0 +1,1610 @@
+{
+  "schema_version": "bafu-danger-levels/v1-draft",
+  "generated_at": "2026-08-28T00:00:00Z",
+  "usage": "INTERNAL RESEARCH ONLY. Not for public publication and not for warning anybody.",
+  "provenance": {
+    "source": "BAFU hydrodaten forecast plot payloads (plot.layout.shapes), archived by SAPPHIRE Flow",
+    "method": "each coloured rect's y0 is the lower bound of that danger level, in m3/s",
+    "level_mapping_status": "INFERRED FROM PLOT COLOURS — confirm against BAFU's published scale before relying on it",
+    "station_count": 40
+  },
+  "level_definitions": [
+    {
+      "level": 1,
+      "key": "low",
+      "label_de": "geringe Gefahr",
+      "colour": null,
+      "note": "everything below the level-2 bound"
+    },
+    {
+      "level": 2,
+      "key": "moderate",
+      "label_de": "mässige Gefahr",
+      "colour": "#FFFF00",
+      "note": "from this station's level-2 bound upward"
+    },
+    {
+      "level": 3,
+      "key": "considerable",
+      "label_de": "erhebliche Gefahr",
+      "colour": "#FF9900",
+      "note": "from this station's level-3 bound upward"
+    },
+    {
+      "level": 4,
+      "key": "high",
+      "label_de": "grosse Gefahr",
+      "colour": "#F7001D",
+      "note": "from this station's level-4 bound upward"
+    },
+    {
+      "level": 5,
+      "key": "very_high",
+      "label_de": "sehr grosse Gefahr",
+      "colour": "#800000",
+      "note": "from this station's level-5 bound upward"
+    }
+  ],
+  "stations": [
+    {
+      "station_code": "2009",
+      "river": "Rhône",
+      "station_name": "Porte du Scex",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 700.0,
+        "level_3": 1000.0,
+        "level_4": 1200.0,
+        "level_5": 1400.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 700.0
+        },
+        {
+          "level": 2,
+          "from": 700.0,
+          "to": 1000.0
+        },
+        {
+          "level": 3,
+          "from": 1000.0,
+          "to": 1200.0
+        },
+        {
+          "level": 4,
+          "from": 1200.0,
+          "to": 1400.0
+        },
+        {
+          "level": 5,
+          "from": 1400.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2011",
+      "river": "Rhône",
+      "station_name": "Sion",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 460.0,
+        "level_3": 640.0,
+        "level_4": 750.0,
+        "level_5": 880.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 460.0
+        },
+        {
+          "level": 2,
+          "from": 460.0,
+          "to": 640.0
+        },
+        {
+          "level": 3,
+          "from": 640.0,
+          "to": 750.0
+        },
+        {
+          "level": 4,
+          "from": 750.0,
+          "to": 880.0
+        },
+        {
+          "level": 5,
+          "from": 880.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2016",
+      "river": "Aare",
+      "station_name": "Brugg",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 820.0,
+        "level_3": 1100.0,
+        "level_4": 1250.0,
+        "level_5": 1350.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 820.0
+        },
+        {
+          "level": 2,
+          "from": 820.0,
+          "to": 1100.0
+        },
+        {
+          "level": 3,
+          "from": 1100.0,
+          "to": 1250.0
+        },
+        {
+          "level": 4,
+          "from": 1250.0,
+          "to": 1350.0
+        },
+        {
+          "level": 5,
+          "from": 1350.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2018",
+      "river": "Reuss",
+      "station_name": "Mellingen",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 480.0,
+        "level_3": 640.0,
+        "level_4": 720.0,
+        "level_5": 830.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 480.0
+        },
+        {
+          "level": 2,
+          "from": 480.0,
+          "to": 640.0
+        },
+        {
+          "level": 3,
+          "from": 640.0,
+          "to": 720.0
+        },
+        {
+          "level": 4,
+          "from": 720.0,
+          "to": 830.0
+        },
+        {
+          "level": 5,
+          "from": 830.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2020",
+      "river": "Ticino",
+      "station_name": "Bellinzona",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 700.0,
+        "level_3": 1100.0,
+        "level_4": 1450.0,
+        "level_5": 1800.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 700.0
+        },
+        {
+          "level": 2,
+          "from": 700.0,
+          "to": 1100.0
+        },
+        {
+          "level": 3,
+          "from": 1100.0,
+          "to": 1450.0
+        },
+        {
+          "level": 4,
+          "from": 1450.0,
+          "to": 1800.0
+        },
+        {
+          "level": 5,
+          "from": 1800.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2024",
+      "river": "Rhône",
+      "station_name": "Branson",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 470.0,
+        "level_3": 650.0,
+        "level_4": 800.0,
+        "level_5": 970.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 470.0
+        },
+        {
+          "level": 2,
+          "from": 470.0,
+          "to": 650.0
+        },
+        {
+          "level": 3,
+          "from": 650.0,
+          "to": 800.0
+        },
+        {
+          "level": 4,
+          "from": 800.0,
+          "to": 970.0
+        },
+        {
+          "level": 5,
+          "from": 970.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2029",
+      "river": "Aare",
+      "station_name": "Brügg, Aegerten",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 550.0,
+        "level_3": 630.0,
+        "level_4": 700.0,
+        "level_5": 750.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 550.0
+        },
+        {
+          "level": 2,
+          "from": 550.0,
+          "to": 630.0
+        },
+        {
+          "level": 3,
+          "from": 630.0,
+          "to": 700.0
+        },
+        {
+          "level": 4,
+          "from": 700.0,
+          "to": 750.0
+        },
+        {
+          "level": 5,
+          "from": 750.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2030",
+      "river": "Aare",
+      "station_name": "Thun",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 350.0,
+        "level_3": 400.0,
+        "level_4": 430.0,
+        "level_5": 490.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 350.0
+        },
+        {
+          "level": 2,
+          "from": 350.0,
+          "to": 400.0
+        },
+        {
+          "level": 3,
+          "from": 400.0,
+          "to": 430.0
+        },
+        {
+          "level": 4,
+          "from": 430.0,
+          "to": 490.0
+        },
+        {
+          "level": 5,
+          "from": 490.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2034",
+      "river": "Broye",
+      "station_name": "Payerne, Caserne d'aviation",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 140.0,
+        "level_3": 220.0,
+        "level_4": 270.0,
+        "level_5": 320.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 140.0
+        },
+        {
+          "level": 2,
+          "from": 140.0,
+          "to": 220.0
+        },
+        {
+          "level": 3,
+          "from": 220.0,
+          "to": 270.0
+        },
+        {
+          "level": 4,
+          "from": 270.0,
+          "to": 320.0
+        },
+        {
+          "level": 5,
+          "from": 320.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2044",
+      "river": "Thur",
+      "station_name": "Andelfingen",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 500.0,
+        "level_3": 700.0,
+        "level_4": 1150.0,
+        "level_5": 1400.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 500.0
+        },
+        {
+          "level": 2,
+          "from": 500.0,
+          "to": 700.0
+        },
+        {
+          "level": 3,
+          "from": 700.0,
+          "to": 1150.0
+        },
+        {
+          "level": 4,
+          "from": 1150.0,
+          "to": 1400.0
+        },
+        {
+          "level": 5,
+          "from": 1400.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2056",
+      "river": "Reuss",
+      "station_name": "Seedorf",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 280.0,
+        "level_3": 450.0,
+        "level_4": 570.0,
+        "level_5": 690.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 280.0
+        },
+        {
+          "level": 2,
+          "from": 280.0,
+          "to": 450.0
+        },
+        {
+          "level": 3,
+          "from": 450.0,
+          "to": 570.0
+        },
+        {
+          "level": 4,
+          "from": 570.0,
+          "to": 690.0
+        },
+        {
+          "level": 5,
+          "from": 690.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2063",
+      "river": "Aare",
+      "station_name": "Murgenthal",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 720.0,
+        "level_3": 940.0,
+        "level_4": 1050.0,
+        "level_5": 1150.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 720.0
+        },
+        {
+          "level": 2,
+          "from": 720.0,
+          "to": 940.0
+        },
+        {
+          "level": 3,
+          "from": 940.0,
+          "to": 1050.0
+        },
+        {
+          "level": 4,
+          "from": 1050.0,
+          "to": 1150.0
+        },
+        {
+          "level": 5,
+          "from": 1150.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2085",
+      "river": "Aare",
+      "station_name": "Hagneck",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 670.0,
+        "level_3": 1000.0,
+        "level_4": 1300.0,
+        "level_5": 1650.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 670.0
+        },
+        {
+          "level": 2,
+          "from": 670.0,
+          "to": 1000.0
+        },
+        {
+          "level": 3,
+          "from": 1000.0,
+          "to": 1300.0
+        },
+        {
+          "level": 4,
+          "from": 1300.0,
+          "to": 1650.0
+        },
+        {
+          "level": 5,
+          "from": 1650.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2091",
+      "river": "Rhein",
+      "station_name": "Rheinfelden, Messstation",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 2500.0,
+        "level_3": 3000.0,
+        "level_4": 3600.0,
+        "level_5": 4500.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 2500.0
+        },
+        {
+          "level": 2,
+          "from": 2500.0,
+          "to": 3000.0
+        },
+        {
+          "level": 3,
+          "from": 3000.0,
+          "to": 3600.0
+        },
+        {
+          "level": 4,
+          "from": 3600.0,
+          "to": 4500.0
+        },
+        {
+          "level": 5,
+          "from": 4500.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2099",
+      "river": "Limmat",
+      "station_name": "Zürich, Unterhard",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 350.0,
+        "level_3": 450.0,
+        "level_4": 530.0,
+        "level_5": 600.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 350.0
+        },
+        {
+          "level": 2,
+          "from": 350.0,
+          "to": 450.0
+        },
+        {
+          "level": 3,
+          "from": 450.0,
+          "to": 530.0
+        },
+        {
+          "level": 4,
+          "from": 530.0,
+          "to": 600.0
+        },
+        {
+          "level": 5,
+          "from": 600.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2104",
+      "river": "Linth",
+      "station_name": "Weesen, Biäsche",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 160.0,
+        "level_3": 220.0,
+        "level_4": 260.0,
+        "level_5": 290.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 160.0
+        },
+        {
+          "level": 2,
+          "from": 160.0,
+          "to": 220.0
+        },
+        {
+          "level": 3,
+          "from": 220.0,
+          "to": 260.0
+        },
+        {
+          "level": 4,
+          "from": 260.0,
+          "to": 290.0
+        },
+        {
+          "level": 5,
+          "from": 290.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2106",
+      "river": "Birs",
+      "station_name": "Münchenstein, Hofmatt",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 140.0,
+        "level_3": 220.0,
+        "level_4": 280.0,
+        "level_5": 350.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 140.0
+        },
+        {
+          "level": 2,
+          "from": 140.0,
+          "to": 220.0
+        },
+        {
+          "level": 3,
+          "from": 220.0,
+          "to": 280.0
+        },
+        {
+          "level": 4,
+          "from": 280.0,
+          "to": 350.0
+        },
+        {
+          "level": 5,
+          "from": 350.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2135",
+      "river": "Aare",
+      "station_name": "Bern, Schönau",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 360.0,
+        "level_3": 430.0,
+        "level_4": 500.0,
+        "level_5": 560.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 360.0
+        },
+        {
+          "level": 2,
+          "from": 360.0,
+          "to": 430.0
+        },
+        {
+          "level": 3,
+          "from": 430.0,
+          "to": 500.0
+        },
+        {
+          "level": 4,
+          "from": 500.0,
+          "to": 560.0
+        },
+        {
+          "level": 5,
+          "from": 560.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2143",
+      "river": "Rhein",
+      "station_name": "Rekingen",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 1150.0,
+        "level_3": 1500.0,
+        "level_4": 1700.0,
+        "level_5": 1900.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 1150.0
+        },
+        {
+          "level": 2,
+          "from": 1150.0,
+          "to": 1500.0
+        },
+        {
+          "level": 3,
+          "from": 1500.0,
+          "to": 1700.0
+        },
+        {
+          "level": 4,
+          "from": 1700.0,
+          "to": 1900.0
+        },
+        {
+          "level": 5,
+          "from": 1900.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2152",
+      "river": "Reuss",
+      "station_name": "Luzern, Geissmattbrücke",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 280.0,
+        "level_3": 350.0,
+        "level_4": 390.0,
+        "level_5": 430.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 280.0
+        },
+        {
+          "level": 2,
+          "from": 280.0,
+          "to": 350.0
+        },
+        {
+          "level": 3,
+          "from": 350.0,
+          "to": 390.0
+        },
+        {
+          "level": 4,
+          "from": 390.0,
+          "to": 430.0
+        },
+        {
+          "level": 5,
+          "from": 430.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2155",
+      "river": "Emme",
+      "station_name": "Wiler, Limpachmündung, nur Hauptstation",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 270.0,
+        "level_3": 430.0,
+        "level_4": 510.0,
+        "level_5": 600.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 270.0
+        },
+        {
+          "level": 2,
+          "from": 270.0,
+          "to": 430.0
+        },
+        {
+          "level": 3,
+          "from": 430.0,
+          "to": 510.0
+        },
+        {
+          "level": 4,
+          "from": 510.0,
+          "to": 600.0
+        },
+        {
+          "level": 5,
+          "from": 600.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2167",
+      "river": "Tresa",
+      "station_name": "Ponte Tresa, Rocchetta",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 80.0,
+        "level_3": 110.0,
+        "level_4": 160.0,
+        "level_5": 190.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 80.0
+        },
+        {
+          "level": 2,
+          "from": 80.0,
+          "to": 110.0
+        },
+        {
+          "level": 3,
+          "from": 110.0,
+          "to": 160.0
+        },
+        {
+          "level": 4,
+          "from": 160.0,
+          "to": 190.0
+        },
+        {
+          "level": 5,
+          "from": 190.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2170",
+      "river": "Arve",
+      "station_name": "Genève, Bout du Monde",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 490.0,
+        "level_3": 660.0,
+        "level_4": 740.0,
+        "level_5": 820.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 490.0
+        },
+        {
+          "level": 2,
+          "from": 490.0,
+          "to": 660.0
+        },
+        {
+          "level": 3,
+          "from": 660.0,
+          "to": 740.0
+        },
+        {
+          "level": 4,
+          "from": 740.0,
+          "to": 820.0
+        },
+        {
+          "level": 5,
+          "from": 820.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2174",
+      "river": "Rhône",
+      "station_name": "Chancy, Aux Ripes",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 970.0,
+        "level_3": 1250.0,
+        "level_4": 1350.0,
+        "level_5": 1500.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 970.0
+        },
+        {
+          "level": 2,
+          "from": 970.0,
+          "to": 1250.0
+        },
+        {
+          "level": 3,
+          "from": 1250.0,
+          "to": 1350.0
+        },
+        {
+          "level": 4,
+          "from": 1350.0,
+          "to": 1500.0
+        },
+        {
+          "level": 5,
+          "from": 1500.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2176",
+      "river": "Sihl",
+      "station_name": "Zürich, Sihlhölzli",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 100.0,
+        "level_3": 200.0,
+        "level_4": 300.0,
+        "level_5": 400.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 100.0
+        },
+        {
+          "level": 2,
+          "from": 100.0,
+          "to": 200.0
+        },
+        {
+          "level": 3,
+          "from": 200.0,
+          "to": 300.0
+        },
+        {
+          "level": 4,
+          "from": 300.0,
+          "to": 400.0
+        },
+        {
+          "level": 5,
+          "from": 400.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2181",
+      "river": "Thur",
+      "station_name": "Halden",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 430.0,
+        "level_3": 630.0,
+        "level_4": 850.0,
+        "level_5": 1250.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 430.0
+        },
+        {
+          "level": 2,
+          "from": 430.0,
+          "to": 630.0
+        },
+        {
+          "level": 3,
+          "from": 630.0,
+          "to": 850.0
+        },
+        {
+          "level": 4,
+          "from": 850.0,
+          "to": 1250.0
+        },
+        {
+          "level": 5,
+          "from": 1250.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2205",
+      "river": "Aare",
+      "station_name": "Untersiggenthal, Stilli",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 1550.0,
+        "level_3": 2050.0,
+        "level_4": 2300.0,
+        "level_5": 2550.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 1550.0
+        },
+        {
+          "level": 2,
+          "from": 1550.0,
+          "to": 2050.0
+        },
+        {
+          "level": 3,
+          "from": 2050.0,
+          "to": 2300.0
+        },
+        {
+          "level": 4,
+          "from": 2300.0,
+          "to": 2550.0
+        },
+        {
+          "level": 5,
+          "from": 2550.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2210",
+      "river": "Doubs",
+      "station_name": "Ocourt",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 165.0,
+        "level_3": 280.0,
+        "level_4": 370.0,
+        "level_5": 470.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 165.0
+        },
+        {
+          "level": 2,
+          "from": 165.0,
+          "to": 280.0
+        },
+        {
+          "level": 3,
+          "from": 280.0,
+          "to": 370.0
+        },
+        {
+          "level": 4,
+          "from": 370.0,
+          "to": 470.0
+        },
+        {
+          "level": 5,
+          "from": 470.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2215",
+      "river": "Saane",
+      "station_name": "Laupen",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 370.0,
+        "level_3": 640.0,
+        "level_4": 820.0,
+        "level_5": 1050.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 370.0
+        },
+        {
+          "level": 2,
+          "from": 370.0,
+          "to": 640.0
+        },
+        {
+          "level": 3,
+          "from": 640.0,
+          "to": 820.0
+        },
+        {
+          "level": 4,
+          "from": 820.0,
+          "to": 1050.0
+        },
+        {
+          "level": 5,
+          "from": 1050.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2243",
+      "river": "Limmat",
+      "station_name": "Baden, Limmatpromenade",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 350.0,
+        "level_3": 480.0,
+        "level_4": 550.0,
+        "level_5": 630.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 350.0
+        },
+        {
+          "level": 2,
+          "from": 350.0,
+          "to": 480.0
+        },
+        {
+          "level": 3,
+          "from": 480.0,
+          "to": 550.0
+        },
+        {
+          "level": 4,
+          "from": 550.0,
+          "to": 630.0
+        },
+        {
+          "level": 5,
+          "from": 630.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2265",
+      "river": "Inn",
+      "station_name": "Tarasp",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 190.0,
+        "level_3": 280.0,
+        "level_4": 340.0,
+        "level_5": 410.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 190.0
+        },
+        {
+          "level": 2,
+          "from": 190.0,
+          "to": 280.0
+        },
+        {
+          "level": 3,
+          "from": 280.0,
+          "to": 340.0
+        },
+        {
+          "level": 4,
+          "from": 340.0,
+          "to": 410.0
+        },
+        {
+          "level": 5,
+          "from": 410.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2288",
+      "river": "Rhein",
+      "station_name": "Neuhausen, Flurlingerbrücke",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 670.0,
+        "level_3": 890.0,
+        "level_4": 1000.0,
+        "level_5": 1150.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 670.0
+        },
+        {
+          "level": 2,
+          "from": 670.0,
+          "to": 890.0
+        },
+        {
+          "level": 3,
+          "from": 890.0,
+          "to": 1000.0
+        },
+        {
+          "level": 4,
+          "from": 1000.0,
+          "to": 1150.0
+        },
+        {
+          "level": 5,
+          "from": 1150.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2289",
+      "river": "Rhein",
+      "station_name": "Basel, Rheinhalle",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 2550.0,
+        "level_3": 3050.0,
+        "level_4": 3700.0,
+        "level_5": 4700.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 2550.0
+        },
+        {
+          "level": 2,
+          "from": 2550.0,
+          "to": 3050.0
+        },
+        {
+          "level": 3,
+          "from": 3050.0,
+          "to": 3700.0
+        },
+        {
+          "level": 4,
+          "from": 3700.0,
+          "to": 4700.0
+        },
+        {
+          "level": 5,
+          "from": 4700.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2346",
+      "river": "Rhone",
+      "station_name": "Brig",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 250.0,
+        "level_3": 380.0,
+        "level_4": 460.0,
+        "level_5": 570.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 250.0
+        },
+        {
+          "level": 2,
+          "from": 250.0,
+          "to": 380.0
+        },
+        {
+          "level": 3,
+          "from": 380.0,
+          "to": 460.0
+        },
+        {
+          "level": 4,
+          "from": 460.0,
+          "to": 570.0
+        },
+        {
+          "level": 5,
+          "from": 570.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2368",
+      "river": "Maggia",
+      "station_name": "Locarno, Solduno",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 800.0,
+        "level_3": 2000.0,
+        "level_4": 3200.0,
+        "level_5": 4400.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 800.0
+        },
+        {
+          "level": 2,
+          "from": 800.0,
+          "to": 2000.0
+        },
+        {
+          "level": 3,
+          "from": 2000.0,
+          "to": 3200.0
+        },
+        {
+          "level": 4,
+          "from": 3200.0,
+          "to": 4400.0
+        },
+        {
+          "level": 5,
+          "from": 4400.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2457",
+      "river": "Aare",
+      "station_name": "Ringgenberg, Goldswil",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 170.0,
+        "level_3": 220.0,
+        "level_4": 250.0,
+        "level_5": 290.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 170.0
+        },
+        {
+          "level": 2,
+          "from": 170.0,
+          "to": 220.0
+        },
+        {
+          "level": 3,
+          "from": 220.0,
+          "to": 250.0
+        },
+        {
+          "level": 4,
+          "from": 250.0,
+          "to": 290.0
+        },
+        {
+          "level": 5,
+          "from": 290.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2473",
+      "river": "Rhein",
+      "station_name": "Diepoldsau, Rietbrücke",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 1300.0,
+        "level_3": 1950.0,
+        "level_4": 2450.0,
+        "level_5": 3050.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 1300.0
+        },
+        {
+          "level": 2,
+          "from": 1300.0,
+          "to": 1950.0
+        },
+        {
+          "level": 3,
+          "from": 1950.0,
+          "to": 2450.0
+        },
+        {
+          "level": 4,
+          "from": 2450.0,
+          "to": 3050.0
+        },
+        {
+          "level": 5,
+          "from": 3050.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2494",
+      "river": "Ticino",
+      "station_name": "Pollegio, Campagna",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 250.0,
+        "level_3": 400.0,
+        "level_4": 550.0,
+        "level_5": 700.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 250.0
+        },
+        {
+          "level": 2,
+          "from": 250.0,
+          "to": 400.0
+        },
+        {
+          "level": 3,
+          "from": 400.0,
+          "to": 550.0
+        },
+        {
+          "level": 4,
+          "from": 550.0,
+          "to": 700.0
+        },
+        {
+          "level": 5,
+          "from": 700.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2602",
+      "river": "Rhein",
+      "station_name": "Domat/Ems",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 780.0,
+        "level_3": 1150.0,
+        "level_4": 1800.0,
+        "level_5": 2250.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 780.0
+        },
+        {
+          "level": 2,
+          "from": 780.0,
+          "to": 1150.0
+        },
+        {
+          "level": 3,
+          "from": 1150.0,
+          "to": 1800.0
+        },
+        {
+          "level": 4,
+          "from": 1800.0,
+          "to": 2250.0
+        },
+        {
+          "level": 5,
+          "from": 2250.0,
+          "to": null
+        }
+      ]
+    },
+    {
+      "station_code": "2634",
+      "river": "Kleine Emme",
+      "station_name": "Emmen",
+      "unit": "m3/s",
+      "bounds_m3s": {
+        "level_2": 320.0,
+        "level_3": 500.0,
+        "level_4": 600.0,
+        "level_5": 700.0
+      },
+      "zones": [
+        {
+          "level": 1,
+          "from": null,
+          "to": 320.0
+        },
+        {
+          "level": 2,
+          "from": 320.0,
+          "to": 500.0
+        },
+        {
+          "level": 3,
+          "from": 500.0,
+          "to": 600.0
+        },
+        {
+          "level": 4,
+          "from": 600.0,
+          "to": 700.0
+        },
+        {
+          "level": 5,
+          "from": 700.0,
+          "to": null
+        }
+      ]
+    }
+  ]
+}

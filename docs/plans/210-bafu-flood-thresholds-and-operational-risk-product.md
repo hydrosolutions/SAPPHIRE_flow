@@ -68,9 +68,10 @@ fraction or quantile-CDF interpolation).
    research-only `/plots/*.json` whose `licence_status` is `unresolved`. A **public** operational map
    is *publication*, exactly what that marker excludes. **Plan 111's G1 letter is still unsent.**
    Parsing and storing for internal use is defensible; publishing is not, until G1 answers.
-4. **Vocabulary mismatch.** Producer levels are `Low … Very High` (`config.toml:71-120`); the map's
-   policy is `below_threshold|watch|likely|severe`. Mapping BAFU's 5 levels onto the map's 4 classes
-   is a **hydrological decision**, not a rename.
+4. **Vocabulary — RESOLVED, and it dissolved rather than being decided.** The owner chose the
+   source's own five levels, so there is no 5→4 mapping to design. The producer's internal
+   `Low … Very High` levels (`config.toml:71-120`) are a **separate** concept and must not be
+   conflated with the BAFU danger levels.
 
 ## Accepted for now (owner, 2026-08-28)
 
@@ -80,17 +81,50 @@ producer side** and is explicitly *not* in this plan. Whatever this plan emits m
 assumption that the step is daily — the consumer contract should carry the native step, so a later
 sub-daily cycle needs no contract change.
 
+## Owner decisions — ALL FOUR RESOLVED 2026-08-28
+
+1. **Five levels, not four.** Use Switzerland's five published danger levels per station.
+   Do **not** map them onto the map's original four-category vocabulary — that would make the
+   product assert something the source does not. Level 1 is everything below the level-2 bound;
+   there is no "level 1 threshold" to invent.
+2. **One view, not two.** Any warning view is **also research-only** and folds into the **existing
+   forecast view**. The question it answers is *"which of our forecasts reach a warning level?"* —
+   so threshold crossings appear alongside the forecasts rather than in a separate product. This
+   supersedes the earlier suggestion to build a separate export.
+3. **Licence: proceed.** This stays **internal research with no publication of any kind**, which is
+   what the research-only marker permits. The Plan 111 G1 letter is therefore **not** a blocker for
+   this work. **It becomes one the moment anything here is published or shown outside the team** —
+   that boundary is the whole basis of this decision.
+4. **`_pooled`'s `qc_status = raw` is accepted for the MVP.** Not investigated, not papered over —
+   consciously deferred. Revisit before anything depends on the combined forecast being QC'd.
+
+**Scope consequence: this is an MVP for internal research.** No alerting, notification, escalation,
+acknowledgement or incident workflow. Nothing that reads as an official warning.
+
+## The reference data is extracted and committed
+
+`docs/spec/bafu-danger-levels.reference.json` — 40 stations, **all complete, all strictly
+increasing** (verified). Four bounds per station defining five zones, plus provenance and the
+level definitions. Handed to the map project as a static file while T1 wires it into the feed.
+
+Two facts worth keeping from the extraction:
+
+- **Station `2174` is `Rhône - Chancy, Aux Ripes`.** This explains the Plan 204 fixture defect: the
+  fixture had pinned *Chancy's* identity onto code `2091` (really `Rhein - Rheinfelden,
+  Messstation`). A real station, a real name, the wrong code.
+- **Thresholds vary by two orders of magnitude** — `2167 Tresa` reaches level 2 at 80 m³/s, `2289
+  Rhein - Basel` at 2550. Any shared constant is silently wrong nearly everywhere.
+
+## Remaining open question
+
 ## Open questions the owner must answer before this can be sliced
+
+**Only one is still open** — the other three are resolved above.
 
 1. **Is the threshold parse a new adapter concern or a backfill tool?** Thresholds change rarely;
    the forecast payload arrives many times a day. Parse-on-every-ingest is wasteful, parse-once is
-   stale-prone. (Suggested: parse on ingest, write only on change, record `observed_at`.)
-2. **Does the operational product extend `forecast-lab-snapshot`, or is it a separate export?** The
-   Forecast Lab contract is explicitly research-only with no alerting; overloading it would erase a
-   deliberate boundary. (Suggested: separate export. Plan 204's review already established the two
-   are different products.)
-3. **The 5→4 level mapping**, per question 4 above. Hydrologist's call.
-4. **Do we publish BAFU-derived thresholds at all, or only our own?** Bound to G1.
+   stale-prone. (Suggested: parse on ingest, write only on change, record `observed_at`.) This is an
+   engineering call and can be settled when the task is sliced — it does not need the owner.
 
 ## Not in scope
 
