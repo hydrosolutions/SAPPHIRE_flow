@@ -267,10 +267,14 @@ Flows 7 and 8/10 appear in both on-demand and subflow categories: they can be in
 **Changing a flow's cron OR its source's minimum-cycle-age guard without the other silently pins NWP
 provenance to FALLBACK — and that is correct behaviour, not a defect.** The forecast cron is
 `0 */6 * * *` (`cli/register_deployments.py:45`) and ICON-CH2-EPS publishes on the same grid
-(`_CYCLE_HOURS = (0, 6, 12, 18)`, `adapters/meteoswiss_nwp.py:44`), so the flow fires at the instant
+(`_CYCLE_HOURS = (0, 6, 12, 18)`, `adapters/meteoswiss_nwp.py:44`), so an **on-time** run fires at the instant
 its target cycle is stamped: age is ~0, the `nwp_cycle_min_age_minutes` guard (`config.toml:17`,
-currently 105) skips the slot without probing STAC, and it walks back one step — **a cron-scheduled
-run can never be PRIMARY.** Plan 196 T1 measured the real latency on 2026-08-28: items for the
+currently 105) skips the slot without probing STAC, and it walks back one step — **an on-time
+scheduled run can never be PRIMARY.** A *late-picked-up* run is different: with no explicit
+`cycle_time` the flow resolves the cycle against `datetime.now(UTC)` at execution rather than the
+scheduled instant (`flows/run_forecast_cycle.py:671`, `:1873`), so lateness on a shared pool (see
+above) can put the candidate anywhere — including inside the window where the guard passes but the
+cycle is still publishing. Plan 196 T1 measured the real latency on 2026-08-28: items for the
 variables the fetch allowlists (`tot_prec`, `t_2m` at +120 h) appear in the catalogue **160.0-168.4
 minutes** after `forecast:reference_datetime`, so at 06:00 the 06Z data is not there yet and
 consuming 00Z is the only option. The guard is **too small** (105 against 160-168), so the walk-back
