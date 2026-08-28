@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-27
 plan: 206
 title: Correct six statements in docs/standards/cicd.md that no longer match the workflows
@@ -12,6 +12,20 @@ source: drift audit 2026-08-27, prompted by the Plan 201 investigation
 # Plan 206 — correct six statements in `cicd.md`
 
 ## Status
+
+**IMPLEMENTED — held at PR #222 (2026-08-28).** Branch `docs/plan-206-cicd-drift`, v0.1.825. All six
+items corrected; exit criterion met mechanically (every command the doc quotes in the `run:` step
+column appears verbatim in the workflow it names — 0 drift). Independent Codex review of the diff:
+BLOCKER none, MAJOR none, MINOR none, APPROVE.
+
+One change outside the audited six, recorded rather than folded in silently: the nightly
+sequential-unit row was MOVED to sit after the slow and live rows. That row's position stopped
+matching the file when Plan 201's fixer round moved the step to the end of
+`integration-nightly.yml`. Same row, same content.
+
+`cicd.md:503`'s unit-suite row — excluded here and owned by Plan 201 T3 — was corrected in PR #220,
+so this plan did not land alongside a knowingly stale row.
+
 
 **DRAFT.** Not for implementation until the owner confirms.
 
