@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-27
 plan: 205
 title: M-A8 — elevation and regime structure, and the rain-phase gradient

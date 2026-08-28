@@ -11,6 +11,17 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## Recently merged (v1 operational hardening — implemented via WF2, independently reviewed)
 
+- **184 / 193 / 205 / 209** — **DHM precipitation research arc (M-A6 → M-A9) — MERGED (#211, #212,
+  #213, #215, #218), ARCHIVED.** Gauge vs ERA5-Land, temporal characterisation, elevation and regime
+  structure, and the Phase-2 recommendation. Each plan independently reviewed **before** implementation
+  (7, 7 and 12 findings folded on 193/205/209 respectively); 184 was implemented first and paid twelve
+  retrospective amendments, which is what established the review-first order. **Outcome:** the sample
+  supports characterisation well and correction poorly — a precipitation–elevation lapse rate is not
+  obtainable from it (needs OD-10), forcing correction transfers only below ~2,000 m, and every route
+  to the snow-dominated high basins is closed by the data. Recommendation at
+  `docs/design/dhm-precipitation-phase2-recommendation.md`. **Remaining on the track:** M-I1 (QC rules),
+  M-I3 (WMO catch-efficiency inventory), M-A5b (IMERG, rewritten around Early).
+
 - **101** — water_level QC datum fix — **MERGED (#66), ARCHIVED** — per-station datum,
   subtract-before-QC across all four QC call sites; the mechanism DHM's mixed
   cm/m/m-a.s.l. units need. 4 design gates + implementation review (regression locks
@@ -335,7 +346,7 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (95 entries).
+See [archive/](archive/) for completed and archived plans (124 entries).
 
 ## Superseded / stranded branches (recorded 2026-08-17)
 

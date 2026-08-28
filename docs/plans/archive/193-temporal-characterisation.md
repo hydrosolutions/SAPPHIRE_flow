@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-20
 plan: 193
 title: M-A7 — temporal characterisation (intensity distributions and diurnal structure)

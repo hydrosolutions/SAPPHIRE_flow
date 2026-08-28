@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-28
 plan: 209
 title: M-A9 — synthesis, the Phase-2 recommendation, and an IMERG feasibility read

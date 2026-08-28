@@ -3,7 +3,7 @@
 Seam tests: every assertion here is on a VALUE actually produced (a row
 count, a set of retained months, a raised exception), never on an argument
 passed to a mock — this track's own recurring failure mode
-(`docs/plans/184-gauge-vs-era5land-comparison.md` T1's "Seam tests" note).
+(`docs/plans/archive/184-gauge-vs-era5land-comparison.md` T1's "Seam tests" note).
 """
 
 from __future__ import annotations
