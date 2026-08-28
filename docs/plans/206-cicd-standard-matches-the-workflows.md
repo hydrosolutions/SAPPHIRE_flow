@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-27
 plan: 206
 title: Correct six statements in docs/standards/cicd.md that no longer match the workflows

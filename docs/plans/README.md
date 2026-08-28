@@ -3,11 +3,48 @@
 Maintained by hand — update whenever a plan's status changes, a new plan is added,
 or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
+## Status convention (added 2026-08-28 after a stale-status audit)
+
+**A plan's status lives in ONE place: a `status:` key in the YAML frontmatter.** Values:
+`DRAFT` · `READY` · `PARTIAL` · `COMPLETE` · `DEFERRED` · `SUPERSEDED`. When a plan reaches
+COMPLETE, `git mv` it into [archive/](archive/) **and** grep for references first — a plan
+path is cited from other plans and, in at least one case, from a workflow comment; archiving
+Plan 174 once broke a test that read the doc from disk.
+
+**Why this is written down.** An audit on 2026-08-28 scanned for stale statuses and found the
+scan itself could not work: statuses were recorded in three different ways — frontmatter
+`status:`, a legacy `**Status**:` line (27 plans), and 11 plans with no status marker at all.
+A scan keyed on frontmatter silently skips the other 38, which is how Plan 064 sat reading
+`READY` while ~90% shipped. **Do not add a second status marker to a plan that already has
+one**, and do not rely on a status scan that only checks one format.
+
 **Context:** v0 is complete (the mac-mini runs NWP-on operational runoff
 forecasting). We are marching to **v1 = Nepal DHM deployment** (ECMWF IFS via the
 recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tags:
 **A** = v0 operational hardening / reliability (land before any v1 prod deploy) ·
 **B** = v1 Nepal feature · **C** = dev-experience / dashboard / deferrable.
+
+
+## Archived by the 2026-08-28 stale-status audit
+
+Each had `status: READY` while its work was already present on `main`. Archived on **code-artifact
+evidence** (plan-named tests and source in the tree), **not** on a task-by-task re-verification of
+exit criteria — Plan 212 owns that deeper screening.
+
+- **090** — NWP incomplete-cycle selection — header already said DONE (P1, PR #49, `ab54d24e` on main); P2 optional, must be re-scoped.
+- **140** — ICON-CH2-EPS STAC pagination fix — body already said "COMPLETE — shipped as `3264a45`"; confirmed on main.
+- **082** — recap Gateway operational readiness (19 plan-named test files, 10 source files).
+- **117** — basin/static artifact architecture.
+- **129** — continuous precipitation knit (RhiresD → RprelimD → NWP).
+- **130** — temperature reanalysis live-tail.
+- **145** — future-snow (JSNOW) forcing wiring — present in the recap adapter, the reanalysis ingest and the forecast cycle.
+- **161** — DATABASE_URL credential parsing.
+
+**Held back deliberately, with reasons:**
+- **138** (BAFU precip+temp+runoff regression) — its own body says "**T1 is PARTIAL, not done**". Archiving it would hide outstanding work.
+- **035** (rating-curve provenance) — contradictory: the header says implementation begins at v1, yet `tests/unit/services/test_rating_conversion.py` and a `0035` migration downgrade test already exist. Needs a decision, not a status flip.
+- **162** (robust database backup) — the work looks shipped, but `tests/unit/ops/test_restore_rehearsal.py:10` cites its path in a docstring. Moving it dangles that reference, and editing a test file is a code change belonging in a PR.
+- **201**, **206** — COMPLETE (merged #220/#222) but not moved: `.github/workflows/integration-nightly.yml:144` cites Plan 201's path.
 
 ## Recently merged (v1 operational hardening — implemented via WF2, independently reviewed)
 

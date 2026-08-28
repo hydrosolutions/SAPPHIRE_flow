@@ -1,0 +1,1569 @@
+{
+  "$defs": {
+    "AlignedDailyBafuSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Minimum"
+        },
+        "p25": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P25"
+        },
+        "median": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Median"
+        },
+        "p75": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P75"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Maximum"
+        },
+        "hour_count": {
+          "title": "Hour Count",
+          "type": "integer"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "minimum",
+        "p25",
+        "median",
+        "p75",
+        "maximum",
+        "hour_count",
+        "complete"
+      ],
+      "title": "AlignedDailyBafuSchema",
+      "type": "object"
+    },
+    "AlignedDailyObservationSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "sample_count": {
+          "title": "Sample Count",
+          "type": "integer"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "value",
+        "sample_count",
+        "complete"
+      ],
+      "title": "AlignedDailyObservationSchema",
+      "type": "object"
+    },
+    "AlignedDailyRowSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "day_start": {
+          "format": "date-time",
+          "title": "Day Start",
+          "type": "string"
+        },
+        "day_end": {
+          "format": "date-time",
+          "title": "Day End",
+          "type": "string"
+        },
+        "observation": {
+          "$ref": "#/$defs/AlignedDailyObservationSchema"
+        },
+        "bafu": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AlignedDailyBafuSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sapphire": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AlignedDailySapphireEntrySchema"
+          },
+          "title": "Sapphire",
+          "type": "object"
+        }
+      },
+      "required": [
+        "day_start",
+        "day_end",
+        "observation",
+        "bafu",
+        "sapphire"
+      ],
+      "title": "AlignedDailyRowSchema",
+      "type": "object"
+    },
+    "AlignedDailySapphireEntrySchema": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Minimum"
+        },
+        "p25": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P25"
+        },
+        "median": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Median"
+        },
+        "p75": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P75"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Maximum"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "minimum",
+        "p25",
+        "median",
+        "p75",
+        "maximum",
+        "complete"
+      ],
+      "title": "AlignedDailySapphireEntrySchema",
+      "type": "object"
+    },
+    "AvailabilitySchema": {
+      "additionalProperties": false,
+      "properties": {
+        "observations": {
+          "title": "Observations",
+          "type": "boolean"
+        },
+        "bafu_forecast": {
+          "title": "Bafu Forecast",
+          "type": "boolean"
+        },
+        "sapphire_forecast": {
+          "title": "Sapphire Forecast",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "observations",
+        "bafu_forecast",
+        "sapphire_forecast"
+      ],
+      "title": "AvailabilitySchema",
+      "type": "object"
+    },
+    "BafuForecastAvailableSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": true,
+          "default": true,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "bafu",
+          "default": "bafu",
+          "title": "Source",
+          "type": "string"
+        },
+        "source_product": {
+          "const": "hydrodaten_plot",
+          "default": "hydrodaten_plot",
+          "title": "Source Product",
+          "type": "string"
+        },
+        "station_code": {
+          "title": "Station Code",
+          "type": "string"
+        },
+        "variable": {
+          "const": "discharge",
+          "default": "discharge",
+          "title": "Variable",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "default": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "inventory_produced_at": {
+          "format": "date-time",
+          "title": "Inventory Produced At",
+          "type": "string"
+        },
+        "licence_status": {
+          "const": "unresolved",
+          "default": "unresolved",
+          "title": "Licence Status",
+          "type": "string"
+        },
+        "native_step_seconds": {
+          "title": "Native Step Seconds",
+          "type": "integer"
+        },
+        "horizon_start": {
+          "format": "date-time",
+          "title": "Horizon Start",
+          "type": "string"
+        },
+        "horizon_end": {
+          "format": "date-time",
+          "title": "Horizon End",
+          "type": "string"
+        },
+        "point_count": {
+          "title": "Point Count",
+          "type": "integer"
+        },
+        "quality_flags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Quality Flags",
+          "type": "array"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/QuantileEnvelopeSchema"
+          },
+          "title": "Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "station_code",
+        "run_id",
+        "issued_at",
+        "inventory_produced_at",
+        "native_step_seconds",
+        "horizon_start",
+        "horizon_end",
+        "point_count",
+        "quality_flags",
+        "points"
+      ],
+      "title": "BafuForecastAvailableSchema",
+      "type": "object"
+    },
+    "BafuForecastUnavailableSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": false,
+          "default": false,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "BafuForecastUnavailableSchema",
+      "type": "object"
+    },
+    "CombinedForecastMembersSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": true,
+          "default": true,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "sapphire",
+          "default": "sapphire",
+          "title": "Source",
+          "type": "string"
+        },
+        "forecast_id": {
+          "title": "Forecast Id",
+          "type": "string"
+        },
+        "model_key": {
+          "title": "Model Key",
+          "type": "string"
+        },
+        "combination_strategy": {
+          "title": "Combination Strategy",
+          "type": "string"
+        },
+        "source_model_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Model Ids",
+          "type": "array"
+        },
+        "variable": {
+          "const": "discharge",
+          "default": "discharge",
+          "title": "Variable",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "default": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "observation_staleness_hours": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observation Staleness Hours"
+        },
+        "native_step_seconds": {
+          "title": "Native Step Seconds",
+          "type": "integer"
+        },
+        "horizon_start": {
+          "format": "date-time",
+          "title": "Horizon Start",
+          "type": "string"
+        },
+        "horizon_end": {
+          "format": "date-time",
+          "title": "Horizon End",
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/QuantileEnvelopeSchema"
+          },
+          "title": "Points",
+          "type": "array"
+        },
+        "representation": {
+          "const": "members",
+          "default": "members",
+          "title": "Representation",
+          "type": "string"
+        },
+        "ensemble_size": {
+          "title": "Ensemble Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "forecast_id",
+        "model_key",
+        "combination_strategy",
+        "source_model_ids",
+        "issued_at",
+        "observation_staleness_hours",
+        "native_step_seconds",
+        "horizon_start",
+        "horizon_end",
+        "points",
+        "ensemble_size"
+      ],
+      "title": "CombinedForecastMembersSchema",
+      "type": "object"
+    },
+    "CombinedForecastQuantilesSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": true,
+          "default": true,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "sapphire",
+          "default": "sapphire",
+          "title": "Source",
+          "type": "string"
+        },
+        "forecast_id": {
+          "title": "Forecast Id",
+          "type": "string"
+        },
+        "model_key": {
+          "title": "Model Key",
+          "type": "string"
+        },
+        "combination_strategy": {
+          "title": "Combination Strategy",
+          "type": "string"
+        },
+        "source_model_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Model Ids",
+          "type": "array"
+        },
+        "variable": {
+          "const": "discharge",
+          "default": "discharge",
+          "title": "Variable",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "default": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "observation_staleness_hours": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observation Staleness Hours"
+        },
+        "native_step_seconds": {
+          "title": "Native Step Seconds",
+          "type": "integer"
+        },
+        "horizon_start": {
+          "format": "date-time",
+          "title": "Horizon Start",
+          "type": "string"
+        },
+        "horizon_end": {
+          "format": "date-time",
+          "title": "Horizon End",
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/QuantileEnvelopeSchema"
+          },
+          "title": "Points",
+          "type": "array"
+        },
+        "representation": {
+          "const": "quantiles",
+          "default": "quantiles",
+          "title": "Representation",
+          "type": "string"
+        },
+        "quantile_level_count": {
+          "title": "Quantile Level Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "forecast_id",
+        "model_key",
+        "combination_strategy",
+        "source_model_ids",
+        "issued_at",
+        "observation_staleness_hours",
+        "native_step_seconds",
+        "horizon_start",
+        "horizon_end",
+        "points",
+        "quantile_level_count"
+      ],
+      "title": "CombinedForecastQuantilesSchema",
+      "type": "object"
+    },
+    "CombinedForecastUnavailableSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": false,
+          "default": false,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "reason": {
+          "enum": [
+            "strategy_primary",
+            "no_combined_forecast"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "CombinedForecastUnavailableSchema",
+      "type": "object"
+    },
+    "ComparisonSemanticsSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "variable": {
+          "const": "discharge",
+          "default": "discharge",
+          "title": "Variable",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "default": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "display_run_rule": {
+          "title": "Display Run Rule",
+          "type": "string"
+        },
+        "daily_aggregation": {
+          "title": "Daily Aggregation",
+          "type": "string"
+        },
+        "bafu_daily_completeness_minimum": {
+          "title": "Bafu Daily Completeness Minimum",
+          "type": "integer"
+        },
+        "observation_daily_completeness_minimum": {
+          "title": "Observation Daily Completeness Minimum",
+          "type": "integer"
+        },
+        "sapphire_quantile_method": {
+          "const": "linear",
+          "default": "linear",
+          "title": "Sapphire Quantile Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "display_run_rule",
+        "daily_aggregation",
+        "bafu_daily_completeness_minimum",
+        "observation_daily_completeness_minimum"
+      ],
+      "title": "ComparisonSemanticsSchema",
+      "type": "object"
+    },
+    "GeoCoordSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "longitude": {
+          "title": "Longitude",
+          "type": "number"
+        },
+        "latitude": {
+          "title": "Latitude",
+          "type": "number"
+        },
+        "crs": {
+          "const": "EPSG:4326",
+          "default": "EPSG:4326",
+          "title": "Crs",
+          "type": "string"
+        }
+      },
+      "required": [
+        "longitude",
+        "latitude"
+      ],
+      "title": "GeoCoordSchema",
+      "type": "object"
+    },
+    "ObservationPointSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "valid_time": {
+          "format": "date-time",
+          "title": "Valid Time",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        },
+        "qc_status": {
+          "const": "qc_passed",
+          "default": "qc_passed",
+          "title": "Qc Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "valid_time",
+        "value"
+      ],
+      "title": "ObservationPointSchema",
+      "type": "object"
+    },
+    "ObservationsSectionSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "variable": {
+          "const": "discharge",
+          "default": "discharge",
+          "title": "Variable",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "default": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "native_step_seconds": {
+          "title": "Native Step Seconds",
+          "type": "integer"
+        },
+        "window_start": {
+          "format": "date-time",
+          "title": "Window Start",
+          "type": "string"
+        },
+        "window_end": {
+          "format": "date-time",
+          "title": "Window End",
+          "type": "string"
+        },
+        "latest_available_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Latest Available At"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/ObservationPointSchema"
+          },
+          "title": "Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "native_step_seconds",
+        "window_start",
+        "window_end",
+        "latest_available_at",
+        "points"
+      ],
+      "title": "ObservationsSectionSchema",
+      "type": "object"
+    },
+    "QuantileEnvelopeSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "valid_time": {
+          "format": "date-time",
+          "title": "Valid Time",
+          "type": "string"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Minimum"
+        },
+        "p25": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P25"
+        },
+        "median": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Median"
+        },
+        "p75": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "P75"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Maximum"
+        }
+      },
+      "required": [
+        "valid_time",
+        "minimum",
+        "p25",
+        "median",
+        "p75",
+        "maximum"
+      ],
+      "title": "QuantileEnvelopeSchema",
+      "type": "object"
+    },
+    "SapphireForecastMembersSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": true,
+          "default": true,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "sapphire",
+          "default": "sapphire",
+          "title": "Source",
+          "type": "string"
+        },
+        "forecast_id": {
+          "title": "Forecast Id",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/SapphireModelSchema"
+        },
+        "variable": {
+          "const": "discharge",
+          "default": "discharge",
+          "title": "Variable",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "default": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "observation_staleness_hours": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observation Staleness Hours"
+        },
+        "native_step_seconds": {
+          "title": "Native Step Seconds",
+          "type": "integer"
+        },
+        "horizon_start": {
+          "format": "date-time",
+          "title": "Horizon Start",
+          "type": "string"
+        },
+        "horizon_end": {
+          "format": "date-time",
+          "title": "Horizon End",
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/QuantileEnvelopeSchema"
+          },
+          "title": "Points",
+          "type": "array"
+        },
+        "representation": {
+          "const": "members",
+          "default": "members",
+          "title": "Representation",
+          "type": "string"
+        },
+        "ensemble_size": {
+          "title": "Ensemble Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "forecast_id",
+        "model",
+        "issued_at",
+        "observation_staleness_hours",
+        "native_step_seconds",
+        "horizon_start",
+        "horizon_end",
+        "points",
+        "ensemble_size"
+      ],
+      "title": "SapphireForecastMembersSchema",
+      "type": "object"
+    },
+    "SapphireForecastQuantilesSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": true,
+          "default": true,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "sapphire",
+          "default": "sapphire",
+          "title": "Source",
+          "type": "string"
+        },
+        "forecast_id": {
+          "title": "Forecast Id",
+          "type": "string"
+        },
+        "model": {
+          "$ref": "#/$defs/SapphireModelSchema"
+        },
+        "variable": {
+          "const": "discharge",
+          "default": "discharge",
+          "title": "Variable",
+          "type": "string"
+        },
+        "unit": {
+          "const": "m3/s",
+          "default": "m3/s",
+          "title": "Unit",
+          "type": "string"
+        },
+        "issued_at": {
+          "format": "date-time",
+          "title": "Issued At",
+          "type": "string"
+        },
+        "observation_staleness_hours": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Observation Staleness Hours"
+        },
+        "native_step_seconds": {
+          "title": "Native Step Seconds",
+          "type": "integer"
+        },
+        "horizon_start": {
+          "format": "date-time",
+          "title": "Horizon Start",
+          "type": "string"
+        },
+        "horizon_end": {
+          "format": "date-time",
+          "title": "Horizon End",
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/QuantileEnvelopeSchema"
+          },
+          "title": "Points",
+          "type": "array"
+        },
+        "representation": {
+          "const": "quantiles",
+          "default": "quantiles",
+          "title": "Representation",
+          "type": "string"
+        },
+        "quantile_level_count": {
+          "title": "Quantile Level Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "forecast_id",
+        "model",
+        "issued_at",
+        "observation_staleness_hours",
+        "native_step_seconds",
+        "horizon_start",
+        "horizon_end",
+        "points",
+        "quantile_level_count"
+      ],
+      "title": "SapphireForecastQuantilesSchema",
+      "type": "object"
+    },
+    "SapphireForecastUnavailableSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "const": false,
+          "default": false,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "model": {
+          "$ref": "#/$defs/SapphireModelRefSchema"
+        },
+        "reason": {
+          "enum": [
+            "no_forecast",
+            "unsupported_representation"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "reason"
+      ],
+      "title": "SapphireForecastUnavailableSchema",
+      "type": "object"
+    },
+    "SapphireModelRefSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "title": "SapphireModelRefSchema",
+      "type": "object"
+    },
+    "SapphireModelSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "artifact_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Artifact Id"
+        },
+        "artifact_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Artifact Sha256"
+        },
+        "code_or_image_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Code Or Image Version"
+        },
+        "is_primary": {
+          "title": "Is Primary",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "display_name",
+        "artifact_id",
+        "artifact_sha256",
+        "code_or_image_version",
+        "is_primary"
+      ],
+      "title": "SapphireModelSchema",
+      "type": "object"
+    },
+    "SourceStatusSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "error",
+            "missing"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "latest_available_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Latest Available At"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Message"
+        }
+      },
+      "required": [
+        "status",
+        "latest_available_at",
+        "message"
+      ],
+      "title": "SourceStatusSchema",
+      "type": "object"
+    },
+    "StationEntrySchema": {
+      "additionalProperties": false,
+      "properties": {
+        "station": {
+          "$ref": "#/$defs/StationSchema"
+        },
+        "availability": {
+          "$ref": "#/$defs/AvailabilitySchema"
+        },
+        "observations": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationsSectionSchema"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bafu_forecast": {
+          "discriminator": {
+            "mapping": {
+              "False": "#/$defs/BafuForecastUnavailableSchema",
+              "True": "#/$defs/BafuForecastAvailableSchema"
+            },
+            "propertyName": "available"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/BafuForecastAvailableSchema"
+            },
+            {
+              "$ref": "#/$defs/BafuForecastUnavailableSchema"
+            }
+          ],
+          "title": "Bafu Forecast"
+        },
+        "sapphire_forecasts": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "False": "#/$defs/SapphireForecastUnavailableSchema",
+                "True": {
+                  "discriminator": {
+                    "mapping": {
+                      "members": "#/$defs/SapphireForecastMembersSchema",
+                      "quantiles": "#/$defs/SapphireForecastQuantilesSchema"
+                    },
+                    "propertyName": "representation"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/SapphireForecastMembersSchema"
+                    },
+                    {
+                      "$ref": "#/$defs/SapphireForecastQuantilesSchema"
+                    }
+                  ]
+                }
+              },
+              "propertyName": "available"
+            },
+            "oneOf": [
+              {
+                "discriminator": {
+                  "mapping": {
+                    "members": "#/$defs/SapphireForecastMembersSchema",
+                    "quantiles": "#/$defs/SapphireForecastQuantilesSchema"
+                  },
+                  "propertyName": "representation"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/SapphireForecastMembersSchema"
+                  },
+                  {
+                    "$ref": "#/$defs/SapphireForecastQuantilesSchema"
+                  }
+                ]
+              },
+              {
+                "$ref": "#/$defs/SapphireForecastUnavailableSchema"
+              }
+            ]
+          },
+          "title": "Sapphire Forecasts",
+          "type": "array"
+        },
+        "combined_forecast": {
+          "discriminator": {
+            "mapping": {
+              "False": "#/$defs/CombinedForecastUnavailableSchema",
+              "True": {
+                "discriminator": {
+                  "mapping": {
+                    "members": "#/$defs/CombinedForecastMembersSchema",
+                    "quantiles": "#/$defs/CombinedForecastQuantilesSchema"
+                  },
+                  "propertyName": "representation"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/CombinedForecastMembersSchema"
+                  },
+                  {
+                    "$ref": "#/$defs/CombinedForecastQuantilesSchema"
+                  }
+                ]
+              }
+            },
+            "propertyName": "available"
+          },
+          "oneOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "members": "#/$defs/CombinedForecastMembersSchema",
+                  "quantiles": "#/$defs/CombinedForecastQuantilesSchema"
+                },
+                "propertyName": "representation"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CombinedForecastMembersSchema"
+                },
+                {
+                  "$ref": "#/$defs/CombinedForecastQuantilesSchema"
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/CombinedForecastUnavailableSchema"
+            }
+          ],
+          "title": "Combined Forecast"
+        },
+        "aligned_daily_comparison": {
+          "items": {
+            "$ref": "#/$defs/AlignedDailyRowSchema"
+          },
+          "title": "Aligned Daily Comparison",
+          "type": "array"
+        },
+        "verification": {
+          "$ref": "#/$defs/VerificationSchema"
+        }
+      },
+      "required": [
+        "station",
+        "availability",
+        "observations",
+        "bafu_forecast",
+        "sapphire_forecasts",
+        "combined_forecast",
+        "aligned_daily_comparison",
+        "verification"
+      ],
+      "title": "StationEntrySchema",
+      "type": "object"
+    },
+    "StationSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "network": {
+          "const": "bafu",
+          "default": "bafu",
+          "title": "Network",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Display Name"
+        },
+        "river": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "River"
+        },
+        "location": {
+          "$ref": "#/$defs/GeoCoordSchema"
+        },
+        "basin_area_km2": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Basin Area Km2"
+        },
+        "active": {
+          "title": "Active",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "name",
+        "display_name",
+        "river",
+        "location",
+        "basin_area_km2",
+        "active"
+      ],
+      "title": "StationSchema",
+      "type": "object"
+    },
+    "StatusBlockSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "overall": {
+          "enum": [
+            "ok",
+            "partial",
+            "unavailable"
+          ],
+          "title": "Overall",
+          "type": "string"
+        },
+        "observations": {
+          "$ref": "#/$defs/SourceStatusSchema"
+        },
+        "bafu_forecasts": {
+          "$ref": "#/$defs/SourceStatusSchema"
+        },
+        "sapphire_forecasts": {
+          "$ref": "#/$defs/SourceStatusSchema"
+        }
+      },
+      "required": [
+        "overall",
+        "observations",
+        "bafu_forecasts",
+        "sapphire_forecasts"
+      ],
+      "title": "StatusBlockSchema",
+      "type": "object"
+    },
+    "VerificationSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "const": "insufficient_data",
+          "default": "insufficient_data",
+          "title": "Status",
+          "type": "string"
+        },
+        "window_start": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Window Start"
+        },
+        "window_end": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Window End"
+        },
+        "method_version": {
+          "const": "forecast-comparison/v1",
+          "default": "forecast-comparison/v1",
+          "title": "Method Version",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "limitations"
+      ],
+      "title": "VerificationSchema",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "forecast-lab-snapshot/v2",
+      "default": "forecast-lab-snapshot/v2",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "data_cutoff_at": {
+      "format": "date-time",
+      "title": "Data Cutoff At",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/StatusBlockSchema"
+    },
+    "comparison_semantics": {
+      "$ref": "#/$defs/ComparisonSemanticsSchema"
+    },
+    "stations": {
+      "items": {
+        "$ref": "#/$defs/StationEntrySchema"
+      },
+      "title": "Stations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "generated_at",
+    "data_cutoff_at",
+    "status",
+    "comparison_semantics",
+    "stations"
+  ],
+  "title": "ForecastLabSnapshot",
+  "type": "object"
+}

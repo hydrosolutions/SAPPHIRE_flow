@@ -9,6 +9,11 @@
 # same stream-purity gate, same failure routing. If you change one, look at the
 # other.
 #
+# Optionally pings a Healthchecks.io dead-man check so a feed that stops
+# producing raises an alert instead of going quiet — this feed is otherwise
+# unmonitored (the host watchdog knows nothing about it). Feature-off by
+# default: no URL file, no ping, no error.
+#
 # Spec: docs/plans/192-recap-second-stack-12300-operational-test.md
 # Runbook: docs/operations/nepal-forcing-runbook.md
 
@@ -36,30 +41,77 @@ SWISS_CONTAINER="${NEPAL_IMAGE_SOURCE_CONTAINER:-sapphire_flow-prefect-worker-1}
 
 log() { printf '[run-nepal-forcing] %s\n' "$1" >&2; }
 
+# --- Dead-man ping (Healthchecks.io). --------------------------------------
+# Read BEFORE the credential guards below, so a vanished key/password file
+# also reports `/fail` rather than dying silently — that class of failure
+# (a file disappearing under the feed) is exactly what took the store down
+# on 2026-08-28.
+#
+# Feature-off by default: a missing/empty/unreadable URL file means no ping
+# and no error, mirroring the watchdog's `read_deadman_url` contract so CI
+# and dev checkouts (where the file is absent) behave normally.
+DEADMAN_URL_FILE="${NEPAL_DEADMAN_URL_FILE:-${REPO}/secrets/nepal_deadman_url}"
+CURL="${CURL_CMD:-curl}"
+
+DEADMAN_URL=""
+if [[ -r "${DEADMAN_URL_FILE}" ]]; then
+    # `tr -d` strips a trailing newline and any stray whitespace; a URL with
+    # embedded whitespace is malformed anyway and curl would reject it.
+    DEADMAN_URL="$(tr -d '[:space:]' <"${DEADMAN_URL_FILE}" 2>/dev/null)"
+fi
+
+# die <message> — log, report `/fail`, exit non-zero. Every guard below uses
+# it so no early exit can leave the dead-man check waiting silently for a run
+# that already gave up.
+die() { log "$1"; deadman_ping /fail; exit 1; }
+
+# deadman_ping [suffix] [body-file]
+#
+# NEVER changes this script's exit status and never echoes the URL: it is a
+# capability secret (anyone holding it can forge check-ins), and a dead-man
+# outage must not break the process it monitors. A ping failure is logged to
+# the launchd log and swallowed.
+deadman_ping() {
+    [[ -z "${DEADMAN_URL}" ]] && return 0
+    local suffix="${1:-}"
+    local body_file="${2:-}"
+    local -a curl_args=(-fsS --max-time 10 --retry 2 -o /dev/null -X POST)
+    if [[ -n "${body_file}" && -r "${body_file}" ]]; then
+        curl_args+=(--data-binary "@${body_file}")
+    fi
+    if ! "${CURL}" "${curl_args[@]}" "${DEADMAN_URL}${suffix}"; then
+        log "dead-man ping failed (${suffix:-success}) — continuing"
+    fi
+    return 0
+}
+
 # --- Guards: never invoke docker with an absent/empty credential. -----------
-if [[ ! -r "${KEY_FILE}" ]]; then log "key file not readable: ${KEY_FILE}"; exit 1; fi
+if [[ ! -r "${KEY_FILE}" ]]; then die "key file not readable: ${KEY_FILE}"; fi
 KEY="$(cat "${KEY_FILE}")"
-if [[ -z "${KEY}" ]]; then log "key file is empty: ${KEY_FILE}"; exit 1; fi
+if [[ -z "${KEY}" ]]; then die "key file is empty: ${KEY_FILE}"; fi
 
-if [[ ! -r "${DB_PASSWORD_FILE}" ]]; then log "db password file not readable: ${DB_PASSWORD_FILE}"; exit 1; fi
+if [[ ! -r "${DB_PASSWORD_FILE}" ]]; then die "db password file not readable: ${DB_PASSWORD_FILE}"; fi
 DB_PASSWORD="$(cat "${DB_PASSWORD_FILE}")"
-if [[ -z "${DB_PASSWORD}" ]]; then log "db password file is empty: ${DB_PASSWORD_FILE}"; exit 1; fi
+if [[ -z "${DB_PASSWORD}" ]]; then die "db password file is empty: ${DB_PASSWORD_FILE}"; fi
 
-if [[ ! -r "${RUN_SCRIPT}" ]]; then log "run script not readable: ${RUN_SCRIPT}"; exit 1; fi
+if [[ ! -r "${RUN_SCRIPT}" ]]; then die "run script not readable: ${RUN_SCRIPT}"; fi
 
 IMAGE="${NEPAL_IMAGE:-}"
 if [[ -z "${IMAGE}" ]]; then
     IMAGE="$("${DOCKER}" inspect --format '{{.Config.Image}}' "${SWISS_CONTAINER}" 2>/dev/null)"
 fi
 if [[ -z "${IMAGE}" ]]; then
-    log "could not resolve image (is ${SWISS_CONTAINER} running? set NEPAL_IMAGE to override)"
-    exit 1
+    die "could not resolve image (is ${SWISS_CONTAINER} running? set NEPAL_IMAGE to override)"
 fi
 
 # --- Run, non-root, script fed via stdin. ----------------------------------
 STDOUT_BUF="$(mktemp)"
 STDERR_BUF="$(mktemp)"
 trap 'rm -f "${STDOUT_BUF}" "${STDERR_BUF}"' EXIT
+
+# Signals "a run began" — Healthchecks.io then measures RUN DURATION and can
+# alert on a hung fetch, not just a missing check-in.
+deadman_ping /start
 
 # NOTE: no `--user app` here. This is `docker run`, so the image ENTRYPOINT
 # runs and drops to the non-root `app` user itself via gosu
@@ -116,5 +168,12 @@ if [[ "${EXIT_CODE}" -ne 0 ]]; then
     FAILED=1
 fi
 
-[[ "${FAILED}" -eq 0 ]] && exit 0
+# Report the outcome. The JSONL record is sent as the ping body (Healthchecks
+# .io keeps it with the check-in), so the dashboard shows rows/members/horizon
+# for the last run rather than a bare "it pinged".
+if [[ "${FAILED}" -eq 0 ]]; then
+    deadman_ping "" "${STDERR_BUF}"
+    exit 0
+fi
+deadman_ping /fail "${STDERR_BUF}"
 exit 1

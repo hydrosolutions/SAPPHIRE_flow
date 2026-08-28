@@ -1,6 +1,6 @@
 {
-  "schema_version": "forecast-lab-snapshot/v1",
-  "snapshot_id": "fls1-20260821T104500Z",
+  "schema_version": "forecast-lab-snapshot/v2",
+  "snapshot_id": "fls2-20260821T104500Z",
   "generated_at": "2026-08-21T10:45:00Z",
   "data_cutoff_at": "2026-08-21T10:40:00Z",
   "status": {
@@ -123,7 +123,8 @@
               "p75": 288.16,
               "maximum": 288.96
             }
-          ]
+          ],
+          "representation": "members"
         },
         {
           "available": false,
@@ -159,6 +160,14 @@
               "p75": 288.16,
               "maximum": 288.96,
               "complete": true
+            },
+            "_pooled": {
+              "minimum": 286.1,
+              "p25": 287.2,
+              "median": 287.7,
+              "p75": 288.05,
+              "maximum": 289.4,
+              "complete": true
             }
           }
         }
@@ -169,9 +178,40 @@
         "window_end": null,
         "method_version": "forecast-comparison/v1",
         "limitations": [
-          "Verification is not computed in v1 (Plan 111 gate G1 \u2014 no BAFU-derived benchmark before licence clarity).",
+          "Verification is not computed in this release (Plan 111 gate G1 \u2014 no BAFU-derived benchmark before licence clarity).",
           "Only two operational SAPPHIRE stations.",
           "Short comparison period."
+        ]
+      },
+      "combined_forecast": {
+        "available": true,
+        "source": "sapphire",
+        "representation": "members",
+        "forecast_id": "b6f1e3a2-7c1e-4b1a-9a2e-1a2b3c4d5e6f",
+        "model_key": "_pooled",
+        "combination_strategy": "pooled",
+        "source_model_ids": [
+          "nwp_regression",
+          "nwp_rainfall_runoff",
+          "linear_regression_daily"
+        ],
+        "variable": "discharge",
+        "unit": "m3/s",
+        "issued_at": "2026-08-21T06:00:06Z",
+        "observation_staleness_hours": 0.2766,
+        "native_step_seconds": 86400,
+        "ensemble_size": 92,
+        "horizon_start": "2026-08-22T00:00:00Z",
+        "horizon_end": "2026-08-26T00:00:00Z",
+        "points": [
+          {
+            "valid_time": "2026-08-22T00:00:00Z",
+            "minimum": 286.1,
+            "p25": 287.2,
+            "median": 287.7,
+            "p75": 288.05,
+            "maximum": 289.4
+          }
         ]
       }
     },
@@ -179,15 +219,15 @@
       "station": {
         "code": "2091",
         "network": "bafu",
-        "name": "Chancy",
+        "name": "Rheinfelden-Messstation",
         "display_name": null,
         "river": null,
         "location": {
-          "longitude": 5.99,
-          "latitude": 46.15,
+          "longitude": 7.8,
+          "latitude": 47.56,
           "crs": "EPSG:4326"
         },
-        "basin_area_km2": null,
+        "basin_area_km2": 34479.4,
         "active": true
       },
       "availability": {
@@ -217,24 +257,74 @@
       },
       "sapphire_forecasts": [
         {
-          "available": false,
+          "available": true,
+          "source": "sapphire",
+          "representation": "quantiles",
+          "forecast_id": "9d4c2b1a-6e5f-4a3b-8c2d-1e2f3a4b5c6d",
           "model": {
-            "key": "linear_regression_daily"
+            "key": "climatology_fallback",
+            "display_name": "Climatology Fallback",
+            "artifact_id": null,
+            "artifact_sha256": null,
+            "code_or_image_version": null,
+            "is_primary": true
           },
-          "reason": "unsupported_representation"
+          "variable": "discharge",
+          "unit": "m3/s",
+          "issued_at": "2026-08-21T06:00:00Z",
+          "observation_staleness_hours": 0.5,
+          "native_step_seconds": 86400,
+          "quantile_level_count": 7,
+          "horizon_start": "2026-08-22T00:00:00Z",
+          "horizon_end": "2026-08-22T00:00:00Z",
+          "points": [
+            {
+              "valid_time": "2026-08-22T00:00:00Z",
+              "minimum": null,
+              "p25": 60.5,
+              "median": 65.0,
+              "p75": 70.25,
+              "maximum": null
+            }
+          ]
         }
       ],
-      "aligned_daily_comparison": [],
+      "aligned_daily_comparison": [
+        {
+          "day_start": "2026-08-22T00:00:00Z",
+          "day_end": "2026-08-23T00:00:00Z",
+          "observation": {
+            "value": null,
+            "sample_count": 0,
+            "complete": false
+          },
+          "bafu": null,
+          "sapphire": {
+            "climatology_fallback": {
+              "minimum": null,
+              "p25": 60.5,
+              "median": 65.0,
+              "p75": 70.25,
+              "maximum": null,
+              "complete": true
+            }
+          }
+        }
+      ],
       "verification": {
         "status": "insufficient_data",
         "window_start": null,
         "window_end": null,
         "method_version": "forecast-comparison/v1",
         "limitations": [
-          "Verification is not computed in v1 (Plan 111 gate G1 \u2014 no BAFU-derived benchmark before licence clarity).",
+          "Verification is not computed in this release (Plan 111 gate G1 \u2014 no BAFU-derived benchmark before licence clarity).",
           "Only two operational SAPPHIRE stations.",
           "Short comparison period."
         ]
+      },
+      "combined_forecast": {
+        "available": false,
+        "reason": "no_combined_forecast"
       }
     }
   ]

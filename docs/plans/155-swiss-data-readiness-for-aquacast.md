@@ -1111,5 +1111,5 @@ the attributes.
 ## References
 - `docs/plans/152-aquacast-pooled-model-integration.md` — parent; artifact contract, decisions,
   and what the Swiss run can and cannot prove.
-- `docs/plans/130-temperature-reanalysis-live-tail.md` — READY, unimplemented; T3 dependency.
-- `docs/plans/117-basin-static-artifact-architecture.md` / Plan 120 — the package format + importer.
+- `docs/plans/archive/130-temperature-reanalysis-live-tail.md` — READY, unimplemented; T3 dependency.
+- `docs/plans/archive/117-basin-static-artifact-architecture.md` / Plan 120 — the package format + importer.

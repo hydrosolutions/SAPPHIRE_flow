@@ -1,11 +1,16 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-20
 plan: 130
 title: Temperature (+min/max/sunshine) reanalysis live-tail — fetch the recent-daily tier so reanalysis reaches present, and harden nwp_regression missing-value handling
 scope: The reanalysis temperature series (TabsD/TminD/TmaxD) and sunshine (SrelD) stop at the yearly-archive edge (~T-45d; 2026-05-31 on staging) because the adapter fetches only their archive tier — but MeteoSwiss ALSO serves them in the recent-daily per-day items (to ~T-2d), which the adapter ignores. This tail gap makes nwp_regression training crash (float(None)) on a missing future temperature for recent samples. Fix: fetch the recent-daily tier for these archive-backed products, and harden the model + training flows so a missing value never crashes a whole run. Temperature analog of Plan 128 (RprelimD precip tail).
 depends_on: []
 ---
+
+> **Archived 2026-08-28 (stale-status audit).** Status was `READY` while the work is present on
+> `main`; archived on code-artifact evidence. Task-level exit criteria were NOT re-verified one by
+> one — Plan 212 owns that deeper screening if it is wanted.
+
 
 # Plan 130 — temperature reanalysis live-tail + model/flow robustness
 

@@ -55,6 +55,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.station import StationConfig
 
+from sapphire_flow.types.enums import ModelCombinationStrategy  # noqa: TC001
+
 log = structlog.get_logger(__name__)
 
 _DEFAULT_OBSERVATION_HOURS = 168
@@ -130,17 +132,22 @@ def export_forecast_lab_snapshot(
     observation_hours: int,
     output_path: Path,
     clock: Callable[[], UtcDatetime],
+    combination_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY,
 ) -> ForecastLabSnapshot:
     """The testable core (D1/D20): takes an already-constructed
     `ForecastLabStores` (fakes in tests, `_forecast_lab_stores(conn)` in
     `main()`) rather than a raw connection, so it needs no real database to
-    exercise."""
+    exercise. `combination_strategy` defaults to `PRIMARY` — the pre-Plan-204
+    behaviour — for the same reason `build_snapshot()`'s default exists
+    (avoids churn in every existing CLI test); `main()` injects the
+    deployment-configured value explicitly (Plan 204 T1)."""
     stations = _resolve_stations(stores, station_codes)
     snapshot = build_snapshot(
         stores,
         stations=stations,
         archive_base_path=archive_base_path,
         observation_hours=observation_hours,
+        combination_strategy=combination_strategy,
         clock=clock,
     )
     _write_atomically(output_path, snapshot.model_dump(mode="json"))
@@ -152,8 +159,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Export a Forecast Lab snapshot (forecast-lab-snapshot/v1) to a "
-            "JSON file (Plan 198 T6)."
+            "Export a Forecast Lab snapshot (forecast-lab-snapshot/v2) to a "
+            "JSON file (Plan 198 T6, extended by Plan 204 T1/T2)."
         )
     )
     parser.add_argument("--output", required=True, type=Path)
@@ -184,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             observation_hours=args.observation_hours,
             output_path=args.output,
             clock=lambda: ensure_utc(datetime.now(UTC)),
+            combination_strategy=config.forecast_combination_strategy,
         )
 
     log.info(

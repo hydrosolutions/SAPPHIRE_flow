@@ -28,6 +28,7 @@ image-tag risk a second stack would carry. See Plan 192 D8.
 | the daily run | `scripts/nepal_forcing_run.py` (single-shot; fed via stdin — `scripts/` is never in the image) |
 | timer wrapper | `scripts/launchd/run-nepal-forcing.sh` |
 | schedule | `scripts/launchd/ch.hydrosolutions.sapphire-nepal-forcing.plist` — **16:00 local** |
+| monitoring | `secrets/nepal_deadman_url` — a Healthchecks.io ping URL (**optional**; absent = no ping) |
 
 **Why 16:00 local (≈14:00 UTC):** the 00Z ensemble is not complete early. Measured 2026-08-20: `pf`
 absent at 09:27 UTC, all 50 members present by 12:59 UTC. An early run gets `fc` only.
@@ -74,7 +75,11 @@ docker exec -i sapphire-nepal-postgres-1 psql -U sapphire -d sapphire \
 # 4. prove it end to end BEFORE scheduling it
 bash scripts/launchd/run-nepal-forcing.sh; echo "exit=$?"
 
-# 5. schedule
+# 5. OPTIONAL but recommended — dead-man monitoring (see § Monitoring below)
+printf '%s' 'https://hc-ping.com/<YOUR-UUID>' > secrets/nepal_deadman_url
+chmod 600 secrets/nepal_deadman_url
+
+# 6. schedule
 cp scripts/launchd/ch.hydrosolutions.sapphire-nepal-forcing.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ch.hydrosolutions.sapphire-nepal-forcing.plist
 launchctl enable gui/$(id -u)/ch.hydrosolutions.sapphire-nepal-forcing
@@ -131,6 +136,53 @@ Still believed to hold (but re-check):
 - The client writes its temp parquet to `Path.cwd()`, which fails in any read-only container.
 - Pure `era5_land_reanalysis` past its edge hard-fails rather than truncating (expected; the edge was
   ~7 days back on 2026-08-20).
+
+## Monitoring — the Healthchecks.io dead-man
+
+This feed is not covered by the host watchdog (see Caveats). Its only alerting is a
+**Healthchecks.io dead-man check**: the wrapper pings on every run, and Healthchecks alerts when a
+ping fails to arrive. That inverts the problem — instead of needing something to notice a failure,
+silence itself is the alarm, which is what catches a host that is off, a Docker engine that is down,
+or a launchd agent that was never loaded.
+
+**It is optional and off by default.** `secrets/nepal_deadman_url` absent, empty, or unreadable means
+no ping and no error, so CI and dev checkouts are unaffected.
+
+**What the wrapper sends:**
+
+| When | Ping | Meaning |
+|---|---|---|
+| run starts | `<url>/start` | lets Healthchecks measure run duration and alert on a hung fetch |
+| run succeeds (exit 0) | `<url>` | the check-in; body = the run's JSONL record |
+| run fails (exit 1) | `<url>/fail` | immediate alert, without waiting for the grace window |
+| a credential guard trips | `<url>/fail` | a key/password file vanished — reported, not silent |
+
+A ping never changes the run's exit status, and the URL is never written to any log — it is a
+capability secret (anyone holding it can forge check-ins).
+
+### Setup (one-time, in the Healthchecks.io UI)
+
+1. Create a check named e.g. **`sapphire-nepal-forcing`**.
+2. **Period 1 day, grace 3 hours.** The run fires at 16:00 local and takes ~40 s; a 3 h grace
+   tolerates a slow gateway and the DST shift without crying wolf.
+3. Point its integration at the same Slack channel the watchdog uses.
+4. Copy the ping URL into `secrets/nepal_deadman_url` (step 5 of Install) — **the UUID is the
+   credential**, so `chmod 600` it and never commit it.
+
+### Verify
+
+```bash
+# a real run should check in
+bash scripts/launchd/run-nepal-forcing.sh; echo "exit=$?"     # expect exit=0
+
+# and a forced failure should report /fail rather than going quiet
+NEPAL_KEY_FILE=/nonexistent bash scripts/launchd/run-nepal-forcing.sh; echo "exit=$?"   # expect exit=1
+```
+
+Both should appear in the Healthchecks.io UI within seconds — the second flagged red. **Run the
+forced-failure case too:** a dead-man that only ever reports success is indistinguishable from one
+that is silently misconfigured, which is precisely the 31-day recap-probe failure
+([[reference_recap_gateway_12300_products]] — 2448 records, zero `ok=True`).
 
 ## Troubleshooting: container won't start (exit 127)
 
@@ -200,9 +252,13 @@ Anything printing a path under `/tmp` or `/private/tmp` is one Docker restart aw
 
 ## Caveats
 
-- **Unmonitored.** The host watchdog probes `localhost:8000` (the Swiss API) and knows nothing about
-  this feed; an explicit `cycle_time` also suppresses the `FORECAST_FRESHNESS` heartbeat. The JSONL
-  record and the launchd log are the only signals. Check them, or wire a dead-man later.
+- **Not covered by the host watchdog.** It probes `localhost:8000` (the Swiss API) and knows nothing
+  about this feed; an explicit `cycle_time` also suppresses the `FORECAST_FRESHNESS` heartbeat, and
+  `MONITORED_LAUNCHD_LABELS` deliberately excludes this agent (it is manually bootstrapped, not
+  installer-managed). **Alerting comes from the Healthchecks.io dead-man instead** — see § Monitoring.
+  With no URL configured the feed is genuinely unmonitored and the JSONL is the only signal.
+  Note that watching the launchd agent would NOT be equivalent: on 2026-08-28 the agent was loaded
+  and last-exit 0 throughout, while the store underneath it was dead.
 - **No backups.** Deliberate — the store is reproducible from the seed plus a re-fetch.
 - **Not restarted by `start-sapphire.sh`** (that manages the Swiss file set only). After a host
   reboot, `docker compose -p sapphire-nepal ... up -d` again **from the repo checkout**;

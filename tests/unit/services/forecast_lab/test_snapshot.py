@@ -26,9 +26,15 @@ import pytest
 
 from sapphire_flow.api.forecast_lab_schemas import (
     BafuForecastAvailableSchema,
+    CombinedForecastAvailableSchema,
+    CombinedForecastMembersSchema,
+    CombinedForecastQuantilesSchema,
+    CombinedForecastUnavailableSchema,
     ForecastLabSnapshot,
     QuantileEnvelopeSchema,
     SapphireForecastAvailableSchema,
+    SapphireForecastMembersSchema,
+    SapphireForecastQuantilesSchema,
     SapphireForecastUnavailableSchema,
 )
 from sapphire_flow.services.forecast_lab.db_sources import ForecastLabStores
@@ -38,11 +44,18 @@ from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     ForecastStatus,
     ModelAssignmentStatus,
+    ModelCombinationStrategy,
     NwpCycleSource,
     QcStatus,
 )
 from sapphire_flow.types.forecast import OperationalForecast
-from sapphire_flow.types.ids import ForecastId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    BMA_MODEL_ID,
+    POOLED_MODEL_ID,
+    ForecastId,
+    ModelId,
+    StationId,
+)
 from sapphire_flow.types.station import ModelAssignment
 from tests.conftest import make_observation, make_station_config
 from tests.fakes.fake_stores import (
@@ -146,6 +159,86 @@ def _active_assignment(
         status=ModelAssignmentStatus.ACTIVE,
         priority=priority,
         created_at=_EPOCH,
+    )
+
+
+# --- Plan 204 T1/T2 helpers -------------------------------------------------
+
+_RECOGNISED_LEVELS = (0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95)
+
+
+def _quantiles_ensemble_from_rows(
+    station_id: StationId,
+    *,
+    issued_at: UtcDatetime,
+    rows: list[dict[str, Any]],
+    model_id: ModelId | None = None,
+) -> ForecastEnsemble:
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("valid_time").cast(pl.Datetime("us", "UTC"))
+    )
+    return ForecastEnsemble.from_quantiles(
+        station_id=station_id,
+        issued_at=issued_at,
+        parameter="discharge",
+        units="m3/s",
+        time_step=timedelta(days=1),
+        values=df,
+        model_id=model_id,
+    )
+
+
+def _recognised_rows(
+    vt: UtcDatetime,
+    *,
+    p25: float = 1.0,
+    median: float = 2.0,
+    p75: float = 3.0,
+    other: float = 99.0,
+) -> list[dict[str, Any]]:
+    values = {
+        0.05: other,
+        0.10: other,
+        0.25: p25,
+        0.50: median,
+        0.75: p75,
+        0.90: other,
+        0.95: other,
+    }
+    return [
+        {"valid_time": vt, "quantile": q, "value": values[q]}
+        for q in _RECOGNISED_LEVELS
+    ]
+
+
+def _combined_forecast(
+    *,
+    station_id: StationId,
+    model_id: ModelId,
+    ensemble: ForecastEnsemble,
+    issued_at: UtcDatetime,
+    combination_strategy: str | None,
+    source_model_ids: list[ModelId] | None,
+) -> OperationalForecast:
+    return OperationalForecast(
+        id=ForecastId(uuid4()),
+        station_id=station_id,
+        model_id=model_id,
+        model_artifact_id=None,
+        issued_at=issued_at,
+        nwp_cycle_reference_time=issued_at,
+        nwp_cycle_source=NwpCycleSource.PRIMARY,
+        representation=ensemble.representation,
+        status=ForecastStatus.RAW,
+        version=1,
+        warm_up_source=None,
+        warm_up_state_age_hours=None,
+        observation_staleness_hours=0.3,
+        ensemble=ensemble,
+        created_at=issued_at,
+        updated_at=issued_at,
+        combination_strategy=combination_strategy,
+        source_model_ids=source_model_ids,
     )
 
 
@@ -752,7 +845,7 @@ class TestInjectedClockDeterminism:
             snap2.model_dump(mode="json")
         )
         assert snap1.generated_at == _EPOCH
-        assert snap1.snapshot_id == "fls1-20260821T104500Z"
+        assert snap1.snapshot_id == "fls2-20260821T104500Z"
 
     def test_no_bare_datetime_now_in_forecast_lab_services(self) -> None:
         import ast
@@ -1076,3 +1169,842 @@ class TestNonFiniteValuesNeverReachTheJson:
 
         assert not out.exists()
         assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Plan 204 T1 — the `combined_forecast` block (Gap 2: `_pooled`/`_bma` have
+# no assignment row, D17b, so no per-model iteration ever reaches them).
+# ---------------------------------------------------------------------------
+
+
+class TestCombinedForecastPositivePath:
+    """T1 exit — the finding this task exists for: a stored `_pooled` row
+    under `combination_strategy=POOLED` renders available with exact
+    provenance, and the representation/count invariant holds."""
+
+    def test_pooled_row_renders_available_with_exact_provenance(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(3), n_members=92
+        )
+        forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="pooled",
+            source_model_ids=[
+                ModelId("nwp_regression"),
+                ModelId("nwp_rainfall_runoff"),
+                ModelId("linear_regression_daily"),
+            ],
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(forecast)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastAvailableSchema)
+        assert combined.available is True
+        assert combined.forecast_id == str(forecast.id)
+        assert combined.combination_strategy == "pooled"
+        assert combined.source_model_ids == [
+            "nwp_regression",
+            "nwp_rainfall_runoff",
+            "linear_regression_daily",
+        ]
+        assert len(combined.points) > 0
+
+    def test_representation_and_count_invariant(self) -> None:
+        """No `quantile_level_count is None` assertion needed: the members
+        variant has no such field and the FORBID-EXTRA RULE makes emitting
+        one a validation error — the MEMBER-COUNT TRAP is unrepresentable,
+        not merely tested for."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(3), n_members=92
+        )
+        forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="pooled",
+            source_model_ids=[ModelId("nwp_regression")],
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(forecast)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastMembersSchema)
+        assert combined.representation == "members"
+        assert combined.ensemble_size == ensemble.member_count == 92
+        assert not hasattr(combined, "quantile_level_count")
+
+
+class TestCombinedForecastMissingProvenanceFailsLoudly:
+    """A `_pooled`/`_bma` row with a NULL `combination_strategy` or a NULL
+    `source_model_ids` is corrupt or was written by something other than
+    the combination writer (`forecast_combination.py` always sets both).
+    Substituting the requested strategy for a missing
+    `combination_strategy`, or an empty list for a missing
+    `source_model_ids`, would silently fabricate lineage that never
+    matches the persisted row (AC4) — the snapshot builder must fail
+    loudly instead of rendering a plausible-looking fake."""
+
+    def test_null_combination_strategy_raises(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(3), n_members=92
+        )
+        forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy=None,
+            source_model_ids=[ModelId("nwp_regression")],
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(forecast)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        with pytest.raises(ValueError, match="missing provenance"):
+            build_snapshot(
+                stores,
+                stations=[station],
+                archive_base_path=None,
+                combination_strategy=ModelCombinationStrategy.POOLED,
+                clock=_frozen_clock(),
+            )
+
+    def test_null_source_model_ids_raises(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(3), n_members=92
+        )
+        forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="pooled",
+            source_model_ids=None,
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(forecast)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        with pytest.raises(ValueError, match="missing provenance"):
+            build_snapshot(
+                stores,
+                stations=[station],
+                archive_base_path=None,
+                combination_strategy=ModelCombinationStrategy.POOLED,
+                clock=_frozen_clock(),
+            )
+
+
+class TestCombinedForecastDailyAlignment:
+    def test_combined_forecast_joins_daily_alignment_and_extends_horizon(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("nwp_regression"), priority=10)
+        )
+        forecast_store = FakeForecastStore()
+        # Per-model forecast: horizon days 1-2 only.
+        per_model_ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=5
+        )
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("nwp_regression"),
+                ensemble=per_model_ensemble,
+                issued_at=_EPOCH,
+            )
+        )
+        # Combined forecast: horizon days 1-3 — extends past every per-model
+        # forecast's horizon.
+        combined_vts = [ensure_utc(_EPOCH + timedelta(days=d)) for d in (1, 2, 3)]
+        combined_ensemble = _members_ensemble(
+            station.id,
+            issued_at=_EPOCH,
+            rng=random.Random(2),
+            n_members=10,
+            valid_times=combined_vts,
+        )
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=combined_ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        rows = snapshot.stations[0].aligned_daily_comparison
+        assert len(rows) == 3
+        assert "_pooled" in rows[0].sapphire
+        assert "_pooled" in rows[2].sapphire
+        # Day 3 has no per-model coverage, only the combined block.
+        assert "nwp_regression" not in rows[2].sapphire
+
+
+class TestCombinedQuantileRecognisedSet:
+    """Round-4 major (independent Codex pass over the committed diff): the
+    combined block bypassed `_is_renderable`, so a QUANTILES combination whose
+    levels are not the RECOGNISED SET was exported `available: true` with
+    `null` quartiles while daily alignment still called it `complete`. The
+    per-model path (T2) has always gated on the predicate; the combined path
+    must use the SAME one."""
+
+    @staticmethod
+    def _seed(rows_for: Any) -> Any:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        vt = _EPOCH + timedelta(days=1)
+        ensemble = _quantiles_ensemble_from_rows(
+            station.id,
+            issued_at=_EPOCH,
+            rows=rows_for(vt),
+            model_id=POOLED_MODEL_ID,
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+        return build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+    def test_recognised_quantile_combination_renders_with_null_extremes(self) -> None:
+        snapshot = self._seed(lambda vt: _recognised_rows(vt))
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastQuantilesSchema)
+        assert combined.quantile_level_count == 7
+        point = combined.points[0]
+        assert point.p25 == 1.0
+        assert point.median == 2.0
+        assert point.p75 == 3.0
+        # The whole point of the guard: extremes are never invented from
+        # 0.05/0.95, on the combined path exactly as on the per-model one.
+        assert point.minimum is None
+        assert point.maximum is None
+
+    def test_unrecognised_quantile_combination_is_not_exported(self) -> None:
+        """RED before the fix: this rendered `available: true` with null
+        quartiles. A nine-level set is the realistic case — a model emitting a
+        different level grid, which `from_quantiles()` accepts (it enforces
+        only a >=7 unique-level floor, `types/ensemble.py:97-100`) and which
+        carries no 0.25/0.75, so p25 and p75 would both silently become null
+        while the block still claimed to be a forecast."""
+
+        def _nine_levels(vt: UtcDatetime) -> list[dict[str, Any]]:
+            levels = (0.02, 0.10, 0.20, 0.30, 0.50, 0.70, 0.80, 0.90, 0.98)
+            return [
+                {"valid_time": vt, "quantile": q, "value": 10.0 + i}
+                for i, q in enumerate(levels)
+            ]
+
+        snapshot = self._seed(_nine_levels)
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+        # And it must not leak into the derived views either.
+        station = snapshot.stations[0]
+        for row in station.aligned_daily_comparison:
+            assert str(POOLED_MODEL_ID) not in row.sapphire
+
+    def test_duplicate_level_combination_is_not_exported(self) -> None:
+        """Set-equality alone would accept this: all seven levels present,
+        plus a second 0.25 row leaving two candidate values for p25."""
+
+        def _duplicate_p25(vt: UtcDatetime) -> list[dict[str, Any]]:
+            rows = _recognised_rows(vt)
+            return [*rows, {"valid_time": vt, "quantile": 0.25, "value": 42.0}]
+
+        snapshot = self._seed(_duplicate_p25)
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+
+
+class TestCombinedForecastStrategyDispatch:
+    """T1's exhaustive `match` on `ModelCombinationStrategy` — the stale-row
+    lock (decision 3), the BMA-vs-pooled dispatch lock, and the CONSENSUS
+    lock. Each seeds the exact rows that would leak through a "PRIMARY
+    special case, everything else fetches `_pooled`" build."""
+
+    def test_primary_never_exports_a_stale_pooled_row(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=5
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.PRIMARY,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "strategy_primary"
+        for row in snapshot.stations[0].aligned_daily_comparison:
+            assert "_pooled" not in row.sapphire
+
+    def test_pooled_strategy_with_no_stored_row_is_unavailable(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        stores = _stores(station_store=station_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+
+    def test_bma_selects_the_bma_row_not_pooled(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        forecast_store = FakeForecastStore()
+        pooled_ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=5
+        )
+        bma_ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(2), n_members=7
+        )
+        pooled_forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=pooled_ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="pooled",
+            source_model_ids=[ModelId("nwp_regression")],
+        )
+        bma_forecast = _combined_forecast(
+            station_id=station.id,
+            model_id=BMA_MODEL_ID,
+            ensemble=bma_ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="bma",
+            source_model_ids=[ModelId("nwp_regression")],
+        )
+        forecast_store.store_forecast(pooled_forecast)
+        forecast_store.store_forecast(bma_forecast)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.BMA,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastAvailableSchema)
+        assert combined.model_key == "_bma"
+        assert combined.forecast_id == str(bma_forecast.id)
+        for row in snapshot.stations[0].aligned_daily_comparison:
+            assert "_bma" in row.sapphire
+            assert "_pooled" not in row.sapphire
+
+    def test_consensus_exports_nothing_even_with_rows_stored(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        forecast_store = FakeForecastStore()
+        pooled_ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=5
+        )
+        bma_ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(2), n_members=7
+        )
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=pooled_ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=BMA_MODEL_ID,
+                ensemble=bma_ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="bma",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.CONSENSUS,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+        for row in snapshot.stations[0].aligned_daily_comparison:
+            assert "_pooled" not in row.sapphire
+            assert "_bma" not in row.sapphire
+            assert "_consensus" not in row.sapphire
+
+
+class TestCombinedForecastRollUp:
+    """T1 exit — combined-only positive scenario: a station with no
+    renderable assigned forecast but a stored `_pooled` row must still
+    count as an available SAPPHIRE source in every roll-up."""
+
+    def test_combined_only_station_counts_in_rollups(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        # An assignment that produces nothing (D5-guarded representation).
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("no_forecast_model"), priority=10)
+        )
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=5
+        )
+        forecast_store = FakeForecastStore()
+        combined = _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="pooled",
+            source_model_ids=[ModelId("nwp_regression")],
+        )
+        forecast_store.store_forecast(combined)
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        assert snapshot.stations[0].availability.sapphire_forecast is True
+        assert snapshot.status.sapphire_forecasts.status == "ok"
+        assert snapshot.status.sapphire_forecasts.latest_available_at == ensure_utc(
+            combined.issued_at
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plan 204 T2 — the quantile envelope: exact stored-level lookup, null
+# extremes, the RECOGNISED-SET RULE (exact per-`valid_time` match), and the
+# shared `_is_renderable` predicate's effect on `is_primary`.
+# ---------------------------------------------------------------------------
+
+
+class TestQuantileEnvelopeMapping:
+    def _build_single_quantile_entry(
+        self, rows: list[dict[str, Any]]
+    ) -> SapphireForecastAvailableSchema | SapphireForecastUnavailableSchema:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("climatology_fallback"), priority=10)
+        )
+        ensemble = _quantiles_ensemble_from_rows(
+            station.id,
+            issued_at=_EPOCH,
+            rows=rows,
+            model_id=ModelId("climatology_fallback"),
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("climatology_fallback"),
+                ensemble=ensemble,
+                issued_at=_EPOCH,
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+        return snapshot.stations[0].sapphire_forecasts[0]
+
+    def test_distinct_stored_levels_map_to_p25_median_p75(self) -> None:
+        # Two valid_times with DIFFERENT p25/median/p75 values: a subtly
+        # broken implementation that performs one global lookup and
+        # repeats those values across the whole horizon would pass a
+        # single-timestep version of this test, so both steps are
+        # asserted independently here.
+        vt1 = ensure_utc(_EPOCH + timedelta(days=1))
+        vt2 = ensure_utc(_EPOCH + timedelta(days=2))
+        rows = _recognised_rows(vt1, p25=1.0, median=2.0, p75=3.0) + _recognised_rows(
+            vt2, p25=10.0, median=20.0, p75=30.0
+        )
+        entry = self._build_single_quantile_entry(rows)
+        assert isinstance(entry, SapphireForecastQuantilesSchema)
+        assert len(entry.points) == 2
+        point1, point2 = entry.points
+        assert point1.valid_time == vt1
+        assert point1.p25 == 1.0
+        assert point1.median == 2.0
+        assert point1.p75 == 3.0
+        assert point2.valid_time == vt2
+        assert point2.p25 == 10.0
+        assert point2.median == 20.0
+        assert point2.p75 == 30.0
+
+    def test_extremes_are_null_not_filled_from_0p05_0p95(self) -> None:
+        vt = ensure_utc(_EPOCH + timedelta(days=1))
+        rows = _recognised_rows(vt)
+        entry = self._build_single_quantile_entry(rows)
+        assert isinstance(entry, SapphireForecastQuantilesSchema)
+        point = entry.points[0]
+        assert point.minimum is None
+        assert point.maximum is None
+
+    def test_per_valid_time_missing_level_falls_back_for_whole_forecast(self) -> None:
+        vt1 = ensure_utc(_EPOCH + timedelta(days=1))
+        vt2 = ensure_utc(_EPOCH + timedelta(days=2))
+        rows = _recognised_rows(vt1) + [
+            r for r in _recognised_rows(vt2) if r["quantile"] != 0.25
+        ]
+        entry = self._build_single_quantile_entry(rows)
+        assert isinstance(entry, SapphireForecastUnavailableSchema)
+        assert entry.reason == "unsupported_representation"
+
+    def test_duplicate_level_row_falls_back_to_unsupported_representation(self) -> None:
+        vt = ensure_utc(_EPOCH + timedelta(days=1))
+        rows = [
+            *_recognised_rows(vt),
+            {"valid_time": vt, "quantile": 0.25, "value": 999.0},
+        ]
+        entry = self._build_single_quantile_entry(rows)
+        assert isinstance(entry, SapphireForecastUnavailableSchema)
+        assert entry.reason == "unsupported_representation"
+
+    def test_wire_shape_quantiles_vs_members(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("nwp_regression"), priority=10)
+        )
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("climatology_fallback"), priority=20)
+        )
+        forecast_store = FakeForecastStore()
+        members_ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=21
+        )
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("nwp_regression"),
+                ensemble=members_ensemble,
+                issued_at=_EPOCH,
+            )
+        )
+        vt = ensure_utc(_EPOCH + timedelta(days=1))
+        quantiles_ensemble = _quantiles_ensemble_from_rows(
+            station.id,
+            issued_at=_EPOCH,
+            rows=_recognised_rows(vt),
+            model_id=ModelId("climatology_fallback"),
+        )
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("climatology_fallback"),
+                ensemble=quantiles_ensemble,
+                issued_at=_EPOCH,
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+        entries = {e.model.key: e for e in snapshot.stations[0].sapphire_forecasts}  # type: ignore[union-attr]
+
+        quantile_entry = entries["climatology_fallback"]
+        members_entry = entries["nwp_regression"]
+        assert isinstance(quantile_entry, SapphireForecastQuantilesSchema)
+        assert quantile_entry.representation == "quantiles"
+        assert quantile_entry.quantile_level_count == 7
+        assert not hasattr(quantile_entry, "ensemble_size")
+
+        assert isinstance(members_entry, SapphireForecastMembersSchema)
+        assert members_entry.representation == "members"
+        assert members_entry.ensemble_size == 21
+
+
+class TestQuantilePrimaryTiebreak:
+    def test_primary_single_quantile_candidate(self) -> None:
+        vt = ensure_utc(_EPOCH + timedelta(days=1))
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("climatology_fallback"), priority=10)
+        )
+        ensemble = _quantiles_ensemble_from_rows(
+            station.id,
+            issued_at=_EPOCH,
+            rows=_recognised_rows(vt),
+            model_id=ModelId("climatology_fallback"),
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("climatology_fallback"),
+                ensemble=ensemble,
+                issued_at=_EPOCH,
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+        entry = snapshot.stations[0].sapphire_forecasts[0]
+        assert isinstance(entry, SapphireForecastQuantilesSchema)
+        assert entry.model.is_primary is True
+
+    def test_primary_mixed_priority_unrecognised_beats_recognised_loses(self) -> None:
+        """The test that actually locks the rule: a HIGHER-priority
+        unrecognised (9-level) quantile forecast must NOT win `is_primary`
+        over a LOWER-priority recognised (7-level) one — RED against a
+        "first non-None forecast" build."""
+        vt = ensure_utc(_EPOCH + timedelta(days=1))
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("high_priority_9level"), priority=0)
+        )
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("low_priority_7level"), priority=1)
+        )
+        forecast_store = FakeForecastStore()
+        nine_level_rows = [
+            {"valid_time": vt, "quantile": q, "value": 1.0}
+            for q in (0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.98)
+        ]
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("high_priority_9level"),
+                ensemble=_quantiles_ensemble_from_rows(
+                    station.id,
+                    issued_at=_EPOCH,
+                    rows=nine_level_rows,
+                    model_id=ModelId("high_priority_9level"),
+                ),
+                issued_at=_EPOCH,
+            )
+        )
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("low_priority_7level"),
+                ensemble=_quantiles_ensemble_from_rows(
+                    station.id,
+                    issued_at=_EPOCH,
+                    rows=_recognised_rows(vt),
+                    model_id=ModelId("low_priority_7level"),
+                ),
+                issued_at=_EPOCH,
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+        primaries = [
+            e
+            for e in snapshot.stations[0].sapphire_forecasts
+            if isinstance(e, SapphireForecastAvailableSchema) and e.model.is_primary
+        ]
+        assert len(primaries) == 1
+        assert primaries[0].model.key == "low_priority_7level"
+
+    def test_primary_per_valid_time_divergence_shared_predicate_lock(self) -> None:
+        """The shared-predicate lock: the higher-priority candidate is a
+        7-level quantile forecast complete at every `valid_time` except one
+        (renders `unsupported_representation` only under the
+        per-`valid_time` rule) — RED against a pre-pass doing a coarser
+        GLOBAL level-set match, which the single-candidate test above cannot
+        distinguish."""
+        vt1 = ensure_utc(_EPOCH + timedelta(days=1))
+        vt2 = ensure_utc(_EPOCH + timedelta(days=2))
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("high_priority_partial"), priority=0)
+        )
+        station_store.store_model_assignment(
+            _active_assignment(station.id, ModelId("low_priority_complete"), priority=1)
+        )
+        forecast_store = FakeForecastStore()
+        partial_rows = _recognised_rows(vt1) + [
+            r for r in _recognised_rows(vt2) if r["quantile"] != 0.25
+        ]
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("high_priority_partial"),
+                ensemble=_quantiles_ensemble_from_rows(
+                    station.id,
+                    issued_at=_EPOCH,
+                    rows=partial_rows,
+                    model_id=ModelId("high_priority_partial"),
+                ),
+                issued_at=_EPOCH,
+            )
+        )
+        complete_rows = _recognised_rows(vt1) + _recognised_rows(vt2)
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("low_priority_complete"),
+                ensemble=_quantiles_ensemble_from_rows(
+                    station.id,
+                    issued_at=_EPOCH,
+                    rows=complete_rows,
+                    model_id=ModelId("low_priority_complete"),
+                ),
+                issued_at=_EPOCH,
+            )
+        )
+        stores = _stores(station_store=station_store, forecast_store=forecast_store)
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+        primaries = [
+            e
+            for e in snapshot.stations[0].sapphire_forecasts
+            if isinstance(e, SapphireForecastAvailableSchema) and e.model.is_primary
+        ]
+        assert len(primaries) == 1
+        assert primaries[0].model.key == "low_priority_complete"
+
+
+# ---------------------------------------------------------------------------
+# Plan 204 T3 — the v2 cutover: exact assertions (a grep is a hygiene
+# check, not a contract).
+# ---------------------------------------------------------------------------
+
+
+class TestV2SchemaVersionCutover:
+    def test_schema_version_and_snapshot_id_and_verification_are_v2(self) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        stores = _stores(station_store=station_store)
+
+        snapshot = build_snapshot(
+            stores, stations=[station], archive_base_path=None, clock=_frozen_clock()
+        )
+
+        assert snapshot.schema_version == "forecast-lab-snapshot/v2"
+        assert snapshot.snapshot_id.startswith("fls2-")
+        assert "v1" not in snapshot.stations[0].verification.limitations[0]
+        # Different version namespace — must survive verbatim (AC7).
+        assert (
+            snapshot.stations[0].verification.method_version == "forecast-comparison/v1"
+        )
