@@ -48,7 +48,7 @@ first later run that actually imports a basin once its hold clears (see
 "Idempotency" below, lines documenting the fully-held case).
 
 The extraction tool that produces this package is **adjacent** — SAP3 does
-not call it (contract §12, `docs/plans/117-basin-static-artifact-
+not call it (contract §12, `docs/plans/archive/117-basin-static-artifact-
 architecture.md`). Obtain the package from the extractor operator (or DHM's
 regeneration path, contract §12) and place it anywhere readable — the
 importer takes an explicit `--package-dir`.
