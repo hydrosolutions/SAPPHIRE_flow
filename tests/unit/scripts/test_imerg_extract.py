@@ -6,8 +6,9 @@ the structure observed on the real GES DISC probe granule.
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import h5py
 import numpy as np
@@ -45,6 +46,7 @@ def _write_fake_granule(
     value: float = 1.0,
     value_at: tuple[float, float] | None = None,
     product_version: str = "07B",
+    file_header_filename: str | None = None,
 ) -> None:
     """The REAL global grid shape (1, 3600, 1800) — `ImergReadContract`'s
     `__post_init__` pins the exact D1 grid shape, so a downsized fixture
@@ -65,7 +67,8 @@ def _write_fake_granule(
         precip[0, i, j] = value
     with h5py.File(path, "w") as f:
         f.attrs["FileHeader"] = (
-            f"FileName={path.name};\nAlgorithmVersion=3IMERGHH;\n"
+            f"FileName={file_header_filename or path.name};\n"
+            "AlgorithmVersion=3IMERGHH;\n"
             f"ProductVersion={product_version};\n"
         ).encode()
         grid = f.create_group("Grid")
@@ -337,28 +340,36 @@ def _valid_identity_inputs(
 
 
 def _write_bundle_payload(
-    directory: Path, *, station_count: int = 1, hour_count: int = 2
+    directory: Path,
+    *,
+    station_count: int = 1,
+    hour_count: int = 2,
+    nearest_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     stations = [f"S{i}" for i in range(station_count)]
     timestamps = [
         str(np.datetime64("2020-01-01T00:00:00") + np.timedelta64(h, "h"))
         for h in range(hour_count)
     ]
-    rows = [
-        {
-            "station_id": s,
-            "timestamp_utc": t,
-            "precip_mm_per_h": 1.0,
-            "granule_count": 2,
-            "non_finite_cell_count": 0,
-            "grid_lat": 27.05,
-            "grid_lon": 85.05,
-            "station_elev_m": 1000.0,
-            "station_elevation_datum": "UNKNOWN",
-        }
-        for s in stations
-        for t in timestamps
-    ]
+    rows = (
+        nearest_rows
+        if nearest_rows is not None
+        else [
+            {
+                "station_id": s,
+                "timestamp_utc": t,
+                "precip_mm_per_h": 1.0,
+                "granule_count": 2,
+                "non_finite_cell_count": 0,
+                "grid_lat": 27.05,
+                "grid_lon": 85.05,
+                "station_elev_m": 1000.0,
+                "station_elevation_datum": "UNKNOWN",
+            }
+            for s in stations
+            for t in timestamps
+        ]
+    )
     pl.DataFrame(rows).write_csv(directory / ie._NEAREST_SERIES_FILENAME)
     pl.DataFrame(
         [
@@ -399,13 +410,70 @@ def _write_bundle_payload(
 
 
 def _station_accounting(*, hour_count: int) -> dict[str, object]:
+    """Matches `_write_bundle_payload`'s rows (every hour complete and
+    finite) — `validate_imerg_bundle` RE-DERIVES this from the published
+    CSV, so it has to be the truth, not a plausible-looking dict."""
     return {
         "n_hours": hour_count,
         "n_hours_complete": hour_count,
         "n_hours_partial": 0,
         "n_hours_missing_granule": 0,
         "n_hours_non_finite_cell": 0,
+        "n_hours_any_non_finite_cell": 0,
+        "n_granules_non_finite_cell": 0,
+        "n_nan_hours": 0,
     }
+
+
+def _bundle_manifest(
+    *,
+    inputs: ie.ImergIdentityInputs,
+    payload_sha256s: dict[str, str],
+    hour_count: int = 1,
+    station_ids: tuple[str, ...] = ("S0",),
+    **overrides: Any,
+) -> ie.ImergExtractionManifest:
+    """ONE factory for every hand-built extraction manifest here. The
+    top-level provenance is DERIVED from `inputs`, so it agrees with the
+    hashed identity by construction and each test overrides only the single
+    field it is actually about — six near-identical 25-line literals could
+    each drift from the identity independently."""
+    axis_start = datetime(2020, 1, 1, 0, 0, tzinfo=UTC)
+    fields: dict[str, Any] = {
+        "extraction_identity": inputs.digest(),
+        "operator_id": inputs.operator_id,
+        "coordinate_table_sha256": inputs.coordinate_table_sha256,
+        "route": inputs.route,
+        "collection_short_name": inputs.collection_short_name,
+        "granule_revision": inputs.granule_revision,
+        "acquisition_window_start": datetime.fromisoformat(
+            inputs.requested_window_start
+        ),
+        "acquisition_window_end": datetime.fromisoformat(inputs.requested_window_end),
+        "granules_requested": len(inputs.granule_checksums),
+        "granules_retrieved": len(inputs.granule_checksums),
+        "granules_missing": (),
+        "acquisition_generated_at": datetime(2026, 8, 28, tzinfo=UTC),
+        "output_axis_start": axis_start,
+        "output_axis_end": axis_start + timedelta(hours=hour_count - 1),
+        "timestamp_convention": AccumulationConvention.PERIOD_ENDING,
+        "period_ending_convention": ie.EXPECTED_PERIOD_ENDING_CONVENTION,
+        "box": inputs.box,
+        "read_contract": dict(inputs.read_contract),
+        "retrospective": True,
+        "measured_acquisition_latency": "4h20m-4h50m",
+        "payload_sha256s": payload_sha256s,
+        "station_accounting": {
+            station: _station_accounting(hour_count=hour_count)
+            for station in station_ids
+        },
+        "identity_inputs": inputs.canonical_payload(),
+        "n_stations": len(station_ids),
+        "n_hours": hour_count,
+        "generated_at": datetime(2026, 8, 28, tzinfo=UTC),
+    }
+    fields.update(overrides)
+    return ie.ImergExtractionManifest(**fields)
 
 
 class TestPublishAndDiscover:
@@ -416,29 +484,8 @@ class TestPublishAndDiscover:
         identity = inputs.digest()
         staged = ie.prepare_staging_dir(root, identity=identity)
         payload_sha256s = _write_bundle_payload(staged, station_count=1, hour_count=2)
-        manifest = ie.ImergExtractionManifest(
-            extraction_identity=identity,
-            operator_id=str(ExtractionOperator.NEAREST),
-            coordinate_table_sha256="abc",
-            route="GES DISC HTTPS archive",
-            collection_short_name="GPM_3IMERGHHE_07",
-            granule_revision="V07B",
-            acquisition_window_start=datetime(2019, 12, 31, 23, 0, tzinfo=UTC),
-            acquisition_window_end=datetime(2025, 12, 31, 22, 30, tzinfo=UTC),
-            output_axis_start=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            output_axis_end=datetime(2020, 1, 1, 1, 0, tzinfo=UTC),
-            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
-            period_ending_convention=ie.EXPECTED_PERIOD_ENDING_CONVENTION,
-            box=(31, 80, 26, 89),
-            read_contract={"units": "mm/hr"},
-            retrospective=True,
-            measured_acquisition_latency="4h20m-4h50m",
-            payload_sha256s=payload_sha256s,
-            station_accounting={"S0": _station_accounting(hour_count=2)},
-            identity_inputs=inputs.canonical_payload(),
-            n_stations=1,
-            n_hours=2,
-            generated_at=datetime(2026, 8, 28, tzinfo=UTC),
+        manifest = _bundle_manifest(
+            inputs=inputs, payload_sha256s=payload_sha256s, hour_count=2
         )
         ie._write_manifest(manifest, staged / ie.manifest_filename())
         published = ie.publish_imerg_bundle(
@@ -466,28 +513,10 @@ class TestPublishAndDiscover:
         identity = inputs.digest()
         staged = ie.prepare_staging_dir(root, identity=identity)
         payload_sha256s = _write_bundle_payload(staged, station_count=1, hour_count=1)
-        manifest = ie.ImergExtractionManifest(
-            extraction_identity=identity,
-            operator_id=str(ExtractionOperator.NEAREST),
-            coordinate_table_sha256="abc",
-            route="GES DISC HTTPS archive",
-            collection_short_name="GPM_3IMERGHHE_07",
-            granule_revision="V07B",
-            acquisition_window_start=datetime(2019, 12, 31, 23, 0, tzinfo=UTC),
-            acquisition_window_end=datetime(2025, 12, 31, 22, 30, tzinfo=UTC),
-            output_axis_start=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            output_axis_end=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
-            period_ending_convention=ie.EXPECTED_PERIOD_ENDING_CONVENTION,
-            box=(31, 80, 26, 89),
-            read_contract={},
-            retrospective=False,  # D7 violation
-            measured_acquisition_latency="4h20m-4h50m",
+        manifest = _bundle_manifest(
+            inputs=inputs,
             payload_sha256s=payload_sha256s,
-            station_accounting={"S0": _station_accounting(hour_count=1)},
-            n_stations=1,
-            n_hours=1,
-            generated_at=datetime(2026, 8, 28, tzinfo=UTC),
+            retrospective=False,  # D7 violation
         )
         ie._write_manifest(manifest, staged / ie.manifest_filename())
         with pytest.raises(ExtractionPostConditionError, match="RETROSPECTIVE"):
@@ -512,30 +541,7 @@ class TestPublishAndDiscover:
         real_identity = inputs.digest()
         staged = ie.prepare_staging_dir(root, identity=real_identity)
         payload_sha256s = _write_bundle_payload(staged, station_count=1, hour_count=1)
-        manifest = ie.ImergExtractionManifest(
-            extraction_identity=real_identity,
-            operator_id=str(ExtractionOperator.NEAREST),
-            coordinate_table_sha256="abc",
-            route="GES DISC HTTPS archive",
-            collection_short_name="GPM_3IMERGHHE_07",
-            granule_revision="V07B",
-            acquisition_window_start=datetime(2019, 12, 31, 23, 0, tzinfo=UTC),
-            acquisition_window_end=datetime(2025, 12, 31, 22, 30, tzinfo=UTC),
-            output_axis_start=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            output_axis_end=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
-            period_ending_convention=ie.EXPECTED_PERIOD_ENDING_CONVENTION,
-            box=(31, 80, 26, 89),
-            read_contract={},
-            retrospective=True,
-            measured_acquisition_latency="4h20m-4h50m",
-            payload_sha256s=payload_sha256s,
-            station_accounting={"S0": _station_accounting(hour_count=1)},
-            identity_inputs=inputs.canonical_payload(),
-            n_stations=1,
-            n_hours=1,
-            generated_at=datetime(2026, 8, 28, tzinfo=UTC),
-        )
+        manifest = _bundle_manifest(inputs=inputs, payload_sha256s=payload_sha256s)
         ie._write_manifest(manifest, staged / ie.manifest_filename())
         with pytest.raises(ExtractionPostConditionError, match="publish identity"):
             ie.publish_imerg_bundle(
@@ -594,28 +600,10 @@ class TestPublishAndDiscover:
         payload_sha256s = {
             name: checksum_file(directory / name) for name in ie.IMERG_PAYLOAD_FILES
         }
-        manifest = ie.ImergExtractionManifest(
-            extraction_identity="idididid",
-            operator_id=str(ExtractionOperator.NEAREST),
-            coordinate_table_sha256="abc",
-            route="GES DISC HTTPS archive",
-            collection_short_name="GPM_3IMERGHHE_07",
-            granule_revision="V07B",
-            acquisition_window_start=datetime(2019, 12, 31, 23, 0, tzinfo=UTC),
-            acquisition_window_end=datetime(2025, 12, 31, 22, 30, tzinfo=UTC),
-            output_axis_start=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            output_axis_end=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
-            period_ending_convention=ie.EXPECTED_PERIOD_ENDING_CONVENTION,
-            box=(31, 80, 26, 89),
-            read_contract={},
-            retrospective=True,
-            measured_acquisition_latency="4h20m-4h50m",
+        manifest = _bundle_manifest(
+            inputs=_valid_identity_inputs(),
             payload_sha256s=payload_sha256s,
-            station_accounting={"S0": {"n_hours": 1}},
-            n_stations=1,
-            n_hours=1,
-            generated_at=datetime(2026, 8, 28, tzinfo=UTC),
+            extraction_identity="idididid",
         )
         renamed = directory.parent / "0000-idididid"
         directory.rename(renamed)
@@ -634,30 +622,12 @@ class TestPublishAndDiscover:
         directory = tmp_path / "xx-deadbeef-yy"
         directory.mkdir()
         _write_bundle_payload(directory, station_count=1, hour_count=1)
-        manifest = ie.ImergExtractionManifest(
-            extraction_identity="deadbeef",
-            operator_id=str(ExtractionOperator.NEAREST),
-            coordinate_table_sha256="abc",
-            route="GES DISC HTTPS archive",
-            collection_short_name="GPM_3IMERGHHE_07",
-            granule_revision="V07B",
-            acquisition_window_start=datetime(2019, 12, 31, 23, 0, tzinfo=UTC),
-            acquisition_window_end=datetime(2025, 12, 31, 22, 30, tzinfo=UTC),
-            output_axis_start=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            output_axis_end=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
-            period_ending_convention=ie.EXPECTED_PERIOD_ENDING_CONVENTION,
-            box=(31, 80, 26, 89),
-            read_contract={},
-            retrospective=True,
-            measured_acquisition_latency="4h20m-4h50m",
+        manifest = _bundle_manifest(
+            inputs=_valid_identity_inputs(),
             payload_sha256s={
                 name: checksum_file(directory / name) for name in ie.IMERG_PAYLOAD_FILES
             },
-            station_accounting={"S0": _station_accounting(hour_count=1)},
-            n_stations=1,
-            n_hours=1,
-            generated_at=datetime(2026, 8, 28, tzinfo=UTC),
+            extraction_identity="deadbeef",
         )
         with pytest.raises(
             ExtractionPostConditionError, match="does not exactly match"
@@ -683,29 +653,10 @@ class TestPublishAndDiscover:
         tampered_value_inputs = tampered_inputs["value_inputs"]
         assert isinstance(tampered_value_inputs, dict)
         tampered_value_inputs["operator_id"] = "TAMPERED"
-        manifest = ie.ImergExtractionManifest(
-            extraction_identity=identity,
-            operator_id=str(ExtractionOperator.NEAREST),
-            coordinate_table_sha256="abc",
-            route="GES DISC HTTPS archive",
-            collection_short_name="GPM_3IMERGHHE_07",
-            granule_revision="V07B",
-            acquisition_window_start=datetime(2019, 12, 31, 23, 0, tzinfo=UTC),
-            acquisition_window_end=datetime(2025, 12, 31, 22, 30, tzinfo=UTC),
-            output_axis_start=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            output_axis_end=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
-            period_ending_convention=ie.EXPECTED_PERIOD_ENDING_CONVENTION,
-            box=(31, 80, 26, 89),
-            read_contract={},
-            retrospective=True,
-            measured_acquisition_latency="4h20m-4h50m",
+        manifest = _bundle_manifest(
+            inputs=inputs,
             payload_sha256s=payload_sha256s,
-            station_accounting={"S0": _station_accounting(hour_count=1)},
             identity_inputs=tampered_inputs,
-            n_stations=1,
-            n_hours=1,
-            generated_at=datetime(2026, 8, 28, tzinfo=UTC),
         )
         ie._write_manifest(manifest, staged / ie.manifest_filename())
         with pytest.raises(ExtractionPostConditionError, match="recomputed"):
@@ -732,30 +683,7 @@ class TestPublishAndDiscover:
         payload_sha256s = {
             name: checksum_file(staged / name) for name in ie.IMERG_PAYLOAD_FILES
         }
-        manifest = ie.ImergExtractionManifest(
-            extraction_identity=identity,
-            operator_id=str(ExtractionOperator.NEAREST),
-            coordinate_table_sha256="abc",
-            route="GES DISC HTTPS archive",
-            collection_short_name="GPM_3IMERGHHE_07",
-            granule_revision="V07B",
-            acquisition_window_start=datetime(2019, 12, 31, 23, 0, tzinfo=UTC),
-            acquisition_window_end=datetime(2025, 12, 31, 22, 30, tzinfo=UTC),
-            output_axis_start=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            output_axis_end=datetime(2020, 1, 1, 0, 0, tzinfo=UTC),
-            timestamp_convention=AccumulationConvention.PERIOD_ENDING,
-            period_ending_convention=ie.EXPECTED_PERIOD_ENDING_CONVENTION,
-            box=(31, 80, 26, 89),
-            read_contract={},
-            retrospective=True,
-            measured_acquisition_latency="4h20m-4h50m",
-            payload_sha256s=payload_sha256s,
-            station_accounting={"S0": _station_accounting(hour_count=1)},
-            identity_inputs=inputs.canonical_payload(),
-            n_stations=1,
-            n_hours=1,
-            generated_at=datetime(2026, 8, 28, tzinfo=UTC),
-        )
+        manifest = _bundle_manifest(inputs=inputs, payload_sha256s=payload_sha256s)
         ie._write_manifest(manifest, staged / ie.manifest_filename())
         with pytest.raises(ExtractionPostConditionError, match="missing column"):
             ie.validate_imerg_bundle(
@@ -792,26 +720,42 @@ def _write_coords_csv(path: Path) -> None:
     ).write_csv(path)
 
 
-def _write_complete_acquisition_manifest(
+def _complete_acquisition_manifest(
     data_root: Path, *, granule_checksums: dict[str, str]
-) -> None:
-    """A hand-built COMPLETE manifest — `completeness` is a data field T2
-    trusts, not something T2 re-derives; exercising `retrieve_window`'s own
-    completeness computation is `test_imerg_acquire.py`'s job."""
-    from scripts.dhm_precip.imerg_acquire import FIRST_GRANULE_START
+) -> ia.ImergAcquisitionManifest:
+    """A manifest that is COMPLETE **by derivation**, not by label: every
+    granule of the pinned D5 window is accounted for — the handful actually
+    on disk as retrieved, every other one recorded MISSING.
 
-    manifest = ia.ImergAcquisitionManifest(
-        route="GES DISC HTTPS archive",
-        collection_short_name="GPM_3IMERGHHE_07",
-        granule_revision="V07B",
+    ⛔ The previous fixture here declared a two-granule, one-hour window and
+    simply set `completeness=COMPLETE`, and the end-to-end test then proved
+    a full 52,608-hour bundle could be published from it. That fixture
+    rationalised the defect ("completeness is a data field T2 trusts") — but
+    a consumer must never accept a field it could have computed, and T2 now
+    DERIVES completeness from exactly these contents."""
+    retrieved_starts = {
+        ia.parse_granule_filename(name)[0].start for name in granule_checksums
+    }
+    probe = sorted(granule_checksums)[0]
+    contract = ia.observe_read_contract(
+        ia.imerg_raw_dir(data_root) / probe
+    ).as_manifest_dict()
+    return ia.ImergAcquisitionManifest(
+        route=ia.ROUTE,
+        collection_short_name=ia.COLLECTION_SHORT_NAME,
+        granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
         completeness=ia.AcquisitionCompleteness.COMPLETE,
-        requested_window_start=FIRST_GRANULE_START,
-        requested_window_end=FIRST_GRANULE_START + timedelta(minutes=30),
-        box=(31, 80, 26, 89),
-        read_contract={"units": "mm/hr"},
-        requested=2,
-        retrieved=2,
-        missing=(),
+        requested_window_start=ia.FIRST_GRANULE_START,
+        requested_window_end=ia.LAST_GRANULE_START,
+        box=ia.STUDY_BOX,
+        read_contract=contract,
+        requested=ia.EXPECTED_GRANULE_COUNT,
+        retrieved=len(granule_checksums),
+        missing=tuple(
+            start.isoformat()
+            for start in ia.all_granule_starts()
+            if start not in retrieved_starts
+        ),
         granule_checksums=granule_checksums,
         granule_retrieved_at={
             name: datetime(2026, 8, 28, tzinfo=UTC) for name in granule_checksums
@@ -819,7 +763,15 @@ def _write_complete_acquisition_manifest(
         retrospective=True,
         generated_at=datetime(2026, 8, 28, tzinfo=UTC),
     )
-    ia.write_acquisition_manifest(manifest, ia.acquisition_manifest_path(data_root))
+
+
+def _write_complete_acquisition_manifest(
+    data_root: Path, *, granule_checksums: dict[str, str]
+) -> None:
+    ia.write_acquisition_manifest(
+        _complete_acquisition_manifest(data_root, granule_checksums=granule_checksums),
+        ia.acquisition_manifest_path(data_root),
+    )
 
 
 class TestRunEndToEnd:
@@ -868,6 +820,12 @@ class TestRunEndToEnd:
         assert manifest.retrospective is True
         assert manifest.granule_revision == "V07B"
         assert manifest.route == "GES DISC HTTPS archive"
+        # D9 — the bundle manifest IS the extraction record, so it carries
+        # the acquisition's counts and gaps, not just its window.
+        assert manifest.granules_requested == ia.EXPECTED_GRANULE_COUNT
+        assert manifest.granules_retrieved == 2  # noqa: PLR2004
+        assert len(manifest.granules_missing) == ia.EXPECTED_GRANULE_COUNT - 2
+        assert manifest.acquisition_generated_at == datetime(2026, 8, 28, tzinfo=UTC)
 
         # D4 — the one hour with two finite granules averages correctly;
         # nulls (never the string "NaN") elsewhere. Polars round-trips a
@@ -925,7 +883,7 @@ class TestRunEndToEnd:
         coords_path = tmp_path / "station_coordinates.csv"
         _write_coords_csv(coords_path)
         args = ie.build_parser().parse_args(["--data-root", str(data_root)])
-        with pytest.raises(ExtractionInputAbsentError, match="PROBE"):
+        with pytest.raises(ia.ImergAcquisitionIncompleteError, match="PROBE"):
             ie.run(
                 args,
                 coords_path=coords_path,
@@ -1059,16 +1017,20 @@ class TestMainCatchesMidExtractionD1Violation:
     def test_a_second_granule_header_revision_mismatch_is_reported_not_raised(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Reproduces the exact drift the module docstring documents as
-        CURRENTLY happening on the live GES DISC archive: a granule's
-        FILENAME carries the D1-pinned revision (V07B) but its own embedded
-        `FileHeader.ProductVersion` disagrees (07C) — raising
-        `ImergReadContractError` out of `read_granule()` while T2 reads the
-        SECOND granule, after the first has already frozen the read
-        contract. `main()` must catch this (via the broad
+        """A granule whose PATH carries the D1-pinned revision (V07B) but
+        whose own embedded `FileHeader.FileName` says V07C — a renamed
+        file — raises `ImergReadContractError` out of `read_granule()`
+        while T2 reads the SECOND granule, after the first has already
+        frozen the read contract. `main()` must catch this (via the broad
         `ImergAcquisitionError`) and report it as a structured
         `imerg_extract.cli.failed` log line with a defined exit code —
-        never as an unhandled traceback."""
+        never as an unhandled traceback.
+
+        ⛔ NOT `FileHeader.ProductVersion`: the 2026-08-28 probe measured
+        `ProductVersion=07B` on a granule whose filename read V07C, so the
+        two are different axes and equating them would reject legitimate
+        granules. `FileName` is the same axis as the path, so a
+        disagreement there is a real defect."""
         from scripts.dhm_precip.imerg_acquire import (
             FIRST_GRANULE_START,
             ImergGranuleId,
@@ -1077,11 +1039,10 @@ class TestMainCatchesMidExtractionD1Violation:
 
         data_root = tmp_path / "data_root"
         starts = [FIRST_GRANULE_START, FIRST_GRANULE_START + timedelta(minutes=30)]
-        # The SECOND granule's embedded header disagrees with its own
-        # (still D1-pinned) filename revision.
-        product_versions = ["07B", "07C"]
+        # The SECOND granule's embedded FileHeader.FileName disagrees with
+        # its own (still D1-pinned) path revision.
         checksums: dict[str, str] = {}
-        for start, product_version in zip(starts, product_versions, strict=True):
+        for index, start in enumerate(starts):
             filename = ImergGranuleId(start=start).filename(revision="V07B")
             path = imerg_raw_dir(data_root) / filename
             _write_fake_granule(
@@ -1089,7 +1050,11 @@ class TestMainCatchesMidExtractionD1Violation:
                 start=start,
                 value_at=(27.05, 85.05),
                 value=2.0,
-                product_version=product_version,
+                file_header_filename=(
+                    ImergGranuleId(start=start).filename(revision="V07C")
+                    if index == 1
+                    else None
+                ),
             )
             checksums[filename] = checksum_file(path)
         _write_complete_acquisition_manifest(data_root, granule_checksums=checksums)
@@ -1108,3 +1073,301 @@ class TestMainCatchesMidExtractionD1Violation:
         captured = capsys.readouterr()
         assert "imerg_extract.cli.failed" in captured.err
         assert "ImergReadContractError" in captured.err
+
+
+# --- D9 (BLOCKER) — T2 DERIVES completeness; it never trusts the label ---
+
+
+def _nearest_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "station_id": "S0",
+        "timestamp_utc": "2020-01-01T00:00:00",
+        "precip_mm_per_h": 1.0,
+        "granule_count": 2,
+        "non_finite_cell_count": 0,
+        "grid_lat": 27.05,
+        "grid_lon": 85.05,
+        "station_elev_m": 1000.0,
+        "station_elevation_datum": "UNKNOWN",
+    }
+    row.update(overrides)
+    return row
+
+
+def _stage_bundle(
+    tmp_path: Path,
+    *,
+    hour_count: int = 1,
+    nearest_rows: list[dict[str, Any]] | None = None,
+    **manifest_overrides: Any,
+) -> tuple[Path, ie.ImergExtractionManifest]:
+    """A staged bundle that validates as published, so each test can break
+    exactly ONE thing about it."""
+    root = ie.imerg_points_root(tmp_path / "data_root")
+    inputs = _valid_identity_inputs(granule_checksums={"g.HDF5": "deadbeef"})
+    staged = ie.prepare_staging_dir(root, identity=inputs.digest())
+    payload_sha256s = _write_bundle_payload(
+        staged, station_count=1, hour_count=hour_count, nearest_rows=nearest_rows
+    )
+    manifest = _bundle_manifest(
+        inputs=inputs,
+        payload_sha256s=payload_sha256s,
+        hour_count=hour_count,
+        **manifest_overrides,
+    )
+    ie._write_manifest(manifest, staged / ie.manifest_filename())
+    return staged, manifest
+
+
+class TestT2DerivesAcquisitionCompleteness:
+    def test_a_two_granule_manifest_labelled_complete_publishes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ THE BLOCKER, locked. The previous fixture built exactly this —
+        a two-granule, one-hour acquisition manifest with
+        `completeness=COMPLETE` — and the end-to-end test proved it
+        published a full 52,608-hour bundle. T2 must now reject it BEFORE
+        opening any granule file, and publish nothing."""
+        from scripts.dhm_precip.imerg_acquire import (
+            FIRST_GRANULE_START,
+            ImergGranuleId,
+            imerg_raw_dir,
+        )
+
+        data_root = tmp_path / "data_root"
+        starts = [FIRST_GRANULE_START, FIRST_GRANULE_START + timedelta(minutes=30)]
+        checksums: dict[str, str] = {}
+        for start, value in zip(starts, [2.0, 4.0], strict=True):
+            filename = ImergGranuleId(start=start).filename(revision="V07B")
+            path = imerg_raw_dir(data_root) / filename
+            _write_fake_granule(path, start=start, value_at=(27.05, 85.05), value=value)
+            checksums[filename] = checksum_file(path)
+        honest = _complete_acquisition_manifest(data_root, granule_checksums=checksums)
+        # The SAME granules, but the window is claimed to be just those two.
+        claimed = honest.model_copy(
+            update={
+                "requested_window_end": starts[-1],
+                "requested": 2,
+                "retrieved": 2,
+                "missing": (),
+            }
+        )
+        ia.write_acquisition_manifest(claimed, ia.acquisition_manifest_path(data_root))
+
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+        args = ie.build_parser().parse_args(["--data-root", str(data_root)])
+        with pytest.raises(
+            ia.ImergAcquisitionIncompleteError, match="105216|unaccounted"
+        ):
+            ie.run(
+                args,
+                clock=lambda: datetime(2026, 8, 28, tzinfo=UTC),
+                coords_path=coords_path,
+                expected_stations=frozenset({Station("A")}),
+                params=DEFAULT_PARAMS,
+            )
+        assert not ie.imerg_points_root(data_root).exists()
+
+    def test_a_read_contract_that_drifted_since_acquisition_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """D1/D9 — the granule T2 reads must carry the WHOLE contract T1
+        recorded, not merely a matching revision letter."""
+        from scripts.dhm_precip.imerg_acquire import (
+            FIRST_GRANULE_START,
+            ImergGranuleId,
+            imerg_raw_dir,
+        )
+
+        data_root = tmp_path / "data_root"
+        starts = [FIRST_GRANULE_START, FIRST_GRANULE_START + timedelta(minutes=30)]
+        checksums: dict[str, str] = {}
+        for start in starts:
+            filename = ImergGranuleId(start=start).filename(revision="V07B")
+            path = imerg_raw_dir(data_root) / filename
+            _write_fake_granule(path, start=start, value_at=(27.05, 85.05), value=2.0)
+            checksums[filename] = checksum_file(path)
+        manifest = _complete_acquisition_manifest(
+            data_root, granule_checksums=checksums
+        )
+        drifted = dict(manifest.read_contract)
+        lat = drifted["lat_vector"]
+        assert isinstance(lat, tuple | list)
+        drifted["lat_vector"] = [float(lat[0]) + 1e-9, *[float(v) for v in lat[1:]]]
+        ia.write_acquisition_manifest(
+            manifest.model_copy(update={"read_contract": drifted}),
+            ia.acquisition_manifest_path(data_root),
+        )
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+        args = ie.build_parser().parse_args(["--data-root", str(data_root)])
+        with pytest.raises(ExtractionPostConditionError, match="read contract"):
+            ie.run(
+                args,
+                clock=lambda: datetime(2026, 8, 28, tzinfo=UTC),
+                coords_path=coords_path,
+                expected_stations=frozenset({Station("A")}),
+                params=DEFAULT_PARAMS,
+            )
+
+
+# --- D4/D9 — the primary series validator's numeric contract ---
+
+
+class TestPrimarySeriesNumericContract:
+    def test_a_null_granule_count_is_rejected(self, tmp_path: Path) -> None:
+        """`~col.is_in([0, 1, 2])` is NULL for a null cell, and `filter`
+        drops nulls — so a null count slipped through every range check."""
+        staged, manifest = _stage_bundle(
+            tmp_path,
+            nearest_rows=[_nearest_row(granule_count=None, precip_mm_per_h=None)],
+        )
+        with pytest.raises(ExtractionPostConditionError, match="null value"):
+            ie.validate_imerg_bundle(
+                staged, manifest, expected_station_count=1, expected_hour_count=1
+            )
+
+    def test_a_nan_precip_on_a_nominally_complete_hour_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Nullness is not finiteness: a NaN written into a complete,
+        cell-finite hour is not a valid rate."""
+        staged, manifest = _stage_bundle(
+            tmp_path, nearest_rows=[_nearest_row(precip_mm_per_h=float("nan"))]
+        )
+        with pytest.raises(ExtractionPostConditionError, match="FINITE rate"):
+            ie.validate_imerg_bundle(
+                staged, manifest, expected_station_count=1, expected_hour_count=1
+            )
+
+    def test_more_non_finite_cells_than_granules_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        staged, manifest = _stage_bundle(
+            tmp_path,
+            nearest_rows=[
+                _nearest_row(
+                    granule_count=1, non_finite_cell_count=2, precip_mm_per_h=None
+                )
+            ],
+        )
+        with pytest.raises(ExtractionPostConditionError, match="0 <= non_finite"):
+            ie.validate_imerg_bundle(
+                staged, manifest, expected_station_count=1, expected_hour_count=1
+            )
+
+
+# --- D4/D9 — station accounting is RE-DERIVED from the payload ---
+
+
+class TestStationAccountingIsRederived:
+    def test_swapped_totals_that_still_sum_correctly_are_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ The old check only asserted the four components SUM to the
+        hour count — so any permutation of them passed."""
+        swapped = _station_accounting(hour_count=2)
+        swapped["n_hours_complete"] = 0
+        swapped["n_hours_missing_granule"] = 2
+        staged, manifest = _stage_bundle(
+            tmp_path, hour_count=2, station_accounting={"S0": swapped}
+        )
+        with pytest.raises(ExtractionPostConditionError, match="disagrees with the"):
+            ie.validate_imerg_bundle(
+                staged, manifest, expected_station_count=1, expected_hour_count=2
+            )
+
+    def test_a_one_granule_non_finite_hour_reaches_the_non_exclusive_total(
+        self,
+    ) -> None:
+        """⛔ The exclusive `n_hours_non_finite_cell` bucket only counts
+        hours where BOTH granules exist, so an hour with a single existing,
+        non-finite granule was classified as merely `partial` and vanished
+        from every non-finite total."""
+        row = ie._station_accounting_row(
+            granule_count=np.array([1]), non_finite_cell_count=np.array([1])
+        )
+        assert row["n_hours_partial"] == 1
+        assert row["n_hours_non_finite_cell"] == 0  # exclusive bucket, correctly
+        assert row["n_hours_any_non_finite_cell"] == 1
+        assert row["n_granules_non_finite_cell"] == 1
+
+
+# --- D9/P7a — provenance may never contradict the hashed identity ---
+
+
+class TestManifestProvenanceReconciliation:
+    def test_a_top_level_route_that_contradicts_identity_inputs_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """The digest still recomputes — only `identity_inputs` feeds it —
+        so nothing else catches a top-level field edited to say anything at
+        all."""
+        staged, manifest = _stage_bundle(tmp_path, route="a different route")
+        with pytest.raises(ExtractionPostConditionError, match="contradicts"):
+            ie.validate_imerg_bundle(
+                staged, manifest, expected_station_count=1, expected_hour_count=1
+            )
+
+    def test_an_output_axis_end_that_disagrees_with_the_payload_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        staged, manifest = _stage_bundle(
+            tmp_path,
+            hour_count=2,
+            output_axis_end=datetime(2020, 6, 1, tzinfo=UTC),
+        )
+        with pytest.raises(ExtractionPostConditionError, match="output_axis"):
+            ie.validate_imerg_bundle(
+                staged, manifest, expected_station_count=1, expected_hour_count=2
+            )
+
+    def test_acquisition_counts_that_do_not_add_up_are_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """D9 — the bundle carries the acquisition's counts and gaps, and
+        they must reconcile with each other and with the granule set the
+        identity was hashed over."""
+        staged, manifest = _stage_bundle(tmp_path, granules_requested=99)
+        with pytest.raises(ExtractionPostConditionError, match="granules_requested"):
+            ie.validate_imerg_bundle(
+                staged, manifest, expected_station_count=1, expected_hour_count=1
+            )
+
+
+# --- D9 — discovery must SKIP an invalid higher bundle, never abort ---
+
+
+class TestDiscoverySkipsInvalidBundles:
+    def test_a_malformed_higher_bundle_falls_back_to_the_lower_valid_one(
+        self, tmp_path: Path
+    ) -> None:
+        """`_read_manifest` raises `Era5StorageError` on malformed JSON and
+        polars raises its own type on a malformed CSV — neither was caught,
+        so discovery aborted at the highest NNNN instead of falling back."""
+        data_root = tmp_path / "data_root"
+        root = ie.imerg_points_root(data_root)
+        inputs = _valid_identity_inputs(granule_checksums={"g.HDF5": "deadbeef"})
+        staged = ie.prepare_staging_dir(root, identity=inputs.digest())
+        payload_sha256s = _write_bundle_payload(staged, station_count=1, hour_count=1)
+        manifest = _bundle_manifest(inputs=inputs, payload_sha256s=payload_sha256s)
+        ie._write_manifest(manifest, staged / ie.manifest_filename())
+        valid = ie.publish_imerg_bundle(
+            staged,
+            data_root=data_root,
+            identity=inputs.digest(),
+            expected_station_count=1,
+            expected_hour_count=1,
+        )
+
+        broken_json = ie.allocate_published_dir(root, identity="bbbb")
+        (broken_json / ie.manifest_filename()).write_text("{not json")
+        broken_csv = ie.allocate_published_dir(root, identity="cccc")
+        shutil.copytree(valid, broken_csv, dirs_exist_ok=True)
+        (broken_csv / ie._NEAREST_SERIES_FILENAME).write_bytes(b"\x00\x01 not,a\ncsv")
+
+        found, _found_manifest = ie.discover_imerg_bundle(
+            data_root, expected_station_count=1, expected_hour_count=1
+        )
+        assert found == valid

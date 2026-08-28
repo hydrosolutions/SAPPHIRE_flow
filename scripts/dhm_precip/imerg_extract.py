@@ -59,6 +59,7 @@ from scripts.dhm_precip.domain_types import (  # noqa: E402
     VerticalDatum,
 )
 from scripts.dhm_precip.era5_errors import (  # noqa: E402
+    Era5AcquisitionError,
     Era5ExtractionError,
     Era5StorageError,
     ExtractionInputAbsentError,
@@ -79,11 +80,11 @@ from scripts.dhm_precip.era5_manifest import checksum_file  # noqa: E402
 from scripts.dhm_precip.era5_request import STUDY_YEARS  # noqa: E402
 from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     MEASURED_ACQUISITION_LATENCY,
-    AcquisitionCompleteness,
     ImergAcquisitionError,
     ImergAcquisitionManifest,
     ImergReadContract,
     acquisition_manifest_path,
+    assert_acquisition_manifest_complete,
     assert_contract_consistent,
     parse_granule_filename,
     read_acquisition_manifest,
@@ -233,6 +234,46 @@ def aggregate_half_hourly_to_hourly(
     return valid_time, values, counts, non_finite_counts
 
 
+_STATION_ACCOUNTING_KEYS: tuple[str, ...] = (
+    "n_hours",
+    "n_hours_complete",
+    "n_hours_partial",
+    "n_hours_missing_granule",
+    "n_hours_non_finite_cell",
+    "n_hours_any_non_finite_cell",
+    "n_granules_non_finite_cell",
+    "n_nan_hours",
+)
+
+
+def _station_accounting_row(
+    *, granule_count: np.ndarray, non_finite_cell_count: np.ndarray
+) -> dict[str, object]:
+    """D4's accounting, derived in ONE place — the same function `run()`
+    writes with and `validate_imerg_bundle` RE-DERIVES from the published
+    `series_nearest.csv`, so swapped or stale totals cannot validate (four
+    numbers summing to the hour count accepts any permutation of them).
+
+    The four `n_hours_{complete,partial,missing_granule,non_finite_cell}`
+    buckets partition the axis; `n_hours_any_non_finite_cell` and
+    `n_granules_non_finite_cell` are NON-EXCLUSIVE totals covering every
+    hour/granule with a non-finite cell, including the one-granule hours the
+    exclusive bucket cannot reach and which would otherwise vanish."""
+    complete = (granule_count == 2) & (non_finite_cell_count == 0)  # noqa: PLR2004
+    return {
+        "n_hours": int(granule_count.size),
+        "n_hours_complete": int(np.sum(complete)),
+        "n_hours_partial": int(np.sum(granule_count == 1)),
+        "n_hours_missing_granule": int(np.sum(granule_count == 0)),
+        "n_hours_non_finite_cell": int(
+            np.sum((granule_count == 2) & (non_finite_cell_count > 0))  # noqa: PLR2004
+        ),
+        "n_hours_any_non_finite_cell": int(np.sum(non_finite_cell_count > 0)),
+        "n_granules_non_finite_cell": int(np.sum(non_finite_cell_count)),
+        "n_nan_hours": int(granule_count.size - np.sum(complete)),
+    }
+
+
 # --- D6 — the cell/elevation record (no DEM, no mismatch table) ---
 
 
@@ -287,16 +328,20 @@ def read_granule(path: Path) -> tuple[xr.Dataset, ImergReadContract]:
     from scripts.dhm_precip.imerg_acquire import (
         HDF5_VARIABLE_PATH,
         assert_revision_matches_plan_and_header,
+        exact_coordinate_vector,
         parse_grid_header_field,
-        read_file_header_product_version,
+        read_file_header,
     )
 
     granule, revision = parse_granule_filename(path.name)
     with h5py.File(path, "r") as f:
-        file_header_product_version = read_file_header_product_version(f)
+        file_header = read_file_header(f)
+        file_header_product_version = parse_grid_header_field(
+            file_header, "ProductVersion"
+        )
         assert_revision_matches_plan_and_header(
             filename_revision=revision,
-            file_header_product_version=file_header_product_version,
+            file_header_filename=parse_grid_header_field(file_header, "FileName"),
         )
         grid = f["Grid"]
         precip_ds = grid["precipitation"]
@@ -331,8 +376,8 @@ def read_granule(path: Path) -> tuple[xr.Dataset, ImergReadContract]:
         units=units,
         fill_value=fill_value,
         grid_shape=tuple(int(n) for n in precip.shape),  # type: ignore[arg-type]
-        lat_vector=tuple(round(float(v), 6) for v in lat),
-        lon_vector=tuple(round(float(v), 6) for v in lon),
+        lat_vector=exact_coordinate_vector(lat),
+        lon_vector=exact_coordinate_vector(lon),
         grid_spacing_deg=spacing,
         granule_revision=revision,
         file_header_product_version=file_header_product_version,
@@ -450,6 +495,12 @@ def manifest_filename() -> str:
 
 def _canonical_json(obj: object) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _json_normalised(obj: object) -> object:
+    """Round-trip through JSON so a tuple compares equal to the list it
+    becomes once a manifest has been written and re-read."""
+    return json.loads(_canonical_json(obj))
 
 
 #: D5 — the exact literal every published manifest must carry, mirroring
@@ -624,6 +675,19 @@ class ImergExtractionManifest(BaseModel):
     """The RETRIEVAL (half-hourly granule) boundary, sourced from the D9
     acquisition manifest T1 wrote — NOT the output axis (D5's finding: the
     two must never be conflated)."""
+    granules_requested: int
+    granules_retrieved: int
+    granules_missing: tuple[str, ...] = ()
+    """D9's 'granule counts and gaps', copied from the acquisition manifest
+    and reconciled against it: `granules_retrieved + len(granules_missing)
+    == granules_requested`, and `granules_retrieved` must equal the number
+    of granule checksums the identity was hashed over."""
+    acquisition_generated_at: datetime
+    """Provenance link to the PERMANENT acquisition record (D10) that
+    carries the per-granule checksums and retrieval timestamps. ⛔ Those
+    105,216-entry maps are deliberately NOT copied here: duplicating them
+    creates two records that can disagree, and the acquisition manifest is
+    the one the plan makes permanent."""
     output_axis_start: datetime
     output_axis_end: datetime
     """The hourly OUTPUT axis boundary (D5) — the axis's first hour needs
@@ -684,11 +748,20 @@ _REQUIRED_STATION_CELL_COLUMNS: tuple[str, ...] = (
     "station_elev_m",
     "station_elevation_datum",
 )
-_STATION_ACCOUNTING_COMPONENT_KEYS: tuple[str, ...] = (
-    "n_hours_complete",
-    "n_hours_partial",
-    "n_hours_missing_granule",
-    "n_hours_non_finite_cell",
+#: D9/P7a — the top-level manifest fields that DUPLICATE a hashed
+#: `identity_inputs.value_inputs` entry, and must therefore be reconciled
+#: against it. ⛔ Otherwise a manifest's human-readable provenance can
+#: contradict the very identity it is published under and still validate.
+_IDENTITY_MIRRORED_FIELDS: tuple[tuple[str, str], ...] = (
+    ("operator_id", "operator_id"),
+    ("coordinate_table_sha256", "coordinate_table_sha256"),
+    ("route", "route"),
+    ("collection_short_name", "collection_short_name"),
+    ("granule_revision", "granule_revision"),
+    ("box", "box"),
+    ("read_contract", "read_contract"),
+    ("acquisition_window_start", "requested_window_start"),
+    ("acquisition_window_end", "requested_window_end"),
 )
 
 _PUBLISHED_RUN_NUMBER_RE = re.compile(rf"^\d{{{_RUN_NUMBER_WIDTH}}}$")
@@ -718,6 +791,32 @@ def _directory_declares_identity(directory: Path, *, identity: str) -> bool:
         and bool(_PUBLISHED_RUN_NUMBER_RE.fullmatch(prefix))
         and rest == identity
     )
+
+
+#: The primary series' numeric columns are read under an EXPLICIT schema
+#: rather than by inference: a non-numeric cell then fails the read (and is
+#: reported as a validation failure), and an all-null column still arrives
+#: typed instead of as `String`.
+_NEAREST_NUMERIC_SCHEMA: dict[str, pl.DataType] = {
+    "precip_mm_per_h": pl.Float64(),
+    "granule_count": pl.Int64(),
+    "non_finite_cell_count": pl.Int64(),
+}
+
+
+def _read_csv_or_reject(
+    path: Path, *, schema_overrides: dict[str, pl.DataType] | None = None
+) -> pl.DataFrame:
+    """A malformed or unreadable payload is a VALIDATION failure, not a
+    crash: D9 requires discovery to SKIP an invalid higher-numbered bundle
+    and fall back to the next lower valid one, which it cannot do if polars
+    raises its own exception type straight through."""
+    try:
+        return pl.read_csv(path, schema_overrides=schema_overrides)
+    except (pl.exceptions.PolarsError, OSError, ValueError) as exc:
+        raise ExtractionPostConditionError(
+            f"{path.name} in {path.parent} is not a readable CSV: {exc} (D9)"
+        ) from exc
 
 
 def validate_imerg_bundle(
@@ -753,9 +852,17 @@ def validate_imerg_bundle(
             f"expected literal {EXPECTED_PERIOD_ENDING_CONVENTION!r} (D5)"
         )
     for name in IMERG_PAYLOAD_FILES:
-        assert_payload_checksum_matches(directory, manifest, name)
+        try:
+            assert_payload_checksum_matches(directory, manifest, name)
+        except OSError as exc:
+            raise ExtractionPostConditionError(
+                f"payload {name!r} in {directory} cannot be read: {exc} (P4a)"
+            ) from exc
 
-    nearest = pl.read_csv(directory / _NEAREST_SERIES_FILENAME)
+    nearest = _read_csv_or_reject(
+        directory / _NEAREST_SERIES_FILENAME,
+        schema_overrides=_NEAREST_NUMERIC_SCHEMA,
+    )
     missing_cols = set(_REQUIRED_NEAREST_COLUMNS) - set(nearest.columns)
     if missing_cols:
         raise ExtractionPostConditionError(
@@ -783,39 +890,48 @@ def validate_imerg_bundle(
                 f"{_NEAREST_SERIES_FILENAME} station {_station_id!r} does not "
                 "carry the exact expected hourly axis (D5/D9)"
             )
-    bad_granule_count = nearest.filter(~pl.col("granule_count").is_in([0, 1, 2]))
-    if bad_granule_count.height:
-        raise ExtractionPostConditionError(
-            f"{_NEAREST_SERIES_FILENAME}.granule_count has value(s) outside "
-            "{0, 1, 2} (D4/D9)"
-        )
-    bad_non_finite_count = nearest.filter(
-        ~pl.col("non_finite_cell_count").is_in([0, 1, 2])
+    # ⛔ Nullness first: `~col.is_in([0,1,2])` evaluates to NULL on a null
+    # cell, which `filter` drops — so a null count would pass every range
+    # check below without this gate.
+    for count_column in ("granule_count", "non_finite_cell_count"):
+        if nearest[count_column].null_count():
+            raise ExtractionPostConditionError(
+                f"{_NEAREST_SERIES_FILENAME}.{count_column} has "
+                f"{nearest[count_column].null_count()} null value(s) — a count "
+                "is never absent (D4/D9)"
+            )
+    # 0 <= non_finite_cell_count <= granule_count <= 2 — a granule cannot be
+    # non-finite without existing, so the counts are ordered, not merely
+    # each in {0, 1, 2}.
+    bad_counts = nearest.filter(
+        ~pl.col("granule_count").is_in([0, 1, 2])
+        | ~pl.col("non_finite_cell_count").is_in([0, 1, 2])
+        | (pl.col("non_finite_cell_count") > pl.col("granule_count"))
     )
-    if bad_non_finite_count.height:
+    if bad_counts.height:
         raise ExtractionPostConditionError(
-            f"{_NEAREST_SERIES_FILENAME}.non_finite_cell_count has value(s) "
-            "outside {0, 1, 2} (D4/D9)"
+            f"{_NEAREST_SERIES_FILENAME} has {bad_counts.height} row(s) violating "
+            "0 <= non_finite_cell_count <= granule_count <= 2 (D4/D9)"
         )
-    # D4 — precip_mm_per_h is non-null IFF granule_count == 2 AND
-    # non_finite_cell_count == 0. Both directions checked: a value present
-    # under a partial/non-finite hour would be invented data; a null value
-    # when both granules genuinely exist and are finite would be wrongly
-    # discarded data.
+    # D4 — precip_mm_per_h is FINITE IFF granule_count == 2 AND
+    # non_finite_cell_count == 0. Both directions checked, and finiteness
+    # rather than nullness: a NaN or +/-inf on a nominally complete hour is
+    # not a valid rate, and a value present under a partial/non-finite hour
+    # would be invented data.
     complete_and_finite = (pl.col("granule_count") == 2) & (  # noqa: PLR2004
         pl.col("non_finite_cell_count") == 0
     )
-    inconsistent = nearest.filter(
-        (complete_and_finite & pl.col("precip_mm_per_h").is_null())
-        | (~complete_and_finite & pl.col("precip_mm_per_h").is_not_null())
-    )
+    value_is_finite = pl.col("precip_mm_per_h").is_finite().fill_null(value=False)
+    inconsistent = nearest.filter(complete_and_finite != value_is_finite)
     if inconsistent.height:
         raise ExtractionPostConditionError(
             f"{_NEAREST_SERIES_FILENAME} has {inconsistent.height} row(s) whose "
-            "precip_mm_per_h/granule_count/non_finite_cell_count disagree (D4)"
+            "precip_mm_per_h/granule_count/non_finite_cell_count disagree — "
+            "a complete, cell-finite hour must carry a FINITE rate and no "
+            "other hour may carry one (D4)"
         )
 
-    station_cell = pl.read_csv(directory / _STATION_CELL_FILENAME)
+    station_cell = _read_csv_or_reject(directory / _STATION_CELL_FILENAME)
     missing_cell_cols = set(_REQUIRED_STATION_CELL_COLUMNS) - set(station_cell.columns)
     if missing_cell_cols:
         raise ExtractionPostConditionError(
@@ -838,7 +954,7 @@ def validate_imerg_bundle(
             f"{_NEAREST_SERIES_FILENAME}'s (D9)"
         )
 
-    sensitivity = pl.read_csv(directory / _SENSITIVITY_FILENAME)
+    sensitivity = _read_csv_or_reject(directory / _SENSITIVITY_FILENAME)
     missing_sensitivity_cols = set(SENSITIVITY_REQUIRED_COLUMNS) - set(
         sensitivity.columns
     )
@@ -882,18 +998,37 @@ def validate_imerg_bundle(
             "IMERG extraction manifest's station_accounting station set does "
             "not match the published series' station set (D9)"
         )
-    for station_id, accounting in manifest.station_accounting.items():
-        missing_keys = set(_STATION_ACCOUNTING_COMPONENT_KEYS) - set(accounting)
-        if missing_keys:
+    # ⛔ RE-DERIVED from the published series, not merely summed: four
+    # caller-supplied numbers that add up to the hour count can be swapped,
+    # stale or invented and still pass a sum check.
+    for group_key, group in nearest.group_by("station_id", maintain_order=True):
+        station_id = str(group_key[0])
+        expected_accounting = _station_accounting_row(
+            granule_count=group["granule_count"].to_numpy(),
+            non_finite_cell_count=group["non_finite_cell_count"].to_numpy(),
+        )
+        recorded = manifest.station_accounting[station_id]
+        if set(recorded) != set(_STATION_ACCOUNTING_KEYS):
             raise ExtractionPostConditionError(
                 f"IMERG extraction manifest's station_accounting[{station_id!r}] "
-                f"is missing key(s) {sorted(missing_keys)} (D4/D9)"
+                f"has key(s) {sorted(recorded)}, expected exactly "
+                f"{sorted(_STATION_ACCOUNTING_KEYS)} (D4/D9)"
             )
-        total = sum(int(accounting[key]) for key in _STATION_ACCOUNTING_COMPONENT_KEYS)  # type: ignore[arg-type]
-        if total != expected_hour_count:
+        differing = {
+            key: (recorded[key], expected_accounting[key])
+            for key in _STATION_ACCOUNTING_KEYS
+            if int(recorded[key]) != int(expected_accounting[key])  # type: ignore[arg-type,call-overload]
+        }
+        if differing:
             raise ExtractionPostConditionError(
                 f"IMERG extraction manifest's station_accounting[{station_id!r}] "
-                f"components sum to {total}, expected expected_hour_count "
+                f"disagrees with the published series on {sorted(differing)} "
+                f"(recorded vs re-derived: {differing}) (D4/D9)"
+            )
+        if int(expected_accounting["n_hours"]) != expected_hour_count:  # type: ignore[arg-type]
+            raise ExtractionPostConditionError(
+                f"station {station_id!r} carries "
+                f"{expected_accounting['n_hours']} hours, expected "
                 f"{expected_hour_count} (D4/D9)"
             )
     if manifest.n_stations != expected_station_count:
@@ -913,6 +1048,53 @@ def validate_imerg_bundle(
         raise ExtractionPostConditionError(
             "IMERG extraction manifest's extraction_identity does not match "
             "the digest recomputed from its own identity_inputs (D9/P7a)"
+        )
+    # D9/P7a — every top-level field that MIRRORS a hashed identity input
+    # must equal it exactly. ⛔ Without this, a manifest's readable
+    # provenance (route, revision, box, window, read contract, …) can be
+    # edited to say anything at all while the digest still recomputes,
+    # because only `identity_inputs` feeds the hash.
+    value_inputs = manifest.identity_inputs["value_inputs"]
+    assert isinstance(value_inputs, dict)  # noqa: S101 - narrowed above
+    for field_name, input_key in _IDENTITY_MIRRORED_FIELDS:
+        top_level = getattr(manifest, field_name)
+        if isinstance(top_level, datetime):
+            top_level = top_level.isoformat()
+        if _json_normalised(top_level) != _json_normalised(value_inputs[input_key]):
+            raise ExtractionPostConditionError(
+                f"IMERG extraction manifest's top-level {field_name!r} "
+                f"contradicts identity_inputs.value_inputs[{input_key!r}] — "
+                "provenance must never disagree with the identity it is "
+                "published under (D9/P7a)"
+            )
+    # The output axis endpoints are a claim about the PAYLOAD, so they are
+    # checked against the payload, not merely against each other.
+    if [
+        str(np.datetime64(manifest.output_axis_start.replace(tzinfo=None), "s")),
+        str(np.datetime64(manifest.output_axis_end.replace(tzinfo=None), "s")),
+    ] != [expected_axis[0], expected_axis[-1]]:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's output_axis_start/end do not match "
+            "the published series' own first/last timestamps (D5/D9)"
+        )
+    # D9 — the acquisition accounting the bundle carries must add up, and
+    # must agree with the granule set the identity was hashed over.
+    if manifest.granules_retrieved + len(manifest.granules_missing) != (
+        manifest.granules_requested
+    ):
+        raise ExtractionPostConditionError(
+            f"IMERG extraction manifest's granules_retrieved "
+            f"{manifest.granules_retrieved} + granules_missing "
+            f"{len(manifest.granules_missing)} != granules_requested "
+            f"{manifest.granules_requested} (D9)"
+        )
+    hashed_checksums = value_inputs["granule_checksums"]
+    assert isinstance(hashed_checksums, dict)  # noqa: S101 - canonical payload shape
+    if manifest.granules_retrieved != len(hashed_checksums):
+        raise ExtractionPostConditionError(
+            f"IMERG extraction manifest's granules_retrieved "
+            f"{manifest.granules_retrieved} != the {len(hashed_checksums)} "
+            "granule checksums its identity was hashed over (D9)"
         )
 
 
@@ -971,19 +1153,23 @@ def discover_imerg_bundle(
         (p for p in root.iterdir() if p.is_dir() and p.name != ".staging"),
         key=lambda p: p.name,
     )
-    last_error: ExtractionPostConditionError | None = None
+    last_error: Era5AcquisitionError | None = None
     for candidate in reversed(candidates):
-        manifest = _read_manifest(candidate / manifest_filename())
-        if manifest is None:
-            continue
+        # ⛔ The manifest READ is inside the guard too: a malformed
+        # `extraction_manifest.json` raises `Era5StorageError`, which would
+        # otherwise abort discovery at the highest NNNN instead of falling
+        # back to the next lower valid bundle (D9).
         try:
+            manifest = _read_manifest(candidate / manifest_filename())
+            if manifest is None:
+                continue
             validate_imerg_bundle(
                 candidate,
                 manifest,
                 expected_station_count=expected_station_count,
                 expected_hour_count=expected_hour_count,
             )
-        except ExtractionPostConditionError as exc:
+        except (ExtractionPostConditionError, Era5StorageError) as exc:
             log.warning(
                 "imerg_extract.discover.validation_failed_skipped",
                 candidate=str(candidate),
@@ -1070,15 +1256,11 @@ def run(
             f"no IMERG acquisition manifest at "
             f"{acquisition_manifest_path(data_root)} — T1 must run first (D9)"
         )
-    if (
-        resolved_acquisition_manifest.completeness
-        is not AcquisitionCompleteness.COMPLETE
-    ):
-        raise ExtractionInputAbsentError(
-            "IMERG acquisition manifest's completeness is "
-            f"{resolved_acquisition_manifest.completeness} — T2 must not "
-            "extract from a PROBE or PARTIAL acquisition (D9)"
-        )
+    # ⛔ COMPLETE is DERIVED from the manifest's own contents, never trusted
+    # from its `completeness` label — and derived BEFORE any granule file is
+    # opened. A value published under an identity supplied alongside it
+    # rather than derived from it is this track's identity defect class.
+    assert_acquisition_manifest_complete(resolved_acquisition_manifest)
 
     resolved_granule_paths = (
         granule_paths
@@ -1128,15 +1310,15 @@ def run(
         ds, contract = read_granule(path)
         if frozen_contract is None:
             frozen_contract = contract
-            if (
-                frozen_contract.granule_revision
-                != resolved_acquisition_manifest.granule_revision
+            # D1/D9 — the WHOLE contract (revision included) must be the one
+            # T1 recorded, not merely a matching revision letter: anything
+            # else means the bytes drifted between acquisition and read.
+            if _json_normalised(contract.as_manifest_dict()) != _json_normalised(
+                resolved_acquisition_manifest.read_contract
             ):
                 raise ExtractionPostConditionError(
-                    "the first read granule's revision "
-                    f"{frozen_contract.granule_revision!r} != the acquisition "
-                    "manifest's granule_revision "
-                    f"{resolved_acquisition_manifest.granule_revision!r} (D9)"
+                    "the first read granule's D1 read contract differs from "
+                    "the one T1 recorded in the acquisition manifest (D1/D9)"
                 )
         else:
             assert_contract_consistent(contract, frozen=frozen_contract)
@@ -1202,16 +1384,9 @@ def run(
             n_nan=int(b_values.size - b_n_finite),
         )
 
-        n_hours_complete = int(np.sum((counts == 2) & (non_finite_counts == 0)))  # noqa: PLR2004
-        n_hours_non_finite_cell = int(np.sum((counts == 2) & (non_finite_counts > 0)))  # noqa: PLR2004
-        station_accounting[str(station)] = {
-            "n_hours": int(counts.size),
-            "n_hours_complete": n_hours_complete,
-            "n_hours_partial": int(np.sum(counts == 1)),
-            "n_hours_missing_granule": int(np.sum(counts == 0)),
-            "n_hours_non_finite_cell": n_hours_non_finite_cell,
-            "n_nan_hours": int(counts.size - n_hours_complete),
-        }
+        station_accounting[str(station)] = _station_accounting_row(
+            granule_count=counts, non_finite_cell_count=non_finite_counts
+        )
 
     station_cell_rows = build_station_cell_table(
         stations, nearest_by_station=grid_cell_by_station
@@ -1328,6 +1503,10 @@ def run(
             granule_revision=frozen_contract.granule_revision,
             acquisition_window_start=resolved_acquisition_manifest.requested_window_start,
             acquisition_window_end=resolved_acquisition_manifest.requested_window_end,
+            granules_requested=resolved_acquisition_manifest.requested,
+            granules_retrieved=resolved_acquisition_manifest.retrieved,
+            granules_missing=resolved_acquisition_manifest.missing,
+            acquisition_generated_at=resolved_acquisition_manifest.generated_at,
             output_axis_start=output_axis_start,
             output_axis_end=output_axis_end,
             timestamp_convention=AccumulationConvention.PERIOD_ENDING,
