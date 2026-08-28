@@ -13,12 +13,15 @@ class CaravanImportProvenance:
     goes through the basin-PACKAGE pipeline (no geometry, no correction,
     no `material_change`) -- see `store/caravan_import.py`.
 
-    ``source_dataset_version`` stays an honest placeholder
-    ("unconfirmed@delivered-2026-08-13") until the modeller confirms the
-    exact Caravan release; the plan requires asking BEFORE running a real
-    import, since correcting it later means a full re-import (immutability
-    reasoning would apply if this were ever persisted through the package
-    pipeline).
+    ``source_dataset_version`` defaults to ``"initial@delivered-2026-08-13"``
+    (Plan 188 T2, owner-requested rename from the original
+    ``"unconfirmed@delivered-2026-08-13"`` -- "unconfirmed" read as a defect
+    awaiting correction; this is simply the first delivery). This value is
+    NEVER persisted -- ``CaravanImportProvenance`` is returned to the
+    caller, never written to a table -- so the rename changes no stored
+    record; a caller with the modeller-confirmed release string still
+    passes it explicitly via ``source_dataset_version=`` (threaded through
+    `run_operational_caravan_import`).
 
     ``content_fingerprint`` (Plan 155 fixer round, major finding: "provenance
     is ephemeral ... no fingerprint and no immutability guard") is a stable
@@ -36,7 +39,7 @@ class CaravanImportProvenance:
     """
 
     source_dataset_name: str = "caravan"
-    source_dataset_version: str = "unconfirmed@delivered-2026-08-13"
+    source_dataset_version: str = "initial@delivered-2026-08-13"
     source_dataset_purpose: str = "attributes"
     extractor_name: str = "hsol"
     extractor_version: str | None = None

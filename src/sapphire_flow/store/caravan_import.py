@@ -94,7 +94,7 @@ def import_caravan_attributes(
     release into the returned provenance once known (plan's own
     guidance: ask BEFORE a real import -- see
     `types/caravan_attributes.py::CaravanImportProvenance`); omitted, the
-    provenance keeps its honest "unconfirmed" placeholder.
+    provenance keeps its "initial@delivered-..." default (Plan 188 T2).
 
     `required_static_names` (Plan 155 fixer round, major finding: "T1's
     exit gate is neither enforced nor genuinely tested -- no production
@@ -273,8 +273,10 @@ def run_operational_caravan_import(
     original fixer round's own note, the concrete PT static-name set is
     aquacast's contract, not this module's, and the live manifest is a
     database query the modeller's confirmed Caravan release must run
-    against (still-pending operational follow-on, unchanged by this fix).
-    A future onboarding/operational script supplies both explicitly.
+    against. **Plan 188 T1 (`scripts/import_caravan_attributes.py`) is that
+    operational script** -- it derives the manifest live and reads the
+    required statics from the discovered `cmal_pool_pt` adapter, supplying
+    both explicitly to this entrypoint.
     """
     if not expected_codes:
         raise ConfigurationError(
