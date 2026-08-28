@@ -511,11 +511,16 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 - [`docs/plans/064-supply-chain-hardening.md`](../plans/064-supply-chain-hardening.md) — predecessor plan that surfaced the "wired but unrun" gate problem this plan fixes. Introduced Trivy image scan, SBOM generation, and CI action SHA pinning.
 - [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — follow-on that supplied the pyright ratchet baseline and CI backstop consumed by Plan 070 A4.
 
-See the CI workflow tiers table below for the full per-step breakdown of every `run:` command across all three workflow files, including local equivalents and CI-only reasons.
+See the CI workflow tiers table below for the per-step breakdown of the five workflow files it covers — `ci.yml`, `dependency-safety.yml`, `integration-nightly.yml`, `live-lindas-weekly.yml` and `live-lindas-weekly-autoretry.yml` — with local equivalents and CI-only reasons. The sixth workflow, `tag-main.yml`, is deliberately absent from that table; it is documented in § Image tagging and versioning.
 
 ## CI workflow tiers
 
 This subsection describes the operational topology of `.github/workflows/ci.yml`. Policy rationale (why each scan exists, what severity thresholds apply, what the `.trivyignore` discipline is) lives in [`security.md`](security.md) § Supply chain.
+
+Two workflow-level properties of `ci.yml` that the table below does not carry, because they are not `run:` steps:
+
+- **Every job sets `timeout-minutes`** — `lint` 10, `unit` 25, `wheel-only-guard` 15, `integration` 25, `build-image-and-scan` 30. A hung job therefore fails on its own rather than occupying a runner until GitHub's six-hour default expires.
+- **A workflow-level `concurrency` group** (`${{ github.workflow }}-${{ github.ref }}`) with `cancel-in-progress` enabled **on pull requests only**. Pushing again to a PR branch cancels the superseded run; pushes to `main` are never cancelled, because every commit landing there is a distinct state someone may need a verdict on.
 
 <!-- Extended by Plan 070 §C1 — two new columns + per-run-step rows. -->
 <!-- "Local equivalent" = command a developer types locally to reproduce. -->
@@ -524,7 +529,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | Tier | Job | `run:` step | Depends on | Local equivalent | CI only? Reason |
 |------|-----|-------------|------------|-----------------|-----------------|
 | **ci.yml** | | | | | |
-| 1 | `lint` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | `git config --global url."https://<token>@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"` (developer needs a token with read access) | No — requires the `RECAP_DG_CLIENT_TOKEN` repo secret in CI |
+| 1 | `lint` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Two `git config --global url.<...>.insteadOf` rewrites: `recap-dg-client` unconditionally, and `aquacast` only when `AQUACAST_TOKEN` is non-empty (`ci.yml:47` — the guard exists so an EMPTY credential is never written, which would turn a would-be 404 into a confusing auth failure). A developer needs tokens with read access to reproduce either. | No — requires the `RECAP_DG_CLIENT_TOKEN` repo secret in CI |
 | 1 | `lint` | `uv sync --frozen` | — | `uv sync` (developers typically have a synced venv already) | No |
 | 1 | `lint` | `uv run ruff check src/ tests/` | — | `uv run ruff check src/ tests/` (also via `uv run check` and pre-commit) | No |
 | 1 | `lint` | `uv run ruff format --check src/ tests/` | — | `uv run ruff format --check src/ tests/` (also via `uv run check` and pre-commit) | No |
@@ -533,7 +538,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 1 | `lint` | `uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json` | — | `uv run pyright src/` (then compare against `tools/pyright_baseline.json`) | No |
 | 1 | `lint` | `aquasecurity/trivy-action` (fs scan, `uses:`) | — | `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .` | No (but requires trivy installed) |
 | 2 | `unit` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
-| 2 | `unit` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
+| 2 | `unit` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `unit` | `Detect uv.lock change (Dependabot degraded-coverage guard)` — checks the PR's `changed_files` count against the pull-request-files endpoint's 3000-file cap first, then `gh api --paginate .../pulls/.../files` matched on `filename` and `previous_filename` (Plan 185 D6) | — | n/a — only runs when `AQUACAST_TOKEN` is absent on a run `github.actor` attributes to Dependabot | Yes — reads the PR's changed-files count and list via `gh`, needs `pull-requests: read` |
 | 2 | `unit` | `AQUACAST_TOKEN absent — fail` (Plan 185 D1 case 3) | — | n/a — fails only when the token is absent outside the one degrade-eligible case | Yes — reachability of `secrets.AQUACAST_TOKEN` is a CI-only condition |
 | 2 | `unit` | `Install (aquacast extra)` — `uv sync --frozen --extra aquacast` (Plan 185 D1 case 1) | — | `uv sync --extra aquacast` (needs a local `aquacast` credential) | No — requires `AQUACAST_TOKEN` |
@@ -541,29 +546,29 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 2 | `unit` | `Prove the aquacast shim test ran` — asserts `1 passed` on the shim's discovery test (Plan 185 D4) | — | `uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q` (requires the `aquacast` extra) | No (but requires `AQUACAST_TOKEN`) |
 | 2 | `unit` | `Plan 201 regression — known ordering leak stays fixed (sequential)` — runs the 4-file Plan 201 reproducer sequentially and asserts it passes (Plan 201 T3 layer 2) | — | `uv run pytest -q tests/unit/cli/test_export_forecast_lab.py tests/unit/flows/test_compute_skills.py tests/unit/scripts/test_backfill_meteoswiss_history_script.py tests/unit/services/skill/test_combined_skill.py` | No |
 | 2 | `unit` | `uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing` (corrected 2026-08-28, Plan 201 — this row previously showed `-v` with no `-n auto`, which had drifted from `ci.yml:277`) | — | `uv run pytest tests/unit/` (requires system deps above; `-n auto` hides test-ordering/global-state leaks — see the `integration-nightly.yml` row below for the sequential check) | No (but requires system deps) |
-| 2 | `wheel-only-guard` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
+| 2 | `wheel-only-guard` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `wheel-only-guard` | Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client` | — | Same command | No |
 | 2 | `wheel-only-guard` | Step 2 = "post-guard temporary exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client` | Step 1 guard | Same command | No |
-| 3 | `integration` | Install system deps for cfgrib / rioxarray / exactextract | `unit` | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
-| 3 | `integration` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | `unit` | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
-| 3 | `integration` | `uv sync --frozen` | `unit` | `uv sync` | No |
-| 3 | `integration` | `uv run pytest tests/integration/ -v -m "not slow"` | `unit` | `uv run pytest tests/integration/ -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
-| 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | `unit` | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
-| 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | `unit` | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
+| 3 | `integration` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
+| 3 | `integration` | `Configure git auth for the private clones` (Plan 082 Task 2H; extended by Plan 159 for `aquacast`) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
+| 3 | `integration` | `uv sync --frozen` | — | `uv sync` | No |
+| 3 | `integration` | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"` (the `--ignore` has been there since 2026-04-21, `d39aa8a`; live-API tests belong to the nightly, not the PR path) | — | `uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
+| 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | — | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
+| 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan → JSON report, non-gating, `uses:`; Plan 180) | — | `trivy image --format json --output trivy-image.json --exit-code 0 --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
 | 4 | `build-image-and-scan` | `trivy convert --format table ... --exit-code 1` (the gate; `run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format table --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 trivy-image.json` | No (but requires trivy installed) |
 | 4 | `build-image-and-scan` | `trivy convert --format sarif` (`run:`; Plan 180) | Trivy image scan (report) | `trivy convert --format sarif --scanners vuln,secret --severity HIGH,CRITICAL --output trivy-image.sarif trivy-image.json` | No (but requires trivy installed) |
 | 4 | `build-image-and-scan` | `github/codeql-action/upload-sarif` (`uses:`; Plan 180 T2) | Convert report to SARIF | n/a | Yes — writes to the GitHub code-scanning API, needs `security-events: write` on the job token |
-| 4 | `build-image-and-scan` | `anchore/sbom-action` (`uses:`) — generate SBOM with syft | `unit` | `syft sapphire-flow:local -o cyclonedx-json > sbom.cdx.json` | No (but requires syft installed) |
-| 5 | `e2e` | _(not yet implemented — dangling comment at line 206 of ci.yml)_ | `unit`, `integration`, `build-image-and-scan` | n/a | n/a |
+| 4 | `build-image-and-scan` | `anchore/sbom-action` (`uses:`) — generate SBOM with syft | — | `syft sapphire-flow:local -o cyclonedx-json > sbom.cdx.json` | No (but requires syft installed) |
+| 5 | `e2e` | _(no such job exists — never built. The only surviving trace is a comment at `ci.yml:475`. Full-pipeline coverage today is the `@pytest.mark.slow` `test_full_pipeline` (`tests/integration/test_e2e_pipeline.py`), run nightly.)_ | _(n/a — if built, Plan 064 gates it on `build-image-and-scan` only)_ | n/a | n/a |
 | **dependency-safety.yml** (Plan 119) | | | | | |
 | Unconditional (`pull_request`, every PR) | `dependency-safety` | `uv sync --frozen` | — | `uv sync` | No |
 | Unconditional (`pull_request`, every PR) | `dependency-safety` | `uv run python tools/dependency_safety.py --base-ref "${{ github.event.pull_request.base.sha }}"` (Classify dependency-bump risk) | — | `uv run python tools/dependency_safety.py --base-ref <base-sha>` (any base commit) | Yes — requires the PR base SHA from the `pull_request` event context |
 | **integration-nightly.yml** | | | | | |
 | N | `integration-nightly` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | N | `integration-nightly` | `uv sync --frozen` | — | `uv sync` | No |
-| N | `integration-nightly` | `uv run pytest tests/unit/ -q` (Plan 201 T3 layer 3 — the full unit suite in COLLECTION order, SEQUENTIAL, no `-n auto`; ratified scope note, fixer round 2026-08-28 — this job never installs the `aquacast` extra, so `test_aquacast_shim.py` skips via importorskip here, unlike `ci.yml`'s `unit` job; layer 3's job is ordering, not `aquacast` coverage) | — | `uv run pytest tests/unit/ -q` | No (but requires system deps) |
 | N | `integration-nightly` | `uv run pytest tests/integration/ -v -m "slow" --timeout=3600` | — | `uv run pytest tests/integration/ -v -m "slow"` (requires postgres + system deps) | No (but requires postgres + system deps) |
 | N | `integration-nightly` | `uv run pytest tests/integration/live -v --timeout=3600 --override-ini "addopts="` | — | `uv run pytest tests/integration/live -v --override-ini "addopts="` (live external APIs) | No (but requires network + live external APIs) |
+| N | `integration-nightly` | `uv run pytest tests/unit/ -q` (Plan 201 T3 layer 3 — the full unit suite in COLLECTION order, SEQUENTIAL, no `-n auto`; ratified scope note, fixer round 2026-08-28 — this job never installs the `aquacast` extra, so `test_aquacast_shim.py` skips via importorskip here, unlike `ci.yml`'s `unit` job; layer 3's job is ordering, not `aquacast` coverage) | — | `uv run pytest tests/unit/ -q` | No (but requires system deps) |
 | **live-lindas-weekly.yml** | | | | | |
 | W | `live-lindas-schema` | `uv sync --frozen` (Install dependencies) | — | `uv sync` | No |
 | W | `live-lindas-schema` | `uv run pytest -m live_lindas -v` (Run live LINDAS schema check) | — | `uv run pytest -m live_lindas -v` (live external API) | No (but requires network + BAFU LINDAS up) |
@@ -666,7 +671,7 @@ The image-build-and-scan tier added by Plan 064 sits between `integration` and `
   printed table and the uploaded SARIF provably the same data as what failed the gate. Policy rationale
   (severity thresholds, `.trivyignore` discipline) lives in `security.md` § CVE scanning layers.
 - Runs `syft` (via `anchore/sbom-action`) to produce a CycloneDX JSON SBOM, uploaded as the `sbom-cyclonedx` workflow artifact on every run.
-- `e2e` gates on this job succeeding (`needs: [unit, integration, build-image-and-scan]`) — a failing CVE scan or SBOM step blocks the capstone suite.
+- **There is no `e2e` job.** Plan 064 specified one gated on this job — the image build/scan path — succeeding (`064:245`, `064:286`), and `ci.yml:475` still carries the comment saying so, but the job was never built. Nothing in `ci.yml` depends on `build-image-and-scan`, so a failing CVE scan blocks the PR only through its own job status, not by starving a downstream suite.
 
 All steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
 
