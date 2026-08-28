@@ -52,6 +52,8 @@ from scripts.dhm_precip.ma7_run import (
     run_ma7_report,
 )
 from scripts.dhm_precip.ma7_run import _production_inputs as _ma7_production_inputs
+from scripts.dhm_precip.ma8_run import Ma8Report, run_ma8_report
+from scripts.dhm_precip.ma8_run import _production_inputs as _ma8_production_inputs
 from scripts.dhm_precip.manifest_io import read_manifest
 from scripts.dhm_precip.params import DEFAULT_PARAMS
 from scripts.dhm_precip.run import run as run_pipeline
@@ -577,3 +579,85 @@ class TestMa7ReportHeadlineNumbers:
             ElevationBand.B2000_3000M: 6,
             ElevationBand.ABOVE_3000M: 5,
         }
+
+
+class TestMa8ReportHeadlineNumbers:
+    """Plan 205 (M-A8) T3 Q2 — the SMALL, NAMED headline set, and nothing
+    else: the two within-Group-B Pearson correlations, the apparent
+    rain-phase gradient at all four rain screens with its intervals, the
+    fit-window endpoints, and the AWS0/AWS1 ratios. Built ONCE over the real
+    production wiring and reused, since M-A8 runs BOTH predecessor pipelines
+    (D2 — it calls M-A6's and M-A7's own constructors rather than
+    re-implementing any estimand) and that is expensive.
+
+    ⛔ Deliberately NOT a snapshot of the result matrix: that would break on
+    any legitimate change and read as a regression. These are the numbers a
+    reader would quote."""
+
+    @pytest.fixture(scope="class")
+    def report(self) -> Ma8Report:
+        return run_ma8_report(inputs=_ma8_production_inputs())
+
+    def test_within_group_b_correlations(self, report: Ma8Report) -> None:
+        """D1's within-group analysis — the identified one. Reported
+        DESCRIPTIVELY: elevation co-varies with exposure, siting, catchment
+        and monsoon dynamics, so this is a relationship, never an effect."""
+        assert report.headlines.within_group_b_pearson_r_bias == pytest.approx(
+            -0.3863, abs=1e-4
+        )
+        assert report.headlines.within_group_b_pearson_r_tail == pytest.approx(
+            -0.6970, abs=1e-4
+        )
+
+    def test_apparent_gradient_at_every_rain_screen(self, report: Ma8Report) -> None:
+        """D4 — an UPPER BOUND IN MAGNITUDE on any true decline, never an
+        estimate of precipitation decline: catch efficiency falls with wind
+        and wind exposure rises up the transect, so observed declines faster
+        than true."""
+        expected = {
+            0.0: -44.8549,
+            1.5: -52.4862,
+            2.0: -55.1018,
+            4.0: -72.5209,
+        }
+        actual = report.headlines.gradient_percent_per_km_by_threshold
+        assert set(actual) == set(expected)
+        for threshold, value in expected.items():
+            assert actual[threshold] == pytest.approx(value, abs=1e-3), threshold
+
+    def test_apparent_gradient_intervals(self, report: Ma8Report) -> None:
+        expected = {
+            0.0: (-67.2971, -7.0118),
+            1.5: (-67.5254, -30.4821),
+            2.0: (-69.6217, -33.6420),
+            4.0: (-89.1031, -30.7051),
+        }
+        actual = report.headlines.gradient_ci95_by_threshold
+        assert set(actual) == set(expected)
+        for threshold, (low, high) in expected.items():
+            assert actual[threshold][0] == pytest.approx(low, abs=1e-3), threshold
+            assert actual[threshold][1] == pytest.approx(high, abs=1e-3), threshold
+
+    def test_fit_window_is_the_measured_one_not_the_plan_s_first_prose(
+        self, report: Ma8Report
+    ) -> None:
+        """P1 as CORRECTED 2026-08-27. An earlier revision of the plan said
+        the five fit stations overlap 2020–2023; measured, AWS4 — the top of
+        the transect at 5,600 m — stops reporting RR on 2018-05-09. Its AT
+        does run to 2023, which is why M-A6's D14 note about a 2020–2023
+        overlap held for temperature and does not transfer to precipitation.
+        This locks the MEASURED window so the prose cannot drift back."""
+        assert str(report.headlines.fit_window_start).startswith("2009-01-01")
+        assert str(report.headlines.fit_window_end).startswith("2018-05-09")
+
+    def test_aws0_aws1_same_elevation_ratios(self, report: Ma8Report) -> None:
+        """D6 — an OBSERVED same-elevation discrepancy, NOT a resolvability
+        floor. ⛔ Not convertible into a threshold: two gauges with unbiased
+        errors still differ over a finite sample by noise alone, and this
+        track already withdrew the identical inference (Plan 184 D8)."""
+        assert report.headlines.aws0_aws1_wet_hour_count_ratio == pytest.approx(
+            1.0111, abs=1e-4
+        )
+        assert report.headlines.aws0_aws1_rain_amount_ratio == pytest.approx(
+            1.1786, abs=1e-4
+        )

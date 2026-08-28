@@ -256,6 +256,14 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   agents failing". Four Codex rounds; two blockers were errors introduced *while fixing* earlier
   findings, and two properties were asserted-but-unlocked until mutation testing exposed them.
   ⚠️ **Not yet deployed to the mini.**
+- **208** — Backups must leave the box — `DRAFT` — the off-box sink Plan 162 D4 named but never
+  created (162's `blocks:` is empty). Owner 2026-08-28: no backup drive for the mini ever; separation
+  arrives with the **AWS** deployment, sink is **S3**. Two findings make it more than a port: 162
+  deferred this on the reasoning that "an encrypted artifact is safe wherever it lands", but
+  **encryption never shipped** (D5 was Phase B; the mini's dumps are plaintext, verified) — so it is a
+  prerequisite, not a companion. And **Plan 194's device predicate does not port**: meaningless on S3,
+  and on EBS it passes trivially while the volume still shares an AZ with the database — a green light
+  for separation that does not exist. Four decisions open.
 - **102** — Dashboard multi-parameter observation visibility — `READY`.
 - **104** — Dashboard hardening (links, chart defaults, skill-chart) — `READY`.
 - **099** — Dashboard display timezone — **P1 shipped** (UTC axis labels, #59); **P2

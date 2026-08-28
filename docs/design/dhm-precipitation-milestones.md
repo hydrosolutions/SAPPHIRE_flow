@@ -935,6 +935,109 @@ siting alone.** Khumbu precipitation declines far more than that over 2,660→5,
 be resolvable. Caveats: n=1 pair, and the common window is older than the rest of the record.
 *(An earlier note claiming a 1.6× same-elevation disagreement was a RECORD-LENGTH artefact — corrected.)*
 
+---
+
+**✅ M-A8 IS COMPLETE — 2026-08-28 (Plan 205, T1–T3).** Regenerate with
+`$ENV uv run python scripts/dhm_precip/ma8_run.py --out <dir>`; two runs hash identically. M-A8
+**calls** M-A6's and M-A7's own constructors and re-implements no estimand (D2), so every number below
+carries the companions it was published with.
+
+#### The confound: half of it is unidentifiable, and that is the result
+
+| band | Group A (0.01 mm) | Group B (0.2 mm) |
+|---|---|---|
+| `< 700 m` | 0 | 9 |
+| `700–2,000 m` | 0 | 9 |
+| **`2,000–3,000 m`** | **3** | **2** |
+| `≥ 3,000 m` | 3 | 0 |
+
+**Group A spans 2,490–3,700 m; Group B spans 67–2,147 m; the ranges do not overlap.** So "Group A
+differs from Group B" and "high differs from low" are the same sentence in this sample: the
+**between-group contrast is unidentified**, and no covariate adjustment over these 26 stations can
+separate them. ⛔ A whole-sample fit carrying both terms would report an assumption, not a measurement.
+
+**But elevation IS analysable within each group at fixed reporting resolution** — and that is most of
+this milestone's scope. Within Group B (20 stations, 2,080 m of relief), against elevation:
+
+| assembled quantity | Pearson r | n |
+|---|---|---|
+| M-A6 matched-hour mean difference (JJAS) | **−0.3863** | 20 |
+| M-A7 q99 wet-hour intensity (JJAS) | **−0.6970** | 20 |
+
+**Extreme rain intensity declines strongly with elevation inside a single instrument population.**
+That is the cleanest elevation signal this track has, precisely because reporting resolution is held
+constant. ⛔ It is a **relationship, not an effect**: exposure, siting, catchment character and monsoon
+dynamics all co-vary with elevation across those 2,080 m. Group A (6 stations) is reported **per
+station**, not fitted — it occupies two D5a bands of three stations each.
+
+**The one band containing both groups is the one M-A7's transferability failed on**, and its q99/q50
+ratios split exactly on group — B at 31.35 and 32.00, A at 9.56, 12.02 and 16.21. That is the sample's
+only observation bearing on the confound. It is consistent with a resolution effect and does not settle
+it, since elevation still varies across the band. n = 5.
+
+#### The Pyramid transect: an apparent gradient, and why it is not a lapse rate
+
+**Apparent rain-phase gradient, uncorrected for wind catch**, five stations, fitted
+**2009-01-01 → 2018-05-09**:
+
+| rain screen | gradient | 95 % interval |
+|---|---|---|
+| `AT ≥ 0 °C` | −44.85 %/km | [−67.30, −7.01] |
+| **`AT ≥ 1.5 °C`** | **−52.49 %/km** | [−67.53, −30.48] |
+| `AT ≥ 2 °C` | −55.10 %/km | [−69.62, −33.64] |
+| `AT ≥ 4 °C` | −72.52 %/km | [−89.10, −30.71] |
+
+⛔ **This is an UPPER BOUND IN MAGNITUDE on any true decline, never an estimate of precipitation
+decline.** Pyramid's gauges are unheated; catch efficiency falls with wind and wind exposure rises up a
+transect, so observed precipitation declines faster than true. The true decline is no steeper than the
+apparent one and **could in principle be nil**, with the whole apparent decline being catch.
+
+**Two readings that the fitted slope alone would hide.** Per-station means at the 1.5 °C screen:
+
+| station | elevation | mm/h (hour-equalised) | n rain hours |
+|---|---|---|---|
+| AWS3 Lukla | 2,660 m | 0.7301 | 5,060 |
+| AWS5 Namche | 3,570 m | 0.2886 | 8,088 |
+| AWS2 Pheriche | 4,260 m | 0.1282 | 19,137 |
+| AWS1 Pyramid | 5,035 m | **0.1324** | 16,772 |
+| AWS4 Kala Patthar | 5,600 m | 0.0711 | 3,714 |
+
+1. **The transect is not monotonic — it plateaus above ~4,000 m.** AWS1 at 5,035 m is marginally wetter
+   than AWS2 at 4,260 m. A single log-linear slope over 2,940 m averages a steep lower section
+   (0.73 → 0.29 over 910 m, Lukla→Namche) with a nearly flat upper one.
+2. **The steeper 4 °C gradient is a SAMPLE COLLAPSE, not a cleaner signal.** AWS4's rain-hour count runs
+   **9,680 → 3,714 → 2,475 → 457** as the screen tightens, its mean falling to 0.0096. At 5,600 m, hours
+   warmer than 4 °C are rare and unrepresentative. ⛔ Do not read "the gradient survives the unambiguous
+   rain screen" as confirmation — the top station lost 95 % of its data. This is visible only because
+   the report carries `n` per station per screen.
+
+**Why the confound cannot be tested away here.** A low-wind stratification was proposed and cut in
+review: low wind does not select the same precipitation under better catch, it selects **different
+precipitation** (stratiform rather than convective) with its own elevation response, so neither
+"flattens ⇒ catch" nor "holds ⇒ precipitation" would follow. Wind is in the same files and cheap to
+load; the obstacle is identification, not ingestion.
+
+**Same-elevation reference.** AWS0 and AWS1 both at 5,035 m, 12,819 common hours: wet-hour count ratio
+**1.0111** (they agree on *when*), rain-screened amount ratio **1.1786**. ⛔ An **observed
+discrepancy, NOT a resolvability floor** — a single realized pair bounds nothing, and this track already
+withdrew the identical inference (Plan 184 D8).
+
+#### ⛔ What M-A8 does NOT deliver
+
+**A precipitation lapse rate usable for elevation-band forcing correction.** The milestone was enabled
+partly to obtain one. This route cannot: the gradient is confounded with the wind-catch profile, the
+confound is not identifiable from these data, and the honest output is an upper bound that admits zero.
+ERA5-Land cannot supply a competing estimate either — per Plan 184 D7 its `total_precipitation` is
+interpolated from ERA5 and never sees the 0.1° orography. **A usable lapse rate needs the
+convection-permitting route (OD-10), not this one.**
+
+**A correction to P1, measured during implementation.** An earlier revision of the plan said the five
+fit stations overlap 2020–2023. **AWS4 — the top of the transect at 5,600 m — stops reporting `RR` on
+2018-05-09**; its `AT` does continue to 2023, which is why M-A6's D14 note about a 2020–2023 overlap
+held for temperature and does not transfer to precipitation. Keeping AWS4 preserves the full 2,940 m
+transect at the cost of 2018–2023 for the other four; that trade was taken deliberately and the fit
+period is stated wherever the gradient appears.
+
 ### M-A9 · Synthesis, corroboration, Phase-2 decision
 **Depends: M-A6, M-A7, M-A8.**
 

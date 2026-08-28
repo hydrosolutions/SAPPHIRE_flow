@@ -187,7 +187,20 @@ forbids.
 
 **PINNED — three mechanics T2's text would otherwise leave to the implementer:**
 - **P1 — the time population is ONE COMMON WINDOW across the stations in the fit.** Pyramid records do
-  not coincide: **AWS0 ends in 2005** while the other five overlap 2020–2023. Fitting across stations
+  not coincide, and the window is **computed from the archive, never assumed**. **⛔ CORRECTED
+  2026-08-27 (measured during T1/T2):** an earlier revision of this pin said AWS0 ends in 2005 "while
+  the other five overlap 2020–2023". AWS0's end is right; the rest is not. Measured `RR` spans:
+  AWS1 2000-10→2023-12, AWS2 2001-10→2023-12, AWS3 2002-11→2023-12, AWS5 2001-10→2023-12, but
+  **AWS4 — the TOP of the transect at 5,600 m — stops reporting `RR` on 2018-05-09** (its `AT` does
+  continue to 2023, which is why M-A6's D14 note about a 2020–2023 overlap held for temperature and
+  does not transfer to precipitation). The real five-station common window is therefore
+  **2009-01-01 → 2018-05-09**.
+
+  That forces a trade-off the plan did not anticipate, and the report must state which side it took:
+  keeping AWS4 preserves the full **2,940 m** transect but costs 2018–2023 for everyone else; dropping
+  it buys the recent period but lowers the transect's top to AWS2 at 4,260 m, losing 1,340 m of the
+  relief the gradient exists to measure. **Keep AWS4 and the full transect**, and say plainly that the
+  gradient is fitted on 2009–2018 rather than on a recent period. Fitting across stations
   with disjoint eras would read an era difference as an elevation gradient. Fit on the common window,
   **name it and name every station excluded for not covering it**. AWS0 is therefore NOT in the
   cross-station fit; its only role is D6's same-elevation contrast with AWS1.
@@ -213,6 +226,31 @@ it was published with (D2).
 **Verify:** `$ENV uv run python scripts/dhm_precip/ma8_run.py --out <dir>` run **twice** with both
 outputs proven non-empty before comparison, byte-identical apart from the generated-at line (D8); then
 `$ENV uv run pytest tests/integration/test_dhm_precip_reproduction.py -q`.
+
+**PINNED 2026-08-27 — four points T3's text leaves open.** Its two predecessors needed the same block;
+this one is shorter because the plan already pins the science.
+- **Q1 — fixed table inventory**, one per Exit clause: (a) the within-Group-B elevation relationship;
+  (b) Group A per station; (c) the group × band cross-tabulation with the non-overlapping ranges and
+  the between-group unidentified statement; (d) the `2,000–3,000 m` band's group-split q99/q50 ratios
+  as D3's only evidence; (e) the apparent rain-phase gradient with all four sensitivity legs and
+  per-station rain-hour counts; (f) the observed AWS0/AWS1 same-elevation discrepancy; (g) consumed
+  inputs, the fit window, and the seed if one is used.
+- **Q2 — the locked headline set is SMALL and NAMED**: the within-Group-B correlation for each of the
+  two assembled quantities; the apparent gradient at all four screens with its intervals; the fit
+  window endpoints; and the AWS0/AWS1 wet-hour-count and rain-amount ratios. Nothing else. A snapshot
+  of every station × quantity would break on any legitimate change and read as a regression.
+- **Q3 — if the report renders ANY bootstrap-derived quantity** (M-A7 adequacy designations and
+  intervals are bootstrap-derived, and D2 requires assembled numbers to keep their companions),
+  **it seeds from one named constant and prints it**, as `ma7_run.REPORT_SEED` does. Phase 1 uses no
+  RNG; if T3 introduces none either, say so in the report rather than leaving it ambiguous.
+- **Q4 — the gradient is rendered with D4's mandatory name and P1's window.** "Apparent rain-phase
+  gradient, uncorrected for wind catch", fitted **2009-01-01 → 2018-05-09**, with AWS0 named as
+  excluded and AWS4 named as the station that sets the window's end. ⛔ Never "the precipitation
+  gradient", and never without the period.
+
+Refusals and inadequate values render as explicit absences with their reasons, never as blanks, zeros
+or dropped rows — the convention Plan 184 T6 P3 and Plan 193 T4 P5 already establish; it is not
+restated here.
 
 ```json
 {
