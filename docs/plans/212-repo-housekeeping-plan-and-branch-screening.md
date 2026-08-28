@@ -25,7 +25,8 @@ plan for it*, not to grow this one.
 
 ## What the audit already settled (do not redo)
 
-Committed on `main` as `b1e1b516`:
+Committed on `main` as `b1e1b516` (090, 140, the 064 correction, the 201/206 flips, the
+README convention) and `3c4736ff` (082, 117, 129, 130, 145, 161):
 
 - Eight plans archived: 082, 090, 117, 129, 130, 140, 145, 161. All inbound links repointed.
 - 064 corrected `READY` → `PARTIAL` (B0/B3/D3 shipped; the e2e tier was never built).
@@ -95,11 +96,42 @@ Two known exceptions that must survive any pruning:
 *In:* a report. No branch is deleted in this task.
 
 For each remote-less branch, classify as **merged** (content on `main`), **unmerged** (real work),
-or **backup**. Cheapest reliable test first: `git cherry origin/main <branch>` — commits it prints
-with `+` are not on `main` by patch-id. Where that is ambiguous, diff the branch's touched files
-against `main`.
+or **backup**.
 
-**Exit:** every remote-less branch is in exactly one bucket, with a one-line reason.
+**Do NOT use `git cherry`.** It was in this plan's first draft and an independent review killed it,
+correctly. `git cherry` matches by patch-id, and a squash-merge rewrites the branch's commits into
+one, so no patch-id matches. Verified on `feat/plan-204-forecast-lab-v2`, squash-merged to `main` as
+`b3473348` (#223): `git cherry origin/main` reports **all four commits as `+`** — "unmerged" — when
+the work is fully landed. In a squash-merge repo `git cherry` marks everything unmerged and is worse
+than useless here, because it would argue against deleting branches that are genuinely done.
+
+**Use a content comparison instead.** For each branch: take the files it touches, then ask whether
+those files still differ from `main`.
+
+```bash
+b=<branch>
+files=$(git diff --name-only "$(git merge-base origin/main $b)" "$b" \
+        | grep -vE '^(uv\.lock|pyproject\.toml|src/sapphire_flow/__init__\.py)$')
+git diff --name-only origin/main "$b" -- ${=files}   # zsh: ${=files} splits; bash: $files
+```
+
+Empty output ⇒ every file the branch touched is byte-identical to `main` ⇒ **merged/superseded**.
+Non-empty ⇒ **needs a look** — not automatically unmerged, since the branch may simply be old.
+
+**Two traps, both hit while writing this plan — do not re-introduce them:**
+
+1. **zsh does not word-split unquoted variables.** Passing `-- $files` sends the whole newline-joined
+   list as ONE pathspec, which matches nothing, so `git diff` comes back empty and **every branch
+   reports as merged.** In a plan that ends in `git branch -D`, that mistake deletes unmerged work.
+   It reported `feat/plan-151-t8b` — 1,946 unpushed insertions — as "content on main". Use `${=files}`.
+2. The version-churn files (`uv.lock`, `pyproject.toml`, `__init__.py`) differ on every branch and
+   drown the signal; the filter above drops them.
+
+**A clean comparison is still not proof.** It says the content matches `main` *today*; it cannot tell
+a merge from a revert-then-rewrite. Anything the owner is unsure about stays.
+
+**Exit:** every remote-less branch is in exactly one bucket, with a one-line reason and the command
+output that put it there.
 
 ### B2 — owner confirms, then delete
 
@@ -111,16 +143,31 @@ and any unmerged branch alone unless explicitly named.
 
 ## C — worktrees
 
-`git worktree list` shows 10. The main checkout is shared by several sessions, and that is an
-active hazard: during this audit another session's pre-commit stash cycle made in-progress edits
-transiently vanish from the shared tree. Prune worktrees whose branch B1 classifies as merged, and
-leave the rest.
+`git worktree list` shows **13** (not 10 — the first draft undercounted). The main checkout is shared
+by several sessions, and that is an active hazard: during this audit another session's pre-commit
+stash cycle made in-progress edits transiently vanish from the shared tree.
 
-**Exit:** `git worktree prune` run; every surviving worktree maps to a live branch.
+**Removing a live worktree and pruning stale registrations are different operations, and the first
+draft conflated them.** `git worktree prune` only clears administrative records for directories that
+are already gone — a review confirmed `--dry-run --verbose` currently prints nothing, because all 13
+registrations are live. It will therefore never remove a worktree, and running it is not the task.
 
-## D — six plan paths already dangle
+Removing a live worktree is destructive and needs, in order: **owner confirmation**, a check that the
+worktree is clean (`git -C <path> status --porcelain` empty — uncommitted work in another session's
+tree is exactly what this repo has lost before), and `git worktree remove` **without** `--force`. Let
+it refuse; a refusal means someone is working there.
 
-Measured 2026-08-28 with the gate below. All six predate this audit — every path the audit itself
+**A branch checked out in a worktree cannot be deleted until that worktree is removed.** Sequence the
+two: worktree first, branch second.
+
+**Exit:** `git worktree prune` run (a no-op is a valid result); every surviving worktree maps to a
+live branch; no worktree removed without confirmation and a clean tree.
+
+## D — nine plan paths already dangle
+
+Measured 2026-08-28 with the gate below. **Nine, not the six this plan first claimed** — an
+independent review found the first gate silently skipped `.sh`, `.yaml` and `.py` files and could not
+match the repo's `115b1`–`115b5` plan ids. All nine predate this audit — every path the audit itself
 moved was repointed — and they are the residue of earlier archiving rounds that skipped the
 reference check:
 
@@ -132,13 +179,21 @@ reference check:
 | `docs/plans/176-lindas-archive-completeness.md` | `archive/` — cited from `docker-compose.yml:402` |
 | `docs/plans/189-audit-window-edge-and-poll-bound.md` | `archive/` — cited from `docker-compose.yml:404`, `tests/unit/cli/test_register_deployments.py:220` |
 | `docs/plans/198-forecast-lab-snapshot-export.md` | `archive/` |
+| `docs/plans/070-precommit-and-gate-parity.md` | also cited from `.pre-commit-config.yaml:17` |
+| `docs/plans/115b4-reader-flip-cutover.md` | `archive/` — cited from `scripts/audit_distribution_shift.py:16` |
+| `docs/plans/132-recap-probe-deployment-reconciliation.md` | `archive/` — cited from `scripts/launchd/run-recap-probe.sh:20` |
+| `docs/plans/199-salvage-plan-158.md` | `archive/` — cited from `scripts/launchd/docker-endpoint.sh:35` |
 
-### D1 — repoint all six
+### D1 — repoint all nine
 
 *In:* the citing files only. Add `archive/` to the path; change nothing else.
 
-Several citations live in `CLAUDE.md`, `AGENTS.md`, `docker-compose*.yml` and a test — those are
-code-tree files, so this task lands as a **PR**, not a plan-doc commit to `main`.
+Several citations live in `CLAUDE.md`, `AGENTS.md`, `docker-compose*.yml`, `.pre-commit-config.yaml`,
+two `scripts/launchd/*.sh` wrappers and a test — code-tree files, so this task lands as a **PR**, not
+a plan-doc commit to `main`.
+
+**One known blind spot, accepted:** `docker-compose.yml:404` wraps a plan path across two lines, so no
+single-line grep can see it. Fix it by hand while doing the rest; the gate will not flag it.
 
 **Exit:** the gate below prints nothing.
 
@@ -154,10 +209,12 @@ naming it.
 ```bash
 uv run pre-commit run --all-files
 
-# Every docs/plans/... path cited anywhere must resolve to a real file.
-# Verified working 2026-08-28: prints the 6 known dangling paths before D1,
-# and prints nothing after. Also proven to catch an injected fake path.
-grep -rhoE "docs/plans/(archive/)?[0-9]{3}[a-z]?-[a-z0-9-]+\.md" \
-  --include="*.py" --include="*.md" --include="*.yml" --include="*.toml" . 2>/dev/null \
-  | sort -u | while read -r p; do [ -f "$p" ] || echo "DANGLING: $p"; done
+# Every docs/plans/... path cited in a TRACKED file must resolve to a real file.
+# git grep covers every tracked file — the first version used `grep -r --include=...`
+# and silently skipped .sh/.yaml/.py, missing 3 of the 9. The [0-9]{3}[a-z]?[0-9]?
+# id pattern matches 115b4 and 111b as well as plain 3-digit ids.
+# Verified 2026-08-28: prints the 9 known dangling paths now, nothing after D1,
+# and proven to flag an injected fake path.
+git grep -hoE "docs/plans/(archive/)?[0-9]{3}[a-z]?[0-9]?-[a-z0-9-]+\.md" -- . \
+  | sort -u | while read -r pth; do [ -f "$pth" ] || echo "DANGLING: $pth"; done
 ```
