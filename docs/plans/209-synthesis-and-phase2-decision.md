@@ -27,11 +27,16 @@ a cost.
 
 **M-A6 — ERA5-Land's error has a shape, and the shape is consistent across every elevation band.**
 It is **wetter than the gauge** averaged over all retained hours and **less intense** on the hours the
-gauge calls wet; the intensity deficit shrinks from **+2.22 mm/h** below 700 m to **+0.43 mm/h** above
-3,000 m. ⛔ Recorded as a pattern, never an attribution: a 0.1° cell (~110 km²) that rains lightly and
-often where a point gauge rains hard and rarely produces the same signature with no model error at all
-(D5 — characterised, not decomposed). ERA5-Land **never once reached DHM's 60 mm/1 h warning level**
-against these 26 stations.
+gauge calls wet; the wet-hour intensity deficit shrinks from **+2.2197 mm/h** below 700 m
+(9 stations, member `n` summing to 9,673 joint wet hours, mean sub-freezing mass fraction 0.0000) to
+**+0.4301 mm/h** above 3,000 m (3 stations, `n` = 4,464, mass fraction 0.0000). ⛔ Recorded as a
+pattern, never an attribution: a 0.1° cell (~110 km²) that rains lightly and often where a point gauge
+rains hard and rarely produces the same signature with no model error at all (D5 — characterised, not
+decomposed).
+
+*(The frequently-quoted "ERA5-Land never reached DHM's 60 mm/1 h warning level" is NOT an M-A6 output —
+it came from the student-bundle README. ⛔ Either re-derive it inside M-A6's own pipeline or drop it;
+do not carry it into a decision document on the strength of a data-transfer note.)*
 
 **M-A7 — tail behaviour transfers between stations everywhere EXCEPT the Lesser Himalaya transition.**
 Leave-one-out prediction error within 25 %: 0.889 below 700 m, **1.000** at 700–2,000 m, **0.000** at
@@ -49,7 +54,8 @@ constant rather than adjusted for. The **between**-group contrast is unidentifia
 sentence in this sample.
 
 **And the answer to the question that enabled the Pyramid work is NO.** The apparent rain-phase
-gradient is **−52.49 %/km** (1.5 °C screen) but is an **upper bound in magnitude** on any true decline
+gradient is **−52.49 %/km** (1.5 °C screen, five stations, fitted **2009-01-01 → 2018-05-09**) but is
+an **upper bound in magnitude** on any true decline
 — unheated gauges, catch efficiency falls with wind, wind exposure rises up a transect — and the
 confound is **not identifiable from these data**. A usable precipitation lapse rate for elevation-band
 forcing correction needs the convection-permitting route (**OD-10**), not this track.
@@ -67,21 +73,37 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
   sign. ⛔ **A synthesis is exactly where companions get stripped**, and this decision exists because
   that is the failure mode of every summary document.
 
-- **D3 — The four candidate uses are named and assessed separately.** They fail and succeed for
-  different reasons and must not be collapsed:
-  1. **Gap-filling the gauge record** (use ERA5-Land where DHM is missing);
-  2. **Bias-correcting ERA5-Land forcing** with a gauge-derived adjustment;
-  3. **Elevation-band forcing correction** (the lapse-rate use);
-  4. **Operational ingest of DHM real-time observations** for forecasting.
+- **D3 — FIVE candidate uses are named and assessed separately.** They fail and succeed for different
+  reasons and must not be collapsed:
+  1. **⭐ Elevation-banded DIURNAL TIMING correction** — take M-A7's observed elevation-banded diurnal
+     profiles, weight by each basin's band `area_km2`, collapse to an observation-derived expected
+     basin-average diurnal shape, and compare with the IFS basin-average shape. **A redistribution in
+     time of an UNCHANGED daily total** — it moves rain to the right hours and never changes how much
+     fell, which is what keeps it orthogonal to the decisions forbidding magnitude adjustment.
+  2. **Gap-filling the gauge record** (use ERA5-Land where DHM is missing);
+  3. **Bias-correcting ERA5-Land forcing** with a gauge-derived adjustment;
+  4. **Elevation-band forcing correction** (the lapse-rate use);
+  5. **Operational ingest of DHM real-time observations** for forecasting.
 
-- **D4 — Use 3 is already answered NO by M-A8, and the document says so plainly.** ⛔ Do not re-open it
+  **⛔ Use 1 is FIRST because the track already puts it on the critical path**, and an earlier revision
+  of this plan omitted it entirely — the four uses it listed were all magnitude corrections, and the
+  timing correction is M-A7's principal operational use. The milestone doc states the operator, states
+  that M-A7 "moves onto the critical path", and calls the elevation-banded observation-derived diurnal
+  profile "the only defensible sub-daily timing source we have, because no available model of this
+  class gets the phase right". ⇒ **The document must assess use 1 at least as carefully as the other
+  four**, and M-A7's own half-confirmed diurnal result (southern-margin peak reproduces; the three
+  upper bands sit together with no gradient among them) is the evidence that bears on it.
+
+- **D4 — Use 4 (the lapse rate) is already answered NO by M-A8, and the document says so plainly.** ⛔ Do not re-open it
   or soften it into "promising but uncertain".
 
-- **D5 — Use 4 carries a separate, non-technical blocker.** The owner's own read (2026-08) is that
+- **D5 — Use 5 carries a separate, non-technical blocker.** The owner's own read (2026-08) is that
   DHM's operational API delivers 10-/15-minute data with little or no QC, through the same API as
   water level, whose shape we have never seen. **This sample is already QC'd by DHM** and still
-  contains false-zero runs to 52 days, a stuck-high sensor at 1,728 mm/day, and 46 sentinel values at
-  one station. ⇒ The document states the **quality precedent**, not a capability claim.
+  contains **candidate** zero-runs to 52 days (M-A3 flags them; they are not adjudicated as false), a
+  stuck-high block of **exactly 120 hours** at Sindhuli Madhi (~1,728 mm/day), and Lukla's sentinel
+  values — **45 on the normalised hourly grid**, 46 in the raw file. ⛔ Quote the on-grid count with its
+  qualifier; the raw count is a different population. ⇒ The document states the **quality precedent**, not a capability claim.
 
 - **D6 — The IMERG assessment is a LITERATURE + LATENCY read, not an acquisition.** M-A5b (IMERG
   acquisition + extraction) has **no plan written**. M-A9 decides only whether writing one is
@@ -94,12 +116,23 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
 
   **✅ OWNER DECISION 2026-08-28 — the target run is IMERG EARLY (~4 h latency).** This settles the
   question and supersedes M-A5b's current text, which specifies **IMERG Final**. Consequences the
-  document must state: **(i)** M-A5b as written answers a question we do not have and must be
-  rewritten around Early before it is worth executing; **(ii)** Early is **not** gauge-calibrated, so
-  every published skill figure obtained on Final is an upper bound on what Early delivers, and figures
-  must be attributed to the run they were measured on; **(iii)** the ~4 h latency is what makes an
-  operational role possible at all, and it is the reason to prefer Early despite (ii) — a
-  better-calibrated product we receive 3.5 months late cannot correct a nowcast.
+  document must state: **(i)** M-A5b as written answers a question we do not have and must be rewritten
+  around Early before it is worth executing; **(ii)** the ~4 h latency is what makes an operational role
+  possible at all — a better-calibrated product arriving 3.5 months late cannot correct a nowcast.
+
+  **⛔ CORRECTED 2026-08-28 (independent review) — an earlier revision said Early is "not
+  gauge-calibrated" and that Final figures are therefore an UPPER BOUND on Early. Both are wrong for
+  V07.** Per the [NASA IMERG V07 ATBD](https://gpm.nasa.gov/sites/default/files/2023-07/IMERG_V07_ATBD_final_230712.pdf),
+  V07 Early's standard precipitation field **does** receive Final-derived **climatological**
+  calibration. The real differences are **forward-only morphing** and **fewer microwave inputs**, not
+  an absence of calibration. So the correct statement is that **Final results are NON-TRANSFERABLE
+  evidence about Early — not a guaranteed bound in either direction**, and every quoted figure must be
+  attributed to the run it was measured on.
+
+  **And a trap specific to operational evaluation:** *retrospectively downloaded* Early can contain
+  inputs that were not available in live operation, so even Early-based published skill can **overstate
+  live Early performance**. ⇒ Any future evaluation must state whether its Early data was retrospective
+  or captured in real time.
 
 - **D8 — The known Himalayan limitation is stated up front, because it lands exactly where we need
   help.** Published validation over Nepal finds satellite products correlate well in the **southern
@@ -108,8 +141,15 @@ forcing correction needs the convection-permitting route (**OD-10**), not this t
   scattering signatures, supercooled-liquid masking), and **IMERG deliberately RETAINS microwave
   estimates over snow/ice within 60°N–S rather than masking them** — so the high basins return numbers
   whose conditions make them least trustworthy. ⇒ **IMERG is strongest where our gauge network is
-  already densest and weakest where it is sparsest.** That asymmetry is the finding, and it decides
-  the recommendation rather than decorating it.
+  already densest and weakest where it is sparsest.**
+
+  **⛔ BUT the geographic asymmetry is NOT the only limitation, and may not be the binding one.**
+  Direct Nepal evidence (Talchabhadel et al.) finds **all three IMERG runs reproduce DAILY patterns
+  considerably better than precise sub-daily rainfall** — and this track's operational resolution is
+  **3-hourly**, which is exactly the regime where that weakness bites. An earlier revision of this plan
+  made the geographic asymmetry decision-determining and omitted the temporal one entirely. ⇒ **The
+  document must weigh BOTH**, and should be explicit that a product which is good daily and weak
+  sub-daily is a poor fit for a 3-hourly correction *regardless* of where our gauges happen to be.
 
 - **D9 — No pre-registered verdict on IMERG** (vision D8). T1 states the conditions; the owner decides
   whether M-A5b is worth writing.
@@ -128,15 +168,25 @@ current text**; and an explicit recommendation on whether to write an M-A5b plan
 fold or to `ma6_run.py`/`ma7_run.py`/`ma8_run.py` output**, and a reviewer can regenerate any of them
 with one command. ⛔ A number that cannot be traced is a defect.
 
-### T2 — the IMERG latency/coverage feasibility probe (depends: nothing new)
-**In:** a small, read-only probe answering three questions the literature cannot: **(a)** is IMERG
-Early actually retrievable for our window and box, **(b)** what is its observed latency in practice,
-and **(c)** what fraction of its retained values over our 26 station cells fall in the snow/ice-flagged
-regime D8 describes. Report counts, never a skill claim.
-**Out:** any extraction pipeline, any archive publication, any comparison against the gauges (that is
-M-A5b's and a later milestone's work).
-**Verify:** the probe runs read-only, publishes **no bundle**, and its output is a table of counts.
-⛔ **Do not write into `data/dhm_precip/`.**
+### T2 — the IMERG Early retrievability and latency probe (depends: nothing new)
+**In:** a read-only probe answering the two questions the literature cannot, for **IMERG Early V07**
+(`GPM_3IMERGHH_E`, field `precipitation`, half-hourly): **(a)** are granules for our window and
+bounding box actually retrievable with the credentials we have, and **(b)** what is the **observed**
+latency between a granule's nominal time and its availability, measured over a handful of recent
+granules — not the documented ~4 h, the measured one.
+**Out:** any extraction at station cells, any regridding, any archive publication, any comparison
+against the gauges, any skill claim. **⛔ This is a retrievability and timing check, NOT acquisition**
+(M-A5b owns that), and it writes nothing under `data/dhm_precip/`.
+**Verify:** `uv run pytest tests/unit/scripts/test_imerg_probe.py -q` for the pure parts (latency
+arithmetic, granule-name construction) with no network; then the probe run once by hand, reporting a
+table of granule name, nominal time, observed availability time, and measured lag. ⛔ A
+network-dependent assertion must NOT enter the unit suite.
+
+*(⛔ **CUT 2026-08-28 (independent review):** an earlier revision also asked for the fraction of values
+in a "snow/ice-flagged regime". **The standard IMERG fields do not supply such a binary flag**, and a
+station-weighted fraction would not have established the sparse-mountain coverage asymmetry it was
+meant to support. D8's limitation stands on the published validation, not on a probe we cannot run.)*
+
 
 ```json
 {
@@ -152,15 +202,18 @@ actually retrievable here, not assuming it.*
 
 ## Exit
 
-A written recommendation stating, for each of D3's four candidate uses, what would have to be true and
-whether the evidence supports it — explicitly permitting "no operational use"; every number carrying
-the conditions it was published with and traceable to a regenerable source; the IMERG assessment
-separating Early/Late/Final by latency, naming the Final-vs-Early mismatch in M-A5b's current text, and
-stating the southern-hills-strong / high-mountain-weak asymmetry; and a recommendation on whether an
+A written recommendation stating, for each of D3's **five** candidate uses — the elevation-banded
+diurnal TIMING correction first, since the track puts it on the critical path — what would have to be
+true and whether the evidence supports it, explicitly permitting "no operational use"; every number
+carrying the conditions it was published with and traceable to a regenerable source; the IMERG
+assessment separating Early/Late/Final by latency, naming the Final-vs-Early mismatch in M-A5b's
+current text, stating that Final evidence is **non-transferable** to Early rather than bounding it, and
+weighing the **geographic** asymmetry against the **temporal** one (daily better than sub-daily,
+against a 3-hourly operational resolution); and a recommendation on whether an
 M-A5b plan is worth writing. **The owner decides (M-DEC); this plan does not.**
 
 ## Non-goals
 
 Any correction, adjustment, disaggregation or downscaling design · IMERG acquisition or extraction
-(M-A5b) · the students' independent findings (deferred by the owner, 2026-08-28) · re-opening use 3,
+(M-A5b) · the students' independent findings (deferred by the owner, 2026-08-28) · re-opening use 4,
 the lapse rate (D4) · any GO/NO-GO decision · recomputing M-A6/M-A7/M-A8 numbers.
