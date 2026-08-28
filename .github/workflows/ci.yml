@@ -282,16 +282,28 @@ jobs:
       # (the autouse structlog reset in tests/conftest.py) is the actual
       # fix; layer 3 (the nightly full sequential run) is what catches
       # future, unknown leaks of this class.
+      # D4-style proof (fixer round, 2026-08-28): `grep -Eq '^[0-9]+ passed'`
+      # alone only proves SOME test in the run passed — if the victim node
+      # (test_coverage_log_message, the one that actually observed the
+      # Plan 201 leak) is later deleted, marked skip, or deselected, the
+      # other 27 tests in these four files still print a matching "N passed"
+      # line and this gate stays green while catching nothing. Run with `-v`
+      # and assert the EXACT victim node ID reports PASSED, plus that
+      # nothing in the run failed, errored, or was skipped — a disappearing
+      # victim then shows up as a missing PASSED line, not a silently
+      # shrinking count.
       - name: Plan 201 regression — known ordering leak stays fixed (sequential)
         run: |
           set -o pipefail
-          uv run pytest -q \
+          uv run pytest -v \
             tests/unit/cli/test_export_forecast_lab.py \
             tests/unit/flows/test_compute_skills.py \
             tests/unit/scripts/test_backfill_meteoswiss_history_script.py \
             tests/unit/services/skill/test_combined_skill.py \
             | tee "$RUNNER_TEMP/plan201-sequential.txt"
-          grep -Eq '^[0-9]+ passed' "$RUNNER_TEMP/plan201-sequential.txt"
+          grep -Fq 'tests/unit/services/skill/test_combined_skill.py::TestCoverageLogging::test_coverage_log_message PASSED' "$RUNNER_TEMP/plan201-sequential.txt"
+          ! grep -Eq '^[0-9]+ (failed|error)' "$RUNNER_TEMP/plan201-sequential.txt"
+          ! grep -q ' skipped' "$RUNNER_TEMP/plan201-sequential.txt"
       # -n auto: the unit suite is ~3700 tests and was the whole critical path
       # (~15 min of a ~16 min job; setup is only ~70 s). Verified parallel-safe
       # on 2026-08-18 — a full `tests/unit/ -n auto` run passed with workers

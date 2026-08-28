@@ -16,6 +16,17 @@ on:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
+# ci.yml:9-16 (fixed in commit 99e4a203): `uv.lock` carries a PRIVATE git
+# dependency (aquacast, an optional extra). `uv sync --frozen` honours the
+# lock and never fetches it, but a bare `uv run` re-resolves and DOES try to
+# clone it — which fails with "could not read Username" on any runner
+# without an aquacast token. This workflow configures only
+# RECAP_DG_CLIENT_TOKEN, so every bare `uv run pytest ...` step below would
+# fail before pytest even starts. Setting UV_FROZEN makes every uv
+# invocation respect the lock instead of re-resolving.
+env:
+  UV_FROZEN: "1"
+
 jobs:
   integration-nightly:
     runs-on: ubuntu-latest
@@ -105,6 +116,19 @@ jobs:
       # rejected. No `-n auto`/`--cov` here: this step's only job is
       # ordering, not coverage or speed, and coverage already runs in
       # ci.yml's `unit` job on every push.
+      #
+      # Ratified scope note (fixer round, 2026-08-28): this plain `uv sync
+      # --frozen` does NOT install the `aquacast` extra, so
+      # `tests/unit/models/test_aquacast_shim.py` skips via importorskip
+      # here — this step is NOT the "full unit suite" in the sense of every
+      # test executing; it is the full suite in COLLECTION order, which is
+      # all T3 layer 3 needs to catch an ordering/global-state leak. Real
+      # `aquacast` coverage (installing the extra, proving the shim test
+      # ran) is already `ci.yml`'s `unit` job's responsibility, on every
+      # push; wiring the
+      # aquacast credential into this workflow too would be an unrelated
+      # expansion of a plan whose own proportionality constraint rules that
+      # out (see docs/plans/201-unit-suite-isolation-defect.md).
       - run: uv run pytest tests/unit/ -q
       # Run both the slow-marked tests from the main integration tree and
        # every test under tests/integration/live (path-based, so we don't

@@ -522,7 +522,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | **integration-nightly.yml** | | | | | |
 | N | `integration-nightly` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | N | `integration-nightly` | `uv sync --frozen` | — | `uv sync` | No |
-| N | `integration-nightly` | `uv run pytest tests/unit/ -q` (Plan 201 T3 layer 3 — the full unit suite, SEQUENTIAL, no `-n auto`) | — | `uv run pytest tests/unit/ -q` | No (but requires system deps) |
+| N | `integration-nightly` | `uv run pytest tests/unit/ -q` (Plan 201 T3 layer 3 — the full unit suite in COLLECTION order, SEQUENTIAL, no `-n auto`; ratified scope note, fixer round 2026-08-28 — this job never installs the `aquacast` extra, so `test_aquacast_shim.py` skips via importorskip here, unlike `ci.yml`'s `unit` job; layer 3's job is ordering, not `aquacast` coverage) | — | `uv run pytest tests/unit/ -q` | No (but requires system deps) |
 | N | `integration-nightly` | `uv run pytest tests/integration/ -v -m "slow" --timeout=3600` | — | `uv run pytest tests/integration/ -v -m "slow"` (requires postgres + system deps) | No (but requires postgres + system deps) |
 | N | `integration-nightly` | `uv run pytest tests/integration/live -v --timeout=3600 --override-ini "addopts="` | — | `uv run pytest tests/integration/live -v --override-ini "addopts="` (live external APIs) | No (but requires network + live external APIs) |
 | **live-lindas-weekly.yml** | | | | | |

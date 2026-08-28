@@ -547,3 +547,21 @@ so no logger can ever be first-bound while a leaked `True` is live. Do not
 individual tests — the autouse fixture already runs before every test's setup;
 the defect is in *which test first binds a given logger*, not in any one test's
 own setup, and per-test patching cannot close that window.
+
+**A reset only at setup is not sufficient by itself (fixer round, 2026-08-28).**
+It closes the window *between* tests, but nothing stops a test's own body from
+calling a production configurator mid-test and first-binding a logger before
+that same test (or the very next one) reads it back with `capture_logs()` — the
+cache activates on that bind, not at the next fixture setup. The fixture
+therefore also intercepts every `structlog.configure()` call for the duration
+of each test (via `monkeypatch.setattr(structlog, "configure", ...)`) and
+forces `cache_logger_on_first_use=False` on it, regardless of what the caller
+passed — including calls production code issues through
+`configure_cli_logging()` / `configure_api_logging()` / `configure_prefect_logging()`.
+`structlog.testing.capture_logs()` is unaffected: it holds its own
+`from structlog import configure` binding captured at import time, a different
+name pointing at the same function, and it never passes
+`cache_logger_on_first_use` anyway. See
+`tests/unit/test_structlog_cache_isolation.py` for the locking regression
+(production configure → first bind → reconfigure → capture, proven to fail
+against the setup-only version of the fixture).
