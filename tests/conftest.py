@@ -14,6 +14,7 @@ import pytest
 # the env-var fallback process-wide for any TestClient(app) instantiation.
 os.environ.setdefault("ACCESS_TOKEN_PEPPER", "test-only-pepper-do-not-use-in-prod")
 
+from sapphire_flow.logging import configure_test_logging
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import (
     GeoCoord,
@@ -78,6 +79,40 @@ def _utc(year: int = 2025, month: int = 1, day: int = 1, hour: int = 0) -> UtcDa
 
 def _uuid(rng: random.Random) -> UUID:
     return UUID(int=rng.getrandbits(128), version=4)
+
+
+@pytest.fixture(autouse=True)
+def _reset_structlog_config_before_each_test() -> None:
+    """Plan 201: force known structlog global config before every test.
+
+    Any test that exercises a real entry point (``main()`` in a CLI module,
+    a flow, ...) calls one of ``configure_cli_logging`` /
+    ``configure_api_logging`` / ``configure_prefect_logging``, which mutates
+    structlog's PROCESS-GLOBAL config via ``structlog.configure(...,
+    cache_logger_on_first_use=True)``. That flag is not just a config value:
+    per ``structlog._config.BoundLoggerLazyProxy.bind``, the FIRST time a
+    module-level ``log = structlog.get_logger(__name__)`` proxy is bound
+    while the flag reads True, the proxy permanently monkeypatches its own
+    ``.bind`` to a closure over the processors active at that moment. No
+    later ``structlog.configure()`` call — including the one
+    ``structlog.testing.capture_logs()`` performs internally — can undo
+    that: it is per-proxy state, not global state, so re-configuring
+    afterwards has no effect on a logger that already cached itself.
+
+    Concretely (Plan 201 T1's minimal reproducer): a CLI test calls
+    ``configure_cli_logging()`` (cache=True); a later, unrelated test is the
+    first to log through ``sapphire_flow.services.skill.combined_skill``'s
+    module logger while that flag is still True, permanently caching it;
+    a still-later test's ``capture_logs()`` then silently observes `[]`
+    because the cached logger never routes through the capturing
+    processors. Resetting to the test-safe config (cache=False) before
+    EVERY test closes the window: no logger can ever be first-bound while
+    the leaked True flag is live, so none can cache itself against a stale
+    config. This must run as test SETUP (not teardown) — the leak is a
+    side effect of a test's body, and only the next test's setup can act
+    before that body's loggers get their first use.
+    """
+    configure_test_logging()
 
 
 @pytest.fixture

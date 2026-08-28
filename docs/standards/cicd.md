@@ -459,7 +459,7 @@ git push / open PR
 merge to main
 ```
 
-Scheduled workflows run outside this push/PR path: `integration-nightly.yml` (03:00 UTC daily) covers `@pytest.mark.slow` and live-API tests; `live-lindas-weekly.yml` (Mondays 06:00 UTC) runs the BAFU LINDAS schema check. Both accept `workflow_dispatch` for out-of-cycle runs. First-fire run IDs are recorded in workflow header comments; see `.github/workflows/integration-nightly.yml` and `live-lindas-weekly.yml` headers.
+Scheduled workflows run outside this push/PR path: `integration-nightly.yml` (03:00 UTC daily) covers `@pytest.mark.slow` and live-API tests, and (Plan 201 T3 layer 3) a full SEQUENTIAL `tests/unit/` run that catches test-ordering / global-state leaks the push/PR path's `-n auto` unit job cannot see; `live-lindas-weekly.yml` (Mondays 06:00 UTC) runs the BAFU LINDAS schema check. Both accept `workflow_dispatch` for out-of-cycle runs. First-fire run IDs are recorded in workflow header comments; see `.github/workflows/integration-nightly.yml` and `live-lindas-weekly.yml` headers.
 
 ### Known external-dependency caveats
 
@@ -500,7 +500,8 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 2 | `unit` | `Install (aquacast extra)` — `uv sync --frozen --extra aquacast` (Plan 185 D1 case 1) | — | `uv sync --extra aquacast` (needs a local `aquacast` credential) | No — requires `AQUACAST_TOKEN` |
 | 2 | `unit` | `Install (no aquacast extra — degraded)` — `uv sync --frozen` + `::warning::` (Plan 185 D1 case 2 / D3) | — | `uv sync` | Yes — only runs when `AQUACAST_TOKEN` is absent on a run `github.actor` attributes to Dependabot |
 | 2 | `unit` | `Prove the aquacast shim test ran` — asserts `1 passed` on the shim's discovery test (Plan 185 D4) | — | `uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q` (requires the `aquacast` extra) | No (but requires `AQUACAST_TOKEN`) |
-| 2 | `unit` | `uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v` | — | `uv run pytest tests/unit/` (requires system deps above) | No (but requires system deps) |
+| 2 | `unit` | `Plan 201 regression — known ordering leak stays fixed (sequential)` — runs the 4-file Plan 201 reproducer sequentially and asserts it passes (Plan 201 T3 layer 2) | — | `uv run pytest -q tests/unit/cli/test_export_forecast_lab.py tests/unit/flows/test_compute_skills.py tests/unit/scripts/test_backfill_meteoswiss_history_script.py tests/unit/services/skill/test_combined_skill.py` | No |
+| 2 | `unit` | `uv run pytest tests/unit/ -n auto --cov=src/sapphire_flow --cov-report=term-missing` (corrected 2026-08-28, Plan 201 — this row previously showed `-v` with no `-n auto`, which had drifted from `ci.yml:277`) | — | `uv run pytest tests/unit/` (requires system deps above; `-n auto` hides test-ordering/global-state leaks — see the `integration-nightly.yml` row below for the sequential check) | No (but requires system deps) |
 | 2 | `wheel-only-guard` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `wheel-only-guard` | Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client` | — | Same command | No |
 | 2 | `wheel-only-guard` | Step 2 = "post-guard temporary exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client` | Step 1 guard | Same command | No |
@@ -521,6 +522,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | **integration-nightly.yml** | | | | | |
 | N | `integration-nightly` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | N | `integration-nightly` | `uv sync --frozen` | — | `uv sync` | No |
+| N | `integration-nightly` | `uv run pytest tests/unit/ -q` (Plan 201 T3 layer 3 — the full unit suite, SEQUENTIAL, no `-n auto`) | — | `uv run pytest tests/unit/ -q` | No (but requires system deps) |
 | N | `integration-nightly` | `uv run pytest tests/integration/ -v -m "slow" --timeout=3600` | — | `uv run pytest tests/integration/ -v -m "slow"` (requires postgres + system deps) | No (but requires postgres + system deps) |
 | N | `integration-nightly` | `uv run pytest tests/integration/live -v --timeout=3600 --override-ini "addopts="` | — | `uv run pytest tests/integration/live -v --override-ini "addopts="` (live external APIs) | No (but requires network + live external APIs) |
 | **live-lindas-weekly.yml** | | | | | |

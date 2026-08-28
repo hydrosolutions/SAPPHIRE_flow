@@ -91,6 +91,21 @@ jobs:
         env:
           RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - run: uv sync --frozen
+      # Plan 201 T3 layer 3 — the full unit suite run SEQUENTIALLY (no
+      # `-n auto`). ci.yml's `unit` job runs `-n auto`, and xdist workers
+      # each execute sequential CHUNKS, so a test-ordering / global-state
+      # leak only surfaces there if today's partition happens to put the
+      # polluter and its victim in the same worker — it does not for the
+      # known Plan 201 leak, and there is no guarantee it will for the next
+      # one either. This catches FUTURE, unknown leaks of the same class.
+      # Nightly cadence (up to 24h to surface a new leak) is an accepted
+      # cost: the harm is a misleading local `pytest tests/unit/` signal,
+      # not broken production, and running this on every push (~86/week,
+      # only 18 of them PR merges) was measured at ~43 CI-hours/week and
+      # rejected. No `-n auto`/`--cov` here: this step's only job is
+      # ordering, not coverage or speed, and coverage already runs in
+      # ci.yml's `unit` job on every push.
+      - run: uv run pytest tests/unit/ -q
       # Run both the slow-marked tests from the main integration tree and
        # every test under tests/integration/live (path-based, so we don't
        # depend on any particular `live*` marker name staying consistent).

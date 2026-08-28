@@ -269,6 +269,29 @@ jobs:
           set -o pipefail
           uv run pytest 'tests/unit/models/test_aquacast_shim.py::TestRealDiscovery::test_discover_models_returns_the_aquacast_model' -q --color=no | tee "$RUNNER_TEMP/aquacast-shim.txt"
           grep -Fq '1 passed' "$RUNNER_TEMP/aquacast-shim.txt"
+      # Plan 201 T3 layer 2 — `-n auto` below hides ordering/state-leak
+      # defects: xdist workers each run sequential chunks, so a polluter and
+      # its victim only collide if today's partition happens to put them in
+      # the same worker. This targeted check locks the ONE known 3-way
+      # interaction found on 2026-08-27 (test_export_forecast_lab.py's
+      # main() sets structlog's global cache_logger_on_first_use=True,
+      # test_compute_skills.py is the first to bind and thus permanently
+      # cache the skill-service module logger while that flag is live, and
+      # test_combined_skill.py's capture_logs() then silently observes `[]`)
+      # at ~8s cost on every push/PR. It is a canary, not the defence — T2
+      # (the autouse structlog reset in tests/conftest.py) is the actual
+      # fix; layer 3 (the nightly full sequential run) is what catches
+      # future, unknown leaks of this class.
+      - name: Plan 201 regression — known ordering leak stays fixed (sequential)
+        run: |
+          set -o pipefail
+          uv run pytest -q \
+            tests/unit/cli/test_export_forecast_lab.py \
+            tests/unit/flows/test_compute_skills.py \
+            tests/unit/scripts/test_backfill_meteoswiss_history_script.py \
+            tests/unit/services/skill/test_combined_skill.py \
+            | tee "$RUNNER_TEMP/plan201-sequential.txt"
+          grep -Eq '^[0-9]+ passed' "$RUNNER_TEMP/plan201-sequential.txt"
       # -n auto: the unit suite is ~3700 tests and was the whole critical path
       # (~15 min of a ~16 min job; setup is only ~70 s). Verified parallel-safe
       # on 2026-08-18 — a full `tests/unit/ -n auto` run passed with workers
