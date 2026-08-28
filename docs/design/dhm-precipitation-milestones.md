@@ -1162,6 +1162,14 @@ SAPPHIRE applies no numeric catch correction and why (D6).
 **Exit:** doc updated; the D6 position reachable from the standards inventory and cross-linked from
 the vision.
 
+**✅ COMPLETE 2026-08-28.** `docs/standards/wmo.md` gains **WMO-SPICE (No. 1131)** in the document
+inventory and a **§ Precipitation gauge catch efficiency** subsection under Observation QC: WMO-168
+Vol I Ch. 6 and SPICE on wind-induced undercatch; why SAPPHIRE applies no numeric correction (a
+defensible transfer function needs wind at gauge height, gauge/shield type and phase — the Nepali
+network supplies none of the three); the signed catch-efficiency caveat that replaces it; and the
+⛔ that it is **never** a lower bound on a reported total, since a physical-impossibility QC gate lets
+an isolated spurious value push a total above truth. Cross-linked from vision D6.
+
 ### M-I4 · Operational precipitation QC binding
 **Depends: M-I1, M-G1, M-G2.** Gated.
 

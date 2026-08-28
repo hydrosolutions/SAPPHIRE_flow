@@ -17,6 +17,7 @@ WMO sets international standards for operational hydrology — covering data col
 | 168 Vol I & II | Guide to Hydrological Practices (2 vols) | 6th ed. | Data collection, QC, forecasting | [Vol I](https://unstats.un.org/unsd/envaccounting/waterGuidelines/Material/WMO_Guide_168_Vol_I_en_hydrological_practices.pdf) / [Vol II](https://www.hydrology.nl/images/docs/hwrp/WMO_Guide_168_Vol_II_en.pdf) |
 | 1150 | Guidelines on Multi-Hazard Impact-Based Forecast and Warning Services | 2015/2021 | Alert system design | [link](https://library.wmo.int/records/item/54669-wmo-guidelines-on-multi-hazard-impact-based-forecast-and-warning-services) |
 | 1109 | Guidelines for Implementation of Common Alerting Protocol | — | Alert format standard (CAP) | [link](https://etrp.wmo.int/pluginfile.php/17980/mod_resource/content/1/wmo_1109_en.pdf) |
+| 1131 | WMO Solid Precipitation Intercomparison Experiment (SPICE) — final report | 2018 | Gauge catch efficiency, wind-induced undercatch | [link](https://library.wmo.int/records/item/56317-wmo-solid-precipitation-intercomparison-experiment-spice-2012-2015) |
 | — | Quality Management Framework — Hydrology (QMF-H) | — | Pipeline quality assurance | [link](https://community.wmo.int/en/activity-areas/hydrology-and-water-resources/quality-management-framework-hydrology) |
 | 49 Vol. III | Technical Regulations — Hydrology | 2006/2022 | Station classification | [link](https://library.wmo.int/records/item/35631-technical-regulations-volume-iii-hydrology) |
 | 1192 | WIGOS Metadata Standard | — | Station metadata interoperability | [link](https://repository.oceanbestpractices.org/bitstream/handle/11329/1379/1192_en.pdf) |
@@ -61,6 +62,40 @@ Maps to: NWP post-processing step in Flow 1, `WeatherPostProcessor` Protocol.
 - **WMO-49 Vol III**: Station classification and observing programme definitions — relevant for station tiering and expected data frequency.
 
 Maps to: `QualityChecker` Protocol, QC flag enum, observation ingest pipeline.
+
+#### Precipitation gauge catch efficiency
+
+- **WMO-168 Vol I, Ch. 6** (precipitation measurement) and **WMO-SPICE** (No. 1131) establish that a
+  precipitation gauge under-catches, that the deficit **grows with wind speed**, and that it is far
+  larger for solid than liquid precipitation — unheated gauges in cold, exposed sites being the worst
+  case.
+
+**⛔ SAPPHIRE applies NO numeric catch correction, and this is a deliberate position, not an omission.**
+
+- **Why not.** A defensible correction needs wind speed at gauge height, gauge and shield type, and
+  precipitation phase, per station and per timestep. For the Nepali network we have **none of the
+  three**: station metadata carries no instrument or shield type, wind is not co-located, and phase is
+  inferred rather than observed. Applying a published transfer function without those inputs would
+  substitute one unquantified error for another while *appearing* corrected.
+- **What we do instead.** Undercatch is carried as a **signed, directional caveat on catch
+  efficiency** — *for a correctly-functioning gauge, catch ≤ true precipitation* — attached to every
+  magnitude we report, rather than as an adjustment to the number.
+- **⛔ The caveat is directional about catch; it is NEVER a lower bound on a reported total.** Our QC is
+  a physical-impossibility gate, not an outlier filter (`value_max = 200.0` mm/h, deliberately
+  unreachable rather than discriminating), so a single spurious high reading passes QC and can push a
+  station total **above** true precipitation — reversing the very sign the caveat would otherwise
+  guarantee.
+
+**Where this position does real work.** The DHM precipitation track's Pyramid transect
+(`docs/design/dhm-precipitation-milestones.md` § M-A8) fits an apparent rain-phase precipitation
+gradient of −52 %/km over 2,660–5,600 m. Because catch efficiency falls with wind and wind exposure
+rises up a transect, the observed decline is **steeper than the true one** — so the figure is reported
+as an **upper bound in magnitude**, and the true decline could be nil. **That bound, rather than a
+corrected gradient, is the deliverable**, and it is a direct consequence of the no-correction position
+recorded here.
+
+Maps to: the DHM precipitation vision's D6, `docs/design/dhm-precipitation-vision.md`; Plan 184 D6;
+and `docs/design/dhm-precipitation-phase2-recommendation.md` § 5.
 
 ### Alert and warning system (Flow 1 — alert checking step)
 
