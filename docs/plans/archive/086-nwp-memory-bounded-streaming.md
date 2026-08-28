@@ -663,7 +663,7 @@ milestone:
 - `docs/standards/cicd.md` and/or `docs/standards/orchestration.md` — note the
   `prefect-worker` `mem_limit` (blast-radius bound) and the NWP memory-bounding
   behaviour if either pins the worker resource model.
-- `docs/plans/084-dev-deployment-validation-2-station-runoff.md` — cross-reference:
+- `docs/plans/archive/084-dev-deployment-validation-2-station-runoff.md` — cross-reference:
   mark Finding NWP-OOM as addressed by Plan 086 (one-line pointer); note that
   mesh-extraction (Open Item E) remains open.
 - `docs/plans/archive/086-nwp-memory-bounded-streaming.md` (this plan),

@@ -547,7 +547,7 @@ acceptanceCriteria:
 - `docs/standards/cicd.md` — line ~162: "48 obs ingest runs/day" budget → 288 +
   explicit ~6× obs-ingest log-volume scale note / revisit `max-file`×`max-size`
   rotation (MAJOR-2).
-- `docs/plans/084-dev-deployment-validation-2-station-runoff.md` — line 54 (D6):
+- `docs/plans/archive/084-dev-deployment-validation-2-station-runoff.md` — line 54 (D6):
   one-line `ingest-observations (*/30)` → `*/5` (it is presented as current truth,
   MINOR-3).
 - `docs/plans/archive/085-observation-ingest-upsert-and-poll-cadence.md` (this plan),

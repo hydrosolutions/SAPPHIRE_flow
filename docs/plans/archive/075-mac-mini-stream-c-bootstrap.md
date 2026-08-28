@@ -1,11 +1,3 @@
-# Plan 075 — Mac Mini Stream C: glue + one-command bootstrap (audit + harden)
-
-**Status**: READY
-**Phase**: 10c (staging infrastructure)
-**Parent**: Plan 046 (Mac Mini Staging Deployment), Stream C
-**Roadmap**: `docs/v0-launch-roadmap.md` §1.5 (§1.5a building blocks, §1.5b one-command bootstrap)
-**Created**: 2026-06-01
-
 ---
 
 ## Decisions (locked 2026-06-01)
@@ -65,6 +57,11 @@ touched §1.4/deps, not §1.5. So the boxes were never ticked in the first place
   none changes runtime behaviour.**
 
 ---
+
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** COMPLETE. Every named deliverable exists —
+`scripts/bootstrap-mac-mini.sh` (435 lines, and shellcheck-gated in `ci.yml`'s lint tier),
+`docker-compose.macmini.yml`, `docs/deployment/mac-mini-staging.md` — and the outcome is not in doubt:
+the mac mini has been bootstrapped and running the operational stack for months. Archived.
 
 ## Context
 
