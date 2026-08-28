@@ -34,6 +34,19 @@ absent at 09:27 UTC, all 50 members present by 12:59 UTC. An early run gets `fc`
 
 ## Install
 
+> ### 🔴 Run Compose from the repo checkout — never a staging copy
+>
+> Every `docker compose` command for this project **must** be run with
+> `/Users/sapphire/SAPPHIRE_flow` as the working directory. The compose file declares its secret
+> as a **relative** path (`file: ./secrets/nepal_db_password`), which Compose resolves to an
+> **absolute** bind-mount source and **bakes into the container** at create time, along with
+> `com.docker.compose.project.working_dir`. Deploy from a scratch directory and that absolute path
+> is what the container keeps forever — the repo copy is never consulted again.
+>
+> This is not hypothetical: the 2026-08-20 install ran from `/tmp/nepal-stage`, macOS cleaned
+> `/tmp`, and on the next Docker restart the container died with **exit 127** and could not be
+> recreated. See [Troubleshooting](#troubleshooting-container-wont-start-exit-127).
+
 ```bash
 cd /Users/sapphire/SAPPHIRE_flow && git pull
 
@@ -41,7 +54,13 @@ cd /Users/sapphire/SAPPHIRE_flow && git pull
 printf '%s' "$(openssl rand -hex 24)" > secrets/nepal_db_password && chmod 600 secrets/nepal_db_password
 
 # 2. bring up the standing Postgres (its own project — Swiss stack untouched)
+#    MUST be run from /Users/sapphire/SAPPHIRE_flow — see the warning above.
 docker compose -p sapphire-nepal -f docker-compose.nepal-forcing.yml up -d
+
+#    Confirm the container recorded the PERSISTENT path, not a scratch one:
+docker inspect sapphire-nepal-postgres-1 \
+  --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'
+#    -> must print /Users/sapphire/SAPPHIRE_flow
 
 # 3. migrate + seed (IMAGE = whatever the Swiss stack runs)
 IMAGE=$(docker inspect --format '{{.Config.Image}}' sapphire_flow-prefect-worker-1)
@@ -113,6 +132,72 @@ Still believed to hold (but re-check):
 - Pure `era5_land_reanalysis` past its edge hard-fails rather than truncating (expected; the edge was
   ~7 days back on 2026-08-20).
 
+## Troubleshooting: container won't start (exit 127)
+
+**Symptom.** `docker ps -a` shows `sapphire-nepal-postgres-1  Exited (127)`, and the daily run fails
+because the network exists but nothing is listening on it. `docker inspect` gives the real reason:
+
+```
+failed to fulfil mount request: open
+/host_mnt/private/tmp/nepal-stage/secrets/nepal_db_password: no such file or directory
+```
+
+**Cause.** The container was created from a working directory that no longer exists (typically a
+staging copy under `/tmp`, which macOS cleans). Compose froze that absolute path into the container's
+bind-mount config, so `restart: unless-stopped` retries forever against a path that is gone. Exit 127
+here is the OCI runtime failing to *create* the container — it is **not** a Postgres error, and
+nothing is wrong with the database.
+
+**The data is safe.** The store lives in the named volume `sapphire-nepal_nepal_pgdata`, which is
+independent of the container. Confirm before touching anything:
+
+```bash
+docker volume inspect sapphire-nepal_nepal_pgdata --format '{{.Name}} {{.Mountpoint}}'
+docker system df -v | grep nepal_pgdata      # expect a non-trivial size (~140 MB after a week)
+```
+
+**Fix — recreate the container from the repo checkout.** `docker compose up -d` alone is *not*
+enough: it reuses the existing container's frozen config and fails identically. The stale container
+must be removed first. `docker rm` never deletes named volumes, so this does not touch the data:
+
+```bash
+docker rm -f sapphire-nepal-postgres-1
+
+cd /Users/sapphire/SAPPHIRE_flow          # the working directory IS the fix
+docker compose -p sapphire-nepal -f docker-compose.nepal-forcing.yml up -d
+
+# verify the new container points at the persistent path
+docker inspect sapphire-nepal-postgres-1 \
+  --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}'
+```
+
+**Then prove the feed end to end** rather than assuming — a healthy DB and a working fetch are
+different claims:
+
+```bash
+bash scripts/launchd/run-nepal-forcing.sh; echo "exit=$?"     # expect exit=0, ~20-40 s
+tail -1 ~/Library/Logs/sapphire-nepal-forcing.jsonl           # expect ok=true, rows=8568, members=51
+
+docker exec sapphire-nepal-postgres-1 psql -U sapphire -d sapphire -c \
+  "SELECT cycle_time, count(*) rows, count(DISTINCT member_id) members, max(valid_time) horizon_end
+     FROM weather_forecasts GROUP BY cycle_time ORDER BY cycle_time DESC LIMIT 5;"
+```
+
+Running the wrapper by hand is safe and is the fastest way to close a missed day — it stores the
+same 00Z cycle the timer would, so the scheduled run later that day is simply a no-op re-fetch.
+
+**Diagnosing the same class of failure elsewhere.** Any Compose project deployed from a scratch
+directory carries this fault. To audit:
+
+```bash
+docker ps -a --format '{{.Names}}' | while read -r c; do
+  printf '%s\t%s\n' "$c" \
+    "$(docker inspect "$c" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}')"
+done | grep -vE '\t/Users/|\t$'
+```
+
+Anything printing a path under `/tmp` or `/private/tmp` is one Docker restart away from this failure.
+
 ## Caveats
 
 - **Unmonitored.** The host watchdog probes `localhost:8000` (the Swiss API) and knows nothing about
@@ -120,8 +205,15 @@ Still believed to hold (but re-check):
   record and the launchd log are the only signals. Check them, or wire a dead-man later.
 - **No backups.** Deliberate — the store is reproducible from the seed plus a re-fetch.
 - **Not restarted by `start-sapphire.sh`** (that manages the Swiss file set only). After a host
-  reboot, `docker compose -p sapphire-nepal ... up -d` again; `restart: unless-stopped` covers a
-  Docker restart but not a fresh boot with the engine down.
+  reboot, `docker compose -p sapphire-nepal ... up -d` again **from the repo checkout**;
+  `restart: unless-stopped` covers a Docker restart but not a fresh boot with the engine down —
+  and it only helps if the container's baked-in mount sources still exist (see
+  [Troubleshooting](#troubleshooting-container-wont-start-exit-127)).
+- **This feed fails silently and invisibly.** It is unmonitored (below), so a dead store surfaces
+  only as a stale JSONL. When something reports "12300 is dead", separate the two questions before
+  concluding anything: *is the Gateway serving?* (the recap probe answers this — it is independent
+  of this store) and *is our store accepting writes?* On 2026-08-28 the Gateway was fully healthy
+  and only the local Postgres was down.
 - **Private-seam coupling.** The run calls `run_forecast_cycle._fetch_nwp_task.fn(...)` — the seam
   that both fetches and persists. Re-check it whenever that flow changes shape.
 - **Placeholder geometry.** The seeded basin outline is a stub; the recap path is basin-average by

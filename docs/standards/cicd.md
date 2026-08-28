@@ -47,6 +47,45 @@ tmpfs mount: `/tmp/sapphire_nwp` (size=4g) on prefect-worker — scratch space f
 
 Config bind mount: `./config.toml:/app/config.toml:ro` on `api` and both v0 workers (`prefect-worker`, `prefect-worker-ingest`); the three-worker phrasing refers to the v1 topology.
 
+### Compose working directory — relative mounts are frozen at container-create time
+
+**Every `docker compose` command must be run from the repo checkout** (`/Users/sapphire/SAPPHIRE_flow`
+on the mac mini). Never from a staging copy, a scratch directory, or anywhere under `/tmp`.
+
+Relative paths in a compose file — bind mounts (`./config.toml`) and file-based secrets
+(`file: ./secrets/foo`) — are resolved against the **working directory of the command that created
+the container**, and the resulting **absolute** path is baked into the container's config, alongside
+the `com.docker.compose.project.working_dir` label. Nothing re-reads the compose file afterwards. A
+container created from a directory that later disappears can never start again:
+
+```
+Exited (127)
+failed to fulfil mount request: open /host_mnt/private/tmp/<dir>/secrets/<name>: no such file or directory
+```
+
+macOS cleans `/tmp`, which makes a staging-directory deploy a delayed-action failure: it works until
+the next Docker or host restart, then fails permanently. Observed 2026-08-28 on the `sapphire-nepal`
+stack, deployed from `/tmp/nepal-stage` eight days earlier.
+
+**`docker compose up -d` does not repair it** — it reuses the existing container's frozen config and
+fails identically. The stale container must be removed first (`docker rm -f <name>`; named volumes
+are never touched by `docker rm`, so data survives), then recreated from the repo checkout.
+
+Verify after any first deploy, and audit periodically:
+
+```bash
+docker ps -a --format '{{.Names}}' | while read -r c; do
+  printf '%s\t%s\n' "$c" \
+    "$(docker inspect "$c" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}')"
+done | grep -vE '\t/Users/|\t$'
+```
+
+Any row resolving under `/tmp` or `/private/tmp` is one restart away from the failure above.
+
+Related: a `git pull` replaces the **inode** behind a single-file bind mount, so containers keep the
+deleted file while the host copy looks correct — always restart the affected services after a pull.
+Same root cause (bind mounts bind to a resolved path/inode, not to a name), different trigger.
+
 ### Dependency chain
 
 ```
