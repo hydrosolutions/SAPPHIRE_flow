@@ -25,7 +25,7 @@ concrete failure, not a missing feature. Adding length is a cost.
 
 | Run mode | Result |
 |---|---|
-| `pytest tests/unit/` sequential, full | **13 failed**, 4293 passed |
+| `pytest tests/unit/` sequential, full | **13 failed**, 4692 passed *(re-measured 2026-08-28; was 4293 on 2026-08-27 — the suite grew, the 13 did not)* |
 | The 4 affected files alone, sequential | 124 passed |
 | The same 4 files under `-n auto` | 124 passed |
 | `tests/unit/services/` alone | 1003 passed |
@@ -49,6 +49,24 @@ bisect range.
 no way to know they are spurious. That erodes the signal the whole review process leans on — and it
 already cost real time: this was found while checking whether Plan 151 T8b had regressed the baseline,
 and answering "no" required a full comparison run against `main`.
+
+## Staleness re-check, 2026-08-28
+
+Re-verified against `main` after Plan 207 merged, since that PR changed `ci.yml`:
+
+- **The defect is live and unfixed.** The four-file reproducer still gives `1 failed, 27 passed` in ~10 s.
+- **Counts:** `13 failed, 4692 passed` — the failure count, and its distribution across the same four
+  files, is **unchanged**; only the pass count moved as the suite grew.
+- **Citations hold:** `ci.yml:277` is still the unit job's command and `ci.yml:3` is still `on:` —
+  Plan 207's edits were all below line 500. `integration-nightly.yml` is still `cron: "0 3 * * *"`,
+  which T3 layer 3 depends on. `cicd.md:503` is untouched.
+- **No collision with Plan 207:** T3 layer 2 adds a step to the `unit` job; 207 changed
+  `build-image-and-scan`.
+
+**Plan 206 depends on this plan and cannot see it.** `docs/plans/206-cicd-standard-matches-the-workflows.md`
+deliberately leaves the unit-suite row (`cicd.md:503`) to T3 and states that **if Plan 201 is dropped,
+that row must be re-filed**. So T3's doc-sync must correct `cicd.md:503`, or 206 lands with a knowingly
+stale row.
 
 ## ⭐ ROOT CAUSE LOCALISED — a 4-file, 8-second reproducer (2026-08-27)
 
