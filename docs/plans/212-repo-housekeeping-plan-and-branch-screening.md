@@ -19,8 +19,9 @@ source: the 2026-08-28 stale-status audit (main b1e1b516); the audit's own limit
   035, 069, 102, 104, 138 corrected to PARTIAL; 122 confirmed genuinely outstanding; 162 left
   UNDETERMINED on purpose. Two audit contradictions resolved: 035's "waits for v1" header was stale
   (`alembic/versions/0034_rating_curves_table.py` is *Plan 035 Task 1*), and 138's T2 *did* land.
-- **D1 — done, held at PR #226.** All nine repointed, including the wrapped
-  `docker-compose.yml:404` path this plan predicted no grep would see.
+- **D1 — MERGED (PR #226, v0.1.831).** All nine repointed, including the wrapped
+  `docker-compose.yml:404` path this plan predicted no grep would see. **Gate verified clean on
+  `main` after the merge: every cited plan path in the repo now resolves.**
 - **B1 — reported below.** 13 retirable, 1 inspect, 53 keep.
 - **B2 and C — blocked on owner confirmation by design.**
 
