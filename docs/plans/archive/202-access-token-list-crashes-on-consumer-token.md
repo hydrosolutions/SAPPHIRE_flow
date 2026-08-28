@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-27
 plan: 202
 title: `access_tokens list` crashes on any consumer token
@@ -12,6 +12,33 @@ source: Found 2026-08-27 while minting the Plan 198 consumer token for SAPPHIRE-
 # Plan 202 — `access_tokens list` crashes on any consumer token
 
 ## Status
+
+**COMPLETE.** Shipped in PR #225, merged to `main` as `f8ba52ad` (v0.1.830 — the
+branch bumped to 0.1.826, but a concurrent session's higher version won the merge;
+0.1.826 is one of the expected gaps in the tag series).
+
+Outcome against the acceptance criteria:
+
+1-3. Met by `!s:36` at `cli/access_tokens.py:191`.
+4. The test was written first and proven RED against the unfixed code, failing with
+   the real `TypeError: unsupported format string passed to UUID.__format__` rather
+   than a fixture error. It was **additionally** proven to reject a `str()` fix that
+   drops the `:36` — that variant passes on the consumer row (a UUID is already 36
+   chars) while silently misaligning admin rows, so criterion 3 is genuinely locked.
+5. Local: 5337 passed / 0 failed across `tests/unit` + `tests/integration`, ruff
+   clean, pyright ratchet 404 <= baseline 432. CI: all 7 checks green.
+
+Two findings from the independent review proved out in practice:
+
+- **`uv.lock` is a third generated bump output.** It did change on the bump; staging
+  only the two files the plan first named would have failed CI on a dirty lock.
+- **No sibling defect exists.** Every width-formatted f-string field in `src/` was
+  enumerated: six total, of which four are ints (`month`, `year`) and two are
+  strings. This bug class lives in exactly one place, now fixed.
+
+The post-implementation `codex exec --sandbox read-only` pass over the committed
+diff returned **NONE — no findings**, having independently reproduced the
+`TypeError` and confirmed the width-lock rather than agreeing by inspection.
 
 **DRAFT.** Not for implementation until the owner confirms.
 
