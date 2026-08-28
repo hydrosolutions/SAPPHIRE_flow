@@ -7,7 +7,7 @@ the combined `_pooled`/`_bma` forecast) at the operational BAFU stations,
 produced by exactly one code path
 (`services/forecast_lab/snapshot.py::build_snapshot()`) whether it is served
 over the REST route or written by the CLI export. See the plan docs
-(`docs/plans/198-forecast-lab-snapshot-export.md`,
+(`docs/plans/archive/198-forecast-lab-snapshot-export.md`,
 `docs/plans/204-forecast-lab-quantile-models-and-pooled.md`) for the full
 design rationale — this page is the consumer/operator-facing reference.
 

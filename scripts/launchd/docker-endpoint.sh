@@ -32,7 +32,7 @@
 # main): start-sapphire.sh, prune-docker.sh, run-recap-probe.sh,
 # run-nepal-forcing.sh.
 #
-# Spec: docs/plans/199-salvage-plan-158.md T2.
+# Spec: docs/plans/archive/199-salvage-plan-158.md T2.
 
 # shellcheck disable=SC2034  # consumed by the sourcing script, not here.
 DOCKER_BIN="${SAPPHIRE_DOCKER_BIN:-/usr/local/bin/docker}"
