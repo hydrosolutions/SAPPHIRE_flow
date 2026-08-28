@@ -800,11 +800,35 @@ mode is an **operational threshold-risk** product. Same producer, two different 
 
 **What that review established about the OTHER product — recorded here only so it is not lost, and
 explicitly NOT work for this plan.** The map's schema makes `threshold` (id/label/value_m3s/source),
-`summary.risk_level` and `summary.exceedance_probability` **required**. This deployment cannot
-produce any of them today:
+`summary.risk_level` and `summary.exceedance_probability` **required**.
 
-- `station_thresholds` exists (`db/metadata.py:306-334`) but has **no `id` or `label` column** — it
-  stores `danger_level`/`parameter`/`value`/`source`.
+> **CORRECTION (owner, 2026-08-28): the threshold VALUES already exist on the mac mini.** The review
+> concluded "cannot produce any of them today". That is **wrong for the threshold values** and the
+> correction matters, because it moves the operational product from "does not exist" to "unwired".
+> BAFU publishes flood danger levels **inside the forecast plot payloads we already archive**, as
+> coloured `layout.shapes` rectangles whose `y0` is the level's lower bound in m³/s.
+> **Measured over the live archive 2026-08-28 (12,655 raw files): 40 of 40 stations carry a complete
+> 4-level threshold set — not "some".** Both operational SAPPHIRE stations are covered:
+> `2009 → {2: 700, 3: 1000, 4: 1200, 5: 1400}`, `2091 → {2: 2500, 3: 3000, 4: 3600, 5: 4500}`.
+> Colours map `#FFFF00→2, #FF9900→3, #F7001D→4, #800000→5`; level 1 is the unbanded region below the
+> lowest bound. **Nothing parses them** — `types/bafu_forecast.py` and the BAFU adapters contain no
+> threshold handling at all, so the values are archived and discarded.
+>
+> Four caveats that keep this honest, and they are the real work:
+> 1. **This is scraped from a rendering, not a data API.** The values come from plot fill colours. A
+>    BAFU restyle changes them and the extraction breaks **silently** — it must be a validated parse
+>    with a loud failure, never a best-effort read.
+> 2. **The colour→danger-level mapping is inferred, not documented here.** Confirm it against BAFU's
+>    published 5-level scale before any of it drives a risk class.
+> 3. **Licence.** These come from the same `/plots/*.json` as the forecasts, whose `licence_status`
+>    is `unresolved` and whose use is **research-only** pending Plan 111 G1. A public operational map
+>    is *publication*, which is exactly what that marker excludes. **The G1 letter gates the map's
+>    operational mode regardless of engineering.**
+> 4. `station_thresholds`' existing columns (`danger_level`/`parameter`/`value`/`source`) fit this
+>    data well; the map contract's `id`/`label` are a presentation mapping, not new storage.
+
+With that correction, the remaining gaps are:
+
 - `PgStationStore.store_thresholds()` (`store/station_store.py:189`) has **zero production callers**
   — verified repo-wide; only three test modules call it. Onboarding supplies no thresholds
   (`services/onboarding.py:174-190`).
@@ -819,9 +843,10 @@ produce any of them today:
 **Station identity is NOT a mismatch:** the map casts FOEN's `schema:identifier` to `int`, this
 export emits the same BAFU authority code as a string. `2009` and `"2009"` are the same identifier.
 
-None of the above is actionable here. It needs its own plan, and the honest summary is that the
-map's *operational* mode is blocked on a product that does not exist yet, while its *research*
-comparison mode is exactly what this plan delivers.
+None of the above is actionable here. It needs its own plan. The honest summary, after the
+correction above: the map's *operational* mode is blocked on **wiring plus two decisions** (the
+danger-level mapping, and the Plan 111 G1 licence answer) — **not** on missing data, as the review
+first concluded. Its *research* comparison mode is exactly what this plan delivers.
 
 ## Not in scope
 
