@@ -164,6 +164,28 @@ Measured 2026-08-28 (Plan 209 T2), against the **GES DISC HTTPS archive**:
   ⇒ **This raises the value of server-side subsetting (T1)**: a subset over the frozen box is ~4,500
   cells per granule, which would make retention a non-question rather than a decision.
 
+## ⛔ PER-RUN SCOPE FOR THIS `/implement` (binding)
+
+**Build the pipeline; stop at T1's own projection gate. Do NOT perform the bulk retrieval.**
+
+- ✅ **In scope:** `imerg_acquire.py`, `imerg_extract.py`, their **no-network** unit tests under
+  `tests/unit/scripts/`, the D9 publisher + shared validation predicate, and T2's milestone-text update.
+- ✅ **Exactly ONE granule may be downloaded** — the D1 contract probe. It is load-bearing: without a
+  real granule the read contract is *assumed*, which is the exact failure D1 exists to prevent. Record
+  its observed structure and its size. ⛔ **One. Not a day, not a month.**
+- ⛔ **STOP after reporting the projection** (granule size × 105,216 against free disk). The bulk
+  retrieval is the owner's call — 896 GB free as of 2026-08-28, so a full-globe pull would consume most
+  of the disk. Report and halt; do not retrieve, do not "start with a small subset to be safe".
+- ⛔ **Tests must never touch the network.** Build fixtures as small synthetic files carrying the
+  structure observed on the probe granule — never by downloading inside a test.
+- ⛔ Nothing is written under `data/dhm_precip/era5_land*`, and nothing under any `points/` tree is
+  deleted. The ERA5 archive is untouched by this work.
+- **Iterate against `tests/unit/scripts/` (~75 s)**, not the full unit suite (~8 min) — running the full
+  suite as an iteration loop has stalled eight subagents on this track. Run the full suite **once** at
+  the end.
+- **Hold at PR.** Every code commit bumps patch (`uv run bump-my-version bump patch`) folded into the
+  real commit. Never merge, never tag on a branch.
+
 ## Tasks
 
 Two tasks, two phases. `$ENV` abbreviates the Earthdata-authenticated environment.
