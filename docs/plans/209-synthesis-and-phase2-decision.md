@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-28
 plan: 209
 title: M-A9 — synthesis, the Phase-2 recommendation, and an IMERG feasibility read
@@ -13,7 +13,9 @@ source: docs/design/dhm-precipitation-milestones.md § M-A9
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** (owner, 2026-08-28). Three independent review rounds returned 5, 5 and 2 findings, all
+folded; the third recommended no cuts. Four of the twelve overturned assertions in earlier revisions,
+including the IMERG Early/Final calibration science in both directions.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
