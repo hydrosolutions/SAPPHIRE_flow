@@ -47,6 +47,25 @@ config change made after the contract was written. Do not reopen Plan 198's sett
 (F3's percentile orientation, the cut T4/T9b/T10/T11, `licence_status`, the deviation table).
 Reviewers: "no findings" is a complete review.
 
+### This round is a VERIFICATION pass, not a fourth expansion round (2026-08-28)
+
+The previous run folded three majors and two minors but ran out of rounds before anything re-read
+the folded text. **Your job is to check that folding, not to grow the plan.** Specifically:
+
+1. **Re-verify every round-3 fix against the source.** Round 2 produced a fix that was itself wrong
+   (it named `ComparisonSemanticsSchema.method_version`; the field is on `VerificationSchema`,
+   `api/forecast_lab_schemas.py:317`). Assume any fix may have the same defect. Check the cited
+   `file:line` actually says what the plan claims.
+2. **Check the locking tests would genuinely fail against the buggy implementation they target** —
+   especially the `BMA`-selects-`_bma` test and the combined-only roll-up test. A test that passes
+   both before and after locks nothing.
+3. **Check the two findings folded from the external consumer review** (T3's fixture station-identity
+   fix; T2's "v1-compatible on its own" claim). The second is a factual claim about the committed v1
+   schema — verify it rather than trust it.
+
+A round that reports "the folded text checks out" is a complete and valuable round. Do not
+manufacture findings to justify the pass, and do not reopen settled owner decisions.
+
 ### Reviewers: DO NOT OVER-ENGINEER THIS PLAN (owner instruction, 2026-08-27)
 
 This is a **three-task change to an export that already works in production** — verified end-to-end
