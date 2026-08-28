@@ -1,8 +1,8 @@
-"""Plan 198 T1 — Pydantic v2 boundary models for the Forecast Lab snapshot
-document (``forecast-lab-snapshot/v1``).
+"""Plan 198 T1 (extended by Plan 204 T1/T2) — Pydantic v2 boundary models
+for the Forecast Lab snapshot document (``forecast-lab-snapshot/v2``).
 
 These are the ONLY place the wire shape is defined — the generated JSON
-Schema (``docs/spec/forecast-lab-snapshot-v1.schema.json``) is derived from
+Schema (``docs/spec/forecast-lab-snapshot-v2.schema.json``) is derived from
 these models (D15), and both the REST route (T5) and the CLI export (T6)
 serialise exactly this model, produced by the single assembly function
 ``services.forecast_lab.snapshot.build_snapshot()`` (D1).
@@ -143,6 +143,9 @@ class ComparisonSemanticsSchema(ForecastLabModel):
     daily_aggregation: str
     bafu_daily_completeness_minimum: int
     observation_daily_completeness_minimum: int
+    # Plan 204 T2 — this describes `representation: "members"` entries ONLY.
+    # A `representation: "quantiles"` entry's p25/median/p75 are exact
+    # stored levels, never run through this order-statistic method.
     sapphire_quantile_method: Literal["linear"] = "linear"
 
 
@@ -237,8 +240,22 @@ class SapphireModelSchema(ForecastLabModel):
 
 SapphireUnavailableReason = Literal["no_forecast", "unsupported_representation"]
 
+# Plan 204 T2 — the MEMBER-COUNT TRAP: a QUANTILES forecast's `member_count`
+# is its LEVEL count, not an ensemble size, so a quantile entry must never be
+# able to carry `ensemble_size`. Split into two variants, nested-discriminated
+# on `representation`, so the wrong pairing (`representation: "quantiles"`
+# with `ensemble_size`, or vice versa) is unrepresentable rather than merely
+# tested for (the FORBID-EXTRA RULE rejects it at construction).
+
+RepresentationValue = Literal["members", "quantiles"]
+
 
 class SapphireForecastAvailableSchema(ForecastLabModel):
+    """Shared base — every field common to both representations. Kept under
+    this name (not renamed) because three `isinstance` call sites in
+    `snapshot.py` and four in `test_snapshot.py` rely on it; it is never
+    itself a union member and never appears in the generated `$defs`."""
+
     available: Literal[True] = True
     source: Literal["sapphire"] = "sapphire"
     forecast_id: str
@@ -248,10 +265,25 @@ class SapphireForecastAvailableSchema(ForecastLabModel):
     issued_at: Rfc3339Utc
     observation_staleness_hours: NullableFiniteFloat
     native_step_seconds: int
-    ensemble_size: int
     horizon_start: Rfc3339Utc
     horizon_end: Rfc3339Utc
     points: list[QuantileEnvelopeSchema]
+
+
+class SapphireForecastMembersSchema(SapphireForecastAvailableSchema):
+    representation: Literal["members"] = "members"
+    ensemble_size: int
+
+
+class SapphireForecastQuantilesSchema(SapphireForecastAvailableSchema):
+    representation: Literal["quantiles"] = "quantiles"
+    quantile_level_count: int
+
+
+SapphireForecastAvailableEntry = Annotated[
+    SapphireForecastMembersSchema | SapphireForecastQuantilesSchema,
+    Field(discriminator="representation"),
+]
 
 
 class SapphireForecastUnavailableSchema(ForecastLabModel):
@@ -261,7 +293,68 @@ class SapphireForecastUnavailableSchema(ForecastLabModel):
 
 
 SapphireForecastEntry = Annotated[
-    SapphireForecastAvailableSchema | SapphireForecastUnavailableSchema,
+    SapphireForecastAvailableEntry | SapphireForecastUnavailableSchema,
+    Field(discriminator="available"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Combined forecast (`_pooled` / `_bma` — Plan 204 T1, Gap 2)
+# ---------------------------------------------------------------------------
+#
+# A sibling block on `StationEntrySchema`, always present and discriminated
+# on `available` — NOT a `sapphire_forecasts[]` entry, because that array is
+# contractually "one entry per assigned model" (D12/D17b) and the combined
+# forecast has no assignment row at all. Mirrors the `bafu_forecast` union.
+# Shares the MEMBER-COUNT-TRAP-safe nested split with the per-model entry
+# above, for the same reason.
+
+
+class CombinedForecastAvailableSchema(ForecastLabModel):
+    available: Literal[True] = True
+    source: Literal["sapphire"] = "sapphire"
+    forecast_id: str
+    model_key: str  # the sentinel actually fetched: "_pooled" or "_bma"
+    combination_strategy: str
+    source_model_ids: list[str]
+    variable: Literal["discharge"] = "discharge"
+    unit: Literal["m3/s"] = "m3/s"
+    issued_at: Rfc3339Utc
+    observation_staleness_hours: NullableFiniteFloat
+    native_step_seconds: int
+    horizon_start: Rfc3339Utc
+    horizon_end: Rfc3339Utc
+    points: list[QuantileEnvelopeSchema]
+
+
+class CombinedForecastMembersSchema(CombinedForecastAvailableSchema):
+    representation: Literal["members"] = "members"
+    ensemble_size: int
+
+
+class CombinedForecastQuantilesSchema(CombinedForecastAvailableSchema):
+    representation: Literal["quantiles"] = "quantiles"
+    quantile_level_count: int
+
+
+CombinedForecastAvailableEntry = Annotated[
+    CombinedForecastMembersSchema | CombinedForecastQuantilesSchema,
+    Field(discriminator="representation"),
+]
+
+# strategy_primary     -> strategy is PRIMARY; no lookup performed
+# no_combined_forecast -> POOLED/BMA discharge lookup returned None,
+#                         or strategy is CONSENSUS (unsupported, no lookup)
+CombinedForecastUnavailableReason = Literal["strategy_primary", "no_combined_forecast"]
+
+
+class CombinedForecastUnavailableSchema(ForecastLabModel):
+    available: Literal[False] = False
+    reason: CombinedForecastUnavailableReason
+
+
+CombinedForecastEntry = Annotated[
+    CombinedForecastAvailableEntry | CombinedForecastUnavailableSchema,
     Field(discriminator="available"),
 ]
 
@@ -335,6 +428,7 @@ class StationEntrySchema(ForecastLabModel):
     observations: ObservationsSectionSchema | None
     bafu_forecast: BafuForecastEntry
     sapphire_forecasts: list[SapphireForecastEntry]
+    combined_forecast: CombinedForecastEntry
     aligned_daily_comparison: list[AlignedDailyRowSchema]
     verification: VerificationSchema
 
@@ -345,7 +439,7 @@ class StationEntrySchema(ForecastLabModel):
 
 
 class ForecastLabSnapshot(ForecastLabModel):
-    schema_version: Literal["forecast-lab-snapshot/v1"] = "forecast-lab-snapshot/v1"
+    schema_version: Literal["forecast-lab-snapshot/v2"] = "forecast-lab-snapshot/v2"
     snapshot_id: str
     generated_at: Rfc3339Utc
     data_cutoff_at: Rfc3339Utc

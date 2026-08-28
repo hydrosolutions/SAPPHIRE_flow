@@ -361,6 +361,24 @@ Notes:
   `plan` and `implement` shell out to Codex, so they require **`codex exec --sandbox
   read-only`** to be permitted in the local allowlist (`.claude/settings.local.json`) —
   they hang or are denied without it.
+- **🔴 Codex is invoked through `scripts/codex-review.sh` — never a hand-rolled
+  `codex exec`.** `codex exec` blocks on `Reading additional input from stdin...`
+  unless stdin is closed: it writes its entire review, then waits until the caller's
+  timeout kills it (exit 143). The verdict is produced and thrown away, and **the run
+  reports a normal, green round that had no independent reviewer in it at all.** Both
+  workflows carried the required `< /dev/null` only as *prose* inside a prompt; on
+  **2026-08-28 a `plan` run reported "0 blockers + 1 major" with
+  `codexFailedRounds` = 2 of 2** — the agent had omitted the redirect both rounds. The
+  redirect now lives in the script, where a caller cannot forget it.
+  - **Before trusting ANY `plan`/`implement` round, check `codexFailedRounds` in the
+    task output.** Non-zero means those rounds were Claude-only and do **not** meet the
+    `CLAUDE.md` independent-review floor, however normally the run reports.
+  - A manual pass is `./scripts/codex-review.sh <prompt-file>`; a non-zero exit means
+    no usable verdict. Scope the prompt — a broad one over a long document can still
+    exceed the 10-minute cap.
+  - Do **not** treat the string `Reading additional input from stdin` in the output as
+    proof of a hang: Codex prints it during normal startup, reads EOF, and proceeds.
+    Guarding on it false-positives on every successful review.
 - **WF2 (`vision-build`) — first run 2026-07-10 (Plan 105).** It BLOCKED at the
   locked-test-authoring soundness gate (twice): the auto-author kept writing
   tests against the changing `_fetch_nwp_task` signature that *errored* instead

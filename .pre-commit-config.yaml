@@ -62,7 +62,7 @@ repos:
         # into it and flags the `source` line itself as SC1091).
         entry: shellcheck -x
         language: system
-        files: ^(scripts/launchd/.*\.sh|scripts/bootstrap-mac-mini\.sh)$
+        files: ^(scripts/launchd/.*\.sh|scripts/bootstrap-mac-mini\.sh|scripts/codex-review\.sh)$
         types_or: [shell]
       - id: plutil-launchd
         name: plutil launchd plists
