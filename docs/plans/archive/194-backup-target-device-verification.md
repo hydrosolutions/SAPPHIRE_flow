@@ -260,7 +260,7 @@ The operational fix is already documented where the operator will meet it
 
 ## Non-goals
 
-Off-box replication (Plan 162 D4 follow-on) · backup encryption (162 T3, shipped) · restore rehearsal
+Off-box replication (Plan 162 D4 follow-on) · backup encryption (162 **D5**, Phase B — **NOT shipped**: there is no encryption code in `src/`, and the mini's dumps are plaintext `PostgreSQL custom database dump`, verified 2026-08-28; 162 T3 is *atomic publication*, which did ship — see Plan 208) · restore rehearsal
 (162 T5, shipped) · generalising the predicate beyond the backup path · any change to what is dumped,
 how often, or its retention · fixing the mini's missing disk (accepted risk; a physical errand).
 
