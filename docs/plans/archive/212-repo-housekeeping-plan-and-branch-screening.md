@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-28
 plan: 212
 title: Screen the undecided plans and the dormant branches against the code, once, with evidence
@@ -13,7 +13,7 @@ source: the 2026-08-28 stale-status audit (main b1e1b516); the audit's own limit
 
 ## Status
 
-**IN PROGRESS — A1 and D1 done, B1 reported, B2 and C await owner confirmation (2026-08-28).**
+**COMPLETE — archived 2026-08-28.** A1, B1, B2, C and D1 all done; D1 merged as PR #226 (v0.1.831).
 
 - **A1 — done.** All nine statuses settled against named files/symbols. 075 and 084 archived COMPLETE;
   035, 069, 102, 104, 138 corrected to PARTIAL; 122 confirmed genuinely outstanding; 162 left
@@ -339,8 +339,9 @@ uv run pre-commit run --all-files
 # Verified 2026-08-28: prints the 9 known dangling paths now, nothing after D1,
 # and proven to flag an injected fake path.
 # ':!' excludes THIS plan: its D table names the broken paths on purpose, so
-# including it would keep the gate red forever.
+# including it would keep the gate red forever. BOTH patterns are needed — the
+# plan lives under archive/ now, and ':!docs/plans/212-*' does not match that.
 git grep -hoE "docs/plans/(archive/)?[0-9]{3}[a-z]?[0-9]?-[a-z0-9-]+\.md" \
-  -- . ':!docs/plans/212-*' \
+  -- . ':!docs/plans/**/212-*' ':!docs/plans/212-*' \
   | sort -u | while read -r pth; do [ -f "$pth" ] || echo "DANGLING: $pth"; done
 ```

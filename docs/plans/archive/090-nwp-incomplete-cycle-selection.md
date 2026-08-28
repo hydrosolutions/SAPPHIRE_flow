@@ -204,5 +204,5 @@ minutes**, which means the walk-back this plan's guard forces has been *protecti
 
 Nothing here is wrong and nothing was changed — D1 of Plan 196 confirms `resolve_cycle` is correct.
 Recorded so the next reader inherits the measurement rather than the guess. See
-`docs/plans/196-nwp-cycle-fallback-is-structural.md` § T1 result and
+`docs/plans/archive/196-nwp-cycle-fallback-is-structural.md` § T1 result and
 `docs/standards/orchestration.md` § "A cron time and an NWP publication-latency guard are coupled".

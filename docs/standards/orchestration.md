@@ -278,7 +278,7 @@ has been protective. **If you change either setting, re-measure first** — do n
 not reuse this sample's maximum either; what T1 establishes is the sign, not a safe constant.
 
 **Limitations that travel with that figure** (see
-`docs/plans/196-nwp-cycle-fallback-is-structural.md` § T1 result): n = 4, bounded by ~24 h catalogue
+`docs/plans/archive/196-nwp-cycle-fallback-is-structural.md` § T1 result): n = 4, bounded by ~24 h catalogue
 retention (item `expires`); one August window only; and item `created` is a proxy for *appeared in
 the catalogue*, **not** a verified successful download.
 
