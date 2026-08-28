@@ -187,3 +187,22 @@ Whether the coverage threshold / delivery-delay is a `DeploymentConfig` value
 **P1** shipped (age-delay guard + post-download validation, PR #49) — it gated
 the Mac-mini data-collection deployment's forecast quality. **P2** is a deferred,
 OPTIONAL precision refinement; re-scope it into its own plan file before implementing.
+
+## REVISIT 2026-08-28 (Plan 196 T1) — the guard is coupled to the forecast cron, and 105 is too small
+
+This plan introduced `nwp_cycle_min_age_minutes` without recording that the forecast flow's own
+schedule decides whether the guard ever fires. It always fires: the cron is `0 */6 * * *` and
+ICON-CH2-EPS publishes on the same `(0, 6, 12, 18)` grid, so every cron-scheduled run snaps to a
+zero-age cycle, skips it without probing STAC, and walks back one step. **No cron-scheduled run can
+be PRIMARY.**
+
+The 105-minute value was a guess — `config.toml:15-16` cites "~90-120 min" with no measurement
+anywhere in the repo. Plan 196 T1 measured it (n = 4 cycles, 2026-08-28): items for the variables the fetch needs
+**appear in the STAC catalogue** 160.0-168.4 minutes after reference time (item `created` as a
+proxy for availability, not a verified download; one August window). The guard is **too small by 55-63
+minutes**, which means the walk-back this plan's guard forces has been *protective*, not wasteful.
+
+Nothing here is wrong and nothing was changed — D1 of Plan 196 confirms `resolve_cycle` is correct.
+Recorded so the next reader inherits the measurement rather than the guess. See
+`docs/plans/196-nwp-cycle-fallback-is-structural.md` § T1 result and
+`docs/standards/orchestration.md` § "A cron time and an NWP publication-latency guard are coupled".

@@ -167,10 +167,12 @@ This choice affects model skill and must be consistent between training (Flows 6
 
 #### Resolved: NWP lateness fallback
 
-When NWP data is late (common — happens multiple times per month), the forecast cycle uses a config-driven three-stage strategy:
+When NWP data is late, the forecast cycle uses a config-driven three-stage strategy:
 1. **Wait** up to `nwp_max_wait_hours` (default 3.0) past expected delivery, with exponential backoff retries.
 2. **Fall back** to the most recent available NWP cycle (e.g. use 18 UTC cycle if 00 UTC is late).
 3. **Skip** if no NWP cycle is available within `nwp_max_fallback_age_hours` (default 12.0). Log to `pipeline_health`, emit warning.
+
+**A FALLBACK cycle is the normal case for a cron-scheduled run, not evidence of lateness** (Plan 196 T1, measured 2026-08-28). The forecast cron `0 */6 * * *` fires on the same grid ICON-CH2-EPS publishes on, so the target cycle is always ~0 minutes old and is skipped by the `nwp_cycle_min_age_minutes` guard before any availability probe. Measured catalogue-appearance latency for the variables the fetch needs is 160-168 minutes (n = 4, one August window, item `created` as a proxy for availability rather than a verified download), so at 06:00 the 06Z data has not been published yet. Do not read `nwp_cycle_source = fallback` as a delivery problem — see `docs/standards/orchestration.md` § "A cron time and an NWP publication-latency guard are coupled".
 
 These are per-NWP-source fields in `DeploymentConfig`. Every forecast record stores the NWP cycle reference time used as forcing — forecasters and the API display which NWP cycle produced each forecast, not just the forecast issue time. Flow 4 monitors NWP delivery status independently.
 

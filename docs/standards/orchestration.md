@@ -262,6 +262,26 @@ Note: T.7–T.8 model approval is NOT a Prefect pause/resume. The `train_models`
 
 Flows 7 and 8/10 appear in both on-demand and subflow categories: they can be invoked standalone by a model admin (e.g. to recompute skill scores for a specific station) or called as subflows from within `train_models`.
 
+### A cron time and an NWP publication-latency guard are coupled (Plan 196 T1)
+
+**Changing a flow's cron OR its source's minimum-cycle-age guard without the other silently pins NWP
+provenance to FALLBACK — and that is correct behaviour, not a defect.** The forecast cron is
+`0 */6 * * *` (`cli/register_deployments.py:45`) and ICON-CH2-EPS publishes on the same grid
+(`_CYCLE_HOURS = (0, 6, 12, 18)`, `adapters/meteoswiss_nwp.py:44`), so the flow fires at the instant
+its target cycle is stamped: age is ~0, the `nwp_cycle_min_age_minutes` guard (`config.toml:17`,
+currently 105) skips the slot without probing STAC, and it walks back one step — **a cron-scheduled
+run can never be PRIMARY.** Plan 196 T1 measured the real latency on 2026-08-28: items for the
+variables the fetch allowlists (`tot_prec`, `t_2m` at +120 h) appear in the catalogue **160.0-168.4
+minutes** after `forecast:reference_datetime`, so at 06:00 the 06Z data is not there yet and
+consuming 00Z is the only option. The guard is **too small** (105 against 160-168), so the walk-back
+has been protective. **If you change either setting, re-measure first** — do not reuse 105, and do
+not reuse this sample's maximum either; what T1 establishes is the sign, not a safe constant.
+
+**Limitations that travel with that figure** (see
+`docs/plans/196-nwp-cycle-fallback-is-structural.md` § T1 result): n = 4, bounded by ~24 h catalogue
+retention (item `expires`); one August window only; and item `created` is a proxy for *appeared in
+the catalogue*, **not** a verified successful download.
+
 ## Concurrency controls
 
 **Per-flow**: `run_forecast_cycle_flow` (Flow 1) has a concurrency limit of 1 — two instances of the same cycle must not run simultaneously. This prevents double-writes on Prefect server restart or accidental duplicate triggers.

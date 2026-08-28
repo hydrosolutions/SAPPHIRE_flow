@@ -58,7 +58,15 @@ PRIMARY.
 
 **This is not an outage and nothing is corrupted.** The 00Z cycle consumed at 06:00 is a real,
 fully published ICON-CH2-EPS run, and input quality does not flag it (`nwp_age_partial_hours = 9.0`,
-`config/deployment.py:65`, against an age of 6h). Two real costs remain:
+`config/deployment.py:65`, against an age of 6h).
+
+> **⚠️ SUPERSEDED BY § T1 RESULT (2026-08-28).** The two numbered points below were written
+> believing the guard was too *conservative*. Measurement showed the opposite — it is too
+> *small*, and the walk-back is protective. Point 1 describes real mechanics but frames a
+> correct skip as a cost; point 2's premise ("never measured") no longer holds. Both are kept
+> unedited as the record of what the plan assumed going in.
+
+Two costs were believed to remain:
 
 1. **The walk-back burns one of three fallback attempts.** `max_fallback_steps = 2` gives
    `resolve_cycle` three candidates; at the 06:00 cron those are 06Z (guaranteed skip), 00Z, and
@@ -66,7 +74,9 @@ fully published ICON-CH2-EPS run, and input quality does not flag it (`nwp_age_p
 2. **`nwp_cycle_min_age_minutes = 105` has never been measured.** `config.toml:15-16` calls it
    "~90-120 min = ICON-CH2-EPS publish latency" with no citation, and no measurement exists anywhere
    in the repository. It sets how much horizon every operational forecast gives up, and nobody knows
-   whether it is right.
+   whether it is right. **— SUPERSEDED 2026-08-28: it has now been measured. See § T1 result. The
+   guess was low, not high, and cost 1 above is mis-framed — the burned candidate is an
+   unpublished slot, so nothing is lost.**
 
 That second point is the whole plan. The constant is guessed, load-bearing, and cheap to check.
 
@@ -89,7 +99,7 @@ That second point is the whole plan. The constant is guessed, load-bearing, and 
 publication timestamp. An independent Codex review raised this as a blocker and a live probe
 confirmed it: item-level `created` means "this catalogue object appeared", not "this cycle is
 downloadable", and `_cycle_is_published` returns `True` on **any** matching item
-(`adapters/meteoswiss_nwp.py:583`) while the fetch walks many items and assets (`:745`).
+(`adapters/meteoswiss_nwp.py:583`) while the fetch walks many items (`:746`) and their assets (`:774`).
 Within a single cycle the item `created` values span ~50 minutes. The executed measurement
 therefore records **the last `created` among the items the fetch actually allowlists**
 (`PARAM_GROUPS` column 0: `tot_prec`, `t_2m`) at the +120 h horizon (`:689`), and keeps the
@@ -144,7 +154,7 @@ file was created.
 | 2026-08-27T18:00Z | 120.4 | **168.4** |
 | 2026-08-28T00:00Z | 123.6 | **166.2** |
 | 2026-08-28T06:00Z | 120.9 | **160.5** |
-| | min 120.1 / median 120.7 / max 123.6 | **min 160.0 / median 163.4 / max 168.4** |
+| | min 120.1 / max 123.6 | **min 160.0 / max 168.4** |
 
 The right-hand column is the operative one: it is when `tot_prec` and `t_2m` at the +120 h horizon
 become available, i.e. when the cycle is genuinely fetchable. The left-hand column is what
@@ -172,13 +182,17 @@ Consequences, recorded but **not acted on** (D2 — measure, then stop):
 
 1. **The cut re-cron task is now definitively dead, not merely deprioritised.** "What was cut and
    why" says to revisit it only if T1 showed `p95 < 105`. T1 showed the opposite. A re-cron computed
-   from the 105 figure would have fired ~35 min before the first item and ~65 min before the data
+   from the 105 figure would have fired ~15-19 min before the first catalogue item and ~55-63 min
+   before the data
    we need — it would have *created* the outage it was meant to prevent.
 2. **Cost 1 above ("the walk-back burns one of three fallback attempts") is factually true but
    mis-framed.** Effective fallback depth is 2, not 3 — but the burned candidate is an unpublished
    slot, so nothing is lost. The real reserve is 2 and always was.
-3. **Any future re-cron or guard change must use ≥ 170 minutes, never 105.** The measured maximum is
-   168.4 and n is small.
+3. **Any future re-cron or guard change must be derived from a fresh measurement with margin —
+   not from 105, and not from this sample's maximum either.** The observed max is 168.4 over
+   n = 4 in a single 24 h window; a floor of 170 would leave 1.6 minutes of headroom, which this
+   sample does not support. What T1 establishes is the *sign*: 105 is indefensible, and the
+   correct value is materially higher than the config comment's "~90-120 min".
 
 ### Limitations
 
@@ -207,6 +221,12 @@ Recorded so the reasoning is not re-litigated from scratch:
 The monitoring blind spot that motivated the cut tasks is **one cycle deep, with working backstops**:
 two missed publications put lag at 12h and fire an input-quality PARTIAL at the 9h threshold; three
 raise `NoCycleAvailableError`. Only the single-miss case is invisible.
+
+**Corrected 2026-08-28 (§ T1 result):** the routine one-step walk-back is *not* a missed
+publication and must not be counted as one. At the cron instant the newer slot has not been
+published yet, so the first candidate is expected to be absent on every run. A genuine missed
+publication is a *second* consecutive absent slot; the depth-of-two reserve is measured from the
+first cycle that is actually old enough to exist.
 
 ## Non-goals
 
