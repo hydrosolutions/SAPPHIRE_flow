@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-27
 plan: 201
 title: 13 unit tests fail in a sequential run and CI cannot see it
@@ -13,7 +13,7 @@ source: discovered 2026-08-26 while verifying Plan 151 T8b against the plan's "n
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY** — owner flip 2026-08-28. T1 is solved (8-second reproducer); T3 is ratified (layered).
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT
 
