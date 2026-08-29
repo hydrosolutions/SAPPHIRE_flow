@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-29
 plan: 216
 title: M-A11 — re-evaluate the diurnal timing error against the ECMWF IFS forecast, not ERA5-Land
@@ -13,13 +13,31 @@ source: docs/design/dhm-precipitation-phase2-recommendation.md § 2 (Use 1)
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-29, after two independent review rounds (over-engineering + slim).
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
 **Three actions: retrieve, compare, recommend.** The comparison machinery already exists
 (`ma6_pairs.py`, `ma7_profiles.py`, `data/dhm_precip/figures/era5-timing/era5_gauge_timing_figure.py`)
 and is reused. No new framework, abstraction layer, config surface or file format. **Adding length is a cost.**
+
+## ⛔ PER-RUN SCOPE (binding)
+
+- **A worktree carries no gitignored files.** `data/` is ignored, so a fresh worktree has none of this
+  track's inputs. **First:** `mkdir -p <wt>/data/dhm_precip && cp /Users/bea/Documents/GitHub/SAPPHIRE_flow/data/dhm_precip/* <wt>/data/dhm_precip/`
+  (workbook, `station_coordinates.csv`, `era5_land_provenance.json`). Without it the loader fails with
+  a typed error that reads like a regression.
+- ✅ **Network: ECDS only** (`https://ecds.ecmwf.int/api`), credentials from `~/.cdsapirc`. Volume is
+  small — the 9-step sample was 6.9 KB, so a JJAS season is a few MB. No projection gate needed.
+  ⛔ **Never call the Copernicus CDS** — a wrong root once triggered a live ERA5-Land download on this
+  track.
+- ✅ Write raw and extracted TIGGE under **`data/dhm_precip/tigge/`** (gitignored).
+  ⛔ Never write under `data/dhm_precip/era5_land*`; ⛔ never delete anything under any `points/` tree.
+- **Iterate on `tests/unit/scripts/` (~75 s)**, not the full unit suite (~8 min) — running the full
+  suite as an iteration loop has stalled eight subagents on this track. Full suite **once** at the end,
+  measuring your own baseline.
+- **Hold at PR.** Every code commit bumps patch (`uv run bump-my-version bump patch`) folded into the
+  real commit. Stage by explicit path, never `git add -A`. Never merge, never tag on a branch.
 
 ## Why this plan exists
 
