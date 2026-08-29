@@ -171,6 +171,31 @@ Everything downstream branches on this and cannot be settled by argument:
   cover JJAS 2026. ⇒ Raise it with M-D3's other asks. ⛔ **Do not block on it**: TIGGE answers the
   screening question without it.
 
+- **D12 — ESCALATION LADDER: exhaust the free options before recommending Nepal spend anything.**
+  Owner direction 2026-08-29: *use TIGGE for historical IFS first; if IFS is not good enough, look at
+  the Indian products and advise Nepal to invest there.* Right sequence — with one rung inserted,
+  because the gap between "ECMWF is wrong" and "buy regional" contains cheaper answers.
+
+  1. **ECMWF via TIGGE** (this plan). Free, CC BY 4.0. ⚠️ Note IFS is free in **two** senses and they
+     must not be conflated: **TIGGE** = historical/research, 48 h embargo (D6a); **ECMWF Open Data** =
+     real-time, free, rolling window — *operationally usable*, retrospectively useless (D6). The
+     verification uses the first; any operational consequence lands on the second or on the gateway.
+  2. **If ECMWF's phase is bad → test the other five CC BY 4.0 centres** (NCEP, UKMO, DWD, ECCC, KMA),
+     prioritising those believed to be **free operationally as well as in TIGGE** — NCEP GFS via
+     NOMADS and DWD ICON via `opendata.dwd.de` are the candidates. ⚠️ **Verify that free operational
+     status before relying on it**; it is asserted here from general knowledge, not measured, and this
+     plan's rule is that a documented capability is not a measured one.
+     ⇒ If one of these gets the nocturnal peak right, Nepal gets a **free operational alternative** —
+     by far the best outcome available, and cheaper advice than any procurement.
+  3. **Only if every free option fails → evaluate IMD / NCMRWF.** Research-only via TIGGE (CC BY-NC,
+     D6b), and operational access would be a **bilateral arrangement with IMD or NCMRWF**, not
+     something TIGGE can supply (D6a).
+
+  ⛔ **Do not advise DHM to invest in a regional product before establishing that no free one works.**
+  That recommendation is expensive, slow and institutionally heavy; it must be the conclusion of an
+  elimination, not a first reaction to an ECMWF result. ⛔ And a CC BY-NC product can only ever be
+  *evidence for a recommendation* here — it can never enter our gateway or forcing chain (D6b).
+
 ## Tasks
 
 Three tasks, three phases. `$ENV` abbreviates the gateway-authenticated environment.
