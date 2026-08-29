@@ -362,7 +362,7 @@ class TestCycleAgeDelayGuard:
     older, adequately-aged slot even when the fresh cycle IS already (partially)
     published — preferring a complete older cycle over a truncated newer one.
 
-    Measured latency (Plan 196 T1, 2026-08-28, n = 5): the variables the fetch
+    Measured latency (Plan 196 T1, 2026-08-28/29, n = 6): the variables the fetch
     allowlists (``tot_prec``/``t_2m`` at +120 h) appear 160.0-173.1 min after
     reference time. The earlier "~90-120 min" figure in this docstring was a
     guess and was wrong low; Plan 213 raised the shipped guard to 210 — a
@@ -1620,7 +1620,7 @@ class TestShippedCycleMinAgeGuard:
         from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
 
         # The property Plan 213 must not disturb: at an on-grid cron instant the
-        # candidates are ~0 and ~360 min old, so 105 and 180 decide the same.
+        # candidates are ~0 and ~360 min old, so 105 and 210 decide the same.
         # This test is expected to pass BEFORE and AFTER the change.
         on_grid = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
         previous = ensure_utc(datetime(2026, 4, 19, 6, 0, tzinfo=UTC))
