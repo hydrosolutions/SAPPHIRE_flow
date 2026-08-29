@@ -430,6 +430,7 @@ def _write_bundle_payload(
     station_ids: tuple[str, ...] = ("S0",),
     first_row_overrides: dict[str, Any] | None = None,
     cell_overrides: dict[str, Any] | None = None,
+    series_cell_overrides: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """A payload on the COMPLETE pinned hourly axis — the only shape the
     predicate accepts, since the axis is D5's own and not a parameter.
@@ -438,6 +439,13 @@ def _write_bundle_payload(
     precip: list[float | None] = [1.0] * n
     granule_count: list[int | None] = [2] * n
     non_finite: list[int | None] = [0] * n
+    series_cell: dict[str, Any] = {
+        "grid_lat": 27.05,
+        "grid_lon": 85.05,
+        "station_elev_m": 1000.0,
+        "station_elevation_datum": "UNKNOWN",
+        **(series_cell_overrides or {}),
+    }
     for key, value in (first_row_overrides or {}).items():
         {
             "precip_mm_per_h": precip,
@@ -455,10 +463,7 @@ def _write_bundle_payload(
                     "non_finite_cell_count": pl.Series(
                         values=non_finite, dtype=pl.Int64
                     ),
-                    "grid_lat": [27.05] * n,
-                    "grid_lon": [85.05] * n,
-                    "station_elev_m": [1000.0] * n,
-                    "station_elevation_datum": ["UNKNOWN"] * n,
+                    **{key: [value] * n for key, value in series_cell.items()},
                 }
             )
             for station in station_ids
@@ -567,6 +572,7 @@ def _stage_bundle(
     *,
     first_row_overrides: dict[str, Any] | None = None,
     cell_overrides: dict[str, Any] | None = None,
+    series_cell_overrides: dict[str, Any] | None = None,
     **manifest_overrides: Any,
 ) -> tuple[Path, ie.ImergExtractionManifest]:
     """A staged bundle that validates as published, so each test can break
@@ -574,7 +580,10 @@ def _stage_bundle(
     record = _write_reference_acquisition_record(tmp_path / "data_root")
     staged = ie.prepare_staging_dir(ie.imerg_points_root(tmp_path / "data_root"))
     payload_sha256s = _write_bundle_payload(
-        staged, first_row_overrides=first_row_overrides, cell_overrides=cell_overrides
+        staged,
+        first_row_overrides=first_row_overrides,
+        cell_overrides=cell_overrides,
+        series_cell_overrides=series_cell_overrides,
     )
     manifest = _bundle_manifest(
         payload_sha256s=payload_sha256s, record=record, **manifest_overrides
@@ -1387,6 +1396,59 @@ class TestDiscoverySkipsInvalidBundles:
         found, _found_manifest = ie.discover_imerg_bundle(data_root)
         assert found == valid
 
+    def test_an_unreadable_acquisition_record_fails_validation_not_discovery(
+        self, tmp_path: Path
+    ) -> None:
+        """D9 (locking) — `read_acquisition_manifest` raises `ImergStorageError`,
+        a hierarchy discovery does not catch, so a malformed permanent record
+        ABORTED the scan with a foreign error instead of failing each bundle's
+        predicate. (Every bundle under one `data_root` names the SAME record —
+        `imerg_acquire.acquisition_manifest_path` — so a broken one invalidates
+        all of them; what is locked here is the error TYPE the scan sees.)"""
+        data_root = tmp_path / "data_root"
+        staged, manifest = _stage_bundle(tmp_path)
+        ie.publish_imerg_bundle(
+            staged, data_root=data_root, identity=manifest.extraction_identity
+        )
+        ia.acquisition_manifest_path(data_root).write_text("{not json")
+
+        with pytest.raises(ExtractionPostConditionError, match="unreadable"):
+            ie.discover_imerg_bundle(data_root)
+
+    def test_a_calendrically_impossible_granule_filename_fails_validation(
+        self, tmp_path: Path
+    ) -> None:
+        """D9 (locking) — the filename pattern matches syntactically valid
+        nonsense (day 32), and `strptime` then raised a RAW `ValueError` that
+        escaped the completeness path's `ImergReadContractError` guard and
+        aborted the scan."""
+        data_root = tmp_path / "data_root"
+        staged, manifest = _stage_bundle(tmp_path)
+        ie.publish_imerg_bundle(
+            staged, data_root=data_root, identity=manifest.extraction_identity
+        )
+        record = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert record is not None
+        impossible = "3B-HHR-E.MS.MRG.3IMERG.20240132-S000000-E002959.0000.V07B.HDF5"
+        ia.acquisition_manifest_path(data_root).write_text(
+            record.model_copy(
+                update={
+                    "granule_checksums": {
+                        **record.granule_checksums,
+                        impossible: "0" * 64,
+                    },
+                    "granule_retrieved_at": {
+                        **record.granule_retrieved_at,
+                        impossible: _AT,
+                    },
+                    "retrieved": record.retrieved + 1,
+                }
+            ).model_dump_json()
+        )
+
+        with pytest.raises(ExtractionPostConditionError, match="impossible date"):
+            ie.discover_imerg_bundle(data_root)
+
 
 # --- D9 (MAJOR) — the ONE predicate owns the plan's invariants, so a bundle
 # cannot reach publication (or discovery) by bypassing run() ---
@@ -1588,4 +1650,27 @@ class TestD6CellAndElevationAgreement:
         copies can only ever disagree, so the agreement is checked."""
         staged, manifest = _stage_bundle(tmp_path, cell_overrides={"grid_lat": 12.34})
         with pytest.raises(ExtractionPostConditionError, match="disagrees with"):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_null_cell_metadata_in_the_cell_table_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """D6 (locking) — presence of the COLUMN was checked, not of a value:
+        a null datum is not `!= "UNKNOWN"`, so an empty cell table passed."""
+        staged, manifest = _stage_bundle(
+            tmp_path, cell_overrides={"station_elevation_datum": None}
+        )
+        with pytest.raises(ExtractionPostConditionError, match="never absent"):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_null_cell_metadata_in_the_series_is_refused(self, tmp_path: Path) -> None:
+        """D6 (locking) — and on the series side two matching NULLs satisfied
+        the agreement check, so a bundle recording no cell at all agreed with
+        itself."""
+        staged, manifest = _stage_bundle(
+            tmp_path,
+            series_cell_overrides={"grid_lat": None, "station_elev_m": None},
+            cell_overrides={"grid_lat": None, "station_elev_m": None},
+        )
+        with pytest.raises(ExtractionPostConditionError, match="never absent"):
             ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")

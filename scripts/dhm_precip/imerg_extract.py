@@ -630,7 +630,15 @@ def validate_imerg_bundle(
     # D9/D10 — the bundle carries only DIGESTS of the acquisition record and
     # the D1 read contract, so the predicate RESOLVES the permanent record and
     # recomputes them; otherwise they are caller-supplied strings.
-    record = read_acquisition_manifest(acquisition_manifest_path(data_root))
+    try:
+        record = read_acquisition_manifest(acquisition_manifest_path(data_root))
+    except ImergStorageError as exc:
+        # ⛔ Typed, not foreign: `ImergStorageError` is a different hierarchy,
+        # so an unreadable record ABORTED discovery instead of being skipped.
+        raise ExtractionPostConditionError(
+            "the permanent IMERG acquisition record at "
+            f"{acquisition_manifest_path(data_root)} is unreadable: {exc} (D9/D10)"
+        ) from exc
     if record is None:
         raise ExtractionPostConditionError(
             "no permanent IMERG acquisition record at "
@@ -760,6 +768,19 @@ def validate_imerg_bundle(
             f"{_STATION_CELL_FILENAME}'s station set does not match "
             f"{_NEAREST_SERIES_FILENAME}'s (D9)"
         )
+    # ⛔ Nullness first, in BOTH payloads: a null datum is not `!= "UNKNOWN"`,
+    # and two matching nulls satisfy the agreement check below — so a bundle
+    # recording no cell/elevation at all would pass every check that follows.
+    for frame, filename in (
+        (nearest, _NEAREST_SERIES_FILENAME),
+        (station_cell, _STATION_CELL_FILENAME),
+    ):
+        null_columns = [c for c in _D6_STATION_COLUMNS if frame[c].null_count()]
+        if null_columns:
+            raise ExtractionPostConditionError(
+                f"{filename} has null value(s) in {null_columns} — a station's "
+                "cell and elevation are recorded, never absent (D6/D9)"
+            )
     # D6 — the datum is UNKNOWN (DHM has stated none), and the series' per-hour
     # cell/elevation metadata must be CONSTANT per station and equal to that
     # station's own row here. ⛔ Two records of one fact can only ever disagree.

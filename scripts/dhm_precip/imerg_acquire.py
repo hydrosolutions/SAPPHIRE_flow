@@ -200,9 +200,16 @@ def parse_granule_filename(name: str) -> tuple[ImergGranuleId, str]:
             f"filename {name!r} does not match the expected IMERG Early "
             "half-hourly naming pattern (D1)"
         )
-    start = datetime.strptime(
-        match["date"] + match["start_time"], "%Y%m%d%H%M%S"
-    ).replace(tzinfo=UTC)
+    try:
+        start = datetime.strptime(
+            match["date"] + match["start_time"], "%Y%m%d%H%M%S"
+        ).replace(tzinfo=UTC)
+    except ValueError as exc:
+        # ⛔ Typed, not raw: the pattern matches syntactically valid nonsense
+        # (a day 32, a month 13), and a raw ValueError aborts callers that skip D1.
+        raise ImergReadContractError(
+            f"filename {name!r} carries an impossible date/time: {exc} (D1)"
+        ) from exc
     granule = ImergGranuleId(start=start)
     if granule.minute_of_day != int(match["minute"]):
         raise ImergReadContractError(
