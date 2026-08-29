@@ -93,8 +93,12 @@ class DeploymentConfig(BaseModel):
     # Plan 090 (D5): operator-tunable delivery delay. A snapped NWP cycle younger
     # than this (now - cycle_time) is treated as not-yet-adequately-published and
     # the adapter walks back to the next older slot (age-delay selection gate),
-    # avoiding an incompletely-uploaded ICON cycle. Default 105 min sits inside the
-    # ~90-120 min ICON-CH2-EPS publish latency window.
+    # avoiding an incompletely-uploaded ICON cycle.
+    # Plan 213: this DEFAULT stays 105 for backward compatibility with deployments
+    # that omit the key, but 105 is BELOW the measured publication latency of
+    # 160.0-173.1 min (Plan 196 T1, n = 6) — do not read it as a recommended
+    # value. The shipped Swiss value is 210 (`config.toml`), a deliberate
+    # over-estimate above that range rather than the measurement itself.
     nwp_cycle_min_age_minutes: int = 105
 
     warm_up_snapshot_max_age_hours: float = 48.0

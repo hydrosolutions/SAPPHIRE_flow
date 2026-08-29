@@ -13,8 +13,19 @@ observation_staleness_warning_hours = 6.0
 nwp_max_wait_hours = 3.0
 nwp_max_fallback_age_hours = 12.0
 # Plan 090: ignore an NWP cycle younger than this (min); walk back to the next
-# older, fully-published slot. ~90-120 min = ICON-CH2-EPS publish latency.
-nwp_cycle_min_age_minutes = 105
+# older, fully-published slot.
+# Plan 213: raised 105 -> 210. MEASURED (Plan 196 T1, 2026-08-28/29, n = 6): the
+# variables the fetch allowlists (tot_prec/t_2m at +120 h) appear in the STAC
+# catalogue 160.0-173.1 min after reference time. The old 105 was a guess and was
+# wrong low, so a run resolving inside that window could accept a cycle that was
+# still publishing.
+# 210 is a DELIBERATE OVER-ESTIMATE, not a measurement: the observed max moved
+# 168.4 -> 173.1 with one extra day, so the true worst case is unknown. Erring
+# high costs one walk-back (6 h older but COMPLETE data); erring low is the
+# hazard. 210 clears every observation so far by 36.9 min.
+# The durable fix is to probe for the items the fetch needs instead of inferring
+# readiness from age — owner-approved follow-on, see Plan 213 D3c.
+nwp_cycle_min_age_minutes = 210
 # Plan 095: hot window (days) for raw NWP grid-cube zarrs under
 # nwp_grid_archive_base_path. Old cycles are pruned; extracted values in
 # weather_forecasts remain the permanent archive. Must be
