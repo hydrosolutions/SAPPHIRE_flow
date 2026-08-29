@@ -945,10 +945,10 @@ Two host/Docker secrets `/health/detail`-auth introduces:
 Because the v1.0 key set is small (a handful of Nepal/Swiss consumer + admin keys):
 
 1. Generate a new pepper: `openssl rand -base64 32 > ./secrets/access_token_pepper.new`.
-2. `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens list` — record every active token's name/role/tenant/scope for re-creation.
+2. `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens list` — record every active token's name/role/tenant/scope_mode for re-creation. For a `'tenant'`-mode token, `show` additionally confirms it (`list`'s `scope=N station(s)` line is the SAME for either mode — it does not distinguish them on its own).
 3. Swap the pepper file (`mv ./secrets/access_token_pepper.new ./secrets/access_token_pepper`) and `docker compose up -d --build api` to pick it up.
-4. For every token recorded in step 2: `revoke` the old id, then `create`/`create-admin` a replacement with the same name/role/tenant/station scope. Distribute the new raw keys to consumers out of band.
-5. Re-run step 4's watchdog admin token through the "First deploy" steps 3-5 above (the watchdog's probe token is itself an access token and must be reissued too).
+4. For every token recorded in step 2: `revoke` the old id, then `create`/`create-admin` a replacement with the same name/role/tenant/station scope. A token recorded as `'tenant'`-mode needs ONE extra step here (Plan 215 T6) — the new token is born in `'stations'` mode (no `--scope-mode` flag on `create`), so re-run `set-scope-mode <new-token-id> tenant --yes-follow-the-whole-tenant` on it; this is a materially SMALLER step than re-materializing a `'stations'`-mode token's grant list, since it needs no per-station arguments at all. Distribute the new raw keys to consumers out of band.
+5. Re-run step 4's watchdog admin token through the "First deploy" steps 3-5 above (the watchdog's probe token is itself an access token and must be reissued too — an admin token is always `'stations'`-mode, so this step never needs the extra `set-scope-mode` call).
 
 The `pepper_version` column on `access_tokens` is the forward hook for a v1.x zero-downtime
 dual-pepper rotation (validate against `{current, previous}` keyed by the row's `pepper_version`, then
@@ -959,6 +959,36 @@ lazily re-hash) — not implemented in v1.0.
 If only the watchdog's own admin token needs rotating (compromise suspected, routine hygiene):
 `revoke` the old token id, `create-admin` a new one, overwrite `./secrets/health_probe_token`
 (chmod 600), no pepper change needed.
+
+### Station scope management (Plan 215 T1/T2/T6, REALIZED)
+
+Widening or narrowing a live consumer token's scope no longer needs raw SQL, and no longer needs a
+reissue (which would change the token value and every consumer would 401 in the gap). All four
+commands run the same way as `create`/`list`/`revoke` (§ First deploy above) — via
+`docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens <command> ...`:
+
+| Command | Effect |
+|---|---|
+| `show <token-id>` | Read-only. Prints name/role/tenant/status/expiry/`scope_mode`, and — for a `'stations'`-mode token — one line per in-scope station carrying BOTH its UUID and its `network/code` (the actually-unique pair), so the output round-trips straight back into `grant`/`revoke-station`. For a `'tenant'`-mode token it labels the listing as derived at load time, not a materialised grant list. |
+| `grant <token-id> <station-id>` | Widens a `'stations'`-mode token's scope by one station (UUID). Idempotent — granting an already-granted station is a no-op. Refuses an admin token and a `'tenant'`-mode token (the latter's scope already follows the whole tenant; there is nothing to add). |
+| `revoke-station <token-id> <station-id>` | Narrows a `'stations'`-mode token's scope by one station. Idempotent — revoking a station already out of scope succeeds and says so, rather than claiming a change that did not happen. Same admin/`'tenant'`-mode refusals as `grant`. |
+| `set-scope-mode <token-id> {stations\|tenant}` | Changes `scope_mode`. Switching TO `tenant` requires an explicit `--yes-follow-the-whole-tenant` flag (it prints the station count the token will follow first) and DELETES the token's now-obsolete `access_token_stations` grant rows in the same transaction as the mode flip — those rows would otherwise silently drift out of sync with what the tenant-derived scope actually resolves to. Switching FROM `tenant` back to `stations` does **not** snapshot the tenant back into grants — the token's scope goes to **empty** and the command says so; re-grant with `grant`. Refuses an admin token (mirrored by the DB CHECK `ck_access_tokens_tenant_mode_is_consumer`, which makes a tenant-mode admin row structurally unrepresentable even outside the CLI). |
+
+Every write among the four (`grant`/`revoke-station`/`set-scope-mode`) appends one `audit_log` row
+(`API_KEY_SCOPE_CHANGED`) in the SAME transaction as its write — a failed audit insert rolls back
+the whole change, matching the `create`/`revoke` atomicity rule (`cli/access_tokens.py` module
+docstring). None of the four print a token's raw value or hash.
+
+**When to reach for `'tenant'` mode over per-station `grant`s**: a token whose intended scope is
+"every station this tenant currently has, and every station it gets in the future" is a `'tenant'`-mode
+token, set once via `set-scope-mode ... tenant`, never touched again. A token whose scope is a
+deliberately curated subset (an external partner, a narrower internal consumer) stays `'stations'`-mode
+and is edited with `grant`/`revoke-station` as that subset changes. `'tenant'` mode is unfiltered by
+`network`/`station_kind` — it is not "every BAFU river station", it is "every station in the tenant" —
+so it widens what the token can read through the endpoints with no eligibility filter
+(`api_stations`/`api_forecasts`/`api_alerts`); weigh that against the operational cost of a forgotten
+per-station grant before choosing it (see `security.md` § v1.0 headless subset, "Scope contract
+narrowed to the station axis only for v1.0").
 
 ## DB role bootstrap (Plan 147 Slice D, REALIZED)
 

@@ -1034,6 +1034,7 @@ erDiagram
         TIMESTAMPTZ disabled_at "NULL"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ last_used_at "NULL"
+        TEXT scope_mode "stations | tenant — default stations, Plan 215 D2.1"
     }
 
     access_token_stations {

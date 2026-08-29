@@ -53,8 +53,9 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # (access_tokens + access_token_stations tables) onto 0046 — advancing the
 # pinned head to 0047. Plan 157 T3 then chained 0048
 # (model_artifact_provenance table) onto 0047 — advancing the pinned head
-# to 0048.
-_RELEASE_B_HEAD = "0048"
+# to 0048. Plan 215 T4 then chained 0049 (access_tokens.scope_mode column +
+# its two CHECK constraints) onto 0048 — advancing the pinned head to 0049.
+_RELEASE_B_HEAD = "0049"
 
 
 def _down_revisions() -> dict[str, str | None]:
