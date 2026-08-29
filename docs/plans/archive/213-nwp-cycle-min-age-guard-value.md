@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-28
 plan: 213
 title: Raise nwp_cycle_min_age_minutes above the measured publication latency
@@ -13,7 +13,16 @@ source: Plan 196 T1 — measured publication latency 160.0-168.4 min against a g
 
 ## Status
 
-**READY — value decided 2026-08-29: 210, not 180.** The D3 gate failed (combined maximum
+**COMPLETE 2026-08-29.** Shipped in PR #228, merged to `main` as `659a4a6f` (v0.1.834).
+`config.toml` carries 210; the dataclass default stays 105. Independent Codex review of the
+committed diff returned no blockers and no majors; its three minors — a malformed
+`deployment.py` comment left by the 180→210 edit, an `n = 5`/`n = 6` mismatch, and a stale
+`architecture-context.md` figure — were fixed before merge.
+
+**NOT YET DEPLOYED.** The mini runs 0.1.833; the guard there is still 105 until the next
+deploy. See § Deployment.
+
+**Value decided 2026-08-29: 210, not 180.** The D3 gate failed (combined maximum
 **173.1 min** against a ≤ 170 threshold), so 180 was withdrawn and the choice went to the
 owner as D3 requires. Owner chose **210 (3.5 h) now, plus the completeness probe as a
 follow-on** ("B now, A later"). See § D3 re-measurement result and D3c.
@@ -242,6 +251,13 @@ latency is different and entirely unmeasured.
 
 **Owner decided 2026-08-29: 210.** Erring high is cheap: a run inside the window walks back one cycle and
 uses 6 h older but complete data. Erring low is the hazard this plan exists to close.
+
+## Deployment
+
+Not required for correctness of any scheduled run (the on-time cron path is unaffected by the
+value). Ships with the next mini deploy; **verify with**
+`docker exec … /entrypoint.sh python -c "from sapphire_flow.config.deployment import load_config;
+print(load_config().nwp_cycle_min_age_minutes)"` → expect `210`.
 
 ## Deferred (not drafted)
 
