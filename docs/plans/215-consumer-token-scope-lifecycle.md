@@ -80,7 +80,7 @@ project we control. Weigh that against a silent-failure step repeated 34 times. 
 "an external partner's token", it would be B without hesitation** — and that difference is the point:
 this is a *policy* decision that should be recorded per token, not a default buried in a script.
 
-## Tasks (sketch — not sliced until D1 is answered)
+## Tasks (sketch — D1 and T3 now resolved; D2's mechanism wants a review pass)
 
 **T1 — `access-tokens grant` / `revoke-station`.** Add the missing verbs to
 `cli/access_tokens.py`, reusing the existing `_assert_stations_in_tenant` invariant rather than
@@ -93,12 +93,51 @@ re-implementing it. Idempotent (`ON CONFLICT DO NOTHING`), and refuses on an adm
 consumer see station X" has no supported answer.
 *Exit:* prints the station codes for a named token; never prints the token value or its hash.
 
-**T3 — decide whether promotion should grant automatically.** If D1 is B, a station promoted to
-`operational` arguably should be granted to every token that already holds the tenant's other
-operational stations. **This is the risky one** — implicit privilege widening driven by a status
-change is how scopes quietly become universal. Probably better as a *warning* in the promotion path
-("token X does not cover this station") than an automatic grant. **Do not implement without an
-explicit decision.**
+**T3 — RESOLVED 2026-08-29: the map token covers every BAFU site in the Swiss research tenant,
+automatically.** The owner's decision is about *behaviour*: a new BAFU station in this tenant is in
+scope without anyone doing anything.
+
+Note this is **broader and simpler than the question originally posed here**, which was whether
+*promotion to operational* should trigger a grant. It is not promotion-triggered — it is
+tenant-membership. That removes the objection this task was flagged for: there is no implicit
+widening driven by a *status* change, because status is no longer what decides scope. The eligibility
+filter still gates the Forecast Lab export (measured under D1), so a non-operational station in scope
+remains inert there.
+
+### D2 — mechanism (engineering call; recommendation, open to review)
+
+**Do NOT implement this as an auto-grant hook or a reconciliation job.** That materialises a copy of
+a fact the database already knows, and every materialised copy needs a sync path, has a drift window
+between station creation and grant, and fails silently when the hook does not run — which is exactly
+the failure this plan was opened to remove. It would also grow `access_token_stations` without bound
+for no informational gain.
+
+**Recommended: make "my scope is my tenant" a first-class mode, resolved at authentication.**
+
+- Add a scope mode to `access_tokens` (`'stations'` | `'tenant'`; default `'stations'`, so every
+  existing token is unchanged).
+- In the token loader (`store/access_token_store.py:140-147`, which today reads
+  `access_token_stations`), a `'tenant'`-mode token instead populates `station_ids` from
+  `SELECT id FROM stations WHERE tenant_id = <token tenant>`.
+- **`Principal.station_in_scope()` and every call site are untouched** — they keep receiving a
+  `frozenset[StationId]` and cannot tell the difference. The auth model does not change; only the
+  *source* of the set does.
+
+Why this shape: scope becomes **derived, not stored**, so it cannot drift, needs no backfill, and a
+station added at 09:00 is in scope at 09:00. It also makes the tenant-wide grant applied under D1
+**redundant** — those 37 rows would be deleted when the map token switches mode, which is the
+strongest signal the mode is the right abstraction.
+
+Costs to weigh in review, honestly: one extra query per token load (the loader already queries, so
+this replaces rather than adds); a `'tenant'`-mode token silently follows the tenant, so **the
+tenant boundary becomes the only thing limiting it** — acceptable for an internal research consumer
+we control, and it must be refused for any external-partner token; and `access-tokens list` /
+`show` must display the mode prominently, or an operator reading `scope=37 station(s)` will not
+realise it is dynamic.
+
+*Exit:* a test proving a `'tenant'`-mode token picks up a station created **after** the token; one
+proving a `'stations'`-mode token does not; one proving cross-tenant stations never enter scope in
+either mode; and one proving an admin token still rejects any scope.
 
 ## Acceptance criteria
 
@@ -107,7 +146,9 @@ explicit decision.**
    second copy.
 3. An operator can read a token's scope as station codes.
 4. No command prints a token value or hash.
-5. The map token's scope matches whatever D1 decides, recorded in the plan.
+5. The map token's scope matches D1, recorded in the plan.
+6. A new BAFU station in the Swiss research tenant is visible to the map token with **no operator
+   action** — the T3 acceptance test, and the one that matters operationally.
 
 ## Not in scope
 
