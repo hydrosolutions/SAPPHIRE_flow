@@ -497,6 +497,14 @@ class TestSetScopeMode:
     ) -> None:
         token = _create_consumer_token(db_connection, name="switch-to-stations")
         _set_scope_mode_raw(db_connection, token.id, ScopeMode.TENANT)
+        # The tenant MUST contain a station for this test to discriminate
+        # (independent Codex review): with an empty tenant the final
+        # `station_ids == frozenset()` assertion also passes against a buggy
+        # implementation that snapshots tenant membership into grant rows on
+        # the way out. With a station present, only the correct
+        # leaves-scope-empty behaviour satisfies it.
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(db_connection).store_station(station)
 
         summary = set_scope_mode(
             db_connection,

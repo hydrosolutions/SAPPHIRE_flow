@@ -131,6 +131,35 @@ class TestMigration0049UpgradeDowngradeRoundTrip:
 
         # 2. Upgrade to head (0049) — both rows must survive with
         # scope_mode='stations', no other behaviour change.
+        # A station and an EXISTING materialised grant row, seeded under the
+        # PRE-0049 schema. Without these the round trip below asserts only on
+        # `access_tokens` rows and would not notice 0049 destroying existing
+        # scope (independent Codex review) — 0049 must not touch
+        # `access_token_stations` at all, in either direction.
+        station_id = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO stations (id, code, name, location, station_kind, "
+                    "timezone, measured_parameters, network, tenant_id) VALUES "
+                    "(:id, :code, :name, ST_SetSRID(ST_MakePoint(7.0, 46.5), 4326), "
+                    "'river', 'UTC', ARRAY['discharge'], 'bafu', :tenant_id)"
+                ),
+                {
+                    "id": station_id,
+                    "code": "9991",
+                    "name": "migration-scope-fixture",
+                    "tenant_id": tenant_id,
+                },
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO access_token_stations (token_id, station_id) "
+                    "VALUES (:token_id, :station_id)"
+                ),
+                {"token_id": consumer_id, "station_id": station_id},
+            )
+
         command.upgrade(cfg, "head")
 
         with engine.begin() as conn:
@@ -208,3 +237,19 @@ class TestMigration0049UpgradeDowngradeRoundTrip:
                 ).all()
             }
         assert rows == {consumer_id: "stations", admin_id: "stations"}
+
+        # The pre-existing materialised scope survives upgrade -> downgrade ->
+        # re-upgrade untouched. This is the assertion that makes the round trip
+        # discriminating: 0049 changes `access_tokens` only.
+        with engine.begin() as conn:
+            granted = [
+                row.station_id
+                for row in conn.execute(
+                    sa.text(
+                        "SELECT station_id FROM access_token_stations "
+                        "WHERE token_id = :id"
+                    ),
+                    {"id": consumer_id},
+                ).all()
+            ]
+        assert granted == [station_id]
