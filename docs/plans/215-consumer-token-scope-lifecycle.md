@@ -44,7 +44,7 @@ SQL against an access-control table is the symptom this plan exists to remove.
 | **Revoke and reissue** with a wider scope | Changes the token value. Every consumer must re-receive it out of band; the map 401s in the gap. For a routine promotion this is absurd. |
 | **Raw SQL** | No validation beyond what the operator remembers to write, no audit trail, and it is exactly the habit that produces a bad day eventually. |
 
-## D1 — the scoping policy (owner decision, the substantive one)
+## D1 — the scoping policy — RESOLVED (Option A)
 
 The Forecast Lab route computes **eligible ∩ scope** (`routes/forecast_lab.py:117`), so a granted
 station that is not operational is inert *for this endpoint*. That makes a broader grant much safer
@@ -60,7 +60,21 @@ it would see incomplete, unvalidated onboarding data.
 holds exactly. Cost: a manual step 34 more times, which *will* be forgotten, and the failure is
 silent — a promoted station simply never appears, exactly as 2011 did not.
 
-**Recommendation: A, given this is internal research and the map is the only consumer.** The data
+**RESOLVED — Option A, applied 2026-08-29.** The `sapphire-flow-map` token now holds **37 grants,
+the whole tenant** (34 inserted; 2009/2011/2091 already present). Verified after applying:
+
+- **The endpoint is unchanged: still serves exactly `2009`, `2011`, `2091`.** The eligibility filter
+  is doing the gating the decision relied on, so the wider grant is inert for the Forecast Lab route
+  — this was the load-bearing assumption and it is now measured, not assumed.
+- **The predicted cost is real and bounded:** `GET /api/v1/stations` with this token returns **37**
+  stations (34 `onboarding`, 3 `operational`). Every promotion from here appears in the export with
+  no token change.
+- **No cross-tenant exposure:** the deployment holds 37 stations in total, all in this tenant, so the
+  grant reaches nothing it did not already logically cover. **This is why the check matters — on a
+  multi-tenant deployment the same statement would be a materially different act**, and the
+  `s.tenant_id = a.tenant_id` join is what keeps it contained.
+
+**Recommendation (retained as rationale): A, given this is internal research and the map is the only consumer.** The data
 the wider grant exposes is our own onboarding data, on the same tenant, to a token we issued for a
 project we control. Weigh that against a silent-failure step repeated 34 times. **If the answer were
 "an external partner's token", it would be B without hesitation** — and that difference is the point:
