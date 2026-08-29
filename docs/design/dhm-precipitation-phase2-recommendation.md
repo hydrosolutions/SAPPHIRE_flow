@@ -85,6 +85,31 @@ with the choice of estimator.
 > **To unlock it:** demonstrate that the margin-versus-upper split (not four bands) carries a stable
 > shape difference, and supply band weights from a source other than the profiles being weighted.
 
+**Update 2026-08-29 — the first unlock condition now has independent support; the second does not.**
+A separate ERA5-Land-versus-gauge timing analysis (`data/dhm_precip/figures/era5-timing/`, JJAS
+2020–2025, 20 retained stations of 26) reproduces **exactly the two-way split** by a different route —
+normalised per-station diurnal cycles, circular lag estimators, NPT rather than UTC, elevation bands
+`<1,000 / 1,000–2,000 / ≥2,000 m`:
+
+| band | gauge vs ERA5-Land offset (median) |
+|---|---|
+| `< 1,000 m` | **+0.6 h** — ERA5-Land essentially aligned |
+| `1,000–2,000 m` | **−14.4 h** |
+| `≥ 2,000 m` | **−11.9 h** |
+
+Stable to ≲1.5 h under exclusions, season definition (JJA/JJAS/MJJASO/JA), band edges, nearest-vs-
+bilinear extraction, and ±1 h period-convention flips. ⛔ **The SIGN is not identifiable** — at near
+antiphase −14.4 h and +9.6 h are the same angle; the **magnitude** is what is measured, and physics
+(parameterized convection firing at local noon) is what favours "model too early". The gauge-timezone
+hypothesis shifts everything +6 h uniformly but leaves the **between-band contrast invariant**.
+
+⇒ Condition (1) is now supported by two independent methods. **Condition (2) — band weights from a
+source other than the profiles being weighted — remains unmet, so the verdict is UNCHANGED.**
+
+⛔ **And note what was measured: ERA5-Land, a REANALYSIS.** The operational forcing is ECMWF **IFS**.
+ERA5-Land's precipitation is interpolated from ERA5, whose convection scheme is a frozen 2016-era IFS
+cycle; operational IFS has moved on many cycles. **We have not measured the product we actually fly.**
+
 ---
 
 ## 3. Use 2 — gap-filling the gauge record with ERA5-Land
@@ -227,6 +252,19 @@ Any future evaluation must state whether its Early data was retrospective or cap
 > latency also rules IMERG out of any correction inside that window — it can inform a forecast issued
 > later, never the nowcast covering the hours it describes.
 
+**Status update 2026-08-29 — this recommendation has been acted on.** M-A5b was rewritten around
+**Early** as **Plan 211**, implemented, and merged (**PR #229**, `main` `bf7b4265`, v0.1.837) after
+four independent review rounds.
+
+⛔ **What merged is the PIPELINE, not the data. No bulk retrieval has run and no bundle has ever been
+published** — the plan halts at T1's projection gate (measure one granule, project over 105,216, stop
+before committing several hundred GB). **That retrieval remains an owner decision** and is not implied
+by the merge.
+
+🔴 **Two prerequisites must close before any real acquisition or re-acquisition** (safe to defer only
+while nothing is published): reconcile acquisition gaps against each station's hourly `granule_count`,
+and protect a record that an already-published bundle's digest names.
+
 ---
 
 ## 8. Summary
@@ -238,7 +276,7 @@ Any future evaluation must state whether its Early data was retrospective or cap
 | 3 · bias-correcting ERA5-Land forcing | **Conditionally viable below ~2,000 m**; not across the transition |
 | 4 · elevation-band lapse rate | **No** — needs OD-10 |
 | 5 · operational DHM real-time ingest | **Not without an automated QC gate** |
-| IMERG / M-A5b | **Write it, rewritten around Early, scoped to low/mid elevation** |
+| IMERG / M-A5b | **Written and merged** (Plan 211, PR #229) — pipeline only, ⛔ no retrieval run |
 
 **The single most consequential finding for the project:** the DHM sample supports *characterisation*
 well and *correction* poorly, and every route to the snow-dominated high basins — where the flood
