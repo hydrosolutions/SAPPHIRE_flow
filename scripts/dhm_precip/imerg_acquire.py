@@ -1,12 +1,10 @@
 """Plan 211 (M-A5b) T1 — IMERG Early half-hourly acquisition over the frozen
-DHM study box, via the GES DISC HTTPS archive. The rationale lives in Plan
-211 (D1, D5, D7, D9, D10); only the invariants are restated here.
+DHM study box, via the GES DISC HTTPS archive (D1, D5, D7, D9, D10).
 
-⚠️ The D1 revision pin is ENFORCED, not documentary, and the 2026-08-28 probe
-observed the live archive serving V07C — filename and `FileHeader.FileName`
-agreeing on V07C while `FileHeader.ProductVersion` read `07B`, measurably a
-different axis. A live run therefore halts on the pin until the owner resolves
-that drift, which is D1's required behaviour, not a bug.
+⚠️ The D1 revision pin is ENFORCED, not documentary: the 2026-08-28 probe saw
+the archive serving V07C (filename and `FileHeader.FileName` agreeing) while
+`FileHeader.ProductVersion` read `07B` — a different axis. A live run halts on
+the pin until the owner resolves that drift; that is D1's required behaviour.
 
 Per-run scope: the CLI probes exactly ONE granule and reports the D10 disk
 projection. `retrieve_window` is the tested bulk path, deliberately unwired.
@@ -31,7 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 import numpy as np  # noqa: E402
 import structlog  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from pydantic import BaseModel, field_validator  # noqa: E402
 
 from sapphire_flow.exceptions import SapphireError  # noqa: E402
 from sapphire_flow.logging import configure_cli_logging  # noqa: E402
@@ -48,8 +46,7 @@ log = structlog.get_logger(__name__)
 
 
 class ImergAcquisitionError(SapphireError):
-    """Base for every M-A5b IMERG acquisition error. CLI exit code 3 unless a
-    subclass below states otherwise."""
+    """Base for every M-A5b IMERG error. CLI exit 3 unless a subclass says."""
 
 
 class ImergCredentialsError(ImergAcquisitionError):
@@ -57,18 +54,17 @@ class ImergCredentialsError(ImergAcquisitionError):
 
 
 class ImergTransientError(ImergAcquisitionError):
-    """Retryable transport error or HTTP 5xx — never surfaces past the retry
-    loop."""
+    """Retryable transport error or 5xx — never surfaces past the retry loop."""
 
 
 class ImergRequestFailedError(ImergAcquisitionError):
-    """GES DISC rejected the request, retries were exhausted, or an acquired
-    artifact failed post-acquisition validation."""
+    """GES DISC rejected the request, retries were exhausted, or an artifact
+    failed post-acquisition validation."""
 
 
 class ImergGranuleMissingError(ImergRequestFailedError):
-    """404 / absent from the day's listing: counted for a window retrieval
-    (D4), fatal for a single-granule probe."""
+    """404 / absent from the listing: counted for a window (D4), fatal for a
+    probe."""
 
 
 class ImergReadContractError(ImergRequestFailedError):
@@ -90,15 +86,14 @@ ROUTE = "GES DISC HTTPS archive"
 #: D1 — enforced by `assert_revision_matches_plan_and_header` on every granule.
 PINNED_GRANULE_REVISION_PER_PLAN = "V07B"
 
-#: D9 — Plan 209 T2's measured figure, carried verbatim into every extraction
-#: manifest (a recorded fact, not re-measured per run).
+#: D9 — Plan 209 T2's measured figure, carried verbatim (never re-measured).
 MEASURED_ACQUISITION_LATENCY = (
     "4h20m-4h50m (Plan 209 T2, GES DISC HTTPS archive, granules publish in "
     "hourly batches of two)"
 )
 
-#: The frozen bounding box, imported not restated (T1 pin). IMERG granules are
-#: global; this is the extraction's recorded footprint, not a download subset.
+#: The frozen box, imported not restated (T1 pin). IMERG granules are global;
+#: this is the recorded footprint, not a download subset.
 STUDY_BOX: tuple[int, int, int, int] = STUDY_AREA
 
 EXPECTED_UNITS = "mm/hr"
@@ -107,26 +102,24 @@ EXPECTED_REGISTRATION = "CENTER"
 EXPECTED_DIMENSION_NAMES: tuple[str, ...] = ("time", "lon", "lat")
 EXPECTED_GRID_SHAPE: tuple[int, int, int] = (1, 3600, 1800)
 _FILL_VALUE_TOLERANCE = 1e-3
-"""float32 round-trip tolerance: -9999.9 reads back as -9999.900390625 —
-observed on the real GES DISC probe granule, 2026-08-28."""
+"""float32 round-trip: -9999.9 reads back as -9999.900390625 (probe granule)."""
 
 
-# --- D5 window arithmetic. The output axis runs 2020-01-01 00:00 ..
-# 2025-12-31 23:00 inclusive (period-ending), so the FIRST hour needs the two
-# granules of 2019-12-31 23:00-24:00 and the LAST granule requested starts at
-# 22:30, not 23:30. ---
+# --- D5 window arithmetic. The period-ending output axis runs 2020-01-01
+# 00:00 .. 2025-12-31 23:00, so the FIRST hour needs the two granules of
+# 2019-12-31 23:00-24:00 and the LAST granule starts at 22:30, not 23:30. ---
 
 FIRST_GRANULE_START: datetime = datetime(STUDY_YEARS[0] - 1, 12, 31, 23, 0, tzinfo=UTC)
 LAST_GRANULE_START: datetime = datetime(STUDY_YEARS[-1], 12, 31, 22, 30, tzinfo=UTC)
 EXPECTED_GRANULE_COUNT: int = (
     int((LAST_GRANULE_START - FIRST_GRANULE_START) / timedelta(minutes=30)) + 1
 )
-"""105,216 — DERIVED from the pinned window (48/day x 2192 days), never
-restated as a bare literal (D10 forbids restating the projection as a fact)."""
+"""105,216 — DERIVED from the pinned window (48/day x 2192 days), never a bare
+literal (D10 forbids restating the projection as a fact)."""
 
 
 def all_granule_starts() -> Iterator[datetime]:
-    """D5 — every half-hour granule start this acquisition needs, in order."""
+    """D5 — every half-hour granule start needed, in order."""
     return (
         FIRST_GRANULE_START + i * timedelta(minutes=30)
         for i in range(EXPECTED_GRANULE_COUNT)
@@ -134,8 +127,7 @@ def all_granule_starts() -> Iterator[datetime]:
 
 
 def granule_start_in_window(start: datetime) -> bool:
-    """Membership in the pinned D5 window's half-hour set, without
-    materialising 105,216 datetimes."""
+    """Membership in D5's half-hour set, without materialising 105,216."""
     return (
         start.tzinfo is not None
         and start.utcoffset() == timedelta(0)
@@ -151,9 +143,9 @@ def granule_start_in_window(start: datetime) -> bool:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ImergGranuleId:
-    """One half-hourly granule, identified by its UTC start. The revision
-    letter is NOT part of the identity — it varies by production generation
-    and is only knowable by listing the archive."""
+    """One half-hourly granule, identified by its UTC start. The revision letter
+    is NOT part of the identity: it varies by production generation and is only
+    knowable by listing the archive."""
 
     start: datetime
 
@@ -201,8 +193,7 @@ _FILENAME_RE = re.compile(
 
 
 def parse_granule_filename(name: str) -> tuple[ImergGranuleId, str]:
-    """The inverse of `ImergGranuleId.filename` — recover identity and
-    revision from an observed name."""
+    """The inverse of `ImergGranuleId.filename`."""
     match = _FILENAME_RE.fullmatch(name)
     if match is None:
         raise ImergReadContractError(
@@ -231,11 +222,9 @@ def parse_granule_filename(name: str) -> tuple[ImergGranuleId, str]:
 def resolve_granule_filename(directory_listing: str, granule: ImergGranuleId) -> str:
     """D1 — the revision letter cannot be predicted, so the day directory's
     listing is searched for this granule's date and start time, whatever
-    revision it carries. Pure string logic, no network.
-
-    ⛔ The END is matched EXACTLY (`start + 29:59`), never as "any six
-    digits": D5 maps an interval by its end, so a mislabeled interval must
-    not be resolved off its start alone."""
+    revision it carries. Pure string logic, no network. ⛔ The END is matched
+    EXACTLY (`start + 29:59`), never as "any six digits": D5 maps an interval
+    by its end, so a mislabeled one must not be resolved off its start."""
     date_str = granule.start.strftime("%Y%m%d")
     start_str = granule.start.strftime("%H%M%S")
     end_str = granule.end.strftime("%H%M%S")
@@ -263,9 +252,9 @@ def resolve_granule_filename(directory_listing: str, granule: ImergGranuleId) ->
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ImergReadContract:
     """D1 — every field frozen on the first granule and asserted on every
-    subsequent one, the full lat/lon vectors included.
-    `file_header_product_version` is frozen IN ITS OWN RIGHT and deliberately
-    NOT equated with `granule_revision` (see the module docstring)."""
+    subsequent one, the full lat/lon vectors included. ⛔
+    `file_header_product_version` is frozen in its own right, NOT equated with
+    `granule_revision`."""
 
     hdf5_variable_path: str
     dimension_names: tuple[str, ...]
@@ -321,12 +310,11 @@ def _attr_text(raw: object) -> str:
 
 
 def contract_from_open_granule(f: object, *, filename: str) -> ImergReadContract:
-    """D1's ONE contract parser, called by both read paths
-    (`observe_read_contract` here and `imerg_extract.read_granule`): D1
-    freezes one contract, so there is one implementation of it. `f` is an open
+    """D1's ONE contract parser, called by both read paths: D1 freezes one
+    contract, so there is one implementation of it. `f` is an open
     `h5py.File`; `filename` is the name the revision is parsed from — a
-    mid-download temp file still carries a `.tmp` suffix, so its real name is
-    passed in."""
+    mid-download temp file still carries `.tmp`, so its real name is passed
+    in."""
     revision = parse_granule_filename(filename)[1]
     file_header = read_file_header(f)
     assert_revision_matches_plan_and_header(
@@ -377,10 +365,9 @@ def observe_read_contract(
 
 
 def exact_coordinate_vector(values: np.ndarray) -> tuple[float, ...]:
-    """D1 — the coordinate vectors are frozen EXACTLY. ⛔ No rounding: a
-    six-decimal round would let sub-6-decimal grid drift (a subset service's
-    own grid, a reprocessed archive) pass the exact-vector requirement while
-    mapping stations to different cells."""
+    """D1 — frozen EXACTLY. ⛔ No rounding: a six-decimal round would let
+    sub-6-decimal grid drift (a subset service's own grid, a reprocessed
+    archive) pass while mapping stations to different cells."""
     return tuple(float(v) for v in values)
 
 
@@ -411,10 +398,8 @@ def assert_revision_matches_plan_and_header(
     *, filename_revision: str, file_header_filename: str
 ) -> None:
     """D1's two revision checks: the filename's revision must equal the plan's
-    pinned literal, and must independently agree with the revision embedded in
-    the granule's own `FileHeader.FileName` — so a renamed file is caught
-    rather than trusted. ⛔ `FileHeader.ProductVersion` is NOT the comparand;
-    it is a different axis (see the module docstring)."""
+    pinned literal AND agree with the granule's own `FileHeader.FileName`, so a
+    renamed file is caught. ⛔ NOT `ProductVersion`: a different axis."""
     if filename_revision != PINNED_GRANULE_REVISION_PER_PLAN:
         raise ImergReadContractError(
             f"observed granule revision {filename_revision!r} (from its "
@@ -433,8 +418,7 @@ def assert_revision_matches_plan_and_header(
 def assert_contract_consistent(
     observed: ImergReadContract, *, frozen: ImergReadContract
 ) -> None:
-    """D1 — freeze the whole contract on the first granule, assert it on every
-    subsequent one."""
+    """D1 — frozen on the first granule, asserted on every subsequent one."""
     if observed.granule_revision != frozen.granule_revision:
         raise ImergReadContractError(
             f"granule revision {observed.granule_revision!r} != frozen "
@@ -464,8 +448,8 @@ def granule_artifact_path(data_root: Path, *, filename: str) -> Path:
 
 
 def acquisition_manifest_path(data_root: Path) -> Path:
-    """D10 — the acquisition manifest is PERMANENT and the raw granules are
-    disposable, so it lives as a SIBLING of `raw/`, never inside it."""
+    """D10 — PERMANENT while the raw granules are disposable, so it lives as a
+    SIBLING of `raw/`, never inside it."""
     return imerg_early_root(data_root) / "acquisition_manifest.json"
 
 
@@ -473,10 +457,9 @@ def acquisition_manifest_path(data_root: Path) -> Path:
 
 
 class ImergAcquisitionManifest(BaseModel):
-    """D9 — written by T1, read by T2, and the SOLE owner of the full D1 read
-    contract and the per-granule checksums (D10: this is what survives if the
-    raw granules are discarded). ⛔ It carries no `completeness` field:
-    completeness is DERIVED from these contents, never stored and trusted."""
+    """D9 — written by T1, read by T2, the SOLE owner of the full D1 read
+    contract and the per-granule checksums (D10: what survives if the raw
+    granules go). ⛔ No `completeness` field: it is DERIVED, never trusted."""
 
     route: str
     collection_short_name: str
@@ -497,14 +480,21 @@ class ImergAcquisitionManifest(BaseModel):
     retrospective: bool
     generated_at: datetime
 
+    @field_validator("missing")
+    @classmethod
+    def _chronological(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """D9 — the gaps are hashed into the extraction identity, so they are
+        stored chronologically: two records differing only in the ORDER their
+        gaps were discovered must not carry different identities."""
+        return tuple(sorted(value))
+
 
 def write_acquisition_manifest(manifest: ImergAcquisitionManifest, path: Path) -> None:
-    """D10 — the acquisition record is PERMANENT, and that is the only reason
-    discarding the raw granules is safe. ⛔ Both the retained record's and the
-    incoming one's completeness are DERIVED here, never read off a label: a
-    malformed record must not replace a complete one by *claiming* to be
-    complete. A re-download's checksums are compared against the retained ones
-    rather than replacing them, so an archive revision stays DETECTABLE."""
+    """D10 — the record is PERMANENT, and that is the only reason discarding
+    the raw granules is safe. ⛔ Completeness is DERIVED here, never read off a
+    label: a malformed record must not replace a complete one by *claiming* to
+    be complete. A re-download's checksums are compared against the retained
+    ones rather than replacing them, so a revision stays DETECTABLE."""
     existing = read_acquisition_manifest(path)
     if existing is not None and is_complete_acquisition(existing):
         violations = acquisition_completeness_violations(manifest)
@@ -563,6 +553,35 @@ _READ_CONTRACT_FIELDS: frozenset[str] = frozenset(
 )
 
 
+def read_contract_violations(
+    raw: dict[str, object], *, granule_revision: str
+) -> tuple[str, ...]:
+    """D1 — a recorded contract must SATISFY the frozen contract, not merely
+    carry its field NAMES: a record whose every value read "recorded" derived
+    as COMPLETE under a presence-only check. ⛔ `ImergReadContract` is the
+    judge (the JSON round-trip turns its tuples into lists)."""
+    if set(raw) != set(_READ_CONTRACT_FIELDS):
+        return (
+            f"read_contract fields {sorted(raw)} != D1's "
+            f"{sorted(_READ_CONTRACT_FIELDS)}",
+        )
+    try:
+        contract = ImergReadContract(
+            **{  # type: ignore[arg-type]
+                key: tuple(value) if isinstance(value, list) else value
+                for key, value in raw.items()
+            }
+        )
+    except (ImergReadContractError, TypeError, ValueError) as exc:
+        return (f"read_contract does not satisfy the D1 read contract: {exc}",)
+    if contract.granule_revision != granule_revision:
+        return (
+            f"read_contract granule_revision {contract.granule_revision!r} != "
+            f"the record's own {granule_revision!r}",
+        )
+    return ()
+
+
 def pinned_provenance_violations(
     *,
     route: str,
@@ -572,8 +591,7 @@ def pinned_provenance_violations(
     retrospective: bool,
 ) -> tuple[str, ...]:
     """D1/D7 — the pins every IMERG record must carry, checked identically by
-    the acquisition record and by the extraction bundle's publish/discovery
-    predicate. ⛔ These are the plan's own constants, never parameters."""
+    the record and by the bundle's predicate. ⛔ Constants, never parameters."""
     v: list[str] = []
     if route != ROUTE:
         v.append(f"route {route!r} != {ROUTE!r}")
@@ -622,12 +640,11 @@ def window_accounting_violations(
     window_end: datetime,
 ) -> tuple[str, ...]:
     """D5/D9 — every reason an acquisition ACCOUNTING fails to describe the
-    WHOLE pinned window. ⛔ Shared by the permanent acquisition record and by
-    the extraction bundle's single publish/discovery predicate, so an
-    under-complete accounting cannot reach publication by bypassing the
-    acquisition path: with the requested count pinned, the gaps unique and
-    confined to the window, and `retrieved + missing == requested`, the
-    retrieved set can only be the exact complement of the gaps."""
+    WHOLE pinned window. ⛔ Shared by the permanent record and by the bundle's
+    publish/discovery predicate, so an under-complete accounting cannot reach
+    publication by bypassing acquisition: with the requested count pinned, the
+    gaps unique and inside the window, and `retrieved + missing == requested`,
+    the retrieved set can only be the exact complement of the gaps."""
     v: list[str] = []
     if window_start != FIRST_GRANULE_START:
         v.append(
@@ -656,9 +673,8 @@ def acquisition_completeness_violations(
     manifest: ImergAcquisitionManifest,
 ) -> tuple[str, ...]:
     """D9/D5 — every reason this record does not describe a complete
-    acquisition of the pinned window, derived from its own contents. A
-    consumer that trusts a claim it could have computed publishes an identity
-    it never verified."""
+    acquisition of the pinned window, derived from its own contents. A consumer
+    trusting a claim it could have computed publishes an unverified identity."""
     v = list(
         window_accounting_violations(
             requested=manifest.requested,
@@ -677,11 +693,11 @@ def acquisition_completeness_violations(
             retrospective=manifest.retrospective,
         )
     )
-    missing_contract_fields = _READ_CONTRACT_FIELDS - set(manifest.read_contract)
-    if missing_contract_fields:
-        v.append(
-            f"read_contract is missing D1 field(s) {sorted(missing_contract_fields)}"
+    v.extend(
+        read_contract_violations(
+            manifest.read_contract, granule_revision=manifest.granule_revision
         )
+    )
     if manifest.retrieved != len(manifest.granule_checksums):
         v.append(
             f"retrieved {manifest.retrieved} != the "
@@ -716,7 +732,7 @@ def acquisition_completeness_violations(
 
 
 def is_complete_acquisition(manifest: ImergAcquisitionManifest) -> bool:
-    """The one place COMPLETE is decided — from the record's own contents."""
+    """The one place COMPLETE is decided, from the record's own contents."""
     return not acquisition_completeness_violations(manifest)
 
 
@@ -744,15 +760,15 @@ class ImergHttpClient(Protocol):
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RealImergHttpClient:
     """`.netrc`-based Earthdata Login auth: `requests` looks up the
-    `urs.earthdata.nasa.gov` entry on the redirect GES DISC issues, exactly as
-    `curl -n` does — no credential appears in this module's code."""
+    `urs.earthdata.nasa.gov` entry on GES DISC's redirect, as `curl -n` does —
+    no credential appears in this module."""
 
     timeout_seconds: float = 60.0
 
     @staticmethod
     def _raise_for_status(status: int, *, url: str) -> None:
-        """One status ladder for both requests: 404 is a missing granule (D4
-        counts it), 401/403 is credentials (exit 2), 5xx is retryable."""
+        """One status ladder: 404 missing (D4 counts it), 401/403 credentials
+        (exit 2), 5xx retryable."""
         if status == 404:  # noqa: PLR2004 - HTTP status literal
             raise ImergGranuleMissingError(f"not found: {url}")
         if status in (401, 403):
@@ -803,11 +819,10 @@ def acquire_granule(
     max_attempts: int = 5,
     backoff_base_seconds: float = 2.0,
 ) -> tuple[Path, str, ImergReadContract]:
-    """List the day directory to resolve this granule's actual filename (its
-    revision letter is unknowable in advance), download it, observe its D1
-    contract (asserted against `frozen_contract` once one is established),
-    checksum it and publish atomically. Transient failures retry with
-    exponential backoff; a 404 is raised immediately, never retried."""
+    """List the day directory to resolve this granule's filename (its revision
+    letter is unknowable in advance), download it, observe its D1 contract
+    (asserted against `frozen_contract` once established), checksum it and
+    publish atomically. Transient failures retry; a 404 never does."""
     listing = client.list_directory(granule.directory_url())
     filename = resolve_granule_filename(listing, granule)
     final_path = granule_artifact_path(data_root, filename=filename)
@@ -890,10 +905,9 @@ def retrieve_window(
     sleep: Callable[[float], None],
 ) -> tuple[WindowRetrievalReport, ImergReadContract | None, dict[str, str]]:
     """D9/D10 — retrieve every granule in `granule_starts`, freezing D1's read
-    contract on the first and asserting it on the rest; missing granules (404)
-    are counted, never fatal (D4 turns them into partial hours downstream).
-    Writes the PERMANENT acquisition manifest whenever at least one granule
-    was retrieved."""
+    contract on the first and asserting it on the rest; a 404 is counted,
+    never fatal (D4 turns it into a partial hour). Writes the PERMANENT
+    acquisition manifest whenever at least one granule was retrieved."""
     requested = 0
     retrieved = 0
     missing: list[str] = []
@@ -923,7 +937,7 @@ def retrieve_window(
         retrieved_at[path.name] = clock()
         retrieved += 1
     report = WindowRetrievalReport(
-        requested=requested, retrieved=retrieved, missing=tuple(missing)
+        requested=requested, retrieved=retrieved, missing=tuple(sorted(missing))
     )
     if frozen is not None and first_start is not None and last_start is not None:
         write_acquisition_manifest(
@@ -966,8 +980,8 @@ def compute_projection(
     free_disk_bytes: int,
     projected_granule_count: int = EXPECTED_GRANULE_COUNT,
 ) -> DiskProjection:
-    """D10 — decide by MEASUREMENT: one granule's real size times the window's
-    granule count, reported BEFORE any bulk retrieval."""
+    """D10 — decide by MEASUREMENT: one granule's size x the window's count,
+    reported BEFORE any bulk retrieval."""
     total = probe_granule_bytes * projected_granule_count
     return DiskProjection(
         probe_granule_bytes=probe_granule_bytes,
@@ -1008,9 +1022,8 @@ def run_probe(
     sleep: Callable[[float], None],
     free_disk_bytes: int,
 ) -> DiskProjection:
-    """T1's one permitted network action this run: acquire exactly ONE
-    granule, freeze its read contract, record it, and report the D10 disk
-    projection. Never retrieves a second granule."""
+    """T1's one permitted network action this run: acquire exactly ONE granule,
+    freeze its read contract, record it, report the D10 disk projection."""
     path, sha256, contract = acquire_granule(
         ImergGranuleId(start=granule_start),
         client=client,
@@ -1057,7 +1070,7 @@ def run_probe(
 
 def parse_cli_utc_timestamp(value: str) -> datetime:
     """Boundary parsing for `--granule-start`: reject a naive timestamp rather
-    than silently reading it in the host's timezone (the wrong granule)."""
+    than reading it in the host's timezone (the wrong granule)."""
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         raise ValueError(
@@ -1069,8 +1082,8 @@ def parse_cli_utc_timestamp(value: str) -> datetime:
 
 
 def _nearest_existing_ancestor(path: Path) -> Path:
-    """`os.statvfs` needs an existing path; a not-yet-created `--data-root`
-    must not silently fall back to measuring the CWD's filesystem."""
+    """`os.statvfs` needs an existing path; a not-yet-created `--data-root` must
+    not fall back to measuring the CWD's filesystem."""
     candidate = path.resolve()
     while not candidate.exists():
         parent = candidate.parent

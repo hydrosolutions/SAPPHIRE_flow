@@ -1,12 +1,10 @@
 """Plan 211 (M-A5b) T2 — hourly aggregation, point extraction and the D9
-extraction record for IMERG Early. Rationale lives in Plan 211; the
-invariants each sit beside the code that enforces them.
-
-D3 mean-of-two-rates (mm/h) · D4 complete axis, NaN never synthesised ·
-D5 period-ending · D6 cell centre + station elevation, no mismatch table ·
-D2 NEAREST primary, BILINEAR sensitivity, both reusing `era5_extract`'s own
-operators · D9 IMERG's own root, reader and manifest type, published and
-discovered through ONE validation predicate.
+extraction record for IMERG Early. Rationale lives in Plan 211; the invariants
+sit beside the code that enforces them. D3 mean-of-two-rates (mm/h) · D4
+complete axis, NaN never synthesised · D5 period-ending · D6 cell centre +
+station elevation, no mismatch table · D2 NEAREST primary, BILINEAR
+sensitivity, both reusing `era5_extract`'s operators · D9 IMERG's own root,
+reader and manifest, published and discovered through ONE predicate.
 """
 
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
@@ -71,6 +69,7 @@ from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     ImergCredentialsError,
     ImergReadContract,
     ImergStorageError,
+    acquisition_completeness_violations,
     acquisition_manifest_path,
     assert_acquisition_manifest_complete,
     assert_contract_consistent,
@@ -98,8 +97,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# D8 — determinism: round every aggregated hourly value to 9 decimals,
-# matching `ma7_profiles._HOURLY_MEAN_ROUNDING_DECIMALS` exactly.
+# D8 — round every hourly value to 9 decimals, matching `ma7_profiles`.
 _HOURLY_MEAN_ROUNDING_DECIMALS = 9
 
 FIRST_HOUR: datetime = datetime(STUDY_YEARS[0], 1, 1, 0, 0, tzinfo=UTC)
@@ -108,9 +106,9 @@ EXPECTED_HOUR_COUNT: int = int((LAST_HOUR - FIRST_HOUR) / timedelta(hours=1)) + 
 """52,608 — the six study years' hours, half of `EXPECTED_GRANULE_COUNT`."""
 
 EXPECTED_STATION_COUNT = 26
-"""Plan 211's own scope: "extract at the 26 station locations". ⛔ A pinned
-invariant, deliberately NOT a validator parameter — a caller able to pass its
-own count could publish a bundle covering a handful of stations."""
+"""Plan 211's own scope: "extract at the 26 station locations". ⛔ A pin, NOT a
+validator parameter: a caller passing its own count could publish a bundle
+covering a handful of stations."""
 
 IMERG_OUTPUT_SCHEMA_VERSION = "1"
 IMERG_EXTRACTION_CODE_VERSION = "1"
@@ -125,9 +123,9 @@ IMERG_PAYLOAD_FILES: tuple[str, ...] = (
     _SENSITIVITY_FILENAME,
 )
 
-# Ordered subclass-first (mirrors extract_era5_t2m.py's own table). The IMERG
-# leaves carry T1's own exit codes, so a D1 violation caught mid-extraction is
-# reported exactly as it would be at acquisition time.
+# Ordered subclass-first (mirrors extract_era5_t2m.py). The IMERG leaves carry
+# T1's exit codes, so a mid-extraction D1 violation reports as it would at
+# acquisition time.
 _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (DhmPrecipLoaderError, 2),
     (ExtractionInputAbsentError, 2),
@@ -151,8 +149,8 @@ def _exit_code_for(exc: Exception) -> int:
 
 def _default_expected_stations() -> frozenset[Station]:
     """The same workbook-derived usable-station inventory every other
-    extraction CLI reads — replicated (it is module-private in
-    `extract_era5.py`), reading the column inventory only, never a value."""
+    extraction CLI reads (replicated: it is private to `extract_era5.py`),
+    reading the column inventory only, never a value."""
     source_path = resolve_source_path()
     _long_frame, inventory = load_long_frame(
         source_path, expected_sha256=PRODUCTION_SOURCE_SHA256
@@ -181,11 +179,10 @@ def aggregate_half_hourly_to_hourly(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """D3/D4/D5 — one row per hour of a COMPLETE axis: the mean of the two
     half-hourly rates whose `E` falls in `(hour-1, hour]`. `granule_count`
-    (0/1/2) counts how many of those two EXIST; `non_finite_cell_count` how
-    many existing ones read a fill value at this station's cell, which D4
-    counts SEPARATELY. The value is non-NaN IFF `granule_count == 2 and
-    non_finite_cell_count == 0` — never synthesised from one granule, never
-    averaged over a fill value."""
+    (0/1/2) counts how many EXIST; `non_finite_cell_count` how many of those
+    read a fill value at this cell (D4 counts them SEPARATELY). Non-NaN IFF
+    `granule_count == 2 and non_finite_cell_count == 0` — never synthesised
+    from one granule, never averaged over a fill value."""
     axis = hourly_axis() if hours is None else hours
     values = np.full(len(axis), np.nan, dtype=np.float64)
     counts = np.zeros(len(axis), dtype=np.int64)
@@ -222,11 +219,11 @@ _STATION_ACCOUNTING_KEYS: tuple[str, ...] = (
 def _station_accounting_row(
     *, granule_count: np.ndarray, non_finite_cell_count: np.ndarray
 ) -> dict[str, object]:
-    """D4's accounting, derived in ONE place — the same function `run()` writes
-    with and `validate_imerg_bundle` RE-DERIVES from the published series. The
-    four `n_hours_{complete,partial,missing_granule,non_finite_cell}` buckets
-    partition the axis; the `*_any_*`/`n_granules_*` totals are NON-EXCLUSIVE
-    and cover the one-granule non-finite hours the exclusive bucket misses."""
+    """D4's accounting, derived in ONE place — `run()` writes with it and
+    `validate_imerg_bundle` RE-DERIVES from the published series. The four
+    `n_hours_{complete,partial,missing_granule,non_finite_cell}` buckets
+    partition the axis; the `*_any_*`/`n_granules_*` totals are NON-EXCLUSIVE,
+    covering the one-granule non-finite hours the exclusive bucket misses."""
     complete = (granule_count == 2) & (non_finite_cell_count == 0)  # noqa: PLR2004
     return {
         "n_hours": int(granule_count.size),
@@ -247,9 +244,8 @@ def _station_accounting_row(
 
 def read_granule(path: Path) -> tuple[xr.Dataset, ImergReadContract]:
     """Reshape one granule into the `(valid_time, latitude, longitude)` xarray
-    layout `era5_extract`'s operators already implement — no IMERG-specific
-    extraction logic here (D2). The D1 contract comes from
-    `imerg_acquire.contract_from_open_granule`, the ONE parser both read paths
+    layout `era5_extract`'s operators implement — no IMERG-specific extraction
+    logic (D2). The D1 contract comes from the ONE parser both read paths
     share, in the same HDF5 open."""
     import h5py
     import xarray as xr
@@ -288,8 +284,7 @@ _STAGING_DIRNAME = ".staging"
 
 
 def imerg_points_root(data_root: Path) -> Path:
-    """D9 — IMERG's OWN root, never `era5_extract_manifest.points_root()`
-    (hardcoded to `era5_land/points`)."""
+    """D9 — IMERG's OWN root, never `era5_extract_manifest.points_root()`."""
     return data_root / "imerg_early" / "points"
 
 
@@ -321,9 +316,8 @@ def _taken_run_numbers(root: Path) -> list[int]:
 
 
 def _reserve_run_number(root: Path) -> int:
-    """D9's allocator: the next free NNNN above the highest existing, whether
-    or not that bundle validates — discovery skips an invalid bundle, but
-    allocation must never REUSE its number."""
+    """D9's allocator: the next free NNNN above the highest existing, valid or
+    not — discovery skips an invalid bundle, allocation never REUSES it."""
     root.mkdir(parents=True, exist_ok=True)
     candidate = max(_taken_run_numbers(root), default=-1) + 1
     while candidate <= _MAX_RUN_NUMBER:
@@ -356,8 +350,7 @@ def allocate_published_dir(root: Path, *, identity: str) -> Path:
 
 def prepare_staging_dir(root: Path) -> Path:
     """A token-named directory under `.staging`. ⛔ The identity is NOT in the
-    name: it is the digest of the manifest this run is about to write, so it
-    is not known until the payloads have been."""
+    name: it digests the manifest this run has yet to write."""
     staging = root / _STAGING_DIRNAME / uuid.uuid4().hex[:16]
     try:
         staging.mkdir(parents=True, exist_ok=False)
@@ -378,12 +371,10 @@ def _sha256_of(obj: object) -> str:
 
 def acquisition_record_digest(manifest: ImergAcquisitionManifest) -> str:
     """The canonical digest of the PERMANENT acquisition record's
-    identity-bearing content — every granule checksum and the whole D1 read
-    contract included, wall-clock provenance excluded (D9: never hash time).
-    ⛔ Hashing THIS into the extraction identity is what lets the bundle stop
-    carrying its own copies of the 105,216 checksums and the 5,400-float
-    coordinate vectors: D10 makes the acquisition record their ONE owner, and
-    two copies could only ever disagree."""
+    identity-bearing content (wall-clock provenance excluded — D9 never hashes
+    time). ⛔ Hashing THIS is what lets the bundle stop carrying its own copies
+    of the 105,216 checksums and the 5,400-float coordinate vectors: D10 makes
+    the record their ONE owner, and two copies could only ever disagree."""
     return _sha256_of(
         manifest.model_dump(
             mode="json", exclude={"generated_at", "granule_retrieved_at"}
@@ -399,21 +390,19 @@ EXPECTED_PERIOD_ENDING_CONVENTION = (
 
 
 class ImergExtractionManifest(BaseModel):
-    """D9's `extraction_manifest.json` — the bundle IS the extraction record
-    (no separate report artefact). The fields down to `extraction_code_version`
-    are exactly what `imerg_extraction_identity` hashes; everything below them
-    is provenance, recorded but never hashed (D9: not wall-clock time, not
-    output paths)."""
+    """D9's `extraction_manifest.json` — the bundle IS the extraction record.
+    The fields down to `extraction_code_version` are what
+    `imerg_extraction_identity` hashes; everything below is provenance, never
+    hashed (D9: not wall-clock time, not output paths)."""
 
     extraction_identity: str
     operator_id: str
     coordinate_table_sha256: str
     acquisition_record_sha256: str
     """`acquisition_record_digest` of the permanent T1 record (D10) that owns
-    the per-granule checksums and the full D1 read contract."""
+    the per-granule checksums and the full D1 read contract; both digests are
+    RECOMPUTED from it by `validate_imerg_bundle`."""
     read_contract_sha256: str
-    """Digest of the D1 contract T2 actually observed, asserted equal to the
-    acquisition record's own before extraction."""
     route: str
     collection_short_name: str
     granule_revision: str
@@ -424,12 +413,10 @@ class ImergExtractionManifest(BaseModel):
     granules_requested: int
     granules_retrieved: int
     granules_missing: tuple[str, ...] = ()
-    """D9's granule counts and gaps, re-derived against the pinned window by
-    `validate_imerg_bundle`."""
+    """D9's gaps, re-derived against the pinned window by the predicate."""
     box: tuple[int, int, int, int]
     sensitivity_params: dict[str, object] = {}
-    """Plan 174 D1a's pinned sensitivity definition — hashed because it
-    determines `operator_sensitivity.csv`'s contents."""
+    """Plan 174 D1a's pinned definition — hashed: it determines the CSV."""
     output_schema_version: str = IMERG_OUTPUT_SCHEMA_VERSION
     extraction_code_version: str = IMERG_EXTRACTION_CODE_VERSION
 
@@ -447,9 +434,7 @@ class ImergExtractionManifest(BaseModel):
     generated_at: datetime
 
 
-#: Everything `extraction_identity` is the digest of (P7a: exactly what was
-#: READ). ⛔ There is no second copy of these inside the bundle, so the
-#: readable provenance cannot contradict the identity it is published under.
+#: Everything `extraction_identity` digests (P7a: exactly what was READ).
 _IDENTITY_FIELDS: set[str] = {
     "operator_id",
     "coordinate_table_sha256",
@@ -471,8 +456,8 @@ _IDENTITY_FIELDS: set[str] = {
 
 
 def imerg_extraction_identity(manifest: ImergExtractionManifest) -> str:
-    """D9/P7a — the digest over exactly what T2 read, taken off the manifest's
-    own fields so a reader recomputes it without having been the writer."""
+    """D9/P7a — the digest over exactly what T2 read, off the manifest's own
+    fields so a reader recomputes it without having been the writer."""
     return _sha256_of(manifest.model_dump(mode="json", include=_IDENTITY_FIELDS))
 
 
@@ -518,6 +503,14 @@ _REQUIRED_STATION_CELL_COLUMNS: tuple[str, ...] = (
     "station_elevation_datum",
 )
 
+#: D6 — the per-station facts the series restates and the cell table owns.
+_D6_STATION_COLUMNS: tuple[str, ...] = (
+    "grid_lat",
+    "grid_lon",
+    "station_elev_m",
+    "station_elevation_datum",
+)
+
 _PUBLISHED_RUN_NUMBER_RE = re.compile(rf"^\d{{{_RUN_NUMBER_WIDTH}}}$")
 
 _VALID_SENSITIVITY_SCOPES: frozenset[str] = frozenset(m.value for m in SensitivityScope)
@@ -530,8 +523,8 @@ _VALID_SENSITIVITY_DELTA_UNITS: frozenset[str] = frozenset(
 
 
 def _directory_declares_identity(directory: Path, *, identity: str) -> bool:
-    """EXACT match against the published form `NNNN-<identity>` — a substring
-    match would wrongly accept a directory merely CONTAINING the identity."""
+    """EXACT match against `NNNN-<identity>`: a substring match would accept a
+    directory merely CONTAINING the identity."""
     prefix, sep, rest = directory.name.partition("-")
     return (
         bool(sep)
@@ -540,9 +533,8 @@ def _directory_declares_identity(directory: Path, *, identity: str) -> bool:
     )
 
 
-#: The primary series' numeric columns are read under an EXPLICIT schema: a
-#: non-numeric cell then fails the read (reported as a validation failure) and
-#: an all-null column still arrives typed instead of as `String`.
+#: An EXPLICIT schema: a non-numeric cell then fails the read (as a validation
+#: failure) and an all-null column arrives typed instead of as `String`.
 _NEAREST_NUMERIC_SCHEMA: dict[str, pl.DataType] = {
     "precip_mm_per_h": pl.Float64(),
     "granule_count": pl.Int64(),
@@ -553,9 +545,8 @@ _NEAREST_NUMERIC_SCHEMA: dict[str, pl.DataType] = {
 def _read_csv_or_reject(
     path: Path, *, schema_overrides: dict[str, pl.DataType] | None = None
 ) -> pl.DataFrame:
-    """A malformed payload is a VALIDATION failure, not a crash: D9 requires
-    discovery to SKIP an invalid higher-numbered bundle, which it cannot do if
-    polars raises its own exception type straight through."""
+    """A malformed payload is a VALIDATION failure, not a crash: discovery
+    SKIPS an invalid higher bundle, a raw polars exception prevents that."""
     try:
         return pl.read_csv(path, schema_overrides=schema_overrides)
     except (pl.exceptions.PolarsError, OSError, ValueError) as exc:
@@ -564,15 +555,44 @@ def _read_csv_or_reject(
         ) from exc
 
 
-def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) -> None:
-    """D9 — ONE validation predicate, applied identically by publication and
-    discovery (never two implementations of the same rules).
+def _acquisition_agreement_violations(
+    manifest: ImergExtractionManifest, record: ImergAcquisitionManifest
+) -> tuple[str, ...]:
+    """D9/D10/P7a — RECOMPUTE the bundle's two digests from the permanent
+    record they name and reconcile every acquisition field the bundle restates
+    against it. ⛔ A digest accepted as a caller-supplied string authenticates
+    nothing: the identity would be self-consistent while describing granules
+    nobody acquired. Keyed by the BUNDLE's names, valued by the record's."""
+    expected: dict[str, object] = {
+        "acquisition_record_sha256": acquisition_record_digest(record),
+        "read_contract_sha256": _sha256_of(record.read_contract),
+        "route": record.route,
+        "collection_short_name": record.collection_short_name,
+        "granule_revision": record.granule_revision,
+        "acquisition_window_start": record.requested_window_start,
+        "acquisition_window_end": record.requested_window_end,
+        "granules_requested": record.requested,
+        "granules_retrieved": record.retrieved,
+        "granules_missing": tuple(record.missing),
+        "box": tuple(record.box),
+    }
+    return tuple(
+        f"{field} disagrees with the permanent acquisition record"
+        for field, value in expected.items()
+        if getattr(manifest, field) != value
+    )
 
-    ⛔ It OWNS the plan's invariants — the pinned route/collection/revision/box,
-    the whole D5 acquisition window, the 26 stations and the complete hourly
-    axis — rather than accepting them as parameters. A caller free to pass its
-    own expectations could publish an under-complete bundle by bypassing
-    `run()`, and discovery would then accept it too."""
+
+def validate_imerg_bundle(
+    directory: Path, manifest: ImergExtractionManifest, *, data_root: Path
+) -> None:
+    """D9 — ONE validation predicate, applied identically by publication and
+    discovery. ⛔ It OWNS the plan's invariants — the pinned
+    route/collection/revision/box/operator, the whole D5 window, the 26
+    stations, the complete hourly axis and the permanent acquisition record —
+    rather than accepting them as parameters: a caller passing its own
+    expectations could publish an under-complete bundle by bypassing `run()`,
+    and discovery would accept it too."""
     if directory.parent.name != _STAGING_DIRNAME and not _directory_declares_identity(
         directory, identity=manifest.extraction_identity
     ):
@@ -592,9 +612,9 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
             "IMERG extraction manifest contradicts the plan's pins (D1/D7): "
             + "; ".join(pinned)
         )
-    # D9 — the SAME accounting invariant the permanent acquisition record must
-    # satisfy. ⛔ Here, not only in `run()`: otherwise a hand-built bundle
-    # claiming one requested granule publishes, and discovery accepts it.
+    # D9 — the SAME accounting invariant the permanent record must satisfy. ⛔
+    # Here, not only in `run()`: else a hand-built bundle claiming one
+    # requested granule publishes, and discovery accepts it.
     accounting = window_accounting_violations(
         requested=manifest.granules_requested,
         retrieved=manifest.granules_retrieved,
@@ -606,6 +626,37 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
         raise ExtractionPostConditionError(
             "IMERG extraction manifest's acquisition accounting does not cover "
             "the pinned D5 window (D9/D5): " + "; ".join(accounting)
+        )
+    # D9/D10 — the bundle carries only DIGESTS of the acquisition record and
+    # the D1 read contract, so the predicate RESOLVES the permanent record and
+    # recomputes them; otherwise they are caller-supplied strings.
+    record = read_acquisition_manifest(acquisition_manifest_path(data_root))
+    if record is None:
+        raise ExtractionPostConditionError(
+            "no permanent IMERG acquisition record at "
+            f"{acquisition_manifest_path(data_root)} — the bundle's "
+            "acquisition_record_sha256 addresses nothing (D9/D10)"
+        )
+    provenance = acquisition_completeness_violations(
+        record
+    ) + _acquisition_agreement_violations(manifest, record)
+    if provenance:
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest is not backed by the permanent "
+            "acquisition record it names (D9/D10): " + "; ".join(provenance)
+        )
+    # D2 — operator and sensitivity definition are PINS, both hashed into the
+    # identity: a bundle naming its own would publish statistics nobody
+    # computed, under a self-consistent digest.
+    if manifest.operator_id != str(ExtractionOperator.NEAREST):
+        raise ExtractionPostConditionError(
+            f"IMERG extraction manifest's operator_id {manifest.operator_id!r} "
+            f"!= the D2-pinned {str(ExtractionOperator.NEAREST)!r} (D2/D9)"
+        )
+    if manifest.sensitivity_params != _sensitivity_params(DEFAULT_PARAMS):
+        raise ExtractionPostConditionError(
+            "IMERG extraction manifest's sensitivity_params != Plan 174 D1a's "
+            "pinned sensitivity definition (D2/D9)"
         )
     if manifest.timestamp_convention is not AccumulationConvention.PERIOD_ENDING:
         raise ExtractionPostConditionError(
@@ -654,9 +705,8 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
                 f"{_NEAREST_SERIES_FILENAME} station {_station_id!r} does not "
                 "carry the exact expected hourly axis (D5/D9)"
             )
-    # ⛔ Nullness first: `~col.is_in([0,1,2])` evaluates to NULL on a null
-    # cell, which `filter` drops — so a null count would pass every range
-    # check below without this gate.
+    # ⛔ Nullness first: `~col.is_in([0,1,2])` is NULL on a null cell, which
+    # `filter` drops — a null count would pass every range check below.
     for count_column in ("granule_count", "non_finite_cell_count"):
         if nearest[count_column].null_count():
             raise ExtractionPostConditionError(
@@ -677,9 +727,9 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
             "0 <= non_finite_cell_count <= granule_count <= 2 (D4/D9)"
         )
     # D4 — precip_mm_per_h is FINITE IFF granule_count == 2 AND
-    # non_finite_cell_count == 0. Both directions, and finiteness rather than
-    # nullness: a NaN on a nominally complete hour is not a valid rate, and a
-    # value under a partial hour would be invented data.
+    # non_finite_cell_count == 0. Both directions, and finiteness not nullness:
+    # a NaN on a complete hour is not a rate, a value on a partial one is
+    # invented.
     complete_and_finite = (pl.col("granule_count") == 2) & (  # noqa: PLR2004
         pl.col("non_finite_cell_count") == 0
     )
@@ -710,6 +760,34 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
             f"{_STATION_CELL_FILENAME}'s station set does not match "
             f"{_NEAREST_SERIES_FILENAME}'s (D9)"
         )
+    # D6 — the datum is UNKNOWN (DHM has stated none), and the series' per-hour
+    # cell/elevation metadata must be CONSTANT per station and equal to that
+    # station's own row here. ⛔ Two records of one fact can only ever disagree.
+    if station_cell.filter(
+        pl.col("station_elevation_datum") != str(VerticalDatum.UNKNOWN)
+    ).height:
+        raise ExtractionPostConditionError(
+            f"{_STATION_CELL_FILENAME}.station_elevation_datum must be "
+            f"{str(VerticalDatum.UNKNOWN)!r} (D6/D9)"
+        )
+    per_station = nearest.select("station_id", *_D6_STATION_COLUMNS).unique()
+    if per_station.height != len(stations_present):
+        raise ExtractionPostConditionError(
+            f"{_NEAREST_SERIES_FILENAME} varies {list(_D6_STATION_COLUMNS)} within a "
+            "station — a station's cell and elevation are one fact (D6/D9)"
+        )
+    if (
+        per_station.sort("station_id").rows()
+        != station_cell.select(
+            pl.col("station").alias("station_id"), *_D6_STATION_COLUMNS
+        )
+        .sort("station_id")
+        .rows()
+    ):
+        raise ExtractionPostConditionError(
+            f"{_NEAREST_SERIES_FILENAME}'s per-station cell/elevation metadata "
+            f"disagrees with {_STATION_CELL_FILENAME}'s (D6/D9)"
+        )
 
     sensitivity = _read_csv_or_reject(directory / _SENSITIVITY_FILENAME)
     missing_sensitivity_cols = set(SENSITIVITY_REQUIRED_COLUMNS) - set(
@@ -739,8 +817,8 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
             "IMERG extraction manifest's station_accounting station set does "
             "not match the published series' station set (D4/D9)"
         )
-    # ⛔ RE-DERIVED from the published series, not merely summed: numbers that
-    # add up to the hour count can still be swapped, stale or invented.
+    # ⛔ RE-DERIVED from the series, not merely summed: numbers that add up to
+    # the hour count can still be swapped, stale or invented.
     for group_key, group in nearest.group_by("station_id", maintain_order=True):
         station_id = str(group_key[0])
         expected_accounting = _station_accounting_row(
@@ -754,11 +832,19 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
                 f"has key(s) {sorted(recorded)}, expected exactly "
                 f"{sorted(_STATION_ACCOUNTING_KEYS)} (D4/D9)"
             )
-        differing = {
-            key: (recorded[key], expected_accounting[key])
-            for key in _STATION_ACCOUNTING_KEYS
-            if int(recorded[key]) != int(expected_accounting[key])  # type: ignore[arg-type,call-overload]
-        }
+        try:
+            differing = {
+                key: (recorded[key], expected_accounting[key])
+                for key in _STATION_ACCOUNTING_KEYS
+                if int(recorded[key]) != int(expected_accounting[key])  # type: ignore[arg-type,call-overload]
+            }
+        except (TypeError, ValueError) as exc:
+            # ⛔ Typed, not raw: D9's discovery SKIPS an invalid higher bundle,
+            # which an escaping ValueError prevents.
+            raise ExtractionPostConditionError(
+                f"IMERG extraction manifest's station_accounting[{station_id!r}] "
+                f"holds a non-integer count: {exc} (D4/D9)"
+            ) from exc
         if differing:
             raise ExtractionPostConditionError(
                 f"IMERG extraction manifest's station_accounting[{station_id!r}] "
@@ -780,8 +866,8 @@ def validate_imerg_bundle(directory: Path, manifest: ImergExtractionManifest) ->
             "IMERG extraction manifest's extraction_identity does not match "
             "the digest recomputed from its own identity-bearing fields (D9/P7a)"
         )
-    # The output axis endpoints are a claim about the PAYLOAD, so they are
-    # checked against the payload, not merely against each other.
+    # The axis endpoints are a claim about the PAYLOAD, so they are checked
+    # against it, not merely against each other.
     if [
         str(np.datetime64(manifest.output_axis_start.replace(tzinfo=None), "s")),
         str(np.datetime64(manifest.output_axis_end.replace(tzinfo=None), "s")),
@@ -806,7 +892,7 @@ def publish_imerg_bundle(staged_dir: Path, *, data_root: Path, identity: str) ->
             "refusing to publish a bundle under a label that disagrees with "
             "its own manifest"
         )
-    validate_imerg_bundle(staged_dir, manifest)
+    validate_imerg_bundle(staged_dir, manifest, data_root=data_root)
     final_dir = allocate_published_dir(imerg_points_root(data_root), identity=identity)
     try:
         os.replace(staged_dir, final_dir)
@@ -823,8 +909,7 @@ def publish_imerg_bundle(staged_dir: Path, *, data_root: Path, identity: str) ->
 
 
 def discover_imerg_bundle(data_root: Path) -> tuple[Path, ImergExtractionManifest]:
-    """P2/P6 — the highest `NNNN` whose manifest validates against
-    `validate_imerg_bundle`, the SAME predicate publication applies."""
+    """P2/P6 — the highest `NNNN` validating against publication's predicate."""
     root = imerg_points_root(data_root)
     if not root.exists():
         raise ExtractionInputAbsentError(f"no IMERG extraction points root at {root}")
@@ -834,14 +919,13 @@ def discover_imerg_bundle(data_root: Path) -> tuple[Path, ImergExtractionManifes
     )
     last_error: Era5AcquisitionError | None = None
     for candidate in reversed(candidates):
-        # ⛔ The manifest READ is inside the guard too: a malformed
-        # `extraction_manifest.json` would otherwise abort discovery at the
-        # highest NNNN instead of falling back to the next lower valid one.
+        # ⛔ The manifest READ is inside the guard too: a malformed one would
+        # otherwise abort discovery instead of falling back to the next valid.
         try:
             manifest = _read_manifest(candidate / MANIFEST_FILENAME)
             if manifest is None:
                 continue
-            validate_imerg_bundle(candidate, manifest)
+            validate_imerg_bundle(candidate, manifest, data_root=data_root)
         except (ExtractionPostConditionError, Era5StorageError) as exc:
             log.warning(
                 "imerg_extract.discover.validation_failed_skipped",
@@ -869,19 +953,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Copy the published bundle (manifest + the three payload CSVs) to "
-            "this NEW OR EMPTY directory, so two runs' outputs can be diffed "
-            "for D8 determinism (excluding the manifest's generated_at). The "
-            "bundle always publishes to its identity-addressed directory under "
-            "--data-root regardless (D9). ⛔ An existing non-empty directory "
-            "is REFUSED, never erased."
+            "this NEW OR EMPTY directory, so two runs can be diffed for D8 "
+            "determinism (excluding generated_at); the bundle publishes to its "
+            "identity-addressed directory regardless (D9). ⛔ An existing "
+            "non-empty directory is REFUSED, never erased."
         ),
     )
     return parser
 
 
 def _sensitivity_params(params: DhmPrecipParams) -> dict[str, object]:
-    """Plan 174 D1a's pinned sensitivity definition — its population, seasons,
-    wet-hour policy and quantiles, reused rather than re-chosen (D2)."""
+    """Plan 174 D1a's pinned sensitivity definition — seasons, wet-hour policy
+    and quantiles, reused rather than re-chosen (D2), and validated by the
+    publish/discovery predicate against exactly this snapshot."""
     return {
         "seasons": {
             "jjas_months": list(params.jjas_months),
@@ -923,10 +1007,8 @@ def run(
     )
     coordinate_table_sha256 = checksum_file(resolved_coords_path)
 
-    # D9 — the T1->T2 handoff IS the acquisition manifest; T2 must not
-    # re-derive the granule set, revision or route by re-listing raw/.
-    # ⛔ COMPLETE is DERIVED from the record's contents before any granule
-    # file is opened, never read off a label it could have computed.
+    # D9 — the handoff IS the manifest: T2 never re-lists raw/, and DERIVES
+    # completeness from the record's contents before opening any granule.
     acquisition = read_acquisition_manifest(acquisition_manifest_path(data_root))
     if acquisition is None:
         raise ExtractionInputAbsentError(
@@ -1065,9 +1147,7 @@ def run(
         nearest_frame.write_csv(staged_dir / _NEAREST_SERIES_FILENAME)
 
         # D6 — the selected cell's CENTRE and the station's own elevation with
-        # its vertical datum. ⛔ No DEM, no mismatch table, and never grid
-        # indices (they would need a global-vs-subset convention nobody asked
-        # for).
+        # its datum. ⛔ No DEM, no mismatch table, never grid indices.
         pl.DataFrame(
             [
                 {
@@ -1131,10 +1211,8 @@ def run(
 
 
 def _copy_bundle_to_out(final_dir: Path, out: Path) -> None:
-    """⛔ `--out` must be a NEW or EMPTY directory. An earlier version passed
-    any existing caller path straight to `shutil.rmtree`, so a mistyped
-    `--out` recursively deleted it — and Plan 211 forbids deleting anything
-    under the ERA5 or `points/` trees."""
+    """⛔ A NEW or EMPTY directory. An earlier version passed any existing
+    caller path to `shutil.rmtree`, so a mistyped `--out` deleted it."""
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise Era5StorageError(
             f"--out {out} already exists and is not an empty directory — "

@@ -116,9 +116,14 @@ def _contract_kwargs() -> dict[str, Any]:
     }
 
 
-_READ_CONTRACT_KEYS_STUB: dict[str, Any] = dict.fromkeys(
-    ia.ImergReadContract.__dataclass_fields__, "recorded"
-)
+def _reference_read_contract() -> dict[str, object]:
+    """A contract that SATISFIES D1, not merely one carrying its field names.
+    ⛔ These fixtures used `dict.fromkeys(fields, "recorded")` and still
+    derived as COMPLETE — key presence was the whole check."""
+    return ia.ImergReadContract(
+        **_contract_kwargs(),
+        granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
+    ).as_manifest_dict()
 
 
 def _derivation_complete_manifest(
@@ -136,7 +141,7 @@ def _derivation_complete_manifest(
         "requested_window_start": ia.FIRST_GRANULE_START,
         "requested_window_end": ia.LAST_GRANULE_START,
         "box": ia.STUDY_BOX,
-        "read_contract": _READ_CONTRACT_KEYS_STUB,
+        "read_contract": _reference_read_contract(),
         "requested": ia.EXPECTED_GRANULE_COUNT,
         "retrieved": len(checksums),
         "missing": tuple(
@@ -756,6 +761,45 @@ class TestAcquisitionCompletenessIsDerived:
         assert ia.acquisition_completeness_violations(manifest) == ()
         assert ia.is_complete_acquisition(manifest) is True
         ia.assert_acquisition_manifest_complete(manifest)
+
+    def test_a_read_contract_of_placeholder_values_does_not_derive_complete(
+        self,
+    ) -> None:
+        """⛔ D1 (locking). These fixtures recorded every contract value as
+        the string "recorded" and the record still derived COMPLETE: the
+        check asked whether the D1 field NAMES were present, never whether
+        the values satisfied the contract they claim to be."""
+        manifest = _derivation_complete_manifest(
+            read_contract=dict.fromkeys(
+                ia.ImergReadContract.__dataclass_fields__, "recorded"
+            )
+        )
+        assert ia.is_complete_acquisition(manifest) is False
+        with pytest.raises(ia.ImergRequestFailedError, match="D1 read contract"):
+            ia.assert_acquisition_manifest_complete(manifest)
+
+    def test_a_read_contract_whose_revision_contradicts_the_record_is_rejected(
+        self,
+    ) -> None:
+        contract = dict(_reference_read_contract())
+        contract["granule_revision"] = "V06B"
+        manifest = _derivation_complete_manifest(read_contract=contract)
+        assert ia.is_complete_acquisition(manifest) is False
+
+    def test_gaps_are_stored_chronologically_so_identity_ignores_their_order(
+        self,
+    ) -> None:
+        """D9 (locking) — `missing` is hashed into the extraction identity as
+        a TUPLE, so a record whose gaps arrived in a different order would
+        publish under a different identity while describing the same
+        acquisition."""
+        gaps = [
+            (ia.FIRST_GRANULE_START + timedelta(minutes=30 * i)).isoformat()
+            for i in (5, 1, 3)
+        ]
+        forward = _derivation_complete_manifest(missing=tuple(gaps))
+        reversed_ = _derivation_complete_manifest(missing=tuple(reversed(gaps)))
+        assert forward.missing == reversed_.missing == tuple(sorted(gaps))
 
     def test_a_two_granule_one_hour_manifest_labelled_complete_is_rejected(
         self,

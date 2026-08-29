@@ -6,6 +6,7 @@ the structure observed on the real GES DISC probe granule.
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,7 @@ from scripts.dhm_precip.era5_errors import (
     ExtractionPostConditionError,
 )
 from scripts.dhm_precip.era5_manifest import checksum_file
+from scripts.dhm_precip.params import DEFAULT_PARAMS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -317,20 +319,10 @@ class TestStorageLayout:
 
 _AT = datetime(2026, 8, 28, tzinfo=UTC)
 
-#: Every hand-built bundle carries the PINNED acquisition accounting: the
-#: publish/discovery predicate now derives completeness itself, so a fixture
-#: that claimed a two-granule window would be refused — which is the point.
-_ACQUISITION_FIELDS: dict[str, Any] = {
-    "route": ia.ROUTE,
-    "collection_short_name": ia.COLLECTION_SHORT_NAME,
-    "granule_revision": ia.PINNED_GRANULE_REVISION_PER_PLAN,
-    "acquisition_window_start": ia.FIRST_GRANULE_START,
-    "acquisition_window_end": ia.LAST_GRANULE_START,
-    "granules_requested": ia.EXPECTED_GRANULE_COUNT,
-    "granules_retrieved": ia.EXPECTED_GRANULE_COUNT,
-    "granules_missing": (),
-    "box": ia.STUDY_BOX,
-}
+#: The REAL D5 window pin, captured at import so a test can restore it after
+#: `_pin_a_two_granule_window` has shrunk it.
+_REAL_WINDOW_END = ia.LAST_GRANULE_START
+_REAL_GRANULE_COUNT = ia.EXPECTED_GRANULE_COUNT
 
 _AXIS: tuple[str, ...] = tuple(
     str(np.datetime64(h.replace(tzinfo=None), "s")) for h in ie.hourly_axis()
@@ -346,11 +338,98 @@ def _pin_one_station(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ie, "EXPECTED_STATION_COUNT", 1)
 
 
+@pytest.fixture
+def _pin_a_two_granule_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same deliberate shrink for D5's 105,216-granule window: every
+    hand-built bundle below is published against a REAL acquisition record
+    whose digests the predicate recomputes, and a genuinely complete record
+    of the real window would carry 105,216 checksums. `test_the_real_d5_
+    window_pin_is_live` restores it.
+
+    ⛔ `TestT2DerivesAcquisitionCompleteness` must NOT use this: its blocker
+    is precisely a two-granule window claiming to be the whole one."""
+    monkeypatch.setattr(
+        ia, "LAST_GRANULE_START", ia.FIRST_GRANULE_START + timedelta(minutes=30)
+    )
+    monkeypatch.setattr(ia, "EXPECTED_GRANULE_COUNT", 2)
+
+
+def _reference_read_contract() -> ia.ImergReadContract:
+    """A contract that SATISFIES D1 (not merely one carrying its field names):
+    completeness is now derived from the values."""
+    return ia.ImergReadContract(
+        hdf5_variable_path=ia.HDF5_VARIABLE_PATH,
+        dimension_names=ia.EXPECTED_DIMENSION_NAMES,
+        coordinate_registration=ia.EXPECTED_REGISTRATION,
+        longitude_convention="SIGNED_180",
+        units=ia.EXPECTED_UNITS,
+        fill_value=ia.EXPECTED_FILL_VALUE,
+        grid_shape=ia.EXPECTED_GRID_SHAPE,
+        lat_vector=tuple(np.linspace(-89.95, 89.95, 1800).tolist()),
+        lon_vector=tuple(np.linspace(-179.95, 179.95, 3600).tolist()),
+        grid_spacing_deg=0.1,
+        granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
+        file_header_product_version="07B",
+    )
+
+
+def _write_reference_acquisition_record(data_root: Path) -> ia.ImergAcquisitionManifest:
+    """The PERMANENT acquisition record every hand-built bundle here is
+    published against. ⛔ A real one, complete by derivation: the predicate
+    resolves it and RECOMPUTES the bundle's two digests from its contents, so
+    a fixture carrying placeholder digest strings would make exactly the
+    invariant under test unobservable — as it did for two review rounds."""
+    checksums = {
+        ia.ImergGranuleId(start=start).filename(
+            revision=ia.PINNED_GRANULE_REVISION_PER_PLAN
+        ): f"{index:064d}"
+        for index, start in enumerate(ia.all_granule_starts())
+    }
+    record = ia.ImergAcquisitionManifest(
+        route=ia.ROUTE,
+        collection_short_name=ia.COLLECTION_SHORT_NAME,
+        granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
+        requested_window_start=ia.FIRST_GRANULE_START,
+        requested_window_end=ia.LAST_GRANULE_START,
+        box=ia.STUDY_BOX,
+        read_contract=_reference_read_contract().as_manifest_dict(),
+        requested=ia.EXPECTED_GRANULE_COUNT,
+        retrieved=len(checksums),
+        missing=(),
+        granule_checksums=checksums,
+        granule_retrieved_at=dict.fromkeys(checksums, _AT),
+        retrospective=True,
+        generated_at=_AT,
+    )
+    ia.write_acquisition_manifest(record, ia.acquisition_manifest_path(data_root))
+    return record
+
+
+def _acquisition_fields(record: ia.ImergAcquisitionManifest) -> dict[str, Any]:
+    """Every acquisition field the bundle restates, taken FROM the record it
+    names — so the bundle and the record agree by construction, and a test
+    that breaks one of them breaks it visibly."""
+    return {
+        "acquisition_record_sha256": ie.acquisition_record_digest(record),
+        "read_contract_sha256": ie._sha256_of(record.read_contract),
+        "route": record.route,
+        "collection_short_name": record.collection_short_name,
+        "granule_revision": record.granule_revision,
+        "acquisition_window_start": record.requested_window_start,
+        "acquisition_window_end": record.requested_window_end,
+        "granules_requested": record.requested,
+        "granules_retrieved": record.retrieved,
+        "granules_missing": record.missing,
+        "box": record.box,
+    }
+
+
 def _write_bundle_payload(
     directory: Path,
     *,
     station_ids: tuple[str, ...] = ("S0",),
     first_row_overrides: dict[str, Any] | None = None,
+    cell_overrides: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """A payload on the COMPLETE pinned hourly axis — the only shape the
     predicate accepts, since the axis is D5's own and not a parameter.
@@ -395,6 +474,7 @@ def _write_bundle_payload(
                 "grid_lon": 85.05,
                 "station_elev_m": 1000.0,
                 "station_elevation_datum": "UNKNOWN",
+                **(cell_overrides or {}),
             }
             for station in station_ids
         ]
@@ -444,6 +524,7 @@ def _station_accounting(**overrides: Any) -> dict[str, Any]:
 def _bundle_manifest(
     *,
     payload_sha256s: dict[str, str],
+    record: ia.ImergAcquisitionManifest,
     station_ids: tuple[str, ...] = ("S0",),
     **overrides: Any,
 ) -> ie.ImergExtractionManifest:
@@ -455,10 +536,8 @@ def _bundle_manifest(
         "extraction_identity": "",
         "operator_id": str(ExtractionOperator.NEAREST),
         "coordinate_table_sha256": "abc",
-        "acquisition_record_sha256": "acquisition-record-digest",
-        "read_contract_sha256": "read-contract-digest",
-        **_ACQUISITION_FIELDS,
-        "sensitivity_params": {"quantile_grid": [0.5]},
+        **_acquisition_fields(record),
+        "sensitivity_params": ie._sensitivity_params(DEFAULT_PARAMS),
         "acquisition_generated_at": _AT,
         "output_axis_start": ie.FIRST_HOUR,
         "output_axis_end": ie.LAST_HOUR,
@@ -487,19 +566,24 @@ def _stage_bundle(
     tmp_path: Path,
     *,
     first_row_overrides: dict[str, Any] | None = None,
+    cell_overrides: dict[str, Any] | None = None,
     **manifest_overrides: Any,
 ) -> tuple[Path, ie.ImergExtractionManifest]:
     """A staged bundle that validates as published, so each test can break
     exactly ONE thing about it."""
+    record = _write_reference_acquisition_record(tmp_path / "data_root")
     staged = ie.prepare_staging_dir(ie.imerg_points_root(tmp_path / "data_root"))
     payload_sha256s = _write_bundle_payload(
-        staged, first_row_overrides=first_row_overrides
+        staged, first_row_overrides=first_row_overrides, cell_overrides=cell_overrides
     )
-    manifest = _bundle_manifest(payload_sha256s=payload_sha256s, **manifest_overrides)
+    manifest = _bundle_manifest(
+        payload_sha256s=payload_sha256s, record=record, **manifest_overrides
+    )
     ie._write_manifest(manifest, staged / ie.MANIFEST_FILENAME)
     return staged, manifest
 
 
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
 class TestPublishAndDiscover:
     def test_publish_then_discover_round_trips(self, tmp_path: Path) -> None:
         data_root = tmp_path / "data_root"
@@ -557,7 +641,7 @@ class TestPublishAndDiscover:
             tmp_path, first_row_overrides={"granule_count": 1}
         )
         with pytest.raises(ExtractionPostConditionError, match="disagree"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
     def test_validate_rejects_a_directory_name_that_merely_contains_the_identity(
         self, tmp_path: Path
@@ -565,16 +649,19 @@ class TestPublishAndDiscover:
         """D9 (locking) — an EXACT `NNNN-<identity>` match is required of a
         PUBLISHED bundle; a directory whose name merely CONTAINS the identity
         as a substring of something else must be rejected."""
+        data_root = tmp_path / "data_root"
+        record = _write_reference_acquisition_record(data_root)
         directory = tmp_path / "xx-deadbeef-yy"
         directory.mkdir()
         manifest = _bundle_manifest(
             payload_sha256s=_write_bundle_payload(directory),
+            record=record,
             extraction_identity="deadbeef",
         )
         with pytest.raises(
             ExtractionPostConditionError, match="does not exactly match"
         ):
-            ie.validate_imerg_bundle(directory, manifest)
+            ie.validate_imerg_bundle(directory, manifest, data_root=data_root)
 
     def test_validate_rejects_an_extraction_identity_that_does_not_recompute(
         self, tmp_path: Path
@@ -584,10 +671,10 @@ class TestPublishAndDiscover:
         be rejected: otherwise the label and the recorded provenance could
         silently drift apart."""
         staged, manifest = _stage_bundle(tmp_path)
-        tampered = manifest.model_copy(update={"operator_id": "TAMPERED"})
+        tampered = manifest.model_copy(update={"coordinate_table_sha256": "TAMPERED"})
         ie._write_manifest(tampered, staged / ie.MANIFEST_FILENAME)
         with pytest.raises(ExtractionPostConditionError, match="recomputed"):
-            ie.validate_imerg_bundle(staged, tampered)
+            ie.validate_imerg_bundle(staged, tampered, data_root=tmp_path / "data_root")
 
     def test_validate_rejects_a_malformed_sensitivity_schema(
         self, tmp_path: Path
@@ -595,7 +682,9 @@ class TestPublishAndDiscover:
         """D9/D1a (locking) — a sensitivity CSV missing the required
         columns (a bare `{scope, station}` frame) must be rejected, not
         published as a valid diagnostics artefact."""
-        staged = ie.prepare_staging_dir(ie.imerg_points_root(tmp_path / "data_root"))
+        data_root = tmp_path / "data_root"
+        record = _write_reference_acquisition_record(data_root)
+        staged = ie.prepare_staging_dir(ie.imerg_points_root(data_root))
         _write_bundle_payload(staged)
         # Overwrite with the OLD, malformed shape.
         pl.DataFrame({"scope": ["STATION"], "station": ["S0"]}).write_csv(
@@ -604,11 +693,12 @@ class TestPublishAndDiscover:
         manifest = _bundle_manifest(
             payload_sha256s={
                 name: checksum_file(staged / name) for name in ie.IMERG_PAYLOAD_FILES
-            }
+            },
+            record=record,
         )
         ie._write_manifest(manifest, staged / ie.MANIFEST_FILENAME)
         with pytest.raises(ExtractionPostConditionError, match="missing column"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
 
 # --- T2 end-to-end through run(), reading a REAL acquisition manifest (D9)
@@ -1143,6 +1233,7 @@ class TestT2DerivesAcquisitionCompleteness:
 # --- D4/D9 — the primary series validator's numeric contract ---
 
 
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
 class TestPrimarySeriesNumericContract:
     def test_a_null_granule_count_is_rejected(self, tmp_path: Path) -> None:
         """`~col.is_in([0, 1, 2])` is NULL for a null cell, and `filter`
@@ -1152,7 +1243,7 @@ class TestPrimarySeriesNumericContract:
             first_row_overrides={"granule_count": None, "precip_mm_per_h": None},
         )
         with pytest.raises(ExtractionPostConditionError, match="null value"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
     def test_a_nan_precip_on_a_nominally_complete_hour_is_rejected(
         self, tmp_path: Path
@@ -1163,7 +1254,7 @@ class TestPrimarySeriesNumericContract:
             tmp_path, first_row_overrides={"precip_mm_per_h": float("nan")}
         )
         with pytest.raises(ExtractionPostConditionError, match="FINITE rate"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
     def test_more_non_finite_cells_than_granules_is_rejected(
         self, tmp_path: Path
@@ -1177,12 +1268,13 @@ class TestPrimarySeriesNumericContract:
             },
         )
         with pytest.raises(ExtractionPostConditionError, match="0 <= non_finite"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
 
 # --- D4/D9 — station accounting is RE-DERIVED from the payload ---
 
 
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
 class TestStationAccountingIsRederived:
     def test_swapped_totals_that_still_sum_correctly_are_rejected(
         self, tmp_path: Path
@@ -1194,7 +1286,7 @@ class TestStationAccountingIsRederived:
         )
         staged, manifest = _stage_bundle(tmp_path, station_accounting={"S0": swapped})
         with pytest.raises(ExtractionPostConditionError, match="disagrees with the"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
     def test_a_one_granule_non_finite_hour_reaches_the_non_exclusive_total(
         self,
@@ -1215,6 +1307,7 @@ class TestStationAccountingIsRederived:
 # --- D9/P7a — provenance may never contradict the hashed identity ---
 
 
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
 class TestManifestProvenanceReconciliation:
     def test_a_route_that_is_not_the_pinned_one_is_rejected(
         self, tmp_path: Path
@@ -1224,7 +1317,7 @@ class TestManifestProvenanceReconciliation:
         reconciled against a second copy of itself inside the bundle."""
         staged, manifest = _stage_bundle(tmp_path, route="a different route")
         with pytest.raises(ExtractionPostConditionError, match="pins"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
     def test_an_output_axis_end_that_disagrees_with_the_payload_is_rejected(
         self, tmp_path: Path
@@ -1233,7 +1326,7 @@ class TestManifestProvenanceReconciliation:
             tmp_path, output_axis_end=datetime(2020, 6, 1, tzinfo=UTC)
         )
         with pytest.raises(ExtractionPostConditionError, match="output_axis"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
     def test_acquisition_counts_that_do_not_add_up_are_rejected(
         self, tmp_path: Path
@@ -1242,12 +1335,13 @@ class TestManifestProvenanceReconciliation:
         must reconcile with each other and with the pinned window."""
         staged, manifest = _stage_bundle(tmp_path, granules_retrieved=99)
         with pytest.raises(ExtractionPostConditionError, match="!= requested"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
 
 # --- D9 — discovery must SKIP an invalid higher bundle, never abort ---
 
 
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
 class TestDiscoverySkipsInvalidBundles:
     def test_a_malformed_higher_bundle_falls_back_to_the_lower_valid_one(
         self, tmp_path: Path
@@ -1271,11 +1365,34 @@ class TestDiscoverySkipsInvalidBundles:
         found, _found_manifest = ie.discover_imerg_bundle(data_root)
         assert found == valid
 
+    def test_a_non_numeric_station_accounting_value_is_skipped_not_raised(
+        self, tmp_path: Path
+    ) -> None:
+        """D9 (locking) — `station_accounting` holds arbitrary JSON values and
+        the re-derivation passed them to a bare `int()`. Discovery catches only
+        the typed validation errors, so a non-numeric count ABORTED discovery
+        with a raw `ValueError` instead of skipping that bundle."""
+        data_root = tmp_path / "data_root"
+        root = ie.imerg_points_root(data_root)
+        staged, manifest = _stage_bundle(tmp_path)
+        valid = ie.publish_imerg_bundle(
+            staged, data_root=data_root, identity=manifest.extraction_identity
+        )
+        higher = ie.allocate_published_dir(root, identity=manifest.extraction_identity)
+        shutil.copytree(valid, higher, dirs_exist_ok=True)
+        payload = json.loads((higher / ie.MANIFEST_FILENAME).read_text())
+        payload["station_accounting"]["S0"]["n_hours_complete"] = "not-a-number"
+        (higher / ie.MANIFEST_FILENAME).write_text(json.dumps(payload))
+
+        found, _found_manifest = ie.discover_imerg_bundle(data_root)
+        assert found == valid
+
 
 # --- D9 (MAJOR) — the ONE predicate owns the plan's invariants, so a bundle
 # cannot reach publication (or discovery) by bypassing run() ---
 
 
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
 class TestPinnedInvariantsCannotBeBypassed:
     def test_a_one_granule_accounting_bundle_is_refused_at_publication(
         self, tmp_path: Path
@@ -1325,7 +1442,7 @@ class TestPinnedInvariantsCannotBeBypassed:
             ),
         )
         with pytest.raises(ExtractionPostConditionError, match="inside the"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
 
     def test_a_bundle_with_fewer_stations_than_the_pin_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1336,4 +1453,139 @@ class TestPinnedInvariantsCannotBeBypassed:
         monkeypatch.setattr(ie, "EXPECTED_STATION_COUNT", 26)
         staged, manifest = _stage_bundle(tmp_path)
         with pytest.raises(ExtractionPostConditionError, match="expected the pinned"):
-            ie.validate_imerg_bundle(staged, manifest)
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_the_real_d5_window_pin_is_live(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The counterpart for the window: `_pin_a_two_granule_window` cannot
+        hide a D5 pin that stopped being enforced, because this test restores
+        the real 105,216-granule one after staging."""
+        staged, manifest = _stage_bundle(tmp_path)
+        monkeypatch.setattr(ia, "LAST_GRANULE_START", _REAL_WINDOW_END)
+        monkeypatch.setattr(ia, "EXPECTED_GRANULE_COUNT", _REAL_GRANULE_COUNT)
+        with pytest.raises(ExtractionPostConditionError, match="pinned D5 window"):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_an_operator_id_other_than_the_pinned_nearest_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """D2/D9 (locking) — `operator_id` is HASHED into the identity but was
+        never checked, so a bundle could name BILINEAR (or anything) as the
+        primary operator and publish under a self-consistent digest."""
+        staged, manifest = _stage_bundle(
+            tmp_path, operator_id=str(ExtractionOperator.BILINEAR)
+        )
+        with pytest.raises(ExtractionPostConditionError, match="operator_id"):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_sensitivity_params_that_are_not_the_pinned_snapshot_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """D2/D9 (locking) — `sensitivity_params` is HASHED into the identity
+        and determines `operator_sensitivity.csv`, so a bundle carrying a
+        pruned snapshot (`{"quantile_grid": [0.5]}` — the shape this fixture
+        itself used to publish) describes statistics nobody computed."""
+        staged, manifest = _stage_bundle(
+            tmp_path, sensitivity_params={"quantile_grid": [0.5]}
+        )
+        with pytest.raises(ExtractionPostConditionError, match="sensitivity_params"):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+
+# --- D9/D10/P7a — the two digests are RECOMPUTED from the record they name ---
+
+
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
+class TestAcquisitionRecordIsAuthenticated:
+    """⛔ The defect class, one layer up: round 1 trusted a `completeness`
+    LABEL, round 2 trusted it in the writer, round 3 replaced the data with a
+    DIGEST and never checked the digest. A bundle naming an acquisition record
+    must be reconciled against that record's own contents."""
+
+    def test_a_placeholder_acquisition_digest_is_refused_at_publication(
+        self, tmp_path: Path
+    ) -> None:
+        data_root = tmp_path / "data_root"
+        staged, manifest = _stage_bundle(
+            tmp_path, acquisition_record_sha256="acquisition-record-digest"
+        )
+        with pytest.raises(
+            ExtractionPostConditionError, match="acquisition_record_sha256"
+        ):
+            ie.publish_imerg_bundle(
+                staged, data_root=data_root, identity=manifest.extraction_identity
+            )
+        assert not list(ie.imerg_points_root(data_root).glob("0*"))
+
+    def test_a_placeholder_read_contract_digest_is_invisible_to_discovery(
+        self, tmp_path: Path
+    ) -> None:
+        data_root = tmp_path / "data_root"
+        staged, manifest = _stage_bundle(
+            tmp_path, read_contract_sha256="read-contract-digest"
+        )
+        published = ie.allocate_published_dir(
+            ie.imerg_points_root(data_root), identity=manifest.extraction_identity
+        )
+        shutil.copytree(staged, published, dirs_exist_ok=True)
+        with pytest.raises(ExtractionPostConditionError, match="read_contract_sha256"):
+            ie.discover_imerg_bundle(data_root)
+
+    def test_a_bundle_whose_acquisition_record_is_absent_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """D10 — the record is what makes discarding the raw granules safe, so
+        a bundle whose digest addresses nothing must not validate."""
+        data_root = tmp_path / "data_root"
+        staged, manifest = _stage_bundle(tmp_path)
+        ia.acquisition_manifest_path(data_root).unlink()
+        with pytest.raises(ExtractionPostConditionError, match="addresses nothing"):
+            ie.publish_imerg_bundle(
+                staged, data_root=data_root, identity=manifest.extraction_identity
+            )
+
+    def test_a_record_that_no_longer_derives_complete_invalidates_the_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        """The record is resolved and RE-DERIVED, not merely digested: a
+        record replaced by a one-granule one cannot back a full bundle."""
+        data_root = tmp_path / "data_root"
+        staged, manifest = _stage_bundle(tmp_path)
+        record = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert record is not None
+        ia.acquisition_manifest_path(data_root).write_text(
+            record.model_copy(update={"requested": 1}).model_dump_json()
+        )
+        with pytest.raises(ExtractionPostConditionError, match="pinned window"):
+            ie.publish_imerg_bundle(
+                staged, data_root=data_root, identity=manifest.extraction_identity
+            )
+
+
+# --- D6 — the cell/elevation facts are recorded ONCE and must agree ---
+
+
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
+class TestD6CellAndElevationAgreement:
+    def test_a_station_elevation_datum_other_than_unknown_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """D6 — `UNKNOWN` is the honest datum for the station side (DHM has
+        stated none); a bundle asserting EGM96 would be inventing one."""
+        staged, manifest = _stage_bundle(
+            tmp_path, cell_overrides={"station_elevation_datum": "EGM96"}
+        )
+        with pytest.raises(
+            ExtractionPostConditionError, match="station_elevation_datum"
+        ):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_series_cell_metadata_disagreeing_with_the_cell_table_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """D6/D9 — the selected cell is ONE fact recorded in two files; two
+        copies can only ever disagree, so the agreement is checked."""
+        staged, manifest = _stage_bundle(tmp_path, cell_overrides={"grid_lat": 12.34})
+        with pytest.raises(ExtractionPostConditionError, match="disagrees with"):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")

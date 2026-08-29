@@ -401,7 +401,20 @@ exit-code table honours `ImergStorageError`'s promised exit 5; and `--out` REFUS
 directory instead of `rmtree`-ing it. The acquisition manifest is now the sole owner of the full D1 read
 contract and the per-granule checksums — the bundle hashes their canonical digests into its identity
 rather than carrying two more copies of both — and the 26-station/complete-axis invariants are pinned
-rather than passed in.
+rather than passed in. **Confirming round (2026-08-29)**: the digest rewrite had moved the defect one
+layer up rather than closing it — the bundle's `acquisition_record_sha256`/`read_contract_sha256` were
+unauthenticated caller-supplied strings, so a bundle naming an acquisition record that does not exist
+published and discovered happily (the fixtures carried literal placeholder digests, which is why two
+rounds missed it). The ONE predicate now RESOLVES the permanent acquisition record, re-derives its
+completeness, RECOMPUTES both digests from its contents and reconciles route/window/counts/gaps/box
+against the bundle. Four smaller items landed with it: the record's D1 `read_contract` is validated
+SEMANTICALLY (`ImergReadContract` is the judge — a record whose every value read `"recorded"` used to
+derive as COMPLETE); a non-numeric `station_accounting` value is normalised into the typed validation
+error discovery skips rather than aborting discovery with a raw `ValueError`; `sensitivity_params` is
+checked against Plan 174 D1a's pinned snapshot again (as is the named NEAREST `operator_id`, hashed
+into the identity but never validated); and D6's `UNKNOWN` datum plus the per-hour /
+station-cell agreement are validated, with the record's gaps canonicalised chronologically so gap ORDER
+cannot change an identity.
 
 **Exit:** extracted IMERG **Early** series + named operator + the per-station cell-centre/elevation
 record above (no DEM mismatch table) + the operator-sensitivity comparison + the manifest marked
