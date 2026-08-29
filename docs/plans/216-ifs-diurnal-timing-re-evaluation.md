@@ -19,10 +19,7 @@ source: docs/design/dhm-precipitation-phase2-recommendation.md § 2 (Use 1)
 
 **Three actions: retrieve, compare, recommend.** The comparison machinery already exists
 (`ma6_pairs.py`, `ma7_profiles.py`, `data/dhm_precip/figures/era5-timing/era5_gauge_timing_figure.py`)
-and is reused. No new framework, abstraction layer, config surface or file format. **Adding length is
-a cost.** *(Cut from 264 lines and 15 decisions after an independent review found it over-engineered —
-the excess was downstream sourcing, licensing and procurement strategy that does not help produce the
-measurement.)*
+and is reused. No new framework, abstraction layer, config surface or file format. **Adding length is a cost.**
 
 ## Why this plan exists
 
@@ -56,17 +53,22 @@ measurement of the one we do.
   correction.** ⛔ Report the bound beside every result: an *unresolved* error must never be read as
   *no* error.
 
-- **D5 — Reuse the comparison, but NOT its six-year adequacy gates.** Same pairing, normalisation
-  (each station's 24 h sums to 100 %), circular lag estimators, bands, NPT display, and sign convention
-  (**positive = model later than gauge**) — so the IFS and ERA5-Land numbers are comparable by
-  construction. 🔴 **But `era5_gauge_timing_figure.py:244–290` bootstraps whole season-years and excludes
-  stations with < 3 season-years or < 3,000 hours. Against ONE season that excludes EVERY station and
-  degenerates the bootstrap.** ⇒ Reuse the *phase estimator*; replace the multi-year adequacy gate with
-  a single-season one and state it. ⛔ A silent reuse here yields an empty result that looks like a
-  finding.
+- **D5 — Reuse the phase estimator; RETIRE the season-year bootstrap and its 24-bin test.** Same
+  pairing, normalisation (each station's cycle sums to 100 %), circular lag estimators, bands, NPT
+  display, and sign convention (**positive = model later than gauge**) — so the IFS and ERA5-Land
+  numbers are comparable by construction. 🔴 **But three things in
+  `era5_gauge_timing_figure.py:244–290` break on one season, and they are separate code paths:** the
+  year resampling (`:249`, `:271`) would draw a one-element `[2025]` bootstrap that resamples the same
+  season and reports **false zero uncertainty**; the adequacy thresholds (`:282`) exclude stations with
+  < 3 season-years or < 3,000 hours, which drops **every** station; and `nb.min() == 0` (`:275`)
+  discards any replicate with an empty bin, while 6-hourly data populates only **4 of the 24** bins.
+  ⇒ **Retire bootstrap uncertainty, the arc exclusion and the 24-bin completeness test for this
+  screen**, and say so in the output. The **±3 h resolution bound (D4) dominates any interval a
+  bootstrap could produce here**, so the interval would add no information while inviting a false-zero
+  reading. Report point estimates with their `n`. ⛔ Fixing only the thresholds is the trap: it leaves
+  the bootstrap silently degenerate.
 
-- **D6 — TIGGE source contract (every property MEASURED 2026-08-29, not read).**
-  Retrieved: ECMWF control `tp`, 2025-07-15 (monsoon, inside the gauge record), exact study box.
+- **D6 — TIGGE source contract. Every property below was MEASURED 2026-08-29, not read.**
   - **Route:** `cdsapi` → `https://ecds.ecmwf.int/api`, dataset **`tigge-forecasts`**. Migrated to ECDS
     **2026-05-27**, so ⛔ pre-migration recipes are dead. An existing Copernicus CDS key works. **Two**
     acceptances are required, both seen as hard 403s: ECDS *Terms of use* and the *TIGGE licence*.
@@ -105,6 +107,12 @@ station-day count; and the unit assertion has a test that **fails against a metr
 ### T2 — the comparison (depends: T1)
 **In:** run the timing comparison with TIGGE-IFS in ERA5-Land's place, per D5, stratified by lead time
 (D3), reporting the ±3 h bound (D4) and both timezone readings (D7).
+🔴 **A lead band is a COMPLEMENTARY STEP SET covering all four 6-hourly clock positions, never a single
+exact lead.** With 00/12 UTC initialisations, one exact lead samples only **two** clock positions per
+day — too few to fit a diurnal cycle at all. Define e.g. `D+1 = steps 24/30/36/42` from the 00 UTC run
+(valid 00/06/12/18 the next day), `D+2 = 48/54/60/66`, and so on. ⛔ Where two initialisations yield a
+forecast at the same valid time, take the **most recent initialisation within the band**,
+deterministically — never both, never an average.
 🔴 **Aggregate the GAUGES into matching complete 6-hour period-ending windows before pairing.**
 `ma6_pairs.py:707` joins on exact timestamps and the existing figure bins 24 *hourly* values; pairing a
 6-hour IFS total against one hourly gauge value would be wrong. ⛔ A window with any missing gauge hour
