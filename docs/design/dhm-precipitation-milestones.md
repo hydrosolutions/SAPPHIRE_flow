@@ -1123,15 +1123,21 @@ D+3), reusing M-A6's own phase estimator unmodified. Screening only — no corre
 claim, no operational dependency (a measured ~48 h TIGGE embargo rules that out for any centre).
 
 **✅ COMPLETE 2026-08-29.** IFS shares the mid/high-elevation-band error's DIRECTION but at roughly
-**half ERA5-Land's magnitude** (mid ~−6.3 to −6.8 h vs ERA5-Land's −14.4 h; high ~−5.1 h vs −11.9 h),
-resolved well beyond the ±3 h bound 6-hourly data permits. **NO-GO on the originally proposed ~12 h
-correction as designed; GO on finer-resolution correction work calibrated to IFS's own, smaller
-displacement.** Full measurement: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md`.
-Code: `scripts/dhm_precip/tigge_ifs.py` (T1 retrieval/extraction), `scripts/dhm_precip/
-tigge_gauge_timing.py` (T2 comparison). One D6 correction against the plan's own draft: the ECDS
-`tigge-forecasts` process has no `grid` interpolation input — it returns the model's native reduced
-Gaussian grid (measured N640), not a regular 0.5° grid; the nearest-cell extraction operator is
-unaffected.
+**a third to a half of ERA5-Land's magnitude** (mid ~−5.2 to −5.7 h vs ERA5-Land's −14.4 h; high ~−5.2
+to −5.7 h vs −11.9 h), resolved well beyond the ±3 h bound 6-hourly data permits; the low band is
+unresolved from zero at every lead. **NO-GO on the originally proposed ~12 h correction as designed;
+GO on finer-resolution correction work calibrated to IFS's own, smaller displacement.** Full
+measurement: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md`. Code:
+`scripts/dhm_precip/tigge_ifs.py` (T1 retrieval/extraction), `scripts/dhm_precip/
+tigge_gauge_timing.py` (T2 comparison), `scripts/dhm_precip/diurnal_phase.py` (D5's shared,
+TRACKED phase estimator, reused by both this screen and `era5_gauge_timing_figure.py` — a review
+round found the first draft (a) dynamically imported that estimator from a gitignored `data/`
+artefact, which broke unit-test collection on a clean checkout, and (b) pooled raw mass across
+stations before computing the phase, violating D5's own per-station-normalised, station-equal
+aggregate; both are fixed and the CSV/table above are from the corrected run). One D6 correction
+against the plan's own draft: the ECDS `tigge-forecasts` process has no `grid` interpolation input —
+it returns the model's native reduced Gaussian grid (measured N640), not a regular 0.5° grid; the
+nearest-cell extraction operator is unaffected.
 
 **Exit:** a measured answer, with lead-dependence, the ±3 h resolution bound, and a screening verdict
 bounded by D4. Owner decides (M-DEC).

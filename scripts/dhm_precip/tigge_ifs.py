@@ -19,6 +19,7 @@ grid-geometry claim was wrong.
 from __future__ import annotations
 
 import argparse
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -29,11 +30,13 @@ import structlog
 import xarray as xr
 
 from sapphire_flow.exceptions import SapphireError
-from scripts.dhm_precip.domain_types import Station, StationCoordinateTable
 from scripts.dhm_precip.loader import load_station_coordinates, resolve_coords_path
+from scripts.dhm_precip.ma6_pairs import load_gauge_masked_population
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+    from scripts.dhm_precip.domain_types import Station, StationCoordinateTable
 
 log = structlog.get_logger(__name__)
 
@@ -46,6 +49,15 @@ TIGGE_LEVEL_TYPE = "single_level"
 TIGGE_VARIABLE = "total_precipitation"
 TIGGE_DATA_VAR_NAME = "tp"  # cfgrib short name for total_precipitation
 TIGGE_DATA_FORMAT = "grib"
+
+# D2 — "One monsoon season: JJAS 2025." This track answers ONE screening
+# question against ONE season; there is no `--year` CLI option (removed —
+# see `TiggeIdentityError`/`assert_tigge_identity` below) because a wrong
+# year silently mislabelled as "JJAS 2025" in every downstream filename,
+# CSV and report is exactly the failure mode D2 forbids.
+TIGGE_YEAR = 2025
+TIGGE_MONTHS: tuple[int, ...] = (6, 7, 8, 9)
+TIGGE_INIT_HOURS_UTC: tuple[int, ...] = (0, 12)
 
 # D6: N/W/S/E, exactly STUDY_AREA. The corrected grid-shape note above
 # applies to what comes BACK, not to this request box, which is unchanged.
@@ -100,6 +112,15 @@ class TiggeStepAxisError(TiggeAcquisitionError):
     sequence starting at 0 h — deaccumulation requires consecutive steps."""
 
 
+class TiggeIdentityError(TiggeAcquisitionError):
+    """The opened GRIB's init axis, lead axis or origin does not match the
+    JJAS `TIGGE_YEAR` control-forecast request this module issues (D2 pins
+    this track to exactly ONE season). Proceeding without this check would
+    let a stale or wrong `--skip-retrieve` file — a different year, a
+    different init/lead axis, a different centre — be silently reported
+    as "JJAS `TIGGE_YEAR`"."""
+
+
 @runtime_checkable
 class CdsClient(Protocol):
     """The single injected ECDS-call seam — mirrors
@@ -136,7 +157,7 @@ def build_tigge_request(
     year: int,
     months: Sequence[int],
     days: Sequence[int],
-    times: Sequence[str],
+    times: Sequence[int],
     leadtime_hours: Sequence[int],
     area: StudyArea = STUDY_AREA,
 ) -> dict[str, object]:
@@ -177,6 +198,71 @@ def assert_tp_units(ds: xr.Dataset, *, variable: str = TIGGE_DATA_VAR_NAME) -> N
             f"{variable!r} units attribute is {units!r}; expected one of "
             f"{sorted(EXPECTED_UNITS)} (kg m**-2 == millimetres) — a metres-valued "
             "file would read as a ~1000x wet bias"
+        )
+
+
+def assert_tigge_identity(
+    ds: xr.Dataset,
+    *,
+    expected_leadtime_hours: Sequence[int],
+    expected_year: int = TIGGE_YEAR,
+    expected_months: Sequence[int] = TIGGE_MONTHS,
+    expected_init_hours_utc: Sequence[int] = TIGGE_INIT_HOURS_UTC,
+    variable: str = TIGGE_DATA_VAR_NAME,
+) -> None:
+    """D2/D6/T1 Verify — the file's own init axis, lead axis and (where
+    available) source attribute must actually BE the one JJAS
+    `expected_year` control-forecast request this module issues, never
+    assumed from a filename or a `--skip-retrieve` re-use. Raises
+    `TiggeIdentityError` on any mismatch."""
+    assert_tp_units(ds, variable=variable)
+
+    init_times = np.atleast_1d(ds["time"].values).astype("datetime64[s]").astype(object)
+    bad_years = sorted({t.year for t in init_times if t.year != expected_year})
+    if bad_years:
+        raise TiggeIdentityError(
+            f"init axis contains year(s) {bad_years}; expected only "
+            f"{expected_year} — refusing to silently label this file as "
+            f"JJAS {expected_year}"
+        )
+    bad_months = sorted(
+        {t.month for t in init_times if t.month not in set(expected_months)}
+    )
+    if bad_months:
+        raise TiggeIdentityError(
+            f"init axis contains month(s) {bad_months} outside JJAS "
+            f"{sorted(expected_months)}"
+        )
+    bad_hours = sorted(
+        {t.hour for t in init_times if t.hour not in set(expected_init_hours_utc)}
+    )
+    if bad_hours:
+        raise TiggeIdentityError(
+            f"init axis contains hour(s)-of-day {bad_hours}; expected only "
+            f"{sorted(expected_init_hours_utc)} UTC"
+        )
+
+    steps_h = sorted((ds["step"].values / np.timedelta64(1, "h")).astype(int).tolist())
+    expected_steps = sorted(expected_leadtime_hours)
+    if steps_h != expected_steps:
+        raise TiggeIdentityError(
+            f"lead (step) axis {steps_h} does not match the expected request "
+            f"{expected_steps}"
+        )
+
+    # Best-effort source-attribute check: a `GRIB_centre` key is not
+    # independently MEASURED for this dataset (D6's own rule), so its
+    # ABSENCE is not itself an error — but if cfgrib does surface it, a
+    # value other than ECMWF's is a real identity mismatch, not noise.
+    centre = (
+        str(ds.attrs.get("GRIB_centre") or ds[variable].attrs.get("GRIB_centre") or "")
+        .strip()
+        .lower()
+    )
+    if centre and centre != "ecmf":
+        raise TiggeIdentityError(
+            f"GRIB centre attribute is {centre!r}; expected 'ecmf' (ECMWF) — "
+            "this file's origin does not match the D6 request"
         )
 
 
@@ -311,6 +397,38 @@ def extract_station_series(
     ).sort(["station", "init_time_utc", "ending_lead_hours"])
 
 
+# D6 — "Attribution to ECMWF and acknowledgement of TIGGE are licence
+# conditions on any output." Fixed text, shared by T1 and T2 so every
+# derived artefact (raw extraction AND the T2 comparison CSV) carries the
+# same record — never stdout-only, which does not travel with the file.
+TIGGE_ATTRIBUTION_TEXT = "ECMWF"
+TIGGE_ACKNOWLEDGEMENT_TEXT = "Contains modified data from TIGGE."
+TIGGE_LICENCE_NOTE = (
+    "Research use only (D6): ECDS Terms of use + TIGGE licence accepted; "
+    "measured ~48h embargo — never an operational dependency, for any centre."
+)
+
+
+def write_tigge_attribution(
+    output_path: Path, *, extra: Mapping[str, object] | None = None
+) -> Path:
+    """Write the D6 attribution/acknowledgement record adjacent to
+    `output_path`, as `<name>.attribution.json` — every T1/T2 derived
+    artefact gets one."""
+    record: dict[str, object] = {
+        "attribution": TIGGE_ATTRIBUTION_TEXT,
+        "acknowledgement": TIGGE_ACKNOWLEDGEMENT_TEXT,
+        "licence_note": TIGGE_LICENCE_NOTE,
+        "source_dataset": TIGGE_DATASET_ID,
+        "for_file": output_path.name,
+    }
+    if extra:
+        record.update(extra)
+    sidecar = output_path.with_name(output_path.name + ".attribution.json")
+    sidecar.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    return sidecar
+
+
 # --- CLI (T1 driver) ---
 DEFAULT_TIGGE_ROOT = Path("data/dhm_precip/tigge")
 _RAW_FILENAME = "tigge_ecmwf_cf_tp_jjas2025.grib"
@@ -336,7 +454,6 @@ REQUEST_LEADTIME_HOURS: tuple[int, ...] = tuple(
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out-root", type=Path, default=DEFAULT_TIGGE_ROOT)
-    ap.add_argument("--year", type=int, default=2025)
     ap.add_argument(
         "--skip-retrieve", action="store_true", help="reuse an existing raw file"
     )
@@ -351,10 +468,10 @@ def main() -> int:
     if not args.skip_retrieve:
         client = RealTiggeClient()
         payload = build_tigge_request(
-            year=args.year,
-            months=(6, 7, 8, 9),
+            year=TIGGE_YEAR,
+            months=TIGGE_MONTHS,
             days=range(1, 32),
-            times=(0, 12),
+            times=TIGGE_INIT_HOURS_UTC,
             leadtime_hours=REQUEST_LEADTIME_HOURS,
             area=STUDY_AREA,
         )
@@ -365,22 +482,27 @@ def main() -> int:
         log.info("tigge_ifs.retrieve.done", raw_path=str(raw_path))
 
     ds = xr.open_dataset(raw_path, engine="cfgrib")
+    # D2/D6 — the opened file must actually BE the JJAS TIGGE_YEAR
+    # control-forecast request (never assumed from the filename, which is
+    # exactly what a stale `--skip-retrieve` file would defeat).
+    assert_tigge_identity(ds, expected_leadtime_hours=REQUEST_LEADTIME_HOURS)
     increments = deaccumulate(ds)
     coords_path = resolve_coords_path()
-    all_stations = (
-        frozenset(
-            Station(row["station"])
-            for row in pl.read_csv(coords_path).iter_rows(named=True)
-        )
-        if coords_path.exists()
-        else frozenset()
-    )
+    # D8-style cardinality tripwire (mirrors extract_era5.py's
+    # `_default_expected_stations()`): the expected-station set must come
+    # from an INDEPENDENT inventory, never a second read of the very same
+    # coordinate file `load_station_coordinates` is about to validate —
+    # that would make the equality check inside it a tautology that can
+    # never fail.
+    gauge_population = load_gauge_masked_population()
+    all_stations = frozenset(gauge_population.by_station.keys())
     coords = load_station_coordinates(coords_path, expected_stations=all_stations)
     series = extract_station_series(ds, increments, coords)
 
     points_path = args.out_root / "points" / _POINTS_FILENAME
     points_path.parent.mkdir(parents=True, exist_ok=True)
     series.write_parquet(points_path)
+    attribution_path = write_tigge_attribution(points_path)
 
     n_inits = series["init_time_utc"].n_unique()
     n_station_days = (
@@ -395,7 +517,8 @@ def main() -> int:
         f"{n_station_days} station-days "
         f"({series['valid_time_utc'].min()} .. {series['valid_time_utc'].max()})"
     )
-    print("Attribution: ECMWF. Acknowledgement: contains modified data from TIGGE.")
+    print(f"wrote {attribution_path}")
+    print(f"Attribution: {TIGGE_ATTRIBUTION_TEXT}. {TIGGE_ACKNOWLEDGEMENT_TEXT}")
     return 0
 
 

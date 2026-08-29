@@ -1,12 +1,22 @@
 """Plan 216 (M-A11) T2 — pair T1's TIGGE-IFS control-forecast series
 against the gauges, stratified by lead band (D3), and estimate the same
 diurnal PHASE lag M-A6/M-A9 measured for ERA5-Land — using the SAME phase
-estimator (D5), imported unmodified from
-`data/dhm_precip/figures/era5-timing/era5_gauge_timing_figure.py`. D5 also
+estimator (D5), now a TRACKED module (`diurnal_phase.py`) shared with
+`era5_gauge_timing_figure.py` rather than a dynamic, gitignored-file
+import (a fresh checkout — including CI — never has `data/`). D5 also
 RETIRES that script's season-year bootstrap and 24-bin completeness test
 for this screen (both are meaningless on 6-hourly, one-season data); this
 module reports point estimates with their own `n` instead (D4's ±3 h
 resolution bound dominates any interval a degenerate bootstrap could add).
+
+D5 also pins the STATION-EQUAL band statistic: each station's own diurnal
+cycle is normalised INDEPENDENTLY (so it sums to 1 regardless of how many
+windows it contributed), its own lag computed from that; the reported band
+figure is the MEDIAN across stations — never a pool of raw mass summed
+across stations first, which would let a high-count station dominate the
+estimate. This mirrors `era5_gauge_timing_figure.analyse`'s per-station
+`pooled()` normalisation and its band-median reporting
+(`run_sensitivities.medians()`'s `np.median`).
 
 ⛔ Phase only — no magnitude or bias claim (T2 `Out`).
 """
@@ -14,73 +24,36 @@ resolution bound dominates any interval a degenerate bootstrap could add).
 from __future__ import annotations
 
 import argparse
-import importlib.util
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 import structlog
 
+from scripts.dhm_precip.diurnal_phase import (
+    BAND_NAMES,
+    HOUR_OF_DAY_PERIOD,
+    band_of,
+    harmonic_phase_h,
+    npt_label,
+    principal_branch,
+    same_day_branch,
+)
 from scripts.dhm_precip.domain_types import Station, StationCoordinateTable
 from scripts.dhm_precip.loader import load_station_coordinates, resolve_coords_path
 from scripts.dhm_precip.ma6_pairs import (
     GaugeMaskedPopulation,
     load_gauge_masked_population,
 )
-from scripts.dhm_precip.tigge_ifs import LEAD_BANDS
-
-if TYPE_CHECKING:
-    from types import ModuleType
+from scripts.dhm_precip.tigge_ifs import (
+    LEAD_BANDS,
+    TIGGE_MONTHS,
+    TIGGE_YEAR,
+    write_tigge_attribution,
+)
 
 log = structlog.get_logger(__name__)
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_ERA5_TIMING_MODULE_PATH = (
-    _REPO_ROOT
-    / "data"
-    / "dhm_precip"
-    / "figures"
-    / "era5-timing"
-    / "era5_gauge_timing_figure.py"
-)
-_HOUR_OF_DAY_PERIOD = 24
-
-
-def _load_era5_timing_module() -> ModuleType:
-    """D5 — import the phase estimator FROM THE EXACT FILE the plan names
-    (`era5_gauge_timing_figure.py:244-290`), never a re-typed copy. That
-    file is gitignored (an M-A6 output artefact, `data/`), so it cannot be
-    a normal package import; loaded by path, mirroring how the file itself
-    inserts the repo root into `sys.path` to reach `scripts.dhm_precip`."""
-    if not _ERA5_TIMING_MODULE_PATH.exists():
-        raise FileNotFoundError(
-            f"the M-A6 timing figure is not on disk at {_ERA5_TIMING_MODULE_PATH} — "
-            "T2 reuses its phase estimator (D5) and cannot proceed without it"
-        )
-    spec = importlib.util.spec_from_file_location(
-        "era5_gauge_timing_figure_for_tigge", _ERA5_TIMING_MODULE_PATH
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(
-            f"could not build an import spec for {_ERA5_TIMING_MODULE_PATH}"
-        )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# D3/T2 — the four elevation bands + the phase functions, reused unmodified.
-_era5_timing = _load_era5_timing_module()
-harmonic_phase_h = _era5_timing.harmonic_phase_h
-same_day_branch = _era5_timing.same_day_branch
-principal_branch = _era5_timing.principal_branch
-band_of = _era5_timing.band_of
-BAND_NAMES = _era5_timing.BAND_NAMES
-npt_label = _era5_timing.npt_label
 
 # D7 — the two timezone readings to report side by side (never a gate).
 GAUGE_SHIFT_READINGS: dict[str, int] = {
@@ -131,6 +104,7 @@ class PhaseEstimate:
     elevation_band: str
     gauge_shift_reading: str
     n_windows: int
+    n_station_days: int
     n_stations: int
     gauge_peak_hour_utc: int
     tigge_peak_hour_utc: int
@@ -144,7 +118,8 @@ def build_paired_frame(
     *,
     lead_band: str,
     gauge_shift_hours: int,
-    jjas_months: tuple[int, ...] = (6, 7, 8, 9),
+    jjas_year: int = TIGGE_YEAR,
+    jjas_months: tuple[int, ...] = TIGGE_MONTHS,
 ) -> pl.DataFrame:
     """T2 — one (station, valid_time) row per surviving pair: `tigge_mm`
     from the deduplicated band series, `gauge_mm` from the matching
@@ -153,7 +128,10 @@ def build_paired_frame(
     `era5_gauge_timing_figure.analyse`'s `gauge_hour_shift` convention
     exactly: gauge(t) pairs with the model value at valid time (t+shift),
     so for a given TIGGE valid time V the gauge window looked up ends at
-    (V - shift)."""
+    (V - shift). D2 — filtered on BOTH `jjas_year` and `jjas_months`
+    (never month alone): a `tigge_series` that happened to carry a
+    different year's data must be dropped here, never silently reported
+    as "JJAS `TIGGE_YEAR`"."""
     banded = dedup_most_recent_init(tigge_series, band_steps=LEAD_BANDS[lead_band])
     if banded.height == 0:
         return banded.with_columns(pl.lit(None, dtype=pl.Float64).alias("gauge_mm"))
@@ -185,28 +163,101 @@ def build_paired_frame(
         if frames
         else banded.with_columns(pl.lit(None, dtype=pl.Float64).alias("gauge_mm"))
     )
+    return restrict_to_pinned_season(
+        paired, jjas_year=jjas_year, jjas_months=jjas_months
+    )
+
+
+def restrict_to_pinned_season(
+    paired: pl.DataFrame, *, jjas_year: int, jjas_months: tuple[int, ...]
+) -> pl.DataFrame:
+    """D2 — keep only rows with a complete gauge pairing AND `valid_time`
+    inside the ONE pinned season (`jjas_year`, `jjas_months`) — filtering
+    on YEAR as well as month closes the gap where a `tigge_series` that
+    happened to carry a different year's JJAS data would pass a
+    month-only filter and be silently reported as "JJAS `jjas_year`"."""
     return paired.filter(
         pl.col("gauge_mm").is_not_null()
+        & (pl.col("valid_time_utc").dt.year() == jjas_year)
         & pl.col("valid_time_utc").dt.month().is_in(list(jjas_months))
     )
 
 
-def _hour_of_day_share(paired: pl.DataFrame, *, value_col: str) -> np.ndarray:
-    """Build a 24-length hour-of-day share vector with mass only at the
+def _hour_of_day_share(frame: pl.DataFrame, *, value_col: str) -> np.ndarray:
+    """Build a 24-length hour-of-day share vector, NORMALISED so it sums
+    to 1 (D5: "each station's cycle sums to 100%" — the harmonic phase is
+    scale-invariant, so summing to 1 vs 100 is the same estimator; the
+    overall SCALE cancels in `harmonic_phase_h`'s angle). Mass only at the
     (<=4) clock positions this band's `valid_time` hours actually occupy —
     zero elsewhere. `harmonic_phase_h`'s first-harmonic transform is a
     weighted sum over `arange(24)`, so a zero-weight bin contributes
     nothing: this is mathematically the SAME estimator as running it on
-    the 4 active points directly, just shaped to fit the reused, 24-length
-    function UNMODIFIED (D5)."""
-    totals = paired.group_by(paired["valid_time_utc"].dt.hour().alias("h")).agg(
+    the <=4 active points directly, just shaped to fit the reused,
+    24-length function UNMODIFIED (D5). Call ONCE PER STATION — never on a
+    frame pooling multiple stations, which would let a high-count station
+    dominate the shared 24-bin total."""
+    totals = frame.group_by(frame["valid_time_utc"].dt.hour().alias("h")).agg(
         pl.col(value_col).sum().alias("total")
     )
-    weights = np.zeros(_HOUR_OF_DAY_PERIOD)
+    weights = np.zeros(HOUR_OF_DAY_PERIOD)
     for row in totals.iter_rows(named=True):
         weights[int(row["h"])] = float(row["total"])
     total = weights.sum()
     return weights / total if total > 0 else weights
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationPhase:
+    """One station's OWN normalised diurnal cycle and lag (D5) — the unit
+    every band statistic is built from, never a pooled cross-station sum."""
+
+    station: Station
+    n_windows: int
+    gauge_share: np.ndarray
+    tigge_share: np.ndarray
+    gauge_peak_hour_utc: int
+    tigge_peak_hour_utc: int
+    lag_h: float
+    lag_principal_h: float
+
+
+def estimate_station_phase(
+    station: Station, station_frame: pl.DataFrame
+) -> StationPhase | None:
+    """T2 — one station's phase estimate, from its OWN normalised cycle
+    only (D5's per-station normalisation)."""
+    g_share = _hour_of_day_share(station_frame, value_col="gauge_mm")
+    e_share = _hour_of_day_share(station_frame, value_col="tigge_mm")
+    if g_share.sum() == 0 or e_share.sum() == 0:
+        return None
+    phase_g = harmonic_phase_h(g_share)
+    phase_e = harmonic_phase_h(e_share)
+    lag_raw = (phase_e - phase_g) % 24.0
+    return StationPhase(
+        station=station,
+        n_windows=station_frame.height,
+        gauge_share=g_share,
+        tigge_share=e_share,
+        gauge_peak_hour_utc=int(np.argmax(g_share)),
+        tigge_peak_hour_utc=int(np.argmax(e_share)),
+        lag_h=same_day_branch(lag_raw),
+        lag_principal_h=principal_branch(lag_raw),
+    )
+
+
+def station_day_count(frame: pl.DataFrame) -> int:
+    """T2 — the number of distinct (station, valid_date) pairs retained,
+    the exposure M-A9's `n_common_hours`/`n_season_years` play the same
+    role for: NOT the window count (a station can contribute more than
+    one window per calendar day across lead bands or repeated valid
+    hours), and not conflated with it."""
+    if frame.height == 0:
+        return 0
+    return (
+        frame.select("station", pl.col("valid_time_utc").dt.date().alias("date"))
+        .unique()
+        .height
+    )
 
 
 def estimate_phase(
@@ -215,29 +266,42 @@ def estimate_phase(
     lead_band: str,
     elevation_band: str,
     gauge_shift_reading: str,
-    n_stations: int,
 ) -> PhaseEstimate | None:
-    """T2 `Out` — one point estimate (no bootstrap, D5) per (lead band,
-    elevation band, timezone reading)."""
+    """T2 `Out` — D5 station-equal aggregate for one (lead band, elevation
+    band, timezone reading): each station in `paired` gets its OWN
+    normalised cycle and lag (`estimate_station_phase`); the reported
+    figure is the MEDIAN across those per-station lags — exactly M-A9's
+    band statistic (`era5_gauge_timing_figure.medians()`), never a pooled
+    sum of raw mass across stations (which would let whichever station
+    contributed the most windows dominate)."""
     if paired.height == 0:
         return None
-    g_share = _hour_of_day_share(paired, value_col="gauge_mm")
-    e_share = _hour_of_day_share(paired, value_col="tigge_mm")
-    if g_share.sum() == 0 or e_share.sum() == 0:
+    station_phases = [
+        phase
+        for station, station_frame in paired.group_by("station")
+        if (phase := estimate_station_phase(Station(str(station[0])), station_frame))
+        is not None
+    ]
+    if not station_phases:
         return None
-    phase_g = harmonic_phase_h(g_share)
-    phase_e = harmonic_phase_h(e_share)
-    lag_raw = (phase_e - phase_g) % 24.0
+
+    band_gauge_share = np.median(
+        np.vstack([sp.gauge_share for sp in station_phases]), axis=0
+    )
+    band_tigge_share = np.median(
+        np.vstack([sp.tigge_share for sp in station_phases]), axis=0
+    )
     return PhaseEstimate(
         lead_band=lead_band,
         elevation_band=elevation_band,
         gauge_shift_reading=gauge_shift_reading,
         n_windows=paired.height,
-        n_stations=n_stations,
-        gauge_peak_hour_utc=int(np.argmax(g_share)),
-        tigge_peak_hour_utc=int(np.argmax(e_share)),
-        lag_h=same_day_branch(lag_raw),
-        lag_principal_h=principal_branch(lag_raw),
+        n_station_days=station_day_count(paired),
+        n_stations=len(station_phases),
+        gauge_peak_hour_utc=int(np.argmax(band_gauge_share)),
+        tigge_peak_hour_utc=int(np.argmax(band_tigge_share)),
+        lag_h=float(np.median([sp.lag_h for sp in station_phases])),
+        lag_principal_h=float(np.median([sp.lag_principal_h for sp in station_phases])),
     )
 
 
@@ -247,8 +311,8 @@ def run_all_bands(
     coords: StationCoordinateTable,
 ) -> list[PhaseEstimate]:
     """T2 driver — every (lead band x elevation band x D7 reading)
-    combination, pooling all stations within each elevation band (M-A9's
-    own banding, `BAND_EDGES`/`BAND_NAMES`, reused via `band_of`)."""
+    combination, computed station-equal (D5) within each elevation band
+    (M-A9's own banding, `BAND_EDGES`/`BAND_NAMES`, reused via `band_of`)."""
     elev_of = {s: c.elev_m for s, c in coords.by_station.items()}
     results: list[PhaseEstimate] = []
     for lead_band in LEAD_BANDS:
@@ -273,13 +337,11 @@ def run_all_bands(
                 sub = paired.filter(pl.col("elev_band") == band_idx)
                 if sub.height == 0:
                     continue
-                n_stations = sub["station"].n_unique()
                 est = estimate_phase(
                     sub,
                     lead_band=lead_band,
                     elevation_band=band_name,
                     gauge_shift_reading=reading_name,
-                    n_stations=n_stations,
                 )
                 if est is not None:
                     results.append(est)
@@ -294,6 +356,7 @@ def write_csv(results: list[PhaseEstimate], path: Path) -> None:
                 "elevation_band": r.elevation_band,
                 "gauge_timezone_reading": r.gauge_shift_reading,
                 "n_paired_windows": r.n_windows,
+                "n_station_days": r.n_station_days,
                 "n_stations": r.n_stations,
                 "gauge_peak_hour_npt": npt_label(r.gauge_peak_hour_utc),
                 "tigge_peak_hour_npt": npt_label(r.tigge_peak_hour_utc),
@@ -328,16 +391,19 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     out_csv = args.out / "tigge_gauge_timing_offsets.csv"
     write_csv(results, out_csv)
+    attribution_path = write_tigge_attribution(out_csv)
     log.info(
         "tigge_gauge_timing.cli.complete", out=str(out_csv), n_estimates=len(results)
     )
     print(
         f"wrote {out_csv}: {len(results)} (lead-band x elev-band x reading) estimates"
     )
+    print(f"wrote {attribution_path}")
     for r in results:
         print(
             f"  {r.lead_band:4s} {r.elevation_band:22s} {r.gauge_shift_reading:20s} "
-            f"n={r.n_windows:5d} ({r.n_stations} stations) lag={r.lag_h:+6.2f} h "
+            f"n={r.n_windows:5d} windows, {r.n_station_days:4d} station-days "
+            f"({r.n_stations} stations) lag={r.lag_h:+6.2f} h "
             f"(±3 h resolution bound)"
         )
     return 0
