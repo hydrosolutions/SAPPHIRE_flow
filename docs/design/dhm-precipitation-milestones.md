@@ -1112,6 +1112,30 @@ evidence supports it, including "no operational use".
 
 **Exit:** written recommendation; owner decision.
 
+### M-A11 · IFS diurnal timing re-evaluation (Plan 216)
+**Depends: M-A6, M-A7, M-A8, M-A9.**
+
+M-A9's Use 1 flagged that its ERA5-Land diurnal-timing measurement was of a REANALYSIS whose
+convection scheme is frozen at a 2016-era IFS cycle — not the operational IFS forecast SAPPHIRE
+actually flies. M-A11 re-measures the same phase question against ECMWF IFS control-forecast `tp`
+(TIGGE, via ECDS — the only source overlapping the 2020-2025 gauge record), lead-stratified (D+1 to
+D+3), reusing M-A6's own phase estimator unmodified. Screening only — no correction, no magnitude
+claim, no operational dependency (a measured ~48 h TIGGE embargo rules that out for any centre).
+
+**✅ COMPLETE 2026-08-29.** IFS shares the mid/high-elevation-band error's DIRECTION but at roughly
+**half ERA5-Land's magnitude** (mid ~−6.3 to −6.8 h vs ERA5-Land's −14.4 h; high ~−5.1 h vs −11.9 h),
+resolved well beyond the ±3 h bound 6-hourly data permits. **NO-GO on the originally proposed ~12 h
+correction as designed; GO on finer-resolution correction work calibrated to IFS's own, smaller
+displacement.** Full measurement: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md`.
+Code: `scripts/dhm_precip/tigge_ifs.py` (T1 retrieval/extraction), `scripts/dhm_precip/
+tigge_gauge_timing.py` (T2 comparison). One D6 correction against the plan's own draft: the ECDS
+`tigge-forecasts` process has no `grid` interpolation input — it returns the model's native reduced
+Gaussian grid (measured N640), not a regular 0.5° grid; the nearest-cell extraction operator is
+unaffected.
+
+**Exit:** a measured answer, with lead-dependence, the ±3 h resolution bound, and a screening verdict
+bounded by D4. Owner decides (M-DEC).
+
 ---
 
 ## Working on this track — the research data is gitignored, so a worktree starts empty
@@ -1303,7 +1327,9 @@ proving the intended binding rather than treating "unused" as an invariant.
     {"id": "M-A10", "depends_on": ["M-A3"],
      "note": "Co-located Pyramid adjudication. Needs only the QC mask — runs in PARALLEL with M-A5/M-A6."},
     {"id": "M-A9",  "depends_on": ["M-A6", "M-A7", "M-A8", "M-A10"]},
-    {"id": "M-DEC", "depends_on": ["M-A9"], "kind": "decision",
+    {"id": "M-A11", "depends_on": ["M-A6", "M-A7", "M-A8", "M-A9"],
+     "note": "Plan 216. Re-measures M-A9's Use-1 timing question against the operational ECMWF IFS forecast (TIGGE via ECDS) instead of ERA5-Land. Screening only — see docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md."},
+    {"id": "M-DEC", "depends_on": ["M-A9", "M-A11"], "kind": "decision",
      "note": "Owner Phase-2 GO / NO-GO. M-A9 exits with a RECOMMENDATION; only this node authorises Track G."},
     {"id": "M-G1",  "depends_on": ["M-DEC"]},
     {"id": "M-G2",  "depends_on": ["M-DEC"]},
