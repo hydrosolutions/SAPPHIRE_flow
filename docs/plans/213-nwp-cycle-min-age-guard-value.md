@@ -13,11 +13,10 @@ source: Plan 196 T1 — measured publication latency 160.0-168.4 min against a g
 
 ## Status
 
-**BLOCKED ON OWNER — D3 gate failed 2026-08-28.** Owner confirmed the change in
-principle ("ok, yes. we change it"), and it is implemented and green on
-`fix/plan-213-nwp-guard-180`. The re-measurement then returned a combined maximum of
-**173.1 min**, above the ≤ 170 gate, so **180 is not shippable as specified** and no PR
-was opened. See § D3 re-measurement result.
+**READY — value decided 2026-08-29: 210, not 180.** The D3 gate failed (combined maximum
+**173.1 min** against a ≤ 170 threshold), so 180 was withdrawn and the choice went to the
+owner as D3 requires. Owner chose **210 (3.5 h) now, plus the completeness probe as a
+follow-on** ("B now, A later"). See § D3 re-measurement result and D3c.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -36,9 +35,9 @@ from *acting*; this is the acting half, and it is small on purpose.
 
 **The ON-TIME cron path is unaffected by this change, and that is not a side note.** When a
 scheduled run starts on the grid instant, the candidate cycles are either ~0 or ~360 minutes old,
-so a guard of 105 and a guard of 180 make **identical** decisions:
+so a guard of 105 and a guard of 210 make **identical** decisions:
 
-| candidate age (on-time run) | guard 105 | guard 180 |
+| candidate age (on-time run) | guard 105 | guard 210 |
 |---|---|---|
 | 0 min (the just-stamped cycle) | SKIP | SKIP |
 | 360 min (one step back) | ACCEPT | ACCEPT |
@@ -55,7 +54,7 @@ shared pool"). A scheduled run picked up 150 minutes late therefore sees a 150-m
 candidate, and **that is exactly the hazard window**.
 
 **The affected set, stated exactly: runs on the MeteoSwiss adapter using the shipped
-`config.toml` value, whose resolution instant puts the snapped cycle in `[105, 180)` minutes** —
+`config.toml` value, whose resolution instant puts the snapped cycle in `[105, 210)` minutes** —
 half-open because the comparison is `age_minutes < min_age` (`adapters/meteoswiss_nwp.py:512`).
 That covers manual triggers, ad-hoc reruns, *and* late-picked-up scheduled runs. It does **not**
 cover deployments with NWP disabled, the Recap/IFS adapter, injected test adapters, or overlays
@@ -108,45 +107,46 @@ demonstrated defect.
   off-cron path, and a one-integer change captures most of the value at a fraction of the risk.
   Recorded as a follow-on, undrafted, in § Deferred.
 
-- **D3 — re-measure first, then pick a value with margin; 180 is the expected answer, not a
-  given.** Plan 196 T1 and `docs/standards/orchestration.md` both say: do not reuse that
-  sample's maximum. Deriving 180 straight from 168.4 would violate this plan's own parent
-  standard. T1 therefore **re-runs the Plan 196 measurement once** before choosing — same
-  heredoc method, no new apparatus — and the value is chosen from the combined sample with explicit
-  margin. **The ship/stop rule is mechanical, so two implementers reach the same answer:**
-  1. The fresh run must include **at least two cycles absent from Plan 196's sample**
-     (`2026-08-27T12Z/18Z`, `2026-08-28T00Z/06Z`, `2026-08-28T12Z`). Retention is ~24 h **and the
-     cadence is 6 h, so exactly one cycle rolls over every six hours** — measured 2026-08-28:
-     two hours after Plan 196's run only *one* new cycle existed. **Run the re-measurement at least
-     12 h after 2026-08-28 13:31 UTC**, or the gate cannot be met however correct the method.
-  2. **Ship 180 iff the maximum over the combined sample is ≤ 170 minutes** — the threshold sits
-     *above* the known maximum, so the rule is satisfiable by construction. The current combined
-     maximum is **168.4** (Plan 196 § T1 result), which passes with **11.6 minutes** of margin
-     below 180.
-  3. **Any combined maximum above 170 → stop and report.** Do not improvise a larger value: it
-     means the margin assumption is wrong, and choosing the new number is the owner's decision,
-     not the implementer's.
+- **D3 — the value is NOT derived from the sample. Owner chose 210 (3.5 h) on 2026-08-29.**
+  The original rule ("re-measure, then ship 180 iff the combined maximum ≤ 170") ran and **failed**:
+  the maximum is 173.1 (§ D3 re-measurement result). Per that rule the choice went to the owner
+  rather than being re-derived by the implementer.
 
-- **D3b — why 180 and not 170.** Plan 196 T1 explicitly refused to license 170 as a safe floor: it clears
-  the observed maximum of 168.4 by 1.6 minutes on n = 4 from a single August window. 180 is a round
-  number with ~12 minutes of margin, and it costs at most one extra walk-back step on a manual run
-  launched in the 105-180 minute window — that run gets the previous cycle instead of an
-  incompletely published one, which is the trade this plan wants.
+  **Why generous rather than a new best estimate.** The observed maximum moved **168.4 → 173.1 with
+  one extra day**, on a sample spanning about a day and a half. We do not know the true worst case,
+  and a freshly-derived number would be the same kind of guess that produced 105. The costs are
+  asymmetric:
+
+  - **Too low** — the hazard this plan exists to close: a run accepts a still-publishing cycle and
+    nothing reports it.
+  - **Too high** — a run in the window walks back one step and uses data 6 h older but complete.
+    The operational models are daily-timestep regressions over basin aggregates, so this barely
+    moves the result.
+
+  **210 clears every observation so far by 36.9 minutes** and needs no further measurement to
+  justify. It is explicitly a *margin* choice, not an estimate of the true latency. The superseded
+  D3b (arguing 180 over 170 on a 1.6-minute difference) is deleted: that comparison was built on the
+  n = 4 sample the re-measurement disproved.
+
+- **D3c — the completeness probe is an owner-approved follow-on, not a speculative deferral.**
+  Owner directed "B now, A later" on 2026-08-29. The constant remains a guess with slack; the probe
+  (§ Deferred) removes the guessing entirely and is what Nepal/IFS needs, where the latency is
+  different and unmeasured. **To be drafted as its own plan.**
 
 - **D4 — The value stays a guess with a citation, and the config comment must say so.** n = 4, one
   August window, `created` as a proxy for availability rather than a verified download. A future
-  reader must not mistake 180 for a validated bound.
+  reader must not mistake 210 for a measured latency: it is a deliberate over-estimate.
 
 ## Task
 
 **T1 — raise the guard, pin the cron path, cite the measurement.**
 
 *In:*
-- `config.toml:17` — `nwp_cycle_min_age_minutes` 105 → 180, and replace the "~90-120 min" comment
+- `config.toml:17` — `nwp_cycle_min_age_minutes` 105 → 210, and replace the "~90-120 min" comment
   (`:15-16`) with the measured range, its date, its `n`, and a pointer to Plan 196 § T1 result.
 - One regression test asserting **the cron path is unchanged** by the new value: at a `0 */6` cron
   instant, `resolve_cycle` still skips the zero-age candidate and still resolves to the
-  one-step-back cycle under both 105 and 180. This is the test that would catch someone later
+  one-step-back cycle under both 105 and 210. This is the test that would catch someone later
   "fixing" the guard into a value that changes scheduled behaviour.
 - One regression test asserting the **new** behaviour, **anchored to `config.toml` itself**. Every
   mechanism this change touches is already generic and already tested for arbitrary values — the
@@ -155,10 +155,10 @@ demonstrated defect.
   parsing of this field is covered for both 105 and an explicit 120
   (`tests/unit/config/test_deployment.py:205-224`). **The only thing T1 changes is the literal in
   `config.toml:17`**, so a test written in the file's existing idiom — a bare
-  `min_age_minutes=180` threaded into `_make_delay_adapter`
+  `min_age_minutes=210` threaded into `_make_delay_adapter`
   (`tests/unit/adapters/test_meteoswiss_nwp.py:368-378`) — would pass on today's repo with none of
   T1 applied and gate nothing. The test must therefore:
-  1. assert `load_config(_REPO_ROOT / "config.toml").nwp_cycle_min_age_minutes == 180` — with
+  1. assert `load_config(_REPO_ROOT / "config.toml").nwp_cycle_min_age_minutes == 210` — with
      `monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)` first, since `load_config`
      always applies an overlay if that variable is set (`config/_overlay.py:27`), and with `Path`
      imported at runtime (the adapter test module imports it only under `TYPE_CHECKING`) — RED today
@@ -204,7 +204,7 @@ demonstrated defect.
 window.
 
 *Exit:* both tests green; **RED proof is required for the shipped-config/150-minute test only** —
-the cron-invariance test passes under both 105 and 180 by design, which is the property it pins.
+the cron-invariance test passes under both 105 and 210 by design, which is the property it pins.
 `uv run pytest`, `ruff`, pyright ratchet pass; the deployed config change noted for the next mini deploy.
 
 ## D3 re-measurement result — 2026-08-28 21:01 UTC — **GATE FAILED, STOPPED**
@@ -224,9 +224,8 @@ Gate requirement was ≥2 cycles absent from Plan 196's sample (met: `12Z` and `
 maximum ≤ 170**. The combined maximum is **173.1**. **The gate FAILS. Per D3 step 3 this stops and
 reports; the implementer does not pick a replacement value.**
 
-**Status:** branch `fix/plan-213-nwp-guard-180` (`30359136`, v0.1.833) carries 180 and is pushed.
-**No PR was opened.** All gates on the change itself are green (5374 passed / 0 failed, ratchet
-404 ≤ 432); it is blocked only on the value.
+**Status:** the gate failure withdrew 180. Owner chose **210** on 2026-08-29 (D3); the branch was
+updated from 180 to 210 and re-gated.
 
 ### What the failure actually tells us — this matters more than the number
 
@@ -241,7 +240,7 @@ present, rather than inferring it from an age — needs no constant at all and i
 that does not depend on the sample being representative. It also transfers to Nepal/IFS, where the
 latency is different and entirely unmeasured.
 
-**Owner decision required.** Erring high is cheap: a run inside the window walks back one cycle and
+**Owner decided 2026-08-29: 210.** Erring high is cheap: a run inside the window walks back one cycle and
 uses 6 h older but complete data. Erring low is the hazard this plan exists to close.
 
 ## Deferred (not drafted)
@@ -270,7 +269,7 @@ Recap/IFS gateway. (Single exclusion list — T1 previously repeated most of the
 
 ## Exit gates
 
-- `config.toml` carries 180 with a comment citing the measurement, its date and its `n`.
+- `config.toml` carries 210 with a comment citing the measurement, its date and its `n`.
 - A test pins the cron path as unchanged; a test reads `nwp_cycle_min_age_minutes` **from the
   shipped `config.toml`** and pins the 150-minute candidate as now skipped (RED against 105).
 - `git diff --stat` touches `config.toml`, the test file, the four doc surfaces enumerated in T1,
