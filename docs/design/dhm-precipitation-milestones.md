@@ -347,16 +347,80 @@ Kirtipur/Khumaltar gauge-pair diagnostic (that needs the M-A3 mask, so it moved 
 ### M-A5b · IMERG acquisition + extraction
 **Depends: M-D2.** Mirrors M-A4 → M-A5 for IMERG: acquisition (half-hourly, mm/hr rate convention,
 aggregate to hourly — none of ERA5-Land's deaccumulation logic transfers) then point extraction at the
-26 station locations, using **IMERG Final** (characterisation, not the D4 adjudication role that
-required satellite-only independence — our track dropped adjudication when wholesale zero-run removal
-was chosen). Record the product version and the same grid/elevation diagnostics as M-A5's ERA5-Land
-side. Split from M-A5 by Plan 174 (2026-08-16): the milestone doc previously named this "nearly free
-once the extraction pipeline exists," which undercounted a distinct acquisition shape (see M-A5
-above). No plan has been written for this milestone yet.
+26 station locations. Record the product version and the same grid/elevation diagnostics as M-A5's
+ERA5-Land side. Split from M-A5 by Plan 174 (2026-08-16): the milestone doc previously named this
+"nearly free once the extraction pipeline exists," which undercounted a distinct acquisition shape
+(see M-A5 above).
 
-**Exit:** extracted IMERG series + named operator + per-station elevation mismatch table + the
-operator-sensitivity comparison, all regenerable from the committed pipeline — the same shape as
-M-A5's exit, for IMERG.
+**⛔ SUPERSEDED 2026-08-28 (Plan 211, on two points the milestone text originally got wrong):**
+
+1. **Final → Early.** This section originally specified **IMERG Final**. The owner decided
+   (Plan 209 D7, confirmed at Plan 211 READY) that the operational question is about **IMERG Early**
+   (~4 h latency): Final has ~3.5-month latency and is the one run that can never serve an operational
+   role, so a characterisation built on it would answer a question we do not have. Plan 211 acquires and
+   extracts **Early V07**, not Final, and the manifest records the run as **RETROSPECTIVE** (a
+   retrospectively downloaded Early bundle can contain inputs unavailable in live operation, so any
+   later skill number derived from it may overstate live Early performance).
+2. **No elevation-mismatch table.** ERA5-Land's table quantifies **model**-versus-station mismatch,
+   which is what D14's lapse correction consumes; IMERG is a satellite retrieval with no model surface,
+   so a "mismatch" here has no consumer. Plan 211 D6 instead records, per station, the selected cell's
+   centre lat/lon and the station's own elevation (vertical datum `UNKNOWN`) — never grid indices, and
+   never a DEM-derived comparison (adding a public DEM was out of scope for an acquisition milestone).
+
+**Plan 211 T1 (acquisition) is COMPLETE up to its own projection gate** (2026-08-28): the pipeline
+(`scripts/dhm_precip/imerg_acquire.py`, `scripts/dhm_precip/imerg_extract.py`) is built and unit-tested
+no-network; exactly one granule was downloaded from the live GES DISC archive as the D1 contract probe,
+freezing the read contract. **⛔ That probe found the live archive serving revision `V07C`, not the
+`V07B` Plan 211 D1 pinned** (both measured the same day). **Post-review fixer pass (2026-08-28) made
+the pin ENFORCED, not merely documentary**: `assert_revision_matches_plan_and_header` rejects any
+granule whose filename revision differs from `V07B`, and independently cross-checks the filename
+against the granule's own embedded `FileHeader.FileName`. ⛔ **Not `FileHeader.ProductVersion`** — the
+probe measured `ProductVersion=07B` on a granule whose filename and `FileName` both read `V07C`, so the
+two are different axes and equating them would reject legitimate granules. Consequence: a live
+acquisition run against the archive **as observed 2026-08-28** will raise `ImergReadContractError` and
+halt — D1's
+own required behaviour ("stop and report rather than blending"), not a bug; resolving the halt
+(confirming V07B has returned, or re-confirming the READY plan for V07C) is the owner's call, not
+something this pipeline resolves unilaterally. **The bulk retrieval (105,216 granules, projected
+~848 GB against 896 GB free) was NOT performed** — Plan 211's per-run scope stops at the projection
+gate; bulk retrieval is the owner's call. **Post-review fixer round 2 (2026-08-28)**: T2's own `main()`
+(`imerg_extract.py`) did not catch `ImergAcquisitionError` — a D1 violation raised while T2 reads a
+granule (the exact halt described above) escaped as an unhandled traceback instead of the structured
+`imerg_extract.cli.failed` log line + defined exit code T1's `main()` already produces for the same
+hierarchy. Fixed by widening T2's `main()` exception handling to the broad `ImergAcquisitionError` and
+`Era5ExtractionError` bases (mirroring `extract_era5_t2m.py`'s own `_EXIT_BY_ERROR` table), with a
+locking test driving the real `V07B`-filename/`07C`-header drift through `main()` end-to-end. **Closing
+round (2026-08-28)**: an independent review found the completeness invariant sitting in the wrong layer
+and the pipeline over-built against D9's proportionality bar (2,851 production lines). Fixed and
+simplified together — the pinned-window accounting invariant now lives in the ONE publish/discovery
+predicate D9 requires (a hand-built bundle claiming one requested granule is refused at publication and
+skipped by discovery, not merely rejected inside `run()`); the permanent acquisition record DERIVES both
+its own and an incoming record's completeness on write, so the stored `completeness` label is gone and
+nothing can *claim* COMPLETE; recorded gaps are reconciled against the pinned window; `imerg_extract`'s
+exit-code table honours `ImergStorageError`'s promised exit 5; and `--out` REFUSES an existing non-empty
+directory instead of `rmtree`-ing it. The acquisition manifest is now the sole owner of the full D1 read
+contract and the per-granule checksums — the bundle hashes their canonical digests into its identity
+rather than carrying two more copies of both — and the 26-station/complete-axis invariants are pinned
+rather than passed in. **Confirming round (2026-08-29)**: the digest rewrite had moved the defect one
+layer up rather than closing it — the bundle's `acquisition_record_sha256`/`read_contract_sha256` were
+unauthenticated caller-supplied strings, so a bundle naming an acquisition record that does not exist
+published and discovered happily (the fixtures carried literal placeholder digests, which is why two
+rounds missed it). The ONE predicate now RESOLVES the permanent acquisition record, re-derives its
+completeness, RECOMPUTES both digests from its contents and reconciles route/window/counts/gaps/box
+against the bundle. Four smaller items landed with it: the record's D1 `read_contract` is validated
+SEMANTICALLY (`ImergReadContract` is the judge — a record whose every value read `"recorded"` used to
+derive as COMPLETE); a non-numeric `station_accounting` value is normalised into the typed validation
+error discovery skips rather than aborting discovery with a raw `ValueError`; `sensitivity_params` is
+checked against Plan 174 D1a's pinned snapshot again (as is the named NEAREST `operator_id`, hashed
+into the identity but never validated); and D6's `UNKNOWN` datum plus the per-hour /
+station-cell agreement are validated, with the record's gaps canonicalised chronologically so gap ORDER
+cannot change an identity.
+
+**Exit:** extracted IMERG **Early** series + named operator + the per-station cell-centre/elevation
+record above (no DEM mismatch table) + the operator-sensitivity comparison + the manifest marked
+**RETROSPECTIVE**, all regenerable from the committed pipeline — the same shape as M-A5's exit, for
+IMERG Early. **Not yet met**: the bulk retrieval and the resulting published bundle are still pending
+the owner's go-ahead on the disk projection above.
 
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC

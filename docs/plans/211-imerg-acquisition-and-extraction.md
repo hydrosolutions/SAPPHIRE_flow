@@ -13,7 +13,12 @@ source: docs/design/dhm-precipitation-milestones.md § M-A5b
 
 ## Status
 
-**READY.** Owner confirmed 2026-08-28, after two independent review rounds.
+**READY.** Owner confirmed 2026-08-28, after two independent review rounds. A confirming review
+(2026-08-29) closed the last five items — the publish/discovery predicate now RESOLVES the
+permanent acquisition record and recomputes the bundle's two digests from it, D1's read contract
+is validated semantically, `sensitivity_params` and D6's datum/cell agreement are pinned again,
+a malformed `station_accounting` value is skipped rather than raised, and recorded gaps are
+canonicalised chronologically. See `docs/design/dhm-precipitation-milestones.md` § M-A5b.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
