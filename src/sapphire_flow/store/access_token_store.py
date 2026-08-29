@@ -98,14 +98,29 @@ class PgAccessTokenStore:
         self,
         token_id: AccessTokenId,
         station_id: StationId,
-        *,
-        tenant_id: TenantId | None,
     ) -> None:
         """Plan 215 T1: widen a `'stations'`-mode token's scope by one
         station, reusing the SAME tenant-containment invariant
         `create_token` enforces rather than a second copy. Idempotent —
-        `ON CONFLICT DO NOTHING` on the composite PK (token_id, station_id)."""
-        self._assert_stations_in_tenant(frozenset({station_id}), tenant_id)
+        `ON CONFLICT DO NOTHING` on the composite PK (token_id, station_id).
+
+        **The tenant is DERIVED from `token_id`, never taken from the
+        caller** (independent Codex review of the Plan 215 diff). An earlier
+        signature accepted `tenant_id` as a keyword, which let a caller pair
+        token A with tenant B and insert B's station into A's scope, or
+        attach a grant row to an admin token — the docstring claimed
+        `create_token`'s invariant while not actually enforcing it, because
+        `create_token` derives the tenant from the token it is handed.
+        A public store boundary must not depend on its callers passing the
+        right tenant."""
+        token = self.fetch_token(token_id)
+        if token is None:
+            raise ValueError(f"unknown access token: {token_id}")
+        if token.role is AccessTokenRole.ADMIN:
+            # Same refusal as create_token — admin tokens are unscoped by
+            # definition, so a scope row is meaningless and misleading.
+            raise ValueError("admin tokens cannot carry a station scope")
+        self._assert_stations_in_tenant(frozenset({station_id}), token.tenant_id)
         self._conn.execute(
             pg_insert(access_token_stations)
             .values(token_id=token_id, station_id=station_id)

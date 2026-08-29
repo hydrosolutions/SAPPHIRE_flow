@@ -73,6 +73,61 @@ class TestScopeMembershipValidation:
         assert fetched is not None
         assert fetched.station_ids == frozenset({station.id})
 
+    def test_grant_station_derives_tenant_from_the_token_not_the_caller(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Independent Codex review of the Plan 215 diff: `grant_station` took
+        `tenant_id` as a caller keyword, so a caller could pair token A with
+        tenant B and insert B's station into A's scope. The store boundary must
+        derive the tenant from `token_id` and refuse, whatever the caller
+        believes."""
+        from sapphire_flow.store.tenant_store import PgTenantStore
+        from sapphire_flow.types.ids import TenantId
+        from sapphire_flow.types.tenant import Tenant
+
+        other_tenant = Tenant(
+            id=TenantId(uuid4()), code=f"x-{uuid4().hex[:6]}", name="X", created_at=_NOW
+        )
+        PgTenantStore(db_connection).store_tenant(other_tenant)
+        foreign_station = make_station_config(tenant_id=other_tenant.id)
+        PgStationStore(db_connection).store_station(foreign_station)
+
+        store = PgAccessTokenStore(db_connection)
+        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        store.create_token(token, station_ids=frozenset())
+
+        # The caller cannot smuggle the foreign tenant in — there is nowhere
+        # left to put it, and the store looks the tenant up itself.
+        with pytest.raises(CrossTenantScopeError):
+            store.grant_station(token.id, foreign_station.id)
+
+        assert store.fetch_token(token.id) is not None
+        assert store.fetch_token(token.id).station_ids == frozenset()
+
+    def test_grant_station_refuses_an_admin_token(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """The same refusal `create_token` makes — an admin token is unscoped
+        by definition, so a grant row on one is meaningless and misleading."""
+        store = PgAccessTokenStore(db_connection)
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(db_connection).store_station(station)
+        admin = _token(role=AccessTokenRole.ADMIN, tenant_id=None)
+        store.create_token(admin, station_ids=frozenset())
+
+        with pytest.raises(ValueError, match="admin tokens cannot carry"):
+            store.grant_station(admin.id, station.id)
+
+    def test_grant_station_rejects_an_unknown_token(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgAccessTokenStore(db_connection)
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(db_connection).store_station(station)
+
+        with pytest.raises(ValueError, match="unknown access token"):
+            store.grant_station(AccessTokenId(uuid4()), station.id)
+
     def test_cross_tenant_station_is_rejected(
         self, db_connection: sa.Connection
     ) -> None:

@@ -226,7 +226,7 @@ def grant_station(
             "to add. Use `set-scope-mode <token-id> stations` first if you "
             "want an explicit per-station grant list instead."
         )
-    store.grant_station(token_id, station_id, tenant_id=existing.tenant_id)
+    store.grant_station(token_id, station_id)
     entry = AuditEntry.system(
         event_type=AuditEventType.API_KEY_SCOPE_CHANGED,
         target_type="access_token",

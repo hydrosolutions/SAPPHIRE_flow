@@ -688,8 +688,6 @@ class AccessTokenStore(Protocol):
         self,
         token_id: AccessTokenId,
         station_id: StationId,
-        *,
-        tenant_id: TenantId | None,
     ) -> None:
         raise NotImplementedError
 
