@@ -15,8 +15,8 @@ from sapphire_flow.store.access_token_store import (
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.auth import AccessToken
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import AccessTokenRole
-from sapphire_flow.types.ids import AccessTokenId
+from sapphire_flow.types.enums import AccessTokenRole, ScopeMode, StationKind
+from sapphire_flow.types.ids import AccessTokenId, StationId
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
 
@@ -220,3 +220,133 @@ class TestKeyPrefixUniqueConstraint:
                     **_raw_insert_values(key_prefix=shared_prefix)
                 )
             )
+
+
+def _set_scope_mode(
+    conn: sa.Connection, token_id: AccessTokenId, mode: ScopeMode
+) -> None:
+    """Raw UPDATE — T6's `set-scope-mode` CLI verb is the supported way to
+    do this in production, but T5 (the loader branch) is implemented and
+    tested before T6 (the phase graph runs T5 ahead of T6/T1/T2), so these
+    tests flip the column directly."""
+    conn.execute(
+        sa.update(access_tokens)
+        .where(access_tokens.c.id == token_id)
+        .values(scope_mode=mode.value)
+    )
+
+
+class TestTenantModeScopeResolution:
+    """Plan 215 D2/T5: the `'tenant'`-mode loader branch derives
+    `station_ids` from `stations.tenant_id` at load time instead of reading
+    `access_token_stations` — the five D2 exit items, in order."""
+
+    def test_tenant_mode_token_picks_up_station_created_after_token(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgAccessTokenStore(db_connection)
+        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        store.create_token(token, station_ids=frozenset())
+        _set_scope_mode(db_connection, token.id, ScopeMode.TENANT)
+
+        # The station is created AFTER the token — a materialised
+        # ('stations'-mode) scope would never see it without a fresh grant.
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(db_connection).store_station(station)
+
+        fetched = store.fetch_token(token.id)
+        assert fetched is not None
+        assert station.id in fetched.station_ids
+        assert fetched.scope_mode is ScopeMode.TENANT
+
+    def test_stations_mode_token_does_not_pick_up_new_station(
+        self, db_connection: sa.Connection
+    ) -> None:
+        granted = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        PgStationStore(db_connection).store_station(granted)
+
+        store = PgAccessTokenStore(db_connection)
+        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        store.create_token(token, station_ids=frozenset({granted.id}))
+        # Stays in default 'stations' mode — no _set_scope_mode call.
+
+        later = make_station_config(
+            tenant_id=DEFAULT_TENANT_ID,
+            code="LATER-001",
+            station_id=StationId(uuid4()),
+        )
+        PgStationStore(db_connection).store_station(later)
+
+        fetched = store.fetch_token(token.id)
+        assert fetched is not None
+        assert fetched.station_ids == frozenset({granted.id})
+        assert fetched.scope_mode is ScopeMode.STATIONS
+
+    def test_cross_tenant_station_never_enters_tenant_mode_scope(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.store.tenant_store import PgTenantStore
+        from sapphire_flow.types.ids import TenantId
+        from sapphire_flow.types.tenant import Tenant
+
+        other_tenant = Tenant(
+            id=TenantId(uuid4()), code=f"x-{uuid4().hex[:6]}", name="X", created_at=_NOW
+        )
+        PgTenantStore(db_connection).store_tenant(other_tenant)
+        foreign_station = make_station_config(tenant_id=other_tenant.id)
+        PgStationStore(db_connection).store_station(foreign_station)
+        own_station = make_station_config(
+            tenant_id=DEFAULT_TENANT_ID,
+            code="OWN-001",
+            station_id=StationId(uuid4()),
+        )
+        PgStationStore(db_connection).store_station(own_station)
+
+        store = PgAccessTokenStore(db_connection)
+        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        store.create_token(token, station_ids=frozenset())
+        _set_scope_mode(db_connection, token.id, ScopeMode.TENANT)
+
+        fetched = store.fetch_token(token.id)
+        assert fetched is not None
+        assert own_station.id in fetched.station_ids
+        assert foreign_station.id not in fetched.station_ids
+
+    def test_non_bafu_non_river_station_enters_tenant_mode_scope(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """D2.2's deliberate widening, locked so it cannot silently change
+        shape: tenant mode is unfiltered by `network`/`station_kind` — a
+        `weather`-kind station on a non-`bafu` network, in the same tenant,
+        IS in scope."""
+        weather_station = make_station_config(
+            tenant_id=DEFAULT_TENANT_ID,
+            code="WX-001",
+            network="not-bafu",
+            station_kind=StationKind.WEATHER,
+        )
+        PgStationStore(db_connection).store_station(weather_station)
+
+        store = PgAccessTokenStore(db_connection)
+        token = _token(role=AccessTokenRole.CONSUMER, tenant_id=DEFAULT_TENANT_ID)
+        store.create_token(token, station_ids=frozenset())
+        _set_scope_mode(db_connection, token.id, ScopeMode.TENANT)
+
+        fetched = store.fetch_token(token.id)
+        assert fetched is not None
+        assert weather_station.id in fetched.station_ids
+
+    def test_db_rejects_tenant_scope_mode_on_admin_row(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgAccessTokenStore(db_connection)
+        token = _token(role=AccessTokenRole.ADMIN, tenant_id=None)
+        store.create_token(token, station_ids=frozenset())
+
+        with (
+            pytest.raises(
+                IntegrityError, match="ck_access_tokens_tenant_mode_is_consumer"
+            ),
+            db_connection.begin_nested(),
+        ):
+            _set_scope_mode(db_connection, token.id, ScopeMode.TENANT)

@@ -313,6 +313,20 @@ class AccessTokenRole(Enum):
     ADMIN = "admin"
 
 
+class ScopeMode(Enum):
+    """Plan 215 D2.1: how a `consumer` token's station scope is resolved at
+    load time. `STATIONS` (the default, matches today's only behaviour) reads
+    `access_token_stations`. `TENANT` derives the scope from
+    `stations.tenant_id = <token tenant>` at read time instead — no
+    materialised rows, so a station added after the token is in scope
+    immediately. An `admin` row can never be `TENANT`
+    (`ck_access_tokens_tenant_mode_is_consumer`, mirrored by
+    `AccessToken.__post_init__`)."""
+
+    STATIONS = "stations"
+    TENANT = "tenant"
+
+
 class AuditEventType(Enum):
     """Plan 147 Slice B: promoted from design-intent
     (`docs/spec/types-and-protocols.md`) to a runtime enum. v1.0 wires
@@ -321,7 +335,9 @@ class AuditEventType(Enum):
     remaining members are v1.x session-auth events, kept here so the enum
     matches the authoritative spec/architecture-context contract in full.
     STATION_ONBOARDED and MODEL_ASSIGNED are additive members (Plan 147
-    Slice B) not present in the original spec-only draft.
+    Slice B) not present in the original spec-only draft. API_KEY_SCOPE_CHANGED
+    is additive too (Plan 215 T6/T1) — one row per `grant`/`revoke-station`/
+    `set-scope-mode` write, reusing this same append path.
     """
 
     LOGIN = "login"
@@ -332,6 +348,7 @@ class AuditEventType(Enum):
     USER_DEACTIVATED = "user_deactivated"
     API_KEY_CREATED = "api_key_created"
     API_KEY_REVOKED = "api_key_revoked"
+    API_KEY_SCOPE_CHANGED = "api_key_scope_changed"
     API_KEY_REQUEST = "api_key_request"
     FORECAST_STATUS_CHANGE = "forecast_status_change"
     FORECAST_ADJUSTED = "forecast_adjusted"

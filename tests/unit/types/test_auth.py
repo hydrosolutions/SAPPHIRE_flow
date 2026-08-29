@@ -7,7 +7,12 @@ import pytest
 
 from sapphire_flow.types.auth import AccessToken, AuditEntry
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import AccessTokenRole, AuditActorType, AuditEventType
+from sapphire_flow.types.enums import (
+    AccessTokenRole,
+    AuditActorType,
+    AuditEventType,
+    ScopeMode,
+)
 from sapphire_flow.types.ids import AccessTokenId, StationId, TenantId, UserId
 
 _NOW = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
@@ -59,6 +64,38 @@ class TestAccessTokenRoleTenantInvariant:
     def test_admin_with_null_tenant_id_constructs(self) -> None:
         token = _access_token(role=AccessTokenRole.ADMIN, tenant_id=None)
         assert token.role is AccessTokenRole.ADMIN
+
+
+class TestAccessTokenScopeModeInvariant:
+    """Plan 215 D2.1: `scope_mode` defaults to `STATIONS` (matching every
+    pre-existing token's behaviour) and `role=admin` can never be `TENANT`
+    — mirrors the DB CHECK `ck_access_tokens_tenant_mode_is_consumer`
+    (alembic/versions/0049), so a tenant-mode admin row is unrepresentable
+    both here and at the DB layer."""
+
+    def test_default_scope_mode_is_stations(self) -> None:
+        token = _access_token(
+            role=AccessTokenRole.CONSUMER, tenant_id=TenantId(uuid.uuid4())
+        )
+        assert token.scope_mode is ScopeMode.STATIONS
+
+    def test_admin_with_tenant_scope_mode_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match="role=admin cannot have scope_mode=tenant"
+        ):
+            _access_token(
+                role=AccessTokenRole.ADMIN,
+                tenant_id=None,
+                scope_mode=ScopeMode.TENANT,
+            )
+
+    def test_consumer_with_tenant_scope_mode_constructs(self) -> None:
+        token = _access_token(
+            role=AccessTokenRole.CONSUMER,
+            tenant_id=TenantId(uuid.uuid4()),
+            scope_mode=ScopeMode.TENANT,
+        )
+        assert token.scope_mode is ScopeMode.TENANT
 
 
 class TestAuditEntryActorIdActorTypeInvariant:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sapphire_flow.types.enums import AccessTokenRole, AuditActorType
+from sapphire_flow.types.enums import AccessTokenRole, AuditActorType, ScopeMode
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
@@ -126,13 +126,19 @@ class AuditEntry:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AccessToken:
-    """Plan 147 Slice C: the `access_tokens` row (R1/R2/R5 LOCKED).
+    """Plan 147 Slice C: the `access_tokens` row (R1/R2/R5 LOCKED). Plan 215
+    D2.1 adds `scope_mode`.
 
     `token_hash` is the HMAC-SHA-256(pepper, raw_key) hex digest — never the
     raw key. `key_prefix` is the fast pre-verification lookup key.
     `tenant_id=None` denotes a global-admin token (unscoped). `station_ids`
-    is the token's `access_token_stations` scope join — meaningful only for
-    `CONSUMER`; empty means "sees nothing" (fail-closed, R2).
+    is meaningful only for `CONSUMER`; empty means "sees nothing"
+    (fail-closed, R2). Its SOURCE depends on `scope_mode`: in `'stations'`
+    mode (the default, every pre-Plan-215 token) it is the token's
+    `access_token_stations` scope join; in `'tenant'` mode it is DERIVED at
+    load time from `stations.tenant_id == self.tenant_id` instead — no
+    materialised copy, so a station added to the tenant after the token is
+    in scope immediately (`store/access_token_store.py::_row_to_token`, D2.2).
 
     G4 LOCKED role/tenant pairing, enforced in `__post_init__` (mirrored by
     a DB CHECK constraint, `alembic/versions/0047`, so the invariant holds
@@ -142,7 +148,10 @@ class AccessToken:
     REQUIRES `tenant_id=None` (admin is always unscoped/global — a
     "tenant-bound admin" is not a representable state, since
     `Principal.is_admin` grants unrestricted global reads regardless of
-    `tenant_id`).
+    `tenant_id`). Plan 215 adds a THIRD invariant, same shape: `role=admin`
+    REQUIRES `scope_mode=STATIONS` (mirrored by
+    `ck_access_tokens_tenant_mode_is_consumer`, `alembic/versions/0049`) —
+    an admin token can never be in `'tenant'` mode; it is already unscoped.
     """
 
     id: AccessTokenId
@@ -157,6 +166,7 @@ class AccessToken:
     created_at: UtcDatetime
     last_used_at: UtcDatetime | None
     station_ids: frozenset[StationId]
+    scope_mode: ScopeMode = ScopeMode.STATIONS
 
     def __post_init__(self) -> None:
         if self.role is AccessTokenRole.CONSUMER and self.tenant_id is None:
@@ -168,4 +178,10 @@ class AccessToken:
             raise ValueError(
                 "AccessToken: role=admin requires tenant_id=None "
                 "(G4 — admin is always unscoped/global, never tenant-bound)"
+            )
+        if self.role is AccessTokenRole.ADMIN and self.scope_mode is ScopeMode.TENANT:
+            raise ValueError(
+                "AccessToken: role=admin cannot have scope_mode=tenant "
+                "(Plan 215 D2.1 — mirrors ck_access_tokens_tenant_mode_is_consumer; "
+                "an admin token is already unscoped/global)"
             )

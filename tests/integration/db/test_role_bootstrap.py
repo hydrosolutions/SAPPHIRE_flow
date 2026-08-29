@@ -418,6 +418,44 @@ class TestPerTableGrantsAreNotBlanket:
         )
 
 
+class TestSapphireApiCanDeleteAccessTokenStations:
+    """Plan 215 T7 (round 1 blocker): `revoke-station` and the mode-switch
+    cleanup both run as `sapphire_api` (the role the CLI connects as inside
+    the `api` container, `cli/access_tokens.py:6-14`) and both DELETE from
+    `access_token_stations`. The pre-Plan-215 bootstrap grants that role
+    INSERT only, so both would fail with `InsufficientPrivilege` in
+    production while every test using the owner role stayed green — this is
+    the widening `docker/bootstrap-roles.sql` gains, and `sapphire_worker`
+    must stay denied on the same table (re-asserted below, not just
+    assumed)."""
+
+    def test_sapphire_api_can_delete_access_token_stations(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        url = bootstrapped.role_url("sapphire_api", "api-pw-initial")
+        # No rows to delete, but the GRANT itself must not raise
+        # InsufficientPrivilege.
+        assert not bootstrapped.denied(
+            url, "DELETE FROM access_token_stations WHERE false"
+        )
+
+    def test_sapphire_worker_still_cannot_delete_access_token_stations(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert bootstrapped.denied(url, "DELETE FROM access_token_stations WHERE false")
+
+    def test_sapphire_worker_still_cannot_select_access_token_stations(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        # Re-assertion (not new coverage on its own): T7 widens sapphire_api
+        # by exactly one verb on one table — it must not touch the
+        # sapphire_worker SELECT revoke from TestWorkerCannotReadAuthTables
+        # below.
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert bootstrapped.denied(url, "SELECT * FROM access_token_stations")
+
+
 class TestWorkerCannotReadAuthTables:
     """A live docker-compose deploy rehearsal caught a least-privilege
     over-grant static review missed: the blanket `GRANT SELECT ON ALL

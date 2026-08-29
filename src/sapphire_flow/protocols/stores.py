@@ -658,10 +658,14 @@ class AuditLogStore(Protocol):
 @runtime_checkable
 class AccessTokenStore(Protocol):
     """Plan 147 Slice C: `access_tokens` + `access_token_stations` scope.
+    Plan 215 T1 adds `grant_station`/`revoke_station` — an existing token's
+    scope now has an edit path, not just create-with-scope and whole-token
+    revoke.
 
     `create_token` validates every scoped station belongs to the token's own
     `tenant_id` (R2's scope-membership rule) and raises `ValueError` on a
-    cross-tenant station id — never silently drops it."""
+    cross-tenant station id — never silently drops it. `grant_station`
+    reuses the SAME check, not a second copy."""
 
     def create_token(
         self, token: AccessToken, *, station_ids: frozenset[StationId]
@@ -678,6 +682,18 @@ class AccessTokenStore(Protocol):
         raise NotImplementedError
 
     def revoke_token(self, token_id: AccessTokenId, *, revoked_at: UtcDatetime) -> None:
+        raise NotImplementedError
+
+    def grant_station(
+        self,
+        token_id: AccessTokenId,
+        station_id: StationId,
+        *,
+        tenant_id: TenantId | None,
+    ) -> None:
+        raise NotImplementedError
+
+    def revoke_station(self, token_id: AccessTokenId, station_id: StationId) -> bool:
         raise NotImplementedError
 
 
