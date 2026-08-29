@@ -8,6 +8,12 @@ depends_on: []
 supersedes_framing: "earlier 122 draft (scoped Dockerfile COPY of loose scripts)"
 ---
 
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** GENUINELY OUTSTANDING — status is correct,
+no action. `scripts/onboard.py` and `src/sapphire_flow/services/reanalysis_backfill.py` exist, but the
+in-image surface this plan is about does not: `[project.scripts]` in `pyproject.toml:59-60` exposes
+only `check`, and there is no packaged entrypoint for the weather-history backfill or the
+forcing-reference validation.
+
 # Plan 122 — Operational one-shot ops → in-image surface (backfill deployment + validate CLI); retire onboard.py
 
 ## What changed since the first draft (and why)

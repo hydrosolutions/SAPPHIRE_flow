@@ -1,6 +1,12 @@
 # Plan 069 — Pyright backlog cleanup: ratchet + drain
 
-**Status**: READY
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL — Phase 1 shipped, Phase 2 never
+started. The ratchet is live: `tools/pyright_ratchet.py`, `tools/pyright_baseline.json` (432), wired
+at pre-push and as the CI backstop, and it passes today at 404. **Phase 2 — "fix the 166 concrete
+violations inside `flows/`" — has not been done: `flows/` still reports 133 errors** (measured via
+`pyright --outputjson src/`). Remaining scope = Phase 2 only.
+
+**Status**: PARTIAL
 **Date**: 2026-04-22 (DRAFT) → 2026-05-11 (READY, post four review rounds)
 **Depends on**: Plan 073 (concrete violations outside `flows/`) → Plan 069 Phase 1 →
 Phase 2+. See §Cross-plan coordination for the full merge order.

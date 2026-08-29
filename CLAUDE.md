@@ -173,7 +173,7 @@ Use sparingly; CI is the backstop. Do NOT make `--no-verify` part
 of a normal workflow.
 
 See `docs/standards/cicd.md` for the CI-tier gate documentation
-and `docs/plans/070-precommit-and-gate-parity.md` for the plan
+and `docs/plans/archive/070-precommit-and-gate-parity.md` for the plan
 that introduced this setup.
 
 ---

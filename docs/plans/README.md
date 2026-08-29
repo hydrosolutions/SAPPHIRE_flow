@@ -238,6 +238,16 @@ exit criteria — Plan 212 owns that deeper screening.
   assignment no longer darkens a station whose higher-priority assignment already succeeded). Does NOT complete
   build-item 2 alone — the FI typed `ModelFailure`-signal preservation (Phase 2-FI follow-on) and the runner's
   `ModelRunContext`-consumption seam (Phase 3) are explicit named follow-ons. See [archive/150-forecast-redesign-phase2-assignment-outcome.md](archive/150-forecast-redesign-phase2-assignment-outcome.md).
+- **151** — Forecast-cycle redesign **Phase 3**: `ForcingTrackKey` projection + per-track resolution +
+  per-assignment assembly — `MERGED (T1–T8a: PRs #182/#192/#196), T8b implemented (hold-at-PR)` — the one atomic
+  phase the redesign refuses to split: per-requirement track projection + dedup (T1–T3), the
+  `CandidateAwareForecastSource` contract + `recap_gateway` migration (T4), per-track walk-back resolution with
+  exact-member-set completeness (T5), per-assignment assembly (T6), the runner consumption seam (T7), and the
+  dormant flow-level policy carrier / retrying task / freshness / preflight / D30 helpers (T8a) are all on `main`.
+  **T8b** (this run) wires the `isinstance` dispatch, re-scopes Phase A, and adds the flow-level goldens that are
+  now the only protection for the live control-only route — migrates `recap_gateway`-served, non-group stations
+  only (D6/D12/D30); MeteoSwiss and group CONTROL stay on the legacy superset path. See
+  [151-forecast-redesign-phase3-track-resolution-assembly.md](151-forecast-redesign-phase3-track-resolution-assembly.md).
 - **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
   directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays

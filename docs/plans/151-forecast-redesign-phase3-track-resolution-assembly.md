@@ -11,6 +11,36 @@ supersedes: []
 
 # Plan 151 — Forecast-cycle redesign Phase 3: track projection + per-track resolution + per-assignment assembly
 
+## T8b — MERGED 2026-08-28 (PR #227, v0.1.833), NOT YET DEPLOYED
+
+**The switch is landed.** T8b activates per-track dispatch for candidate-aware adapters on non-group
+stations — the first task in this plan to change production behaviour.
+
+It sat unpushed from 2026-08-26 and was rebased over 103 commits. Its stated exit gates all passed on
+the first attempt; the independent review was run anyway and returned **1 blocker + 3 majors**, every
+one verified against the code and real:
+
+- **Containment started too late.** Assembly ran for every eligible station in one pre-loop pass, so
+  one station's failed read aborted the cycle for all siblings. Round 1's containment covered only the
+  later forecast/persist arm. Fixed where the per-station reads actually happen; deployment-wide typed
+  errors still re-raise per D7/D31.
+- **`GatewayResolutionError` was missing from the fatal tuple** — a Recap deployment with an
+  unpopulated polygon table would have died with no `FORECAST_FRESHNESS` record.
+- **The cross-cycle golden could not fail.** Its premise was impossible (a second forecast binding on
+  a station that has exactly one). Rewritten to drive two tracks via differing model feature sets.
+- **A model declaring several supported time steps crashed the cycle.** **Owner ruling 2026-08-28:
+  skip that model for that station, continue the run.** This resolves the tension between D1/D2's
+  single-resolution assumption and `types-and-protocols.md`, which permits multi-valued declarations.
+
+Every fix is locked by a test proven to fail against the unfixed code. Gates at merge: sequential and
+parallel `tests/unit/` both 4756 passed / 0 failed, pyright 404 <= 432, ruff clean beyond the 12
+pre-existing alembic `E501`s.
+
+⚠️ **NOT deployed.** The mac mini still runs 0.1.806 and was deliberately left alone while station
+onboarding runs there. Its `pooled` setting is on MeteoSwiss, which stays on the legacy path, so T8b
+should be inert there — but this is the first behaviour-changing task in the plan, so **watch the
+first forecast cycle after the mini is next deployed** rather than assuming.
+
 ## Status
 **READY — Phase 3 of the forecast-cycle redesign** (owner-ratified 2026-08-11: D26 freshness cost accepted, D31 spec
 edit approved, D21 global sweep confirmed — **no open forks remained**).
@@ -1507,3 +1537,59 @@ majors, and one minor — all against T8a's own committed code, not a T5–T7 re
 **Exit gate:** `uv run pytest tests/unit -q` full suite green; `uv run ruff format`/`uv run ruff check .` clean
 beyond the same 12 pre-existing alembic `E501`s; `uv run pyright src/sapphire_flow/adapters/forecast_interface.py
 src/sapphire_flow/flows/run_forecast_cycle.py src/sapphire_flow/services/track_resolution.py` at 0 errors.
+
+## Fourth fixer round (T8b review round 1 fold-in, 2026-08-26)
+An independent Codex pass over the committed T8b diff (`066fcbb`) raised two majors. Both are resolved below.
+
+- **Major — the per-track branch had no station-level exception containment, unlike the legacy branch right below
+  it in the same loop.** An unexpected exception anywhere in `run_all_station_forecasts_per_track`,
+  `resolve_combined_forcing_cycle`, `_nwp_cycle_source_for_combined`, or `build_combined_forecasts` (called
+  unguarded) propagated out of the per-station loop and crashed the ENTIRE `run_forecast_cycle_flow` run for every
+  station in the cycle, not just the one at fault — reproduced by patching
+  `sapphire_flow.services.forecast_combination.build_combined_forecasts` to raise inside a POOLED-strategy per-track
+  station, which failed the whole Prefect flow run (`RuntimeError('boom')`) instead of recording one failed station
+  and continuing. **Fix:** the per-track branch body (`flows/run_forecast_cycle.py`, from the
+  `run_all_station_forecasts_per_track` call through the end of the single-model/pooled-combination persist arms) is
+  now wrapped in the SAME `try/except Exception` pattern as the legacy branch immediately below it —
+  `forecast_cycle.station_forecast_failed` logged, appended to `errors`, `stations_failed` incremented, loop
+  `continue`s. This is deliberately SEPARATE from the fatal-typed-error re-raise (`RecapAuthError` /
+  `RecapConfigurationError` / `RecapPayloadIntegrityError` / `StoreError`, still propagating via
+  `emit_freshness_on_fatal_exit`) — that is a narrow, *anticipated* taxonomy meant to abort the cycle loud;
+  this containment is the *unanticipated*-bug backstop the legacy route has always had. Locked by
+  `TestT8bStationExceptionContainment.test_unexpected_exception_in_per_track_combination_fails_one_station_only`
+  (`tests/unit/flows/test_run_forecast_cycle.py`) — two stations sharing one POOLED-strategy cycle, one station's
+  `build_combined_forecasts` call patched to raise; asserts `stations_failed == 1`, `stations_succeeded == 1`, the
+  healthy station's combined forecast is stored, and the broken station's is not. Proven RED against the pre-fix
+  code: the same `RuntimeError` propagated out of the flow run entirely (the test never reaches its own assertions —
+  it errors on the exception, not on a failed assertion).
+- **Major — the T8b routing goldens did not perform the plan's own full-field canonical-snapshot comparison.**
+  The acceptance criteria above (this file, "the flow-level goldens") require BOTH routing goldens' persisted output
+  to equal a canonical snapshot frozen from the pre-T8 tree (`main` `351bac3`, before any T8b dispatch code exists),
+  compared field-by-field across the listed set; the as-implemented goldens asserted only `nwp_cycle_reference_time`
+  / `nwp_cycle_source` / store-count (per-track golden) or nothing about forecast content at all (legacy golden) —
+  a future change silently altering `qc_status`, `warm_up_source`, `representation`, `combination_strategy`, or
+  `source_model_ids` on either route would have passed both. **Fix:** the frozen baseline was built by running the
+  EXACT station/model/forcing scenario both routing goldens now share (fixed station id, one model,
+  `_point_forecast_result`'s 10-step/1-member/precipitation+temperature shape) through `run_forecast_cycle_flow` at
+  a checkout of `main` `351bac3` (pre-T8 tree, verified an ancestor of `main` and of this branch) — before any T8b
+  dispatch code existed, so every station in that tree took the (only) legacy route — and committed as data at
+  `tests/fixtures/plan151_t8b_canonical_snapshot.json`. Both goldens now build a fixed-station-id scenario (the
+  legacy golden's adapter data reshaped from `_make_nwp_records`/empty-result to the SAME `_point_forecast_result`
+  content, delivered via the legacy `fetch_forecasts` method instead of `fetch_requirement`, so both routes carry
+  IDENTICAL underlying forcing) and assert the persisted `OperationalForecast`(s) — plus `forecasts_stored` and the
+  `FORECAST_FRESHNESS` record — equal the frozen snapshot field-for-field, across exactly the plan's listed fields
+  (excluding `id`/`created_at`/`updated_at`). Locked by the extended
+  `TestT8bPerTrackRouting.test_candidate_aware_non_grouped_station_takes_the_per_track_route` and
+  `.test_legacy_adapter_station_never_reaches_a_per_track_entry_point`, both now calling the new
+  `_assert_matches_canonical_snapshot` helper. Proven RED against the pre-fix code path: hardcoding
+  `qc_status=QcStatus.QC_SUSPECT` in `_run_single_model`'s `OperationalForecast` construction (a content-only
+  mutation — same call pattern, same call counts, only the persisted value differs) failed BOTH goldens on the new
+  full-field assertion while leaving every pre-existing narrower assertion in each test green; reverted after
+  confirming RED.
+
+**Exit gate (fourth fixer round):** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py -q` green (177
+passed); `uv run pytest tests/unit -q` full suite green (4306 passed, 5 skipped, 0 failed, 193 s); `uv run ruff
+format`/`uv run ruff check .` clean beyond the same 12 pre-existing alembic `E501`s; `uv run pyright
+src/sapphire_flow/flows/run_forecast_cycle.py` at 0 errors; the repo-wide pyright ratchet
+(`tools/pyright_ratchet.py` against `tools/pyright_baseline.json`) passes (404 ≤ 432 baseline, no new `src/` errors
+introduced).

@@ -1,6 +1,12 @@
 # Plan 102 — dashboard: make water_level & water_temperature observations visible
 
-**Status**: READY — grill-me COMPLETE + **plan-review (WF1) COMPLETE (2026-07-06, 3
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL / needs an owner look. A per-parameter
+selector exists at `src/sapphire_flow/api/templates/stations/detail.html:139-144`, but the layout this
+plan *ratified* was **multi-panel (stacked, per-parameter axis)** and the template still renders a
+single `obs-chart` div (`:165`). Open question for the owner: does the selector satisfy the intent, or
+is the stacked layout still wanted?
+
+**Status**: PARTIAL
 rounds)**: layout = **multi-panel (stacked, per-parameter axis)**; **ship
 independent of Plan 101** with a **QC-failed show/hide toggle**; **scope =
 station-detail page only**. Plan-review found 2 blockers + 4 majors (all

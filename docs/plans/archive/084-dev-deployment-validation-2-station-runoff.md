@@ -1,15 +1,3 @@
-# Plan 084 — Dev-machine deployment validation: 2-station runoff-only end-to-end
-
-**Status**: READY
-**Phase**: 10c (staging infrastructure / deployment validation)
-**Parent**: Plan 046 (Mac Mini Staging Deployment) — builds directly on the A3
-dress-rehearsal procedure
-**Related**: Plan 077 (forecast-cycle optional NWP / runoff-only mode, DONE),
-Plan 078 (forecast provenance for NWP-less forecasts, DONE via epic-088 M4),
-Plan 060 (dev CAMELS-CH bind-mount + `cache_policy=NO_CACHE`), Plan 062
-(`PREFECT_HOME` persistence, open gap), Plan 065 (config overlays)
-**Created**: 2026-06-26
-
 ---
 
 > **Provenance note (2026-07-01, epic-088 M4):** the runoff-only forecasts this
@@ -21,6 +9,14 @@ Plan 060 (dev CAMELS-CH bind-mount + `cache_policy=NO_CACHE`), Plan 062
 > runoff-only mode" input-quality detail.
 
 ---
+
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** COMPLETE by outcome. This plan existed because
+"the most recent Mac mini bring-up attempt failed to produce operational stations or forecasts". That
+condition no longer holds: on 2026-08-28 the mini was observed running `collect-bafu-observations` and
+`ingest-observations` to COMPLETED on a ~3-minute cadence with forecast cycles scheduled. The named
+config surfaces (`config/overlays/mac-mini.toml`, `docker-compose.dev.yml`) exist. Archived — if any
+specific validation step is still wanted, it should be re-filed as its own plan rather than kept alive
+inside a bring-up post-mortem.
 
 ## Problem
 
@@ -659,7 +655,7 @@ before an NWP-enabled mini bring-up.
 
 ## Affected files
 
-- `docs/plans/084-dev-deployment-validation-2-station-runoff.md` (this plan).
+- `docs/plans/archive/084-dev-deployment-validation-2-station-runoff.md` (this plan).
 - `docs/plans/README.md` (index entry).
 - No production code or committed config changes (validation only). The
   `docker-compose.runoff.yml` override in Phase 3b is a transient, uncommitted

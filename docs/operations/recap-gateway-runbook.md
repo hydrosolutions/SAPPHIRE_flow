@@ -163,6 +163,29 @@ checks `weather_forecasts` for the ACTIVE forecast source
 other source, so an IFS-only Nepal deploy never raises a permanent false
 CRITICAL from the (permanently absent) MeteoSwiss grid.
 
+## Shared-forcing-track freshness (Plan 151, per-track routing)
+
+For a station served by the per-track path (a candidate-aware adapter and no station-group membership — today
+that means `recap_gateway`-served, non-group stations), **every model sharing the same forcing track resolves
+to the SAME cycle** — the dedup/resolution identity are the same thing (D5/D26). Concretely: if a 5-day model
+and a 10-day model share a track (same NWP source, ensemble mode, time step, spatial representation, and
+feature set), the track is fetched and accepted at the 10-day model's completeness threshold, and BOTH models
+run on that one `resolved_cycle`.
+
+**Operator-visible symptom:** the 5-day model's forecast can appear to have run on an OLDER cycle than it alone
+would have needed, even though a fresher cycle existed that only the 5-day model could have used. This is a
+deliberate, accepted freshness cost (not a bug) — per-assignment cycles were considered and rejected as
+unbuildable under the locked `TrackFetchResult.resolved_cycle` contract (one cycle per track, not per
+assignment). If a deployment shows this freshness loss to matter in practice, per-assignment cycles remain
+available as a future spec change.
+
+**What is NOT affected:** two DIFFERENT tracks (different NWP source, feature set, ensemble mode, time step, or
+spatial representation) resolve INDEPENDENTLY — each gets its own walk-back and its own cycle. If two models
+sharing one *station* end up on genuinely different tracks, their forecasts can combine only if they land on the
+same cycle; otherwise the cross-cycle combination preflight (D11) fails that station's combination loud, with
+zero forecast/state writes for it that cycle (see the `forecast_cycle.cross_cycle_mismatch` event,
+`docs/standards/logging.md`).
+
 ## API-key handling (`RECAP_API_KEY`)
 
 The recap API-key secret is **Nepal-only**, provided by the

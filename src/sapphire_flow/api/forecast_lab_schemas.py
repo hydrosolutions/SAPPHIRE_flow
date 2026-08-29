@@ -11,7 +11,7 @@ Per CLAUDE.md, Pydantic is used here because this module IS the system
 boundary (the wire contract to the separate SAPPHIRE-flow-map project) —
 these are never used as internal domain types elsewhere in this repo.
 
-See ``docs/plans/198-forecast-lab-snapshot-export.md`` § The v1 document
+See ``docs/plans/archive/198-forecast-lab-snapshot-export.md`` § The v1 document
 shape (authoritative) for the annotated example this file implements, and
 its deltas-from-the-request table for why each field looks the way it does.
 """

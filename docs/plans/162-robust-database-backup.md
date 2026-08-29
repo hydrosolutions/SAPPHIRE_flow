@@ -9,6 +9,14 @@ blocks: []
 supersedes: []
 ---
 
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** UNDETERMINED — deliberately left open. T5 is
+present (`scripts/restore-rehearsal.sh`, headed "Plan 162 T5") and the backup work has clearly shipped
+in part, but T1-T4 (own backup identity, no-URL credential, atomic publication, an unfoolable monitor)
+were not individually verified in this pass. Archiving is in any case gated on a code change:
+`tests/unit/ops/test_restore_rehearsal.py:10` cites this plan's path, so the move needs a PR.
+**Open question:** are T1-T4 all live on the mini, or did the 2026-08-18 zero-byte-backup incident work
+supersede parts of them?
+
 # Plan 162 — Robust database backup
 
 ## 📌 Owner context 2026-08-18 — the off-box destination is DEPLOYMENT-DEPENDENT

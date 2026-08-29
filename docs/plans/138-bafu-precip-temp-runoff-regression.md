@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-07-22
 plan: 138
 title: BAFU precip+temp+past-runoff regression — add past-temperature, unshadow, retrain
@@ -8,6 +8,12 @@ depends_on: []
 blocks: []
 supersedes: []
 ---
+
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL — **T2 landed; T1 is the remainder.**
+T2 (add past-temperature to `SeasonalPrecipRunoffRegression`) is verifiably done: the class docstring
+at `src/sapphire_flow/models/nwp_regression.py:712-725` names "a NEW ``past_known
+reanalysis/temperature`` channel (antecedent temperature, Plan 138)". T1 — diagnose why the model
+stored 0 forecasts — is still recorded as PARTIAL by this plan's own body, and that is the open scope.
 
 # Plan 138 — BAFU precip + temp + past-runoff regression (extend + unshadow)
 

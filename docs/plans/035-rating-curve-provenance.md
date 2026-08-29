@@ -1,6 +1,13 @@
 # Plan 035 — Rating Curve Provenance for Skill Score Integrity
 
-**Status**: READY
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL — **and the header above was stale.**
+It said implementation begins at v1 phase start; in fact Task 1 shipped long ago:
+`alembic/versions/0034_rating_curves_table.py` is titled "rating_curves table (Plan 035 Task 1)", and
+`src/sapphire_flow/services/rating_conversion.py` exists. This plan's own body already said "Tasks
+1/2/4 (merged)". Remaining scope is whatever is left after 1/2/4 — that is the open question, not
+whether the plan has started.
+
+**Status**: PARTIAL
 **Phase**: v1 preparation (schema + types + flow logic)
 **Scope**: v1 (Nepal). **Implementation begins at v1 phase start**, not during v0
 development. v0-scope.md §B explicitly defers `rating_curves` ("don't create tables

@@ -32,8 +32,14 @@ observation_staleness_warning_hours = 6.0  # Flow 1 step 1.6 warning threshold
 
 # --- NWP lateness ---
 # Source: types-and-protocols.md § DeploymentConfig, architecture-context.md § NWP lateness fallback
-nwp_max_wait_hours = 3.0              # max wait for expected NWP delivery
+nwp_max_wait_hours = 3.0              # max wait for expected NWP delivery (currently dormant: no consumer in src/)
 nwp_max_fallback_age_hours = 12.0     # max age of fallback NWP cycle
+# Plan 090 guard, Plan 213 value: skip a cycle younger than this and walk back to an older,
+# fully published one. MEASURED (Plan 196 T1, 2026-08-28/29, n = 6): tot_prec/t_2m at +120 h
+# appear 160.0-173.1 min after reference time. Dataclass default is 105 for backward
+# compatibility; the Swiss deployment ships 210 — a deliberate over-estimate, not the
+# measurement. See Plan 213 D3.
+nwp_cycle_min_age_minutes = 210       # min age of an NWP cycle before it may be used
 # Plan 095: hot window (days) for raw NWP grid-cube zarrs under nwp_grid_archive_base_path.
 # Old cycles are pruned by age; extracted values in weather_forecasts stay the permanent archive.
 # Constraint: nwp_grid_retention_days >= ceil(nwp_max_fallback_age_hours / 24) + 1 (validated at load time)

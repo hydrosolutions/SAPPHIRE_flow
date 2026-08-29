@@ -1,7 +1,7 @@
 # docker-compose.staging.yml — adds the 5-station staging overlay on top of docker-compose.yml.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.staging.yml up
 #
-# See docs/plans/065-config-overlay-environment-variants.md T4/D8.
+# See docs/plans/archive/065-config-overlay-environment-variants.md T4/D8.
 
 services:
   prefect-worker:

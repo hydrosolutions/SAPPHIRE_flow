@@ -399,10 +399,11 @@ services:
       SCHEDULE_INGEST_SNOW_REANALYSIS: ${SCHEDULE_INGEST_SNOW_REANALYSIS:-0 5 * * *}
       # Plan 176 D1: LINDAS publishes on a 10-minute grid, not hourly (the
       # old `37 * * * *` assumption is falsified — see
-      # docs/plans/176-lindas-archive-completeness.md § Evidence).
+      # docs/plans/archive/176-lindas-archive-completeness.md § Evidence).
       # Plan 189 T2: tightened after a live 45-min run measured a 7.0 min
-      # minimum publish gap (docs/plans/189-audit-window-edge-and-poll-
-      # bound.md § T2). Max cyclic gap <=3 min, min gap >=2 min, no minute
+      # minimum publish gap — see
+      # docs/plans/archive/189-audit-window-edge-and-poll-bound.md § T2.
+      # Max cyclic gap <=3 min, min gap >=2 min, no minute
       # divisible by 5 — properties asserted by
       # tests/unit/cli/test_register_deployments.py, mirrored by
       # cli/register_deployments.py's Python fallback — MUST stay in sync.

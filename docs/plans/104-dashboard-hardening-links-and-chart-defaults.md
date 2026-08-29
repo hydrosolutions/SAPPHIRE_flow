@@ -1,6 +1,13 @@
 # Plan 104 — dashboard hardening: links, chart defaults, and skill-chart consistency
 
-**Status**: READY — drafted from the dashboard-investigator pass on 2026-07-06;
+**A1 verdict (2026-08-28 stale-status audit, Plan 212).** PARTIAL — issue 1 of 4 is fixed, issue 2 is
+not. **Fixed:** the Prefect UI link is no longer the docker-internal hostname —
+`src/sapphire_flow/api/__init__.py:17` reads `PREFECT_UI_URL` with a `http://localhost:4200` fallback
+and exposes it to templates at `:36`. **Not fixed:** the basin card is still plain text —
+`src/sapphire_flow/api/templates/stations/detail.html:45-51` renders `basin.name` / `basin.code` with
+**zero** `href`. Issues 3 and 4 were not assessed.
+
+**Status**: PARTIAL
 converged through six adversarial plan-review rounds (2026-07-06/07). Confirmed READY
 by the user on 2026-07-07.
 **Priority**: medium — these are review-dashboard correctness and operability

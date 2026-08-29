@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: COMPLETE
 created: 2026-08-21
 plan: 196
 title: Measure ICON-CH2-EPS publication latency before trusting the 105-minute guess
@@ -13,7 +13,14 @@ source: Flow Map integration audit 2026-08-21 § B; cut down from the four-task 
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**COMPLETE 2026-08-28.** Both tasks done; exit gates met (`## T1 result` carries the sample size
+and window; T2's paragraph carries the measured figure; the diff touched only `docs/`).
+
+**T1 CLOSED, T2 DONE.** T1 was authorised and run on 2026-08-28; its finding is
+recorded under `## T1 result` and it needs no further work. T2 recorded the coupling in `docs/standards/orchestration.md`, added a
+dated REVISIT note to the archived Plan 090, and corrected `architecture-context.md`. No code,
+schedule or config was changed, per D2 — **acting on the measured number remains a separate
+plan that has not been drafted.**
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT ON THIS PLAN AND ON ITS REVIEW
 
@@ -49,21 +56,31 @@ Verified on the mac mini, 2026-08-21:
 The arithmetic makes it unavoidable. `_CYCLE_HOURS = (0, 6, 12, 18)`
 (`adapters/meteoswiss_nwp.py:44`); the forecast cron is `0 */6 * * *`
 (`cli/register_deployments.py:45`). The flow fires at 06:00:0x, `_snap_to_cycle` returns 06:00,
-`age_minutes ≈ 0`, and the `age_minutes < 105` guard (`nwp_cycle_min_age_minutes`, `config.toml:16`)
+`age_minutes ≈ 0`, and the `age_minutes < 105` guard (`nwp_cycle_min_age_minutes`, `config.toml:17`)
 skips the slot **without probing STAC** and walks back to 00Z. A cron-scheduled run can never be
 PRIMARY.
 
 **This is not an outage and nothing is corrupted.** The 00Z cycle consumed at 06:00 is a real,
 fully published ICON-CH2-EPS run, and input quality does not flag it (`nwp_age_partial_hours = 9.0`,
-`config/deployment.py:65`, against an age of 6h). Two real costs remain:
+`config/deployment.py:65`, against an age of 6h).
+
+> **⚠️ SUPERSEDED BY § T1 RESULT (2026-08-28).** The two numbered points below were written
+> believing the guard was too *conservative*. Measurement showed the opposite — it is too
+> *small*, and the walk-back is protective. Point 1 describes real mechanics but frames a
+> correct skip as a cost; point 2's premise ("never measured") no longer holds. Both are kept
+> unedited as the record of what the plan assumed going in.
+
+Two costs were believed to remain:
 
 1. **The walk-back burns one of three fallback attempts.** `max_fallback_steps = 2` gives
    `resolve_cycle` three candidates; at the 06:00 cron those are 06Z (guaranteed skip), 00Z, and
    18Z-previous-day. Effective depth is **2, not 3**, every single run.
-2. **`nwp_cycle_min_age_minutes = 105` has never been measured.** `config.toml:15` calls it
+2. **`nwp_cycle_min_age_minutes = 105` has never been measured.** `config.toml:15-16` calls it
    "~90-120 min = ICON-CH2-EPS publish latency" with no citation, and no measurement exists anywhere
    in the repository. It sets how much horizon every operational forecast gives up, and nobody knows
-   whether it is right.
+   whether it is right. **— SUPERSEDED 2026-08-28: it has now been measured. See § T1 result. The
+   guess was low, not high, and cost 1 above is mis-framed — the burned candidate is an
+   unpublished slot, so nothing is lost.**
 
 That second point is the whole plan. The constant is guessed, load-bearing, and cheap to check.
 
@@ -80,7 +97,23 @@ That second point is the whole plan. The constant is guessed, load-bearing, and 
 
 ## Tasks
 
-### T1 — measure the real publication latency
+### T1 — measure the real publication latency — ✅ **DONE 2026-08-28** (see `## T1 result`)
+
+**Method correction applied before running.** As drafted, T1 said to record the item's own
+publication timestamp. An independent Codex review raised this as a blocker and a live probe
+confirmed it: item-level `created` means "this catalogue object appeared", not "this cycle is
+downloadable", and `_cycle_is_published` returns `True` on **any** matching item
+(`adapters/meteoswiss_nwp.py:583`) while the fetch walks many items (`:746`) and their assets (`:774`).
+Within a single cycle the item `created` values span ~50 minutes. The executed measurement
+therefore records **the last `created` among the items the fetch actually allowlists**
+(`PARAM_GROUPS` column 0: `tot_prec`, `t_2m`) at the +120 h horizon (`:689`), and keeps the
+first-item figure only as the secondary number that the *probe* keys on.
+
+**The plan's pagination warning was well-founded and is retained verbatim.** Two naive probes
+hit exactly the bias it describes: items sort `reference_datetime`-ascending, so a walk from
+page 1 never leaves the oldest cycle; and `?datetime=` filters on *valid* time, so page 1 for
+the 18Z cycle is full of the 12Z cycle's step-6 items. Correct probing needed 2-7 pages per
+cycle.
 *In:* a throwaway heredoc against the MeteoSwiss STAC catalogue (CLAUDE.md § Ad-hoc Analyses —
 **no new script file**, no addition to `scripts/`).
 
@@ -109,6 +142,72 @@ schedule decides whether it ever fires; that omission is why this went unnoticed
 
 Include the measured figure from T1 so the next person inherits evidence rather than the same guess.
 
+## T1 result
+
+**Measured 2026-08-28 against the live MeteoSwiss STAC catalogue** — public, no credentials, run
+from the dev machine (not the mini) as a heredoc per CLAUDE.md § Ad-hoc Analyses. No new script
+file was created.
+
+**Window covered:** cycles `2026-08-27T12:00Z` through `2026-08-28T06:00Z`. **Sample size: n = 4.**
+
+### The numbers — minutes after `forecast:reference_datetime`
+
+| cycle | first item of any kind | last item we actually need |
+|---|---|---|
+| 2026-08-27T12:00Z | 120.1 | **160.0** |
+| 2026-08-27T18:00Z | 120.4 | **168.4** |
+| 2026-08-28T00:00Z | 123.6 | **166.2** |
+| 2026-08-28T06:00Z | 120.9 | **160.5** |
+| | min 120.1 / max 123.6 | **min 160.0 / max 168.4** |
+
+The right-hand column is the operative one: it is when `tot_prec` and `t_2m` at the +120 h horizon
+become available, i.e. when the cycle is genuinely fetchable. The left-hand column is what
+`_cycle_is_published` keys on.
+
+**No p95 is reported, and none is computable.** A p95 from n = 4 is not a statistic. This is not a
+sampling shortcut that more effort would fix: catalogue items carry `expires` ~24 h after
+publication, so the retained window *is* the population at any instant. Obtaining a real p95 would
+require a recurring monitor, which this plan explicitly forbids as new apparatus. The spread here is
+tight (8.4 min across four cycles), so the conclusion does not depend on the missing quantile.
+
+### The finding
+
+**The third branch holds: the guard is too small — by 55-63 minutes.** `nwp_cycle_min_age_minutes
+= 105` (`config.toml:17`) sits far below the 160-168 minutes a cycle actually needs. The walk-back
+has been **protective all along**, not wasteful.
+
+This **inverts the framing this plan was written with.** The "Why" section above reasons that the
+guard makes a cron-scheduled run structurally incapable of being PRIMARY, and treats that as a cost.
+The arithmetic is correct and the behaviour is real, but the interpretation was wrong: when the
+06:00 cron fires, the 06Z cycle is not merely "too recent" — **it does not exist yet, and will not
+for another ~2.7 hours.** Skipping it and consuming 00Z is the only correct thing to do.
+
+Consequences, recorded but **not acted on** (D2 — measure, then stop):
+
+1. **The cut re-cron task is now definitively dead, not merely deprioritised.** "What was cut and
+   why" says to revisit it only if T1 showed `p95 < 105`. T1 showed the opposite. A re-cron computed
+   from the 105 figure would have fired ~15-19 min before the first catalogue item and ~55-63 min
+   before the data
+   we need — it would have *created* the outage it was meant to prevent.
+2. **Cost 1 above ("the walk-back burns one of three fallback attempts") is factually true but
+   mis-framed.** Effective fallback depth is 2, not 3 — but the burned candidate is an unpublished
+   slot, so nothing is lost. The real reserve is 2 and always was.
+3. **Any future re-cron or guard change must be derived from a fresh measurement with margin —
+   not from 105, and not from this sample's maximum either.** The observed max is 168.4 over
+   n = 4 in a single 24 h window; a floor of 170 would leave 1.6 minutes of headroom, which this
+   sample does not support. What T1 establishes is the *sign*: 105 is indefensible, and the
+   correct value is materially higher than the config comment's "~90-120 min".
+
+### Limitations
+
+- **n = 4**, bounded by catalogue retention, as above.
+- `created` is a proxy for "downloadable". It is the best available signal — STAC's `updated` can be
+  rewritten by later revisions, so it is strictly worse — but it was not verified by attempting a
+  download at the measured instant.
+- Measured over one 24 h window in August. Publication latency under load, during MeteoSwiss
+  maintenance, or in another season is unmeasured.
+
+
 ## What was cut and why
 
 Recorded so the reasoning is not re-litigated from scratch:
@@ -126,6 +225,12 @@ Recorded so the reasoning is not re-litigated from scratch:
 The monitoring blind spot that motivated the cut tasks is **one cycle deep, with working backstops**:
 two missed publications put lag at 12h and fire an input-quality PARTIAL at the 9h threshold; three
 raise `NoCycleAvailableError`. Only the single-miss case is invisible.
+
+**Corrected 2026-08-28 (§ T1 result):** the routine one-step walk-back is *not* a missed
+publication and must not be counted as one. At the cron instant the newer slot has not been
+published yet, so the first candidate is expected to be absent on every run. A genuine missed
+publication is a *second* consecutive absent slot; the depth-of-two reserve is measured from the
+first cycle that is actually old enough to exist.
 
 ## Non-goals
 

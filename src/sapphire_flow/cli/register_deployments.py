@@ -60,7 +60,7 @@ def _build_specs() -> list[DeploymentSpec]:
     # Plan 136 BAFU LINDAS observation archive collector. Plan 176 D1:
     # LINDAS actually publishes on a 10-minute grid (the "hourly refresh"
     # claim that justified the old `37 * * * *` was measured and falsified
-    # — see docs/plans/176-lindas-archive-completeness.md § Evidence).
+    # — see docs/plans/archive/176-lindas-archive-completeness.md § Evidence).
     # Over-poll at roughly 2.5x the grid rather than match it exactly — a
     # poll rate equal to the grid rate loses a slot whenever publish jitter
     # puts two slots between two polls (D1's "why not simply poll every 10
@@ -177,7 +177,7 @@ def _build_specs() -> list[DeploymentSpec]:
             # (its own dedicated worker/event loop) rather than `default` —
             # insurance against the worker-side poll-cycle starvation Plan
             # 098 measured (25-60 min) during forecast-cycle windows on the
-            # shared pool. See docs/plans/176-lindas-archive-completeness.md
+            # shared pool. See docs/plans/archive/176-lindas-archive-completeness.md
             # § Execution isolation.
             work_pool_name=INGEST_POOL,
         ),

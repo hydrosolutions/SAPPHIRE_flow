@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: COMPLETE
 created: 2026-08-28
 plan: 212
 title: Screen the undecided plans and the dormant branches against the code, once, with evidence
@@ -13,7 +13,35 @@ source: the 2026-08-28 stale-status audit (main b1e1b516); the audit's own limit
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**COMPLETE — archived 2026-08-28.** A1, B1, B2, C and D1 all done; D1 merged as PR #226 (v0.1.831).
+
+- **A1 — done.** All nine statuses settled against named files/symbols. 075 and 084 archived COMPLETE;
+  035, 069, 102, 104, 138 corrected to PARTIAL; 122 confirmed genuinely outstanding; 162 left
+  UNDETERMINED on purpose. Two audit contradictions resolved: 035's "waits for v1" header was stale
+  (`alembic/versions/0034_rating_curves_table.py` is *Plan 035 Task 1*), and 138's T2 *did* land.
+- **D1 — MERGED (PR #226, v0.1.831).** All nine repointed, including the wrapped
+  `docker-compose.yml:404` path this plan predicted no grep would see. **Gate verified clean on
+  `main` after the merge: every cited plan path in the repo now resolves.**
+- **B1 — reported below.** 13 retirable, 1 inspect, 53 keep.
+- **B2 — owner set a cutoff: retire only branches last worked on 2026-08-25 or earlier; nothing from
+  yesterday or today.** Applied 2026-08-28 → **exactly ONE of the 13 qualified**:
+  `docs/plan-192-recap-second-stack` (last activity 2026-08-20). Retired recoverably —
+  `pruned/docs-plan-192-recap-second-stack` → `19c3ab3f`, restore verified live. The other 12 are
+  held: `docs/plan-205-ma8` is from yesterday and **eleven were touched TODAY** by other sessions
+  (`docs/housekeeping` committed at 14:03, `docs/plan-ma9` at 10:57). The cutoff earned its keep.
+- **C — worktree pass done; nothing removed.** Under the same cutoff no worktree qualifies: all nine
+  non-main worktrees are clean, but every one either holds real work (`DIFFERS`) or was active today.
+  `git worktree prune` was a no-op — no stale registrations. `sapphire-plan192`'s worktree WAS removed
+  (unforced, clean) as the prerequisite for retiring its branch.
+
+**Method note for anyone repeating this:** a `NO_UNIQUE_WORK` branch points at a commit already on
+`main`, so `git log -1 <branch>` returns **main's** date, not when the branch was worked on. Use the
+**reflog** (`git reflog show --date=short <branch>`) — it records when the ref itself moved. Using the
+commit date would have declared all 13 retirable, including eleven under active edit.
+
+**READY — owner flip 2026-08-28**, after three independent Codex passes. Passes 1-3 each found a
+blocker in §B1's branch-classification method; all were folded and re-verified. The final change was
+to stop depending on the classifier being right and make deletion recoverable (§B2).
 
 ## ⛔ PROPORTIONALITY IS A BINDING CONSTRAINT
 
@@ -81,8 +109,19 @@ move needs a **code PR**, not a plan-doc commit to `main`.
 branch whose merge base is old, whether or not its content already landed via squash-merge. Only
 one bucket is trustworthy:
 
-- **11 branches show no diff at all** against `origin/main` — squash-merge residue, safe to delete.
-- The rest need a per-branch answer to: *is this content already on `main`?*
+Running the corrected classifier (below) over all remote-less branches on 2026-08-28 gives:
+
+| verdict | count |
+|---|---|
+| `NO_UNIQUE_WORK` — adds nothing over its merge base | **14** |
+| `VERSION_CHURN_ONLY` — differs only in version/lock files | **1** |
+| `DIFFERS` — real content not on `main` | **52** |
+
+The audit's crude first pass said "11 zero-diff"; the correct method says 14 deletable. **B1 must
+re-run the classifier rather than reuse either number** — branches move.
+
+That single `VERSION_CHURN_ONLY` result is why the guard exists: under the discarded filter it would
+have classified as merged and been deleted unexamined. It is `test/live-recap-127-forecast-xfail`.
 
 Two known exceptions that must survive any pruning:
 
@@ -105,18 +144,65 @@ one, so no patch-id matches. Verified on `feat/plan-204-forecast-lab-v2`, squash
 the work is fully landed. In a squash-merge repo `git cherry` marks everything unmerged and is worse
 than useless here, because it would argue against deleting branches that are genuinely done.
 
-**Use a content comparison instead.** For each branch: take the files it touches, then ask whether
-those files still differ from `main`.
+**Use a content comparison instead** — but not the naive one. A second review killed this plan's
+*first* replacement too, for two reasons that both end in deleted work:
+
+- **The empty-list bug.** When the filtered file list is empty, `-- ${=files}` expands to *no
+  pathspec at all*, so `git diff` compares the **entire trees**. Measured: `docs/fix-mi3-cimo` touches
+  zero files yet the command reported **48** differing files. Wrong direction here, but it makes the
+  classifier meaningless.
+- **The excluded-file hole, which IS destructive.** Filtering `pyproject.toml` / `uv.lock` /
+  `__init__.py` out of the *comparison* hides a branch whose only unmerged work lives in one of them —
+  a real dependency addition, say. It would report clean and be deleted. Proven with a probe branch
+  carrying a version-only change: under the old filter it classified as "merged".
+
+**Never exclude a file from the comparison. Exclude it only from the verdict.** And never build the
+pathspec by word-splitting: this repo contains filenames with spaces (`docs/requirements/DFL_Dummy
+Station A.txt` and two siblings), present on the `backup/*` branches among others, so `${=files}`
+splits one path into two pathspecs that match nothing — and an unmerged new file then reads as
+`CONTENT_ON_MAIN`. Compare one NUL-delimited path at a time:
 
 ```bash
-b=<branch>
-files=$(git diff --name-only "$(git merge-base origin/main $b)" "$b" \
-        | grep -vE '^(uv\.lock|pyproject\.toml|src/sapphire_flow/__init__\.py)$')
-git diff --name-only origin/main "$b" -- ${=files}   # zsh: ${=files} splits; bash: $files
+classify() {                                  # POSIX-safe; no word-splitting anywhere
+  local b=$1 base n del out sub
+  base=$(git merge-base origin/main "$b" 2>/dev/null) \
+    || { echo "NO_MERGE_BASE $b — unrelated history or deleted upstream; INSPECT"; return; }
+  n=$(git diff --name-only -z "$base" "$b" | tr -cd '\0' | wc -c | tr -d ' ')
+  [ "$n" -eq 0 ] && { echo "NO_UNIQUE_WORK $b"; return; }
+  del=$(git diff --name-status -z "$base" "$b" | tr '\0' '\n' | grep -c '^[DR]')
+  out=$(git diff --name-only -z "$base" "$b" | while IFS= read -r -d '' f; do
+          git diff --quiet origin/main "$b" -- "$f" || printf '%s\n' "$f"
+        done)
+  if [ -z "$out" ]; then
+    [ "$del" -gt 0 ] && { echo "INSPECT_DELETES_OR_RENAMES $b"; return; }
+    echo "CONTENT_ON_MAIN $b"; return
+  fi
+  sub=$(printf '%s\n' "$out" | grep -vE '^(uv\.lock|pyproject\.toml|src/sapphire_flow/__init__\.py)$')
+  [ -z "$sub" ] && { echo "VERSION_CHURN_ONLY $b"; return; }
+  echo "DIFFERS($(printf '%s\n' "$sub" | grep -c .)) $b"
+}
 ```
 
-Empty output ⇒ every file the branch touched is byte-identical to `main` ⇒ **merged/superseded**.
-Non-empty ⇒ **needs a look** — not automatically unmerged, since the branch may simply be old.
+Verdicts, of which only two are deletable:
+
+| verdict | meaning | action |
+|---|---|---|
+| `NO_UNIQUE_WORK` | adds nothing over its merge base | delete (recoverably — see B2) |
+| `CONTENT_ON_MAIN` | every file it touched is byte-identical to `main`, and it deletes/renames nothing | delete (recoverably) |
+| `VERSION_CHURN_ONLY` | differs *only* in version/lock files | **inspect** |
+| `INSPECT_DELETES_OR_RENAMES` | looks clean, but the branch deletes or renames a path | **inspect** |
+| `DIFFERS` / `NO_MERGE_BASE` | real work, or history that cannot be compared | keep |
+
+`INSPECT_DELETES_OR_RENAMES` exists because a comparison keyed on paths cannot see a *deletion* that
+`main` resolved by renaming instead: base has `old`, the branch deletes `old`, `main` moves `old` →
+`new`, and both sides then lack `old`, so the naive answer is "identical". `docs/plans/` is renamed
+constantly here — eight files in one commit during this very audit — so the case is live, not
+theoretical.
+
+Verified 2026-08-28 against known answers: `feat/plan-151-t8b` → DIFFERS (10 files, its 1,946 unpushed
+insertions), `backup/plan-174-pre-rebase` (which carries the space-containing paths) → DIFFERS,
+`docs/fix-mi3-cimo` → NO_UNIQUE_WORK, `test/live-recap-127-forecast-xfail` → VERSION_CHURN_ONLY. Full
+sweep: **14 NO_UNIQUE_WORK, 1 VERSION_CHURN_ONLY, 52 DIFFERS.**
 
 **Two traps, both hit while writing this plan — do not re-introduce them:**
 
@@ -124,8 +210,9 @@ Non-empty ⇒ **needs a look** — not automatically unmerged, since the branch 
    list as ONE pathspec, which matches nothing, so `git diff` comes back empty and **every branch
    reports as merged.** In a plan that ends in `git branch -D`, that mistake deletes unmerged work.
    It reported `feat/plan-151-t8b` — 1,946 unpushed insertions — as "content on main". Use `${=files}`.
-2. The version-churn files (`uv.lock`, `pyproject.toml`, `__init__.py`) differ on every branch and
-   drown the signal; the filter above drops them.
+2. Do not "simplify" the classifier by filtering the file list before the diff, and do not collapse
+   the per-path loop back into one pathspec. Those are exactly the holes that made drafts two and
+   three of this section unsafe.
 
 **A clean comparison is still not proof.** It says the content matches `main` *today*; it cannot tell
 a merge from a revert-then-rewrite. Anything the owner is unsure about stays.
@@ -133,17 +220,52 @@ a merge from a revert-then-rewrite. Anything the owner is unsure about stays.
 **Exit:** every remote-less branch is in exactly one bucket, with a one-line reason and the command
 output that put it there.
 
-### B2 — owner confirms, then delete
+**B1 result, 2026-08-28** (re-run before acting — branches move):
 
-Deletion is destructive and the owner has previously required an independent cross-check before
-deleting superseded branches. Present B1's list; delete only the confirmed set; leave `backup/*`
-and any unmerged branch alone unless explicitly named.
+- **13 `NO_UNIQUE_WORK`**, i.e. retirable: `docs/fix-205-status`, `docs/fix-mi3-cimo`,
+  `docs/fix-mi3-citations`, `docs/housekeeping`, `docs/plan-192-recap-second-stack`,
+  `docs/plan-205-ma8`, `docs/plan-211-ready`, `docs/plan-ma5b`, `docs/plan-ma5b-r2`,
+  `docs/plan-ma5b-r3`, `docs/plan-ma9`, `docs/track-i-plans`, `status-check`.
+- **1 `VERSION_CHURN_ONLY`** — `test/live-recap-127-forecast-xfail`. Inspect; the discarded filter
+  would have deleted this one unexamined.
+- **53 `DIFFERS`** — keep, including `feat/plan-151-t8b` and all three `backup/*`.
 
-**Exit:** `git branch` lists only `main`, live work, and whatever the owner chose to keep.
+### B2 — owner confirms, then retire recoverably
+
+**Three independent reviews found three different ways for this classifier to call unmerged work
+deletable** — patch-id vs squash-merge, an empty pathspec comparing whole trees, a filter hiding
+version-only work, a split path matching nothing, a deletion masked by a rename on `main`. Each fix
+was correct and each time a new edge appeared. The conclusion is not "write a fourth classifier".
+
+**Stop relying on the classifier being right. Make being wrong cheap.**
+
+Do not run `git branch -D` against anything. Retire a branch by first pinning its tip, then dropping
+the branch:
+
+```bash
+git tag "pruned/$b" "$b"     # a real ref: keeps every object alive and reachable
+git branch -D "$b"           # only after the tag exists
+```
+
+Restoring a mistake is then `git branch "$b" "pruned/$b"` — nothing is lost, ever. The `pruned/`
+namespace is deliberate: it cannot collide with the `v*` tags that `tag-main.yml` creates on every
+push to `main`. Keep the tags local unless the owner wants them pushed.
+
+With deletion made reversible, the classifier's job drops from "must never be wrong" to "sorts the
+list so a human reads a short one". That is a job it can actually do.
+
+**Still required:** owner confirmation on the specific list; `backup/*` and anything `DIFFERS`,
+`VERSION_CHURN_ONLY`, `INSPECT_DELETES_OR_RENAMES` or `NO_MERGE_BASE` untouched unless the owner
+names it; and `feat/plan-151-t8b` retained until its work is pushed or deliberately abandoned.
+
+**Exit:** every retired branch has a `pruned/<name>` tag pointing at its old tip, and
+`git branch` lists only `main`, live work, and what the owner chose to keep.
 
 ## C — worktrees
 
-`git worktree list` shows **13** (not 10 — the first draft undercounted). The main checkout is shared
+`git worktree list` showed **13** during the 2026-08-28 review (not 10 — the first draft
+undercounted), and 12 an hour later as other sessions finished. Count it again at implementation
+time rather than trusting either number. The main checkout is shared
 by several sessions, and that is an active hazard: during this audit another session's pre-commit
 stash cycle made in-progress edits transiently vanish from the shared tree.
 
@@ -160,8 +282,9 @@ it refuse; a refusal means someone is working there.
 **A branch checked out in a worktree cannot be deleted until that worktree is removed.** Sequence the
 two: worktree first, branch second.
 
-**Exit:** `git worktree prune` run (a no-op is a valid result); every surviving worktree maps to a
-live branch; no worktree removed without confirmation and a clean tree.
+**Exit:** every surviving worktree maps to a live branch; no worktree removed without owner
+confirmation and a clean tree. `git worktree prune` is optional bookkeeping, not a gate — with all
+registrations live it is a no-op, and requiring it here contradicted the paragraph above.
 
 ## D — nine plan paths already dangle
 
@@ -215,6 +338,10 @@ uv run pre-commit run --all-files
 # id pattern matches 115b4 and 111b as well as plain 3-digit ids.
 # Verified 2026-08-28: prints the 9 known dangling paths now, nothing after D1,
 # and proven to flag an injected fake path.
-git grep -hoE "docs/plans/(archive/)?[0-9]{3}[a-z]?[0-9]?-[a-z0-9-]+\.md" -- . \
+# ':!' excludes THIS plan: its D table names the broken paths on purpose, so
+# including it would keep the gate red forever. BOTH patterns are needed — the
+# plan lives under archive/ now, and ':!docs/plans/212-*' does not match that.
+git grep -hoE "docs/plans/(archive/)?[0-9]{3}[a-z]?[0-9]?-[a-z0-9-]+\.md" \
+  -- . ':!docs/plans/**/212-*' ':!docs/plans/212-*' \
   | sort -u | while read -r pth; do [ -f "$pth" ] || echo "DANGLING: $pth"; done
 ```
