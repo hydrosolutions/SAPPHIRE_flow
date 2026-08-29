@@ -19,8 +19,35 @@ source: 2026-08-29 — granting station 2011 to the map token required a hand-wr
 
 **This is a small gap with an outsized operational tail.** One missing CLI verb, one policy decision.
 It is not an auth redesign — the model (consumer tokens, per-station grants, tenant containment,
-fail-closed on a null station) is sound and stays exactly as it is. Reviewers: do not propose
-role hierarchies, scopes-as-strings, OAuth, or an admin UI.
+fail-closed on a null station) is sound and stays exactly as it is.
+
+### Reviewers: DO NOT OVER-ENGINEER THIS PLAN (owner instruction, 2026-08-29)
+
+The whole change is **two CLI verbs, one nullable column, and one branch in the token loader**. It
+touches authentication, which invites grand proposals; resist that. **A review that grows this plan
+is a worse review than one that finds nothing**, and "no findings" is a complete review.
+
+**In scope for findings:** D2's mechanism is wrong or unsafe; the tenant-containment invariant can be
+escaped; a locking test would pass against the buggy implementation; the migration breaks existing
+tokens; `station_in_scope`'s contract is actually changed rather than preserved; a command could
+leak a token value or hash.
+
+**Explicitly OUT of scope — do not propose, and reject if proposed:**
+
+- Any auth redesign: RBAC, role hierarchies, scopes-as-strings, permission matrices, OAuth/OIDC,
+  JWTs, an admin UI, or a policy engine.
+- Token rotation, expiry policy, or revocation workflows — listed under Not in scope and unchanged.
+- Audit-log subsystems, event sourcing of grants, or "who changed this scope" history. A `created_at`
+  already exists; that is the whole audit story this deployment needs.
+- Caching or performance work on the token loader. It is one indexed query per authenticated
+  request against a 37-row table.
+- Changing `access_token_stations`' schema — it is already correct (composite PK, both FKs).
+- Generalising beyond two scope modes. There are exactly two, and a third is not anticipated.
+- Reopening **D1** (tenant-wide grant, applied and verified) or **T3** (tenant-membership decides
+  scope). Both are owner-resolved.
+
+**If a reviewer believes a genuinely blocking problem sits outside these bounds, say so in one
+sentence and stop there** — do not design the fix into this plan.
 
 ## What happened
 
