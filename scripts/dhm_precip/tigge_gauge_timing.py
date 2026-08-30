@@ -70,12 +70,18 @@ REQUIRED_CLOCK_HOURS: tuple[int, ...] = (0, 6, 12, 18)
 # Identifiability floor on the FIRST HARMONIC's magnitude, which D5's estimator
 # never checks: on four bins it is `(w0 - w12, w6 - w18)` over shares summing to
 # 1, so equal opposite bins give R = 0 — an undefined angle that `np.angle`
-# still reports as a plausible 00:00. Rotating a phase past D4's ±3 h bound
-# (45° of arc) takes an orthogonal perturbation of magnitude R, so the floor is
-# the smallest opposite-bin contrast worth treating as real: 5% of the cycle's
-# mass, against the 25% per bin a flat cycle carries. ⛔ A stated CONVENTION,
-# not a significance level (D5 retired the bootstrap). Measured spread and the
-# 0.05-vs-0.10 sensitivity: see the T3 report.
+# still reports as a plausible 00:00.
+#
+# ⛔ The floor is a DECLARED CONVENTION — NOT a stability guarantee and NOT a
+# worst-case bound; the geometry supplies neither. An ORTHOGONAL perturbation
+# of magnitude R rotates the phase by EXACTLY 45° (D4's ±3 h bound), not past
+# it, and the SMALLEST unrestricted perturbation reaching the 45° ray is
+# `R / sqrt(2)` ≈ 0.71 R. R scales the available room proportionally, but no
+# threshold on R BOUNDS the rotation an arbitrary perturbation can produce.
+# What justifies 0.05 is the observed separation (band medians R = 0.18-0.38,
+# the two rejects R ≈ 0.03, nearest retained cycle 0.056) and the 0.05 -> 0.10
+# sweep leaving the reading unchanged — not a significance level (D5 retired
+# the bootstrap). Sweep it with `--min-amplitude`; see the T3 report.
 MIN_HARMONIC_AMPLITUDE = 0.05
 
 
@@ -265,6 +271,12 @@ def _hour_of_day_share(frame: pl.DataFrame, *, value_col: str) -> np.ndarray:
     return means / total if total > 0 else means
 
 
+def _rounded_amplitude(share: np.ndarray) -> float:
+    """`harmonic_amplitude` divides by the cycle's mass — a dry cycle has no
+    amplitude, so report nan rather than a zero-division artefact."""
+    return round(harmonic_amplitude(share), 4) if share.sum() > 0 else float("nan")
+
+
 def _clock_hours_covered(frame: pl.DataFrame) -> set[int]:
     return {int(h) for h in frame["valid_time_utc"].dt.hour().unique().to_list()}
 
@@ -287,20 +299,26 @@ class StationPhase:
 
 
 def estimate_station_phase(
-    station: Station, station_frame: pl.DataFrame, *, gauge_hour_shift: int = 0
+    station: Station,
+    station_frame: pl.DataFrame,
+    *,
+    gauge_hour_shift: int = 0,
+    min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
 ) -> StationPhase | PhaseStatus:
     """T2 — one station's phase estimate from its OWN normalised cycle (D5).
     Returns the `PhaseStatus` of the gate it failed, instead of an estimate,
     when the station cannot support a diurnal fit: its surviving pairs must
     occupy ALL of `REQUIRED_CLOCK_HOURS`, both sides must carry mass, and
-    both first harmonics must reach `MIN_HARMONIC_AMPLITUDE` — an angle read
-    off a near-zero harmonic is a number, not a phase.
+    both first harmonics must reach `min_amplitude` — an angle read off a
+    near-zero harmonic is a number, not a phase. `min_amplitude` is a
+    PARAMETER so the declared floor can be swept (`--min-amplitude`) without
+    monkey-patching the module constant.
 
     D7: `gauge_hour_shift` CIRCULARLY ROTATES this station's already-built
     gauge cycle — the "gauge labels are really NPT" reading, computed from
     the SAME windows as the as-labelled one, so every `n` is identical and
     this station's circular offset moves by exactly -`gauge_hour_shift`
-    hours MODULO 24. On the reported `(-18, +6]` branch that is a plain
+    hours MODULO 24. On the reported `[-18, +6)` branch that is a plain
     +6 h shift only for stations that do not cross the branch cut."""
     if not set(REQUIRED_CLOCK_HOURS) <= _clock_hours_covered(station_frame):
         return PhaseStatus.INSUFFICIENT_CLOCK_COVERAGE
@@ -312,7 +330,7 @@ def estimate_station_phase(
         return PhaseStatus.NO_PRECIPITATION_MASS
     gauge_amplitude = harmonic_amplitude(g_share)
     tigge_amplitude = harmonic_amplitude(e_share)
-    if min(gauge_amplitude, tigge_amplitude) < MIN_HARMONIC_AMPLITUDE:
+    if min(gauge_amplitude, tigge_amplitude) < min_amplitude:
         return PhaseStatus.PHASE_UNIDENTIFIABLE
     lag_raw = (harmonic_phase_h(e_share) - harmonic_phase_h(g_share)) % 24.0
     return StationPhase(
@@ -349,6 +367,7 @@ def estimate_phase(
     elevation_band: str,
     gauge_shift_reading: str,
     gauge_hour_shift: int = 0,
+    min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
 ) -> PhaseEstimate:
     """T2 `Out` — the D5 station-equal aggregate for one (lead band,
     elevation band, timezone reading): every station gets its OWN normalised
@@ -361,7 +380,10 @@ def estimate_phase(
     row are indistinguishable to a reader."""
     outcomes = [
         estimate_station_phase(
-            Station(str(station[0])), station_frame, gauge_hour_shift=gauge_hour_shift
+            Station(str(station[0])),
+            station_frame,
+            gauge_hour_shift=gauge_hour_shift,
+            min_amplitude=min_amplitude,
         )
         for station, station_frame in paired.group_by("station")
     ]
@@ -421,6 +443,8 @@ def run_all_bands(
     tigge_series: pl.DataFrame,
     gauge_population: GaugeMaskedPopulation,
     coords: StationCoordinateTable,
+    *,
+    min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
 ) -> list[PhaseEstimate]:
     """T2 driver — the COMPLETE (lead band x elevation band x D7 reading)
     matrix, station-equal (D5) within each elevation band (M-A9's own
@@ -450,12 +474,66 @@ def run_all_bands(
                         elevation_band=band_name,
                         gauge_shift_reading=reading_name,
                         gauge_hour_shift=shift,
+                        min_amplitude=min_amplitude,
                     )
                 )
     return results
 
 
-def write_csv(results: list[PhaseEstimate], path: Path) -> None:
+def station_amplitude_rows(
+    tigge_series: pl.DataFrame,
+    gauge_population: GaugeMaskedPopulation,
+    coords: StationCoordinateTable,
+    *,
+    min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
+) -> pl.DataFrame:
+    """T3 Verify — one row per (lead band, station) cycle: BOTH first-harmonic
+    magnitudes and the inclusion decision `min_amplitude` produces, so the
+    station-level identifiability claims and the floor sensitivity are
+    regenerable rather than resting on the aggregate CSV (which publishes only
+    band medians and the configured floor). One row per CYCLE, not per D7
+    reading: `np.roll` moves the angle, never the magnitude."""
+    elev_of = {s: c.elev_m for s, c in coords.by_station.items()}
+    rows: list[dict[str, object]] = []
+    for lead_band in LEAD_BANDS:
+        paired = build_paired_frame(tigge_series, gauge_population, lead_band=lead_band)
+        for station, station_frame in paired.group_by("station"):
+            st = Station(str(station[0]))
+            outcome = estimate_station_phase(
+                st, station_frame, min_amplitude=min_amplitude
+            )
+            resolved = outcome if isinstance(outcome, StationPhase) else None
+            status = PhaseStatus.OK if isinstance(outcome, StationPhase) else outcome
+            g_share = _hour_of_day_share(station_frame, value_col="gauge_mm")
+            t_share = _hour_of_day_share(station_frame, value_col="tigge_mm")
+            rows.append(
+                {
+                    "lead_band": lead_band,
+                    "station": str(st),
+                    "elevation_band": BAND_NAMES[
+                        band_of(elev_of.get(st, float("nan")))
+                    ],
+                    "n_paired_windows": station_frame.height,
+                    "clock_hours_covered": len(_clock_hours_covered(station_frame)),
+                    "gauge_harmonic_amplitude": _rounded_amplitude(g_share),
+                    "tigge_harmonic_amplitude": _rounded_amplitude(t_share),
+                    "min_harmonic_amplitude": min_amplitude,
+                    "included": resolved is not None,
+                    "status": status.value,
+                    "lag_hours_same_day_branch": (
+                        round(resolved.lag_h, 2) if resolved else float("nan")
+                    ),
+                }
+            )
+    return pl.DataFrame(rows).sort(["lead_band", "station"])
+
+
+def write_csv(
+    results: list[PhaseEstimate],
+    path: Path,
+    *,
+    min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
+) -> None:
     pl.DataFrame(
         [
             {
@@ -480,7 +558,7 @@ def write_csv(results: list[PhaseEstimate], path: Path) -> None:
                 "lag_hours_shortest_arc": round(r.lag_principal_h, 2),
                 "gauge_harmonic_amplitude": round(r.gauge_amplitude, 3),
                 "tigge_harmonic_amplitude": round(r.tigge_amplitude, 3),
-                "min_harmonic_amplitude": MIN_HARMONIC_AMPLITUDE,
+                "min_harmonic_amplitude": min_amplitude,
                 "resolution_bound_h": 3.0,
             }
             for r in results
@@ -498,6 +576,17 @@ def main() -> int:
         ),
     )
     ap.add_argument("--out", type=Path, default=Path("data/dhm_precip/tigge/points"))
+    ap.add_argument(
+        "--min-amplitude",
+        type=float,
+        default=MIN_HARMONIC_AMPLITUDE,
+        help=(
+            "identifiability floor on the first-harmonic magnitude (declared "
+            "convention, not a significance level). Any value other than the "
+            f"published {MIN_HARMONIC_AMPLITUDE} writes to _minamp<value> "
+            "filenames, so a sweep can never overwrite the published outputs."
+        ),
+    )
     args = ap.parse_args()
 
     tigge_series = pl.read_parquet(args.tigge_points)
@@ -506,23 +595,40 @@ def main() -> int:
     all_stations = frozenset(gauge_population.by_station.keys())
     coords = load_station_coordinates(coords_path, expected_stations=all_stations)
 
-    results = run_all_bands(tigge_series, gauge_population, coords)
+    min_amplitude = float(args.min_amplitude)
+    results = run_all_bands(
+        tigge_series, gauge_population, coords, min_amplitude=min_amplitude
+    )
     if not any(r.status is PhaseStatus.OK for r in results):
         raise TiggeTimingMatrixError(
             f"none of the {len(results)} (lead band x elevation band x reading) "
             "cells produced a lag — refusing to write an all-empty matrix"
         )
     args.out.mkdir(parents=True, exist_ok=True)
-    out_csv = args.out / "tigge_gauge_timing_offsets.csv"
-    write_csv(results, out_csv)
+    # A swept floor never lands on the published filenames.
+    suffix = (
+        "" if min_amplitude == MIN_HARMONIC_AMPLITUDE else f"_minamp{min_amplitude:g}"
+    )
+    out_csv = args.out / f"tigge_gauge_timing_offsets{suffix}.csv"
+    write_csv(results, out_csv, min_amplitude=min_amplitude)
     attribution_path = write_tigge_attribution(out_csv)
+    stations_csv = args.out / f"tigge_station_amplitudes{suffix}.csv"
+    station_amplitude_rows(
+        tigge_series, gauge_population, coords, min_amplitude=min_amplitude
+    ).write_csv(stations_csv)
+    write_tigge_attribution(stations_csv)
     log.info(
-        "tigge_gauge_timing.cli.complete", out=str(out_csv), n_estimates=len(results)
+        "tigge_gauge_timing.cli.complete",
+        out=str(out_csv),
+        stations=str(stations_csv),
+        min_amplitude=min_amplitude,
+        n_estimates=len(results),
     )
     print(
         f"wrote {out_csv}: {len(results)} (lead-band x elev-band x reading) estimates"
     )
     print(f"wrote {attribution_path}")
+    print(f"wrote {stations_csv}: per-(lead band, station) amplitudes and inclusion")
     for r in results:
         print(
             f"  {r.lead_band:4s} {r.elevation_band:22s} {r.gauge_shift_reading:20s} "

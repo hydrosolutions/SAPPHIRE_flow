@@ -42,14 +42,17 @@ def harmonic_amplitude(weights: np.ndarray) -> float:
 
 
 def same_day_branch(lag_raw_h: float) -> float:
-    """Signed offset on the branch (-18, +6] h — the "same convective day"
-    reading. Near |offset| = 12 h the two cycles are antiphase and the
+    """Signed offset on the branch [-18, +6) h — the "same convective day"
+    reading. The interval is HALF-OPEN AT THE TOP because `%` returns
+    [0, 24): a raw lag of +6 h maps to -18 h, and +6 h itself is never
+    produced. Near |offset| = 12 h the two cycles are antiphase and the
     SIGN is not identified."""
     return ((lag_raw_h + 18.0) % 24.0) - 18.0
 
 
 def principal_branch(lag_raw_h: float) -> float:
-    """Shortest-arc signed offset on (-12, +12]."""
+    """Shortest-arc signed offset on [-12, +12) — half-open at the top for
+    the same reason as `same_day_branch`: a raw lag of +12 h maps to -12 h."""
     return ((lag_raw_h + 12.0) % 24.0) - 12.0
 
 

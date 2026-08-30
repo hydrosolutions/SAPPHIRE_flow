@@ -18,9 +18,11 @@ DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
 ```
 
 Raw and extracted data: `data/dhm_precip/tigge/` (gitignored). Retrieved 2026-08-29, 17.8 MB,
-`data/dhm_precip/tigge/raw/tigge_ecmwf_cf_tp_jjas2025.grib`. Every number below is in
-`data/dhm_precip/tigge/points/tigge_gauge_timing_offsets.csv`, **regenerated 2026-08-30 (13:11)** after
-two corrections independent reviews found:
+`data/dhm_precip/tigge/raw/tigge_ecmwf_cf_tp_jjas2025.grib`. The second command writes two CSVs:
+the published matrix `data/dhm_precip/tigge/points/tigge_gauge_timing_offsets.csv` (every aggregate
+number below) and `…/tigge_station_amplitudes.csv` (the per-station amplitudes and inclusion decisions
+behind **Identifiability**; see the sweep command there). The matrix was **regenerated 2026-08-30
+(13:11)** after two corrections independent reviews found:
 
 1. **The D5 normalisation.** The screen normalised each clock hour's RAW TOTAL, while M-A6 divides each
    clock-hour total by its OWN OBSERVATION COUNT and normalises the resulting cycle of hourly MEANS.
@@ -108,9 +110,11 @@ from every `n`. A station also contributes only if BOTH its cycles have an ident
 (**Identifiability**, below). The CSV carries the COMPLETE 3 lead bands x 3 elevation bands x 2 readings
 matrix with a `status` per cell — `ok`, `no_paired_windows`, `insufficient_clock_coverage`,
 `no_precipitation_mass` or `phase_unidentifiable` — so a combination nothing supports is visible as such
-rather than an absent row; all 18 cells are `ok` on this season. Per D5, the season-year bootstrap and
-24-bin completeness test are RETIRED for this screen (a one-season, 4-bin input degenerates both into
-false precision or false exclusion); every number below is a point estimate with its own `n` — both the
+rather than an absent row. ⚠️ Its 18 rows are **9 ANALYSIS CELLS x 2 D7 readings**: `run_all_bands`
+builds ONE pairing per lead band and the D7 reading merely rotates those cycles, so counting 18 would
+double-count every measurement. All 9 analysis cells are `ok` on this season. Per D5, the season-year
+bootstrap and 24-bin completeness test are RETIRED for this screen (a one-season, 4-bin input
+degenerates both into false precision or false exclusion); every number below is a point estimate with its own `n` — both the
 window count and the **distinct (station, valid-date) station-day count**, reported separately since a
 station can contribute more than one window per calendar day — and the **±3 h resolution bound (D4)
 applies to every cell**: 6-hourly data cannot place a lag more precisely than that, and an unresolved
@@ -125,13 +129,38 @@ opposite bins give R = 0 — an undefined phase — and `np.angle(0)` returns 0.
 00:00 phase for a cycle that has none. A mass check does not catch this: such a cycle can carry full
 mass. With only four bins that is a live risk, so R is now **gated and published**.
 
-**The floor is `MIN_HARMONIC_AMPLITUDE = 0.05`** (`scripts/dhm_precip/tigge_gauge_timing.py`). Reason:
-rotating a phase past D4's own ±3 h bound (45° of arc) takes an orthogonal perturbation of magnitude R,
-so the floor is the smallest opposite-bin contrast worth treating as real — set at 5% of the cycle's
-mass, against the 25% per bin a flat cycle carries. ⛔ It is a **stated convention, not an estimated
-significance level**: D5 retired the bootstrap, so no interval is claimed here and none is implied.
-A station cycle below the floor on either side is reported `phase_unidentifiable` and contributes
-nothing; a cell no station supports carries the status of the furthest gate its stations reached.
+**The floor is `MIN_HARMONIC_AMPLITUDE = 0.05`** (`scripts/dhm_precip/tigge_gauge_timing.py`). ⛔ It is
+a **DECLARED CONVENTION** — not a stability guarantee, not a worst-case bound, and not a significance
+level (D5 retired the bootstrap, so no interval is claimed here and none is implied).
+
+⚠️ **An earlier revision argued the floor from geometry. That argument was wrong and is withdrawn.**
+Corrected: an **orthogonal** perturbation of magnitude R rotates the phase by **exactly 45°** (D4's
+±3 h bound), not *past* it, and the **smallest unrestricted** perturbation reaching the 45° ray is
+**`R / √2` ≈ 0.71 R** — its distance to that ray. R scales the available room proportionally, but **no
+threshold on R bounds the rotation an arbitrary perturbation can produce**; geometry licenses no floor.
+
+What does justify 0.05 is the **observed separation** plus the **sweep**: band medians sit at
+R = 0.18-0.38, the two rejected station cycles at R ≈ 0.03, the nearest RETAINED cycle at 0.056 — a
+real but narrow gap (⚠️ not an order of magnitude at station level: four retained cycles sit between
+0.056 and 0.092), and doubling the floor to 0.10 drops exactly those four while leaving the reading
+unchanged (**Sensitivity**, below). A station cycle below the floor on either side is reported
+`phase_unidentifiable` and contributes nothing; a cell no station supports carries the status of the
+furthest gate its stations reached.
+
+**Every number in this section is reproducible per station**, not just as a band median. The
+`Regenerate` command above also writes `data/dhm_precip/tigge/points/tigge_station_amplitudes.csv` —
+one row per (lead band, station) cycle, 69 on this season, with `gauge_harmonic_amplitude`,
+`tigge_harmonic_amplitude`, `min_harmonic_amplitude`, `included`, `status` and
+`lag_hours_same_day_branch` (one row per CYCLE, not per D7 reading: `np.roll` moves the angle, not the
+magnitude). The sweep re-runs the whole screen at another floor, into `_minamp` filenames that can
+never overwrite the published ones:
+
+```
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
+  uv run python -m scripts.dhm_precip.tigge_gauge_timing --min-amplitude 0.10
+# -> data/dhm_precip/tigge/points/tigge_station_amplitudes_minamp0.1.csv
+# -> data/dhm_precip/tigge/points/tigge_gauge_timing_offsets_minamp0.1.csv
+```
 
 **Measured on this season** (69 (lead band x station) cycles): gauge R spans 0.107-0.618, TIGGE R
 0.027-0.441. At the 0.05 floor **2 of 69 station-cycles are unidentifiable** — Bharatpur Airport at D+2
@@ -140,10 +169,11 @@ nothing; a cell no station supports carries the status of the furthest gate its 
 stations, n 2,140/612 → 1,899/546), plus their two D7 twins. **No cell became unidentifiable**, no cell
 changed sign, and every band statistic still rests on ≥ 5 stations, so the verdict below is unchanged.
 
-**Sensitivity (declared, not tuned).** At a stricter 0.10 floor, 4 further station-cycles drop: two from
-D+1 low (whose median does not move at all), one from D+3 low (−0.68 → −1.88 h, still inside the ±3 h
-bound and still unresolved from zero) and one from D+3 mid (−6.15 → −6.09 h). Every other cell is
-unchanged and all 18 remain `ok`, so the reading of the result is the same at either floor.
+**Sensitivity (declared, not tuned; regenerate with the `--min-amplitude 0.10` command above).** At a
+stricter 0.10 floor, 4 further station-cycles drop: two from D+1 low (whose median does not move at
+all), one from D+3 low (−0.68 → −1.88 h, still inside the ±3 h bound and still unresolved from zero)
+and one from D+3 mid (−6.15 → −6.09 h). Every other cell is unchanged and all 9 analysis cells remain
+`ok`, so the reading of the result is the same at either floor.
 
 ### Primary reading (gauge timestamps as labelled, D7)
 
@@ -176,8 +206,9 @@ pairing at the V+6 alignment instead, which admitted a slightly different set of
 
 Under the rotation **every per-station CIRCULAR offset moves by exactly +6 h modulo 24, by
 construction** (the gauge share vector is `np.roll`ed; nothing else moves). The reported band figure,
-however, is an ARITHMETIC median (`np.median`) of same-day-branch REPRESENTATIVES on `(-18, +6]`, and
-that is not rotation-equivariant: as soon as a station's shifted offset crosses the branch cut it
+however, is an ARITHMETIC median (`np.median`) of same-day-branch REPRESENTATIVES on `[-18, +6)` —
+half-open at the TOP, since `%` returns `[0, 24)` so a raw +6 h lag maps to −18 h — and that is not
+rotation-equivariant: as soon as a station's shifted offset crosses the branch cut it
 re-enters the median from the other end. So a band number need neither shift by +6 h nor stay put.
 Measured here, only three of the nine cells do shift by exactly +6 h — high at D+1 (**+0.48 h**), mid at
 D+2 (**+0.22 h**) and high at D+3 (**−0.52 h**); the other six differ, D+3 low most visibly

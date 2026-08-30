@@ -7,8 +7,10 @@
 - D5: M-A6's OWN normalisation — clock-hour SUM / clock-hour OBSERVATION
   COUNT, normalised as a cycle of hourly MEANS (never raw totals) — and
   the reported band figure is the station-EQUAL median.
-- D7: the alternate timezone reading is a UNIFORM rotation of the SAME
-  contributing windows, never a second pairing with its own `n`.
+- D7 (amended): the alternate timezone reading rotates each station's
+  CIRCULAR offset uniformly by +6 h mod 24, on the SAME contributing
+  windows, never a second pairing with its own `n` — but the reported band
+  median shifts uniformly only when no station crosses the branch cut.
 - a station must cover all four 6-hourly clock positions to contribute.
 
 No network, no real gauge workbook — every test is against small synthetic
@@ -46,6 +48,7 @@ from scripts.dhm_precip.tigge_gauge_timing import (
     estimate_station_phase,
     restrict_to_pinned_season,
     run_all_bands,
+    station_amplitude_rows,
     station_day_count,
 )
 from scripts.dhm_precip.tigge_ifs import LEAD_BANDS
@@ -456,12 +459,16 @@ class TestPerStationNormalisation:
 
 
 class TestD7UniformRotation:
-    """D7 — 'An NPT reading shifts every offset uniformly +6 h while
-    leaving the between-band contrast invariant.' That holds only if both
-    readings are computed from the SAME contributing windows: the reading
-    is a circular rotation of the built cycle, never a second pairing at a
-    different window alignment (which changes which windows survive, and
-    their `n`, so the shift is not uniform)."""
+    """D7 (amended) — the NPT reading moves each station's CIRCULAR offset
+    by +6 h modulo 24. Identical contributing windows are NECESSARY for that
+    (the reading is a circular rotation of the built cycle, never a second
+    pairing at a different window alignment, which would change which
+    windows survive and their `n`) but they are NOT SUFFICIENT for the
+    reported BAND figure to shift by +6 h: that is an arithmetic median of
+    same-day-branch representatives, so no station may cross the -18/+6
+    branch cut either. This sample happens not to cross it; the crossing
+    case is `TestD7BranchCrossing`.
+    """
 
     def test_the_npt_reading_shifts_the_lag_by_exactly_six_hours(self) -> None:
         rows = _cycle_rows(
@@ -960,3 +967,46 @@ class TestD7BranchCrossing:
         assert as_labelled.lag_h == pytest.approx(-6.0)
         assert as_npt.lag_h == pytest.approx(-6.0)
         assert as_npt.lag_h != pytest.approx(as_labelled.lag_h + 6.0)
+
+
+class TestAmplitudeFloorIsReproducible:
+    """T3 Verify — every figure traces to T2 output or a NAMED COMMAND. The
+    report makes station-level identifiability claims and a 0.05 -> 0.10
+    sensitivity claim; the aggregate CSV publishes neither (only band medians
+    and the configured floor). So the floor must be a swept PARAMETER and the
+    per-station decision must be an OUTPUT."""
+
+    def test_the_floor_is_a_parameter_not_the_module_constant(self) -> None:
+        frame = _paired_frame(
+            _cycle_rows(
+                station="A",
+                date="2025-06-01",
+                gauge_by_hour={6: 8.0, 12: 2.0},
+                tigge_by_hour={12: 7.0, 18: 3.0},
+            )
+        )
+        assert isinstance(estimate_station_phase(Station("A"), frame), StationPhase)
+        # Same cycle, stricter floor -> the SAME code path must reject it.
+        assert (
+            estimate_station_phase(Station("A"), frame, min_amplitude=0.99)
+            is PhaseStatus.PHASE_UNIDENTIFIABLE
+        )
+
+    def test_station_rows_publish_the_amplitudes_and_the_swept_decision(self) -> None:
+        series, population, coords = _synthetic_inputs()
+        rows = station_amplitude_rows(series, population, coords)
+        # One row per (lead band, station) CYCLE, not per D7 reading: the
+        # rotation moves the angle, never the magnitude.
+        assert rows.height == len(LEAD_BANDS)
+        assert set(rows["lead_band"].to_list()) == set(LEAD_BANDS)
+        assert rows["included"].all()
+        assert rows["min_harmonic_amplitude"].to_list() == [MIN_HARMONIC_AMPLITUDE] * 3
+
+        swept = station_amplitude_rows(series, population, coords, min_amplitude=0.99)
+        assert not swept["included"].any()
+        assert set(swept["status"].to_list()) == {
+            PhaseStatus.PHASE_UNIDENTIFIABLE.value
+        }
+        # The amplitudes are a MEASUREMENT, not a gate output: published for
+        # rejected cycles too, which is what makes the sensitivity checkable.
+        assert all(a > 0 for a in swept["tigge_harmonic_amplitude"].to_list())
