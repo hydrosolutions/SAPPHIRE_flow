@@ -9,8 +9,19 @@ local symlink into the sibling checkout. That made unit-test collection
 (and CI, which never provisions `data/`) fail with `FileNotFoundError` on
 any clean clone. The implementation here is unchanged byte-for-byte from
 that file's original `harmonic_phase_h`/`same_day_branch`/`principal_branch`
-/`band_of`/`npt_label` — `era5_gauge_timing_figure.py` now imports from
-here too, so both analyses run the SAME code path (D5), not a fork.
+/`band_of`/`npt_label`.
+
+⚠️ SCOPE OF THE D5 REUSE CLAIM. The TRACKED consumer
+(`tigge_gauge_timing.py`) is identity-tested against this module
+(`tests/unit/scripts/test_tigge_gauge_timing.py::TestCleanCheckoutImport`
+asserts `tigge_gauge_timing.band_of is diurnal_phase.band_of`).
+`era5_gauge_timing_figure.py` imports the same functions from here, but it
+lives under the gitignored `data/` tree, so NO test and NO CI job can reach
+it — its use of this module is unverified by this repo, and nothing here
+may be read as a CI-backed guarantee about it. (An earlier revision of that
+file imported these names and then re-`def`d `band_of`/`npt_label` locally,
+silently shadowing the import; the stale definitions were deleted, but only
+a human running that script can confirm it stays that way.)
 """
 
 from __future__ import annotations

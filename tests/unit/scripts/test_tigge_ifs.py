@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from datetime import datetime
 
 import numpy as np
 import pytest
@@ -31,6 +32,8 @@ from scripts.dhm_precip.domain_types import (
     StationCoordinateTable,
 )
 from scripts.dhm_precip.tigge_ifs import (
+    LEAD_BANDS,
+    REQUEST_LEADTIME_HOURS,
     STUDY_AREA,
     TIGGE_ACKNOWLEDGEMENT_TEXT,
     TIGGE_ATTRIBUTION_TEXT,
@@ -43,6 +46,7 @@ from scripts.dhm_precip.tigge_ifs import (
     assert_tp_units,
     build_tigge_request,
     deaccumulate,
+    expected_init_schedule,
     extract_station_series,
     main,
     nearest_point_index,
@@ -58,13 +62,21 @@ def _cf_dataset(
     accum_mm: np.ndarray,  # (step, points)
     units: str = "kg m**-2",
     init: str = "2025-07-15T00:00:00",
+    data_type: str = "cf",
+    step_type: str = "accum",
 ) -> xr.Dataset:
     """A minimal single-init `(step, values)` control-forecast dataset,
-    shaped like the real cfgrib-opened TIGGE file (measured 2026-08-29)."""
+    shaped like the real cfgrib-opened TIGGE file (measured 2026-08-29,
+    including its `GRIB_dataType`/`GRIB_stepType` attributes)."""
     tp = xr.DataArray(
         accum_mm.astype(np.float32),
         dims=("step", "values"),
-        attrs={"units": units, "GRIB_units": units},
+        attrs={
+            "units": units,
+            "GRIB_units": units,
+            "GRIB_dataType": data_type,
+            "GRIB_stepType": step_type,
+        },
     )
     return xr.Dataset(
         {"tp": tp},
@@ -160,6 +172,23 @@ class TestDeaccumulate:
         )
         incs = deaccumulate(ds)
         assert incs[0].mm.tolist() == [0.0]
+
+    def test_a_masked_raw_point_is_carried_as_nan_never_filled(self) -> None:
+        """T1 carries gaps; it never fills them and never reads them as
+        observations. A NaN is neither materially negative nor removed by
+        the clip, so it survives into the parquet — and is rejected at the
+        PAIRED-STATISTIC boundary instead
+        (`tigge_gauge_timing.restrict_to_pinned_season`)."""
+        ds = _cf_dataset(
+            steps_h=[0, 6, 12],
+            lat=np.array([30.0, 29.0]),
+            lon=np.array([81.0, 82.0]),
+            accum_mm=np.array([[0.0, 0.0], [1.0, np.nan], [2.0, np.nan]]),
+        )
+        incs = deaccumulate(ds)
+        assert incs[0].mm[0] == pytest.approx(1.0)
+        assert np.isnan(incs[0].mm[1])  # carried, not zero-filled
+        assert np.isnan(incs[1].mm[1])
 
     def test_rejects_a_non_contiguous_step_axis(self) -> None:
         ds = _cf_dataset(
@@ -268,6 +297,12 @@ class TestBuildTiggeRequest:
         assert payload["day"] == ["01", "02", "03"]
 
 
+_ONE_INIT = (datetime(2025, 7, 15, 0, 0),)
+"""The single init `_cf_dataset` carries. The gate's DEFAULT is the full
+`expected_init_schedule()` (244 JJAS 2025 inits) — a fixture narrows it
+deliberately; production never does."""
+
+
 class TestAssertTiggeIdentity:
     """D2/D6/T1 Verify — a stale or wrong `--skip-retrieve` file must never
     be silently reported as 'JJAS TIGGE_YEAR'. Every axis checked here is
@@ -281,7 +316,9 @@ class TestAssertTiggeIdentity:
             accum_mm=np.array([[0.0], [1.0], [2.0]]),
             init="2025-07-15T00:00:00",
         )
-        assert_tigge_identity(ds, expected_leadtime_hours=[0, 6, 12])  # no raise
+        assert_tigge_identity(
+            ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6, 12]
+        )  # no raise
 
     def test_rejects_a_wrong_year(self) -> None:
         ds = _cf_dataset(
@@ -292,7 +329,9 @@ class TestAssertTiggeIdentity:
             init="2024-07-15T00:00:00",  # not TIGGE_YEAR
         )
         with pytest.raises(TiggeIdentityError, match="year"):
-            assert_tigge_identity(ds, expected_leadtime_hours=[0, 6])
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
 
     def test_rejects_a_month_outside_jjas(self) -> None:
         ds = _cf_dataset(
@@ -303,7 +342,9 @@ class TestAssertTiggeIdentity:
             init="2025-10-15T00:00:00",  # October, not JJAS
         )
         with pytest.raises(TiggeIdentityError, match="month"):
-            assert_tigge_identity(ds, expected_leadtime_hours=[0, 6])
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
 
     def test_rejects_an_init_hour_outside_00_12_utc(self) -> None:
         ds = _cf_dataset(
@@ -314,7 +355,9 @@ class TestAssertTiggeIdentity:
             init="2025-07-15T06:00:00",  # not 00 or 12 UTC
         )
         with pytest.raises(TiggeIdentityError, match="hour"):
-            assert_tigge_identity(ds, expected_leadtime_hours=[0, 6])
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
 
     def test_rejects_a_lead_axis_that_does_not_match_the_request(self) -> None:
         ds = _cf_dataset(
@@ -325,7 +368,9 @@ class TestAssertTiggeIdentity:
             init="2025-07-15T00:00:00",
         )
         with pytest.raises(TiggeIdentityError, match="lead"):
-            assert_tigge_identity(ds, expected_leadtime_hours=[0, 6, 12])
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6, 12]
+            )
 
     def test_rejects_a_non_ecmwf_centre_attribute(self) -> None:
         ds = _cf_dataset(
@@ -337,7 +382,9 @@ class TestAssertTiggeIdentity:
         )
         ds.attrs["GRIB_centre"] = "kwbc"  # NCEP, not ECMWF
         with pytest.raises(TiggeIdentityError, match="centre"):
-            assert_tigge_identity(ds, expected_leadtime_hours=[0, 6])
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
 
     def test_a_units_defect_is_still_caught_first(self) -> None:
         """`assert_tigge_identity` runs `assert_tp_units` internally — a
@@ -352,7 +399,146 @@ class TestAssertTiggeIdentity:
             init="2025-07-15T00:00:00",
         )
         with pytest.raises(TiggeUnitsError):
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
+
+
+class TestIdentityGateRejectsAPartialOrPerturbedSeason:
+    """D2/D6 — `--skip-retrieve` re-uses whatever GRIB is on disk. The gate
+    must therefore assert the EXACT one-season, control-forecast,
+    accumulated-from-forecast-start contract, not merely that no forbidden
+    year/month/hour appears: a half-downloaded season, a perturbed-member
+    file or an instantaneous field would all otherwise be screened and
+    reported as "JJAS TIGGE_YEAR"."""
+
+    def test_the_expected_schedule_is_the_full_jjas_00_12z_grid(self) -> None:
+        schedule = expected_init_schedule()
+        assert len(schedule) == 244  # 122 JJAS days x 2 inits (measured)
+        assert len(set(schedule)) == 244
+        assert min(schedule) == datetime(2025, 6, 1, 0)
+        assert max(schedule) == datetime(2025, 9, 30, 12)
+        assert {t.hour for t in schedule} == {0, 12}
+
+    def test_rejects_a_partial_season(self) -> None:
+        """THE `--skip-retrieve` DEFECT: one perfectly valid JJAS init is
+        not a season. Without an exact-schedule assertion this file passes
+        every year/month/hour check and is screened as the whole season."""
+        ds = _cf_dataset(
+            steps_h=[0, 6],
+            lat=np.array([30.0]),
+            lon=np.array([81.0]),
+            accum_mm=np.array([[0.0], [1.0]]),
+            init="2025-07-15T00:00:00",
+        )
+        with pytest.raises(TiggeIdentityError, match="partial season"):
             assert_tigge_identity(ds, expected_leadtime_hours=[0, 6])
+
+    def test_rejects_a_repeated_initialisation(self) -> None:
+        tp = xr.DataArray(
+            np.zeros((2, 2, 1), dtype=np.float32),
+            dims=("time", "step", "values"),
+            attrs={
+                "units": "kg m**-2",
+                "GRIB_dataType": "cf",
+                "GRIB_stepType": "accum",
+            },
+        )
+        ds = xr.Dataset(
+            {"tp": tp},
+            coords={
+                "time": (
+                    "time",
+                    np.array(
+                        ["2025-07-15T00:00:00", "2025-07-15T00:00:00"],
+                        dtype="datetime64[ns]",
+                    ),
+                ),
+                "step": ("step", np.array([0, 6], dtype="timedelta64[h]")),
+                "latitude": ("values", np.array([30.0])),
+                "longitude": ("values", np.array([81.0])),
+            },
+        )
+        with pytest.raises(TiggeIdentityError, match="repeats"):
+            assert_tigge_identity(
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_leadtime_hours=[0, 6],
+            )
+
+    def test_rejects_a_perturbed_member_file(self) -> None:
+        ds = _cf_dataset(
+            steps_h=[0, 6],
+            lat=np.array([30.0]),
+            lon=np.array([81.0]),
+            accum_mm=np.array([[0.0], [1.0]]),
+            data_type="pf",  # perturbed forecast — a different estimand
+        )
+        with pytest.raises(TiggeIdentityError, match="dataType"):
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
+
+    def test_rejects_a_non_accumulated_field(self) -> None:
+        ds = _cf_dataset(
+            steps_h=[0, 6],
+            lat=np.array([30.0]),
+            lon=np.array([81.0]),
+            accum_mm=np.array([[0.0], [1.0]]),
+            step_type="instant",
+        )
+        with pytest.raises(TiggeIdentityError, match="stepType"):
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
+
+    def test_rejects_a_field_that_does_not_accumulate_from_forecast_start(
+        self,
+    ) -> None:
+        """Measured: step 0 is exactly zero. A step-0 field already
+        carrying mass accumulates from somewhere else, so every
+        deaccumulated increment would be offset — silently."""
+        ds = _cf_dataset(
+            steps_h=[0, 6],
+            lat=np.array([30.0]),
+            lon=np.array([81.0]),
+            accum_mm=np.array([[7.0], [9.0]]),
+        )
+        with pytest.raises(TiggeIdentityError, match="accumulate from forecast start"):
+            assert_tigge_identity(
+                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+            )
+
+
+class TestLeadBandContract:
+    """D3 — 'A lead band is a COMPLEMENTARY STEP SET covering all four
+    6-hourly clock positions... Pooling would average a real
+    lead-dependence into one misleading number.' Nothing else in the suite
+    pins these literals, so silently dropping a clock position from a band
+    (or requesting a step axis that no longer covers a band's predecessor)
+    would only show up on a live re-pull."""
+
+    def test_bands_are_exactly_the_three_complete_six_hourly_sets(self) -> None:
+        assert LEAD_BANDS == {
+            "D+1": (24, 30, 36, 42),
+            "D+2": (48, 54, 60, 66),
+            "D+3": (72, 78, 84, 90),
+        }
+        for steps in LEAD_BANDS.values():
+            assert {h % 24 for h in steps} == {0, 6, 12, 18}
+
+    def test_the_requested_step_axis_covers_every_band_step_and_its_predecessor(
+        self,
+    ) -> None:
+        assert REQUEST_LEADTIME_HOURS[0] == 0
+        assert list(REQUEST_LEADTIME_HOURS) == list(
+            range(0, REQUEST_LEADTIME_HOURS[-1] + 1, 6)
+        )
+        requested = set(REQUEST_LEADTIME_HOURS)
+        for steps in LEAD_BANDS.values():
+            for step in steps:
+                assert step in requested
+                assert step - 6 in requested  # deaccumulation needs the neighbour
 
 
 class TestWriteTiggeAttribution:

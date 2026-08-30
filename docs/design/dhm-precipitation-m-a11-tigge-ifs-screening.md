@@ -1,7 +1,7 @@
 # DHM precipitation — M-A11 IFS diurnal timing re-evaluation (Plan 216 T3)
 
 **Plan 216 T1-T3. Written 2026-08-29 against a live TIGGE (ECDS) pull, JJAS 2025, ECMWF control
-forecast only.** Answers the question M-A9 §2 (Use 1) flagged but could not answer: does the
+forecast only; numbers corrected and regenerated 2026-08-30 (see Regenerate).** Answers the question M-A9 §2 (Use 1) flagged but could not answer: does the
 **operational ECMWF IFS forecast** share ERA5-Land's ~12 h monsoon diurnal phase error, or was that
 error an artefact of measuring a reanalysis whose convection scheme is frozen at a 2016-era IFS cycle?
 
@@ -19,23 +19,27 @@ DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
 
 Raw and extracted data: `data/dhm_precip/tigge/` (gitignored). Retrieved 2026-08-29, 17.8 MB,
 `data/dhm_precip/tigge/raw/tigge_ecmwf_cf_tp_jjas2025.grib`. Every number below is in
-`data/dhm_precip/tigge/points/tigge_gauge_timing_offsets.csv`, **regenerated 2026-08-29 (21:44) against
-the fixed D5 per-station estimator** (see next section) — the CSV committed alongside this doc's first
-draft used a pooled-mass aggregate a review round found violated D5's own "each station's cycle sums to
-100%" rule; every table and reading below is from the corrected run, not the first one.
+`data/dhm_precip/tigge/points/tigge_gauge_timing_offsets.csv`, **regenerated 2026-08-30 (07:50) against
+the corrected D5 normalisation** — an independent review found the screen normalised each clock hour's
+RAW TOTAL, while M-A6 divides each clock-hour total by its OWN OBSERVATION COUNT and normalises the
+resulting cycle of hourly MEANS. That is a different estimator, not a scale factor: with gappy coverage
+it weights each clock position by how many windows survived there. Both earlier tables (the first draft's
+pooled-mass aggregate and the 2026-08-29 21:44 per-station rerun) are superseded; every number below is
+from the 2026-08-30 run. Its `n` is unchanged from the 21:44 run in every as-labelled cell, so the
+movement in this table is the normalisation fix alone, not a changed sample.
 
-**T2 Verify's "the ERA5-Land figures regenerate unchanged from the same code path" is satisfied by
-CODE IDENTITY, not a fresh figure render:** `scripts/dhm_precip/diurnal_phase.py` is now the one
-TRACKED module both this screen and `era5_gauge_timing_figure.py` import their phase estimator from
-(`tests/unit/scripts/test_tigge_gauge_timing.py::TestCleanCheckoutImport` locks
-`tigge_gauge_timing.band_of is diurnal_phase.band_of`, an object-identity check strictly stronger than
-an output diff — two different functions can happen to agree on one figure's numbers, but cannot both
-be the literal same object unless they are). `era5_gauge_timing_figure.py` itself was not re-run as
-part of this fixer round: it lives under the gitignored `data/` tree (an M-A6 output artefact in a
-sibling checkout, outside this repo), nothing in the D5 refactor changes its inputs or its own code
-(only how it imports four helper functions it previously defined by dynamic path-load), and re-running
-it exercises no code this repo tracks or tests. Its own ERA5-Land numbers are therefore unaffected by
-this fix and are not restated here.
+**What T2 Verify's "the ERA5-Land figures regenerate unchanged from the same code path" does and does
+not cover.** `scripts/dhm_precip/diurnal_phase.py` is the one TRACKED module holding the phase
+estimator. The TRACKED consumer is identity-tested:
+`tests/unit/scripts/test_tigge_gauge_timing.py::TestCleanCheckoutImport` locks
+`tigge_gauge_timing.band_of is diurnal_phase.band_of` — an object-identity check strictly stronger than
+an output diff. ⚠️ **That test says nothing about `era5_gauge_timing_figure.py`**, which lives under the
+gitignored `data/` tree: no test and no CI job in this repo can reach it, so no claim here is
+CI-verified for it. It does import the same functions from the same module, and the two stale local
+`band_of`/`npt_label` definitions that were silently SHADOWING those imports (a Python name-resolution
+trap: the later `def` wins, so the file was quietly back on its own copies) have been deleted — but
+only a human re-running that script can confirm it stays that way. It was not re-run here, and its own
+ERA5-Land numbers are unaffected by this fix (nothing in the D5 refactor changes its inputs).
 
 ## D6 correction — the grid is not what the plan assumed
 
@@ -59,6 +63,11 @@ docstring for the full record.
 by 6 h (16 steps), `STUDY_AREA` (31/80/26/89), deaccumulated to 6-hourly period-ending increments,
 extracted to all 26 gauge stations by nearest grid point. 95,160 (station, init, lead) rows,
 3,276 station-days (distinct station x calendar-date pairs across the full retrieved lead range).
+The opened file is gated on its OWN attributes before any of this runs, so a stale or partial
+`--skip-retrieve` re-use cannot be screened as a season: the exact 244-init JJAS schedule (no
+duplicate, none missing), `GRIB_dataType == cf` (⛔ never a perturbed member), `GRIB_stepType ==
+accum`, `GRIB_centre == ecmf`, the 6-hourly 0-90 h lead axis, `kg m**-2` units, and step 0 == 0
+(accumulation really does run from forecast start). The real file passes all of them.
 
 **Comparison (T2):** lead-stratified (D3) into three COMPLETE bands (all four 6-hourly clock
 positions) — `D+1` (steps 24/30/36/42), `D+2` (48/54/60/66), `D+3` (72/78/84/90). There is no `D+0`:
@@ -70,12 +79,19 @@ estimated with M-A6's own harmonic-phase estimator (`harmonic_phase_h`/`same_day
 through the TRACKED `scripts/dhm_precip/diurnal_phase.py` module — imported by BOTH this screen's
 `tigge_gauge_timing.py` and `era5_gauge_timing_figure.py` so they run the exact same code path (D5),
 never a fork or a gitignored-file import a fresh checkout (or CI) cannot resolve. Each band's four
-active clock-hour totals go into an otherwise-zero 24-length share vector — mathematically identical to
-running the same first-harmonic transform on the 4 points directly — but D5 also pins the
+active clock-hour bins go into an otherwise-zero 24-length share vector — mathematically identical to
+running the same first-harmonic transform on the 4 points directly — as M-A6's own **hourly MEANS**:
+each clock hour's total is divided by that clock hour's OWN observation count before the cycle is
+normalised, so a clock position does not gain weight merely by retaining more windows. D5 also pins the
 **station-equal** aggregate: each station's own cycle is normalised independently (so it sums to 100%
 regardless of how many windows it contributed) and its own lag computed from that; every reported figure
 below is the MEDIAN across stations, never a pool of raw mass summed across stations first (which would
-let whichever station contributed the most windows dominate). Per D5, the season-year bootstrap and
+let whichever station contributed the most windows dominate). A station contributes only if its
+surviving pairs occupy **all four** clock positions — one to three cannot fit a diurnal cycle at all —
+and a non-finite value on either side (a carried T1 gap) is dropped at the pairing boundary and excluded
+from every `n`. The CSV carries the COMPLETE 3 lead bands x 3 elevation bands x 2 readings matrix with a
+`status` per cell, so a combination nothing supports is visible as such rather than an absent row; all
+18 cells are `ok` on this season. Per D5, the season-year bootstrap and
 24-bin completeness test are RETIRED for this screen (a one-season, 4-bin input degenerates both into
 false precision or false exclusion); every number below is a point estimate with its own `n` — both the
 window count and the **distinct (station, valid-date) station-day count**, reported separately since a
@@ -90,48 +106,62 @@ directly comparable. `n` is windows / station-days.
 
 | lead band | `< 1,000 m` (n stations) | `1,000-2,000 m` (n stations) | `≥ 2,000 m` (n stations) |
 |---|---|---|---|
-| D+1 | **−1.51 h** (8, n=2,940 / 842) | **−5.33 h** (9, n=3,498 / 956) | **−5.16 h** (6, n=2,168 / 620) |
-| D+2 | **−0.29 h** (8, n=2,915 / 835) | **−5.17 h** (9, n=3,479 / 951) | **−5.29 h** (6, n=2,155 / 616) |
-| D+3 | **−0.96 h** (8, n=2,888 / 828) | **−5.72 h** (9, n=3,461 / 946) | **−5.68 h** (6, n=2,140 / 612) |
+| D+1 | **−1.34 h** (8, n=2,940 / 842) | **−6.47 h** (9, n=3,498 / 956) | **−5.52 h** (6, n=2,168 / 620) |
+| D+2 | **−0.20 h** (8, n=2,915 / 835) | **−5.78 h** (9, n=3,479 / 951) | **−5.63 h** (6, n=2,155 / 616) |
+| D+3 | **−0.68 h** (8, n=2,888 / 828) | **−6.15 h** (9, n=3,461 / 946) | **−6.11 h** (6, n=2,140 / 612) |
+
+Superseded by the corrected normalisation, for the record (same cells, same `n`): D+1 −1.51 / −5.33 /
+−5.16 h, D+2 −0.29 / −5.17 / −5.29 h, D+3 −0.96 / −5.72 / −5.68 h. The low band moved ≤ 0.3 h toward
+zero and the mid/high bands 0.2-1.1 h further from it; no cell changed sign and no reading below
+changes as a result.
 
 **For reference, M-A9's ERA5-Land numbers** (JJAS 2020-2025, hourly, same sign convention,
 `< 1,000 / 1,000-2,000 / ≥ 2,000 m` bands): **+0.6 h / −14.4 h / −11.9 h**.
 
-### D7 alternate reading — gauge labels are really NPT (−6 h shift)
+### D7 alternate reading — gauge labels are really NPT (+6 h rotation)
 
-Reported alongside, never gating (D7): the mid and high bands land near zero (**−0.31 to −1.07 h** mid,
-**−0.53 to +0.45 h** high) — consistent with, though not identical to, the uniform +6 h shift the same
-hypothesis produces on ERA5-Land's between-band contrast. The low band does **not** behave as a clean
-rotation (`+2.22 h` at D+1 to `−4.30 h`/`−6.47 h` at D+2/D+3) — expected on real, gappy 6-hourly data:
-the two window alignments (ending at V vs. V+6) do not admit the identical set of complete windows, so a
-pure bin-rotation is only an idealisation here, not an exact prediction.
+Reported alongside, never gating (D7). This reading is now a **circular rotation of the very same
+contributing cycles**, not a second pairing: the windows and every `n` are identical to the primary
+reading, cell for cell (2,940 / 3,498 / 2,168 at D+1, and so on). An earlier revision rebuilt the
+pairing at the V+6 alignment instead, which admitted a slightly different set of complete windows
+(2,941 / 3,502 / 2,171) — a changed sample, which is exactly what D7 forbids.
+
+Under the rotation **every per-station offset shifts by exactly +6 h, by construction** (the gauge share
+vector is `np.roll`ed; nothing else moves). The reported band figure is the MEDIAN of those per-station
+offsets, and a median on a circle is not equivariant under rotation: whenever a station's shifted offset
+crosses the same-day branch cut at +6 h / −18 h it re-enters the median from the other end. So the band
+numbers shift by +6 h only where no station wraps — mid/high at D+1 (**−1.04 h**, **+0.48 h**) and D+2
+(**+0.22 h**, **−0.47 h**), high at D+3 (**−0.11 h**) — and by less (or, at D+3 low, by −6 h ≡ +18 h)
+where some do. That is a property of the branch cut, not of the sample, and it is why the primary
+reading remains the one the verdict is drawn from.
 
 ## Reading the result
 
 1. **The mid and high bands are NOT aligned.** Every lead in both bands is resolved well beyond the
-   ±3 h bound — a ~5-6 h same-direction offset is roughly 2x the finest lag D4 permits distinguishing
-   from zero. IFS shares ERA5-Land's DIRECTION of error (model too early) in the same two bands ERA5-
-   Land flagged.
-2. **The MAGNITUDE is smaller than ERA5-Land's, not the same.** Mid band ~36-40% of ERA5-Land's
-   −14.4 h (−5.17 to −5.72 h, roughly flat across D+1-D+3); high band ~43-48% of ERA5-Land's −11.9 h
-   (−5.16 to −5.68 h, mildly increasing with lead). This is the expected direction for D3's "early
-   leads inherit the analysis, later leads relax onto the model's attractor" — but three days of lead
-   is not enough sample to say whether either trend would continue toward ERA5-Land's number at
-   longer leads (this plan's D2 scope is one season at leads to D+3; that question is open, not
-   answered here).
-3. **The low band is not resolved beyond zero at any lead** (−1.51, −0.29, −0.96 h — every value is
-   inside the ±3 h D4 bound), consistent with ERA5-Land's own near-zero low-band number (+0.6 h): this
-   screen cannot distinguish the low band from no error at all, at any of the three leads measured.
+   ±3 h bound — a ~5.5-6.5 h same-direction offset is roughly 2x the finest lag D4 permits
+   distinguishing from zero. IFS shares ERA5-Land's DIRECTION of error (model too early) in the same
+   two bands ERA5-Land flagged.
+2. **The MAGNITUDE is smaller than ERA5-Land's, not the same.** Mid band ~40-45% of ERA5-Land's
+   −14.4 h (−5.78 to −6.47 h, non-monotonic across D+1-D+3, so not a trend); high band ~46-51% of
+   ERA5-Land's −11.9 h (−5.52 to −6.11 h, mildly increasing with lead). A drift toward the reanalysis
+   number at longer leads is the direction D3 anticipates ("early leads inherit the analysis, later
+   leads relax onto the model's attractor") — but three days of lead, on one season, is not enough to
+   say whether it continues (this plan's D2 scope is one season at leads to D+3; that question is
+   open, not answered here).
+3. **The low band is not resolved beyond zero at any lead** (−1.34, −0.20, −0.68 h — every value is
+   inside the ±3 h D4 bound, and closer to zero than the superseded run's), consistent with
+   ERA5-Land's own near-zero low-band number (+0.6 h): this screen cannot distinguish the low band
+   from no error at all, at any of the three leads measured.
 4. **Neither pole of the plan's own decision rule applies cleanly.** This is not "apparent alignment"
    (mid/high bands are clearly non-zero) and it is not "a repeated half-day (~12 h) displacement" either
-   — the measured displacement is real, resolved, and repeated, but at roughly a third to a half of
-   ERA5-Land's magnitude.
+   — the measured displacement is real, resolved, and repeated, but at roughly 40-50% of ERA5-Land's
+   magnitude.
 
 ## Verdict (bounded by D4)
 
 **NO-GO on deploying the originally proposed ~12 h correction as designed** — IFS's own measured
-displacement in the two affected bands is roughly a third to a half of that magnitude; applying
-ERA5-Land's larger correction to IFS forcing would systematically over-correct.
+displacement in the two affected bands is roughly 40-50% of that magnitude; applying ERA5-Land's
+larger correction to IFS forcing would systematically over-correct, by ~6-9 h.
 
 **GO on finer-resolution correction work, calibrated to IFS itself rather than to ERA5-Land** — the
 mid/high-band error is real (well beyond the ±3 h bound), repeated across three correlated lead strata
@@ -142,8 +172,8 @@ from THIS measurement (not from M-A9's ERA5-Land numbers) is now evidence-suppor
 The low band is unresolved from zero at every lead measured, so any correction there is on much weaker
 ground and should not simply mirror the upper bands' sign.
 
-This conclusion does **not** extend to "no timing correction is needed" (D4) — a ~5-6 h, well-resolved,
-repeated error is not "no error", even though it is smaller than first thought.
+This conclusion does **not** extend to "no timing correction is needed" (D4) — a ~5.5-6.5 h,
+well-resolved, repeated error is not "no error", even though it is smaller than ERA5-Land's.
 
 ## Attribution
 

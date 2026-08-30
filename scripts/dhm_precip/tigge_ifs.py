@@ -19,8 +19,10 @@ grid-geometry claim was wrong.
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -58,6 +60,13 @@ TIGGE_DATA_FORMAT = "grib"
 TIGGE_YEAR = 2025
 TIGGE_MONTHS: tuple[int, ...] = (6, 7, 8, 9)
 TIGGE_INIT_HOURS_UTC: tuple[int, ...] = (0, 12)
+
+# D6, MEASURED 2026-08-29 on the real file: the GRIB's own type/step
+# attributes. `cf` is the CONTROL forecast — a perturbed-member file
+# (`pf`) is a different estimand entirely (T1 `In`: "⛔ Control-only is
+# deliberate"), and `accum` is what makes deaccumulation meaningful.
+EXPECTED_DATA_TYPE = "cf"
+EXPECTED_STEP_TYPE = "accum"
 
 # D6: N/W/S/E, exactly STUDY_AREA. The corrected grid-shape note above
 # applies to what comes BACK, not to this request box, which is unchanged.
@@ -201,6 +210,25 @@ def assert_tp_units(ds: xr.Dataset, *, variable: str = TIGGE_DATA_VAR_NAME) -> N
         )
 
 
+def expected_init_schedule(
+    *,
+    year: int = TIGGE_YEAR,
+    months: Sequence[int] = TIGGE_MONTHS,
+    init_hours_utc: Sequence[int] = TIGGE_INIT_HOURS_UTC,
+) -> tuple[datetime, ...]:
+    """The EXACT set of initialisations D2's one season must contain —
+    every calendar day of `months` in `year` at every hour of
+    `init_hours_utc` (JJAS 2025 x 00/12 UTC = 244, measured on the real
+    file). Derived, never hard-coded, so a different season is expressible
+    without a second literal to keep in sync."""
+    return tuple(
+        datetime(year, month, day, hour)
+        for month in months
+        for day in range(1, calendar.monthrange(year, month)[1] + 1)
+        for hour in init_hours_utc
+    )
+
+
 def assert_tigge_identity(
     ds: xr.Dataset,
     *,
@@ -208,14 +236,35 @@ def assert_tigge_identity(
     expected_year: int = TIGGE_YEAR,
     expected_months: Sequence[int] = TIGGE_MONTHS,
     expected_init_hours_utc: Sequence[int] = TIGGE_INIT_HOURS_UTC,
+    expected_init_times: Sequence[datetime] | None = None,
     variable: str = TIGGE_DATA_VAR_NAME,
 ) -> None:
-    """D2/D6/T1 Verify — the file's own init axis, lead axis and (where
-    available) source attribute must actually BE the one JJAS
-    `expected_year` control-forecast request this module issues, never
-    assumed from a filename or a `--skip-retrieve` re-use. Raises
-    `TiggeIdentityError` on any mismatch."""
+    """D2/D6/T1 Verify — the file's own init axis, lead axis, type/step
+    attributes, source attribute and forecast-start accumulation must
+    actually BE the one JJAS `expected_year` CONTROL-forecast request this
+    module issues, never assumed from a filename or a `--skip-retrieve`
+    re-use. Raises `TiggeIdentityError` on any mismatch.
+
+    `expected_init_times` defaults to the FULL `expected_init_schedule()` —
+    the gate is strict by default, so a half-downloaded season is rejected
+    rather than screened and reported as "JJAS `expected_year`". Tests
+    (and only tests) narrow it to the single init their fixture carries."""
     assert_tp_units(ds, variable=variable)
+
+    attrs = ds[variable].attrs
+    data_type = str(attrs.get("GRIB_dataType") or "").strip().lower()
+    if data_type != EXPECTED_DATA_TYPE:
+        raise TiggeIdentityError(
+            f"GRIB dataType is {data_type!r}; expected {EXPECTED_DATA_TYPE!r} "
+            "(ECMWF CONTROL forecast) — a perturbed-member file is a "
+            "different estimand, not this screen's"
+        )
+    step_type = str(attrs.get("GRIB_stepType") or "").strip().lower()
+    if step_type != EXPECTED_STEP_TYPE:
+        raise TiggeIdentityError(
+            f"GRIB stepType is {step_type!r}; expected {EXPECTED_STEP_TYPE!r} — "
+            "deaccumulation is only meaningful on an accumulated field"
+        )
 
     init_times = np.atleast_1d(ds["time"].values).astype("datetime64[s]").astype(object)
     bad_years = sorted({t.year for t in init_times if t.year != expected_year})
@@ -242,6 +291,33 @@ def assert_tigge_identity(
             f"{sorted(expected_init_hours_utc)} UTC"
         )
 
+    expected_inits = sorted(
+        expected_init_times
+        if expected_init_times is not None
+        else expected_init_schedule(
+            year=expected_year,
+            months=expected_months,
+            init_hours_utc=expected_init_hours_utc,
+        )
+    )
+    actual_inits = sorted(init_times)
+    duplicates = sorted({t for t in actual_inits if actual_inits.count(t) > 1})
+    if duplicates:
+        raise TiggeIdentityError(
+            f"init axis repeats {len(duplicates)} initialisation(s) "
+            f"(first: {duplicates[0]}) — every init must appear exactly once"
+        )
+    if actual_inits != expected_inits:
+        missing = sorted(set(expected_inits) - set(actual_inits))
+        extra = sorted(set(actual_inits) - set(expected_inits))
+        raise TiggeIdentityError(
+            f"init axis has {len(actual_inits)} initialisation(s); expected "
+            f"exactly {len(expected_inits)} "
+            f"({len(missing)} missing, first {missing[0] if missing else None}; "
+            f"{len(extra)} unexpected, first {extra[0] if extra else None}) — "
+            "a partial season must never be screened as a whole one"
+        )
+
     steps_h = sorted((ds["step"].values / np.timedelta64(1, "h")).astype(int).tolist())
     expected_steps = sorted(expected_leadtime_hours)
     if steps_h != expected_steps:
@@ -264,6 +340,24 @@ def assert_tigge_identity(
             f"GRIB centre attribute is {centre!r}; expected 'ecmf' (ECMWF) — "
             "this file's origin does not match the D6 request"
         )
+
+    # D6 — accumulation runs from FORECAST START (measured: step 0 is
+    # exactly zero, no daily reset). `deaccumulate` differences neighbours,
+    # so a file whose step-0 field already carries mass is accumulating
+    # from somewhere else and every increment would be wrong by that
+    # offset. NaN is left alone here: T1 carries gaps, it never fills them.
+    axis_steps_h = (ds["step"].values / np.timedelta64(1, "h")).astype(int)
+    if 0 in axis_steps_h.tolist():
+        # ⛔ index the file's OWN step axis, never the sorted copy above.
+        zero_step = ds[variable].isel(step=int(np.argmin(np.abs(axis_steps_h)))).values
+        over = np.abs(zero_step) > PACKING_TOLERANCE_MM
+        if bool(over.any()):
+            raise TiggeIdentityError(
+                f"{int(over.sum())} step-0 value(s) exceed "
+                f"{PACKING_TOLERANCE_MM} mm (max "
+                f"{float(np.nanmax(np.abs(zero_step))):.4g}) — this field does "
+                "not accumulate from forecast start"
+            )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -320,6 +414,13 @@ def deaccumulate(
         values = raw[order, :]  # (step, points), kg m**-2 == mm
         for i in range(1, len(steps_h)):
             diff = values[i] - values[i - 1]
+            # A masked/absent raw point produces a NaN increment. T1 CARRIES
+            # gaps (never fills them, never reads them as observations), so
+            # NaN passes through both the negativity test (NaN < x is False)
+            # and `np.clip` unchanged. It is rejected — and excluded from
+            # every `n` — at the paired-statistic boundary
+            # (`tigge_gauge_timing.restrict_to_pinned_season`), which is the
+            # only place a non-finite value could otherwise poison a phase.
             material_negative = diff < -PACKING_TOLERANCE_MM
             if bool(material_negative.any()):
                 count = int(material_negative.sum())
