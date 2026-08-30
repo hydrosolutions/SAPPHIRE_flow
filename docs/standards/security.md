@@ -14,9 +14,9 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
 §Authentication (v1) — OAuth2 sessions, TOTP MFA, JWT/refresh tokens, dashboard user management, the
 5-role human matrix — remains the **v1.x target** and is not yet built.
 
-- **Two roles only**: `consumer` (read, station-scoped via `access_token_stations`) and `admin`
-  (read, unscoped + CLI token/tenant management). No session roles, no `operator`/`forecaster` role,
-  no third HTTP role.
+- **Two roles only**: `consumer` (read, station-scoped — the scope resolved in one of two
+  `scope_mode`s, below) and `admin` (read, unscoped + CLI
+  token/tenant management). No session roles, no `operator`/`forecaster` role, no third HTTP role.
 - **Access tokens are strictly GET-only** — no bearer key of any role may POST/PATCH/DELETE. The
   sole state-changing v0/v1.0 route, `POST /alerts/{id}/acknowledge`, is removed from the v1.0 surface
   (returns `501`); it returns with the Flow 3 dashboard + session tokens in v1.x.
@@ -49,16 +49,23 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   reaches, with per-endpoint station-scope filtering.
 - **Scope contract narrowed to the station axis only for v1.0.** § API key lifecycle below documents
   a 3-axis scope (station + parameter + geographic boundary) as the full v1 design; v1.0 implements
-  **only** the station axis (`access_token_stations`, a normalized join, not JSONB). Parameter and
-  geographic scoping are **deferred to v1.x**. Empty scope = a consumer sees nothing (fail-closed);
-  out-of-scope station ids return 404 (not 403 — do not reveal existence); a null (stationless)
+  **only** the station axis, resolved in one of two `scope_mode`s (Plan 215 D2.1): `'stations'` (the
+  default) is a normalized `access_token_stations` join, not JSONB; `'tenant'` derives the scope from
+  `stations.tenant_id` at load time instead — no materialised rows, so a station added to the tenant
+  after the token is in scope immediately, at the cost of being unfiltered by network/station kind
+  (`cicd.md` § access-token runbook). Parameter and geographic scoping are **deferred to v1.x**.
+  Empty scope = a consumer sees nothing (fail-closed); out-of-scope station ids return 404 (not 403 —
+  do not reveal existence); a null (stationless)
   `station_id` (e.g. some `alerts` rows) is never in a consumer's scope either.
 - **CORS**: `SAPPHIRE_CORS_ORIGINS="*"` is rejected at API startup once auth is enforced (a wildcard
   origin would let any site's JS ride a browser-held bearer token). Unset = no CORS middleware
   (same-origin only); set an explicit comma-separated origin list for a browser-based consumer.
-- **`create-admin` / `create` / `list` / `revoke` CLI** — see § Initial deployment bootstrap and
-  § API key lifecycle management below. In-place `rotate`/scope-edit are deferred to v1.x; v1.0
-  rotation = `revoke` + `create` (re-materializing the token's scope rows).
+- **`create-admin` / `create` / `list` / `revoke` / `show` / `grant` / `revoke-station` /
+  `set-scope-mode` CLI** — see § Initial deployment bootstrap below and `cicd.md` § access-token
+  runbook. The last four are Plan 215 (T1/T2/T6): a token's station scope now has a supported edit
+  path, so scope-edit is **no longer** deferred to v1.x. In-place key **rotation** is still deferred;
+  v1.0 rotation = `revoke` + `create` (re-materializing the token's scope rows, or re-running
+  `set-scope-mode` for a `'tenant'`-mode token).
 - **Least-privilege DB roles are REALIZED** (Plan 147 Slice D — see § Least-privilege DB roles below):
   the app runs as scoped `sapphire_api`/`sapphire_worker` roles (never the owner/migration superuser),
   each with its own credential, per-table grants (not blanket `UPDATE`/`DELETE`), and no
@@ -899,8 +906,10 @@ creates two scoped, non-superuser roles and grants them per-table:
 
 - **`sapphire_api`** — connects as itself (`docker-compose.yml` `DATABASE_URL_TEMPLATE`), its own
   Docker secret (`sapphire_api_db_password`, distinct from the owner's `db_password`). Broad
-  `SELECT`; `INSERT`/`UPDATE` on `access_tokens`; `INSERT` on `access_token_stations`; `INSERT`-only
-  on `audit_log`. No write grant on any other domain table — matches the GET-only HTTP surface (G4).
+  `SELECT`; `INSERT`/`UPDATE` on `access_tokens`; `INSERT`, `DELETE` on `access_token_stations`
+  (`DELETE` added Plan 215 T7 — `revoke-station` and the `set-scope-mode ... tenant` cleanup both
+  delete grant rows, running as this role); `INSERT`-only on `audit_log`. No write grant on any other
+  domain table — matches the GET-only HTTP surface (G4).
 - **`sapphire_worker`** — connects as itself (`prefect-worker`/`prefect-worker-ingest`), its own
   secret (`sapphire_worker_db_password`). Broad `SELECT`; per-table `INSERT`/`UPDATE`/`DELETE` on the
   domain tables the flow/CLI write paths actually write (see `conventions.md` § Service users for the

@@ -147,7 +147,11 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO sapphire_api, sapphire_
 -- UPDATE/DELETE on audit_log — defense-in-depth atop the role-independent
 -- append-only trigger (migration 0046), not the primary guarantee.
 GRANT INSERT, UPDATE ON access_tokens TO sapphire_api;
-GRANT INSERT ON access_token_stations TO sapphire_api;
+-- Plan 215 T7: DELETE added alongside the pre-existing INSERT — the
+-- `revoke-station` verb and the `set-scope-mode ... tenant` cleanup both
+-- delete now-obsolete grant rows, and ran as sapphire_api (the role the CLI
+-- connects as inside the `api` container) they need it.
+GRANT INSERT, DELETE ON access_token_stations TO sapphire_api;
 GRANT INSERT ON audit_log TO sapphire_api;
 
 -- sapphire_worker (conventions.md § Service users): the flow/CLI write paths

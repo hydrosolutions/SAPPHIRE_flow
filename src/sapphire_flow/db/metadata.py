@@ -1683,10 +1683,24 @@ access_tokens = sa.Table(
         server_default=sa.func.now(),
     ),
     sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "scope_mode",
+        sa.Text,
+        nullable=False,
+        server_default="stations",
+    ),
     sa.CheckConstraint(
         "(role = 'admin' AND tenant_id IS NULL) OR "
         "(role = 'consumer' AND tenant_id IS NOT NULL)",
         name="ck_access_tokens_role_tenant",
+    ),
+    sa.CheckConstraint(
+        "scope_mode IN ('stations', 'tenant')",
+        name="ck_access_tokens_scope_mode",
+    ),
+    sa.CheckConstraint(
+        "scope_mode = 'stations' OR role = 'consumer'",
+        name="ck_access_tokens_tenant_mode_is_consumer",
     ),
     sa.Index("ix_access_tokens_key_prefix", "key_prefix", unique=True),
     sa.Index("ix_access_tokens_expires_at", "expires_at"),

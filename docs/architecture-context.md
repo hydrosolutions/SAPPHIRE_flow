@@ -2346,7 +2346,7 @@ that supersedes the design-intent sketch below it in most respects (see security
 subset for the authoritative v1.0 contract):
 
 ```
-access_tokens:                           # ACTUAL v1.0 shape (migration 0047)
+access_tokens:                           # ACTUAL v1.0 shape (migration 0047 + 0049)
   id: UUID PK
   token_hash: TEXT UNIQUE                # HMAC-SHA-256(access_token_pepper, raw_secret) — NOT bcrypt (R1)
   key_prefix: TEXT                       # fast pre-verification lookup key, indexed
@@ -2358,11 +2358,16 @@ access_tokens:                           # ACTUAL v1.0 shape (migration 0047)
   disabled_at: TIMESTAMPTZ NULL          # NULL = active (NOT `revoked_at`)
   created_at: TIMESTAMPTZ
   last_used_at: TIMESTAMPTZ NULL
+  scope_mode: TEXT DEFAULT 'stations'    # 'stations' | 'tenant' — Plan 215 D2.1, migration 0049
 
 access_token_stations:                   # the R2-LOCKED normalized scope join — NOT a JSONB `scope` column
   token_id: UUID PK,FK → access_tokens.id
   station_id: UUID PK,FK → stations.id
   created_at: TIMESTAMPTZ
+  # Plan 215 D2.2: this join is authoritative ONLY when scope_mode='stations' (the default).
+  # In scope_mode='tenant' the token's scope is DERIVED at load time from
+  # stations.tenant_id == access_tokens.tenant_id instead — this table stays
+  # empty for a 'tenant'-mode token (grant rows are deleted on the switch).
 ```
 
 Indexes: `(key_prefix)`, `(expires_at)`. No `(token_hash)` lookup index — verification looks up by

@@ -287,8 +287,12 @@ class AuditActorType(Enum):
     SYSTEM = "system"
 
 class AccessTokenRole(Enum):    # Plan 147 Slice C: v1.0 headless HTTP role model — exactly 2 roles, both GET-only
-    CONSUMER = "consumer"       # read, station-scoped (access_token_stations)
+    CONSUMER = "consumer"       # read, station-scoped (mode per ScopeMode — Plan 215 D2.1)
     ADMIN = "admin"             # read, unscoped + CLI token/tenant management
+
+class ScopeMode(Enum):          # Plan 215 D2.1: how a consumer token's station_ids is resolved
+    STATIONS = "stations"       # default — reads the access_token_stations join
+    TENANT = "tenant"           # derived at load time from stations.tenant_id; admin can never use this
 
 class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent to runtime
     LOGIN = "login"
@@ -299,6 +303,7 @@ class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent 
     USER_DEACTIVATED = "user_deactivated"
     API_KEY_CREATED = "api_key_created"
     API_KEY_REVOKED = "api_key_revoked"
+    API_KEY_SCOPE_CHANGED = "api_key_scope_changed"  # additive (Plan 215 T1/T6)
     API_KEY_REQUEST = "api_key_request"
     FORECAST_STATUS_CHANGE = "forecast_status_change"
     FORECAST_ADJUSTED = "forecast_adjusted"
@@ -1261,7 +1266,8 @@ not import it.
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AccessToken:
     """The `access_tokens` row (v1.0 headless, Plan 147 Slice C — supersedes
-    the old consumer_name/AccessTokenScope/created_by/revoked_at sketch)."""
+    the old consumer_name/AccessTokenScope/created_by/revoked_at sketch).
+    Plan 215 D2.1 adds `scope_mode`."""
 
     id: AccessTokenId
     token_hash: str                      # HMAC-SHA-256(pepper, raw_secret) hex digest — R1
@@ -1274,18 +1280,31 @@ class AccessToken:
     disabled_at: UtcDatetime | None      # None = active
     created_at: UtcDatetime
     last_used_at: UtcDatetime | None     # None = never used
-    station_ids: frozenset[StationId]    # access_token_stations scope join (R2); consumer-only
+    station_ids: frozenset[StationId]    # scope, source depends on scope_mode (R2/D2.2); consumer-only
+    scope_mode: ScopeMode                # STATIONS (default, join) | TENANT (derived) — Plan 215 D2.1
 ```
 
-Module: `types/auth.py`. **Status**: **implemented** (Plan 147 Slice C, 2026-07-24). Table + migration
-0047 (`access_tokens` + `access_token_stations`); store `store/access_token_store.py::PgAccessTokenStore`
-(scope-membership validated against the token's own `tenant_id` at `create_token`, raising
-`CrossTenantScopeError` on a cross-tenant station id); the FastAPI auth boundary
+Module: `types/auth.py`. **Status**: **implemented** (Plan 147 Slice C, 2026-07-24; `scope_mode` added
+Plan 215, migration 0049). Table + migration 0047 (`access_tokens` + `access_token_stations`) plus 0049
+(`scope_mode` column + its two CHECK constraints); store
+`store/access_token_store.py::PgAccessTokenStore` (scope-membership validated against the token's own
+`tenant_id` at `create_token`, raising `CrossTenantScopeError` on a cross-tenant station id — the SAME
+invariant `PgAccessTokenStore.grant_station` reuses, Plan 215 T1). `station_ids`' SOURCE branches on
+`scope_mode` at load time (`_row_to_token`): `'stations'` mode (the default) reads the
+`access_token_stations` join and re-validates it against `tenant_id` (fail-closed re-check, unchanged);
+`'tenant'` mode instead derives the set from `stations.tenant_id == tenant_id`, deliberately unfiltered
+by `network`/`station_kind` — no materialised copy, so a station added to the tenant after the token
+existed is in scope immediately, and `_assert_stations_in_tenant` is skipped (the tenant predicate that
+produced the set IS the assertion). The FastAPI auth boundary
 (`api/security.py::require_principal`/`require_admin`) resolves a Bearer header to a `Principal`
 (a request-scoped API-boundary type, distinct from the persisted `AccessToken` row) on the request's
-own read connection. CLI: `python -m sapphire_flow.cli.access_tokens {create,list,revoke,create-admin}`.
-Deferred to v1.x: `AccessTokenScope`'s parameter/geographic axes, in-place rotation, dashboard key
-management.
+own read connection — `Principal.station_in_scope` and every call site are UNCHANGED by `scope_mode`;
+they still receive a plain `frozenset[StationId]` and cannot tell which mode produced it.
+CLI: `python -m sapphire_flow.cli.access_tokens {create,list,revoke,create-admin,show,grant,
+revoke-station,set-scope-mode}` — the last four are Plan 215 (T1/T2/T6): a token's station scope now
+has a supported lifecycle (widen/narrow/re-source), not just create-with-scope and revoke-the-whole-
+token. Deferred to v1.x: `AccessTokenScope`'s parameter/geographic axes, in-place key rotation,
+dashboard key management.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -2970,7 +2989,13 @@ class AuditLogStore(Protocol):
 
 Plan 147 Slice C: `access_tokens` + `access_token_stations` scope. `create_token` validates every
 scoped station belongs to the token's own `tenant_id` (R2), raising `CrossTenantScopeError` (a
-`ValueError` subclass) on a cross-tenant station id — never silently dropping it.
+`ValueError` subclass) on a cross-tenant station id — never silently dropping it. Plan 215 T1 adds
+`grant_station`/`revoke_station`, giving an EXISTING token's scope a supported edit path (previously
+only `create_token`-with-scope and whole-token `revoke_token` existed); `grant_station` reuses the
+SAME `_assert_stations_in_tenant` invariant `create_token` enforces, not a second copy. Scope
+resolution on the READ path (`fetch_by_key_prefix`/`fetch_token`/`fetch_all_tokens`) branches on the
+row's `scope_mode` (D2.2) — `'stations'` reads the join, `'tenant'` derives from `stations.tenant_id`
+— but that branch is internal to `_row_to_token`; the Protocol surface below is unchanged by it.
 
 ```python
 class AccessTokenStore(Protocol):
@@ -2979,6 +3004,15 @@ class AccessTokenStore(Protocol):
     def fetch_token(self, token_id: AccessTokenId) -> AccessToken | None: ...
     def fetch_all_tokens(self) -> list[AccessToken]: ...
     def revoke_token(self, token_id: AccessTokenId, *, revoked_at: UtcDatetime) -> None: ...
+    def grant_station(
+        self, token_id: AccessTokenId, station_id: StationId, *, tenant_id: TenantId | None
+    ) -> None: ...
+        # Plan 215 T1. Idempotent (ON CONFLICT DO NOTHING). Raises CrossTenantScopeError
+        # via the same _assert_stations_in_tenant check create_token uses.
+    def revoke_station(self, token_id: AccessTokenId, station_id: StationId) -> bool: ...
+        # Plan 215 T1. Idempotent — returns False (not an error) when the station
+        # was already out of scope, so the caller can report that rather than
+        # claim a change that did not happen.
 ```
 
 #### RatingCurveStore

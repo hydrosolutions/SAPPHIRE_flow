@@ -86,9 +86,9 @@ class TestAuditEventType:
     def test_exists_as_runtime_enum(self) -> None:
         _require_audit_event_type()
 
-    def test_has_exactly_seventeen_values(self) -> None:
+    def test_has_exactly_eighteen_values(self) -> None:
         audit_event_type = _require_audit_event_type()
-        assert len(audit_event_type) == 17
+        assert len(audit_event_type) == 18
 
     def test_values_match_spec_plus_additive_members(self) -> None:
         audit_event_type = _require_audit_event_type()
@@ -101,6 +101,7 @@ class TestAuditEventType:
             "user_deactivated",
             "api_key_created",
             "api_key_revoked",
+            "api_key_scope_changed",
             "api_key_request",
             "forecast_status_change",
             "forecast_adjusted",
@@ -122,6 +123,7 @@ class TestAuditEventType:
         audit_event_type = _require_audit_event_type()
         assert audit_event_type.API_KEY_CREATED.value == "api_key_created"
         assert audit_event_type.API_KEY_REVOKED.value == "api_key_revoked"
+        assert audit_event_type.API_KEY_SCOPE_CHANGED.value == "api_key_scope_changed"
         assert audit_event_type.MODEL_PROMOTED.value == "model_promoted"
         assert audit_event_type.MODEL_REJECTED.value == "model_rejected"
 
@@ -129,6 +131,35 @@ class TestAuditEventType:
         audit_event_type = _require_audit_event_type()
         for member in audit_event_type:
             assert audit_event_type(member.value) is member
+
+
+class TestScopeMode:
+    """Plan 215 D2.1/T5: exactly two modes, `stations` (default, matches
+    every pre-215 token) and `tenant` (D2.2's derived-scope mode)."""
+
+    def test_has_exactly_two_values(self) -> None:
+        from sapphire_flow.types.enums import ScopeMode
+
+        assert {m.value for m in ScopeMode} == {"stations", "tenant"}
+
+    def test_round_trips_from_string(self) -> None:
+        from sapphire_flow.types.enums import ScopeMode
+
+        for member in ScopeMode:
+            assert ScopeMode(member.value) is member
+
+    def test_unknown_value_fails_closed(self) -> None:
+        """T5's fail-closed parse test (construction specified, round 2):
+        `_row_to_token` parses `row["scope_mode"]` through `ScopeMode(...)`
+        — an out-of-band value the DB CHECK constraint did not catch (there
+        is no code path that stages one; this pins the parse itself) must
+        raise, never silently degrade into 'no mode, assume tenant'."""
+        import pytest
+
+        from sapphire_flow.types.enums import ScopeMode
+
+        with pytest.raises(ValueError, match="garbage"):
+            ScopeMode("garbage")
 
 
 class TestPipelineCheckTypeRecapSnowReanalysisIngest:

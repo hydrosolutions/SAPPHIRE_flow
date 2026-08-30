@@ -53,6 +53,22 @@ class TestCliFailsClosedWithoutPepperForEverySubcommand:
         with pytest.raises(PepperNotConfiguredError):
             main(["create-admin", "--name", "boot"])
 
+    def test_show_fails_closed(self) -> None:
+        with pytest.raises(PepperNotConfiguredError):
+            main(["show", str(uuid4())])
+
+    def test_grant_fails_closed(self) -> None:
+        with pytest.raises(PepperNotConfiguredError):
+            main(["grant", str(uuid4()), str(uuid4())])
+
+    def test_revoke_station_fails_closed(self) -> None:
+        with pytest.raises(PepperNotConfiguredError):
+            main(["revoke-station", str(uuid4()), str(uuid4())])
+
+    def test_set_scope_mode_fails_closed(self) -> None:
+        with pytest.raises(PepperNotConfiguredError):
+            main(["set-scope-mode", str(uuid4()), "tenant"])
+
     def test_whitespace_only_env_pepper_fails_closed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -99,3 +115,29 @@ class TestPrintTokenRow:
         # consumer row (a UUID is already 36 chars) but misaligns the admin one.
         assert "tenant=4b0f12d4-24da-4d2f-bf32-38eaaacdf214  active  " in consumer
         assert "tenant=-" + " " * 35 + "  active  " in admin
+
+
+class TestArgumentParsingForNewVerbs:
+    """Plan 215 T1/T2/T6: argparse validation happens BEFORE the pepper
+    check, so these raise SystemExit(2) with no DB and no pepper needed —
+    exercising the CLI argument parsing the plan's exit criteria call for."""
+
+    def test_grant_requires_a_station_id(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["grant", str(uuid4())])
+
+    def test_revoke_station_requires_a_station_id(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["revoke-station", str(uuid4())])
+
+    def test_show_requires_a_token_id(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["show"])
+
+    def test_set_scope_mode_requires_a_mode(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["set-scope-mode", str(uuid4())])
+
+    def test_set_scope_mode_rejects_an_invalid_mode_choice(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["set-scope-mode", str(uuid4()), "not-a-real-mode"])
