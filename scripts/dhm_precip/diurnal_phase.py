@@ -1,27 +1,17 @@
 """Shared circular diurnal-phase estimator (D5, M-A9 / Plan 216 M-A11).
 
-TRACKED so every consumer imports the SAME functions from the SAME file on
-a fresh checkout. Before this module existed, the M-A11 TIGGE-IFS screen
-(`tigge_gauge_timing.py`) dynamically loaded these functions BY PATH from
-`data/dhm_precip/figures/era5-timing/era5_gauge_timing_figure.py` — an
-M-A6 output artefact under the gitignored `data/` tree, present only via a
-local symlink into the sibling checkout. That made unit-test collection
-(and CI, which never provisions `data/`) fail with `FileNotFoundError` on
-any clean clone. The implementation here is unchanged byte-for-byte from
-that file's original `harmonic_phase_h`/`same_day_branch`/`principal_branch`
-/`band_of`/`npt_label`.
+TRACKED so every consumer imports the SAME functions from the SAME file on a
+fresh checkout. The M-A11 TIGGE-IFS screen previously loaded them BY PATH
+from `data/dhm_precip/figures/era5-timing/era5_gauge_timing_figure.py`, a
+gitignored M-A6 output artefact, which made unit-test collection (and CI,
+which never provisions `data/`) fail on any clean clone.
 
-⚠️ SCOPE OF THE D5 REUSE CLAIM. The TRACKED consumer
+⚠️ SCOPE OF THE D5 REUSE CLAIM. Only the TRACKED consumer
 (`tigge_gauge_timing.py`) is identity-tested against this module
-(`tests/unit/scripts/test_tigge_gauge_timing.py::TestCleanCheckoutImport`
-asserts `tigge_gauge_timing.band_of is diurnal_phase.band_of`).
-`era5_gauge_timing_figure.py` imports the same functions from here, but it
-lives under the gitignored `data/` tree, so NO test and NO CI job can reach
-it — its use of this module is unverified by this repo, and nothing here
-may be read as a CI-backed guarantee about it. (An earlier revision of that
-file imported these names and then re-`def`d `band_of`/`npt_label` locally,
-silently shadowing the import; the stale definitions were deleted, but only
-a human running that script can confirm it stays that way.)
+(`test_tigge_gauge_timing.py::TestCleanCheckoutImport`).
+`era5_gauge_timing_figure.py` imports the same functions but lives outside
+the repo tree, so no test and no CI job here can reach it; nothing about it
+is verified by this repo.
 """
 
 from __future__ import annotations
@@ -45,6 +35,8 @@ def harmonic_phase_h(weights: np.ndarray) -> float:
 
 
 def harmonic_amplitude(weights: np.ndarray) -> float:
+    """Magnitude of that first harmonic, as a fraction of the cycle's mass —
+    0 when opposite bins cancel, i.e. when the phase is not identified."""
     z = (weights * np.exp(1j * 2 * np.pi * np.arange(24) / 24)).sum()
     return float(abs(z) / weights.sum())
 
@@ -83,11 +75,9 @@ def cross_correlation_lag_h(gauge: np.ndarray, era5: np.ndarray) -> tuple[float,
 
 
 def band_of(elev_m: float, *, edges: tuple[float, float] = BAND_EDGES) -> int:
-    """`edges` is an explicit parameter (not a module-global mutated in
-    place) precisely so a sensitivity sweep over alternate band edges can
-    call this with a different `edges` value without a `global` monkey-
-    patch trick — which would silently stop working once callers in other
-    modules held their own reference to this function."""
+    """`edges` is an explicit parameter, not a module global, so a
+    sensitivity sweep over alternate edges needs no monkey-patch (which
+    would silently miss callers holding their own reference)."""
     return 0 if elev_m < edges[0] else (1 if elev_m < edges[1] else 2)
 
 

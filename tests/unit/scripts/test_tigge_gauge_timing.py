@@ -34,9 +34,11 @@ from scripts.dhm_precip.domain_types import (
 from scripts.dhm_precip.ma6_pairs import GaugeMaskedPopulation, MaskedGaugeSeries
 from scripts.dhm_precip.tigge_gauge_timing import (
     GAUGE_SHIFT_READINGS,
+    MIN_HARMONIC_AMPLITUDE,
     REQUIRED_CLOCK_HOURS,
     PhaseEstimate,
     PhaseStatus,
+    StationPhase,
     _gauge_window_lookup,
     _hour_of_day_share,
     dedup_most_recent_init,
@@ -282,8 +284,8 @@ class TestHourlyMeanNormalisation:
 
         base_phase = estimate_station_phase(Station("A"), base)
         thick_phase = estimate_station_phase(Station("A"), thickened)
-        assert base_phase is not None
-        assert thick_phase is not None
+        assert isinstance(base_phase, StationPhase)
+        assert isinstance(thick_phase, StationPhase)
         assert thick_phase.lag_h == pytest.approx(base_phase.lag_h)
 
     def test_a_bins_share_is_its_mean_not_its_total(self) -> None:
@@ -329,7 +331,10 @@ class TestRequiredClockCoverage:
                 for h in (0, 6, 12)  # 18 UTC missing
             ]
         )
-        assert estimate_station_phase(Station("A"), partial) is None
+        assert (
+            estimate_station_phase(Station("A"), partial)
+            is PhaseStatus.INSUFFICIENT_CLOCK_COVERAGE
+        )
 
     def test_the_cell_is_reported_with_a_status_never_dropped(self) -> None:
         partial = _paired_frame(
@@ -442,8 +447,8 @@ class TestPerStationNormalisation:
         )
         big_phase = estimate_station_phase(Station("Big"), big)
         small_phase = estimate_station_phase(Station("Small"), small)
-        assert big_phase is not None
-        assert small_phase is not None
+        assert isinstance(big_phase, StationPhase)
+        assert isinstance(small_phase, StationPhase)
         assert big_phase.gauge_share.sum() == pytest.approx(1.0)
         assert small_phase.gauge_share.sum() == pytest.approx(1.0)
         # Same SHAPE (proportions), different SCALE -> identical lag.
@@ -499,8 +504,8 @@ class TestD7UniformRotation:
             paired.filter(pl.col("station") == "A"),
             gauge_hour_shift=GAUGE_SHIFT_READINGS["gauge_labels_are_npt"],
         )
-        assert base is not None
-        assert rotated is not None
+        assert isinstance(base, StationPhase)
+        assert isinstance(rotated, StationPhase)
         assert rotated.gauge_share == pytest.approx(np.roll(base.gauge_share, -6))
         assert rotated.tigge_share == pytest.approx(base.tigge_share)
 
@@ -759,6 +764,8 @@ class TestWriteCsv:
                 tigge_peak_hour_utc=12,
                 lag_h=6.0,
                 lag_principal_h=6.0,
+                gauge_amplitude=0.42,
+                tigge_amplitude=0.31,
             ),
             PhaseEstimate(
                 lead_band="D+1",
@@ -772,6 +779,8 @@ class TestWriteCsv:
                 tigge_peak_hour_utc=None,
                 lag_h=float("nan"),
                 lag_principal_h=float("nan"),
+                gauge_amplitude=float("nan"),
+                tigge_amplitude=float("nan"),
             ),
         ]
         path = tmp_path / "out.csv"
@@ -781,3 +790,173 @@ class TestWriteCsv:
         assert out["n_station_days"][0] == 4
         assert out["status"].to_list() == ["ok", "no_paired_windows"]
         assert out["gauge_peak_hour_npt"][1] in ("", None)
+        # The identifiability diagnostic travels with the published number.
+        assert out["gauge_harmonic_amplitude"][0] == pytest.approx(0.42)
+        assert out["tigge_harmonic_amplitude"][0] == pytest.approx(0.31)
+        assert out["min_harmonic_amplitude"][0] == pytest.approx(MIN_HARMONIC_AMPLITUDE)
+
+
+class TestPhaseIdentifiability:
+    """`harmonic_phase_h` takes the ANGLE of the first harmonic and
+    never looks at its MAGNITUDE. With four bins, near-equal opposite bins
+    drive that harmonic to ~zero: `np.angle(0)` is 0.0, so the estimator
+    returns a plausible-looking 00:00 phase for a cycle that has no
+    identified phase at all. Mass alone does not catch it — the cycle below
+    carries full mass."""
+
+    def test_equal_opposite_bins_are_unidentifiable_not_a_phase(self) -> None:
+        # w0 == w12 and w6 == w18 -> first harmonic is exactly zero.
+        flat = _paired_frame(
+            _cycle_rows(
+                station="A",
+                date="2025-06-01",
+                gauge_by_hour={0: 10.0, 12: 10.0},
+                tigge_by_hour={6: 5.0},
+            )
+        )
+        assert (
+            estimate_station_phase(Station("A"), flat)
+            is PhaseStatus.PHASE_UNIDENTIFIABLE
+        )
+        est = estimate_phase(
+            flat,
+            lead_band="D+1",
+            elevation_band="low (< 1,000 m)",
+            gauge_shift_reading="as_labelled_utc",
+        )
+        assert est.status is PhaseStatus.PHASE_UNIDENTIFIABLE
+        assert est.n_stations == 0
+        assert np.isnan(est.lag_h)
+
+    def test_a_cell_reports_the_furthest_gate_any_station_reached(self) -> None:
+        rows = _cycle_rows(
+            station="Flat",
+            date="2025-06-01",
+            gauge_by_hour={0: 10.0, 12: 10.0},
+            tigge_by_hour={6: 5.0},
+        ) + [
+            _row(
+                station="Partial",
+                valid_time="2025-06-01T06:00:00",
+                gauge_mm=1.0,
+                tigge_mm=1.0,
+            )
+        ]
+        est = estimate_phase(
+            _paired_frame(rows),
+            lead_band="D+1",
+            elevation_band="low (< 1,000 m)",
+            gauge_shift_reading="as_labelled_utc",
+        )
+        # "Partial" never covered four clocks; "Flat" did and failed later.
+        assert est.status is PhaseStatus.PHASE_UNIDENTIFIABLE
+
+    def test_a_resolved_cycle_publishes_its_amplitude(self) -> None:
+        est = estimate_phase(
+            _paired_frame(
+                _cycle_rows(
+                    station="A",
+                    date="2025-06-01",
+                    gauge_by_hour={0: 10.0},
+                    tigge_by_hour={6: 10.0},
+                )
+            ),
+            lead_band="D+1",
+            elevation_band="low (< 1,000 m)",
+            gauge_shift_reading="as_labelled_utc",
+        )
+        assert est.status is PhaseStatus.OK
+        # All the mass in one bin -> a unit-length first harmonic.
+        assert est.gauge_amplitude == pytest.approx(1.0)
+        assert est.tigge_amplitude == pytest.approx(1.0)
+        assert est.gauge_amplitude >= MIN_HARMONIC_AMPLITUDE
+
+
+class TestNoPrecipitationMassIsNotAClockCoverageFailure:
+    """A cell whose stations DO cover all four clock positions but
+    carry no usable precipitation has a truthful status of its own. Calling
+    it `insufficient_clock_coverage` states something false about the data."""
+
+    def test_a_complete_but_dry_cycle_is_no_precipitation_mass(self) -> None:
+        dry = _paired_frame(
+            _cycle_rows(
+                station="A",
+                date="2025-06-01",
+                gauge_by_hour={},  # all four clocks present, every value 0.0
+                tigge_by_hour={6: 5.0},
+            )
+        )
+        assert set(REQUIRED_CLOCK_HOURS) <= {
+            int(h) for h in dry["valid_time_utc"].dt.hour().unique().to_list()
+        }
+        assert (
+            estimate_station_phase(Station("A"), dry)
+            is PhaseStatus.NO_PRECIPITATION_MASS
+        )
+        est = estimate_phase(
+            dry,
+            lead_band="D+1",
+            elevation_band="low (< 1,000 m)",
+            gauge_shift_reading="as_labelled_utc",
+        )
+        assert est.status is PhaseStatus.NO_PRECIPITATION_MASS
+        assert est.status is not PhaseStatus.INSUFFICIENT_CLOCK_COVERAGE
+        assert est.n_windows == 4  # the windows are there; the rain is not
+
+
+class TestD7BranchCrossing:
+    """Plan 216 D7 (amended) — the alternate NPT reading moves each station's
+    CIRCULAR offset by +6 h modulo 24. The reported band figure is an
+    ARITHMETIC median of same-day-branch representatives, which is not
+    rotation-equivariant: once a station crosses the +6/-18 branch cut the
+    band median need neither shift by +6 h nor stay put. The pre-existing
+    D7 test exercises only a no-wrap sample."""
+
+    def _rows(self) -> list[dict[str, object]]:
+        # Gauge mass at 00 UTC for all three -> per-station offsets 0, -12, -6.
+        return [
+            row
+            for station, tigge_hour in (("A", 0), ("B", 12), ("C", 18))
+            for row in _cycle_rows(
+                station=station,
+                date="2025-06-01",
+                gauge_by_hour={0: 10.0},
+                tigge_by_hour={tigge_hour: 10.0},
+            )
+        ]
+
+    def test_each_station_shifts_by_six_hours_modulo_twenty_four(self) -> None:
+        paired = _paired_frame(self._rows())
+        for station in ("A", "B", "C"):
+            frame = paired.filter(pl.col("station") == station)
+            base = estimate_station_phase(Station(station), frame)
+            rotated = estimate_station_phase(
+                Station(station),
+                frame,
+                gauge_hour_shift=GAUGE_SHIFT_READINGS["gauge_labels_are_npt"],
+            )
+            assert isinstance(base, StationPhase)
+            assert isinstance(rotated, StationPhase)
+            assert (rotated.lag_h - base.lag_h) % 24.0 == pytest.approx(6.0)
+
+    def test_the_band_median_does_not_simply_shift_by_six_hours(self) -> None:
+        paired = _paired_frame(self._rows())
+        as_labelled = estimate_phase(
+            paired,
+            lead_band="D+1",
+            elevation_band="low (< 1,000 m)",
+            gauge_shift_reading="as_labelled_utc",
+            gauge_hour_shift=GAUGE_SHIFT_READINGS["as_labelled_utc"],
+        )
+        as_npt = estimate_phase(
+            paired,
+            lead_band="D+1",
+            elevation_band="low (< 1,000 m)",
+            gauge_shift_reading="gauge_labels_are_npt",
+            gauge_hour_shift=GAUGE_SHIFT_READINGS["gauge_labels_are_npt"],
+        )
+        assert as_labelled.n_stations == as_npt.n_stations == 3
+        # Offsets {0, -12, -6} -> median -6; rotated {-18, -6, 0} -> median -6.
+        assert as_labelled.lag_h == pytest.approx(-6.0)
+        assert as_npt.lag_h == pytest.approx(-6.0)
+        assert as_npt.lag_h != pytest.approx(as_labelled.lag_h + 6.0)

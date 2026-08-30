@@ -1,22 +1,15 @@
 """Plan 216 (M-A11) T2 — pair T1's TIGGE-IFS control-forecast series
 against the gauges, stratified by lead band (D3), and estimate the same
-diurnal PHASE lag M-A6/M-A9 measured for ERA5-Land — using the SAME phase
-estimator (D5), now a TRACKED module (`diurnal_phase.py`) shared with
-`era5_gauge_timing_figure.py` rather than a dynamic, gitignored-file
-import (a fresh checkout — including CI — never has `data/`). D5 also
-RETIRES that script's season-year bootstrap and 24-bin completeness test
-for this screen (both are meaningless on 6-hourly, one-season data); this
-module reports point estimates with their own `n` instead (D4's ±3 h
-resolution bound dominates any interval a degenerate bootstrap could add).
+diurnal PHASE lag M-A6/M-A9 measured for ERA5-Land, reusing that estimator
+from the TRACKED `diurnal_phase.py` (a fresh checkout — including CI —
+never has `data/`).
 
-D5 also pins the STATION-EQUAL band statistic: each station's own diurnal
-cycle is normalised INDEPENDENTLY (so it sums to 1 regardless of how many
-windows it contributed), its own lag computed from that; the reported band
-figure is the MEDIAN across stations — never a pool of raw mass summed
-across stations first, which would let a high-count station dominate the
-estimate. This mirrors `era5_gauge_timing_figure.analyse`'s per-station
-`pooled()` normalisation and its band-median reporting
-(`run_sensitivities.medians()`'s `np.median`).
+D5 pins two things this module must not drift from: M-A6's OWN normalisation
+(a cycle of hourly MEANS, `_hour_of_day_share`) and the STATION-EQUAL band
+statistic (per-station cycle and lag; the band figure is their MEDIAN). D5
+also RETIRES the season-year bootstrap and the 24-bin completeness test here —
+both degenerate on one season of 6-hourly data — so every cell is a point
+estimate with its own `n` under D4's ±3 h bound.
 
 ⛔ Phase only — no magnitude or bias claim (T2 `Out`).
 """
@@ -37,6 +30,7 @@ from scripts.dhm_precip.diurnal_phase import (
     BAND_NAMES,
     HOUR_OF_DAY_PERIOD,
     band_of,
+    harmonic_amplitude,
     harmonic_phase_h,
     npt_label,
     principal_branch,
@@ -57,14 +51,10 @@ from scripts.dhm_precip.tigge_ifs import (
 
 log = structlog.get_logger(__name__)
 
-# D7 — the two timezone readings to report side by side (never a gate).
-# The value is a CIRCULAR SHIFT (in whole hours) applied to an already-built
-# station cycle, NOT a re-pairing offset: D7 says an NPT reading "shifts every
-# offset uniformly +6 h while leaving the between-band contrast invariant", and
-# that is only true if BOTH readings are computed from the SAME contributing
-# windows. Rebuilding the pairing at a different window alignment changes which
-# windows survive (and their `n`), so the offsets would NOT shift uniformly —
-# which is exactly the D7 contradiction an earlier revision shipped.
+# D7 — the two timezone readings to report side by side (never a gate). The
+# value is a CIRCULAR SHIFT (whole hours) applied to an already-built station
+# cycle, NOT a re-pairing offset: both readings must be computed from the SAME
+# contributing windows, or their `n` differs and they are not comparable.
 GAUGE_SHIFT_READINGS: dict[str, int] = {
     "as_labelled_utc": 0,
     "gauge_labels_are_npt": -6,
@@ -77,6 +67,18 @@ GAUGE_SHIFT_READINGS: dict[str, int] = {
 REQUIRED_CLOCK_HOURS: tuple[int, ...] = (0, 6, 12, 18)
 
 
+# Identifiability floor on the FIRST HARMONIC's magnitude, which D5's estimator
+# never checks: on four bins it is `(w0 - w12, w6 - w18)` over shares summing to
+# 1, so equal opposite bins give R = 0 — an undefined angle that `np.angle`
+# still reports as a plausible 00:00. Rotating a phase past D4's ±3 h bound
+# (45° of arc) takes an orthogonal perturbation of magnitude R, so the floor is
+# the smallest opposite-bin contrast worth treating as real: 5% of the cycle's
+# mass, against the 25% per bin a flat cycle carries. ⛔ A stated CONVENTION,
+# not a significance level (D5 retired the bootstrap). Measured spread and the
+# 0.05-vs-0.10 sensitivity: see the T3 report.
+MIN_HARMONIC_AMPLITUDE = 0.05
+
+
 class PhaseStatus(Enum):
     """Why a (lead band x elevation band x reading) cell does or does not
     carry a lag. Reported explicitly for EVERY cell — a silently missing
@@ -85,6 +87,18 @@ class PhaseStatus(Enum):
     OK = "ok"
     NO_PAIRED_WINDOWS = "no_paired_windows"
     INSUFFICIENT_CLOCK_COVERAGE = "insufficient_clock_coverage"
+    NO_PRECIPITATION_MASS = "no_precipitation_mass"
+    PHASE_UNIDENTIFIABLE = "phase_unidentifiable"
+
+
+# The per-station gates, weakest first. A cell no station supports is labelled
+# by the FURTHEST gate its stations reached, so a station that DID cover all
+# four clocks and failed later is never reported as missing clock coverage.
+_REJECTION_ORDER: tuple[PhaseStatus, ...] = (
+    PhaseStatus.INSUFFICIENT_CLOCK_COVERAGE,
+    PhaseStatus.NO_PRECIPITATION_MASS,
+    PhaseStatus.PHASE_UNIDENTIFIABLE,
+)
 
 
 class TiggeTimingMatrixError(SapphireError):
@@ -142,6 +156,10 @@ class PhaseEstimate:
     tigge_peak_hour_utc: int | None
     lag_h: float  # nan unless `status is PhaseStatus.OK`
     lag_principal_h: float
+    # Median first-harmonic magnitude of the contributing stations' cycles —
+    # the identifiability diagnostic behind `status`. nan unless OK.
+    gauge_amplitude: float
+    tigge_amplitude: float
 
 
 def build_paired_frame(
@@ -155,15 +173,10 @@ def build_paired_frame(
     """T2 — one (station, valid_time) row per surviving pair: `tigge_mm`
     from the deduplicated band series, `gauge_mm` from the matching
     complete 6-hour gauge window ENDING at that valid time (T2 `In`).
-    ⛔ There is exactly ONE pairing, shared by both D7 readings: the
-    alternate "gauge labels are really NPT" reading is a circular shift of
-    the resulting cycle (`GAUGE_SHIFT_READINGS`), never a second pairing at
-    a different window alignment — which would change the surviving windows
-    and their `n`, so the offsets would not shift uniformly as D7 requires.
-    D2 — filtered on BOTH `jjas_year` and `jjas_months`
-    (never month alone): a `tigge_series` that happened to carry a
-    different year's data must be dropped here, never silently reported
-    as "JJAS `TIGGE_YEAR`"."""
+    ⛔ Exactly ONE pairing, shared by both D7 readings (which rotate the
+    built cycle, never re-pair at another alignment — that would change the
+    surviving windows and their `n`). D2 — filtered on BOTH `jjas_year` and
+    `jjas_months`, never month alone."""
     banded = dedup_most_recent_init(tigge_series, band_steps=LEAD_BANDS[lead_band])
     if banded.height == 0:
         return banded.with_columns(pl.lit(None, dtype=pl.Float64).alias("gauge_mm"))
@@ -208,20 +221,13 @@ def build_paired_frame(
 def restrict_to_pinned_season(
     paired: pl.DataFrame, *, jjas_year: int, jjas_months: tuple[int, ...]
 ) -> pl.DataFrame:
-    """D2 — keep only rows with a complete, FINITE pairing on BOTH sides
-    AND `valid_time` inside the ONE pinned season (`jjas_year`,
-    `jjas_months`) — filtering on YEAR as well as month closes the gap
-    where a `tigge_series` that happened to carry a different year's JJAS
-    data would pass a month-only filter and be silently reported as "JJAS
-    `jjas_year`".
-
-    This is the PAIRED-STATISTIC BOUNDARY. T1 carries gaps rather than
-    filling them, so a masked raw grid point reaches here as a NaN
-    `tigge_mm` — which is neither "materially negative" nor removed by
-    `np.clip`, and would otherwise survive normalisation, the phase, the
-    median AND the station-day count, poisoning a whole cell while every
-    `n` still looked healthy. A non-finite value on EITHER side is not an
-    observation, so it is dropped here and excluded from every `n`."""
+    """D2 and the PAIRED-STATISTIC BOUNDARY: keep only rows non-null and
+    FINITE on BOTH sides and inside the ONE pinned season — year AND month,
+    since a month-only filter would let another year's JJAS be reported as
+    `jjas_year`. T1 carries gaps rather than filling them, so a masked grid
+    point arrives here as a NaN `tigge_mm`: neither materially negative nor
+    clipped away, it would otherwise survive into a share, a phase, a median
+    and every `n`. It is not an observation, so it is dropped here."""
     return paired.filter(
         pl.col("gauge_mm").is_not_null()
         & pl.col("gauge_mm").is_finite()
@@ -233,29 +239,19 @@ def restrict_to_pinned_season(
 
 
 def _hour_of_day_share(frame: pl.DataFrame, *, value_col: str) -> np.ndarray:
-    """Build a 24-length hour-of-day share vector using M-A6's OWN
-    normalisation (D5, "same normalisation"): aggregate the SUM and the
-    OBSERVATION COUNT per clock hour, form the HOURLY MEAN `sum / count`,
-    and normalise THAT — exactly `era5_gauge_timing_figure.analyse`'s
-    `hourly_means()` (`sum`, `sum`, `len`) followed by
-    `pooled()`'s `g / np.maximum(n, 1)` and `g_share = 100 * g_mean /
-    g_mean.sum()`.
+    """A 24-length hour-of-day share vector under M-A6's OWN normalisation
+    (D5): per clock hour the SUM and the OBSERVATION COUNT, then the hourly
+    MEAN `sum / count`, then normalise THAT — `analyse`'s `hourly_means()`
+    followed by `pooled()`.
+    ⛔ Normalising RAW TOTALS is a DIFFERENT ESTIMATOR, not a scale factor:
+    it weights a clock position by how many windows survived there, which
+    moves the phase. (Scale alone does cancel in the angle; the per-bin
+    count does not.)
 
-    ⛔ Normalising RAW TOTALS instead is a DIFFERENT ESTIMATOR, not a
-    scale factor: with gappy coverage the clock positions that retained
-    more windows get more weight purely because they retained more
-    windows, which moves the phase. (The overall SCALE does cancel in
-    `harmonic_phase_h`'s angle — summing to 1 vs 100 is the same
-    estimator — but the per-bin count does not.)
-
-    Mass only at the (<=4) clock positions this band's `valid_time` hours
-    actually occupy — zero elsewhere. `harmonic_phase_h`'s first-harmonic
-    transform is a weighted sum over `arange(24)`, so a zero-weight bin
-    contributes nothing: this is mathematically the SAME estimator as
-    running it on the <=4 active points directly, just shaped to fit the
-    reused, 24-length function UNMODIFIED (D5). Call ONCE PER STATION —
-    never on a frame pooling multiple stations, which would let a
-    high-count station dominate the shared 24-bin total."""
+    Mass sits only at the (<=4) clock positions this band occupies; a
+    zero-weight bin contributes nothing to the first-harmonic sum, so this
+    is the same estimator as running it on those points directly. Call ONCE
+    PER STATION — pooling stations lets a high-count station dominate."""
     agg = frame.group_by(frame["valid_time_utc"].dt.hour().alias("h")).agg(
         pl.col(value_col).sum().alias("total"), pl.len().alias("n")
     )
@@ -284,35 +280,41 @@ class StationPhase:
     tigge_share: np.ndarray
     gauge_peak_hour_utc: int
     tigge_peak_hour_utc: int
+    gauge_amplitude: float
+    tigge_amplitude: float
     lag_h: float
     lag_principal_h: float
 
 
 def estimate_station_phase(
     station: Station, station_frame: pl.DataFrame, *, gauge_hour_shift: int = 0
-) -> StationPhase | None:
-    """T2 — one station's phase estimate, from its OWN normalised cycle
-    only (D5's per-station normalisation). Returns `None` when the station
-    cannot support a diurnal fit: its surviving pairs must occupy ALL of
-    `REQUIRED_CLOCK_HOURS` (one to three of the four positions cannot fit a
-    cycle, however much mass they carry), and both sides must carry mass.
+) -> StationPhase | PhaseStatus:
+    """T2 — one station's phase estimate from its OWN normalised cycle (D5).
+    Returns the `PhaseStatus` of the gate it failed, instead of an estimate,
+    when the station cannot support a diurnal fit: its surviving pairs must
+    occupy ALL of `REQUIRED_CLOCK_HOURS`, both sides must carry mass, and
+    both first harmonics must reach `MIN_HARMONIC_AMPLITUDE` — an angle read
+    off a near-zero harmonic is a number, not a phase.
 
     D7: `gauge_hour_shift` CIRCULARLY ROTATES this station's already-built
     gauge cycle — the "gauge labels are really NPT" reading, computed from
-    the SAME windows as the as-labelled reading, so it shifts the lag
-    uniformly by exactly -`gauge_hour_shift` hours and leaves every `n`
-    identical."""
+    the SAME windows as the as-labelled one, so every `n` is identical and
+    this station's circular offset moves by exactly -`gauge_hour_shift`
+    hours MODULO 24. On the reported `(-18, +6]` branch that is a plain
+    +6 h shift only for stations that do not cross the branch cut."""
     if not set(REQUIRED_CLOCK_HOURS) <= _clock_hours_covered(station_frame):
-        return None
+        return PhaseStatus.INSUFFICIENT_CLOCK_COVERAGE
     g_share = np.roll(
         _hour_of_day_share(station_frame, value_col="gauge_mm"), gauge_hour_shift
     )
     e_share = _hour_of_day_share(station_frame, value_col="tigge_mm")
     if g_share.sum() == 0 or e_share.sum() == 0:
-        return None
-    phase_g = harmonic_phase_h(g_share)
-    phase_e = harmonic_phase_h(e_share)
-    lag_raw = (phase_e - phase_g) % 24.0
+        return PhaseStatus.NO_PRECIPITATION_MASS
+    gauge_amplitude = harmonic_amplitude(g_share)
+    tigge_amplitude = harmonic_amplitude(e_share)
+    if min(gauge_amplitude, tigge_amplitude) < MIN_HARMONIC_AMPLITUDE:
+        return PhaseStatus.PHASE_UNIDENTIFIABLE
+    lag_raw = (harmonic_phase_h(e_share) - harmonic_phase_h(g_share)) % 24.0
     return StationPhase(
         station=station,
         n_windows=station_frame.height,
@@ -320,17 +322,17 @@ def estimate_station_phase(
         tigge_share=e_share,
         gauge_peak_hour_utc=int(np.argmax(g_share)),
         tigge_peak_hour_utc=int(np.argmax(e_share)),
+        gauge_amplitude=gauge_amplitude,
+        tigge_amplitude=tigge_amplitude,
         lag_h=same_day_branch(lag_raw),
         lag_principal_h=principal_branch(lag_raw),
     )
 
 
 def station_day_count(frame: pl.DataFrame) -> int:
-    """T2 — the number of distinct (station, valid_date) pairs retained,
-    the exposure M-A9's `n_common_hours`/`n_season_years` play the same
-    role for: NOT the window count (a station can contribute more than
-    one window per calendar day across lead bands or repeated valid
-    hours), and not conflated with it."""
+    """T2 — distinct (station, valid_date) pairs retained. ⛔ NOT the window
+    count, and never conflated with it: a station can contribute more than
+    one window per calendar day."""
     if frame.height == 0:
         return 0
     return (
@@ -348,39 +350,32 @@ def estimate_phase(
     gauge_shift_reading: str,
     gauge_hour_shift: int = 0,
 ) -> PhaseEstimate:
-    """T2 `Out` — D5 station-equal aggregate for one (lead band, elevation
-    band, timezone reading): each station in `paired` gets its OWN
-    normalised cycle and lag (`estimate_station_phase`); the reported
-    figure is the MEDIAN across those per-station lags — exactly M-A9's
-    band statistic (`era5_gauge_timing_figure.medians()`), never a pooled
-    sum of raw mass across stations (which would let whichever station
-    contributed the most windows dominate).
+    """T2 `Out` — the D5 station-equal aggregate for one (lead band,
+    elevation band, timezone reading): every station gets its OWN normalised
+    cycle and lag, and the reported figure is the MEDIAN across those
+    per-station lags — never a pooled sum of raw mass across stations.
 
-    ALWAYS returns a cell. A combination no station can support is
-    reported EXPLICITLY (`PhaseStatus`, `n_stations=0`, `lag = nan`) rather
-    than dropped — a missing row and an uncomputed row are
-    indistinguishable to a reader."""
-    station_phases = [
-        phase
-        for station, station_frame in paired.group_by("station")
-        if (
-            phase := estimate_station_phase(
-                Station(str(station[0])),
-                station_frame,
-                gauge_hour_shift=gauge_hour_shift,
-            )
+    ALWAYS returns a cell. A combination no station can support carries the
+    `PhaseStatus` of the FURTHEST gate its stations reached (`n_stations=0`,
+    `lag = nan`) rather than being dropped — a missing row and an uncomputed
+    row are indistinguishable to a reader."""
+    outcomes = [
+        estimate_station_phase(
+            Station(str(station[0])), station_frame, gauge_hour_shift=gauge_hour_shift
         )
-        is not None
+        for station, station_frame in paired.group_by("station")
     ]
+    station_phases = [o for o in outcomes if isinstance(o, StationPhase)]
     if not station_phases:
+        rejections = [o for o in outcomes if isinstance(o, PhaseStatus)]
         return PhaseEstimate(
             lead_band=lead_band,
             elevation_band=elevation_band,
             gauge_shift_reading=gauge_shift_reading,
             status=(
-                PhaseStatus.NO_PAIRED_WINDOWS
-                if paired.height == 0
-                else PhaseStatus.INSUFFICIENT_CLOCK_COVERAGE
+                max(rejections, key=_REJECTION_ORDER.index)
+                if rejections
+                else PhaseStatus.NO_PAIRED_WINDOWS
             ),
             n_windows=paired.height,
             n_station_days=station_day_count(paired),
@@ -389,6 +384,8 @@ def estimate_phase(
             tigge_peak_hour_utc=None,
             lag_h=float("nan"),
             lag_principal_h=float("nan"),
+            gauge_amplitude=float("nan"),
+            tigge_amplitude=float("nan"),
         )
 
     band_gauge_share = np.median(
@@ -415,6 +412,8 @@ def estimate_phase(
         tigge_peak_hour_utc=int(np.argmax(band_tigge_share)),
         lag_h=float(np.median([sp.lag_h for sp in station_phases])),
         lag_principal_h=float(np.median([sp.lag_principal_h for sp in station_phases])),
+        gauge_amplitude=float(np.median([sp.gauge_amplitude for sp in station_phases])),
+        tigge_amplitude=float(np.median([sp.tigge_amplitude for sp in station_phases])),
     )
 
 
@@ -424,14 +423,11 @@ def run_all_bands(
     coords: StationCoordinateTable,
 ) -> list[PhaseEstimate]:
     """T2 driver — the COMPLETE (lead band x elevation band x D7 reading)
-    matrix, computed station-equal (D5) within each elevation band (M-A9's
-    own banding, `BAND_EDGES`/`BAND_NAMES`, reused via `band_of`). Every
-    combination yields exactly one row, including the ones no station can
-    support — never a silently short matrix.
-
-    The pairing is built ONCE per lead band and reused by both D7 readings
-    (`GAUGE_SHIFT_READINGS` rotates the built cycle), so the two readings
-    are computed from the identical windows."""
+    matrix, station-equal (D5) within each elevation band (M-A9's own
+    `band_of` banding). Every combination yields exactly one row, including
+    the ones no station supports — never a silently short matrix. The
+    pairing is built ONCE per lead band and reused by both D7 readings, so
+    the two are computed from identical windows."""
     elev_of = {s: c.elev_m for s, c in coords.by_station.items()}
     results: list[PhaseEstimate] = []
     for lead_band in LEAD_BANDS:
@@ -482,6 +478,9 @@ def write_csv(results: list[PhaseEstimate], path: Path) -> None:
                 ),
                 "lag_hours_same_day_branch": round(r.lag_h, 2),
                 "lag_hours_shortest_arc": round(r.lag_principal_h, 2),
+                "gauge_harmonic_amplitude": round(r.gauge_amplitude, 3),
+                "tigge_harmonic_amplitude": round(r.tigge_amplitude, 3),
+                "min_harmonic_amplitude": MIN_HARMONIC_AMPLITUDE,
                 "resolution_bound_h": 3.0,
             }
             for r in results
@@ -530,7 +529,7 @@ def main() -> int:
             f"{r.status.value:28s} n={r.n_windows:5d} windows, "
             f"{r.n_station_days:4d} station-days "
             f"({r.n_stations} stations) lag={r.lag_h:+6.2f} h "
-            f"(±3 h resolution bound)"
+            f"(±3 h bound) R={r.gauge_amplitude:.2f}/{r.tigge_amplitude:.2f}"
         )
     return 0
 

@@ -2,18 +2,14 @@
 forecast `tp` from TIGGE (via ECDS), deaccumulate, and extract to the 26
 gauge station points.
 
-⛔ Control-only (`type: cf`), one season (D2), one centre (ECMWF) — this is a
-phase screening, not a correction and not an operational feed (D6: a
-measured ~48 h embargo on TIGGE makes it research-only). See
-`docs/plans/216-ifs-diurnal-timing-re-evaluation.md` D6 for the source
-contract, MEASURED 2026-08-29 against the live ECDS API — including one
-correction to the plan's own draft: the grid returned is NOT a regular 0.5°
-lat/lon grid. `tigge-forecasts` on ECDS has no `grid` interpolation input at
-all (confirmed against the process's own input schema) — it returns the
-model's native reduced Gaussian grid (measured: N640, ~1,600 irregularly
-spaced points inside `STUDY_AREA`, not 11x19=209 regular cells). The nearest-
-cell OPERATOR (haversine argmin) is unchanged and still correct; only the
-grid-geometry claim was wrong.
+⛔ Control-only (`type: cf`), one season (D2), one centre (ECMWF) — a phase
+screening, not a correction and not an operational feed (D6: a measured
+~48 h embargo makes TIGGE research-only). Plan 216 D6 holds the source
+contract, MEASURED 2026-08-29 against the live ECDS API, with one correction
+to the plan's draft: `tigge-forecasts` has no `grid` input at all, so what
+comes back is the model's native reduced Gaussian grid (N640, ~1,600
+irregular points in `STUDY_AREA`), not a regular 0.5° 11x19 lat/lon grid.
+The nearest-cell OPERATOR (haversine argmin) is unaffected.
 """
 
 from __future__ import annotations
@@ -52,19 +48,16 @@ TIGGE_VARIABLE = "total_precipitation"
 TIGGE_DATA_VAR_NAME = "tp"  # cfgrib short name for total_precipitation
 TIGGE_DATA_FORMAT = "grib"
 
-# D2 — "One monsoon season: JJAS 2025." This track answers ONE screening
-# question against ONE season; there is no `--year` CLI option (removed —
-# see `TiggeIdentityError`/`assert_tigge_identity` below) because a wrong
-# year silently mislabelled as "JJAS 2025" in every downstream filename,
-# CSV and report is exactly the failure mode D2 forbids.
+# D2 — "One monsoon season: JJAS 2025." There is deliberately no `--year` CLI
+# option: a wrong year, mislabelled "JJAS 2025" downstream, is the failure mode
+# D2 forbids (see `assert_tigge_identity`).
 TIGGE_YEAR = 2025
 TIGGE_MONTHS: tuple[int, ...] = (6, 7, 8, 9)
 TIGGE_INIT_HOURS_UTC: tuple[int, ...] = (0, 12)
 
-# D6, MEASURED 2026-08-29 on the real file: the GRIB's own type/step
-# attributes. `cf` is the CONTROL forecast — a perturbed-member file
-# (`pf`) is a different estimand entirely (T1 `In`: "⛔ Control-only is
-# deliberate"), and `accum` is what makes deaccumulation meaningful.
+# D6, MEASURED 2026-08-29 on the real file. `cf` is the CONTROL forecast — a
+# perturbed member (`pf`) is a different estimand (T1 `In`) — and `accum` is
+# what makes deaccumulation meaningful.
 EXPECTED_DATA_TYPE = "cf"
 EXPECTED_STEP_TYPE = "accum"
 
@@ -83,11 +76,9 @@ EXPECTED_UNITS = frozenset({"kg m**-2", "kg m-2"})
 PACKING_TOLERANCE_MM = 0.05
 
 _EARTH_RADIUS_KM = 6371.0088  # WGS84 spherical radius — same constant as
-# scripts/dhm_precip/era5_extract.py:_haversine_km; duplicated (not
-# imported) because that module's haversine is private and this module's
-# nearest-neighbour search is over an IRREGULAR point cloud, not a
-# registered regular grid — importing era5_extract's public surface would
-# drag in 0.1 deg grid-registration validation that does not apply here.
+# era5_extract.py:_haversine_km, duplicated because that module's haversine
+# is private and its public surface enforces 0.1 deg grid registration that
+# an irregular point cloud does not have.
 
 
 def _haversine_km(
@@ -122,20 +113,16 @@ class TiggeStepAxisError(TiggeAcquisitionError):
 
 
 class TiggeIdentityError(TiggeAcquisitionError):
-    """The opened GRIB's init axis, lead axis or origin does not match the
-    JJAS `TIGGE_YEAR` control-forecast request this module issues (D2 pins
-    this track to exactly ONE season). Proceeding without this check would
-    let a stale or wrong `--skip-retrieve` file — a different year, a
-    different init/lead axis, a different centre — be silently reported
+    """The opened GRIB's init axis, lead axis or origin is not the JJAS
+    `TIGGE_YEAR` control-forecast request this module issues (D2). Without
+    this check a stale `--skip-retrieve` file would be screened and reported
     as "JJAS `TIGGE_YEAR`"."""
 
 
 @runtime_checkable
 class CdsClient(Protocol):
-    """The single injected ECDS-call seam — mirrors
-    `scripts/dhm_precip/era5_acquire.CdsClient` so tests never touch the
-    network; the real implementation talks to ECDS, never the Copernicus
-    CDS (⛔ plan 216 per-run scope)."""
+    """The single injected ECDS-call seam — mirrors `era5_acquire.CdsClient`
+    so tests never touch the network. ⛔ ECDS, never the Copernicus CDS."""
 
     def retrieve_to_path(
         self, *, dataset: str, payload: Mapping[str, object], target: Path
@@ -216,11 +203,9 @@ def expected_init_schedule(
     months: Sequence[int] = TIGGE_MONTHS,
     init_hours_utc: Sequence[int] = TIGGE_INIT_HOURS_UTC,
 ) -> tuple[datetime, ...]:
-    """The EXACT set of initialisations D2's one season must contain —
-    every calendar day of `months` in `year` at every hour of
-    `init_hours_utc` (JJAS 2025 x 00/12 UTC = 244, measured on the real
-    file). Derived, never hard-coded, so a different season is expressible
-    without a second literal to keep in sync."""
+    """The EXACT set of initialisations D2's one season must contain (JJAS
+    2025 x 00/12 UTC = 244, measured on the real file). Derived, never
+    hard-coded, so there is no second literal to keep in sync."""
     return tuple(
         datetime(year, month, day, hour)
         for month in months
@@ -240,15 +225,11 @@ def assert_tigge_identity(
     variable: str = TIGGE_DATA_VAR_NAME,
 ) -> None:
     """D2/D6/T1 Verify — the file's own init axis, lead axis, type/step
-    attributes, source attribute and forecast-start accumulation must
-    actually BE the one JJAS `expected_year` CONTROL-forecast request this
-    module issues, never assumed from a filename or a `--skip-retrieve`
-    re-use. Raises `TiggeIdentityError` on any mismatch.
-
-    `expected_init_times` defaults to the FULL `expected_init_schedule()` —
-    the gate is strict by default, so a half-downloaded season is rejected
-    rather than screened and reported as "JJAS `expected_year`". Tests
-    (and only tests) narrow it to the single init their fixture carries."""
+    attributes, source attribute and forecast-start accumulation must BE
+    the request this module issues, never assumed from a filename. Raises
+    `TiggeIdentityError` on any mismatch. `expected_init_times` defaults to
+    the FULL `expected_init_schedule()`, so a half-downloaded season is
+    rejected; tests (and only tests) narrow it to their fixture's init."""
     assert_tp_units(ds, variable=variable)
 
     attrs = ds[variable].attrs
@@ -342,10 +323,9 @@ def assert_tigge_identity(
         )
 
     # D6 — accumulation runs from FORECAST START (measured: step 0 is
-    # exactly zero, no daily reset). `deaccumulate` differences neighbours,
-    # so a file whose step-0 field already carries mass is accumulating
-    # from somewhere else and every increment would be wrong by that
-    # offset. NaN is left alone here: T1 carries gaps, it never fills them.
+    # exactly zero). A step-0 field already carrying mass accumulates from
+    # somewhere else, so every differenced increment would be offset. NaN is
+    # left alone: T1 carries gaps, it never fills them.
     axis_steps_h = (ds["step"].values / np.timedelta64(1, "h")).astype(int)
     if 0 in axis_steps_h.tolist():
         # ⛔ index the file's OWN step axis, never the sorted copy above.
@@ -391,12 +371,11 @@ def deaccumulate(
     ds: xr.Dataset, *, variable: str = TIGGE_DATA_VAR_NAME
 ) -> list[DeaccumulatedIncrement]:
     """T1 — turn the raw forecast-start accumulator into 6-hourly period-
-    ending increments, one `DeaccumulatedIncrement` per (init, step>0).
-    Continuous accumulation from forecast start (measured 2026-08-29:
-    `step=0` is exactly zero and every later step is the running total —
-    no daily reset, unlike ERA5-Land's 01 UTC accumulator), so each
-    increment is `total[step] - total[step - 6h]`. Handles both a single
-    init (`time` scalar) and a full season (`time` a dimension)."""
+    ending increments, one per (init, step>0). Accumulation is continuous
+    from forecast start (measured: no daily reset, unlike ERA5-Land's 01 UTC
+    accumulator), so each increment is `total[step] - total[step - 6h]`.
+    Handles a single init (`time` scalar) and a full season (`time` a
+    dimension) alike."""
     assert_tp_units(ds, variable=variable)
     steps_h = (ds["step"].values / np.timedelta64(1, "h")).astype(int)
     order = np.argsort(steps_h)
@@ -414,13 +393,10 @@ def deaccumulate(
         values = raw[order, :]  # (step, points), kg m**-2 == mm
         for i in range(1, len(steps_h)):
             diff = values[i] - values[i - 1]
-            # A masked/absent raw point produces a NaN increment. T1 CARRIES
-            # gaps (never fills them, never reads them as observations), so
-            # NaN passes through both the negativity test (NaN < x is False)
-            # and `np.clip` unchanged. It is rejected — and excluded from
-            # every `n` — at the paired-statistic boundary
-            # (`tigge_gauge_timing.restrict_to_pinned_season`), which is the
-            # only place a non-finite value could otherwise poison a phase.
+            # A masked raw point gives a NaN increment, which passes both
+            # the negativity test (NaN < x is False) and `np.clip` unchanged:
+            # T1 carries gaps. It is rejected at the paired-statistic
+            # boundary (`tigge_gauge_timing.restrict_to_pinned_season`).
             material_negative = diff < -PACKING_TOLERANCE_MM
             if bool(material_negative.any()):
                 count = int(material_negative.sum())
@@ -443,10 +419,10 @@ def nearest_point_index(
     *, lat: np.ndarray, lon: np.ndarray, station_lat: float, station_lon: float
 ) -> int:
     """Nearest-cell operator (D1 reuse, adapted): argmin haversine distance
-    over the file's own irregular point cloud — a native reduced-Gaussian
-    grid has no row/col registration to exploit, so this is a linear
-    argmin rather than era5_extract's regular-grid lookup, but it is the
-    SAME operator (nearest by great-circle distance)."""
+    over the file's own irregular point cloud. A reduced-Gaussian grid has
+    no row/col registration, so this is a linear argmin rather than
+    era5_extract's grid lookup — the SAME operator, nearest by
+    great-circle distance."""
     dist = _haversine_km(station_lat, station_lon, lat, lon)
     return int(np.argmin(dist))
 
@@ -498,10 +474,9 @@ def extract_station_series(
     ).sort(["station", "init_time_utc", "ending_lead_hours"])
 
 
-# D6 — "Attribution to ECMWF and acknowledgement of TIGGE are licence
-# conditions on any output." Fixed text, shared by T1 and T2 so every
-# derived artefact (raw extraction AND the T2 comparison CSV) carries the
-# same record — never stdout-only, which does not travel with the file.
+# D6 — attribution to ECMWF and acknowledgement of TIGGE are licence
+# conditions on any output. Shared by T1 and T2 so every derived artefact
+# carries the same record — never stdout-only, which does not travel.
 TIGGE_ATTRIBUTION_TEXT = "ECMWF"
 TIGGE_ACKNOWLEDGEMENT_TEXT = "Contains modified data from TIGGE."
 TIGGE_LICENCE_NOTE = (
@@ -589,12 +564,10 @@ def main() -> int:
     assert_tigge_identity(ds, expected_leadtime_hours=REQUEST_LEADTIME_HOURS)
     increments = deaccumulate(ds)
     coords_path = resolve_coords_path()
-    # D8-style cardinality tripwire (mirrors extract_era5.py's
-    # `_default_expected_stations()`): the expected-station set must come
-    # from an INDEPENDENT inventory, never a second read of the very same
-    # coordinate file `load_station_coordinates` is about to validate —
-    # that would make the equality check inside it a tautology that can
-    # never fail.
+    # D8-style cardinality tripwire (mirrors extract_era5.py): the
+    # expected-station set must come from an INDEPENDENT inventory, never a
+    # second read of the coordinate file being validated — that would make
+    # the equality check a tautology.
     gauge_population = load_gauge_masked_population()
     all_stations = frozenset(gauge_population.by_station.keys())
     coords = load_station_coordinates(coords_path, expected_stations=all_stations)
