@@ -103,8 +103,15 @@ measurement of the one we do.
 
 - **D7 — The gauge timezone rides along; it does not gate.** `Time (UTC)` is corroborated three ways
   (2,415 stamps at exactly `:15` — what an on-the-hour NPT stamp becomes under −5:45; DHM's
-  PERIOD_ENDING answer; the Pyramid cross-check) but unproven. An NPT reading shifts every offset
-  uniformly **+6 h** while leaving the **between-band contrast invariant**. Report both readings.
+  PERIOD_ENDING answer; the Pyramid cross-check) but unproven. Report both readings.
+  **AMENDED 2026-08-30** (the original wording — "an NPT reading shifts every offset uniformly +6 h
+  while leaving the between-band contrast invariant" — was mathematically wrong about the reported
+  statistic, not a description of a code defect): the alternate NPT reading circularly rotates each
+  station's gauge cycle on exactly the same paired windows, so **each station's circular offset changes
+  by +6 h modulo 24**. Because D5 reports an *arithmetic* median of same-day-branch representatives,
+  reported band medians and their ordinary between-band differences **need not** shift by +6 h or remain
+  invariant when stations cross the +6/−18 branch cut. (A *proper circular* median could be
+  rotation-equivariant; `np.median` on branch-mapped values is not.)
 
 ## Tasks
 

@@ -110,6 +110,16 @@ source other than the profiles being weighted — remains unmet, so the verdict 
 ERA5-Land's precipitation is interpolated from ERA5, whose convection scheme is a frozen 2016-era IFS
 cycle; operational IFS has moved on many cycles. **We have not measured the product we actually fly.**
 
+**Update 2026-08-29 (Plan 216, M-A11) — now measured.** IFS control-forecast `tp` (TIGGE via ECDS, JJAS
+2025, leads D+1-D+3) shares the mid/high-band error's DIRECTION but at roughly **a third to a half of
+ERA5-Land's magnitude** (mid ~−5.2 to −5.7 h vs ERA5-Land's −14.4 h; high ~−5.2 to −5.7 h vs −11.9 h),
+well beyond the ±3 h resolution bound 6-hourly data permits; the low band is unresolved from zero at
+every lead. See `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` for the full measurement
+(numbers here are from that document's D5-corrected re-run — a review round found the first pass pooled
+raw mass across stations before computing the phase, which this document's original 2026-08-29 update
+inherited). **NO-GO on the originally proposed ~12 h correction as designed** (it would over-correct
+IFS); **GO on finer-resolution correction work calibrated to IFS's own, smaller displacement.**
+
 ---
 
 ## 3. Use 2 — gap-filling the gauge record with ERA5-Land
