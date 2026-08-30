@@ -773,6 +773,7 @@ class TestWriteCsv:
                 lag_principal_h=6.0,
                 gauge_amplitude=0.42,
                 tigge_amplitude=0.31,
+                min_amplitude=MIN_HARMONIC_AMPLITUDE,
             ),
             PhaseEstimate(
                 lead_band="D+1",
@@ -788,6 +789,7 @@ class TestWriteCsv:
                 lag_principal_h=float("nan"),
                 gauge_amplitude=float("nan"),
                 tigge_amplitude=float("nan"),
+                min_amplitude=MIN_HARMONIC_AMPLITUDE,
             ),
         ]
         path = tmp_path / "out.csv"
@@ -801,6 +803,20 @@ class TestWriteCsv:
         assert out["gauge_harmonic_amplitude"][0] == pytest.approx(0.42)
         assert out["tigge_harmonic_amplitude"][0] == pytest.approx(0.31)
         assert out["min_harmonic_amplitude"][0] == pytest.approx(MIN_HARMONIC_AMPLITUDE)
+
+    def test_csv_reports_the_swept_floor_not_the_default(self, tmp_path: Path) -> None:
+        """A run at a NON-DEFAULT floor must serialize the floor it actually
+        selected under. The floor travels inside each estimate, so the writer
+        cannot be handed one value while the results were produced at another."""
+        swept = 0.10
+        assert swept != MIN_HARMONIC_AMPLITUDE
+        series, population, coords = _synthetic_inputs()
+        results = run_all_bands(series, population, coords, min_amplitude=swept)
+        path = tmp_path / "swept.csv"
+        tigge_gauge_timing.write_csv(results, path)
+        out = pl.read_csv(path)
+        assert out.height == len(results)
+        assert out["min_harmonic_amplitude"].to_list() == [swept] * out.height
 
 
 class TestPhaseIdentifiability:

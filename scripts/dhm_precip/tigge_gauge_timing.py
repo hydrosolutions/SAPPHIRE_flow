@@ -166,6 +166,11 @@ class PhaseEstimate:
     # the identifiability diagnostic behind `status`. nan unless OK.
     gauge_amplitude: float
     tigge_amplitude: float
+    # The identifiability floor THIS estimate was selected under. Carried on
+    # the result so a serializer reads it off what it is given rather than
+    # being told separately — a parallel parameter can disagree, a field
+    # cannot.
+    min_amplitude: float
 
 
 def build_paired_frame(
@@ -408,6 +413,7 @@ def estimate_phase(
             lag_principal_h=float("nan"),
             gauge_amplitude=float("nan"),
             tigge_amplitude=float("nan"),
+            min_amplitude=min_amplitude,
         )
 
     band_gauge_share = np.median(
@@ -436,6 +442,7 @@ def estimate_phase(
         lag_principal_h=float(np.median([sp.lag_principal_h for sp in station_phases])),
         gauge_amplitude=float(np.median([sp.gauge_amplitude for sp in station_phases])),
         tigge_amplitude=float(np.median([sp.tigge_amplitude for sp in station_phases])),
+        min_amplitude=min_amplitude,
     )
 
 
@@ -528,12 +535,10 @@ def station_amplitude_rows(
     return pl.DataFrame(rows).sort(["lead_band", "station"])
 
 
-def write_csv(
-    results: list[PhaseEstimate],
-    path: Path,
-    *,
-    min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
-) -> None:
+def write_csv(results: list[PhaseEstimate], path: Path) -> None:
+    """⛔ The floor is read off each estimate, NEVER passed alongside it: a
+    separate parameter lets a caller label results produced at one floor with
+    another."""
     pl.DataFrame(
         [
             {
@@ -558,7 +563,7 @@ def write_csv(
                 "lag_hours_shortest_arc": round(r.lag_principal_h, 2),
                 "gauge_harmonic_amplitude": round(r.gauge_amplitude, 3),
                 "tigge_harmonic_amplitude": round(r.tigge_amplitude, 3),
-                "min_harmonic_amplitude": min_amplitude,
+                "min_harmonic_amplitude": r.min_amplitude,
                 "resolution_bound_h": 3.0,
             }
             for r in results
@@ -610,7 +615,7 @@ def main() -> int:
         "" if min_amplitude == MIN_HARMONIC_AMPLITUDE else f"_minamp{min_amplitude:g}"
     )
     out_csv = args.out / f"tigge_gauge_timing_offsets{suffix}.csv"
-    write_csv(results, out_csv, min_amplitude=min_amplitude)
+    write_csv(results, out_csv)
     attribution_path = write_tigge_attribution(out_csv)
     stations_csv = args.out / f"tigge_station_amplitudes{suffix}.csv"
     station_amplitude_rows(
