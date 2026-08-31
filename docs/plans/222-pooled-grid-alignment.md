@@ -94,7 +94,7 @@ parameter. It must **not** live in the shared combine helper, which
 ### D7 — shipping this takes the combined forecast dark, and that requires T7
 
 The intersection is empty under today's grids, so the cycle stops writing `_pooled` rows for
-stations 2009 and 2091 until **Plan 224** re-anchors the daily models. Absence is the accepted,
+stations 2009 and 2091 until **Plan 226** re-anchors the daily models. Absence is the accepted,
 honest outcome.
 
 **But not writing is not the same as not publishing.** The export fetches with no age constraint
@@ -196,7 +196,7 @@ accretion round 5 cut. Recorded below; it needs its own plan.
 - `docs/spec/forecast-lab-snapshot.md:123-126` is normative and says "latest available". T7 changes
   it to the selected publication cycle: a **behavioural contract change** with no schema bump.
 - A note to SAPPHIRE-flow-map, **before the deploy**: `_pooled` will read `no_combined_forecast` for
-  2009 and 2091 until Plan 224 lands, and that is deliberate.
+  2009 and 2091 until Plan 226 lands, and that is deliberate.
 - Correct the published diagnosis where round 1 found it wrong: the temporal-jump QC rule would
   **not** have caught this sawtooth (`max_rate: 500.0` against a ~330 m³/s jump). *(Already done in
   the artifact; recorded here so the correction is tracked.)*
@@ -251,7 +251,7 @@ against the code across rounds 1-4; none is a false finding.
 
 ## Non-goals
 
-- Anchoring any model's `valid_time` — **Plan 224**, which also owns the two defects underneath it
+- Anchoring any model's `valid_time` — **Plan 226**, which also owns the two defects underneath it
   (the hindcast lookback taking rows not daily buckets, and skill's unresampled observation join).
 - Per-point provenance in the v2 contract; QC over combined forecasts; persisting `time_step`;
   backfill.
@@ -276,7 +276,7 @@ line).
 | Round | Verdict | What it changed |
 |---|---|---|
 | 1 | NEEDS_CHANGES (4 blockers) | Alert-resolution hazard; the one-timestamp `3600` trap; the QC-rule claim corrected to the consumer |
-| 2 | NEEDS_CHANGES (3 blockers) | Proved round 1's own repair wrong; surfaced the hindcast-lookback and skill-join defects → **anchoring split to Plan 224** |
+| 2 | NEEDS_CHANGES (3 blockers) | Proved round 1's own repair wrong; surfaced the hindcast-lookback and skill-join defects → **anchoring split to Plan 226** |
 | 3 | NEEDS_CHANGES (1 blocker) | Proved the re-cut's premise wrong: absence is invisible without T7 |
 | 4 | NEEDS_CHANGES (1 blocker) | T7's per-model exemption was false; its predicate cannot be a timestamp comparison |
 | 5 | **TOO BIG BY 5 TASKS** | This cut |
