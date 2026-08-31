@@ -22,13 +22,25 @@ pre-existing production defects it never set out to fix.
 is now the **intersection half only** — which round 2 largely validated. Anchoring, and the three
 defects it depends on, move to **Plan 224**.
 
-### ⚠️ Shipping this alone takes the combined forecast dark
+### ⚠️ Shipping this alone takes the combined forecast dark — ONLY IF T7 lands with it
 
-With today's disjoint grids the intersection is empty, so `_pooled` disappears from the export for
-stations 2009 and 2091 until Plan 224 lands. **That is the accepted outcome**, and it is the right
-one: the map's danger classification stops being driven by a pooling artifact, an absent combined
-forecast is an honest signal where a wrong one was not, and the alert-resolution hazard below is
-closed before thresholds are ever written. See "Round history" at the foot.
+With today's disjoint grids the intersection is empty, so the cycle stops **writing** new `_pooled`
+rows for stations 2009 and 2091 until Plan 224 lands. Absence is the intended, accepted outcome:
+the map's danger classification stops being driven by a pooling artifact, and the alert-resolution
+hazard below is closed before thresholds are ever written.
+
+**But not writing is not the same as not publishing** *(round 3, blocker)*. The export fetches the
+combined forecast with `fetch_latest_forecast()`, which has **no age or cycle constraint**
+(`services/forecast_lab/db_sources.py:145-152`). Plan 204 identified this hazard in its own
+docstring — "would keep exporting a stale `_pooled` row forever"
+(`services/forecast_lab/snapshot.py:419-425`) — and guarded only the case where the *strategy*
+switches away from `pooled`. This plan creates the case it does not guard: the strategy stays
+`pooled` while production stops, the gate passes, and **the last sawtooth is served indefinitely,
+marked `complete` in daily alignment.**
+
+That is worse than either outcome previously weighed — worse than a wrong-but-updating value, and
+worse than absence. **T7 exists to make absence actually absent, and this plan must not ship
+without it.**
 
 
 ## ⛔ Proportionality
@@ -218,8 +230,8 @@ The fallbacks emit `QUANTILES` and are excluded from `combinable_results`
 (`services/run_station_forecast.py:128-131`), so they never reach pooling and nothing in this plan
 touches them. *(Round 2 also showed the original D5 was wrong in both directions: persistence
 values DO change with a retimed grid because spread scales with the step index
-(`models/persistence_fallback.py:91`), and climatology values do NOT change when the date is
-unchanged (`models/climatology_fallback.py:143`). Plan 224 inherits the corrected statement.)*
+(`models/persistence_fallback.py:93`), and climatology values do NOT change when the date is
+unchanged (`models/climatology_fallback.py:145-148`). Plan 224 inherits the corrected statement.)*
 
 ### D6 — the two-timestamp floor binds the STORED forecast only
 
@@ -236,6 +248,13 @@ skill (`services/skill/combined_skill.py:104`).
 **The floor therefore applies to T3 (the persisted combined forecast) and NOT to T4 (alerting) or
 the skill path.** Applying it everywhere would suppress valid evaluation.
 
+**Where the floor LIVES is part of the decision** *(round 3, major)*. It must **not** sit inside the
+shared combine function, because `combined_skill.py:104-110` and the alert path call through the
+same code and would inherit it silently. It belongs at the persistence boundary — the caller that
+stores the combined forecast. Two **positive** regression tests pin this: a one-timestamp pooled
+ensemble still yields an alert exceedance evaluation, and still yields a combined skill hindcast.
+Without them the floor migrates into the shared path on the next refactor and nothing notices.
+
 ## Phase graph
 
 ```json
@@ -243,7 +262,7 @@ the skill path.** Applying it everywhere would suppress valid evaluation.
   "phases": [
     {"id": "phase-0", "tasks": ["T0"], "parallel": false},
     {"id": "phase-1", "tasks": ["T3b"], "parallel": false, "depends_on": ["phase-0"]},
-    {"id": "phase-2", "tasks": ["T3", "T4", "T4b", "T5"], "parallel": false, "depends_on": ["phase-1"]},
+    {"id": "phase-2", "tasks": ["T3", "T4", "T4b", "T5", "T7"], "parallel": false, "depends_on": ["phase-1"]},
     {"id": "phase-3", "tasks": ["T6"], "parallel": false, "depends_on": ["phase-2"]}
   ]
 }
@@ -262,7 +281,9 @@ reasoning instead of measuring, and because this plan's accepted consequence —
 forecast going dark — must be a *measured* prediction before deploy, not an inferred one.
 
 **Exit:** a recorded table of per-model grids and intersection size per station, and an explicit
-statement of which stations will stop publishing a combined forecast.
+statement of which stations will stop publishing a combined forecast. *(Round 3, major: this task
+previously also carried an observation-staleness measurement. That belongs to Plan 224 and has been
+removed — this plan changes no model's output, so staleness does not affect it.)*
 
 ### T3b — stop the pooled member-id collision 🔴
 
@@ -276,15 +297,27 @@ ids are not uniformly based: FI trajectories are 1-based
 two members collapse into one id, and the pool silently loses a member.
 
 The alert path already does this correctly, remapping to sequential ids through a join
-(`services/alert_strategy.py:113-128`). Two implementations of one operation; the forecast one is
-wrong. Bring `combine_ensembles_pooled` and `combine_ensembles_bma` onto the correct approach.
+(`services/alert_strategy.py:113-128`). Two implementations of one operation; the pooled one is
+wrong.
+
+**`combine_ensembles_bma` does NOT need this fix** *(round 3, minor — round 2's fold said it did)*.
+BMA assigns `global_offset + new_id` where `new_id` enumerates the sampled members
+(`services/forecast_combination.py:161-169`), so its ids are already sequential and collision-free.
+Rewriting it would broaden the change with no defect to fix. **T3b touches
+`combine_ensembles_pooled` only.**
 
 **Why it gates D2:** rectangularity is a statement about member counts per timestamp. While ids can
 collide, a rectangular input can produce a non-rectangular pool, and no assertion downstream can
 tell the difference.
 
-**Locking test (red first):** pool a 1-based 21-member ensemble with a 0-based 21-member ensemble
-and assert the result has 42 distinct member ids. Against current code it has 41.
+**Locking tests (red first):**
+1. Pool a 1-based 21-member ensemble with a 0-based 21-member ensemble; the result has 42 distinct
+   member ids. Against current code it has 41.
+2. **Identity, not just cardinality** *(round 3, major)*. Each output member id maps to exactly one
+   input `(contributor, original_member_id)` across **every** timestamp. A time-varying permutation
+   keeps the count at 42 while splicing different trajectories into each exported member series —
+   which the REST API publishes per member (`api/routes/api_forecasts.py:34-38`) — so a count
+   assertion alone does not lock the requirement this task states.
 
 **Must not change:** the pooled values themselves, or member identity within a single contributor.
 
@@ -324,12 +357,22 @@ timestamp. *(Round 1: the first draft asked for an assertion on the exceedance d
 have been written by reaching into internals — which the repo's testing philosophy forbids. The
 no-result assertion is observable from the public API and is red against current code.)*
 
-**Second locking test** *(round 2, major)*: two models sharing every timestamp but with **ragged
-member coverage** at one of them. T4's disjoint-grid test alone would pass an implementation that
-intersects timestamps and leaves the denominator ragged — which is the actual alert hazard.
+**Second locking test** *(round 2, major; assertion specified in round 3)*: two models sharing every
+timestamp but with **ragged member coverage** at one of them. The assertion must be on the
+**resulting exceedance probability**, computed against the known fixed denominator — not merely
+that a result came back or that nothing raised. A test that only obtains a result passes the
+current union implementation and locks nothing *(round 3, major)*.
 
 **Scope note (D6):** T4 must **not** inherit T3's two-timestamp floor. Alerting evaluates from an
 in-memory ensemble and a single future timestamp is valid to evaluate.
+
+**⚠️ Accepted consequence, now documented rather than discovered** *(round 3, major)*: on disjoint
+grids T4 produces no exceedance results at all, so **no new alert can be RAISED** either — T4b only
+protects alerts that already exist. That is a forecast-alert blackout for any station whose pooled
+models disagree on a grid. It is dormant twice over in this deployment — zero thresholds are
+configured, and `alert_model_strategy = "primary"` (`config.toml:40`), so the pooled alert path is
+not even reached — but it becomes live the moment either changes. **Plan 224 is the fix**; recording
+it here is what keeps it from being rediscovered as an incident.
 
 **Open for the implementer to answer, not to design around:** `_ensemble_size_adequate` sums
 `member_count` across models (`services/alert_checker.py:181`). After T4 the pooled ensemble is
@@ -344,8 +387,11 @@ review.** `check_station_alerts` adds a parameter to `evaluated_parameters` **be
 alert whose configured parameters are all "evaluated" and not exceeded
 (`services/alert_checker.py:346-354`).
 
-Today an empty result from `evaluate()` cannot happen for a reason other than "not exceeded". After
-T4 it can: an empty grid intersection returns no results. That would be read as **"evaluated, not
+*(Round 3, minor: round 2's fold claimed an empty result was **new** under T4. It is not — a missing
+or filtered danger level already yields no results while the parameter is marked evaluated,
+`services/alert_checker.py:65-68`, `services/alert_strategy.py:224-228`. The per-level repair below
+therefore fixes a **pre-existing** hazard as well as the one T4 introduces, which strengthens the
+case for it.)* After T4 the empty-result case also arises from an empty grid intersection. That would be read as **"evaluated, not
 exceeded"** and would **resolve a live flood alert** on a station whose models simply failed to
 agree on a grid. Silent, and in the wrong direction.
 
@@ -364,11 +410,14 @@ uses.
 1. A station with an active forecast alert whose pooled models are on disjoint grids still has that
    alert active after `check_station_alerts`. Choose thresholds so current code genuinely resolves
    it, or the test is not red *(round 2)*.
-2. **The legitimate path still resolves.** A pooled station that IS evaluable and is NOT exceeded
-   resolves its active alert, driven through `check_station_alerts()` — not through
+2. **The legitimate path still resolves** — a pooled station that IS evaluable and is NOT exceeded
+   resolves its active alert, driven through `check_station_alerts()` rather than
    `_process_results()` directly, which is how the existing coverage reaches it
-   (`tests/unit/services/test_alert_checker.py:731`) and is why test 1 alone would accept a
-   degenerate fix that simply never marks pooled parameters evaluated *(round 2, major)*.
+   (`tests/unit/services/test_alert_checker.py:731`). Without it, test 1 alone accepts a degenerate
+   fix that simply never marks pooled parameters evaluated *(round 2, major)*.
+   **This is a REGRESSION GUARD and is exempt from red-first** — current code already resolves in
+   this situation, so it passes before and after *(round 3, major: round 2 mislabelled it as a
+   red-first locking test, and the exit gate demanded it be red)*.
 3. A parameter evaluable at one danger level and not another does not resolve the alert at the
    level it could not evaluate.
 
@@ -386,6 +435,32 @@ computes.
 parameter's names two. *(Round 1: with only two models the second parameter would fall below D2's
 two-contributor floor and produce no forecast at all, leaving nothing to assert. The fixture shape
 is load-bearing, so it is stated here rather than left to the implementer.)*
+
+### T7 — an absent combined forecast must READ as absent 🔴 *(deploy blocker)*
+
+**Round 3 blocker. This plan is unsafe to ship without it.**
+
+`fetch_latest_forecast_for_model` delegates to `fetch_latest_forecast()` with no age or cycle
+constraint (`services/forecast_lab/db_sources.py:145-152`). Plan 204 gated the *strategy* to stop a
+stale `_pooled` row leaking after a `pooled → primary` switch
+(`services/forecast_lab/snapshot.py:419-425`), but that gate does not fire when the strategy stays
+`pooled` and the cycle simply stops producing rows — which is exactly what D2 causes.
+
+Constrain the combined fetch so a row that is not from the current forecast cycle is treated as
+absent, returning the existing `CombinedForecastUnavailableSchema` rather than a stale document.
+This is additive within the v2 contract — the unavailable shape already exists and already carries
+a `reason` — so **no `schema_version` change**, consistent with the consumer's four pinned literals.
+
+**Locking test (red first):** with a stored `_pooled` row from an earlier cycle and no row from the
+current one, the export renders the combined block **unavailable**. Against current code it renders
+the stale row as `available`, and daily alignment marks those days `complete`.
+
+**Must not change:** the per-model entries, which are fetched the same way but *are* being written
+every cycle. Round 3 did not find them at risk, and widening this to every fetch is out of scope.
+
+**Open for the implementer:** the exact freshness predicate — same-cycle equality against the
+resolved cycle time, versus an age bound. Same-cycle is preferred as it needs no new tunable, but
+the export runs asynchronously from the cycle and must not flap during a run.
 
 ### T6 — docs, observability, and tell the consumers
 
@@ -417,17 +492,18 @@ Changes production forecast behaviour, so it does not ride along with anything e
 - 🪤 `git pull` on the mini replaces the inode behind single-file bind mounts; restart
   worker/ingest/api after pulling or `load_config()` raises `FileNotFoundError` against a host file
   that looks fine.
-- **Expect the combined forecast to DISAPPEAR for 2009 and 2091.** That is the predicted, accepted
-  outcome of shipping the invariant without Plan 224, and T0 must have named those stations in
-  advance. A combined forecast that *survives* is the surprise worth investigating, not its absence.
+- **Expect the combined forecast to DISAPPEAR for 2009 and 2091**, and verify it in the *export*,
+  not merely in the cycle. A cycle that writes no `_pooled` row while the export still renders one
+  is precisely the T7 failure mode, and it looks identical to success from the flow logs.
 - **Watch the first forecast cycle after deploy.** Where a station publishes nothing, the log must
   say **which** of D2's conditions caused it (T6) — an unexplained absence is indistinguishable from
   a regression.
 - **T4b is a safety gate, not a nicety.** Do not deploy T4 without it: the deployment currently
   holds zero thresholds, so the alert-resolution hazard is dormant, but the ordering makes it live
   the moment thresholds are written.
-- D1(a) shortens the combined horizon by one day per day of observation staleness. That is correct
-  behaviour, and T0 must have quantified it **before** deploy rather than it being diagnosed after.
+- Plan 224 is what restores the combined forecast. Until it lands the consumer sees
+  `no_combined_forecast` — provided T7 shipped. *(Round 3, major: this bullet previously carried an
+  observation-staleness consequence that belongs entirely to Plan 224. Removed.)*
 
 ## Non-goals
 
@@ -438,6 +514,13 @@ Changes production forecast behaviour, so it does not ride along with anything e
 - Backfilling or recomputing stored forecasts.
 - **Anchoring any model's `valid_time`, and the three pre-existing defects it depends on** — Plan
   224. Named here so the split is explicit rather than an omission.
+- **BMA's model-global member allocation** *(round 3, major — a fourth pre-existing defect)*.
+  `combine_ensembles_bma` computes `counts` once per model and reuses it for every parameter
+  (`services/forecast_combination.py:127-143`), so a positive-weight model carrying only
+  `discharge` still consumes its allocation for `water_level`, leaving that forecast undersized
+  against the documented 100 members (`docs/architecture-context.md:133`). Real, but BMA is not
+  deployed and this is an allocation defect, not a grid defect. **Recorded here so it is not lost;
+  it needs its own plan.**
 - The Flow Map's OPERATIONAL mode, thresholds, or CRPSS. Gated elsewhere on the Plan 111 G1 licence.
 
 ## Exit gates
@@ -445,13 +528,15 @@ Changes production forecast behaviour, so it does not ride along with anything e
 - `uv run ruff format` / `uv run ruff check --fix` clean.
 - `uv run pyright` — no new errors against the ratchet.
 - `uv run pytest tests/unit` — zero failures. The bar is zero; any failure is real.
-- Every locking test in T3b, T3 (tests 1-3, 5, 6, 7), T4, T4b and T5 demonstrated **failing against
-  the pre-change code** and passing after. A locking test that passes both ways is a defect in the
+- Every locking test in T3b, T3 (tests 1-3, 5, 6, 7), T4, T4b (tests 1 and 3), T5 and T7
+  demonstrated **failing against the pre-change code** and passing after. A locking test that passes both ways is a defect in the
   test, not evidence.
-- **One stated exemption:** T3 test 4 (identical grids → unchanged output) is a regression guard and
-  passes both before and after by design. It is the only exemption; any other test that passes
-  before the change is a defect. *(Round 1: the first draft's universal red-first gate contradicted
-  this test.)*
+- **Two stated exemptions**, both regression guards that pass before and after by design:
+  T3 test 4 (identical, collision-free grids → unchanged output) and T4b test 2 (the legitimate
+  resolution path). Any *other* test that passes before the change is a defect. *(Round 1 caught
+  the first; round 3 caught the second, which round 2 had mislabelled as red-first.)*
+- D6's two positive regression tests (one-timestamp alert evaluation, one-timestamp combined skill)
+  also pass before and after — they exist to stop the floor migrating into the shared path.
 - Version bumped in the commit; hold at PR.
 
 ## Round history
@@ -503,8 +588,31 @@ and the BMA and ragged-denominator qualifications being stated but locked by no 
 | Citations `run_forecast_cycle.py:684-690` and `:2872-2886` have drifted | Both correct in the working tree **and** at HEAD: `_resolve_cycle_time` is at 684-690 and returns `clock()`; `build_combined_forecasts` is at 2872 |
 | Round 1's skip-reason citation `:2898-2903` | Points at `store_forecast_failed`, not the combination gate. The observability gap is real and is in T6; the reference was not |
 
-### Round 3
+### Round 3 — NEEDS_CHANGES (1 blocker, 7 majors, 4 minors)
 
-Has not run. This plan changed shape after round 2, so the round-2 verdict does not carry over to
-it — the intersection half was largely validated (round 2 explicitly CHECKED T3 tests 1-3, 5, 6 and
-T5 as red against current behaviour), but T3b, D6 and the rewritten T4b are new and unreviewed.
+Run against the re-cut plan, and asked specifically to trace what happens downstream when
+`_pooled` stops existing. It found that **the premise of the re-cut was wrong**.
+
+- **BLOCKER: shipping this alone does not take `_pooled` dark — it freezes it.** The export fetches
+  with no age constraint (`services/forecast_lab/db_sources.py:145-152`), so the last sawtooth is
+  served indefinitely and marked `complete`. Plan 204 named this hazard in its own docstring and
+  guarded only the strategy-switch case (`services/forecast_lab/snapshot.py:419-425`); this plan
+  creates the case it does not guard. **T7 is the answer, and this plan cannot ship without it.**
+- Majors: the alert-coverage blackout (not merely resolution) is now documented at T4 rather than
+  left to be discovered; D6's floor needed a *location* and positive tests, not just a scope
+  statement; T3b's cardinality test did not lock member identity; T4's ragged test had no
+  observable assertion; T4b test 2 was mislabelled red-first when it is a regression guard; and a
+  stale anchoring consequence had survived the re-cut in T0 and Deployment.
+- A **fourth pre-existing defect** surfaced and was deliberately NOT taken: BMA's model-global
+  member allocation. Recorded in Non-goals.
+
+**Trajectory across the three rounds** — blockers 4 → 3 → 1, and round 3's "checks out" list now
+covers the core design: the member-id collision is real, T4b's per-level granularity is correct,
+T3 tests 1-3/5/6 and T5 are red, and the Proportionality reconciliation holds. What keeps failing
+is **test specification precision**, not design. Rounds 1 and 2 each invalidated the previous
+round's repair; round 3 did not — it invalidated a *premise* instead, and the design underneath
+survived.
+
+### Round 4
+
+Has not run. T7, the D6 relocation, and three rewritten assertions are new and unreviewed.
