@@ -132,6 +132,18 @@ COPY --from=builder --chown=app:app /app/src /app/src
 COPY --from=builder --chown=app:app /app/alembic.ini /app/alembic.ini
 COPY --from=builder --chown=app:app /app/alembic /app/alembic
 
+# Plan 218: curated operator scripts an operator runs AGAINST a deployment
+# (not the whole scripts/ directory — see docs/plans/218-ship-operator-scripts-in-the-image.md
+# D1/D2 for what's excluded and why). Run e.g.:
+#   docker exec -it <container> python /app/scripts/onboard.py --help
+COPY --chown=app:app \
+    scripts/import_caravan_attributes.py \
+    scripts/onboard.py \
+    scripts/backfill_meteoswiss_history.py \
+    scripts/backfill_era5_land_history.py \
+    scripts/validate_forcing_reference.py \
+    /app/scripts/
+
 ENV PATH="/app/.venv/bin:$PATH"
 
 ENTRYPOINT ["/entrypoint.sh"]

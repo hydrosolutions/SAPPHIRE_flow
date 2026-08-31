@@ -743,6 +743,26 @@ Canonical templates:
   adapter-registry pattern is decided.
 - `train-models` (non-empty) — TODO: same.
 
+### Operator scripts (Plan 218)
+
+A curated set of operator CLIs ships inside the runtime image at
+`/app/scripts` — `import_caravan_attributes.py`, `onboard.py`,
+`backfill_meteoswiss_history.py`, `backfill_era5_land_history.py`, and
+`validate_forcing_reference.py` (see
+`docs/plans/218-ship-operator-scripts-in-the-image.md` D1/D2 for what's
+excluded and why; this is not all of `scripts/`). Invoke one against the
+deployed stack with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.macmini.yml \
+    exec -T prefect-worker python /app/scripts/onboard.py --help
+```
+
+`import_caravan_attributes.py` additionally needs its input parquet
+bind-mounted into a one-off container — see
+`docs/plans/188-caravan-statics-operational-import.md` §T4 for that
+recipe (it is not satisfied by this plan alone).
+
 ## Upgrade procedure
 
 ```bash
