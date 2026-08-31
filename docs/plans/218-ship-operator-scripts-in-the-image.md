@@ -5,8 +5,8 @@ plan: 218
 title: Ship the operator scripts in the runtime image so a deployment can be reproduced
 scope: Copy a curated set of operator scripts into the runtime image, plus the .dockerignore hygiene that keeps build junk out. No change to any script's behaviour.
 depends_on: []
-blocks: [188]
-source: 2026-08-31 — Plan 188 T4 could not run because scripts/import_caravan_attributes.py, merged in T1-T3, is absent from the deployed image
+blocks: []
+source: 2026-08-31 — scripts/import_caravan_attributes.py, merged by Plan 188 T1-T3, is absent from the deployed image. NOT a blocker for 188 T4, which prescribes bind-mounting instead; this plan is about reproducibility on a new host
 ---
 
 # Plan 218 — the operator CLI we shipped isn't in the image
@@ -47,15 +47,32 @@ alembic  alembic.ini  config  config.toml  docker  src
 This is **not** a `.dockerignore` exclusion — `scripts` is not mentioned there. The directory is
 simply never copied.
 
-**Consequence, already realised:** Plan 188 T1-T3 built, reviewed and merged an *operator CLI*
+**Consequence:** Plan 188 T1-T3 built, reviewed and merged an *operator CLI*
 (`scripts/import_caravan_attributes.py`) whose entire purpose is to be run against a deployment.
-It cannot be run against any deployment. T4 is blocked on this, and every future operator tool
-will hit the same wall silently — the tool merges green, and the gap only appears when someone
-tries to use it in production.
+It cannot be run *from* any deployment image. Every future operator tool hits the same wall
+silently — the tool merges green, and the gap only appears when someone tries to use it.
+
+**⚠️ This does NOT block Plan 188 T4, and an earlier draft of this plan wrongly said it did.**
+T4 already carries a reviewed recipe that works *without* any image change: it bind-mounts both
+the CLI and the parquet into a one-off `prefect-worker`-based container
+(`docs/plans/188-caravan-statics-operational-import.md` § T4). That recipe additionally requires
+**both** private-repo secrets at build time, preserving `/entrypoint.sh` (where `DATABASE_URL` is
+assembled, `docker/entrypoint.sh:10-23`), and **explicitly resolving the one-off
+`WITH_AQUACAST=1` tag** — because `docker-compose.yml:80-83` pins `image: sapphire-flow:${VERSION}`
+and would otherwise quietly run the ordinary image without aquacast, which fails the D2 preflight
+and *looks like* a model-registration problem.
+
+So this plan's value is the owner's stated one — **reproducing a deployment on another machine** —
+not unblocking T4. It should be judged on that, and it is not on T4's critical path.
 
 **Owner's framing (2026-08-31):** *"we might want to re-deploy on a different machine and then
 it's good if we can fully reproduce what we have done here."* An image that cannot run the
 procedures that built the deployment cannot reproduce it.
+
+**Verified 2026-08-31:** the parquet sits on the mini at
+`data/caravan/bafu_static_attributes.parquet` (host) and is **not visible inside any container**;
+`docker cp` cannot fix that because the containers run a read-only rootfs
+(`docs/standards/security.md:454`). A bind mount is genuinely required, exactly as 188 T4 says.
 
 ## Decisions
 
@@ -73,8 +90,11 @@ procedures that built the deployment cannot reproduce it.
 
 - **D2 — The curated set is the scripts an operator runs AGAINST a deployment.** Proposed:
   `import_caravan_attributes.py`, `onboard.py`, `backfill_meteoswiss_history.py`,
-  `backfill_era5_land_history.py`, `validate_forcing_reference.py`,
-  `regenerate_icon_grid_asset.py`. **`check_readiness.py` is excluded** — it inspects review
+  `backfill_era5_land_history.py`, `validate_forcing_reference.py`. **`regenerate_icon_grid_asset.py` is excluded** — it writes into the source tree
+  (`_ASSET_PATH.parent.mkdir(...)`, `scripts/regenerate_icon_grid_asset.py:112`) and every
+  deployment service sets `read_only: true` (`docker-compose.yml:122,177,248`), so it would
+  fail with `EROFS`. It is a build-time asset generator, not an operator tool.
+  **`check_readiness.py` is excluded** — it inspects review
   metadata in plan/design documents (`scripts/check_readiness.py:110`) and `docs/` is not shipped
   (`.dockerignore:9`), so it could never work in the image; it is development tooling. **Excluded:** host provisioning (`bootstrap-mac-mini.sh`,
   `launchd/`), dev tooling (`codex-review.sh`, `check_readiness.py`), research (`dhm_precip/`,
@@ -89,7 +109,7 @@ procedures that built the deployment cannot reproduce it.
   (`scripts/import_caravan_attributes.py:358`) **before** `resolve_required_static_names()` runs
   (`:369`), and that call reads the required statics from the **discovered** `cmal_pool_pt`
   adapter. `discover_models()` swallows an import failure and omits the model
-  (`services/model_registry.py:101`), so on the ordinary image the operator command still dies
+  (`services/model_registry.py:125`), so on the ordinary image the operator command still dies
   with "model not registered" while `--help` exits 0.
 
   **This is not a missing plan — it is an existing build arg.** `WITH_AQUACAST=0` is the default
@@ -123,12 +143,19 @@ script and is a bigger change than unblocking Plan 188 needs today.
 ## Non-goals
 
 Rewriting scripts · moving them into `src/` · a packaging migration · shipping host-provisioning
-or research code · changing what any script does · Plan 188 T4 itself (this only unblocks it).
+or research code · changing what any script does · Plan 188 T4 itself — **and this plan does not unblock it**; T4 has its own
+recipe (see above).
 
 ## Exit gates
 
 - `docker exec <container> ls /app/scripts` lists exactly D2's curated set.
 - `--help` exits 0 on the default image (smoke check).
 - **In a `WITH_AQUACAST=1` image, `cmal_pool_pt` resolves and `resolve_required_static_names()`
-  returns a non-empty set** — the gate that actually proves Plan 188 T4 can run.
+  returns a non-empty set** — this proves the CLI is *operational in the image*. It does **not**
+  prove Plan 188 T4 can run: T4 additionally needs the parquet bind-mounted, the DB URL from
+  `/entrypoint.sh`, and the backend network (188 § T4).
+
+**Station-count note (2026-08-31):** Plan 188 § "T4's premise is FALSE" records 2 river stations
+against a 148-code manifest. **That is now stale** — the fleet finished onboarding and the DB holds
+**148**, verified today. T4's station precondition is met; do not cite the old figure.
 - The deployment doc records where operator scripts live and how to run one.

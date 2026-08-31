@@ -21,7 +21,18 @@ supersedes: []
 | **T3** `replace_namespaced_attributes` | ✅ **MERGED** | same PR — `store/basin_store.py` |
 | **T4** run the import on the mini | ⛔ **BLOCKED — cannot run** | its stated precondition is false; see below |
 
-### ⛔ T4's premise is FALSE — measured 2026-08-28
+### ✅ RESOLVED 2026-08-31 — the fleet is now onboarded (148 stations)
+
+The section below was written on 2026-08-28, when the mini held 2 river stations. Batch 1
+and batch 2 onboarding have since completed and the database holds **148**, matching the
+pinned manifest exactly (verified 2026-08-31, zero stations outside the manifest). The
+delivered parquet is on the mini at `data/caravan/bafu_static_attributes.parquet`,
+sha256-verified, and contains all 148 manifest codes. **T4's station precondition is met.**
+The remaining requirements are the ones this section already lists: bind-mount the CLI and
+the parquet, both build secrets, the `WITH_AQUACAST=1` tag resolved explicitly, and
+`/entrypoint.sh` preserved.
+
+#### Original 2026-08-28 finding, kept as the record
 
 T4 reads: *"The Swiss fleet is onboarded there (owner-confirmed); the dev box has 2 stations and
 cannot exercise this."* **The mini also has 2 stations.** Proved against the production database
