@@ -790,7 +790,10 @@ class MeteoSwissNwpAdapter:
                         raise BudgetExceededError(
                             f"Download size cap exceeded: "
                             f"{accumulated_bytes + bytes_add} "
-                            f"> {self._max_download_bytes}"
+                            f"> {self._max_download_bytes}",
+                            kind="byte",
+                            observed=accumulated_bytes + bytes_add,
+                            limit=self._max_download_bytes,
                         )
                     href = str(asset.get("href", ""))
                     file_path = self._download_asset(href, asset_key, scratch_dir)
@@ -805,7 +808,10 @@ class MeteoSwissNwpAdapter:
                     if len(grib_files) > _MAX_FILE_COUNT:
                         raise BudgetExceededError(
                             f"GRIB file count exceeded: "
-                            f"{len(grib_files)} > {_MAX_FILE_COUNT}"
+                            f"{len(grib_files)} > {_MAX_FILE_COUNT}",
+                            kind="file_count",
+                            observed=len(grib_files),
+                            limit=_MAX_FILE_COUNT,
                         )
                     if (
                         self._max_files is not None

@@ -40,7 +40,26 @@ class NoCycleAvailableError(AdapterError):
 
 
 class BudgetExceededError(AdapterError):
-    """Local size or file-count guard tripped; not a retriable external-source error."""
+    """Local size or file-count guard tripped; not a retriable external-source error.
+
+    ``kind``/``observed``/``limit`` (Plan 223 D6) let a caller construct a
+    short, sanitised failure reason (e.g. ``"nwp_file_count_exceeded: 501 >
+    500"``) from values the code itself computed, without ever parsing
+    ``str(exc)`` — the message text may still be freeform for logs.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: Literal["byte", "file_count"],
+        observed: int,
+        limit: int,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.observed = observed
+        self.limit = limit
 
 
 class LindasRateLimitExhaustedError(AdapterError):

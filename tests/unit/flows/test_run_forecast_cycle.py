@@ -28,6 +28,7 @@ from sapphire_flow.adapters.recap_gateway import (
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import (
     AdapterError,
+    BudgetExceededError,
     ConfigurationError,
     ExtractionError,
     StoreError,
@@ -1586,6 +1587,75 @@ class TestRecapNwpDeliveryWatchdog:
         assert stale is True
         record = _only_nwp_delivery_record(health_store)
         assert record.status == PipelineHealthStatus.CRITICAL
+
+
+class TestNwpFetchTaskFailureReason:
+    """Plan 223 D5/D6 — the ``_fetch_nwp_task`` boundary: the generic
+    ``except Exception`` clause is the only place that still holds the
+    exception, so it is where the sanitised cause must be constructed and
+    attached to the outcome instead of collapsing to bare ``None``."""
+
+    def _run_with_adapter(self, adapter: object) -> object:
+        sid = StationId(uuid4())
+        source = StationWeatherSource(
+            station_id=sid,
+            nwp_source=_NWP_SOURCE,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
+        )
+        return _fetch_nwp_task.fn(
+            adapter=adapter,  # type: ignore[arg-type]
+            station_configs=[source],
+            cycle_time=_NOW,
+            weather_forecast_store=FakeWeatherForecastStore(),
+            clock=_clock,
+        )
+
+    def test_generic_exception_returns_outcome_with_generic_reason(self) -> None:
+        outcome = self._run_with_adapter(_RaisingAdapter(RuntimeError("boom")))
+
+        assert isinstance(outcome, _NwpFetchOutcome)
+        assert outcome.fetch_failure_reason == "nwp_fetch_failed"
+
+    def test_budget_exceeded_file_count_names_the_cap_with_numbers(self) -> None:
+        exc = BudgetExceededError(
+            "GRIB file count exceeded: 501 > 500",
+            kind="file_count",
+            observed=501,
+            limit=500,
+        )
+        outcome = self._run_with_adapter(_RaisingAdapter(exc))
+
+        assert isinstance(outcome, _NwpFetchOutcome)
+        assert outcome.fetch_failure_reason == "nwp_file_count_exceeded: 501 > 500"
+
+    def test_budget_exceeded_byte_cap_names_the_cap_with_numbers(self) -> None:
+        exc = BudgetExceededError(
+            "Download size cap exceeded: 999 > 500",
+            kind="byte",
+            observed=999,
+            limit=500,
+        )
+        outcome = self._run_with_adapter(_RaisingAdapter(exc))
+
+        assert isinstance(outcome, _NwpFetchOutcome)
+        assert outcome.fetch_failure_reason == "nwp_byte_exceeded: 999 > 500"
+
+    def test_url_bearing_exception_never_reaches_the_reason(self) -> None:
+        leaking = AdapterError(
+            "NWP fetch failed: https://rgw.cscs.ch/bucket/x.grib2"
+            "?AWSAccessKeyId=SECRET_KEY_ID&Signature=SECRET_SIG&Expires=9999999999"
+        )
+        outcome = self._run_with_adapter(_RaisingAdapter(leaking))
+
+        assert isinstance(outcome, _NwpFetchOutcome)
+        reason = outcome.fetch_failure_reason
+        assert reason == "nwp_fetch_failed"
+        assert reason is not None
+        assert "AWSAccessKeyId" not in reason
+        assert "SECRET" not in reason
+        assert "https://" not in reason
 
 
 def _snow_ws(station_id: StationId) -> StationWeatherSource:
@@ -4001,6 +4071,10 @@ enabled = false
         )
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.CRITICAL
+        # Plan 223 D3: this path never constructs a cause (it isn't an NWP
+        # fetch failure) -- the detail must NOT grow a spurious
+        # `reason: null`/`reason: None` key.
+        assert "reason" not in records[0].detail
 
     def test_no_active_assignment_emits_critical_freshness_record(self) -> None:
         """Requirement 3, a DIFFERENT variant from the no-operational-
@@ -4118,6 +4192,139 @@ enabled = false
         )
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.CRITICAL
+        # Plan 223 D2/D5: a generic (unclassified) fetch exception still
+        # carries a short constructed cause -- never raw str(exc) -- into
+        # the record so the alert stops reading as an empty page.
+        assert records[0].detail["reason"] == "nwp_fetch_failed"
+
+    def test_nwp_budget_exceeded_file_count_abort_names_the_cap(self) -> None:
+        """Plan 223 D6 — the actual 2026-08-29 outage: the file-count
+        budget guard trips (`BudgetExceededError(kind="file_count", ...)`)
+        and the freshness record must name WHICH cap tripped plus the
+        observed/limit numbers, built from the exception's structured
+        fields (never `str(exc)`)."""
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=_RaisingAdapter(
+                BudgetExceededError(
+                    "GRIB file count exceeded: 501 > 500",
+                    kind="file_count",
+                    observed=501,
+                    limit=500,
+                )
+            ),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.health is ForecastCycleHealth.FAILED
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        assert records[0].detail["reason"] == "nwp_file_count_exceeded: 501 > 500"
+
+    def test_nwp_fetch_failure_url_bearing_exception_never_leaks(self) -> None:
+        """Plan 223 D2 — a security requirement, not tidiness: MeteoSwiss
+        download hrefs are presigned URLs carrying `AWSAccessKeyId` and
+        `Signature`. An adapter exception wrapping one verbatim (exactly
+        `meteoswiss_nwp.py:670`'s ``f"NWP fetch failed: {exc}"`` shape)
+        must never reach the stored `detail` or the alert -- only the
+        short constructed generic code."""
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        leaking = AdapterError(
+            "NWP fetch failed: https://rgw.cscs.ch/bucket/x.grib2"
+            "?AWSAccessKeyId=SECRET_KEY_ID&Signature=SECRET_SIG&Expires=9999999999"
+        )
+
+        run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=_RaisingAdapter(leaking),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_FRESHNESS
+        )
+        assert len(records) == 1
+        reason = records[0].detail["reason"]
+        assert isinstance(reason, str)
+        assert "AWSAccessKeyId" not in reason
+        assert "SECRET" not in reason
+        assert "https://" not in reason
+        assert reason == "nwp_fetch_failed"
 
     def test_group_only_total_store_forecast_failure_emits_critical_freshness_record(
         self,
