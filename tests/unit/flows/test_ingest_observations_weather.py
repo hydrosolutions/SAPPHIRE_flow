@@ -142,6 +142,60 @@ class TestWeatherStationEligibility:
         # UNGAUGED and gauging still gates RIVER/LAKE.
         assert result.stations_polled == 1
 
+    @pytest.mark.parametrize(
+        "status",
+        [
+            StationStatus.ONBOARDING,
+            StationStatus.SUSPENDED,
+            StationStatus.DECOMMISSIONED,
+        ],
+    )
+    def test_non_operational_weather_station_is_rejected(
+        self, status: StationStatus
+    ) -> None:
+        """D2 gates WEATHER on `station_status == operational` alone (no
+        gauging check) — but that gate must still reject every
+        non-operational status. A predicate like `WEATHER or (operational
+        and gauged)` would admit every non-operational weather station
+        (since GAUGED defaults True) and still pass the single OPERATIONAL
+        case above."""
+        weather = make_station_config(
+            code="WX-STATUS",
+            name="Weather Status",
+            station_kind=StationKind.WEATHER,
+            gauging_status=GaugingStatus.UNGAUGED,
+            station_status=status,
+            rng=random.Random(11),
+        )
+        station_store = FakeStationStore()
+        station_store.store_station(weather)
+
+        class _CountingAdapter:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def fetch_observations_batch(
+                self,
+                station_configs: list[StationConfig],
+                since: dict[StationId, UtcDatetime],
+            ) -> HydroScraperBatchResult:
+                self.calls += 1
+                return HydroScraperBatchResult(outcomes=())
+
+        adapter = _CountingAdapter()
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=FakeObservationStore(),
+            baseline_store=FakeClimBaselineStore(),
+            adapter=adapter,
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.stations_polled == 0
+        assert adapter.calls == 0
+
     def test_river_lake_only_deployment_counts_unchanged(self) -> None:
         """D1/D2 must be a no-op for existing RIVER/LAKE-only deployments."""
         s1 = make_station_config(code="2135", name="Aare Bern", rng=random.Random(3))
@@ -310,7 +364,8 @@ class TestWeatherStationEndToEndReplay:
         assert result.qc_passed == 1
         assert result.qc_failed == 0
 
-        # D8: the fetch health record is written before QC, and still is
-        # with a weather station in the mix.
+        # The fetch health record is written before QC (Plan 175's D8, not
+        # a Plan 217 decision), and still is with a weather station in the
+        # mix.
         records = health_store.fetch_recent(PipelineCheckType.OBSERVATION_INGEST_FETCH)
         assert len(records) == 1

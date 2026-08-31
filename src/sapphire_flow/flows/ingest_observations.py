@@ -579,8 +579,16 @@ def ingest_observations_flow(
     # --- Step 2.0: Fetch eligible stations (RIVER + LAKE + WEATHER) ---
     # Plan 217 (M-G1) D1: WEATHER joins the existing fetch rather than
     # getting its own flow.
-    river_stations = station_store.fetch_all_stations(kind=StationKind.RIVER)
-    lake_stations = station_store.fetch_all_stations(kind=StationKind.LAKE)
+    # `station_store` is typed `object` (see the parameter default above),
+    # so pyright flags `fetch_all_stations` as an unknown attribute on all
+    # three of the following calls alike; ignored consistently rather than
+    # on just one of the three.
+    river_stations = station_store.fetch_all_stations(  # type: ignore[attr-defined]
+        kind=StationKind.RIVER
+    )
+    lake_stations = station_store.fetch_all_stations(  # type: ignore[attr-defined]
+        kind=StationKind.LAKE
+    )
     weather_stations = station_store.fetch_all_stations(  # type: ignore[attr-defined]
         kind=StationKind.WEATHER
     )

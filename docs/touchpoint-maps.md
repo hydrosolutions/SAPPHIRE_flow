@@ -1041,6 +1041,20 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   `ReplayStationAdapter` both do — not a `StationDataSource` Protocol change;
   widening that Protocol itself was the explicit rejected alternative (see
   `docs/spec/types-and-protocols.md` § StationDataSource).
+- **`ReplayStationAdapter` requires a UNIQUE `station_code` across a requested
+  batch's `station_configs` (Plan 217 fixer round).** The fixture keys rows by
+  `station_code` alone (`docs/plans/archive/020-phase3-replay-recording.md`),
+  but `code` is only unique per `(network, code)` in the DB
+  (`uq_stations_network_code`) — Plan 217 made this reachable for the first
+  time in practice by adding WEATHER to the same fetch as RIVER/LAKE, so a
+  weather station and a river station on different networks can now
+  legitimately share a bare code in one replay batch. `fetch_observations`/
+  `fetch_observations_batch` raise `ConfigurationError` on any such collision
+  rather than silently routing a matching row (e.g. discharge) to whichever
+  config happened to be last in the list. Do not "fix" this by reverting to
+  last-write-wins; if fixture identity ever needs to be more than
+  `station_code`, that is a fixture-schema change (adds a `network` column),
+  not a lookup-order fix.
 - **The per-station fan-out was replaced by a whole-graph fetch (D5, RESOLVED —
   Plan 186).** `HydroScraperAdapter.fetch_observations_batch` issues ONE SPARQL
   request per call regardless of station count, indexed by `(gauge_code,
