@@ -373,17 +373,25 @@ def _reference_read_contract() -> ia.ImergReadContract:
     )
 
 
-def _write_reference_acquisition_record(data_root: Path) -> ia.ImergAcquisitionManifest:
+def _write_reference_acquisition_record(
+    data_root: Path, *, missing: tuple[datetime, ...] = ()
+) -> ia.ImergAcquisitionManifest:
     """The PERMANENT acquisition record every hand-built bundle here is
     published against. ⛔ A real one, complete by derivation: the predicate
     resolves it and RECOMPUTES the bundle's two digests from its contents, so
     a fixture carrying placeholder digest strings would make exactly the
-    invariant under test unobservable — as it did for two review rounds."""
+    invariant under test unobservable — as it did for two review rounds.
+
+    `missing` records granule starts as GAPS instead of retrieved, so the
+    record stays complete by derivation while the bundle's gap set is no
+    longer empty."""
+    gaps = set(missing)
     checksums = {
         ia.ImergGranuleId(start=start).filename(
             revision=ia.PINNED_GRANULE_REVISION_PER_PLAN
         ): f"{index:064d}"
         for index, start in enumerate(ia.all_granule_starts())
+        if start not in gaps
     }
     record = ia.ImergAcquisitionManifest(
         route=ia.ROUTE,
@@ -395,7 +403,7 @@ def _write_reference_acquisition_record(data_root: Path) -> ia.ImergAcquisitionM
         read_contract=_reference_read_contract().as_manifest_dict(),
         requested=ia.EXPECTED_GRANULE_COUNT,
         retrieved=len(checksums),
-        missing=(),
+        missing=tuple(start.isoformat() for start in sorted(gaps)),
         granule_checksums=checksums,
         granule_retrieved_at=dict.fromkeys(checksums, _AT),
         retrospective=True,
@@ -573,11 +581,14 @@ def _stage_bundle(
     first_row_overrides: dict[str, Any] | None = None,
     cell_overrides: dict[str, Any] | None = None,
     series_cell_overrides: dict[str, Any] | None = None,
+    record_missing: tuple[datetime, ...] = (),
     **manifest_overrides: Any,
 ) -> tuple[Path, ie.ImergExtractionManifest]:
     """A staged bundle that validates as published, so each test can break
     exactly ONE thing about it."""
-    record = _write_reference_acquisition_record(tmp_path / "data_root")
+    record = _write_reference_acquisition_record(
+        tmp_path / "data_root", missing=record_missing
+    )
     staged = ie.prepare_staging_dir(ie.imerg_points_root(tmp_path / "data_root"))
     payload_sha256s = _write_bundle_payload(
         staged,
@@ -1278,6 +1289,100 @@ class TestPrimarySeriesNumericContract:
         )
         with pytest.raises(ExtractionPostConditionError, match="0 <= non_finite"):
             ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+
+# --- Plan 224 T1 — the acquisition's GAPS and the series' per-hour
+# `granule_count` are two records of one fact and must reconcile ---
+
+
+@pytest.mark.usefixtures("_pin_a_two_granule_window")
+class TestGapsReconcileWithTheSeriesGranuleCounts:
+    def test_a_recorded_gap_the_series_does_not_reflect_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 224 T1 (locking) — the bundle records WHICH granules were
+        missing and the series records HOW MANY each hour had. Nothing
+        reconciled them, so a bundle could claim a gap whose hour still
+        reports two granules and validate anyway."""
+        staged, manifest = _stage_bundle(
+            tmp_path, record_missing=(ia.FIRST_GRANULE_START,)
+        )
+        with pytest.raises(
+            ExtractionPostConditionError, match="implied by the acquisition"
+        ):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_a_series_hour_short_a_granule_with_no_recorded_gap_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 224 T1 (locking) — the other direction: an hour reporting one
+        granule while the acquisition recorded no gap at all. Its accounting
+        is deliberately CORRECT for the payload, so only the reconciliation
+        can be what refuses it."""
+        staged, manifest = _stage_bundle(
+            tmp_path,
+            first_row_overrides={"granule_count": 1, "precip_mm_per_h": None},
+            station_accounting={
+                "S0": _station_accounting(
+                    n_hours_complete=ie.EXPECTED_HOUR_COUNT - 1,
+                    n_hours_partial=1,
+                    n_nan_hours=1,
+                )
+            },
+        )
+        with pytest.raises(
+            ExtractionPostConditionError, match="implied by the acquisition"
+        ):
+            ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_a_gap_the_series_does_reflect_validates(self, tmp_path: Path) -> None:
+        """The reconciliation must ACCEPT a real gap — otherwise it would
+        forbid the only acquisition outcome it exists to describe."""
+        staged, manifest = _stage_bundle(
+            tmp_path,
+            record_missing=(ia.FIRST_GRANULE_START,),
+            first_row_overrides={"granule_count": 1, "precip_mm_per_h": None},
+            station_accounting={
+                "S0": _station_accounting(
+                    n_hours_complete=ie.EXPECTED_HOUR_COUNT - 1,
+                    n_hours_partial=1,
+                    n_nan_hours=1,
+                )
+            },
+        )
+        ie.validate_imerg_bundle(staged, manifest, data_root=tmp_path / "data_root")
+
+    def test_the_expected_count_is_derived_from_the_gaps_not_the_hours(self) -> None:
+        """⛔ Linear in the GAPS, never the 105,216 x 52,608 product an
+        earlier formulation implied: only the deficit hours are materialised,
+        and both half-hours of an hour map to that one hour."""
+        deficit = ie.expected_granule_count_by_hour(
+            (
+                ia.FIRST_GRANULE_START.isoformat(),
+                (ia.FIRST_GRANULE_START + timedelta(minutes=30)).isoformat(),
+                (ia.FIRST_GRANULE_START + timedelta(hours=1)).isoformat(),
+            )
+        )
+        assert deficit == {"2020-01-01T00:00:00": 0, "2020-01-01T01:00:00": 1}
+
+    def test_the_hour_mapping_agrees_with_the_aggregator_that_built_the_series(
+        self,
+    ) -> None:
+        """⛔ Cross-checked against `aggregate_half_hourly_to_hourly` itself,
+        not against a restatement of its rule: the reconciliation would
+        otherwise be free to police a different period-ending convention than
+        the one that produced the `granule_count` it judges."""
+        hours = (ie.FIRST_HOUR, ie.FIRST_HOUR + timedelta(hours=5), ie.LAST_HOUR)
+        for hour in hours:
+            for offset in (timedelta(hours=1), timedelta(minutes=30)):
+                start = hour - offset
+                assert ie.granule_start_hour(start) == hour
+                _, _, counts, _ = ie.aggregate_half_hourly_to_hourly(
+                    {start: 1.0}, hours=hours
+                )
+                assert counts.tolist() == [1 if h == hour else 0 for h in hours], (
+                    f"{start.isoformat()} did not land on {hour.isoformat()}"
+                )
 
 
 # --- D4/D9 — station accounting is RE-DERIVED from the payload ---

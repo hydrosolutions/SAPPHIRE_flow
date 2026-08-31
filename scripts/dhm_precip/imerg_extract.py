@@ -71,9 +71,13 @@ from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     ImergStorageError,
     acquisition_completeness_violations,
     acquisition_manifest_path,
+    acquisition_record_identity_content,
     assert_acquisition_manifest_complete,
     assert_contract_consistent,
     contract_from_open_granule,
+    imerg_early_root,
+    imerg_points_root,
+    imerg_writer_lock,
     parse_granule_filename,
     pinned_provenance_violations,
     read_acquisition_manifest,
@@ -89,7 +93,7 @@ from scripts.dhm_precip.loader import (  # noqa: E402
 from scripts.dhm_precip.params import DEFAULT_PARAMS  # noqa: E402
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
     import xarray as xr
 
@@ -204,6 +208,37 @@ def aggregate_half_hourly_to_hourly(
     return valid_time, values, counts, non_finite_counts
 
 
+#: D3/D5 — the two half-hourly granules an hour is built from.
+_GRANULES_PER_HOUR = 2
+
+
+def granule_start_hour(start: datetime) -> datetime:
+    """D5 — the period-ending hour a half-hourly granule contributes to: it
+    covers `start -> start + 30 min` and belongs to the hour `t` whose window
+    `(t-1, t]` contains that END. The inverse of the two `half_hourly.get()`
+    lookups in `aggregate_half_hourly_to_hourly`, and the SAME rule: two
+    conventions here would police a series built under the other one."""
+    end = start + timedelta(minutes=30)
+    return end if end.minute == 0 else end.replace(minute=0) + timedelta(hours=1)
+
+
+def expected_granule_count_by_hour(missing: Sequence[str]) -> dict[str, int]:
+    """Plan 224 T1 — the per-hour `granule_count` the acquisition's GAPS
+    imply, keyed exactly as the published series writes its timestamps. Only
+    the DEFICIT hours appear; every other hour expects `_GRANULES_PER_HOUR`.
+
+    ⛔ Derived from the gap set alone, so it is linear in the gaps — never the
+    105,216 x 52,608 gaps-by-hours product the naive formulation implies.
+    ⛔ The caller must have run `window_accounting_violations` first: that is
+    what guarantees every entry parses and lands inside the pinned window."""
+    deficit: dict[str, int] = {}
+    for iso in missing:
+        hour = granule_start_hour(datetime.fromisoformat(iso))
+        key = str(np.datetime64(hour.replace(tzinfo=None), "s"))
+        deficit[key] = deficit.get(key, 0) + 1
+    return {key: max(_GRANULES_PER_HOUR - n, 0) for key, n in deficit.items()}
+
+
 _STATION_ACCOUNTING_KEYS: tuple[str, ...] = (
     "n_hours",
     "n_hours_complete",
@@ -281,11 +316,6 @@ def read_granule(path: Path) -> tuple[xr.Dataset, ImergReadContract]:
 _RUN_NUMBER_WIDTH = 4
 _MAX_RUN_NUMBER = 10**_RUN_NUMBER_WIDTH - 1
 _STAGING_DIRNAME = ".staging"
-
-
-def imerg_points_root(data_root: Path) -> Path:
-    """D9 — IMERG's OWN root, never `era5_extract_manifest.points_root()`."""
-    return data_root / "imerg_early" / "points"
 
 
 def _published_dir(root: Path, *, run_number: int, identity: str) -> Path:
@@ -375,11 +405,7 @@ def acquisition_record_digest(manifest: ImergAcquisitionManifest) -> str:
     time). ⛔ Hashing THIS is what lets the bundle stop carrying its own copies
     of the 105,216 checksums and the 5,400-float coordinate vectors: D10 makes
     the record their ONE owner, and two copies could only ever disagree."""
-    return _sha256_of(
-        manifest.model_dump(
-            mode="json", exclude={"generated_at", "granule_retrieved_at"}
-        )
-    )
+    return _sha256_of(acquisition_record_identity_content(manifest))
 
 
 #: D5 — the exact literal every published manifest must carry.
@@ -751,6 +777,43 @@ def validate_imerg_bundle(
             "other hour may carry one (D4)"
         )
 
+    # Plan 224 T1 — the gaps and the counts are two records of ONE fact. The
+    # bundle says WHICH granules were missing and the series says HOW MANY
+    # each hour had; nothing reconciled them, so a bundle could report a gap
+    # the series does not reflect (or the reverse) and still validate. ⛔
+    # Expressed as a deficit MAP off the gap set — linear in the gaps, never
+    # a gaps-by-hours product.
+    deficit = expected_granule_count_by_hour(manifest.granules_missing)
+    # ⛔ Projected FIRST: an unrecognised payload column literally named
+    # `_expected_granule_count` would otherwise survive the join and be the one
+    # this check reads, letting the payload supply its own answer.
+    reconciled = nearest.select("station_id", "timestamp_utc", "granule_count")
+    if deficit:
+        reconciled = reconciled.join(
+            pl.DataFrame(
+                {
+                    "timestamp_utc": list(deficit),
+                    "_expected_granule_count": pl.Series(
+                        values=list(deficit.values()), dtype=pl.Int64
+                    ),
+                }
+            ),
+            on="timestamp_utc",
+            how="left",
+        )
+        expected_count = pl.col("_expected_granule_count").fill_null(_GRANULES_PER_HOUR)
+    else:
+        expected_count = pl.lit(_GRANULES_PER_HOUR, dtype=pl.Int64)
+    disagreeing = reconciled.filter(pl.col("granule_count") != expected_count)
+    if disagreeing.height:
+        raise ExtractionPostConditionError(
+            f"{_NEAREST_SERIES_FILENAME} has {disagreeing.height} row(s) whose "
+            "granule_count is not the count implied by the acquisition's "
+            f"{len(manifest.granules_missing)} recorded gap(s) — first "
+            f"disagreement at {disagreeing['timestamp_utc'][0]!r} for station "
+            f"{disagreeing['station_id'][0]!r} (D4/D5/D9)"
+        )
+
     station_cell = _read_csv_or_reject(directory / _STATION_CELL_FILENAME)
     missing_cell_cols = set(_REQUIRED_STATION_CELL_COLUMNS) - set(station_cell.columns)
     if missing_cell_cols:
@@ -900,6 +963,22 @@ def validate_imerg_bundle(
 
 
 def publish_imerg_bundle(staged_dir: Path, *, data_root: Path, identity: str) -> Path:
+    """Plan 224 T1 — publication VALIDATES the acquisition record and then
+    renames a bundle that carries only its digest, so the whole sequence runs
+    under the same exclusive writer lock the record's writer takes. ⛔ The two
+    MUST NOT overlap; the lock makes a violation fail loudly rather than
+    silently publishing a bundle against a record that is being replaced."""
+    with imerg_writer_lock(
+        imerg_early_root(data_root), holder="the IMERG bundle publication"
+    ):
+        return _publish_imerg_bundle_locked(
+            staged_dir, data_root=data_root, identity=identity
+        )
+
+
+def _publish_imerg_bundle_locked(
+    staged_dir: Path, *, data_root: Path, identity: str
+) -> Path:
     manifest = _read_manifest(staged_dir / MANIFEST_FILENAME)
     if manifest is None:
         raise ExtractionPostConditionError(

@@ -416,11 +416,61 @@ into the identity but never validated); and D6's `UNKNOWN` datum plus the per-ho
 station-cell agreement are validated, with the record's gaps canonicalised chronologically so gap ORDER
 cannot change an identity.
 
+**M-A5c — the two prerequisites closed and the volume MEASURED (Plan 224, 2026-08-31).** Both
+deferrals that were safe only while nothing had been published are now closed. (1) The bundle's
+recorded **gaps** are reconciled against the per-station hourly `granule_count`: they are two records
+of one fact and nothing compared them, so a bundle could report a gap the series does not reflect (or
+an hour short a granule the acquisition never recorded as missing) and validate. The check derives the
+expected count per hour from the gap SET (`expected_granule_count_by_hour`) — linear in the gaps, ⛔
+never the 105,216 x 52,608 product the naive formulation implies. (2) `write_acquisition_manifest`
+now refuses to replace a record whose identity-bearing content would change while published bundles
+sit under the sibling `points/` root: it protected the record from being DOWNGRADED but not from being
+ORPHANED, and a re-acquisition could leave every published bundle's `acquisition_record_sha256`
+addressing a record that no longer exists. A rewrite that only moves the clock is still allowed —
+`acquisition_record_identity_content` is now the ONE definition of what the digest covers, shared with
+`acquisition_record_digest`.
+
+**⛔ A third defect was found only by running it, and it blocked every acquisition.** The 2026-08-28
+narrative above is right that the pin is enforced, but the enforcement compared the granule's embedded
+`FileHeader.FileName` against the **archive** filename pattern, whose `.HDF5` literal **no real IMERG
+Early granule can satisfy**: Early *is* the real-time run, so its embedded name ends **`.RT-H5`** while
+the archive stores the identical bytes as `.HDF5`. Every live granule therefore halted, reporting a
+revision disagreement that did not exist (`V07B` on both sides). The archive filename parser stays
+strict; only the embedded-name check accepts either extension.
+
+**Two review findings on that fix, closed 2026-08-31.** (a) The relaxation had degraded the
+cross-check to a **revision** comparison: any syntactically valid IMERG embedded name carrying the
+pinned `V07B` passed, whatever date or half-hour it named — and extraction takes a granule's timestamp
+from its **path**, so contents from one time could be filed under another. The embedded name's
+extension is now **normalised** (`.RT-H5` -> `.HDF5`) and the **complete names** are compared, which is
+what the `.RT-H5` allowance was ever meant to permit. (b) Acquisition and publication are now declared
+**mutually exclusive**, and the rule is enforced: the record's writer scans the published bundles and
+*then* replaces the record, while publication validates the record and *then* renames a bundle in, so
+interleaved they can both pass and leave a bundle naming a replaced digest. ⛔ Rather than coordinate
+them, both sides take one **non-blocking advisory `flock`** (`imerg_early/.imerg-writer.lock`) over
+their whole read-then-act sequence, so a violation fails loudly instead of racing. Both operations run
+from the same host and are minutes-scale; the lock only makes an existing assumption explicit.
+
+**MEASURED 2026-08-31 — one granule, `2020-07-15T00:00Z`, GES DISC HTTPS archive, full global field:**
+**8,047,136 B (8.05 MB / 7.67 MiB)**. ⇒ full D5 window (105,216 granules) **846.7 GB (788.5 GiB)**;
+one JJAS season (5,856 granules) **47.1 GB**; six JJAS seasons **282.7 GB**. Free disk at the time:
+**939.6 GB (875.0 GiB)** — the full window fits with **~87 GiB (9.9 %) to spare**, which is a real but
+thin margin on a shared disk. ⚠️ Two facts the earlier narrative could not know: the **retrospective**
+window is served as **`V07B`**, so the pin holds (the `V07C` drift was observed on a *near-real-time*
+granule, not an in-window one); and the route measured is the **full global field**, ⛔ **not** a
+server-side subset. A subset over the frozen box is 50 x 90 = **4,500 cells** against the global
+3600 x 1800 = 6,480,000 — a 1,440x reduction that would dissolve the volume question entirely, but it
+would need a **different D1 read contract** (the frozen one pins the exact 1800/3600 coordinate vectors
+and warns explicitly against "a subset service's own grid"), so it is an owner decision, not a
+substitution this pipeline can make. ⛔ **No bulk retrieval and no published bundle**: exactly one
+granule is on disk.
+
 **Exit:** extracted IMERG **Early** series + named operator + the per-station cell-centre/elevation
 record above (no DEM mismatch table) + the operator-sensitivity comparison + the manifest marked
 **RETROSPECTIVE**, all regenerable from the committed pipeline — the same shape as M-A5's exit, for
 IMERG Early. **Not yet met**: the bulk retrieval and the resulting published bundle are still pending
-the owner's go-ahead on the disk projection above.
+the owner's go-ahead — which now rests on a **measured** projection (Plan 224 above), not an assumed
+granule size, and on the full-field-versus-subset choice that projection exposes.
 
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC

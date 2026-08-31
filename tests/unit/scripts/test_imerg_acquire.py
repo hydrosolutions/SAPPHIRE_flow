@@ -8,6 +8,7 @@ risk note in `imerg_acquire.py`; it is not repeated here.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,7 @@ import numpy as np
 import pytest
 
 from scripts.dhm_precip import imerg_acquire as ia
+from scripts.dhm_precip import imerg_extract as ie
 from scripts.dhm_precip.era5_request import STUDY_AREA
 
 if TYPE_CHECKING:
@@ -404,6 +406,89 @@ class TestRevisionPin:
         )
         with pytest.raises(ia.ImergReadContractError, match="disagrees"):
             ia.observe_read_contract(path)
+
+    def test_the_early_run_rt_h5_embedded_extension_is_not_a_revision_drift(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ MEASURED 2026-08-31 on the real GES DISC granule
+        `3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5`: its
+        own `FileHeader.FileName` reads `...V07B.RT-H5`, because EARLY *is*
+        the real-time run while the archive stores the file as `.HDF5`. The
+        two names differ in EXTENSION ONLY — the revision field agreed
+        (`V07B` both sides) — but the cross-check compared them with the
+        archive pattern, whose `.HDF5` literal no real Early granule's
+        embedded name can satisfy. The probe therefore halted on EVERY
+        granule, reporting a revision disagreement that did not exist."""
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
+        )
+        _write_fake_granule(
+            path,
+            file_header_filename=(
+                "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.RT-H5"
+            ),
+        )
+        assert ia.observe_read_contract(path).granule_revision == "V07B"
+
+    def test_an_rt_h5_embedded_name_of_the_wrong_revision_is_still_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Accepting the RT extension must not weaken the pin itself: a
+        `.RT-H5` embedded name carrying a DIFFERENT revision is still a
+        renamed file."""
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
+        )
+        _write_fake_granule(
+            path,
+            file_header_filename=(
+                "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07C.RT-H5"
+            ),
+        )
+        with pytest.raises(ia.ImergReadContractError, match="disagrees"):
+            ia.observe_read_contract(path)
+
+    def test_an_embedded_name_of_the_right_revision_but_wrong_time_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 224 review — the `.RT-H5` relaxation must not degrade the
+        cross-check to a REVISION comparison. Extraction takes a granule's
+        timestamp from its PATH, so an archive file whose own embedded name
+        carries the pinned revision but a DIFFERENT half-hour is contents from
+        one time filed under another: the COMPLETE names must agree."""
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
+        )
+        _write_fake_granule(
+            path,
+            file_header_filename=(
+                "3B-HHR-E.MS.MRG.3IMERG.20200715-S003000-E005959.0030.V07B.RT-H5"
+            ),
+        )
+        with pytest.raises(ia.ImergReadContractError, match="disagrees"):
+            ia.observe_read_contract(path)
+
+    def test_an_unparseable_embedded_name_is_rejected(self, tmp_path: Path) -> None:
+        """A `FileHeader.FileName` that is not an IMERG name at all must be
+        refused as such, not silently compared as an opaque string."""
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
+        )
+        _write_fake_granule(path, file_header_filename="not-an-imerg-name.HDF5")
+        with pytest.raises(ia.ImergReadContractError, match="naming pattern"):
+            ia.observe_read_contract(path)
+
+    def test_the_archive_filename_parser_stays_strict_about_its_extension(
+        self,
+    ) -> None:
+        """⛔ Only the EMBEDDED name may carry `.RT-H5`. `parse_granule_
+        filename` reads names off the archive listing and the raw/ directory,
+        where the extension is `.HDF5`; relaxing it there would let a
+        differently-stored file be treated as an acquired granule."""
+        with pytest.raises(ia.ImergReadContractError, match="naming pattern"):
+            ia.parse_granule_filename(
+                "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.RT-H5"
+            )
 
     def test_a_product_version_that_differs_from_the_filename_is_not_a_violation(
         self, tmp_path: Path
@@ -947,6 +1032,118 @@ class TestAcquisitionManifestIsPermanent:
         retained = ia.read_acquisition_manifest(path)
         assert retained is not None
         assert retained.granule_checksums == {name: "samesha"}
+
+    def test_a_record_a_published_bundle_names_may_not_be_replaced(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 224 T1 (locking) — a published bundle carries only the DIGEST
+        of the acquisition record, so replacing that record with one of
+        different identity-bearing content leaves the bundle naming something
+        that no longer exists. The writer protected the record from being
+        DOWNGRADED but never from being ORPHANED: this replacement derives as
+        complete and shares no checksum, so every existing guard passes it."""
+        path = ia.acquisition_manifest_path(tmp_path)
+        name = ia.ImergGranuleId(start=ia.FIRST_GRANULE_START).filename(revision="V07B")
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(granule_checksums={name: "samesha"}), path
+        )
+        retained_before = ia.read_acquisition_manifest(path)
+        assert retained_before is not None
+        # ⛔ A REAL bundle, not an empty directory: it carries the digest of the
+        # record on disk, which is exactly what the replacement would orphan.
+        named_digest = ie.acquisition_record_digest(retained_before)
+        replacement = _derivation_complete_manifest()
+        assert ie.acquisition_record_digest(replacement) != named_digest
+        bundle = ia.imerg_points_root(tmp_path) / f"0000-{named_digest[:12]}"
+        bundle.mkdir(parents=True)
+        (bundle / "extraction_manifest.json").write_text(
+            json.dumps({"acquisition_record_sha256": named_digest})
+        )
+        with pytest.raises(ia.ImergStorageError, match="published IMERG bundle"):
+            ia.write_acquisition_manifest(replacement, path)
+        retained = ia.read_acquisition_manifest(path)
+        assert retained is not None
+        assert retained.granule_checksums == {name: "samesha"}
+        # the digest the published bundle names still resolves
+        assert ie.acquisition_record_digest(retained) == named_digest
+
+    def test_a_rewrite_that_only_moves_the_clock_is_allowed_beside_a_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        """The digest EXCLUDES wall-clock provenance, so a re-run that changes
+        only `generated_at` orphans nothing and must still be allowed —
+        otherwise the guard would block the idempotent rewrite the writer has
+        always permitted."""
+        path = ia.acquisition_manifest_path(tmp_path)
+        name = ia.ImergGranuleId(start=ia.FIRST_GRANULE_START).filename(revision="V07B")
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(granule_checksums={name: "samesha"}), path
+        )
+        (ia.imerg_points_root(tmp_path) / "0000-abc").mkdir(parents=True)
+        later = datetime(2026, 9, 1, tzinfo=UTC)
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(
+                granule_checksums={name: "samesha"}, generated_at=later
+            ),
+            path,
+        )
+        retained = ia.read_acquisition_manifest(path)
+        assert retained is not None
+        assert retained.generated_at == later
+
+    def test_a_staging_directory_is_not_a_published_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ Only `NNNN-<identity>` directories are published bundles: a
+        staging token left behind by a crashed extraction must not lock the
+        permanent record forever."""
+        path = ia.acquisition_manifest_path(tmp_path)
+        name = ia.ImergGranuleId(start=ia.FIRST_GRANULE_START).filename(revision="V07B")
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(granule_checksums={name: "samesha"}), path
+        )
+        (ia.imerg_points_root(tmp_path) / ".staging" / "deadbeef").mkdir(parents=True)
+        ia.write_acquisition_manifest(_derivation_complete_manifest(), path)
+        retained = ia.read_acquisition_manifest(path)
+        assert retained is not None
+        assert retained.granule_checksums == {}
+
+
+# --- Plan 224 T1 — acquisition and publication MUST NOT overlap ---
+
+
+class TestWriterSerializationLock:
+    """The record's writer READS the published bundles and then replaces the
+    record; publication VALIDATES the record and then renames a bundle in.
+    Interleaved, both pass and the bundle names a replaced digest. The two are
+    declared mutually exclusive and the rule is enforced by one non-blocking
+    advisory lock, so a violation FAILS LOUDLY instead of racing."""
+
+    def test_a_record_write_refuses_while_the_writer_lock_is_held(
+        self, tmp_path: Path
+    ) -> None:
+        path = ia.acquisition_manifest_path(tmp_path)
+        with (
+            ia.imerg_writer_lock(ia.imerg_early_root(tmp_path), holder="a publication"),
+            pytest.raises(ia.ImergStorageError, match="MUST NOT overlap"),
+        ):
+            ia.write_acquisition_manifest(_derivation_complete_manifest(), path)
+        # released: the same write now succeeds
+        ia.write_acquisition_manifest(_derivation_complete_manifest(), path)
+        assert ia.read_acquisition_manifest(path) is not None
+
+    def test_publication_refuses_while_the_writer_lock_is_held(
+        self, tmp_path: Path
+    ) -> None:
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        with (
+            ia.imerg_writer_lock(
+                ia.imerg_early_root(tmp_path), holder="a record write"
+            ),
+            pytest.raises(ia.ImergStorageError, match="MUST NOT overlap"),
+        ):
+            ie.publish_imerg_bundle(staged, data_root=tmp_path, identity="abc")
 
 
 # --- D5 — the filename's period END is the field that maps an interval ---
