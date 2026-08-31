@@ -185,11 +185,26 @@ class ImergGranuleId:
         return f"{self.directory_url()}{self.filename(revision=revision)}"
 
 
-_FILENAME_RE = re.compile(
-    r"^3B-HHR-E\.MS\.MRG\.3IMERG\."
+_FILENAME_STEM = (
+    r"3B-HHR-E\.MS\.MRG\.3IMERG\."
     r"(?P<date>\d{8})-S(?P<start_time>\d{6})-E(?P<end_time>\d{6})\."
-    r"(?P<minute>\d{4})\.(?P<revision>V\d{2}[A-Z])\.HDF5$"
+    r"(?P<minute>\d{4})\.(?P<revision>V\d{2}[A-Z])"
 )
+
+#: The ARCHIVE's own filename. ⛔ Strict about `.HDF5`: these names are read
+#: off the day listing and out of `raw/`, and a differently-stored file must
+#: never be mistaken for an acquired granule.
+_FILENAME_RE = re.compile(rf"^{_FILENAME_STEM}\.HDF5$")
+
+#: The name the granule carries INSIDE itself, in `FileHeader.FileName`.
+#: ⛔ MEASURED 2026-08-31 on the real 2020-07-15T00:00Z granule: IMERG EARLY
+#: *is* the real-time run, so its embedded name ends `.RT-H5` while the
+#: archive stores the very same bytes as `.HDF5`. Comparing it with the
+#: archive pattern rejected every real Early granule for an extension
+#: difference, reported as a revision disagreement that did not exist (the
+#: revision field read `V07B` on both sides). The EXTENSION is the only field
+#: that may differ between the two names.
+_EMBEDDED_FILENAME_RE = re.compile(rf"^{_FILENAME_STEM}\.(?:HDF5|RT-H5)$")
 
 
 def parse_granule_filename(name: str) -> tuple[ImergGranuleId, str]:
@@ -413,7 +428,7 @@ def assert_revision_matches_plan_and_header(
             f"filename) != the D1-pinned {PINNED_GRANULE_REVISION_PER_PLAN!r} "
             "— stop and report rather than blending (D1)"
         )
-    embedded = _FILENAME_RE.fullmatch(file_header_filename.strip())
+    embedded = _EMBEDDED_FILENAME_RE.fullmatch(file_header_filename.strip())
     if embedded is None or embedded["revision"] != filename_revision:
         raise ImergReadContractError(
             f"path revision {filename_revision!r} disagrees with the granule's "
@@ -458,6 +473,43 @@ def acquisition_manifest_path(data_root: Path) -> Path:
     """D10 — PERMANENT while the raw granules are disposable, so it lives as a
     SIBLING of `raw/`, never inside it."""
     return imerg_early_root(data_root) / "acquisition_manifest.json"
+
+
+def imerg_points_root(data_root: Path) -> Path:
+    """D9 — IMERG's OWN published-bundle root, never `era5_extract_manifest.
+    points_root()`. Defined HERE, beside the permanent record, because the
+    record's WRITER has to find the bundles that name it (Plan 224 T1);
+    `imerg_extract` imports it rather than keeping a second copy."""
+    return imerg_early_root(data_root) / "points"
+
+
+_PUBLISHED_BUNDLE_DIR_RE = re.compile(r"^\d+-")
+
+
+def published_bundle_dirs(points_root: Path) -> list[Path]:
+    """The published `NNNN-<identity>` bundles under `points_root`. ⛔ Only
+    those: `.staging/<token>` is a crashed run's leftover, not a bundle that
+    anything can name."""
+    if not points_root.is_dir():
+        return []
+    return sorted(
+        child
+        for child in points_root.iterdir()
+        if child.is_dir() and _PUBLISHED_BUNDLE_DIR_RE.match(child.name)
+    )
+
+
+def acquisition_record_identity_content(
+    manifest: ImergAcquisitionManifest,
+) -> dict[str, object]:
+    """Exactly the content a published bundle's `acquisition_record_sha256`
+    digests — wall-clock provenance excluded (D9 never hashes time). ⛔ ONE
+    definition, shared with `imerg_extract.acquisition_record_digest`: a
+    second copy could only ever drift, and the writer's orphan guard below
+    would then protect a digest nobody computes."""
+    return manifest.model_dump(
+        mode="json", exclude={"generated_at", "granule_retrieved_at"}
+    )
 
 
 # --- D9 T1->T2 handoff — the permanent acquisition manifest ---
@@ -524,6 +576,28 @@ def write_acquisition_manifest(manifest: ImergAcquisitionManifest, path: Path) -
                 f"({len(revised)} granule(s)) disagree with the retained "
                 f"COMPLETE acquisition manifest at {path} — GES DISC revised "
                 "the archive; resolve that before replacing the record (D10)"
+            )
+    if existing is not None and acquisition_record_identity_content(
+        manifest
+    ) != acquisition_record_identity_content(existing):
+        # Plan 224 T1 — a published bundle carries only the record's DIGEST,
+        # and `validate_imerg_bundle` resolves it at exactly this path. So
+        # every bundle under the sibling points root was validated against the
+        # record being replaced here: changing its identity-bearing content
+        # leaves their `acquisition_record_sha256` addressing nothing. ⛔ The
+        # writer refuses rather than orphaning them; the operator moves the
+        # bundles aside deliberately. (A rewrite that only moves the clock is
+        # excluded above and stays allowed.)
+        points_root = imerg_points_root(path.parent.parent)
+        orphaned = published_bundle_dirs(points_root)
+        if orphaned:
+            raise ImergStorageError(
+                f"refusing to replace the permanent acquisition record at "
+                f"{path}: {len(orphaned)} published IMERG bundle(s) under "
+                f"{points_root} (first {orphaned[0].name}) were validated "
+                "against it, and the replacement's identity-bearing content "
+                "differs — their acquisition_record_sha256 would address a "
+                "record that no longer exists (D9/D10)"
             )
     tmp_path = path.with_name(path.name + ".tmp")
     try:

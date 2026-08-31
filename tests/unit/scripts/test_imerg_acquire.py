@@ -405,6 +405,59 @@ class TestRevisionPin:
         with pytest.raises(ia.ImergReadContractError, match="disagrees"):
             ia.observe_read_contract(path)
 
+    def test_the_early_run_rt_h5_embedded_extension_is_not_a_revision_drift(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ MEASURED 2026-08-31 on the real GES DISC granule
+        `3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5`: its
+        own `FileHeader.FileName` reads `...V07B.RT-H5`, because EARLY *is*
+        the real-time run while the archive stores the file as `.HDF5`. The
+        two names differ in EXTENSION ONLY — the revision field agreed
+        (`V07B` both sides) — but the cross-check compared them with the
+        archive pattern, whose `.HDF5` literal no real Early granule's
+        embedded name can satisfy. The probe therefore halted on EVERY
+        granule, reporting a revision disagreement that did not exist."""
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
+        )
+        _write_fake_granule(
+            path,
+            file_header_filename=(
+                "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.RT-H5"
+            ),
+        )
+        assert ia.observe_read_contract(path).granule_revision == "V07B"
+
+    def test_an_rt_h5_embedded_name_of_the_wrong_revision_is_still_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """Accepting the RT extension must not weaken the pin itself: a
+        `.RT-H5` embedded name carrying a DIFFERENT revision is still a
+        renamed file."""
+        path = tmp_path / (
+            "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
+        )
+        _write_fake_granule(
+            path,
+            file_header_filename=(
+                "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07C.RT-H5"
+            ),
+        )
+        with pytest.raises(ia.ImergReadContractError, match="disagrees"):
+            ia.observe_read_contract(path)
+
+    def test_the_archive_filename_parser_stays_strict_about_its_extension(
+        self,
+    ) -> None:
+        """⛔ Only the EMBEDDED name may carry `.RT-H5`. `parse_granule_
+        filename` reads names off the archive listing and the raw/ directory,
+        where the extension is `.HDF5`; relaxing it there would let a
+        differently-stored file be treated as an acquired granule."""
+        with pytest.raises(ia.ImergReadContractError, match="naming pattern"):
+            ia.parse_granule_filename(
+                "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.RT-H5"
+            )
+
     def test_a_product_version_that_differs_from_the_filename_is_not_a_violation(
         self, tmp_path: Path
     ) -> None:
@@ -947,6 +1000,68 @@ class TestAcquisitionManifestIsPermanent:
         retained = ia.read_acquisition_manifest(path)
         assert retained is not None
         assert retained.granule_checksums == {name: "samesha"}
+
+    def test_a_record_a_published_bundle_names_may_not_be_replaced(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 224 T1 (locking) — a published bundle carries only the DIGEST
+        of the acquisition record, so replacing that record with one of
+        different identity-bearing content leaves the bundle naming something
+        that no longer exists. The writer protected the record from being
+        DOWNGRADED but never from being ORPHANED: this replacement derives as
+        complete and shares no checksum, so every existing guard passes it."""
+        path = ia.acquisition_manifest_path(tmp_path)
+        name = ia.ImergGranuleId(start=ia.FIRST_GRANULE_START).filename(revision="V07B")
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(granule_checksums={name: "samesha"}), path
+        )
+        (ia.imerg_points_root(tmp_path) / "0000-abc").mkdir(parents=True)
+        with pytest.raises(ia.ImergStorageError, match="published IMERG bundle"):
+            ia.write_acquisition_manifest(_derivation_complete_manifest(), path)
+        retained = ia.read_acquisition_manifest(path)
+        assert retained is not None
+        assert retained.granule_checksums == {name: "samesha"}
+
+    def test_a_rewrite_that_only_moves_the_clock_is_allowed_beside_a_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        """The digest EXCLUDES wall-clock provenance, so a re-run that changes
+        only `generated_at` orphans nothing and must still be allowed —
+        otherwise the guard would block the idempotent rewrite the writer has
+        always permitted."""
+        path = ia.acquisition_manifest_path(tmp_path)
+        name = ia.ImergGranuleId(start=ia.FIRST_GRANULE_START).filename(revision="V07B")
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(granule_checksums={name: "samesha"}), path
+        )
+        (ia.imerg_points_root(tmp_path) / "0000-abc").mkdir(parents=True)
+        later = datetime(2026, 9, 1, tzinfo=UTC)
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(
+                granule_checksums={name: "samesha"}, generated_at=later
+            ),
+            path,
+        )
+        retained = ia.read_acquisition_manifest(path)
+        assert retained is not None
+        assert retained.generated_at == later
+
+    def test_a_staging_directory_is_not_a_published_bundle(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ Only `NNNN-<identity>` directories are published bundles: a
+        staging token left behind by a crashed extraction must not lock the
+        permanent record forever."""
+        path = ia.acquisition_manifest_path(tmp_path)
+        name = ia.ImergGranuleId(start=ia.FIRST_GRANULE_START).filename(revision="V07B")
+        ia.write_acquisition_manifest(
+            _derivation_complete_manifest(granule_checksums={name: "samesha"}), path
+        )
+        (ia.imerg_points_root(tmp_path) / ".staging" / "deadbeef").mkdir(parents=True)
+        ia.write_acquisition_manifest(_derivation_complete_manifest(), path)
+        retained = ia.read_acquisition_manifest(path)
+        assert retained is not None
+        assert retained.granule_checksums == {}
 
 
 # --- D5 — the filename's period END is the field that maps an interval ---
