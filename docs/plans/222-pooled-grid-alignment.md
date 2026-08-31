@@ -2,8 +2,8 @@
 status: DRAFT
 created: 2026-08-31
 plan: 222
-title: A combined forecast must stand on one grid — calendar-day anchoring, then intersection pooling
-scope: Anchor the daily models' valid_times to the daily observation bucket grid they already predict on (Phase 1), then make every pooling site publish only where all contributors are present (Phase 2). No contract change, no backfill, no change to the forecast cycle's structure.
+title: A combined forecast must stand on one grid — intersection pooling
+scope: Pooling publishes only where every contributor is present, at every one of the three pooling call sites, plus the member-id remap that makes that guarantee real. Anchoring the daily models is SPLIT OUT to Plan 224. No contract change, no backfill, no change to any model's output.
 depends_on: [204]
 blocks: []
 source: 2026-08-31 — SAPPHIRE-flow-map reported an alternating `_pooled` median at station 2091; diagnosed as a disjoint-grid pooling artifact and reproduced through the production functions
@@ -13,24 +13,29 @@ source: 2026-08-31 — SAPPHIRE-flow-map reported an alternating `_pooled` media
 
 ## Status
 
-**DRAFT** — awaiting owner READY. **Round 1 of independent Codex review returned NEEDS_CHANGES
-(4 blockers, 8 majors); every blocker and every load-bearing major was verified against the cited
-code and folded.** See "Round 1 — what the review changed" at the foot of this document.
+**DRAFT** — awaiting owner READY. **Two rounds of independent Codex review; round 2 returned
+NEEDS_CHANGES (3 blockers, 8 majors) and did not converge.** The non-convergence was structural,
+not local: the anchoring half of the original plan turned out to be entangled with three
+pre-existing production defects it never set out to fix.
 
-The owner chose D1 **(a) anchor to the last observed day**. The review proved the *construction*
-originally specified for (a) was broken — it trusted `past_targets` to be pre-bucketed, which is
-false in hindcast — so (a) now anchors by **truncation**, D1(a′). The owner's choice stands; the
-mechanism was repaired.
+**The plan was therefore RE-CUT, not ground through a third round** (owner, 2026-08-31). This plan
+is now the **intersection half only** — which round 2 largely validated. Anchoring, and the three
+defects it depends on, move to **Plan 224**.
 
-The diagnosis this plan acts on is published to the map consumer at
-`https://claude.ai/code/artifact/7416ea1c-f884-49ae-bc37-7ce4bcc542ad`. The consumer has asked
-that no published value change before the semantics are agreed — Phase 2 is that agreement made
-executable, and **T6 tells them what became observable**.
+### ⚠️ Shipping this alone takes the combined forecast dark
+
+With today's disjoint grids the intersection is empty, so `_pooled` disappears from the export for
+stations 2009 and 2091 until Plan 224 lands. **That is the accepted outcome**, and it is the right
+one: the map's danger classification stops being driven by a pooling artifact, an absent combined
+forecast is an honest signal where a wrong one was not, and the alert-resolution hazard below is
+closed before thresholds are ever written. See "Round history" at the foot.
+
 
 ## ⛔ Proportionality
 
 **This plan changes production forecast behaviour.** That is unavoidable — the reported defect
-*is* a behaviour — but it bounds what belongs here. Two phases, six tasks, no new abstraction.
+*is* a behaviour — but it bounds what belongs here. **Five tasks, no new abstraction, and no change
+to any model's output.**
 
 **In scope for findings:** the D1–D5 contract shape is wrong or ambiguous; a cited fact is false;
 an acceptance criterion does not lock its behaviour; a locking test would pass against the buggy
@@ -46,8 +51,12 @@ code; the change breaks a consumer we have not named.
 - Replacing the store's derive-`time_step`-by-differencing (`store/forecast_store.py:316-321`).
   Under this plan it yields the right answer again; hardening it is separate.
 - Backfill or recomputation of stored forecasts.
-- Any change to `NwpRegression` / `NwpRainfallRunoff` timestamps. They are already correct and are
-  the grid everything else moves onto.
+- **Any change to any model's `valid_time` construction.** That is Plan 224's entire subject. This
+  plan takes the grids as it finds them and only decides what may be *combined* from them.
+- The three pre-existing defects Plan 224 owns: the hindcast lookback taking rows rather than daily
+  buckets, the skill observation join, and `LinearRegressionDaily`'s issue-anchored timestamps.
+  **One exception, and it is in scope here**: the pooled member-id collision (T3b), because D2's
+  rectangularity guarantee is unenforceable without it.
 - Smoothing, interpolation or resampling of any published series. The consumer forbade it and so
   do we.
 
@@ -92,38 +101,27 @@ on the forecast row at all: `time_step` appears in `db/metadata.py` only on `mod
 and `group_model_assignments` (`db/metadata.py:1008`, `db/metadata.py:1036`), never on the forecast
 tables. *(Round 1: the derivation lines alone did not establish the absence; the metadata does.)*
 
-## The finding that sets the plan's shape
+## Why this plan no longer contains the anchoring fix
 
-**`LinearRegressionDaily`'s timestamps are wrong independently of pooling.** It trains and predicts
-on midnight-bucketed daily discharge — `group_by_dynamic("timestamp", every="1d")`
-(`services/training_data.py:106-110`) feeding `past_targets`
-(`services/operational_inputs.py:551`). Its step-*k* output is *the k-th daily mean after the last
-observed day*: a calendar-day quantity, labelled with a wall-clock instant.
+The original plan paired anchoring with intersection because the intersection is empty under
+today's grids, so intersection alone takes the product dark. That remains true. What changed is the
+cost of the other half.
 
-**Intersection alone is therefore not enough.** With `00:00:00Z` against `18:00:01.851153Z` the
-intersection is empty, so intersection-only would take the combined forecast dark on every
-**scheduled** cycle. *(Round 1 correction: "every station, always" was overstated. A
-midnight-**exact** issue time — an explicit `--cycle-time`, or a hindcast — keeps the issue-day NWP
-bucket (`services/operational_inputs.py:228-236`) and overlaps four of the five daily-model
-timestamps. No scheduled cycle is midnight-exact, because `clock()` carries the wall clock, so the
-conclusion holds for production; the absolute did not.)* Anchoring is what makes the invariant satisfiable; intersection is what
-keeps it honest afterwards. Both, in that order, in one plan.
+Two review rounds established that anchoring is **not** the cheap fix it appeared to be. It rests
+on paths that are already broken:
 
-**The anchor must be computed, not read** *(corrected in round 1 — the original claim here was
-false and load-bearing)*. The first draft argued anchoring was a no-op in hindcast because hindcast
-issue times are midnight (`services/hindcast.py:101-111`, `flows/run_hindcast.py:166`). That is
-true of the *issue time* and irrelevant to the *anchor*: hindcast passes **raw, unresampled
-observations** as `past_targets` (`services/hindcast.py:201`, `station_data = StationInputData(past_targets=obs_df, ...)`),
-where the operational path resamples (`services/operational_inputs.py:551`). A hindcast
-`past_targets` can therefore end at 23:50, and anchoring to that row verbatim would push
-hindcast daily models **off** the midnight grid — breaking the exact-timestamp observation join
-that skill scoring depends on (`services/skill/service.py:92-95`) and emptying the hindcast
-pooling intersection.
+- `LinearRegressionDaily._extract_discharge()` takes the **last seven rows**, not seven daily
+  buckets (`models/linear_regression_daily.py:42-49` — the error text says "need 7 rows").
+  Operationally `past_targets` is resampled so rows equal days; in hindcast it is not
+  (`services/hindcast.py:201`), so the model runs on roughly seventy minutes of history while
+  declaring a seven-day autoregressive window. Relabelling its output cannot fix that.
+- Skill scoring joins forecasts to an **unresampled** observation lookup
+  (`services/skill/service.py:338`), so a daily-mean forecast is scored against the instantaneous
+  midnight reading regardless of what any timestamp says.
 
-D1(a′) resolves this by truncating to the daily bucket rather than trusting the input to be
-bucketed. Under truncation both paths land on the same grid, and hindcast genuinely is unaffected —
-but as a *consequence of the construction*, not as a property of the input.
-
+Both are live defects today and neither is this plan's to fix. Anchoring cannot be made correct
+without them, so it moves to **Plan 224** with its own measurement and its own review. This plan
+ships the invariant that makes the artifact impossible, and accepts the outage in the meantime.
 ## Impact
 
 - **Published**: 2 of 2 stations with a combined forecast (2009, 2091). Every station acquires it
@@ -139,7 +137,7 @@ but as a *consequence of the construction*, not as a property of the input.
   point standing on 42 members is checked as though it stood on 92. No alert has fired — the
   deployment holds zero thresholds — but the defect is upstream of thresholds, not downstream.
 - **Skill**: `combined_skill.py:107` pools hindcasts through the same function, so any CRPSS on
-  `_pooled` would score the artifact. Inherits the Phase 2 fix at no cost.
+  `_pooled` would score the artifact. Inherits T3 and T3b at no cost.
 - **Never caught because**: combined rows are stored with `qc_status=RAW` and never run through
   `ForecastOutputQualityChecker` (`flows/run_forecast_cycle.py:2872-2886`). *(Round 1 correction:
   the first draft called the temporal-jump rule "the one check that would have caught it". It would
@@ -152,60 +150,10 @@ but as a *consequence of the construction*, not as a property of the input.
 
 ## Decisions
 
-### D1 — what the daily models anchor to (owner-settled: (a); construction repaired in round 1)
+### D1 — MOVED to Plan 224
 
-**Chosen: (a′) anchor to the daily bucket CONTAINING the last observation.**
-`valid_time[k] = truncate_to_step(last_observation_timestamp) + k·step`.
-
-The truncation is the whole point and is **not** an implementation detail the implementer may
-optimise away. Two verified facts make it mandatory:
-
-- Hindcast `past_targets` are raw observations, never resampled (`services/hindcast.py:201`), so
-  the final row is an arbitrary wall-clock reading.
-- The operational resampler is **not** unconditional: it returns the frame unchanged when it holds
-  fewer than two rows, or when the median gap already looks daily
-  (`services/training_data.py:66-87`). A single degraded-data observation at 07:20 stays at 07:20.
-
-Reading the final `past_targets` row verbatim — the first draft's construction — is therefore
-wrong in both paths. Truncation is correct in both.
-
-The rejected alternative was **(b) anchor to the issue day**: `midnight(issue_date) + k·step`.
-
-| | (a) last observed bucket | (b) issue day |
-|---|---|---|
-| Semantically true under stale observations | yes | no — claims day *D+1* for a value rolled forward from a 3-day-old reading |
-| Coincides with the NWP grid | only when observations are fresh | always |
-| Combined horizon under staleness | shortens honestly (intersection handles it) | stays 5 days, silently misaligned |
-| Matches hindcast/skill semantics | yes, **given truncation** | only when fresh |
-
-**Why (a) is recommended.** The point of this plan is to stop publishing things that are not true.
-Under (b) a staleness of two days relabels every step by two days, and because skill scoring joins
-on exact timestamps it would score the wrong pairs — invisibly, since hindcasts never run stale.
-(a) makes the operational path mean what the hindcast path already means. The cost is that the
-combined horizon shortens when observations lag, which the intersection rule expresses correctly
-and which `observation_staleness_hours` already records on the forecast row.
-
-**Consequence the implementer must not design around.** Under (a′) the combined horizon is
-`5 - staleness_days` where the NWP grid starts at `issue_date + 1`. At two days' staleness the
-combined forecast is three days, not five. That is the correct behaviour and T3's intersection
-expresses it; it is **not** a reason to pad, extrapolate or fall back to (b). T0 measures how often
-this bites so the deploy is not surprised by it.
-
-**Backdated points are a real hazard and T1 must exclude them** *(round 1, major)*. With stale
-observations the early steps of `last_bucket + k·step` fall at or before `issued_at`. Nothing
-downstream rejects them: alerting maximises exceedance over every point regardless of lead time
-(`services/alert_strategy.py:39-51`), and the export renders their past calendar days and marks
-them complete. **T1 therefore drops any step whose `valid_time <= issued_at`** rather than emitting
-a forecast about the past. This shortens the horizon further under staleness, consistent with the
-paragraph above.
-
-**What D1 does NOT get for free** *(round 1, major)*. The first draft justified the shortened
-horizon by saying `observation_staleness_hours` already records it on the forecast row. False for
-the combined row: `build_combined_forecasts` hard-codes `observation_staleness_hours=None`
-(`services/forecast_combination.py:254`). The shortened horizon is currently **unexplained** in the
-published document. Populating it is deliberately out of scope here (it is a provenance change,
-and provenance is the consumer's open contract question) — but T6 must say so plainly rather than
-implying a field carries the explanation.
+Anchoring the daily models is no longer part of this plan. Plan 224 owns it, together with the two
+pre-existing defects it depends on. Nothing in D2-D4 below assumes any particular grid.
 
 ### D2 — pooling semantics (owner-settled)
 
@@ -230,12 +178,13 @@ Three qualifications, all from round 1:
   present at a timestamp with only some of its members — passes validation and would still vary the
   denominator. The invariant is **rectangularity**: every contributor supplies its full member set
   at every retained timestamp. Retain only timestamps satisfying that, and assert it directly.
-- **An intersection of exactly one timestamp must not be published** (blocker). The store derives
+  **Rectangularity is unenforceable until T3b lands** — see there.
+- **An intersection of exactly one timestamp must not be PERSISTED** (blocker). The store derives
   `time_step` by differencing the first two valid_times and falls back to `timedelta(hours=1)` when
   there is only one (`store/forecast_store.py:316-321`), so a single-timestamp combined forecast
   would publish `native_step_seconds: 3600` — a fresh instance of the defect this plan exists to
-  remove. Require **at least two** retained timestamps. This keeps the store's derivation, which
-  the Proportionality section forbids touching, out of scope and correct.
+  remove. Require at least two retained timestamps **for the stored forecast only**; see D6 for why
+  this must not bind alerting or skill.
 
 Rejected: *minimum contributor count* keeps publishing at a varying denominator, narrowing the
 artifact without removing it. *Resampling onto a common grid* is silent interpolation of a forecast.
@@ -263,20 +212,29 @@ defect, not currently deployed but latent the moment BMA is switched on), and `_
 (`services/alert_strategy.py:99-143`). One shared helper, three call sites — a forecast pooling on
 the intersection while alerting pools on the union would be incoherent.
 
-### D5 — the fallbacks are anchored too, and climatology's VALUES change with them
+### D5 — MOVED to Plan 224
 
-`PersistenceFallback` and `ClimatologyFallback` never reach pooling: they emit `QUANTILES` and are
-excluded from `combinable_results` (`services/run_station_forecast.py:128-131`). Their timestamps
-are mislabelled in exactly the same way and they are published per-model in the export, so D1
-applies to them. This is inclusion for uniformity of the invariant, not for pooling.
+The fallbacks emit `QUANTILES` and are excluded from `combinable_results`
+(`services/run_station_forecast.py:128-131`), so they never reach pooling and nothing in this plan
+touches them. *(Round 2 also showed the original D5 was wrong in both directions: persistence
+values DO change with a retimed grid because spread scales with the step index
+(`models/persistence_fallback.py:91`), and climatology values do NOT change when the date is
+unchanged (`models/climatology_fallback.py:143`). Plan 224 inherits the corrected statement.)*
 
-**`ClimatologyFallback`'s `value` column necessarily changes too** *(round 1, blocker — the first
-draft forbade exactly this in T1 while requiring it in D5)*. It selects each step's quantiles by
-the day-of-year *of the proposed `valid_time`* (`models/climatology_fallback.py:145-148`), so
-moving the timestamp moves the climatological day it reads. That is a **correction** — the model
-was reading the day-of-year of a mislabelled instant — and T1 asserts it explicitly rather than
-tolerating it silently. `PersistenceFallback` is unaffected in value: it repeats the last
-observation and does not roll through elapsed days.
+### D6 — the two-timestamp floor binds the STORED forecast only
+
+*(Round 2, major.)* Round 1 added a floor of two retained timestamps because the store fabricates a
+one-hour `time_step` for a single-timestamp forecast (`store/forecast_store.py:316-321`). That
+reasoning is **specific to store readback** and was wrongly generalised across all three call
+sites.
+
+Alerting evaluates exceedance directly from an in-memory ensemble and never round-trips the store
+(`services/alert_strategy.py:39-51`); a single future timestamp is a perfectly valid thing to
+evaluate, and a model horizon of one is legal (`types/model.py:288`). The same holds for combined
+skill (`services/skill/combined_skill.py:104`).
+
+**The floor therefore applies to T3 (the persisted combined forecast) and NOT to T4 (alerting) or
+the skill path.** Applying it everywhere would suppress valid evaluation.
 
 ## Phase graph
 
@@ -284,7 +242,7 @@ observation and does not roll through elapsed days.
 {
   "phases": [
     {"id": "phase-0", "tasks": ["T0"], "parallel": false},
-    {"id": "phase-1", "tasks": ["T1"], "parallel": false, "depends_on": ["phase-0"]},
+    {"id": "phase-1", "tasks": ["T3b"], "parallel": false, "depends_on": ["phase-0"]},
     {"id": "phase-2", "tasks": ["T3", "T4", "T4b", "T5"], "parallel": false, "depends_on": ["phase-1"]},
     {"id": "phase-3", "tasks": ["T6"], "parallel": false, "depends_on": ["phase-2"]}
   ]
@@ -293,69 +251,42 @@ observation and does not roll through elapsed days.
 
 ## Tasks
 
-### T0 — measure the real grids before changing any model (read-only)
+### T0 — measure the real grids (read-only)
 
 Against the live mini DB, for every station with a stored forecast in the last 7 cycles: the
-distinct `valid_time` grid per `model_id`, the observation staleness at issue, and the size of the
-D2 intersection had it been applied. **No writes, no deploy, no interruption of a running flow.**
+distinct `valid_time` grid per `model_id`, and the size of the D2 intersection had it been applied.
+**No writes, no deploy, no interruption of a running flow.**
 
 This exists because the repo has been wrong four times in one day about operational numbers by
-reasoning instead of measuring. Phase 1 changes production model output; it does not start until
-the grids are measured rather than derived from code.
+reasoning instead of measuring, and because this plan's accepted consequence — the combined
+forecast going dark — must be a *measured* prediction before deploy, not an inferred one.
 
-**Exit:** a recorded table of per-model grids and the intersection size per station, plus the
-observed distribution of `last_bucket` relative to `issue_date` — which, under the settled D1(a),
-sizes how much shorter the combined horizon becomes in practice.
+**Exit:** a recorded table of per-model grids and intersection size per station, and an explicit
+statement of which stations will stop publishing a combined forecast.
 
-### T1 — anchor the daily models to the daily bucket grid
+### T3b — stop the pooled member-id collision 🔴
 
-`LinearRegressionDaily`, `PersistenceFallback`, `ClimatologyFallback`: replace
-`inputs.issue_time + (step+1) * inputs.time_step` with the D1 construction.
+**A pre-existing production defect, found in round 2, and a prerequisite for D2's rectangularity.**
 
-**Locking tests (red first).** *(Round 1: the original single assertion — "all timestamps are
-midnight" — was too weak. It also passes issue-day anchoring and an off-by-one `last_bucket + step`,
-so it would not have locked D1(a′) at all.)*
+`combine_ensembles_pooled` adds a running offset to the **original** member ids
+(`services/forecast_combination.py:67-70`) instead of remapping them to a contiguous range. Member
+ids are not uniformly based: FI trajectories are 1-based
+(`adapters/forecast_interface.py:284`, `range(1, num_samples + 1)`) while the native models are
+0-based. Pool a 1-based ensemble followed by a 0-based one and the ranges overlap at the boundary —
+two members collapse into one id, and the pool silently loses a member.
 
-1. **Exact first timestamp**, not merely midnight: `predict()` at issue `18:00:01.851153` with a
-   last observation on day *D* returns `valid_time[0] == midnight(D) + 1 day` exactly, and the full
-   series at daily spacing.
-2. **Truncation path**: a `past_targets` whose final row is `23:50` (the raw hindcast shape,
-   `services/hindcast.py:201`) yields the same grid as one ending at midnight. This is the
-   assertion that would have caught the first draft's construction.
-3. **Single-row `past_targets`** at a non-midnight instant still yields a midnight grid — the
-   resampler no-ops below two rows (`services/training_data.py:66-67`), so truncation is the only
-   thing standing between a degraded feed and an off-grid forecast.
-4. **Backdated steps dropped**: with observations stale by two days, no returned `valid_time` is
-   `<= issued_at`.
-5. **`ClimatologyFallback` day-of-year shift asserted explicitly** — the `value` column changes,
-   and the test states the new expected day rather than tolerating whatever comes out.
+The alert path already does this correctly, remapping to sequential ids through a join
+(`services/alert_strategy.py:113-128`). Two implementations of one operation; the forecast one is
+wrong. Bring `combine_ensembles_pooled` and `combine_ensembles_bma` onto the correct approach.
 
-**Must not change:** `NwpRegression` / `NwpRainfallRunoff` timestamps. *(The first draft also
-forbade any change to a `ForecastEnsemble` field other than `valid_time`. Round 1 showed that
-contradicts D5 — climatology's `value` must change — so the prohibition is now scoped to the NWP
-models' timestamps, which is what it was actually protecting.)*
+**Why it gates D2:** rectangularity is a statement about member counts per timestamp. While ids can
+collide, a rectangular input can produce a non-rectangular pool, and no assertion downstream can
+tell the difference.
 
-### T2 — CUT in round 1. Do not implement.
+**Locking test (red first):** pool a 1-based 21-member ensemble with a 0-based 21-member ensemble
+and assert the result has 42 distinct member ids. Against current code it has 41.
 
-The first draft rounded the scheduled cycle's issue time to the nearest hour
-(`flows/run_forecast_cycle.py:684-690`), justified by the claim that "every window helper already
-anchors on `.date()`". **That claim is false and the task was unsafe.**
-
-`_drop_backdated_and_cap` filters NWP buckets on `valid_time >= issue_time` — an exact comparison,
-not a date one — and its docstring spells out the consequence
-(`services/operational_inputs.py:225-236`): at a non-midnight issue the UTC-midnight issue-day
-bucket sorts *before* `issue_time` and is correctly dropped, while at a midnight-**exact**
-`issue_time` it sorts *at* `issue_time` and is kept. Rounding a `00:00:01.85` cycle back to
-`00:00:00` therefore **admits a whole extra day of NWP forcing and shifts the NWP models' output
-grid by one day** — violating this plan's own "must not change `NwpRegression` timestamps"
-prohibition, in the one task that claimed to be cosmetic.
-
-It is also unnecessary. Under D1(a′) the sub-second never reaches `valid_time`, which was the
-defect. It remains on `issued_at`, where it is arguably **correct**: that is genuinely when the
-cycle was issued. The consumer flagged it as a symptom of the grid problem, and the grid problem is
-fixed without it.
-
-Phase 1 is therefore T1 alone.
+**Must not change:** the pooled values themselves, or member identity within a single contributor.
 
 ### T3 — intersection in `combine_ensembles_pooled` and `combine_ensembles_bma`
 
@@ -376,7 +307,11 @@ no entry for a parameter with fewer than two contributors or an empty intersecti
    at one of them → that timestamp is excluded. Timestamp-set intersection alone does not catch
    this (`types/ensemble.py:60-73` validates only global counts), so a fixture of complete
    ensembles cannot prove the invariant.
-6. **Single shared timestamp** → no combined forecast, per D2's two-timestamp floor.
+6. **Single shared timestamp** → no combined forecast, per D2's two-timestamp floor (T3 only — D6).
+7. **BMA zero-weight model does not constrain the grid** *(round 2, major — round 1 stated the
+   post-weight contributor rule but locked it nowhere)*. A zero-weight model on a *mismatching*
+   grid must neither shrink the intersection nor appear in `source_model_ids`. Without this case a
+   pre-weight intersection passes every other test.
 
 ### T4 — intersection in the alert pooling path
 
@@ -388,6 +323,13 @@ timestamp. *(Round 1: the first draft asked for an assertion on the exceedance d
 `ExceedanceResult` exposes no such field (`types/domain.py:218-228`), so that assertion could only
 have been written by reaching into internals — which the repo's testing philosophy forbids. The
 no-result assertion is observable from the public API and is red against current code.)*
+
+**Second locking test** *(round 2, major)*: two models sharing every timestamp but with **ragged
+member coverage** at one of them. T4's disjoint-grid test alone would pass an implementation that
+intersects timestamps and leaves the denominator ragged — which is the actual alert hazard.
+
+**Scope note (D6):** T4 must **not** inherit T3's two-timestamp floor. Alerting evaluates from an
+in-memory ensemble and a single future timestamp is valid to evaluate.
 
 **Open for the implementer to answer, not to design around:** `_ensemble_size_adequate` sums
 `member_count` across models (`services/alert_checker.py:181`). After T4 the pooled ensemble is
@@ -407,12 +349,28 @@ T4 it can: an empty grid intersection returns no results. That would be read as 
 exceeded"** and would **resolve a live flood alert** on a station whose models simply failed to
 agree on a grid. Silent, and in the wrong direction.
 
-Distinguish "evaluated and not exceeded" from "could not be evaluated", and mark the parameter
-evaluated only in the first case.
+Distinguish "evaluated and not exceeded" from "could not be evaluated", and record evaluation only
+in the first case.
 
-**Locking test (red first):** a station with an active forecast alert, whose pooled models are on
-disjoint grids, still has that alert active after `check_station_alerts`. Against current code plus
-T4 alone, the alert is resolved.
+**Completeness is per (parameter, danger level), not per parameter** *(round 2, major)*. A
+parameter can yield a result for one level and none for another — the effective danger-level list
+is not necessarily every configured level (`services/alert_strategy.py:224`,
+`services/alert_checker.py:284`), and resolution is decided per level
+(`services/alert_checker.py:336-354`). Parameter-level state, which round 1 proposed, still permits
+a DL2 alert to resolve on the strength of a DL1 result. Track the granularity resolution actually
+uses.
+
+**Locking tests (red first):**
+1. A station with an active forecast alert whose pooled models are on disjoint grids still has that
+   alert active after `check_station_alerts`. Choose thresholds so current code genuinely resolves
+   it, or the test is not red *(round 2)*.
+2. **The legitimate path still resolves.** A pooled station that IS evaluable and is NOT exceeded
+   resolves its active alert, driven through `check_station_alerts()` — not through
+   `_process_results()` directly, which is how the existing coverage reaches it
+   (`tests/unit/services/test_alert_checker.py:731`) and is why test 1 alone would accept a
+   degenerate fix that simply never marks pooled parameters evaluated *(round 2, major)*.
+3. A parameter evaluable at one danger level and not another does not resolve the alert at the
+   level it could not evaluate.
 
 **Must not change:** resolution behaviour when the parameter genuinely was evaluated and genuinely
 was not exceeded. That path is correct and is the common one.
@@ -434,16 +392,19 @@ is load-bearing, so it is stated here rather than left to the implementer.)*
 - `docs/spec/forecast-lab-snapshot.md`: state the pooling invariant — a combined forecast stands on
   one grid, every point carries every contributor, `ensemble_size` is the count behind every point.
 - `docs/touchpoint-maps.md`: the combination subsystem's must-not-change contract.
+- `docs/architecture-context.md:131` and `docs/spec/types-and-protocols.md:4209` *(round 2, minor)*
+  — both still describe only the global two-model gate and an undifferentiated `source_model_ids`.
+  `types-and-protocols.md` is authoritative for implementation, so leaving it stale would actively
+  mislead the next change.
 - **Distinguish the skip reasons in the log** *(round 1, minor)*. `build_combined_forecasts`
   returns `[]` for "fewer than two combinable results", "fewer than two contributors for this
   parameter", and "empty or too-small intersection" alike, and the caller cannot tell them apart.
   The deployment watch below depends on telling them apart, so emit the actual reason.
-- A short note to SAPPHIRE-flow-map covering: the invariant now enforced; that `source_model_ids`
-  may shrink (D3); that a combined forecast may be **absent** where one was previously published,
-  and that absence is the correct signal; that the horizon shortens with observation staleness and
-  that **no published field currently explains why** (D1, `observation_staleness_hours` is `None`
-  on combined rows); and that `native_step_seconds`, `ensemble_size` and `horizon_end` are correct
-  again as a consequence rather than by direct fix.
+- A note to SAPPHIRE-flow-map, **sent before the deploy, not after**, covering: the invariant now
+  enforced; that `_pooled` will read `no_combined_forecast` for 2009 and 2091 until Plan 224 lands,
+  and that this is deliberate rather than an outage; that `source_model_ids` may shrink when it
+  returns (D3); and that `native_step_seconds`, `ensemble_size` and `horizon_end` become correct as
+  a consequence of the invariant rather than by direct fix.
 - Correct the published diagnosis where round 1 found it wrong: the temporal-jump QC rule would
   **not** have caught this sawtooth at the default `max_rate` of 500 m³/s.
 - The REST API consumer (`api/routes/api_forecasts.py:75-76`) is told about D3 as well.
@@ -456,10 +417,12 @@ Changes production forecast behaviour, so it does not ride along with anything e
 - 🪤 `git pull` on the mini replaces the inode behind single-file bind mounts; restart
   worker/ingest/api after pulling or `load_config()` raises `FileNotFoundError` against a host file
   that looks fine.
-- **Watch the first forecast cycle after deploy.** The success criterion is that 2009 and 2091
-  publish a combined forecast on a single grid with a constant member count — not merely that the
-  cycle completes. If a station publishes nothing, the log must say **which** of D2's three
-  conditions caused it (T6).
+- **Expect the combined forecast to DISAPPEAR for 2009 and 2091.** That is the predicted, accepted
+  outcome of shipping the invariant without Plan 224, and T0 must have named those stations in
+  advance. A combined forecast that *survives* is the surprise worth investigating, not its absence.
+- **Watch the first forecast cycle after deploy.** Where a station publishes nothing, the log must
+  say **which** of D2's conditions caused it (T6) — an unexplained absence is indistinguishable from
+  a regression.
 - **T4b is a safety gate, not a nicety.** Do not deploy T4 without it: the deployment currently
   holds zero thresholds, so the alert-resolution hazard is dormant, but the ordering makes it live
   the moment thresholds are written.
@@ -473,6 +436,8 @@ Changes production forecast behaviour, so it does not ride along with anything e
 - Running forecast QC over combined forecasts — a real gap, recorded here, separately planned.
 - Persisting `time_step` on the forecast row instead of deriving it on read.
 - Backfilling or recomputing stored forecasts.
+- **Anchoring any model's `valid_time`, and the three pre-existing defects it depends on** — Plan
+  224. Named here so the split is explicit rather than an omission.
 - The Flow Map's OPERATIONAL mode, thresholds, or CRPSS. Gated elsewhere on the Plan 111 G1 licence.
 
 ## Exit gates
@@ -480,7 +445,7 @@ Changes production forecast behaviour, so it does not ride along with anything e
 - `uv run ruff format` / `uv run ruff check --fix` clean.
 - `uv run pyright` — no new errors against the ratchet.
 - `uv run pytest tests/unit` — zero failures. The bar is zero; any failure is real.
-- Every locking test in T1, T3 (tests 1-3, 5, 6), T4, T4b and T5 demonstrated **failing against
+- Every locking test in T3b, T3 (tests 1-3, 5, 6, 7), T4, T4b and T5 demonstrated **failing against
   the pre-change code** and passing after. A locking test that passes both ways is a defect in the
   test, not evidence.
 - **One stated exemption:** T3 test 4 (identical grids → unchanged output) is a regression guard and
@@ -489,36 +454,57 @@ Changes production forecast behaviour, so it does not ride along with anything e
   this test.)*
 - Version bumped in the commit; hold at PR.
 
-## Round 1 — what the independent review changed
+## Round history
 
-`scripts/codex-review.sh`, `gpt-5.6-sol`, read-only sandbox, 2026-08-31. Verdict
-**NEEDS_CHANGES**: 4 blockers, 8 majors, 6 minors. Every blocker and every load-bearing major was
-**verified against the cited code before folding** — a finding is a claim, not a fact.
+Two independent `scripts/codex-review.sh` passes (`gpt-5.6-sol`, read-only sandbox, 2026-08-31).
+Every blocker and load-bearing major was **verified against the cited code before folding** — a
+finding is a claim, not a fact — and two were rejected on that basis.
 
-**Blockers, all confirmed:**
+### Round 1 — NEEDS_CHANGES (4 blockers, 8 majors)
 
-| Finding | Verified at | Resolution |
-|---|---|---|
-| Anchoring is *not* a hindcast no-op — hindcast `past_targets` are raw, unresampled observations | `services/hindcast.py:201` | D1 becomes (a′), anchoring by **truncation** rather than by reading the final row |
-| `ClimatologyFallback`'s `value` must change with its `valid_time`, contradicting T1's own prohibition | `models/climatology_fallback.py:145-148` | D5 states it; T1 asserts the day-of-year shift; the prohibition rescoped to NWP timestamps |
-| An empty intersection would **resolve a live flood alert** | `services/alert_checker.py:141-143, 346-354` | New task **T4b**, gated as a deploy blocker |
-| A one-timestamp intersection publishes `native_step_seconds: 3600` | `store/forecast_store.py:316-321` | D2 requires ≥2 retained timestamps — keeps the forbidden store change out of scope |
+Findings that survive into this plan: the alert-resolution hazard (now T4b); the one-timestamp
+`native_step_seconds: 3600` trap (now D2 + D6); BMA's post-weight contributor set; rectangularity
+as the real invariant; the REST API as a second `source_model_ids` consumer
+(`api/routes/api_forecasts.py:75-76`); and the correction that the temporal-jump QC rule would
+**not** have caught this sawtooth (`max_rate: 500.0` against a ~330 m³/s jump) — corrected here and
+in the published consumer diagnosis.
 
-**Majors folded:** T2 cut entirely (rounding the issue time shifts the NWP grid by a day —
-`services/operational_inputs.py:225-236`); D1 can emit backdated points, so T1 now drops
-`valid_time <= issued_at`; `observation_staleness_hours` is `None` on combined rows so it explains
-nothing; BMA's contributor set is the post-weight set; rectangularity, not timestamp intersection,
-is the real invariant; T1 and T4's original assertions locked nothing; the "dark for every station"
-absolute was overstated.
+Findings that moved to Plan 224 with the anchoring work: the hindcast `past_targets` blocker, the
+`ClimatologyFallback` value contradiction, backdated points, and `observation_staleness_hours`.
 
-**Minors folded:** the temporal-jump QC rule would **not** have caught this (`max_rate: 500.0`
-against a ~330 m³/s jump) — corrected here *and* in the published consumer diagnosis; the REST API
-is a second `source_model_ids` consumer; T5's fixture needs three models; T3 test 4 is exempt from
-red-first; the `time_step`-never-persisted claim needed the metadata, not the read path.
+### Round 2 — NEEDS_CHANGES (3 blockers, 8 majors) → RE-CUT
 
-**Not folded:** the reviewer's citation for the skip-reason finding
-(`flows/run_forecast_cycle.py:2898-2903`) points at `store_forecast_failed`, not the combination
-gate. The underlying observability gap is real and is folded into T6; the line reference is not.
+Round 2 returned as many findings as round 1. It did not converge, and the reason was structural:
+every surviving blocker sat in the anchoring half, on top of pre-existing defects.
 
-**Net effect on scope:** one task removed (T2), one added (T4b), no change to the two-phase shape.
-The plan is smaller and the invariant is sharper. Round 2 has not run.
+**What it proved about the anchoring half — and why that half left this plan:**
+
+- D1(a′), round 1's repair, did **not** work. `_extract_discharge()` takes the last seven *rows*,
+  not seven daily buckets (`models/linear_regression_daily.py:42-49`); hindcast passes raw
+  observations (`services/hindcast.py:201`), so the model runs on ~70 minutes of history.
+  Relabelling cannot fix a lookback.
+- Skill scoring joins to an unresampled observation lookup (`services/skill/service.py:338`), so
+  D1's justification — that anchoring aligns operational with skill semantics — was false.
+- T1 tests 2 and 4 passed current code, and an issue-day-anchored implementation passed tests 1-4,
+  so the suite did not distinguish (a′) from (b) at all.
+- The `valid_time <= issued_at` rule contradicted the NWP convention, which treats equality at
+  midnight as future (`services/operational_inputs.py:225-236`).
+- D5 was wrong in both directions on the fallbacks.
+
+**What it changed in THIS half:** the member-id collision (now T3b, a live defect); the
+two-timestamp floor wrongly generalised beyond the store (now D6); T4b's parameter-level
+granularity being too coarse for level-specific resolution; T4b's test admitting a degenerate fix;
+and the BMA and ragged-denominator qualifications being stated but locked by no test.
+
+**Rejected after verification** — two findings that did not survive checking:
+
+| Claim | Why rejected |
+|---|---|
+| Citations `run_forecast_cycle.py:684-690` and `:2872-2886` have drifted | Both correct in the working tree **and** at HEAD: `_resolve_cycle_time` is at 684-690 and returns `clock()`; `build_combined_forecasts` is at 2872 |
+| Round 1's skip-reason citation `:2898-2903` | Points at `store_forecast_failed`, not the combination gate. The observability gap is real and is in T6; the reference was not |
+
+### Round 3
+
+Has not run. This plan changed shape after round 2, so the round-2 verdict does not carry over to
+it — the intersection half was largely validated (round 2 explicitly CHECKED T3 tests 1-3, 5, 6 and
+T5 as red against current behaviour), but T3b, D6 and the rewritten T4b are new and unreviewed.
