@@ -25,6 +25,34 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
+def _code_to_config(
+    station_configs: list[StationConfig],
+) -> dict[str, StationConfig]:
+    """Fixture rows key on `station_code` alone (see the Parquet schema doc
+    in `docs/plans/archive/020-phase3-replay-recording.md`), but `code` is
+    only unique per (network, code) in the DB (`uq_stations_network_code`).
+    A requested batch containing two stations that share a code across
+    networks — e.g. a WEATHER and a RIVER station both coded "2135" — cannot
+    be disambiguated from `station_code` alone: every matching fixture row,
+    including e.g. discharge, would silently route to whichever config
+    happened to be last in `station_configs`. Fail loudly instead."""
+    code_to_config: dict[str, StationConfig] = {}
+    duplicate_codes: set[str] = set()
+    for sc in station_configs:
+        if sc.code in code_to_config and code_to_config[sc.code].id != sc.id:
+            duplicate_codes.add(sc.code)
+        code_to_config[sc.code] = sc
+    if duplicate_codes:
+        raise ConfigurationError(
+            "ReplayStationAdapter cannot disambiguate station code(s) "
+            f"{sorted(duplicate_codes)!r}: the replay fixture keys rows by "
+            "`station_code` alone, but these codes are shared by more than "
+            "one requested station (codes are only unique per network). "
+            "Refusing to guess which station owns the fixture rows."
+        )
+    return code_to_config
+
+
 class ReplayStationAdapter:
     def __init__(
         self,
@@ -57,9 +85,7 @@ class ReplayStationAdapter:
         t0 = time.perf_counter()
         now = self._simulated_time()
 
-        code_to_config: dict[str, StationConfig] = {
-            sc.code: sc for sc in station_configs
-        }
+        code_to_config = _code_to_config(station_configs)
         valid_codes = set(code_to_config.keys())
 
         if self._df.is_empty() or not valid_codes:

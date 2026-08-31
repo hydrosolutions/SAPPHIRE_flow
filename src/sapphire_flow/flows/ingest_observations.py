@@ -105,6 +105,28 @@ def _load_adapter_endpoint() -> str:
     )
 
 
+# Plan 217 (M-G1) D3: the `fetch_latest_timestamp` cursor parameter, keyed
+# explicitly by StationKind. Replaces the old `"water_level" if LAKE else
+# "discharge"` binary, which silently read a WEATHER station's cursor from
+# its (usually absent, always wrong) discharge watermark. This governs the
+# CURSOR only — not what the adapter polls, which the adapter decides for
+# itself from the station configs it is handed.
+_CURSOR_PARAMETER_BY_KIND: dict[StationKind, str] = {
+    StationKind.RIVER: "discharge",
+    StationKind.LAKE: "water_level",
+    StationKind.WEATHER: "precipitation",
+}
+
+
+def _cursor_parameter_for_kind(kind: StationKind) -> str:
+    try:
+        return _CURSOR_PARAMETER_BY_KIND[kind]
+    except KeyError:
+        raise ConfigurationError(
+            f"No cursor parameter mapping for station kind: {kind!r}"
+        ) from None
+
+
 def _aggregate_qc_status(flags: list[object]) -> QcStatus:
     if not flags:
         return QcStatus.QC_PASSED
@@ -554,15 +576,36 @@ def ingest_observations_flow(
 
     now: UtcDatetime = clock()  # type: ignore[assignment]
 
-    # --- Step 2.0: Fetch eligible stations (RIVER + LAKE) ---
-    river_stations = station_store.fetch_all_stations(kind=StationKind.RIVER)
-    lake_stations = station_store.fetch_all_stations(kind=StationKind.LAKE)
-    all_stations = [*river_stations, *lake_stations]
+    # --- Step 2.0: Fetch eligible stations (RIVER + LAKE + WEATHER) ---
+    # Plan 217 (M-G1) D1: WEATHER joins the existing fetch rather than
+    # getting its own flow.
+    # `station_store` is typed `object` (see the parameter default above),
+    # so pyright flags `fetch_all_stations` as an unknown attribute on all
+    # three of the following calls alike; ignored consistently rather than
+    # on just one of the three.
+    river_stations = station_store.fetch_all_stations(  # type: ignore[attr-defined]
+        kind=StationKind.RIVER
+    )
+    lake_stations = station_store.fetch_all_stations(  # type: ignore[attr-defined]
+        kind=StationKind.LAKE
+    )
+    weather_stations = station_store.fetch_all_stations(  # type: ignore[attr-defined]
+        kind=StationKind.WEATHER
+    )
+    all_stations = [*river_stations, *lake_stations, *weather_stations]
+    # D2: "gauged" is a discharge concept (does this river/lake station have
+    # a rating curve?) — it does not apply to weather stations, which gate
+    # on station_status alone. Applying the GAUGED filter uniformly would
+    # let a WEATHER station pass by the `gauging_status` DEFAULT rather than
+    # by decision (`Station.gauging_status` defaults to GAUGED).
     eligible = [
         s
         for s in all_stations
-        if s.gauging_status == GaugingStatus.GAUGED
-        and s.station_status.value == "operational"
+        if s.station_status.value == "operational"
+        and (
+            s.station_kind == StationKind.WEATHER
+            or s.gauging_status == GaugingStatus.GAUGED
+        )
     ]
 
     if not eligible:
@@ -585,9 +628,7 @@ def ingest_observations_flow(
     default_since = ensure_utc(now - timedelta(hours=default_lookback_hours))
     since: dict[StationId, UtcDatetime] = {}
     for station in eligible:
-        param = (
-            "water_level" if station.station_kind == StationKind.LAKE else "discharge"
-        )
+        param = _cursor_parameter_for_kind(station.station_kind)
         latest = obs_store.fetch_latest_timestamp(station.id, param)
         since[station.id] = latest if latest is not None else default_since
 
@@ -682,12 +723,18 @@ def ingest_observations_flow(
     # Sequential post-QC step (NOT a task.map fan-out): the QC loop finishing is the
     # barrier. Calculated stations were excluded from `eligible` by the GAUGED guard, so
     # this reads their components' just-QC'd observations. No-op when there are none.
+    # Plan 217 (M-G1) D4: derivation is a discharge concept, restricted to
+    # RIVER/LAKE explicitly — WEATHER now joins `all_stations` (D1) and,
+    # unlike RIVER/LAKE, is not gated out of this filter by `gauging_status`
+    # (D2), so a WEATHER station whose `gauging_status` happens to read
+    # CALCULATED must still not reach derivation.
     derived = {"derived": 0, "missing": 0}
     calculated = [
         s
         for s in all_stations
         if s.gauging_status == GaugingStatus.CALCULATED
         and s.station_status.value == "operational"
+        and s.station_kind in (StationKind.RIVER, StationKind.LAKE)
     ]
     if calculated and formula_store is not None:
         derived = _derive_calculated_task(

@@ -47,6 +47,8 @@ def _write_fixture(
 def _make_station_config(
     code: str,
     station_id: StationId | None = None,
+    station_kind: StationKind = StationKind.RIVER,
+    network: str = "bafu",
 ) -> StationConfig:
     ts = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
     return StationConfig(
@@ -54,7 +56,7 @@ def _make_station_config(
         code=code,
         name=f"Station {code}",
         location=GeoCoord(lon=7.0, lat=47.0),
-        station_kind=StationKind.RIVER,
+        station_kind=station_kind,
         basin_id=None,
         timezone="Europe/Zurich",
         regulation_type=None,
@@ -63,7 +65,7 @@ def _make_station_config(
         station_status=StationStatus.OPERATIONAL,
         created_at=ts,
         updated_at=ts,
-        network="bafu",
+        network=network,
         ownership=StationOwnership.OWN,
         wigos_id=None,
         gauging_status=GaugingStatus.GAUGED,
@@ -305,6 +307,34 @@ class TestReplayStationAdapter:
         )
         assert isinstance(adapter, StationDataSource)
 
+    def test_mixed_network_same_code_raises_instead_of_misrouting(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: codes are only unique per (network, code)
+        (`uq_stations_network_code`). A RIVER station on one network and a
+        WEATHER station on another can share a bare `code`. The fixture
+        schema only carries `station_code`, so the adapter cannot tell which
+        station a matching row belongs to — it must refuse, not guess.
+        Without the fix this silently routed every "2135" row (discharge
+        included) to whichever config was last in the list."""
+        river = _make_station_config(
+            "2135", station_kind=StationKind.RIVER, network="bafu"
+        )
+        weather = _make_station_config(
+            "2135", station_kind=StationKind.WEATHER, network="meteoswiss"
+        )
+        fixture = tmp_path / "obs.parquet"
+        t1 = datetime(2024, 3, 1, 0, 0, tzinfo=UTC)
+        _write_fixture(fixture, [_row("2135", t1, param="discharge", value=42.0)])
+
+        adapter = ReplayStationAdapter(fixture, lambda: _utc(2024, 6, 1))
+
+        with pytest.raises(ConfigurationError, match="2135"):
+            adapter.fetch_observations(
+                [river, weather],
+                {river.id: _utc(2024, 1, 1), weather.id: _utc(2024, 1, 1)},
+            )
+
 
 class TestReplayStationAdapterBatch:
     """Minor fix (Plan 175 round 2): `ingest_observations_flow` calls
@@ -390,3 +420,30 @@ class TestReplayStationAdapterBatch:
         assert outcome.observations == ()
         assert outcome.failure_cause is not None
         assert outcome.failure_cause.value == "malformed_response"
+
+    def test_mixed_network_same_code_raises_not_a_typed_outcome(
+        self, tmp_path: Path
+    ) -> None:
+        """Unlike a fixture-wide parse failure (per-station outcome above),
+        an ambiguous code collision across networks is a misconfiguration of
+        the requested batch itself — `fetch_observations_batch` only catches
+        `AdapterError`, so this must propagate as `ConfigurationError`
+        rather than being reported as a clean per-station outcome that could
+        mask silent misrouting."""
+        river = _make_station_config(
+            "2135", station_kind=StationKind.RIVER, network="bafu"
+        )
+        weather = _make_station_config(
+            "2135", station_kind=StationKind.WEATHER, network="meteoswiss"
+        )
+        fixture = tmp_path / "obs.parquet"
+        t1 = datetime(2024, 3, 1, 0, 0, tzinfo=UTC)
+        _write_fixture(fixture, [_row("2135", t1, param="discharge", value=42.0)])
+
+        adapter = ReplayStationAdapter(fixture, lambda: _utc(2024, 6, 1))
+
+        with pytest.raises(ConfigurationError, match="2135"):
+            adapter.fetch_observations_batch(
+                [river, weather],
+                {river.id: _utc(2024, 1, 1), weather.id: _utc(2024, 1, 1)},
+            )
