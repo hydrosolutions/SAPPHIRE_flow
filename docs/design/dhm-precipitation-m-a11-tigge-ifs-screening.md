@@ -367,13 +367,22 @@ pooled set.
 
 ### Reading the result — the offset is NOT stable across years
 
-**The independent review's flagged risk is confirmed: the mid band moves by close to 10 hours across
-six seasons, and the high band shows a probable sign reversal in its thinnest year.**
+**The independent review's flagged risk is confirmed: on the preregistered branch the mid band moves
+by close to 10 hours across six seasons, and the high band's thinnest year returns a reproducible
+point-estimate sign change that is unresolved from zero.**
+
+⚠️ **All figures below are on the PREREGISTERED same-day branch `[-18,+6)`.** The cross-station median is **branch-dependent**: 2021's D+1 mid is **−11.48 h** here but **+3.26 h** under shortest-arc aggregation, while 2023 is −3.97 h under both. ⛔ The extremes are therefore **not** branch-invariant and must not be quoted as physical magnitudes. *(They are not a simple wrap — −11.48 and −3.97 are 7.51 h apart and do not straddle the cut — but the aggregate still moves with the convention.)*
+
+🔬 **The spread survives a fixed-membership control.** Re-running D+1 mid on only the **four
+stations retained in all six seasons** gives −2.31, −9.79, −10.53, −4.95, −5.43, −5.62 h — still an
+**8.22 h range**. ⇒ Changing station membership is a confounder but **not the whole explanation**;
+equally, this still cannot be called *pure* IFS-cycle variability.
 
 1. **Mid band (1,000-2,000 m) is the most volatile.** D+1 ranges from **-2.31 h (2020)** to
    **-11.48 h (2021)** — a **9.2 h spread**, with no monotonic trend (2022 nearly matches 2021's extreme,
    2023 drops back to -3.97 h, 2024/2025 sit in between). D+3 2020's mid-band value is **+0.37 h** —
-   indistinguishable from zero and of the OPPOSITE sign to every other year's mid-band reading. The
+   indistinguishable from zero and of the opposite sign to every other year's mid-band reading — ⛔ a
+   **reproducible point-estimate sign change, unresolved from zero**, not a demonstrated reversal. The
    2025-only screening this document opened with (mid ≈ -5.8 to -6.5 h, "40-55% of ERA5-Land's -14.4 h")
    sits roughly in the MIDDLE of this range, not at either end — a single season understated how far the
    true year-to-year spread reaches: 2021/2022 alone would have suggested a correction close to
@@ -397,7 +406,8 @@ six seasons, and the high band shows a probable sign reversal in its thinnest ye
 
 **Settled:** the M-A9/M-A11 question "is IFS's mid/high-band diurnal timing error a single, stable
 number close to a third-to-half of ERA5-Land's" is now answered **no** — it is a number that moves by
-several hours between seasons, including at least one plausible near-zero/sign-reversed year in the
+several hours between seasons on the preregistered branch, including one year whose point estimate is
+near-zero and sign-changed but **unresolved from zero at n=2 under the ±3 h bound**, in the
 thinnest-coverage band. Any IFS-calibrated correction (this document's own GO recommendation, above)
 would need to either (a) accept and report this spread rather than a single point value, or (b) be
 built from more seasons/stations than any single year offers — which is exactly this section's own

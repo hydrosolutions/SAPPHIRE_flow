@@ -1158,13 +1158,17 @@ count, not a required one (D2): a missing forecast run is recorded as a named ga
 runs. The report is per-year **and** pooled (D3: `run_multi_season` concatenates the six seasons' raw
 paired frames and reruns the unchanged station-equal estimator once on the union — never a median of six
 already-computed point estimates, which is a different statistic), with 2020 included and hedged (D4: it
-carries only 3 high-band gauges against 6-8 in later years).
+carries only **3 raw high-band candidates** against 6-8 in later years — of which the estimator
+**retains 2**, the third failing `NO_PRECIPITATION_MASS`).
 
 **✅ COMPLETE 2026-08-31.** All five remaining seasons retrieved (244/244 inits, zero gaps, each). **The
 independent review's flagged risk is CONFIRMED**: the mid-elevation band's offset ranges from **-2.31 h
-(2020) to -11.48 h (2021)** — a 9.2 h spread, not a single stable number — and 2020's thin 2-station high
-band shows a probable sign reversal (+0.47/-0.96 h at D+1/D+2) against every other year's clearly
-negative reading. The low band, read as "near zero" off 2025 alone, crosses the ±3 h bound in 2020 and
+(2020) to -11.48 h (2021)** on the **preregistered same-day branch** — a 9.2 h spread, not a single
+stable number, and still an 8.22 h range under a fixed four-station panel. 2020's high band, which
+**retains 2 of its 3 raw candidates**, returns +0.47/-0.96 h at D+1/D+2 — a **reproducible
+point-estimate sign change, unresolved from zero** at that `n` under the ±3 h bound, not a
+demonstrated reversal. ⚠️ The cross-station median is branch-dependent, so these extremes are not
+physical magnitudes. The low band, read as "near zero" off 2025 alone, crosses the ±3 h bound in 2020 and
 2023. Pooled figures track the higher-coverage years, not a naive average of the six per-year values.
 Full table + reading: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11b addendum.
 
