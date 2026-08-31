@@ -57,13 +57,24 @@ of the high stations begin reporting around 2020-10-12, *after* that JJAS.
 
 ## Decisions
 
-- **D1 — The year becomes a parameter, and EVERYTHING derives from it.** The current constant is
-  deliberately hardcoded, and the code says why: *"a wrong year, mislabelled 'JJAS 2025' downstream, is
-  the failure mode"* (`tigge_ifs.py:51`). That hazard is real and this plan must close it, not inherit
-  it. ⇒ The raw filename, the points filename, the manifest, the attribution sidecar and every log line
-  **derive from the same single year value** — ⛔ no second source, no format string built from a
-  different variable. This is the identity rule this track has re-learned four times: **a value carried
-  alongside can disagree; a value derived cannot.**
+- **D1 — The year becomes a parameter, and the COMPETING SOURCES ARE DELETED.** The constant is
+  hardcoded on purpose — *"a wrong year, mislabelled 'JJAS 2025' downstream, is the failure mode"*
+  (`tigge_ifs.py:51`). ⛔ **Close that by removing the alternatives, not by adding a checker** — this
+  repo's recurring defect is a value carried alongside rather than derived, and the fix that has worked
+  four times is deleting the thing that can disagree. **The existing boundary gate already compares the
+  GRIB's actual init axis against the selected year** (`tigge_ifs.py:250`, `:275`), so no new mismatch
+  check is needed.
+  **Three concrete deletions:**
+  1. **`TIGGE_YEAR`'s default goes** — it currently defaults *both* the expected schedule and the
+     identity gate to 2025 (`tigge_ifs.py:51`, `:200`, `:217`).
+  2. **The independent `--tigge-points` selector goes** (`tigge_gauge_timing.py:574`) — a second,
+     user-controlled identity source. The timing input path derives from `--year` and the root.
+  3. **The pairing path takes the year** — `build_paired_frame` defaults to 2025 while `run_all_bands`
+     neither accepts nor passes one (`tigge_gauge_timing.py:176`, `:449`).
+  ⇒ Filename, points file, **attribution sidecar** and logs all derive from that one value.
+  ⛔ **Not "manifest"** — the TIGGE path writes a Parquet plus an attribution sidecar and no manifest
+  (`tigge_ifs.py:576`, `tigge_gauge_timing.py:617`); inventing one would break this plan's own
+  "no new file format" rule.
 
 - **D2 — 244 is the EXPECTED schedule, not a required count. Real seasons have gaps.**
   ⚠️ **Owner correction 2026-08-31:** *"there may not be full 244 forecast runs — sometimes forecasts
@@ -78,14 +89,24 @@ of the high stations begin reporting around 2020-10-12, *after* that JJAS.
   ⇒ **Publish a completeness figure per season** (inits present / 244) beside every result, and state
   it in the report. ⛔ A season that is materially incomplete must say so next to its numbers; do not
   let a 70 %-complete season sit in a table looking like a 100 %-complete one.
-  *(The arithmetic behind 244 is still right and unchanged: JJAS is 122 days in every year — no
-  February — so 122 × 2 = 244 for 2020–2025 alike. What changes is that this is the expected count, not
-  an admission requirement.)*
+  *(The arithmetic is right and unchanged: JJAS is 122 days in every year — no February — so
+  122 × 2 = 244 for 2020–2025 alike. What changes is that this is the expected count, not an admission
+  requirement.)*
+  ⛔ **There is no `244` constant in production and none should be added.** The schedule is derived as
+  exact dates via `calendar.monthrange` (`tigge_ifs.py:200`); keep using
+  `expected_init_schedule(year=year)` and **do not introduce `expected_init_count(year)`**. Only the
+  year default changes — the gate logic stays.
 
-- **D3 — Report PER-YEAR *and* POOLED.** *(Owner decision 2026-08-31.)* ⛔ Never pooled-only, and
-  ⚠️ **the pooled figure must state how it weights unequal seasons**: 2020 contributes 3 high-band
-  stations where 2022 contributes 8, so a naive pool silently gives some years more influence.
-  State the weighting; if per-year and pooled disagree, the per-year spread is the finding. The question is interannual variability, and a
+- **D3 — Report PER-YEAR *and* POOLED.** *(Owner decision 2026-08-31.)* ⛔ Never pooled-only.
+  🔴 **"Pooled" means: concatenate the six season frames, then run the UNCHANGED station-equal estimator
+  ONCE.** ⛔ It does **not** mean taking a median of six already-aggregated cells — the estimator
+  computes each station's phase and then the median across stations (`tigge_gauge_timing.py:386`,
+  `:419`), and the two give different answers.
+  ⇒ Label the pooled figure an **available-case aggregate** and keep the per-year station counts beside
+  it: 2020 contributes 3 high-band stations where 2022 contributes 8.
+  ⚠️ **State the limit plainly:** per-year results show whether the aggregate is stable across seasons,
+  but unequal station membership means they **cannot isolate pure IFS-cycle variability**. ⛔ No
+  common-station rerun is required here — station representativeness is a separate open prerequisite. The question is interannual variability, and a
   pooled median answers a different question — it would hide exactly the spread the review asked for.
   ⇒ Every band × lead cell carries six per-year values plus the pooled figure, each with its own `n`.
 
@@ -105,6 +126,11 @@ of the high stations begin reporting around 2020-10-12, *after* that JJAS.
   ⛔ **A difference is not automatically acceptable — it must be EXPLAINED and attributed** to a named
   cause (e.g. D2's gap handling admitting runs the old exact-count gate rejected). An unexplained change
   means the parameterisation broke something. ⛔ Do not silently re-baseline.
+  ⚠️ **Correction:** an earlier revision of this plan cited a `PublishedTableMismatch` guard. **No such
+  guard exists** — the runtime check is `TiggeTimingMatrixError`, for an all-empty result
+  (`tigge_gauge_timing.py:110`, `:607`). ⇒ The nine-cell regression assertion is the whole mechanism;
+  ⛔ do not add a new exception, and do not add per-station or retained-key golden locks — finer than
+  the parameterisation risk requires.
 
 ## Tasks
 
@@ -117,8 +143,11 @@ alone must be inert. ⛔ Plus a test that a mismatched year cannot be written in
 different year is recorded in the manifest — the hazard `tigge_ifs.py:51` names.
 
 ### T2 — retrieve 2020–2024 (depends: T1)
-**In:** five ECDS requests, same route and read contract as D6 of Plan 216 (`tigge-forecasts`, 0.5°,
+**In:** five ECDS requests, same route and read contract as D6 of Plan 216 (`tigge-forecasts`,
 study box, `type: cf`, 6-hourly, `kg m**-2` asserted from the file attribute).
+🔴 **NOT `0.5°` — an earlier revision of this plan said so and was wrong.** ECDS exposes **no
+`grid` request field**; it returns the **native reduced-Gaussian grid** (`tigge_ifs.py:7`,
+M-A11 report `:59`). ⛔ Do not send a `grid` parameter.
 **Out:** any analysis.
 **Verify:** each season's inits are checked against the expected 244-run schedule with absences recorded as named gaps (D2), and its completeness figure published; each raw file and its
 points parquet carry the correct year in name and manifest; the 2025 artifacts are **untouched**.
