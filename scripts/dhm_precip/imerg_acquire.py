@@ -15,9 +15,11 @@ projection. `retrieve_window` is the tested bulk path, deliberately unwired.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import re
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -83,7 +85,7 @@ GESDISC_BASE_URL = "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGH
 HDF5_VARIABLE_PATH = "/Grid/precipitation"
 ROUTE = "GES DISC HTTPS archive"
 
-#: D1 — enforced by `assert_revision_matches_plan_and_header` on every granule.
+#: D1 — enforced by `assert_identity_matches_plan_and_header` on every granule.
 PINNED_GRANULE_REVISION_PER_PLAN = "V07B"
 
 #: D9 — Plan 209 T2's measured figure, carried verbatim (never re-measured).
@@ -339,7 +341,8 @@ def contract_from_open_granule(f: object, *, filename: str) -> ImergReadContract
     in."""
     revision = parse_granule_filename(filename)[1]
     file_header = read_file_header(f)
-    assert_revision_matches_plan_and_header(
+    assert_identity_matches_plan_and_header(
+        archive_filename=filename,
         filename_revision=revision,
         file_header_filename=parse_grid_header_field(file_header, "FileName"),
     )
@@ -416,24 +419,44 @@ def read_file_header(f: object) -> str:
     return _attr_text(raw)
 
 
-def assert_revision_matches_plan_and_header(
-    *, filename_revision: str, file_header_filename: str
+def normalise_embedded_filename(file_header_filename: str) -> str:
+    """The embedded `FileHeader.FileName` reduced to the ARCHIVE spelling of
+    the same name: `.RT-H5` -> `.HDF5`. ⛔ The EXTENSION is the only field that
+    may differ between the two names, so normalising it is what lets the whole
+    name — date, start, end, sequence AND revision — be compared."""
+    stripped = file_header_filename.strip()
+    if _EMBEDDED_FILENAME_RE.fullmatch(stripped) is None:
+        raise ImergReadContractError(
+            f"the granule's own embedded FileHeader.FileName {stripped!r} does "
+            "not match the expected IMERG Early half-hourly naming pattern (D1)"
+        )
+    if stripped.endswith(".RT-H5"):
+        return stripped.removesuffix(".RT-H5") + ".HDF5"
+    return stripped
+
+
+def assert_identity_matches_plan_and_header(
+    *, archive_filename: str, filename_revision: str, file_header_filename: str
 ) -> None:
-    """D1's two revision checks: the filename's revision must equal the plan's
-    pinned literal AND agree with the granule's own `FileHeader.FileName`, so a
-    renamed file is caught. ⛔ NOT `ProductVersion`: a different axis."""
+    """D1's two identity checks: the filename's revision must equal the plan's
+    pinned literal AND the granule's own `FileHeader.FileName` must be the SAME
+    NAME as the archive path's, so a renamed file is caught. ⛔ The COMPLETE
+    names are compared, not merely their revisions: extraction takes the
+    timestamp from the PATH, so a granule whose embedded name carries the right
+    revision but a different date/time would silently be filed under a time its
+    contents are not from. ⛔ NOT `ProductVersion`: a different axis."""
     if filename_revision != PINNED_GRANULE_REVISION_PER_PLAN:
         raise ImergReadContractError(
             f"observed granule revision {filename_revision!r} (from its "
             f"filename) != the D1-pinned {PINNED_GRANULE_REVISION_PER_PLAN!r} "
             "— stop and report rather than blending (D1)"
         )
-    embedded = _EMBEDDED_FILENAME_RE.fullmatch(file_header_filename.strip())
-    if embedded is None or embedded["revision"] != filename_revision:
+    if normalise_embedded_filename(file_header_filename) != archive_filename:
         raise ImergReadContractError(
-            f"path revision {filename_revision!r} disagrees with the granule's "
-            f"own embedded FileHeader.FileName {file_header_filename!r} — the "
-            "revision must not be inferred from the path alone (D1)"
+            f"archive filename {archive_filename!r} disagrees with the "
+            f"granule's own embedded FileHeader.FileName "
+            f"{file_header_filename.strip()!r} — a granule's identity must not "
+            "be inferred from the path alone (D1)"
         )
 
 
@@ -499,6 +522,49 @@ def published_bundle_dirs(points_root: Path) -> list[Path]:
     )
 
 
+#: Plan 224 T1 — the SERIALIZATION CONTRACT. The writer's orphan guard reads
+#: the published bundles and then replaces the record; publication separately
+#: validates the record and then renames a bundle in. Interleaved, both can
+#: pass and leave a bundle naming a replaced digest. ⛔ Rather than coordinate
+#: them, acquisition-record writes and bundle publication are declared MUTUALLY
+#: EXCLUSIVE and the rule is ENFORCED here: one advisory `flock` over the whole
+#: read-then-act sequence on each side, taken NON-BLOCKING so a violation fails
+#: loudly instead of queueing. Both operations are minutes-scale, run from the
+#: same host and are never concurrent by design — this only makes that explicit.
+WRITER_LOCK_FILENAME = ".imerg-writer.lock"
+
+
+@contextmanager
+def imerg_writer_lock(early_root: Path, *, holder: str) -> Iterator[None]:
+    """Hold the exclusive IMERG writer lock for `holder`, or fail loudly."""
+    lock_path = early_root / WRITER_LOCK_FILENAME
+    try:
+        early_root.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        raise ImergStorageError(
+            f"{holder} could not open the IMERG writer lock at {lock_path}: {exc}"
+        ) from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ImergStorageError(
+                f"{holder} could not take the exclusive IMERG writer lock at "
+                f"{lock_path}: another IMERG acquisition-record write or bundle "
+                "publication holds it. The two MUST NOT overlap — a published "
+                "bundle carries only the record's digest, so an interleaved run "
+                "can leave it naming a record that no longer exists. Re-run once "
+                "the other finishes (Plan 224 T1)"
+            ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def acquisition_record_identity_content(
     manifest: ImergAcquisitionManifest,
 ) -> dict[str, object]:
@@ -549,6 +615,16 @@ class ImergAcquisitionManifest(BaseModel):
 
 
 def write_acquisition_manifest(manifest: ImergAcquisitionManifest, path: Path) -> None:
+    """D10's writer, under the Plan 224 T1 serialization lock: the guard below
+    READS the published bundles and then ACTS on the record, so the whole
+    sequence is held exclusive against a concurrent publication."""
+    with imerg_writer_lock(path.parent, holder="the IMERG acquisition-record write"):
+        _write_acquisition_manifest_locked(manifest, path)
+
+
+def _write_acquisition_manifest_locked(
+    manifest: ImergAcquisitionManifest, path: Path
+) -> None:
     """D10 — the record is PERMANENT, and that is the only reason discarding
     the raw granules is safe. ⛔ Completeness is DERIVED here, never read off a
     label: a malformed record must not replace a complete one by *claiming* to

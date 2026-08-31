@@ -75,7 +75,9 @@ from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     assert_acquisition_manifest_complete,
     assert_contract_consistent,
     contract_from_open_granule,
+    imerg_early_root,
     imerg_points_root,
+    imerg_writer_lock,
     parse_granule_filename,
     pinned_provenance_violations,
     read_acquisition_manifest,
@@ -961,6 +963,22 @@ def validate_imerg_bundle(
 
 
 def publish_imerg_bundle(staged_dir: Path, *, data_root: Path, identity: str) -> Path:
+    """Plan 224 T1 — publication VALIDATES the acquisition record and then
+    renames a bundle that carries only its digest, so the whole sequence runs
+    under the same exclusive writer lock the record's writer takes. ⛔ The two
+    MUST NOT overlap; the lock makes a violation fail loudly rather than
+    silently publishing a bundle against a record that is being replaced."""
+    with imerg_writer_lock(
+        imerg_early_root(data_root), holder="the IMERG bundle publication"
+    ):
+        return _publish_imerg_bundle_locked(
+            staged_dir, data_root=data_root, identity=identity
+        )
+
+
+def _publish_imerg_bundle_locked(
+    staged_dir: Path, *, data_root: Path, identity: str
+) -> Path:
     manifest = _read_manifest(staged_dir / MANIFEST_FILENAME)
     if manifest is None:
         raise ExtractionPostConditionError(

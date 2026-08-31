@@ -438,6 +438,19 @@ the archive stores the identical bytes as `.HDF5`. Every live granule therefore 
 revision disagreement that did not exist (`V07B` on both sides). The archive filename parser stays
 strict; only the embedded-name check accepts either extension.
 
+**Two review findings on that fix, closed 2026-08-31.** (a) The relaxation had degraded the
+cross-check to a **revision** comparison: any syntactically valid IMERG embedded name carrying the
+pinned `V07B` passed, whatever date or half-hour it named — and extraction takes a granule's timestamp
+from its **path**, so contents from one time could be filed under another. The embedded name's
+extension is now **normalised** (`.RT-H5` -> `.HDF5`) and the **complete names** are compared, which is
+what the `.RT-H5` allowance was ever meant to permit. (b) Acquisition and publication are now declared
+**mutually exclusive**, and the rule is enforced: the record's writer scans the published bundles and
+*then* replaces the record, while publication validates the record and *then* renames a bundle in, so
+interleaved they can both pass and leave a bundle naming a replaced digest. ⛔ Rather than coordinate
+them, both sides take one **non-blocking advisory `flock`** (`imerg_early/.imerg-writer.lock`) over
+their whole read-then-act sequence, so a violation fails loudly instead of racing. Both operations run
+from the same host and are minutes-scale; the lock only makes an existing assumption explicit.
+
 **MEASURED 2026-08-31 — one granule, `2020-07-15T00:00Z`, GES DISC HTTPS archive, full global field:**
 **8,047,136 B (8.05 MB / 7.67 MiB)**. ⇒ full D5 window (105,216 granules) **846.7 GB (788.5 GiB)**;
 one JJAS season (5,856 granules) **47.1 GB**; six JJAS seasons **282.7 GB**. Free disk at the time:
