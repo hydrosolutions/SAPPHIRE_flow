@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-31
 plan: 222
 title: A combined forecast must stand on one grid — intersection pooling
-scope: Pooling publishes only where every contributor is present, at every one of the three pooling call sites, plus the member-id remap that makes that guarantee real. Anchoring the daily models is SPLIT OUT to Plan 224. No contract change, no backfill, no change to any model's output.
+scope: Pooling publishes only where every contributor is present, at every one of the three pooling call sites, plus the member-id remap that makes that guarantee real, plus the export freshness rule (T7) without which absence is invisible. Anchoring the daily models is SPLIT OUT to Plan 224. No SCHEMA change and no backfill — but T7 IS a behavioural contract change to the Forecast Lab export, and is documented as one.
 depends_on: [204]
 blocks: []
 source: 2026-08-31 — SAPPHIRE-flow-map reported an alternating `_pooled` median at station 2091; diagnosed as a disjoint-grid pooling artifact and reproduced through the production functions
@@ -46,8 +46,9 @@ without it.**
 ## ⛔ Proportionality
 
 **This plan changes production forecast behaviour.** That is unavoidable — the reported defect
-*is* a behaviour — but it bounds what belongs here. **Five tasks, no new abstraction, and no change
-to any model's output.**
+*is* a behaviour — but it bounds what belongs here. **Eight tasks (T0, T3b, T3, T4, T4b, T5, T7,
+T6), one shared intersection helper, and no change to any model's output.** *(Round 4, minor: this
+said "five tasks, no new abstraction" and was never updated through the re-cut and three folds.)*
 
 **In scope for findings:** the D1–D5 contract shape is wrong or ambiguous; a cited fact is false;
 an acceptance criterion does not lock its behaviour; a locking test would pass against the buggy
@@ -345,6 +346,12 @@ no entry for a parameter with fewer than two contributors or an empty intersecti
    post-weight contributor rule but locked it nowhere)*. A zero-weight model on a *mismatching*
    grid must neither shrink the intersection nor appear in `source_model_ids`. Without this case a
    pre-weight intersection passes every other test.
+8. **BMA's two-contributor minimum is post-weight** *(round 4, major)*. Two models pass the
+   pre-gate count at `forecast_combination.py:202-204` but only **one** carries a positive weight
+   (`forecast_combination.py:98-121`) → no combined forecast. Test 7 can be satisfied with two
+   positive contributors and so never exercises the minimum; current code emits a one-contributor
+   BMA forecast here. This locks the count, not the allocation — BMA's member allocation stays in
+   Non-goals.
 
 ### T4 — intersection in the alert pooling path
 
@@ -480,6 +487,9 @@ the export runs asynchronously from the cycle and must not flap during a run.
   and that this is deliberate rather than an outage; that `source_model_ids` may shrink when it
   returns (D3); and that `native_step_seconds`, `ensemble_size` and `horizon_end` become correct as
   a consequence of the invariant rather than by direct fix.
+- **`docs/spec/forecast-lab-snapshot.md:123-126`** — normative, currently "latest available".
+  T7 changes it to "the selected publication cycle". Behavioural contract change; document it and
+  tell the consumer explicitly *(round 4, major)*.
 - Correct the published diagnosis where round 1 found it wrong: the temporal-jump QC rule would
   **not** have caught this sawtooth at the default `max_rate` of 500 m³/s.
 - The REST API consumer (`api/routes/api_forecasts.py:75-76`) is told about D3 as well.
