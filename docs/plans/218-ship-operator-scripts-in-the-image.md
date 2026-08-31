@@ -118,6 +118,17 @@ procedures that built the deployment cannot reproduce it.
   model resolution **in a `WITH_AQUACAST=1` image**, not treat `--help` on the default image as
   proof.
 
+- **D3a — the curated list is VERIFIED against the image, not chosen by name.** Both review rounds
+  found an entry that could not work there (`check_readiness.py` needs `docs/`, `.dockerignore:9`;
+  `regenerate_icon_grid_asset.py` writes the source tree against `read_only: true`). All five
+  survivors were then checked directly (2026-08-31): `onboard.py`,
+  `backfill_meteoswiss_history.py` and `backfill_era5_land_history.py` resolve
+  `_REPO_ROOT / "alembic.ini"` to `/app/alembic.ini`, which the image **does** contain;
+  `validate_forcing_reference.py` reads through a `HistoricalForcingStore` from the DB
+  (`services/validation_gate.py:385-396`), **not** from `tests/fixtures` (excluded,
+  `.dockerignore:8`); `import_caravan_attributes.py` needs only the bind-mounted parquet. No entry
+  now depends on a path the image excludes.
+
 - **D4 — `__pycache__` needs no work.** It is already excluded at `.dockerignore:3`. Recorded so a
   reviewer does not re-raise it; **no `.dockerignore` edit is required by this plan.**
 
