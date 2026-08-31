@@ -1260,3 +1260,380 @@ class TestMain:
             sleep=_sleep,
         )
         assert code == 5  # noqa: PLR2004
+
+
+# --- Plan 225 (M-A5d) T1/T2 — the OPeNDAP subset route: a second frozen
+# contract, route dispatch, and the D5 archive/subset cross-check. Fixtures
+# below carry the structure MEASURED on the real GES DISC OPeNDAP subset
+# response for 2020-07-15T00:00Z / 80-89E/26-31N (2026-08-31): root-level
+# `/precipitation` (not `/Grid/precipitation`), a 1-element-array
+# `_FillValue`, unpacked float32, 90x50 cells. ---
+
+_ARCHIVE_LAT = np.round(np.linspace(-89.95, 89.95, 1800), 6).astype(np.float32)
+_ARCHIVE_LON = np.round(np.linspace(-179.95, 179.95, 3600), 6).astype(np.float32)
+#: The box's own contiguous slice of the real archive grid above — matches
+#: the MEASURED 2600:2689 (lon) / 1160:1209 (lat) index range exactly.
+_BOX_LON_START, _BOX_LON_STOP = 2600, 2689
+_BOX_LAT_START, _BOX_LAT_STOP = 1160, 1209
+
+
+def _write_fake_archive_granule_for_box(
+    path: Path, *, value: float | np.ndarray = 1.5, filename: str | None = None
+) -> None:
+    """A REAL-shape (1, 3600, 1800) archive granule whose box slice
+    (2600:2689 lon, 1160:1209 lat) carries `value` — everything outside the
+    box stays at the fill value, so a cross-check against a MATCHING subset
+    fixture below is exact by construction."""
+    fill_value = -9999.9
+    precip = np.full((1, 3600, 1800), fill_value, dtype=np.float32)
+    box = (
+        value
+        if isinstance(value, np.ndarray)
+        else np.full((90, 50), value, dtype=np.float32)
+    )
+    precip[
+        0, _BOX_LON_START : _BOX_LON_STOP + 1, _BOX_LAT_START : _BOX_LAT_STOP + 1
+    ] = box
+    name = filename or path.name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as f:
+        f.attrs["FileHeader"] = (
+            f"FileName={name};\nAlgorithmVersion=3IMERGHH;\nProductVersion=V07B;\n"
+        ).encode()
+        grid = f.create_group("Grid")
+        grid.attrs["GridHeader"] = (
+            b"BinMethod=ARITHMETIC_MEAN;\nRegistration=CENTER;\n"
+            b"LatitudeResolution=0.1;\nLongitudeResolution=0.1;\n"
+            b"NorthBoundingCoordinate=90;\nSouthBoundingCoordinate=-90;\n"
+            b"EastBoundingCoordinate=180;\nWestBoundingCoordinate=-180;\n"
+            b"Origin=SOUTHWEST;\n"
+        )
+        grid.create_dataset("lat", data=_ARCHIVE_LAT)
+        grid.create_dataset("lon", data=_ARCHIVE_LON)
+        ds = grid.create_dataset("precipitation", data=precip)
+        ds.attrs["DimensionNames"] = b"time,lon,lat"
+        ds.attrs["units"] = b"mm/hr"
+        ds.attrs["_FillValue"] = fill_value
+
+
+def _write_fake_subset_granule(
+    path: Path,
+    *,
+    archive_filename: str,
+    value: float | np.ndarray = 1.5,
+    lat: np.ndarray | None = None,
+    lon: np.ndarray | None = None,
+    lat_count: int = 50,
+    lon_count: int = 90,
+) -> None:
+    """The MEASURED subset shape: root-level `/precipitation`, `/lat`,
+    `/lon` (no `/Grid` group — OPeNDAP flattens it), a 1-element-array
+    `_FillValue`. Defaults to the box's own exact slice of `_ARCHIVE_LAT`/
+    `_ARCHIVE_LON`, so a fixture pair built with matching `value`s cross-
+    checks as exact."""
+    lat_vec = (
+        lat if lat is not None else _ARCHIVE_LAT[_BOX_LAT_START : _BOX_LAT_STOP + 1]
+    )
+    lon_vec = (
+        lon if lon is not None else _ARCHIVE_LON[_BOX_LON_START : _BOX_LON_STOP + 1]
+    )
+    precip = (
+        value
+        if isinstance(value, np.ndarray)
+        else np.full((1, lon_count, lat_count), value, dtype=np.float32)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as f:
+        f.attrs["FileHeader"] = (
+            f"FileName={archive_filename.removesuffix('.HDF5')}.RT-H5;\n"
+            "AlgorithmVersion=3IMERGHH;\nProductVersion=V07B;\n"
+        ).encode()
+        f.create_dataset("lat", data=lat_vec)
+        f.create_dataset("lon", data=lon_vec)
+        ds = f.create_dataset("precipitation", data=precip)
+        ds.attrs["DimensionNames"] = b"time,lon,lat"
+        ds.attrs["units"] = b"mm/hr"
+        ds.attrs["_FillValue"] = np.array([-9999.9], dtype=np.float32)
+
+
+@dataclass
+class FakeImergSubsetHttpClient:
+    """No-network double for `ImergSubsetHttpClient`."""
+
+    content: bytes
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        self.calls.append((url, constraint))
+        return self.content
+
+
+def _subset_contract_kwargs() -> dict[str, Any]:
+    """Every `ImergSubsetReadContract` field except `granule_revision`, so a
+    test can vary exactly one of them (mirrors `_contract_kwargs`)."""
+    return {
+        "variable_path": ia.SUBSET_VARIABLE_PATH,
+        "dimension_names": ("time", "lon", "lat"),
+        "units": "mm/hr",
+        "fill_value": -9999.9,
+        "dtype": "float32",
+        "scale_factor": None,
+        "add_offset": None,
+        "longitude_convention": "UNSIGNED_360",
+        "grid_shape": ia.EXPECTED_SUBSET_GRID_SHAPE,
+        "lat_vector": tuple(float(v) for v in _ARCHIVE_LAT[1160:1210]),
+        "lon_vector": tuple(float(v) for v in _ARCHIVE_LON[2600:2690]),
+        "file_header_product_version": "V07B",
+    }
+
+
+_ARCHIVE_FILENAME = "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
+
+
+class TestSubsetReadContract:
+    def test_subset_contract_matches_the_real_probe_structure(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(path, archive_filename=_ARCHIVE_FILENAME)
+        contract = ia.observe_subset_read_contract(
+            path, archive_filename=_ARCHIVE_FILENAME
+        )
+        assert contract.variable_path == "/precipitation"
+        assert contract.dimension_names == ("time", "lon", "lat")
+        assert contract.units == "mm/hr"
+        assert contract.dtype == "float32"
+        assert contract.scale_factor is None
+        assert contract.add_offset is None
+        assert contract.grid_shape == (1, 90, 50)
+        assert contract.granule_revision == "V07B"
+        assert len(contract.lat_vector) == 50  # noqa: PLR2004
+        assert len(contract.lon_vector) == 90  # noqa: PLR2004
+
+    def test_rejects_a_full_field_grid_shape(self, tmp_path: Path) -> None:
+        """T1 verify: "a full-field granule offered against the subset
+        contract is refused"."""
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(
+            path,
+            archive_filename=_ARCHIVE_FILENAME,
+            value=np.full((1, 3600, 1800), 1.5, dtype=np.float32),
+            lat=_ARCHIVE_LAT,
+            lon=_ARCHIVE_LON,
+            lat_count=1800,
+            lon_count=3600,
+        )
+        with pytest.raises(ia.ImergReadContractError, match="grid shape"):
+            ia.observe_subset_read_contract(path, archive_filename=_ARCHIVE_FILENAME)
+
+    def test_archive_route_still_refuses_a_subset_shaped_response(
+        self, tmp_path: Path
+    ) -> None:
+        """T1 verify, "vice versa": `contract_from_open_granule`/
+        `observe_read_contract` stay UNTOUCHED (D1) and must still refuse a
+        subset-shaped file on their own, unmodified."""
+        path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_subset_granule(path, archive_filename=_ARCHIVE_FILENAME)
+        with pytest.raises(Exception):  # noqa: B017, PT011 - the UNTOUCHED archive parser's own natural refusal, whatever shape it takes
+            ia.observe_read_contract(path)
+
+    def test_a_subset_lat_vector_short_by_one_cell_is_rejected(self) -> None:
+        kwargs = _subset_contract_kwargs()
+        short_lat = kwargs["lat_vector"][:-1]
+        with pytest.raises(ia.ImergReadContractError, match="lat_vector length"):
+            ia.ImergSubsetReadContract(
+                **{**kwargs, "lat_vector": short_lat}, granule_revision="V07B"
+            )
+
+
+class TestSubsetCrossCheck:
+    def test_passes_when_the_subset_exactly_matches_the_archive_box(
+        self, tmp_path: Path
+    ) -> None:
+        archive_path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(archive_path, value=3.5)
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        _write_fake_subset_granule(
+            subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.5
+        )
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        report = ia.cross_check_subset_against_archive(
+            archive_path=archive_path, data_root=tmp_path / "data_root", client=client
+        )
+        assert report.lat_exact_match is True
+        assert report.lon_exact_match is True
+        assert report.tolerance == 0.0
+        assert report.max_abs_diff == 0.0
+        assert report.passed is True
+        ia.assert_subset_cross_check_passed(report)  # must not raise
+        assert len(client.calls) == 1
+
+    def test_a_one_cell_lon_shift_is_refused(self, tmp_path: Path) -> None:
+        """T1 verify: "a response whose lon/lat vectors differ by one cell
+        is refused" (D5's own stop rule — locking)."""
+        archive_path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(archive_path, value=3.5)
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        shifted_lon = _ARCHIVE_LON[_BOX_LON_START : _BOX_LON_STOP + 1] + np.float32(0.1)
+        _write_fake_subset_granule(
+            subset_bytes_path,
+            archive_filename=_ARCHIVE_FILENAME,
+            value=3.5,
+            lon=shifted_lon,
+        )
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        report = ia.cross_check_subset_against_archive(
+            archive_path=archive_path, data_root=tmp_path / "data_root", client=client
+        )
+        assert report.lon_exact_match is False
+        assert report.passed is False
+        with pytest.raises(ia.ImergReadContractError, match="FAILED"):
+            ia.assert_subset_cross_check_passed(report)
+
+    def test_a_value_mismatch_exceeding_tolerance_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        archive_path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(archive_path, value=3.5)
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        _write_fake_subset_granule(
+            subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.6
+        )
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        report = ia.cross_check_subset_against_archive(
+            archive_path=archive_path, data_root=tmp_path / "data_root", client=client
+        )
+        assert report.lat_exact_match is True
+        assert report.lon_exact_match is True
+        assert report.values_within_tolerance is False
+        assert report.passed is False
+
+    def test_second_run_reuses_the_cached_subset_artifact(self, tmp_path: Path) -> None:
+        """D2/D3 — resumability preserved: `acquire_subset_granule` reuses an
+        existing artifact rather than re-fetching."""
+        archive_path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(archive_path, value=3.5)
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        _write_fake_subset_granule(
+            subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.5
+        )
+        data_root = tmp_path / "data_root"
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        ia.cross_check_subset_against_archive(
+            archive_path=archive_path, data_root=data_root, client=client
+        )
+        assert len(client.calls) == 1
+
+        class PoisonClient:
+            def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+                raise AssertionError("must not re-fetch a cached artifact")
+
+        report = ia.cross_check_subset_against_archive(
+            archive_path=archive_path, data_root=data_root, client=PoisonClient()
+        )
+        assert report.passed is True
+
+
+class TestSubsetRouteDispatch:
+    """D2 — "Contract validation must DISPATCH on the recorded route." Tests
+    for BOTH mismatched combinations."""
+
+    def test_archive_route_rejects_a_subset_shaped_read_contract(self) -> None:
+        subset_dict = ia.ImergSubsetReadContract(
+            **_subset_contract_kwargs(), granule_revision="V07B"
+        ).as_manifest_dict()
+        violations = ia.read_contract_violations(
+            subset_dict, granule_revision="V07B", route=ia.ROUTE
+        )
+        assert violations
+
+    def test_subset_route_rejects_an_archive_shaped_read_contract(self) -> None:
+        archive_dict = _reference_read_contract()
+        violations = ia.read_contract_violations(
+            archive_dict, granule_revision="V07B", route=ia.SUBSET_ROUTE
+        )
+        assert violations
+
+    def test_subset_route_accepts_a_valid_subset_read_contract(self) -> None:
+        subset_dict = ia.ImergSubsetReadContract(
+            **_subset_contract_kwargs(), granule_revision="V07B"
+        ).as_manifest_dict()
+        violations = ia.read_contract_violations(
+            subset_dict, granule_revision="V07B", route=ia.SUBSET_ROUTE
+        )
+        assert violations == ()
+
+    def test_pinned_provenance_accepts_the_subset_route(self) -> None:
+        violations = ia.pinned_provenance_violations(
+            route=ia.SUBSET_ROUTE,
+            collection_short_name=ia.COLLECTION_SHORT_NAME,
+            granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
+            box=ia.STUDY_BOX,
+            retrospective=True,
+        )
+        assert violations == ()
+
+    def test_pinned_provenance_rejects_an_unknown_route(self) -> None:
+        violations = ia.pinned_provenance_violations(
+            route="a made-up route",
+            collection_short_name=ia.COLLECTION_SHORT_NAME,
+            granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
+            box=ia.STUDY_BOX,
+            retrospective=True,
+        )
+        assert any("route" in v for v in violations)
+
+
+class TestSubsetFilesystemIdentity:
+    """D2 — "Subset artifacts need a route-distinct filename or raw
+    directory": the archive/subset artifact paths for the SAME archive
+    filename must never collide."""
+
+    def test_subset_and_archive_raw_dirs_differ(self, tmp_path: Path) -> None:
+        assert ia.imerg_subset_raw_dir(tmp_path) != ia.imerg_raw_dir(tmp_path)
+
+    def test_subset_and_archive_artifact_paths_never_collide(
+        self, tmp_path: Path
+    ) -> None:
+        archive_path = ia.granule_artifact_path(tmp_path, filename=_ARCHIVE_FILENAME)
+        subset_path = ia.subset_granule_artifact_path(
+            tmp_path, archive_filename=_ARCHIVE_FILENAME
+        )
+        assert archive_path != subset_path
+        assert archive_path.parent != subset_path.parent
+
+
+class TestSubsetBoxIndices:
+    def test_matches_the_measured_lon_index_range(self) -> None:
+        start, stop = ia.subset_box_indices(
+            tuple(float(v) for v in _ARCHIVE_LON), low=80, high=89
+        )
+        assert (start, stop) == (2600, 2689)
+
+    def test_matches_the_measured_lat_index_range(self) -> None:
+        start, stop = ia.subset_box_indices(
+            tuple(float(v) for v in _ARCHIVE_LAT), low=26, high=31
+        )
+        assert (start, stop) == (1160, 1209)
+
+    def test_raises_when_the_box_is_not_covered(self) -> None:
+        with pytest.raises(ia.ImergReadContractError, match="no coordinate values"):
+            ia.subset_box_indices((1.0, 2.0, 3.0), low=100.0, high=200.0)
+
+
+class TestSubsetUrlAndConstraint:
+    def test_subset_granule_url_matches_the_measured_endpoint(self) -> None:
+        start = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+        url = ia.subset_granule_url(archive_filename=_ARCHIVE_FILENAME, start=start)
+        assert url == (
+            "https://gpm1.gesdisc.eosdis.nasa.gov/opendap/GPM_L3/"
+            f"GPM_3IMERGHHE.07/2020/197/{_ARCHIVE_FILENAME}.dap.nc4"
+        )
+
+    def test_subset_constraint_matches_the_measured_shape(self) -> None:
+        constraint = ia.subset_constraint(
+            lon_start=2600, lon_stop=2689, lat_start=1160, lat_stop=1209
+        )
+        assert constraint == (
+            "/precipitation[0][2600:2689][1160:1209];/lon[2600:2689];/lat[1160:1209]"
+        )

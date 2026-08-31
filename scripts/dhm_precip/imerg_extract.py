@@ -69,12 +69,14 @@ from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     ImergCredentialsError,
     ImergReadContract,
     ImergStorageError,
+    ImergSubsetReadContract,
     acquisition_completeness_violations,
     acquisition_manifest_path,
     acquisition_record_identity_content,
     assert_acquisition_manifest_complete,
     assert_contract_consistent,
     contract_from_open_granule,
+    contract_from_open_subset_granule,
     imerg_early_root,
     imerg_points_root,
     imerg_writer_lock,
@@ -290,6 +292,48 @@ def read_granule(path: Path) -> tuple[xr.Dataset, ImergReadContract]:
         contract = contract_from_open_granule(f, filename=path.name)
         # (time, lon, lat), the dimension order D1 pins
         precip = np.asarray(f["/Grid/precipitation"][:], dtype=np.float64)  # type: ignore[index]
+    lat = np.asarray(contract.lat_vector, dtype=np.float64)
+    lon = np.asarray(contract.lon_vector, dtype=np.float64)
+    precip = np.where(
+        np.isclose(precip[0], contract.fill_value, atol=1e-3), np.nan, precip[0]
+    ).T  # -> (lat, lon)
+    ds = xr.Dataset(
+        {
+            "precipitation": (
+                ("valid_time", "latitude", "longitude"),
+                precip[np.newaxis],
+            )
+        },
+        coords={
+            "valid_time": np.array([np.datetime64(granule.start.replace(tzinfo=None))]),
+            "latitude": lat,
+            "longitude": lon,
+        },
+    )
+    return ds, contract
+
+
+def read_subset_granule(
+    path: Path, *, archive_filename: str
+) -> tuple[xr.Dataset, ImergSubsetReadContract]:
+    """Plan 225 (M-A5d) D2 — the route-aware counterpart of `read_granule`:
+    normalises the OPeNDAP subset response (root-level `/precipitation`, a
+    box-local grid) into the SAME `(valid_time, latitude, longitude)` layout,
+    so downstream code never needs to know which route a granule came from.
+    ⛔ Route dispatch (two readers, one shared output shape), not a reader
+    abstraction — `archive_filename` is the archive spelling this subset
+    granule corresponds to, exactly as `contract_from_open_subset_granule`
+    needs for its own identity check."""
+    import h5py
+    import xarray as xr
+
+    granule, _revision = parse_granule_filename(archive_filename)
+    with h5py.File(path, "r") as f:
+        contract = contract_from_open_subset_granule(
+            f, archive_filename=archive_filename
+        )
+        # (time, lon, lat), the same dimension order D1 pins for the archive
+        precip = np.asarray(f["/precipitation"][:], dtype=np.float64)  # type: ignore[index]
     lat = np.asarray(contract.lat_vector, dtype=np.float64)
     lon = np.asarray(contract.lon_vector, dtype=np.float64)
     precip = np.where(

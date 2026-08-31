@@ -477,6 +477,414 @@ def assert_contract_consistent(
         )
 
 
+# --- Plan 225 (M-A5d) D1 — the SUBSET route's own, SEPARATELY-frozen read
+# contract. `ImergReadContract`/`contract_from_open_granule` above stay
+# untouched: GES DISC's OPeNDAP subset service flattens the HDF5 `/Grid`
+# group into root-level variables (`/precipitation`, not
+# `/Grid/precipitation`) and slices to a box-local grid, so the archive
+# parser cannot read it and must not be parameterised to try (D1 warns in so
+# many words against a shared/relaxed contract). ---
+
+SUBSET_ROUTE = "GES DISC OPeNDAP subset"
+OPENDAP_BASE_URL = (
+    "https://gpm1.gesdisc.eosdis.nasa.gov/opendap/GPM_L3/GPM_3IMERGHHE.07"
+)
+SUBSET_VARIABLE_PATH = "/precipitation"
+
+#: D4 — measured 2026-08-31: the OPeNDAP response carries the archive's own
+#: 0.1 deg grid, so the frozen STUDY_BOX maps to an EXACT cell count —
+#: DERIVED, never a bare literal (matches EXPECTED_GRANULE_COUNT's own rule).
+_GRID_SPACING_DEG = 0.1
+EXPECTED_SUBSET_LON_COUNT: int = round(
+    (STUDY_BOX[3] - STUDY_BOX[1]) / _GRID_SPACING_DEG
+)
+EXPECTED_SUBSET_LAT_COUNT: int = round(
+    (STUDY_BOX[0] - STUDY_BOX[2]) / _GRID_SPACING_DEG
+)
+EXPECTED_SUBSET_GRID_SHAPE: tuple[int, int, int] = (
+    1,
+    EXPECTED_SUBSET_LON_COUNT,
+    EXPECTED_SUBSET_LAT_COUNT,
+)
+EXPECTED_SUBSET_DTYPE = "float32"
+"""Measured 2026-08-31 on the live probe granule (2020-07-15T00:00Z,
+80-89E/26-31N): the subset response is UNPACKED float32 — no
+`scale_factor`/`add_offset` — the same encoding the archive route's own
+`/Grid/precipitation` has always used (D1's dtype/packing warning)."""
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ImergSubsetReadContract:
+    """D1 — the SECOND frozen read contract, one field frozen at a time just
+    as strictly as `ImergReadContract`, but on a DIFFERENT shape: the
+    box-local 90x50 grid, a root-level `/precipitation` variable, and the
+    dtype/packing fields the archive contract has never needed (⛔ two
+    contracts, neither weakened into the other)."""
+
+    variable_path: str
+    dimension_names: tuple[str, ...]
+    units: str
+    fill_value: float
+    dtype: str
+    scale_factor: float | None
+    add_offset: float | None
+    longitude_convention: str
+    grid_shape: tuple[int, int, int]
+    lat_vector: tuple[float, ...]
+    lon_vector: tuple[float, ...]
+    granule_revision: str
+    file_header_product_version: str
+
+    def __post_init__(self) -> None:
+        for label, observed, expected in (
+            ("variable path", self.variable_path, SUBSET_VARIABLE_PATH),
+            ("units", self.units, EXPECTED_UNITS),
+            ("dimension order", self.dimension_names, EXPECTED_DIMENSION_NAMES),
+            ("dtype", self.dtype, EXPECTED_SUBSET_DTYPE),
+            ("grid shape", self.grid_shape, EXPECTED_SUBSET_GRID_SHAPE),
+        ):
+            if observed != expected:
+                raise ImergReadContractError(
+                    f"observed subset {label} {observed!r} != expected "
+                    f"{expected!r} (D1)"
+                )
+        if abs(self.fill_value - EXPECTED_FILL_VALUE) > _FILL_VALUE_TOLERANCE:
+            raise ImergReadContractError(
+                f"observed subset fill value {self.fill_value!r} != expected "
+                f"{EXPECTED_FILL_VALUE!r} (D1)"
+            )
+        if self.longitude_convention not in ("SIGNED_180", "UNSIGNED_360"):
+            raise ImergReadContractError(
+                f"unrecognised subset longitude convention "
+                f"{self.longitude_convention!r} (D1)"
+            )
+        if len(self.lat_vector) != self.grid_shape[2]:
+            raise ImergReadContractError(
+                f"subset lat_vector length {len(self.lat_vector)} != "
+                f"grid_shape[2] {self.grid_shape[2]} (D1)"
+            )
+        if len(self.lon_vector) != self.grid_shape[1]:
+            raise ImergReadContractError(
+                f"subset lon_vector length {len(self.lon_vector)} != "
+                f"grid_shape[1] {self.grid_shape[1]} (D1)"
+            )
+
+    def as_manifest_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def _attr_scalar_float(raw: object) -> float:
+    """The subset response's `_FillValue` was measured as a 1-element ARRAY
+    (unlike the archive's scalar) — OPeNDAP's own re-encoding, not ours to
+    normalise away silently. Reads either shape the same way."""
+    array = np.asarray(raw, dtype=np.float64).reshape(-1)
+    if array.size != 1:
+        raise ImergReadContractError(
+            f"expected a scalar (or 1-element) attribute, got shape {array.shape}"
+        )
+    return float(array[0])
+
+
+def contract_from_open_subset_granule(
+    f: object, *, archive_filename: str
+) -> ImergSubsetReadContract:
+    """D1's subset contract parser — the ONE implementation, mirroring
+    `contract_from_open_granule`'s role for the archive route. `f` is an open
+    `h5py.File` on the OPeNDAP `.dap.nc4` response; `archive_filename` is the
+    ARCHIVE spelling this subset granule corresponds to — D2's identity check
+    is against that same name, since the embedded `FileHeader` (a root-level
+    attribute, unaffected by the `/Grid` flattening) is unchanged by
+    server-side subsetting."""
+    revision = parse_granule_filename(archive_filename)[1]
+    file_header = read_file_header(f)
+    assert_identity_matches_plan_and_header(
+        archive_filename=archive_filename,
+        filename_revision=revision,
+        file_header_filename=parse_grid_header_field(file_header, "FileName"),
+    )
+    precip = f["precipitation"]  # type: ignore[index]  # OPeNDAP flattens /Grid
+    lat = np.asarray(f["lat"][:], dtype=np.float64)  # type: ignore[index]
+    lon = np.asarray(f["lon"][:], dtype=np.float64)  # type: ignore[index]
+    grid_shape = tuple(int(n) for n in precip.shape)
+    if len(grid_shape) != 3:  # noqa: PLR2004 - D1 pins a 3-D grid
+        raise ImergReadContractError(
+            f"observed subset 'precipitation' shape {grid_shape} is not 3-D (D1)"
+        )
+    attrs = precip.attrs
+    return ImergSubsetReadContract(
+        variable_path=SUBSET_VARIABLE_PATH,
+        dimension_names=tuple(_attr_text(attrs["DimensionNames"]).split(",")),
+        units=_attr_text(attrs["units"]),
+        fill_value=_attr_scalar_float(attrs["_FillValue"]),
+        dtype=str(precip.dtype),
+        scale_factor=(
+            float(attrs["scale_factor"]) if "scale_factor" in attrs else None
+        ),
+        add_offset=(float(attrs["add_offset"]) if "add_offset" in attrs else None),
+        longitude_convention=(
+            "SIGNED_180" if float(lon.min()) < 0.0 else "UNSIGNED_360"
+        ),
+        grid_shape=(grid_shape[0], grid_shape[1], grid_shape[2]),
+        lat_vector=exact_coordinate_vector(lat),
+        lon_vector=exact_coordinate_vector(lon),
+        granule_revision=revision,
+        file_header_product_version=parse_grid_header_field(
+            file_header, "ProductVersion"
+        ),
+    )
+
+
+def observe_subset_read_contract(
+    path: Path, *, archive_filename: str
+) -> ImergSubsetReadContract:
+    """Open an OPeNDAP subset artifact and extract every D1 subset field —
+    the subset-route counterpart of `observe_read_contract`."""
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        return contract_from_open_subset_granule(f, archive_filename=archive_filename)
+
+
+def subset_box_indices(
+    vector: Sequence[float], *, low: float, high: float
+) -> tuple[int, int]:
+    """D4 — the CONTIGUOUS, inclusive `(start, stop)` index range (the
+    `dap4.ce` slice convention) a global coordinate vector covers within
+    `[low, high]`. DERIVED from the archive's own frozen vector, never a bare
+    literal restating the box (D10's rule) — the box is fixed, so the range
+    is fixed, but it is computed from data, not hand-copied from a probe."""
+    matches = [i for i, v in enumerate(vector) if low <= v <= high]
+    if not matches:
+        raise ImergReadContractError(
+            f"no coordinate values fall within [{low}, {high}] (D4)"
+        )
+    start, stop = matches[0], matches[-1]
+    if matches != list(range(start, stop + 1)):
+        raise ImergReadContractError(
+            f"coordinate values within [{low}, {high}] are not contiguous (D4)"
+        )
+    return start, stop
+
+
+def subset_granule_url(*, archive_filename: str, start: datetime) -> str:
+    """D4 — measured 2026-08-31: OPeNDAP mirrors the archive's own
+    year/day-of-year layout, with `.dap.nc4` appended to the ARCHIVE
+    filename (never a differently-named product)."""
+    doy = start.timetuple().tm_yday
+    return f"{OPENDAP_BASE_URL}/{start.year:04d}/{doy:03d}/{archive_filename}.dap.nc4"
+
+
+def subset_constraint(
+    *, lon_start: int, lon_stop: int, lat_start: int, lat_stop: int
+) -> str:
+    """D4's measured `dap4.ce` constraint shape, parameterised over the box
+    indices `subset_box_indices` derives — never a magic literal restating
+    the box."""
+    return (
+        f"{SUBSET_VARIABLE_PATH}[0][{lon_start}:{lon_stop}][{lat_start}:{lat_stop}];"
+        f"/lon[{lon_start}:{lon_stop}];/lat[{lat_start}:{lat_stop}]"
+    )
+
+
+@runtime_checkable
+class ImergSubsetHttpClient(Protocol):
+    """D4's injected OPeNDAP seam — fetch, not list/download-to-path: the
+    subset response is small enough to hold in memory (~25 KB measured), and
+    there is no day-directory listing step (the archive filename this subset
+    corresponds to is already known — D2)."""
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes: ...
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RealImergSubsetHttpClient:
+    """D4 — the SAME `.netrc`-based Earthdata Login auth as the archive
+    route, over `requests`' own redirect+cookie handling (measured
+    2026-08-31: a bare `requests.get` with `params={"dap4.ce": ...}`
+    succeeds end to end — no extra session/cookie plumbing was needed to
+    reproduce curl's `--location-trusted` behaviour). Window-scale
+    reuse/throttling (D3) is T3's concern, not built here."""
+
+    timeout_seconds: float = 60.0
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        import requests
+
+        try:
+            response = requests.get(
+                url, params={"dap4.ce": constraint}, timeout=self.timeout_seconds
+            )
+        except requests.RequestException as exc:
+            raise ImergTransientError(f"failed to fetch subset {url}: {exc}") from exc
+        RealImergHttpClient._raise_for_status(response.status_code, url=url)
+        return response.content
+
+
+def imerg_subset_raw_dir(data_root: Path) -> Path:
+    """D2 — a route-DISTINCT directory: `acquire_granule`'s existing-path
+    reuse is keyed only by filename, so the two routes must never share a
+    directory or a same-named archive/subset pair could collide."""
+    return imerg_early_root(data_root) / "raw_subset"
+
+
+def subset_granule_artifact_path(data_root: Path, *, archive_filename: str) -> Path:
+    return imerg_subset_raw_dir(data_root) / f"{archive_filename}.dap.nc4"
+
+
+def acquire_subset_granule(
+    granule: ImergGranuleId,
+    *,
+    archive_filename: str,
+    client: ImergSubsetHttpClient,
+    data_root: Path,
+    lon_bounds: tuple[int, int],
+    lat_bounds: tuple[int, int],
+) -> Path:
+    """D2/D4 — fetch ONE OPeNDAP subset granule, reusing an existing cached
+    artifact rather than re-fetching (preserves `acquire_granule`'s own
+    resumability for the subset filename, per D3). No retry loop, no
+    day-listing: T3's window-scale concerns (D3 cadence/backoff/session
+    reuse) are out of this run's scope."""
+    target = subset_granule_artifact_path(data_root, archive_filename=archive_filename)
+    if target.exists():
+        return target
+    lon_start, lon_stop = lon_bounds
+    lat_start, lat_stop = lat_bounds
+    url = subset_granule_url(archive_filename=archive_filename, start=granule.start)
+    constraint = subset_constraint(
+        lon_start=lon_start, lon_stop=lon_stop, lat_start=lat_start, lat_stop=lat_stop
+    )
+    content = client.fetch_subset(url=url, constraint=constraint)
+    imerg_subset_raw_dir(data_root).mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(target.name + ".tmp")
+    try:
+        tmp_path.write_bytes(content)
+        os.replace(tmp_path, target)
+    except OSError as exc:
+        raise ImergStorageError(f"failed to write {target}: {exc}") from exc
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return target
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SubsetCrossCheckReport:
+    """D5 — the T2 gate: exact coordinate agreement first (the actual
+    station-mapping invariant D1 exists to protect), THEN decoded values
+    within a tolerance frozen from the observed dtype/packing BEFORE the
+    comparison runs."""
+
+    lat_exact_match: bool
+    lon_exact_match: bool
+    max_abs_diff: float
+    tolerance: float
+    values_within_tolerance: bool
+
+    @property
+    def passed(self) -> bool:
+        return (
+            self.lat_exact_match
+            and self.lon_exact_match
+            and self.values_within_tolerance
+        )
+
+
+def subset_cross_check_tolerance(*, subset_contract: ImergSubsetReadContract) -> float:
+    """D5 — frozen BEFORE the comparison runs, from the observed dtype and
+    packing. The archive route's `/Grid/precipitation` is UNPACKED float32
+    (D1's own contract has never had `scale_factor`/`add_offset` fields
+    because none has ever been observed there). If the subset side matches
+    that exactly, the two grids hold bit-identical values and the tolerance
+    is zero; any packing or dtype drift on the subset side means this
+    function has no data to derive a tolerance from, so it refuses rather
+    than guessing one (⛔ "within float tolerance" left unnamed is
+    adjustable, which would defeat D5's stop rule)."""
+    if subset_contract.dtype != EXPECTED_SUBSET_DTYPE:
+        raise ImergReadContractError(
+            f"subset dtype {subset_contract.dtype!r} != the archive route's "
+            f"unpacked {EXPECTED_SUBSET_DTYPE!r} — D5's tolerance must be "
+            "derived from the dtype mismatch before comparing, not assumed "
+            "zero (D1)"
+        )
+    if (
+        subset_contract.scale_factor is not None
+        or subset_contract.add_offset is not None
+    ):
+        raise ImergReadContractError(
+            "the subset response is PACKED (scale_factor/add_offset present) "
+            "— D5's tolerance must be derived from the packing before "
+            "comparing, not assumed zero (D1)"
+        )
+    return 0.0
+
+
+def cross_check_subset_against_archive(
+    *,
+    archive_path: Path,
+    data_root: Path,
+    client: ImergSubsetHttpClient,
+    box: tuple[int, int, int, int] = STUDY_BOX,
+) -> SubsetCrossCheckReport:
+    """D5 — T2: fetch (or reuse) the OPeNDAP subset for the granule already
+    held via the archive route, and compare cell for cell over `box`. ⛔ The
+    coordinate VECTORS are compared first and exactly — "all cells match" is
+    only indirect evidence of alignment."""
+    import h5py
+
+    archive_filename = archive_path.name
+    archive_contract = observe_read_contract(archive_path, filename=archive_filename)
+    granule, _revision = parse_granule_filename(archive_filename)
+    lon_start, lon_stop = subset_box_indices(
+        archive_contract.lon_vector, low=box[1], high=box[3]
+    )
+    lat_start, lat_stop = subset_box_indices(
+        archive_contract.lat_vector, low=box[2], high=box[0]
+    )
+    subset_path = acquire_subset_granule(
+        granule,
+        archive_filename=archive_filename,
+        client=client,
+        data_root=data_root,
+        lon_bounds=(lon_start, lon_stop),
+        lat_bounds=(lat_start, lat_stop),
+    )
+    with h5py.File(archive_path, "r") as f:
+        archive_box = np.asarray(
+            f["Grid"]["precipitation"][
+                0, lon_start : lon_stop + 1, lat_start : lat_stop + 1
+            ],  # type: ignore[index]
+            dtype=np.float64,
+        )
+    subset_contract = observe_subset_read_contract(
+        subset_path, archive_filename=archive_filename
+    )
+    with h5py.File(subset_path, "r") as f:
+        subset_values = np.asarray(f["precipitation"][:], dtype=np.float64)[0]  # type: ignore[index]
+
+    archive_lat = tuple(archive_contract.lat_vector[lat_start : lat_stop + 1])
+    archive_lon = tuple(archive_contract.lon_vector[lon_start : lon_stop + 1])
+    tolerance = subset_cross_check_tolerance(subset_contract=subset_contract)
+    max_abs_diff = float(np.max(np.abs(archive_box - subset_values)))
+    return SubsetCrossCheckReport(
+        lat_exact_match=archive_lat == subset_contract.lat_vector,
+        lon_exact_match=archive_lon == subset_contract.lon_vector,
+        max_abs_diff=max_abs_diff,
+        tolerance=tolerance,
+        values_within_tolerance=max_abs_diff <= tolerance,
+    )
+
+
+def assert_subset_cross_check_passed(report: SubsetCrossCheckReport) -> None:
+    """D5 — ⛔ a mismatch STOPS the plan; report it rather than adjusting the
+    tolerance to pass, which is precisely why the tolerance is frozen before
+    the comparison runs."""
+    if not report.passed:
+        raise ImergReadContractError(
+            "D5 subset/archive cross-check FAILED — stop and report rather "
+            f"than adjusting the tolerance to pass: {report}"
+        )
+
+
 # --- storage layout ---
 
 
@@ -708,29 +1116,56 @@ def read_acquisition_manifest(path: Path) -> ImergAcquisitionManifest | None:
 _READ_CONTRACT_FIELDS: frozenset[str] = frozenset(
     ImergReadContract.__dataclass_fields__
 )
+_SUBSET_READ_CONTRACT_FIELDS: frozenset[str] = frozenset(
+    ImergSubsetReadContract.__dataclass_fields__
+)
+
+#: D2 — route -> the frozen contract class it must satisfy. ⛔ Route DISPATCH,
+#: not a shared/relaxed contract: a route absent here is unrecognised, never
+#: silently accepted.
+_KNOWN_ROUTES: frozenset[str] = frozenset((ROUTE, SUBSET_ROUTE))
+_CONTRACT_FIELDS_BY_ROUTE: dict[str, frozenset[str]] = {
+    ROUTE: _READ_CONTRACT_FIELDS,
+    SUBSET_ROUTE: _SUBSET_READ_CONTRACT_FIELDS,
+}
+_CONTRACT_CLASS_BY_ROUTE: dict[
+    str, type[ImergReadContract] | type[ImergSubsetReadContract]
+] = {
+    ROUTE: ImergReadContract,
+    SUBSET_ROUTE: ImergSubsetReadContract,
+}
 
 
 def read_contract_violations(
-    raw: dict[str, object], *, granule_revision: str
+    raw: dict[str, object], *, granule_revision: str, route: str
 ) -> tuple[str, ...]:
-    """D1 — a recorded contract must SATISFY the frozen contract, not merely
-    carry its field NAMES: a record whose every value read "recorded" derived
-    as COMPLETE under a presence-only check. ⛔ `ImergReadContract` is the
-    judge (the JSON round-trip turns its tuples into lists)."""
-    if set(raw) != set(_READ_CONTRACT_FIELDS):
+    """D1/D2 — a recorded contract must SATISFY the frozen contract for ITS
+    OWN recorded route, not merely carry SOME contract's field names: a
+    record whose every value read "recorded" derived as COMPLETE under a
+    presence-only check, and a record naming one route while carrying the
+    OTHER route's contract shape must not pass either. The contract class for
+    `route` is the judge (the JSON round-trip turns its tuples into lists)."""
+    expected_fields = _CONTRACT_FIELDS_BY_ROUTE.get(route)
+    if expected_fields is None:
+        return (f"route {route!r} is not a recognised IMERG route (D2)",)
+    if set(raw) != set(expected_fields):
         return (
-            f"read_contract fields {sorted(raw)} != D1's "
-            f"{sorted(_READ_CONTRACT_FIELDS)}",
+            f"read_contract fields {sorted(raw)} != the {route!r} route's "
+            f"{sorted(expected_fields)}",
         )
+    contract_cls = _CONTRACT_CLASS_BY_ROUTE[route]
     try:
-        contract = ImergReadContract(
+        contract = contract_cls(
             **{  # type: ignore[arg-type]
                 key: tuple(value) if isinstance(value, list) else value
                 for key, value in raw.items()
             }
         )
     except (ImergReadContractError, TypeError, ValueError) as exc:
-        return (f"read_contract does not satisfy the D1 read contract: {exc}",)
+        return (
+            f"read_contract does not satisfy the D1 read contract for the "
+            f"{route!r} route: {exc}",
+        )
     if contract.granule_revision != granule_revision:
         return (
             f"read_contract granule_revision {contract.granule_revision!r} != "
@@ -747,11 +1182,16 @@ def pinned_provenance_violations(
     box: tuple[int, ...],
     retrospective: bool,
 ) -> tuple[str, ...]:
-    """D1/D7 — the pins every IMERG record must carry, checked identically by
-    the record and by the bundle's predicate. ⛔ Constants, never parameters."""
+    """D1/D2/D7 — the pins every IMERG record must carry, checked identically
+    by the record and by the bundle's predicate. ⛔ Constants, never
+    parameters — except `route`, which is now one of TWO known constants
+    (D2), never an arbitrary string."""
     v: list[str] = []
-    if route != ROUTE:
-        v.append(f"route {route!r} != {ROUTE!r}")
+    if route not in _KNOWN_ROUTES:
+        v.append(
+            f"route {route!r} is not one of the known IMERG routes "
+            f"{sorted(_KNOWN_ROUTES)}"
+        )
     if collection_short_name != COLLECTION_SHORT_NAME:
         v.append(f"collection {collection_short_name!r} != {COLLECTION_SHORT_NAME!r}")
     if granule_revision != PINNED_GRANULE_REVISION_PER_PLAN:
@@ -852,7 +1292,9 @@ def acquisition_completeness_violations(
     )
     v.extend(
         read_contract_violations(
-            manifest.read_contract, granule_revision=manifest.granule_revision
+            manifest.read_contract,
+            granule_revision=manifest.granule_revision,
+            route=manifest.route,
         )
     )
     if manifest.retrieved != len(manifest.granule_checksums):

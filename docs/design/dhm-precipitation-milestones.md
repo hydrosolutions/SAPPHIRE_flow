@@ -472,6 +472,39 @@ IMERG Early. **Not yet met**: the bulk retrieval and the resulting published bun
 the owner's go-ahead — which now rests on a **measured** projection (Plan 224 above), not an assumed
 granule size, and on the full-field-versus-subset choice that projection exposes.
 
+**M-A5d — the OPeNDAP subset route, built and cross-checked, 847 GB → 2.7 GB (Plan 225, T1+T2 only,
+2026-08-31).** M-A5c's own "different D1 read contract" caveat above is now closed. **Probed
+2026-08-31**: GES DISC serves the same granule over OPeNDAP, and a server-side subset over the frozen
+box (`dap4.ce=/precipitation[0][2600:2689][1160:1209];/lon[2600:2689];/lat[1160:1209]`) is **25,524 B —
+315x smaller** than the archive-route granule (8,047,136 B) — ⇒ the full 2020-2025 window drops from
+846.7 GB to **~2.7 GB**, dissolving the disk-margin question M-A5c's projection posed. Built (T1): a
+**second, separately-frozen** read contract (`ImergSubsetReadContract`) pinning the box-local 90x50
+grid, the root-level `/precipitation` path OPeNDAP's flattening of `/Grid` produces, the exact lat/lon
+vectors, and — new relative to the archive contract — dtype and `scale_factor`/`add_offset` (measured:
+unpacked float32, neither present); a route-distinct raw directory (`raw_subset/`) so an archive and a
+subset artifact for the SAME granule can never collide on disk; contract-validation dispatch on the
+manifest's recorded `route` (`GES DISC HTTPS archive` vs `GES DISC OPeNDAP subset`), so a record naming
+one route can no longer be checked against the other's contract shape; and a route-aware reader
+(`read_subset_granule`) normalising the subset response into the SAME `(valid_time, latitude,
+longitude)` layout the archive reader produces. The archive contract/parser (`ImergReadContract`,
+`contract_from_open_granule`) are **untouched**. **Cross-checked (T2), on the granule already held**
+(`2020-07-15T00:00Z`): one live, authenticated OPeNDAP request — the ONE this run's per-run scope
+permitted — fetched the subset over the exact same box, cached under `raw_subset/`, and compared
+cell-for-cell against the archive-route granule already on disk. **Coordinate vectors matched exactly**
+(50 lat + 90 lon values, bit-for-bit) and **all 4,500 decoded values matched exactly** (max abs diff
+`0.0`, tolerance frozen at `0.0` from the observed unpacked-float32/no-packing dtype on both sides,
+before the comparison ran, per D5) — the subset route reads the identical underlying grid, not a
+resampled one. ⛔ **T3 (retrieving the full 105,216-granule window through this route) was explicitly
+NOT run this pass** — it is a multi-hour, outward-facing operation gated on its own authorisation,
+per Plan 225's per-run scope; the projected ~2.7 GB is a **measured extrapolation** from one granule's
+subset size, not yet a bulk-retrieval result.
+
+**Exit (T1+T2 only):** a second, separately-frozen OPeNDAP subset read contract; route-dispatched
+contract validation with a locking test per mismatched combination; a route-distinct raw directory; a
+route-aware reader; and an exact, real-data cross-check against the archive route on the one granule
+both routes now hold. **Not yet met**: the bulk retrieval (T3) and the resulting published bundle —
+gated on a separate go-ahead, per the plan's binding per-run scope.
+
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC
 axis, so the gauge side must be normalised before any pairing.)* **The point of this track.**

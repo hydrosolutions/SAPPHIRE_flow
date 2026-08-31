@@ -287,6 +287,85 @@ class TestReadGranule:
             ie.read_granule(path)
 
 
+# --- Plan 225 (M-A5d) D2 — the route-aware subset reader. Fixture mirrors
+# the MEASURED OPeNDAP subset structure: root-level `/precipitation` (no
+# `/Grid` group), a 1-element-array `_FillValue`. ---
+
+
+def _write_fake_subset_granule(
+    path: Path,
+    *,
+    archive_filename: str,
+    fill_value: float = -9999.9,
+    lat_count: int = 50,
+    lon_count: int = 90,
+    value: float = 1.0,
+    lat_start: float = 26.05,
+    lon_start: float = 80.05,
+) -> None:
+    lat = np.round(
+        np.linspace(lat_start, lat_start + 0.1 * (lat_count - 1), lat_count), 6
+    ).astype(np.float32)
+    lon = np.round(
+        np.linspace(lon_start, lon_start + 0.1 * (lon_count - 1), lon_count), 6
+    ).astype(np.float32)
+    precip = np.full((1, lon_count, lat_count), value, dtype=np.float32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as f:
+        f.attrs["FileHeader"] = (
+            f"FileName={archive_filename.removesuffix('.HDF5')}.RT-H5;\n"
+            "AlgorithmVersion=3IMERGHH;\nProductVersion=V07B;\n"
+        ).encode()
+        f.create_dataset("lat", data=lat)
+        f.create_dataset("lon", data=lon)
+        ds = f.create_dataset("precipitation", data=precip)
+        ds.attrs["DimensionNames"] = b"time,lon,lat"
+        ds.attrs["units"] = b"mm/hr"
+        ds.attrs["_FillValue"] = np.array([fill_value], dtype=np.float32)
+
+
+class TestReadSubsetGranule:
+    def test_reshapes_into_the_same_layout_read_granule_produces(
+        self, tmp_path: Path
+    ) -> None:
+        start = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+        archive_filename = _granule_filename(start)
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(path, archive_filename=archive_filename, value=2.5)
+        ds, contract = ie.read_subset_granule(path, archive_filename=archive_filename)
+        assert set(ds.coords) == {"valid_time", "latitude", "longitude"}
+        assert ds["valid_time"].values[0] == np.datetime64("2020-07-15T00:00:00")
+        assert ds["precipitation"].shape == (1, 50, 90)
+        assert contract.granule_revision == "V07B"
+
+    def test_fill_value_becomes_nan(self, tmp_path: Path) -> None:
+        start = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+        archive_filename = _granule_filename(start)
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(
+            path, archive_filename=archive_filename, value=-9999.9
+        )
+        ds, _contract = ie.read_subset_granule(path, archive_filename=archive_filename)
+        assert bool(np.isnan(ds["precipitation"].values).all())
+
+    def test_rejects_a_full_field_shaped_response(self, tmp_path: Path) -> None:
+        """D2 — 'a full-field granule offered against the subset contract is
+        refused' (T1 verify), exercised through the pipeline-shaped reader."""
+        start = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+        archive_filename = _granule_filename(start)
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(
+            path,
+            archive_filename=archive_filename,
+            lat_count=1800,
+            lon_count=3600,
+            lat_start=-89.95,
+            lon_start=-179.95,
+        )
+        with pytest.raises(ia.ImergReadContractError, match="grid shape"):
+            ie.read_subset_granule(path, archive_filename=archive_filename)
+
+
 # --- D9 storage/identity/manifest primitives ---
 
 
