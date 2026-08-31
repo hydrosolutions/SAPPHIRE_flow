@@ -1,15 +1,19 @@
-"""Plan 216 (M-A11) T1 — retrieve one JJAS 2025 season of ECMWF IFS control-
+"""Plan 216 (M-A11) T1 — retrieve one JJAS season of ECMWF IFS control-
 forecast `tp` from TIGGE (via ECDS), deaccumulate, and extract to the 26
-gauge station points.
+gauge station points. Plan 220 (M-A11b) parameterises the season by `--year`
+(D1) so every overlapping JJAS season (2020-2025) is retrievable through the
+same code path — never a second copy that could disagree.
 
-⛔ Control-only (`type: cf`), one season (D2), one centre (ECMWF) — a phase
-screening, not a correction and not an operational feed (D6: a measured
-~48 h embargo makes TIGGE research-only). Plan 216 D6 holds the source
-contract, MEASURED 2026-08-29 against the live ECDS API, with one correction
-to the plan's draft: `tigge-forecasts` has no `grid` input at all, so what
-comes back is the model's native reduced Gaussian grid (N640, ~1,600
-irregular points in `STUDY_AREA`), not a regular 0.5° 11x19 lat/lon grid.
-The nearest-cell OPERATOR (haversine argmin) is unaffected.
+⛔ Control-only (`type: cf`), one centre (ECMWF) — a phase screening, not a
+correction and not an operational feed (D6: a measured ~48 h embargo makes
+TIGGE research-only). Plan 216 D6 holds the source contract, MEASURED
+2026-08-29 against the live ECDS API, with one correction to the plan's
+draft: `tigge-forecasts` has no `grid` input at all, so what comes back is
+the model's native reduced Gaussian grid (N640, ~1,600 irregular points in
+`STUDY_AREA`), not a regular 0.5° 11x19 lat/lon grid. The nearest-cell
+OPERATOR (haversine argmin) is unaffected. Plan 220 D2: a season's 244-run
+schedule is EXPECTED, not required — a missing run is a named gap, not a
+rejection (see `SeasonCompleteness`).
 """
 
 from __future__ import annotations
@@ -48,10 +52,15 @@ TIGGE_VARIABLE = "total_precipitation"
 TIGGE_DATA_VAR_NAME = "tp"  # cfgrib short name for total_precipitation
 TIGGE_DATA_FORMAT = "grib"
 
-# D2 — "One monsoon season: JJAS 2025." There is deliberately no `--year` CLI
-# option: a wrong year, mislabelled "JJAS 2025" downstream, is the failure mode
-# D2 forbids (see `assert_tigge_identity`).
-TIGGE_YEAR = 2025
+# D1 (Plan 220) — the year is a REQUIRED CLI parameter (`--year`, no
+# default): a wrong year, mislabelled downstream, is the failure mode D2
+# forbids. What closes that hazard is `assert_tigge_identity` gating the
+# OPENED FILE's own init axis against whichever year was requested — never a
+# module-level default a caller could silently rely on and a request could
+# silently disagree with. There is deliberately no `TIGGE_YEAR` constant any
+# more (Plan 216 had one, defaulting both the schedule and the identity gate
+# to 2025) — a value carried alongside the request instead of derived from it
+# is exactly the recurring defect shape Plan 220 D1 closes by deletion.
 TIGGE_MONTHS: tuple[int, ...] = (6, 7, 8, 9)
 TIGGE_INIT_HOURS_UTC: tuple[int, ...] = (0, 12)
 
@@ -114,9 +123,10 @@ class TiggeStepAxisError(TiggeAcquisitionError):
 
 class TiggeIdentityError(TiggeAcquisitionError):
     """The opened GRIB's init axis, lead axis or origin is not the JJAS
-    `TIGGE_YEAR` control-forecast request this module issues (D2). Without
-    this check a stale `--skip-retrieve` file would be screened and reported
-    as "JJAS `TIGGE_YEAR`"."""
+    control-forecast request this module issues for the requested `--year`
+    (D2). Without this check a stale `--skip-retrieve` file would be
+    screened and reported as that year's season regardless of what it
+    actually contains."""
 
 
 @runtime_checkable
@@ -199,13 +209,16 @@ def assert_tp_units(ds: xr.Dataset, *, variable: str = TIGGE_DATA_VAR_NAME) -> N
 
 def expected_init_schedule(
     *,
-    year: int = TIGGE_YEAR,
+    year: int,
     months: Sequence[int] = TIGGE_MONTHS,
     init_hours_utc: Sequence[int] = TIGGE_INIT_HOURS_UTC,
 ) -> tuple[datetime, ...]:
-    """The EXACT set of initialisations D2's one season must contain (JJAS
-    2025 x 00/12 UTC = 244, measured on the real file). Derived, never
-    hard-coded, so there is no second literal to keep in sync."""
+    """The EXPECTED set of initialisations one JJAS season SHOULD contain
+    (JJAS x 00/12 UTC = 244 for every year, since JJAS never spans a leap
+    day). Derived, never hard-coded, so there is no second literal to keep
+    in sync. Plan 220 D2 — this is the EXPECTED schedule, not a required
+    count: `assert_tigge_identity` reports a season's shortfall against it as
+    named gaps rather than rejecting the season outright."""
     return tuple(
         datetime(year, month, day, hour)
         for month in months
@@ -214,22 +227,49 @@ def expected_init_schedule(
     )
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SeasonCompleteness:
+    """Plan 220 D2 — how much of one season's EXPECTED 244-run schedule the
+    retrieved file actually contains. A missing expected init is a named gap
+    ("real seasons have gaps... sometimes forecasts are not published"), not
+    a rejection; `assert_tigge_identity` still rejects an init OUTSIDE the
+    expected schedule, a duplicate, or a wrong lead/centre/step-0 axis — a
+    retrieval fault, which is different from an incomplete archive."""
+
+    year: int
+    expected_count: int
+    actual_count: int
+    missing_inits: tuple[datetime, ...]
+
+    @property
+    def completeness_fraction(self) -> float:
+        return self.actual_count / self.expected_count if self.expected_count else 0.0
+
+
 def assert_tigge_identity(
     ds: xr.Dataset,
     *,
     expected_leadtime_hours: Sequence[int],
-    expected_year: int = TIGGE_YEAR,
+    expected_year: int,
     expected_months: Sequence[int] = TIGGE_MONTHS,
     expected_init_hours_utc: Sequence[int] = TIGGE_INIT_HOURS_UTC,
     expected_init_times: Sequence[datetime] | None = None,
     variable: str = TIGGE_DATA_VAR_NAME,
-) -> None:
+) -> SeasonCompleteness:
     """D2/D6/T1 Verify — the file's own init axis, lead axis, type/step
     attributes, source attribute and forecast-start accumulation must BE
-    the request this module issues, never assumed from a filename. Raises
-    `TiggeIdentityError` on any mismatch. `expected_init_times` defaults to
-    the FULL `expected_init_schedule()`, so a half-downloaded season is
-    rejected; tests (and only tests) narrow it to their fixture's init."""
+    the request this module issues for `expected_year`, never assumed from
+    a filename. Raises `TiggeIdentityError` on any REAL mismatch (wrong
+    year/month/hour, a duplicate, an init outside the expected schedule, a
+    wrong lead/centre/step-0 axis). `expected_init_times` defaults to the
+    FULL `expected_init_schedule()`, so an init the schedule does not
+    recognise is rejected; tests (and only tests) narrow it to their
+    fixture's init.
+
+    Plan 220 D2: a season SHORT of its expected schedule is no longer
+    rejected outright — real seasons have unpublished runs. The shortfall is
+    returned as a `SeasonCompleteness`, never silently absorbed into a
+    smaller `n`."""
     assert_tp_units(ds, variable=variable)
 
     attrs = ds[variable].attrs
@@ -288,16 +328,18 @@ def assert_tigge_identity(
             f"init axis repeats {len(duplicates)} initialisation(s) "
             f"(first: {duplicates[0]}) — every init must appear exactly once"
         )
-    if actual_inits != expected_inits:
-        missing = sorted(set(expected_inits) - set(actual_inits))
-        extra = sorted(set(actual_inits) - set(expected_inits))
+    # Plan 220 D2 — an init OUTSIDE the expected schedule means the
+    # RETRIEVAL is wrong (a bug, not archive incompleteness) and is still
+    # rejected. An init the schedule expected but the file lacks is a named
+    # gap, reported below, never a rejection.
+    extra = sorted(set(actual_inits) - set(expected_inits))
+    if extra:
         raise TiggeIdentityError(
-            f"init axis has {len(actual_inits)} initialisation(s); expected "
-            f"exactly {len(expected_inits)} "
-            f"({len(missing)} missing, first {missing[0] if missing else None}; "
-            f"{len(extra)} unexpected, first {extra[0] if extra else None}) — "
-            "a partial season must never be screened as a whole one"
+            f"init axis contains {len(extra)} initialisation(s) outside the "
+            f"expected schedule (first {extra[0]}) — the retrieval, not the "
+            "archive, is wrong"
         )
+    missing = sorted(set(expected_inits) - set(actual_inits))
 
     steps_h = sorted((ds["step"].values / np.timedelta64(1, "h")).astype(int).tolist())
     expected_steps = sorted(expected_leadtime_hours)
@@ -338,6 +380,13 @@ def assert_tigge_identity(
                 f"{float(np.nanmax(np.abs(zero_step))):.4g}) — this field does "
                 "not accumulate from forecast start"
             )
+
+    return SeasonCompleteness(
+        year=expected_year,
+        expected_count=len(expected_inits),
+        actual_count=len(actual_inits),
+        missing_inits=tuple(missing),
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -507,8 +556,20 @@ def write_tigge_attribution(
 
 # --- CLI (T1 driver) ---
 DEFAULT_TIGGE_ROOT = Path("data/dhm_precip/tigge")
-_RAW_FILENAME = "tigge_ecmwf_cf_tp_jjas2025.grib"
-_POINTS_FILENAME = "tigge_station_series_jjas2025.parquet"
+
+
+def raw_filename(year: int) -> str:
+    """Plan 220 D1 — filename derives from `year`, never a second literal
+    that could disagree with the request. `year=2025` reproduces the exact
+    on-disk name Plan 216 wrote, so the existing JJAS 2025 artefact is
+    addressed by the same path without being re-downloaded."""
+    return f"tigge_ecmwf_cf_tp_jjas{year}.grib"
+
+
+def points_filename(year: int) -> str:
+    """Plan 220 D1 companion to `raw_filename` — same derivation rule."""
+    return f"tigge_station_series_jjas{year}.parquet"
+
 
 # D3/T2 lead bands, defined here (not in T2) because they determine exactly
 # which leadtime_hours T1 needs to request. D+1 is the first COMPLETE band
@@ -529,13 +590,23 @@ REQUEST_LEADTIME_HOURS: tuple[int, ...] = tuple(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--year",
+        type=int,
+        required=True,
+        help=(
+            "JJAS season year (Plan 220 D1) — no default, so a wrong year is "
+            "never silently assumed"
+        ),
+    )
     ap.add_argument("--out-root", type=Path, default=DEFAULT_TIGGE_ROOT)
     ap.add_argument(
         "--skip-retrieve", action="store_true", help="reuse an existing raw file"
     )
     args = ap.parse_args()
+    year: int = args.year
 
-    raw_path = args.out_root / "raw" / _RAW_FILENAME
+    raw_path = args.out_root / "raw" / raw_filename(year)
     if args.skip_retrieve and not raw_path.exists():
         raise FileNotFoundError(
             f"--skip-retrieve was given but {raw_path} does not exist — "
@@ -544,24 +615,26 @@ def main() -> int:
     if not args.skip_retrieve:
         client = RealTiggeClient()
         payload = build_tigge_request(
-            year=TIGGE_YEAR,
+            year=year,
             months=TIGGE_MONTHS,
             days=range(1, 32),
             times=TIGGE_INIT_HOURS_UTC,
             leadtime_hours=REQUEST_LEADTIME_HOURS,
             area=STUDY_AREA,
         )
-        log.info("tigge_ifs.retrieve.start", raw_path=str(raw_path))
+        log.info("tigge_ifs.retrieve.start", raw_path=str(raw_path), year=year)
         client.retrieve_to_path(
             dataset=TIGGE_DATASET_ID, payload=payload, target=raw_path
         )
-        log.info("tigge_ifs.retrieve.done", raw_path=str(raw_path))
+        log.info("tigge_ifs.retrieve.done", raw_path=str(raw_path), year=year)
 
     ds = xr.open_dataset(raw_path, engine="cfgrib")
-    # D2/D6 — the opened file must actually BE the JJAS TIGGE_YEAR
-    # control-forecast request (never assumed from the filename, which is
-    # exactly what a stale `--skip-retrieve` file would defeat).
-    assert_tigge_identity(ds, expected_leadtime_hours=REQUEST_LEADTIME_HOURS)
+    # D2/D6 — the opened file must actually BE the JJAS `year` control-
+    # forecast request (never assumed from the filename, which is exactly
+    # what a stale `--skip-retrieve` file would defeat).
+    completeness = assert_tigge_identity(
+        ds, expected_leadtime_hours=REQUEST_LEADTIME_HOURS, expected_year=year
+    )
     increments = deaccumulate(ds)
     coords_path = resolve_coords_path()
     # D8-style cardinality tripwire (mirrors extract_era5.py): the
@@ -573,10 +646,19 @@ def main() -> int:
     coords = load_station_coordinates(coords_path, expected_stations=all_stations)
     series = extract_station_series(ds, increments, coords)
 
-    points_path = args.out_root / "points" / _POINTS_FILENAME
+    points_path = args.out_root / "points" / points_filename(year)
     points_path.parent.mkdir(parents=True, exist_ok=True)
     series.write_parquet(points_path)
-    attribution_path = write_tigge_attribution(points_path)
+    attribution_path = write_tigge_attribution(
+        points_path,
+        extra={
+            "season_year": year,
+            "expected_inits": completeness.expected_count,
+            "actual_inits": completeness.actual_count,
+            "completeness_fraction": round(completeness.completeness_fraction, 4),
+            "missing_inits": [t.isoformat() for t in completeness.missing_inits],
+        },
+    )
 
     n_inits = series["init_time_utc"].n_unique()
     n_station_days = (
@@ -590,6 +672,11 @@ def main() -> int:
         f"{series['ending_lead_hours'].n_unique()} leads, "
         f"{n_station_days} station-days "
         f"({series['valid_time_utc'].min()} .. {series['valid_time_utc'].max()})"
+    )
+    print(
+        f"completeness: {completeness.actual_count}/{completeness.expected_count} "
+        f"({completeness.completeness_fraction:.1%}) — "
+        f"{len(completeness.missing_inits)} missing init(s)"
     )
     print(f"wrote {attribution_path}")
     print(f"Attribution: {TIGGE_ATTRIBUTION_TEXT}. {TIGGE_ACKNOWLEDGEMENT_TEXT}")

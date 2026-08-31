@@ -1122,11 +1122,14 @@ actually flies. M-A11 re-measures the same phase question against ECMWF IFS cont
 D+3), reusing M-A6's own phase estimator unmodified. Screening only — no correction, no magnitude
 claim, no operational dependency (a measured ~48 h TIGGE embargo rules that out for any centre).
 
-**✅ COMPLETE 2026-08-29.** IFS shares the mid/high-elevation-band error's DIRECTION but at roughly
-**a third to a half of ERA5-Land's magnitude** (mid ~−5.2 to −5.7 h vs ERA5-Land's −14.4 h; high ~−5.2
-to −5.7 h vs −11.9 h), resolved well beyond the ±3 h bound 6-hourly data permits; the low band is
-unresolved from zero at every lead. **NO-GO on the originally proposed ~12 h correction as designed;
-GO on finer-resolution correction work calibrated to IFS's own, smaller displacement.** Full
+**✅ COMPLETE 2026-08-29 — ⚠️ MAGNITUDE SUPERSEDED 2026-08-31 by Plan 220.** IFS shares the
+mid/high-elevation-band error's DIRECTION. ⛔ The single-season magnitude claim ("a third to a half of
+ERA5-Land's") **does not survive six seasons**: the mid band spans ~9 h across 2020-2025 on the
+preregistered branch, with JJAS 2025 near the middle by chance. **There is no single IFS displacement to
+calibrate against**, so nothing here sizes a correction. The low band is unresolved from zero at every lead **in JJAS 2025** —
+⚠️ across six seasons it crosses the ±3 h bound in **2023 (every lead)** and at D+1 in **2020**.
+**NO-GO on the originally proposed ~12 h correction as designed;
+GO on further MEASUREMENT (finer than 6-hourly, more stations, branch-robust aggregation) — ⛔ NOT on constructing a correction.** Full
 measurement: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md`. Code:
 `scripts/dhm_precip/tigge_ifs.py` (T1 retrieval/extraction), `scripts/dhm_precip/
 tigge_gauge_timing.py` (T2 comparison), `scripts/dhm_precip/diurnal_phase.py` (D5's shared,
@@ -1141,6 +1144,42 @@ nearest-cell extraction operator is unaffected.
 
 **Exit:** a measured answer, with lead-dependence, the ±3 h resolution bound, and a screening verdict
 bounded by D4. Owner decides (M-DEC).
+
+### M-A11b · Multi-season IFS timing (Plan 220)
+**Depends: M-A11.** Does **not** gate M-DEC (M-DEC already resolves off M-A9 + M-A11's single-season
+screen) — it closes prerequisite 2 of the independent verdict that reviewed M-A11 ("potentially several
+hours or a sign change" across seasons) and feeds a later retraining decision, not the Track G
+deployment gate.
+
+M-A11 measured JJAS **2025 only** — one season cannot show interannual variability. `tigge_ifs.py` and
+`tigge_gauge_timing.py` are parameterised by `--year` (D1: the `TIGGE_YEAR` module constant that used to
+default both the schedule and the identity gate is deleted, not checked-around) and JJAS 2020-2024 are
+retrieved alongside the already-archived 2025, reusing the exact same estimator, amplitude gate, branch
+convention and elevation/lead bands (D5 — no method change). The 244-run schedule is now the *expected*
+count, not a required one (D2): a missing forecast run is recorded as a named gap
+(`SeasonCompleteness.missing_inits`), never a season-wide rejection — real archives have unpublished
+runs. The report is per-year **and** pooled (D3: `run_multi_season` concatenates the six seasons' raw
+paired frames and reruns the unchanged station-equal estimator once on the union — never a median of six
+already-computed point estimates, which is a different statistic), with 2020 included and hedged (D4: it
+carries only **3 raw high-band candidates** against 6-8 in later years — of which the estimator
+**retains 2**, the third failing `NO_PRECIPITATION_MASS`).
+
+**✅ COMPLETE 2026-08-31.** All five remaining seasons retrieved (244/244 inits, zero gaps, each). **The
+independent review's flagged risk is CONFIRMED**: the mid-elevation band's offset ranges from **-2.31 h
+(2020) to -11.48 h (2021)** on the **preregistered same-day branch** — a 9.2 h spread, not a single
+stable number, and still an 8.22 h range under a fixed four-station panel. 2020's high band, which
+**retains 2 of its 3 raw candidates**, returns +0.47/-0.96 h at D+1/D+2 — a **reproducible
+point-estimate sign change, unresolved from zero** at that `n` under the ±3 h bound, not a
+demonstrated reversal. ⚠️ The cross-station median is branch-dependent, so these extremes are not
+physical magnitudes. The low band, read as "near zero" off 2025 alone, crosses the ±3 h bound in 2020 and
+2023. Pooled figures track the higher-coverage years, not a naive average of the six per-year values.
+Full table + reading: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11b addendum.
+
+**Exit:** the IFS-vs-gauge phase offset for every overlapping JJAS season (2020-2025), per-year and
+pooled, with per-cell `n`, station counts and a per-season completeness figure (all 100%); the re-run
+2025 row matches the published table exactly (MEASURED). **Does not by itself authorise retraining** —
+if anything, the confirmed spread argues for more caution, not less, before any single-point IFS
+correction.
 
 ---
 
@@ -1346,6 +1385,8 @@ scheduled against a live feed before M-I4.**
     {"id": "M-A9",  "depends_on": ["M-A6", "M-A7", "M-A8", "M-A10"]},
     {"id": "M-A11", "depends_on": ["M-A6", "M-A7", "M-A8", "M-A9"],
      "note": "Plan 216. Re-measures M-A9's Use-1 timing question against the operational ECMWF IFS forecast (TIGGE via ECDS) instead of ERA5-Land. Screening only — see docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md."},
+    {"id": "M-A11b", "depends_on": ["M-A11"],
+     "note": "Plan 220. Closes prerequisite 2 of M-A11's independent verdict — JJAS 2020-2024 alongside 2025, per-year and pooled, same estimator. Does NOT gate M-DEC; feeds a later retraining decision."},
     {"id": "M-DEC", "depends_on": ["M-A9", "M-A11"], "kind": "decision",
      "note": "Owner Phase-2 GO / NO-GO. M-A9 exits with a RECOMMENDATION; only this node authorises Track G."},
     {"id": "M-G1",  "depends_on": ["M-DEC"]},
@@ -1459,10 +1500,25 @@ Phase 1 commits to no correction design.
 
 ## Forcing-correction architecture (added 2026-08-18)
 
+⛔ **OWNER DECISION 2026-08-31 (Plan 220) — OD-13 IS HELD; OD-12 STANDS.**
+These decisions were taken when IFS's diurnal displacement was believed to be a single, stable
+quantity. **It is not**: across JJAS 2020-2025 the mid band spans ~9 h on the preregistered branch
+(8.22 h even under a fixed four-station panel), and there is **no single displacement to calibrate
+against**.
+
+- **OD-12 — SURVIVES.** It settles *where* the correction sits, not how large it is: the model keeps
+  consuming `BasinAverageForecast` and only the forcing is corrected. Unaffected by the magnitude
+  finding. ✅ **Confirmed by the owner 2026-08-31.**
+- 🔴 **OD-13 — HELD. Do NOT build the correction operator yet.** Its instruction was "built now,
+  enabled at the Nepal re-training step". ⇒ **Delay building until the displacement can be sized**
+  (owner, 2026-08-31). Building a correction whose magnitude cannot be determined invites someone to
+  fill it in later from whichever season's number is nearest to hand.
+- 🔴 **"One fix serves both products" — HELD, and doubted.** See the binding section below.
+
 | # | Question | Decision |
 |---|---|---|
 | **OD-12** | Must the modeller train on elevation bands so we can correct band-wise? | **No.** Correct the **basin-average** series in the **forcing pipeline**, using **hypsometric weighting** — the elevation dependence enters only through the weights, which are computed offline, once per basin. **The model never changes and keeps consuming `BasinAverageForecast`.** |
-| **OD-13** | Where does the correction live, and when is it switched on? | **In the forcing pipeline, behind a seam — built now, enabled at the Nepal re-training step, never before.** See the train/serve invariant below: it is the binding constraint, not the correction itself |
+| **OD-13** | Where does the correction live, and when is it switched on? | 🔴 **HELD 2026-08-31 — DO NOT BUILD YET** (owner; Plan 220: no single displacement to size it against). *Superseded wording: "in the forcing pipeline, behind a seam — built now, enabled at the Nepal re-training step, never before."* **Where** it lives is unchanged; **when it is built** is now: after the displacement can be sized.** See the train/serve invariant below: it is the binding constraint, not the correction itself |
 
 ### Why band-wise modelling is not required — the pieces already exist
 
@@ -1470,6 +1526,10 @@ Phase 1 commits to no correction design.
   `max_elevation_m` and **`area_km2`** per band. **That is hypsometry, already in the basin package.**
 - `ElevationBandForecast` (`types/weather.py:62`) is already a first-class `WeatherForecastResult`
   variant beside `BasinAverageForecast`, so the band-wise route stays open without being taken now.
+
+🔴 **THE OPERATOR DESCRIBED BELOW IS HELD (2026-08-31) AND IS NOT AN INSTRUCTION** (the *seam* is separately authorised — see the sequencing block). It describes how a
+correction *would* be built once the displacement can be sized. ⛔ Do not act on it: OD-13 is held,
+and Plan 220 shows there is no single magnitude to build against. Retained as design reasoning.
 
 **The cheap operator:** take the **observed elevation-banded diurnal profiles** (M-A7's deliverable),
 weight them by each basin's **band `area_km2`**, and collapse to an **observation-derived expected
@@ -1503,9 +1563,10 @@ than *how* it is computed:
 **The invariant, whichever way that goes: TRAIN AND SERVE MUST MATCH.** An
 uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
 
-⇒ **Sequencing:**
-1. **Now (pre-deployment):** build the correction operator and its seam. **Do not enable it.** Global
-   pre-training stays on uncorrected forcing.
+⇒ **Sequencing** — 🔴 **step 1 is HELD; the sequence resumes only once the displacement can be sized:**
+1. **Now (pre-deployment):** build **the seam only** — ✅ authorised (owner 2026-08-31), it needs no
+   magnitude. 🔴 ~~build the correction operator~~ **HELD** until the displacement can be sized
+   (Plan 220). Global pre-training stays on uncorrected forcing either way.
 2. **At Nepal deployment/re-training:** apply the **same** operator to the Nepali training forcing *and*
    the operational forcing, then re-train. Consistent *and* closer to physical truth.
 3. **Measure both ways at step 2** — corrected-consistent vs uncorrected-consistent — because that is
@@ -1513,7 +1574,12 @@ uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
 
 **And OD-10 remains the better long-run answer:** if DHM's parallel downscaling delivers a
 convection-permitting product, that fixes the phase *physically*, and this correction becomes
-unnecessary rather than merely adequate. Build the seam so that swap costs nothing.
+unnecessary rather than merely adequate. **Build the seam so that swap costs nothing.**
+✅ **OWNER DECISION 2026-08-31 — the SEAM may be built NOW; only the OPERATOR is held.** A seam is an
+insertion point and needs **no magnitude**, so it is separable from the correction it will one day
+carry: building it keeps the option open at no cost and commits to nothing. ⛔ **Do not build the
+operator** (OD-13, held until the displacement can be sized) — an empty seam is the whole of what is
+authorised here.
 
 ### M-D4 · Lightning data — partner ask (NEW, partner-gated)
 **Depends: —.** Ask project partners for stroke-level lightning: **timestamp, lat/lon, detection
@@ -1689,6 +1755,13 @@ requirement at its **strongest**:
 |---|---|---|
 | **3-hourly** | ~12 h ⇒ **four timesteps** of displacement — rain in the wrong part of the day | the full **intra-day profile** |
 | **daily** | displaces rain **across the day boundary** — a burst lands on *D+1* instead of *D* | correct **day-attribution** |
+
+🔴 **HELD 2026-08-31 (Plan 220) — the owner's reading is that ONE FIX MAY NOT BE ENOUGH.**
+The argument below was made from a single, stable ~12 h error. With a displacement that moves ~9 h
+between seasons, a correction tuned to one product's needs may not suit the other's, so the
+"no trade-off" claim **cannot be assumed**. ⇒ **Hold this conclusion until the displacement can be
+sized.** The structural reasoning may well survive; its premise does not. *(The text below is retained
+as the original argument, not as a live decision.)*
 
 **One fix serves both, and that is the useful part:** getting the intra-day phase right *necessarily*
 fixes day-attribution, because day-boundary displacement is just the phase error crossing midnight.

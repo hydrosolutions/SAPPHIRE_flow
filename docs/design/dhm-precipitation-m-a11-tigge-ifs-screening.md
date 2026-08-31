@@ -225,13 +225,20 @@ from.
 
 ## Reading the result
 
+⚠️ **THIS SECTION IS THE JJAS 2025 READING. Its MAGNITUDES ARE SUPERSEDED (2026-08-31, Plan 220).**
+Six seasons show the mid band spanning ~9 h on the preregistered branch, with 2025 near the middle by
+chance. ⛔ **Every "~5.5-6.5 h"-style figure below describes 2025 alone and must not be quoted as IFS's
+displacement.** What survives is the **direction** (model too early in mid/high bands, low band
+unresolved from zero in 2025). See the multi-season section for the standing result.
+
 1. **The mid and high bands are NOT aligned.** Every lead in both bands is resolved well beyond the
    ±3 h bound — a ~5.5-6.5 h same-direction offset is roughly 2x the finest lag D4 permits
    distinguishing from zero. IFS shares ERA5-Land's DIRECTION of error (model too early) in the same
    two bands ERA5-Land flagged.
-2. **The MAGNITUDE is smaller than ERA5-Land's, not the same.** Mid band ~40-45% of ERA5-Land's
-   −14.4 h (−5.78 to −6.47 h, non-monotonic across D+1-D+3, so not a trend); high band ~46-55% of
-   ERA5-Land's −11.9 h (−5.52 to −6.52 h, mildly increasing with lead). A drift toward the reanalysis
+2. **The MAGNITUDE is smaller than ERA5-Land's, not the same.** Mid band −5.78 to −6.47 h;
+   high band −5.52 to −6.52 h (non-monotonic across D+1-D+3, so not a trend).
+   ⚠️ **An earlier revision expressed these as "~40-45%" and "~46-55%" of ERA5-Land's. Those ratios are
+   RETRACTED** — they are single-season, and six seasons show no stable fraction (Plan 220). A drift toward the reanalysis
    number at longer leads is the direction D3 anticipates ("early leads inherit the analysis, later
    leads relax onto the model's attractor") — but three days of lead, on one season, is not enough to
    say whether it continues (this plan's D2 scope is one season at leads to D+3; that question is
@@ -242,27 +249,42 @@ from.
    from no error at all, at any of the three leads measured.
 4. **Neither pole of the plan's own decision rule applies cleanly.** This is not "apparent alignment"
    (mid/high bands are clearly non-zero) and it is not "a repeated half-day (~12 h) displacement" either
-   — the measured displacement is real, resolved, and repeated, but at roughly 40-50% of ERA5-Land's
-   magnitude.
+   — the measured displacement is real, resolved and repeated, but smaller than ERA5-Land's.
+   ⚠️ **An earlier revision put it at "roughly 40-50% of ERA5-Land's magnitude" from JJAS 2025 alone;
+   six seasons show no single ratio holds** (Plan 220). ⛔ The direction survives; the fraction does not.
 
 ## Verdict (bounded by D4)
 
-**NO-GO on deploying the originally proposed ~12 h correction as designed** — IFS's own measured
-displacement in the two affected bands is roughly 40-55% of that magnitude; applying ERA5-Land's
-larger correction to IFS forcing would systematically over-correct, by ~6-9 h.
+⚠️ **SUPERSEDED IN PART, 2026-08-31 (Plan 220).** This verdict was drawn from **JJAS 2025
+alone**. Six seasons now show the mid-band offset spanning ~9 h (−2.31 h to −11.48 h on the
+preregistered branch; still 8.22 h under a fixed four-station panel), with 2025 near the
+middle by chance. ⛔ **The magnitude statements below no longer hold and must not be used to
+size anything** — see the multi-season section. The NO-GO stands and is strengthened.
 
-**GO on finer-resolution correction work, calibrated to IFS itself rather than to ERA5-Land** — the
+**NO-GO on deploying the originally proposed ~12 h correction as designed** — IFS's displacement differs
+from ERA5-Land's in every season measured, so ERA5-Land's correction would misapply to IFS forcing.
+⛔ **The over-correction is NOT quantified here**: an earlier revision put it at "~6-9 h" from the 2025
+season alone, and the six-season spread shows that figure was an artefact of which year was drawn.
+
+**GO on further MEASUREMENT — not on constructing a correction** — ⛔ an earlier revision said "calibrated
+to IFS itself", which presumes IFS has a single displacement to calibrate against. **It does not**, on
+this evidence. What is supported is more measurement (finer than 6-hourly, more stations, branch-robust
+aggregation); what is **not** supported is building a correction from these numbers. The underlying
+observation still stands — the
 mid/high-band error is real (well beyond the ±3 h bound), repeated across three correlated lead strata
 (D+1/D+2/D+3 pool overlapping initialisations and the same stations, so they are not independent
 samples — the repetition still shows the same displacement is not a one-lead artefact, but it does not
 multiply as three independent confirmations would), and in a consistent direction. That supports
-**finer-resolution work to DETERMINE an IFS-calibrated correction** for those two bands — ⛔ not a
-correction designed from this measurement itself, which D4's ±3 h bound cannot support. The low band is
+**finer-resolution MEASUREMENT** of those two bands — ⛔ **not** work to determine a correction, and not
+a correction designed from this measurement, neither of which D4's ±3 h bound nor the six-season spread
+can support (Plan 220: there is no single displacement to calibrate against). The low band is
 unresolved from zero at every lead measured, so any correction there is on much weaker ground and should
 not simply mirror the upper bands' sign.
 
-This conclusion does **not** extend to "no timing correction is needed" (D4) — a ~5.5-6.5 h,
-well-resolved, repeated error is not "no error", even though it is smaller than ERA5-Land's.
+This conclusion does **not** extend to "no timing correction is needed" (D4) — the error is resolved
+and repeated in every season measured, so it is not "no error". ⚠️ **An earlier revision quantified it
+as "~5.5-6.5 h" from JJAS 2025 alone; that figure is superseded** — across six seasons the displacement
+is real in direction but has **no single magnitude** (Plan 220).
 
 ## Attribution
 
@@ -276,3 +298,169 @@ No correction was implemented. No magnitude or bias claim is made — phase only
 ECMWF was pulled. No perturbed members. No multi-year climatology. Elevation-band weights, the DHM 2026
 gauge request, and the free-alternatives escalation ladder all belong to whatever M-DEC authorises next,
 not to this measurement.
+
+---
+
+## M-A11b addendum — multi-season 2020-2025 (Plan 220)
+
+**Retrieved and measured 2026-08-31.** Closes prerequisite 2 of this document's own verdict above: one
+season cannot show interannual variability, and the independent review that read the single-season
+result flagged that a multi-year check could move it by "potentially several hours or a sign change."
+**It did.** This is more data through the exact same reviewed pipeline — same estimator, same amplitude
+gate (`MIN_HARMONIC_AMPLITUDE = 0.05`), same `[-18,+6)` branch, same elevation and lead bands (D5) — not
+a new measurement, a correction, or a climatology fit (the "no multi-year climatology" non-goal above is
+about trend-fitting across years, which this is not: every season is its own independent point
+estimate, plus one available-case pooled aggregate, D3).
+
+**Code:** `TIGGE_YEAR`'s hard-coded default is deleted from `tigge_ifs.py`/`tigge_gauge_timing.py` (D1);
+`--year` is now a required CLI argument on both scripts, and `tigge_gauge_timing`'s old
+`--tigge-points` file selector is gone — a single `--year` reproduces the single-season report, more
+than one triggers the per-year + pooled report below. The 244-run JJAS schedule is now the *expected*
+count, not a required one (D2): a missing run would be recorded as a named gap on the file's
+attribution sidecar rather than rejecting the season — moot here, since every retrieved season came back
+complete.
+
+**Regression check (D6):** re-running JJAS 2025 alone through the parameterised code
+(`--year 2025 --skip-retrieve`, i.e. reusing the exact same GRIB Plan 216 downloaded) reproduces the
+published table above EXACTLY — same 9 lag cells, same `n`, same amplitudes. The parameterisation is
+inert, as required before any new data was fetched.
+
+**Retrieval completeness — all six seasons, all complete.** Five ECDS requests (2020-2024; 2025 was
+already on disk) each returned the full **244/244** expected initialisations, **zero missing inits**,
+zero extras, zero duplicates. There is no completeness caveat to carry on any cell below — the year-to-
+year differences that follow are not an artefact of gappy retrieval.
+
+**2020 station coverage — thinner than every other year, as flagged in the plan.** The high band
+(≥ 2,000 m) rests on **2 stations** in 2020, against 6-8 in every other year (even thinner than the
+plan's own pre-registered count of 3 — the phase estimator's per-station gates, not just data
+availability, decide final inclusion). Every 2020 high-band number below carries that hedge (D4): treat
+it as the least reliable row in the table, not a like-for-like point against the other five years.
+
+### Per-year and pooled phase offset (gauge timestamps as labelled, D7 primary reading)
+
+Positive = model later than gauge, same convention as the single-season table above. `n(st)` is the
+station count contributing to that cell (station-equal median, D5); the full window/station-day counts
+and both D7 readings are in `data/dhm_precip/tigge/points/tigge_gauge_timing_offsets_multiseason.csv`
+(gitignored, regenerable — see Regenerate-multi below). Every cell below is `status = ok`.
+
+#### D+1
+
+| season | low n(st) | low lag | mid n(st) | mid lag | high n(st) | high lag |
+|---|---|---|---|---|---|---|
+| 2020 | 8 | -3.65 h | 6 | -2.31 h | **2** | **+0.47 h** |
+| 2021 | 9 | -1.85 h | 6 | -11.48 h | 7 | -9.44 h |
+| 2022 | 9 | -1.42 h | 8 | -10.12 h | 8 | -6.75 h |
+| 2023 | 9 | -4.38 h | 8 | -3.97 h | 7 | -7.94 h |
+| 2024 | 7 | -1.40 h | 7 | -6.76 h | 7 | -6.40 h |
+| 2025 | 8 | -1.34 h | 9 | -6.47 h | 6 | -5.52 h |
+| **pooled** | 9 | -2.14 h | 8 | -9.23 h | 8 | -7.30 h |
+
+#### D+2
+
+| season | low n(st) | low lag | mid n(st) | mid lag | high n(st) | high lag |
+|---|---|---|---|---|---|---|
+| 2020 | 8 | -2.69 h | 6 | -8.17 h | **2** | **-0.96 h** |
+| 2021 | 9 | -1.63 h | 8 | -10.30 h | 7 | -9.91 h |
+| 2022 | 9 | -2.55 h | 8 | -9.85 h | 8 | -7.10 h |
+| 2023 | 9 | -4.01 h | 8 | -3.81 h | 7 | -5.76 h |
+| 2024 | 6 | -2.80 h | 7 | -9.51 h | 7 | -6.87 h |
+| 2025 | 7 | -0.39 h | 9 | -5.78 h | 6 | -5.63 h |
+| **pooled** | 9 | -2.40 h | 8 | -9.13 h | 8 | -7.42 h |
+
+#### D+3
+
+| season | low n(st) | low lag | mid n(st) | mid lag | high n(st) | high lag |
+|---|---|---|---|---|---|---|
+| 2020 | 8 | -2.53 h | 6 | **+0.37 h** | **2** | **-7.91 h** |
+| 2021 | 9 | -2.04 h | 8 | -11.50 h | 7 | -9.09 h |
+| 2022 | 9 | -1.27 h | 8 | -9.70 h | 8 | -6.73 h |
+| 2023 | 9 | -3.39 h | 8 | -5.19 h | 7 | -7.97 h |
+| 2024 | 7 | -2.34 h | 6 | -12.80 h | 7 | -6.67 h |
+| 2025 | 8 | -0.68 h | 9 | -6.15 h | 5 | -6.52 h |
+| **pooled** | 9 | -1.80 h | 8 | -9.93 h | 8 | -7.42 h |
+
+**Pooled ≠ average of the per-year cells** — by construction (D3): `run_multi_season` concatenates the
+six seasons' raw paired windows per (lead band, elevation band) and reruns the unchanged station-equal
+estimator once on the union, so a station's pooled cycle is built from every window it contributed
+across all six years, then the pooled figure is the median across stations. It is not a mean or median
+of the six point lags above — e.g. D+1 mid's six per-year values average to about -6.9 h, but the pooled
+figure is -9.23 h, closer to the higher-coverage 2021/2022 seasons whose stations dominate the 8-station
+pooled set.
+
+### Reading the result — the offset is NOT stable across years
+
+**The independent review's flagged risk is confirmed: on the preregistered branch the mid band moves
+by close to 10 hours across six seasons, and the high band's thinnest year returns a reproducible
+point-estimate sign change that is unresolved from zero.**
+
+⚠️ **All figures below are on the PREREGISTERED same-day branch `[-18,+6)`.** The cross-station median is **branch-dependent**: 2021's D+1 mid is **−11.48 h** here but **+3.26 h** under shortest-arc aggregation, while 2023 is −3.97 h under both. ⛔ The extremes are therefore **not** branch-invariant and must not be quoted as physical magnitudes. *(They are not a simple wrap — −11.48 and −3.97 are 7.51 h apart and do not straddle the cut — but the aggregate still moves with the convention.)*
+
+🔬 **The spread survives a fixed-membership control.** Re-running D+1 mid on only the **four
+stations retained in all six seasons** gives −2.31, −9.79, −10.53, −4.95, −5.43, −5.62 h — still an
+**8.22 h range**. ⇒ Changing station membership is a confounder but **not the whole explanation**;
+equally, this still cannot be called *pure* IFS-cycle variability.
+
+1. **Mid band (1,000-2,000 m) is the most volatile.** D+1 ranges from **-2.31 h (2020)** to
+   **-11.48 h (2021)** — a **9.2 h spread**, with no monotonic trend (2022 nearly matches 2021's extreme,
+   2023 drops back to -3.97 h, 2024/2025 sit in between). D+3 2020's mid-band value is **+0.37 h** —
+   indistinguishable from zero and of the opposite sign to every other year's mid-band reading — ⛔ a
+   **reproducible point-estimate sign change, unresolved from zero**, not a demonstrated reversal. The
+   2025-only screening this document opened with (mid ≈ -5.8 to -6.5 h, "40-55% of ERA5-Land's -14.4 h")
+   sits roughly in the MIDDLE of this range, not at either end — a single season understated how far the
+   **branch-selected** year-to-year spread reaches. ⛔ **Do not read a correction magnitude off these
+   numbers**: had 2021/2022 been the season drawn, the same procedure would have reported a figure close
+   to ERA5-Land's own — which shows the estimate is season-dependent, **not** that any of these values
+   sizes a correction. The spread is measured on the preregistered branch and the aggregate is
+   branch-dependent (above).
+2. **High band (≥ 2,000 m) is directionally more consistent in the four full-coverage years
+   (2021-2024: -6.4 to -9.9 h) but 2020's thin 2-station cell breaks that pattern** — near zero or
+   positive at D+1/D+2 (+0.47 h, -0.96 h) before swinging to -7.91 h at D+3. Given D4's hedge (n=2), this
+   reads as a genuinely thin, noisy cell rather than a reliable third data point for the high band's own
+   interannual spread — but it is also not simply discardable (D4: include, hedge, do not exclude), and
+   it is the only year that could NOT be characterised as "high band, consistently negative."
+3. **Low band stays closest to zero across every year, but is not uniformly inside the ±3 h bound the
+   way the 2025-only reading suggested.** 2023 crosses it at every lead (-4.38/-4.01/-3.39 h); 2020 is
+   at or just past it at D+1 (-3.65 h). 2021/2022/2024/2025 stay inside. The low band's own
+   interannual spread (roughly -0.4 to -4.4 h on the preregistered branch) is **small next to the
+   mid/high bands' spread** and never approaches their magnitude or reverses sign. ⛔ Like every spread
+   in this section it is branch-selected, not a physical magnitude.
+4. **Pooled numbers track the higher-coverage years, not a simple average** — see above. Read the pooled
+   row as an available-case aggregate weighted toward whichever stations have the most years of surviving
+   data, never as "the" multi-year answer in place of the per-year spread.
+
+### What this does and does not settle
+
+**Answered, on the preregistered branch:** the M-A9/M-A11 question "is IFS's mid/high-band diurnal
+timing error a single, stable number close to a third-to-half of ERA5-Land's" is answered **no** — it is a number that moves by
+several hours between seasons on the preregistered branch, including one year whose point estimate is
+near-zero and sign-changed but **unresolved from zero at n=2 under the ±3 h bound**, in the
+thinnest-coverage band.
+
+⛔ **What this does NOT settle, and this document does not advance:** how any IFS-calibrated correction
+should be constructed. **This analysis cannot determine a single correction magnitude** — the spread is
+branch-dependent in aggregate, rests on 2–9 stations per cell, and carries a ±3 h resolution bound.
+⛔ Do not read the options for building one out of these numbers; that is later work under whatever
+M-DEC authorises. The bounded conclusion is exactly two sentences: **2025 is not universal, and a single
+correction magnitude is not determinable from this.**
+
+**Not settled — the other three prerequisites the original independent verdict named remain open:**
+estimator/branch sensitivity, station representativeness (the 2020 vs. 2022+ coverage gap is itself
+part of this), and finer-than-6-hourly forcing. This section closes prerequisite 2 only. **It does not
+by itself authorise retraining** (Plan 220's own exit condition) — if anything, the confirmed
+interannual spread argues for MORE caution before committing to any single-point IFS correction, not
+less.
+
+### Regenerate (multi-season)
+
+```
+$ cd /Users/bea/Documents/GitHub/sapphire-ma6   # or SAPPHIRE_flow — data/dhm_precip is shared
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
+  uv run python -m scripts.dhm_precip.tigge_ifs --year 2020   # repeat per year 2020-2024; --skip-retrieve for 2025
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
+  uv run python -m scripts.dhm_precip.tigge_gauge_timing --year 2020 2021 2022 2023 2024 2025
+```
+
+Writes `data/dhm_precip/tigge/points/tigge_gauge_timing_offsets_multiseason.csv` (gitignored) — every
+(season x lead band x elevation band x reading) cell, `season` one of `"2020"`..`"2025"`/`"pooled"`,
+plus its attribution sidecar. Single-season `--year 2025` alone still reproduces the original published
+`tigge_gauge_timing_offsets.csv` unchanged (D6).

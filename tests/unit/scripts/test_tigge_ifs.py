@@ -316,9 +316,13 @@ class TestAssertTiggeIdentity:
             accum_mm=np.array([[0.0], [1.0], [2.0]]),
             init="2025-07-15T00:00:00",
         )
-        assert_tigge_identity(
-            ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6, 12]
+        completeness = assert_tigge_identity(
+            ds,
+            expected_init_times=_ONE_INIT,
+            expected_year=2025,
+            expected_leadtime_hours=[0, 6, 12],
         )  # no raise
+        assert completeness.actual_count == completeness.expected_count == 1
 
     def test_rejects_a_wrong_year(self) -> None:
         ds = _cf_dataset(
@@ -326,11 +330,14 @@ class TestAssertTiggeIdentity:
             lat=np.array([30.0]),
             lon=np.array([81.0]),
             accum_mm=np.array([[0.0], [1.0]]),
-            init="2024-07-15T00:00:00",  # not TIGGE_YEAR
+            init="2024-07-15T00:00:00",  # not the expected_year=2025 passed below
         )
         with pytest.raises(TiggeIdentityError, match="year"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
     def test_rejects_a_month_outside_jjas(self) -> None:
@@ -343,7 +350,10 @@ class TestAssertTiggeIdentity:
         )
         with pytest.raises(TiggeIdentityError, match="month"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
     def test_rejects_an_init_hour_outside_00_12_utc(self) -> None:
@@ -356,7 +366,10 @@ class TestAssertTiggeIdentity:
         )
         with pytest.raises(TiggeIdentityError, match="hour"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
     def test_rejects_a_lead_axis_that_does_not_match_the_request(self) -> None:
@@ -369,7 +382,10 @@ class TestAssertTiggeIdentity:
         )
         with pytest.raises(TiggeIdentityError, match="lead"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6, 12]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6, 12],
             )
 
     def test_rejects_a_non_ecmwf_centre_attribute(self) -> None:
@@ -383,7 +399,10 @@ class TestAssertTiggeIdentity:
         ds.attrs["GRIB_centre"] = "kwbc"  # NCEP, not ECMWF
         with pytest.raises(TiggeIdentityError, match="centre"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
     def test_a_units_defect_is_still_caught_first(self) -> None:
@@ -400,39 +419,30 @@ class TestAssertTiggeIdentity:
         )
         with pytest.raises(TiggeUnitsError):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
 
-class TestIdentityGateRejectsAPartialOrPerturbedSeason:
+class TestIdentityGateRejectsAPerturbedOrMisidentifiedSeason:
     """D2/D6 — `--skip-retrieve` re-uses whatever GRIB is on disk. The gate
     must therefore assert the EXACT one-season, control-forecast,
     accumulated-from-forecast-start contract, not merely that no forbidden
-    year/month/hour appears: a half-downloaded season, a perturbed-member
-    file or an instantaneous field would all otherwise be screened and
-    reported as "JJAS TIGGE_YEAR"."""
+    year/month/hour appears: a perturbed-member file or an instantaneous
+    field would otherwise be screened and reported as that year's season
+    regardless of what it actually contains. Plan 220 D2 — a season SHORT of
+    its expected schedule is no longer one of those rejections; see
+    `TestSeasonCompletenessAllowsGaps`."""
 
     def test_the_expected_schedule_is_the_full_jjas_00_12z_grid(self) -> None:
-        schedule = expected_init_schedule()
+        schedule = expected_init_schedule(year=2025)
         assert len(schedule) == 244  # 122 JJAS days x 2 inits (measured)
         assert len(set(schedule)) == 244
         assert min(schedule) == datetime(2025, 6, 1, 0)
         assert max(schedule) == datetime(2025, 9, 30, 12)
         assert {t.hour for t in schedule} == {0, 12}
-
-    def test_rejects_a_partial_season(self) -> None:
-        """THE `--skip-retrieve` DEFECT: one perfectly valid JJAS init is
-        not a season. Without an exact-schedule assertion this file passes
-        every year/month/hour check and is screened as the whole season."""
-        ds = _cf_dataset(
-            steps_h=[0, 6],
-            lat=np.array([30.0]),
-            lon=np.array([81.0]),
-            accum_mm=np.array([[0.0], [1.0]]),
-            init="2025-07-15T00:00:00",
-        )
-        with pytest.raises(TiggeIdentityError, match="partial season"):
-            assert_tigge_identity(ds, expected_leadtime_hours=[0, 6])
 
     def test_rejects_a_repeated_initialisation(self) -> None:
         tp = xr.DataArray(
@@ -463,6 +473,7 @@ class TestIdentityGateRejectsAPartialOrPerturbedSeason:
             assert_tigge_identity(
                 ds,
                 expected_init_times=_ONE_INIT,
+                expected_year=2025,
                 expected_leadtime_hours=[0, 6],
             )
 
@@ -476,7 +487,10 @@ class TestIdentityGateRejectsAPartialOrPerturbedSeason:
         )
         with pytest.raises(TiggeIdentityError, match="dataType"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
     def test_rejects_a_non_accumulated_field(self) -> None:
@@ -489,7 +503,10 @@ class TestIdentityGateRejectsAPartialOrPerturbedSeason:
         )
         with pytest.raises(TiggeIdentityError, match="stepType"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
     def test_rejects_a_field_that_does_not_accumulate_from_forecast_start(
@@ -506,7 +523,96 @@ class TestIdentityGateRejectsAPartialOrPerturbedSeason:
         )
         with pytest.raises(TiggeIdentityError, match="accumulate from forecast start"):
             assert_tigge_identity(
-                ds, expected_init_times=_ONE_INIT, expected_leadtime_hours=[0, 6]
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
+            )
+
+
+class TestSeasonCompletenessAllowsGaps:
+    """Plan 220 D2 (owner correction 2026-08-31): 'there may not be full 244
+    forecast runs — sometimes forecasts are not published.' A season SHORT
+    of its expected schedule is admitted, with the shortfall reported as
+    named gaps, never rejected outright — the opposite of Plan 216's
+    exact-count gate this supersedes. An init OUTSIDE the expected schedule
+    is still rejected: that is the retrieval being wrong, not the archive
+    being incomplete."""
+
+    def test_a_missing_expected_init_is_recorded_as_a_named_gap_not_rejected(
+        self,
+    ) -> None:
+        """THE Plan 216 REGRESSION CASE: one perfectly valid JJAS init,
+        screened against the full 244-init schedule, used to be rejected as
+        a 'partial season'. It must now be ADMITTED, with 243 named gaps."""
+        ds = _cf_dataset(
+            steps_h=[0, 6],
+            lat=np.array([30.0]),
+            lon=np.array([81.0]),
+            accum_mm=np.array([[0.0], [1.0]]),
+            init="2025-07-15T00:00:00",
+        )
+        completeness = assert_tigge_identity(
+            ds, expected_leadtime_hours=[0, 6], expected_year=2025
+        )
+        assert completeness.actual_count == 1
+        assert completeness.expected_count == 244
+        assert len(completeness.missing_inits) == 243
+        assert datetime(2025, 6, 1, 0) in completeness.missing_inits
+        assert completeness.completeness_fraction == pytest.approx(1 / 244)
+
+    def test_a_complete_season_reports_full_completeness_and_no_gaps(self) -> None:
+        ds = _cf_dataset(
+            steps_h=[0, 6, 12],
+            lat=np.array([30.0]),
+            lon=np.array([81.0]),
+            accum_mm=np.array([[0.0], [1.0], [2.0]]),
+            init="2025-07-15T00:00:00",
+        )
+        completeness = assert_tigge_identity(
+            ds,
+            expected_init_times=_ONE_INIT,
+            expected_year=2025,
+            expected_leadtime_hours=[0, 6, 12],
+        )
+        assert completeness.missing_inits == ()
+        assert completeness.actual_count == completeness.expected_count == 1
+        assert completeness.completeness_fraction == pytest.approx(1.0)
+
+    def test_an_init_outside_the_expected_schedule_is_still_rejected(self) -> None:
+        """The RETRIEVAL is wrong here, not the archive: an init beyond the
+        narrowed expected set (`_ONE_INIT`) is a real defect that D2 still
+        rejects — gaps are tolerated, extras are not."""
+        tp = xr.DataArray(
+            np.zeros((2, 2, 1), dtype=np.float32),
+            dims=("time", "step", "values"),
+            attrs={
+                "units": "kg m**-2",
+                "GRIB_dataType": "cf",
+                "GRIB_stepType": "accum",
+            },
+        )
+        ds = xr.Dataset(
+            {"tp": tp},
+            coords={
+                "time": (
+                    "time",
+                    np.array(
+                        ["2025-07-15T00:00:00", "2025-07-16T00:00:00"],
+                        dtype="datetime64[ns]",
+                    ),
+                ),
+                "step": ("step", np.array([0, 6], dtype="timedelta64[h]")),
+                "latitude": ("values", np.array([30.0])),
+                "longitude": ("values", np.array([81.0])),
+            },
+        )
+        with pytest.raises(TiggeIdentityError, match="outside the expected schedule"):
+            assert_tigge_identity(
+                ds,
+                expected_init_times=_ONE_INIT,
+                expected_year=2025,
+                expected_leadtime_hours=[0, 6],
             )
 
 
