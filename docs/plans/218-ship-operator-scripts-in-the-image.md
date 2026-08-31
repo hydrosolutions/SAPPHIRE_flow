@@ -1,7 +1,7 @@
 ---
 status: DRAFT
 created: 2026-08-31
-plan: 215
+plan: 218
 title: Ship the operator scripts in the runtime image so a deployment can be reproduced
 scope: Copy a curated set of operator scripts into the runtime image, plus the .dockerignore hygiene that keeps build junk out. No change to any script's behaviour.
 depends_on: []
@@ -9,7 +9,7 @@ blocks: [188]
 source: 2026-08-31 — Plan 188 T4 could not run because scripts/import_caravan_attributes.py, merged in T1-T3, is absent from the deployed image
 ---
 
-# Plan 215 — the operator CLI we shipped isn't in the image
+# Plan 218 — the operator CLI we shipped isn't in the image
 
 ## Status
 
@@ -32,13 +32,17 @@ behaviour and no runtime code path.
 ## The defect — measured, not inferred
 
 `Dockerfile` copies `pyproject.toml`, `uv.lock`, `README.md`, `src/`, `alembic.ini`, `alembic/`,
-and `docker/`. **It never copies `scripts/`.** The runtime stage copies only `/app/.venv` and
-`/app/src` from the builder (`Dockerfile:130-131`). Confirmed on the mini 2026-08-31:
+and `docker/`. **It never copies `scripts/`.** The runtime stage copies `/app/.venv`, `/app/src`, `/app/alembic.ini` and
+`/app/alembic` from the builder (`Dockerfile:130-133`) — but not `scripts/`. **The exact fix is a
+single curated runtime-stage `COPY --chown=app:app … /app/scripts/` inserted after
+`Dockerfile:133`; no builder-stage copy is needed.** Confirmed on the mini 2026-08-31:
 
 ```
 $ docker exec sapphire_flow-api-1 ls /app/
 alembic  alembic.ini  config  config.toml  docker  src
 ```
+
+(Plain `ls` hides `/app/.venv`, which is also present — the point is only that `scripts` is absent.)
 
 This is **not** a `.dockerignore` exclusion — `scripts` is not mentioned there. The directory is
 simply never copied.
@@ -69,33 +73,45 @@ procedures that built the deployment cannot reproduce it.
 
 - **D2 — The curated set is the scripts an operator runs AGAINST a deployment.** Proposed:
   `import_caravan_attributes.py`, `onboard.py`, `backfill_meteoswiss_history.py`,
-  `backfill_era5_land_history.py`, `check_readiness.py`, `validate_forcing_reference.py`,
-  `regenerate_icon_grid_asset.py`. **Excluded:** host provisioning (`bootstrap-mac-mini.sh`,
-  `launchd/`), dev tooling (`codex-review.sh`), research (`dhm_precip/`,
+  `backfill_era5_land_history.py`, `validate_forcing_reference.py`,
+  `regenerate_icon_grid_asset.py`. **`check_readiness.py` is excluded** — it inspects review
+  metadata in plan/design documents (`scripts/check_readiness.py:110`) and `docs/` is not shipped
+  (`.dockerignore:9`), so it could never work in the image; it is development tooling. **Excluded:** host provisioning (`bootstrap-mac-mini.sh`,
+  `launchd/`), dev tooling (`codex-review.sh`, `check_readiness.py`), research (`dhm_precip/`,
   `audit_distribution_shift.py`, `063_e2e_verify.py`, `plan100_*.py`), and anything Nepal-stack
   specific unless the owner wants it. **The boundary is an owner decision** — T1 must not
   silently widen it.
 
-- **D3 — The scripts must be importable, not just present.** `scripts/` is not a package and the
-  script does `from import_caravan_attributes import ...` style imports only when `scripts/` is on
-  `sys.path`. T1 must verify the shipped script actually *runs* in the container, not merely that
-  the file exists — the failure this plan fixes was itself a "looks fine, isn't there" failure.
+- **D3 — Proving the script *runs* requires model resolution, not `--help`.** An earlier draft of
+  this decision justified the check by sibling imports; **that rationale was false** — no curated
+  script does `from import_caravan_attributes import …`, and plain execution already puts
+  `/app/scripts` on `sys.path`. The real gap is later: `--help` exits inside `parse_args()`
+  (`scripts/import_caravan_attributes.py:358`) **before** `resolve_required_static_names()` runs
+  (`:369`), and that call reads the required statics from the **discovered** `cmal_pool_pt`
+  adapter. `discover_models()` swallows an import failure and omits the model
+  (`services/model_registry.py:101`), so on the ordinary image the operator command still dies
+  with "model not registered" while `--help` exits 0.
 
-- **D4 — `__pycache__` must not ship.** Add it to `.dockerignore` if a curated `COPY` would
-  otherwise carry it. Stale bytecode in an image is a real source of confusing behaviour.
+  **This is not a missing plan — it is an existing build arg.** `WITH_AQUACAST=0` is the default
+  (`Dockerfile:39`) and Plan 188 T4 already specifies a one-off
+  `docker build --build-arg WITH_AQUACAST=1` image (`Dockerfile:32-44`). T1 must therefore verify
+  model resolution **in a `WITH_AQUACAST=1` image**, not treat `--help` on the default image as
+  proof.
+
+- **D4 — `__pycache__` needs no work.** It is already excluded at `.dockerignore:3`. Recorded so a
+  reviewer does not re-raise it; **no `.dockerignore` edit is required by this plan.**
 
 ## Task
 
 **T1 — copy the curated scripts into the runtime image and prove they run.**
-*In:* the `COPY` line(s) in `Dockerfile` (builder and/or runtime stage as needed), the
-`.dockerignore` hygiene from D4, and one line in `docs/deployment/mac-mini-staging.md` recording
+*In:* one runtime-stage `COPY` in `Dockerfile` after `:133` (per D1/D2's curated list), and one line in `docs/deployment/mac-mini-staging.md` recording
 that operator scripts live at `/app/scripts` and how to invoke one.
 *Out:* changing any script; moving scripts under `src/`; a console-scripts migration (§ Deferred);
 adding scripts beyond D2's list without saying so.
-*Exit:* a built image contains exactly D2's set at `/app/scripts`; **`--help` runs successfully
-inside the container for at least `import_caravan_attributes.py`** (proving importability per D3,
-not just presence); `docker exec … ls /app/scripts` matches the curated list; image size delta
-recorded.
+*Exit:* a built image contains exactly D2's set at `/app/scripts`; `docker exec … ls /app/scripts`
+matches the curated list; image size delta recorded. **And, per D3, in a `WITH_AQUACAST=1` image:
+`resolve_required_static_names()` returns a non-empty set** — i.e. `cmal_pool_pt` resolves. `--help`
+on the default image is a necessary smoke check, not the gate.
 
 ## Deferred (not drafted)
 
@@ -112,6 +128,7 @@ or research code · changing what any script does · Plan 188 T4 itself (this on
 ## Exit gates
 
 - `docker exec <container> ls /app/scripts` lists exactly D2's curated set.
-- `docker exec <container> python /app/scripts/import_caravan_attributes.py --help` exits 0.
-- `.dockerignore` prevents `__pycache__` from entering the image.
+- `--help` exits 0 on the default image (smoke check).
+- **In a `WITH_AQUACAST=1` image, `cmal_pool_pt` resolves and `resolve_required_static_names()`
+  returns a non-empty set** — the gate that actually proves Plan 188 T4 can run.
 - The deployment doc records where operator scripts live and how to run one.
