@@ -63,7 +63,22 @@ PARAM_GROUPS: list[tuple[str, str, str]] = [
 
 _DEFAULT_MAX_DOWNLOAD_BYTES: int = 4 * 1024 * 1024 * 1024  # 4 GB
 _ASSET_SIZE_ESTIMATE_BYTES: int = 2 * 1024 * 1024  # 2 MB fallback
-_MAX_FILE_COUNT: int = 500
+
+# Runaway guard, NOT an operating limit. `_DEFAULT_MAX_DOWNLOAD_BYTES` above
+# is the cost bound, but it is an ESTIMATE — accumulated from the STAC `size`
+# field, falling back to `_ASSET_SIZE_ESTIMATE_BYTES` when absent — and is
+# never reconciled against bytes actually downloaded (Plan 221 D2), so it
+# cannot be relied on to catch a runaway on its own. This constant exists to
+# stop unbounded downloads (e.g. a pagination or filter bug) if the byte
+# estimate is wrong. Real ICON-CH2-EPS cycles were observed at 484-501
+# allowlisted files as of 2026-08-31 (Plan 221); a fixed 500 tripped on the
+# 501-file cycles, aborting those forecast cycles with zero forecasts
+# written. Raised to 2000 — deliberate headroom, ~4x the observed working
+# range, so it will not trip on a healthy cycle while still catching a
+# genuine runaway. The value is NOT derived from the observed maximum
+# (Plan 221 D3, guarding against Plan 213's mistake): the 484-vs-501 gap is
+# unexplained, so the true ceiling is unknown.
+_MAX_FILE_COUNT: int = 2000
 _GRIB_MAGIC: bytes = b"GRIB"
 
 # Pagination cap for _fetch_grib_files's 120 h-window walk.
