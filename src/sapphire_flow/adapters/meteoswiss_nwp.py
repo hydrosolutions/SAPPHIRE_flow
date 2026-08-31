@@ -72,12 +72,12 @@ _ASSET_SIZE_ESTIMATE_BYTES: int = 2 * 1024 * 1024  # 2 MB fallback
 # stop unbounded downloads (e.g. a pagination or filter bug) if the byte
 # estimate is wrong. Real ICON-CH2-EPS cycles were observed at 484-501
 # allowlisted files as of 2026-08-31 (Plan 221); a fixed 500 tripped on the
-# 501-file cycles and silently aborted forecasts (zero forecasts written,
-# Prefect run reporting COMPLETED). Raised to 2000 — ~4x the observed
-# working range, so it will not trip on a healthy cycle, while still
-# catching a genuine runaway. Do not derive this value from an observed
-# maximum again (Plan 213's mistake, repeated in Plan 221 D3): the 484-vs-501
-# gap is unexplained, so the true ceiling is unknown.
+# 501-file cycles, aborting those forecast cycles with zero forecasts
+# written. Raised to 2000 — deliberate headroom, ~4x the observed working
+# range, so it will not trip on a healthy cycle while still catching a
+# genuine runaway. The value is NOT derived from the observed maximum
+# (Plan 221 D3, guarding against Plan 213's mistake): the 484-vs-501 gap is
+# unexplained, so the true ceiling is unknown.
 _MAX_FILE_COUNT: int = 2000
 _GRIB_MAGIC: bytes = b"GRIB"
 

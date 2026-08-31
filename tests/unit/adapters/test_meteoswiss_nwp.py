@@ -1519,7 +1519,8 @@ class TestMaxFilesCap:
         with structlog.testing.capture_logs() as captured:
             files = adapter._fetch_grib_files(cycle)
 
-        # All 100 items are allowlisted (tp) and below _MAX_FILE_COUNT=500.
+        # All 100 items are allowlisted (tp) and well below the runaway guard
+        # (_MAX_FILE_COUNT).
         assert len(files) == 100
         cap_events = [e for e in captured if e.get("event") == "nwp.fetch_cap_reached"]
         assert cap_events == []
