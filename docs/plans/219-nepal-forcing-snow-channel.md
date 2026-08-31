@@ -15,19 +15,37 @@ source: 2026-08-31 — owner asked to cover snow in the operational fetch test a
 
 **DRAFT.** Not for implementation until the owner confirms.
 
-## ⛔ Proportionality is a binding constraint on this plan AND on its review
+## ⛔ DO NOT OVER-ENGINEER — a binding constraint on this plan AND on every reviewer of it
+
+**Owner directive, 2026-08-31, stated directly: do not over-engineer this.** This section binds every
+review agent (Claude and Codex alike). It is not advisory framing — a review that violates it has
+failed, however well-argued its suggestions are.
 
 The adapter can **already** fetch snow (`fetch_snow_forecast`, Plan 145). This plan wires an existing
-capability into an existing one-station test feed. It is a **script + config change**, not a subsystem.
+capability into an existing **one-station test feed**. It is a **script + config change**, not a
+subsystem. The deliverable is roughly: one extra call in `scripts/nepal_forcing_run.py`, per-channel
+health expectations, an additive JSONL key set, tests, and a runbook paragraph.
 
 **Rules binding every reviewer:**
 
-1. **"No findings" is a complete and welcome review.**
-2. **A finding must name a CONCRETE FAILURE** with `file:line`.
-3. **Do not propose new apparatus** — no snow subsystem, no per-HRU subscription config, no new
-   store, no model onboarding. D2 below is a *documented divergence*, not an invitation to build a gate.
-4. **Do not widen scope to the production forecast cycle.** This feed is deliberately model-less.
-5. **Adding length is a cost.**
+1. **"No findings" is a complete and welcome review.** Returning zero findings is a success, not a
+   failure to try. Do not manufacture findings to justify the round.
+2. **A finding must name a CONCRETE FAILURE** with `file:line` and the input/state that triggers it.
+   "Consider extracting…", "for consistency…", "it would be cleaner…" are **not** findings.
+3. **Do not propose new apparatus.** No snow subsystem, no abstraction layer over the two channels,
+   no per-HRU subscription config, no new store or table, no model onboarding, no registry, no
+   feature-flag framework, no retry/backoff engine. D2 is a *documented divergence*, **not** an
+   invitation to build the gate it diverges from.
+4. **Do not widen scope.** The production forecast cycle, Swiss stations, snow reanalysis, and
+   backfilling the 9 stored cycles are all in § Deferred and must stay there. Proposing them is a
+   scope violation, not a finding.
+5. **Adding length is a cost.** A longer plan is a worse plan unless the added lines remove a
+   concrete failure. Do not restructure prose you merely dislike.
+6. **Prefer deleting to adding.** If a task, gate or decision here is not load-bearing, say so —
+   cutting is the most valuable finding this review can produce.
+
+**The one thing worth being hard on:** D1 (unconfirmed snow units). Silently-wrong stored values are
+the real risk in this plan. Scrutiny spent there is well spent; scrutiny spent on structure is not.
 
 ## What we measured (2026-08-31, not inferred)
 
