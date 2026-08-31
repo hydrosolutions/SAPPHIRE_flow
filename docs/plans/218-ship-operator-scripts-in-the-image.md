@@ -157,6 +157,35 @@ Rewriting scripts · moving them into `src/` · a packaging migration · shippin
 or research code · changing what any script does · Plan 188 T4 itself — **and this plan does not unblock it**; T4 has its own
 recipe (see above).
 
+## Implementation status — 2026-08-31 — PARTIALLY VERIFIED, do not archive
+
+**The code landed on `main` without a PR, by operator error.** A `git add -A` in the shared main
+tree swept the in-flight `/implement` working files into `c0c493dd`, whose message describes an
+unrelated Plan 221 draft and claims "plan-doc-only … no version bump" — both false. `384deaf7`
+added the missing bump. Consequence for auditing: **`git log --grep=218` does not find the
+implementation**; it is in `c0c493dd`. History was not rewritten, deliberately.
+
+**What IS verified in the tree (re-checked 2026-08-31):**
+
+- The curated `COPY --chown=app:app … /app/scripts/` is in the runtime stage (`Dockerfile:135-144`).
+- **Invocation is documented correctly**: `docker exec`/`compose exec` bypasses the ENTRYPOINT where
+  `DATABASE_URL` is assembled and where root drops to `gosu app`, so operators must call
+  `/entrypoint.sh python /app/scripts/…`. Recorded in both `Dockerfile:137-143` and
+  `docs/deployment/mac-mini-staging.md:755`. `--help` masks this, which is why D3 exists.
+- **The locking test asserts set equality, not substring presence**: it parses logical `COPY`
+  instructions, requires exactly one targeting `/app/scripts`, and asserts
+  `shipped == _CURATED_SCRIPTS` — so neither a missing script nor an extra subtree passes.
+  5 tests green.
+
+**What is NOT verified, and blocks calling this done:** every image-level exit gate.
+No `WITH_AQUACAST=1` build was produced, no `docker exec … ls /app/scripts` listing, no image-size
+delta, and **no check that `resolve_required_static_names()` returns non-empty** — which D3 names as
+the *only* real proof, because `--help` exits before that resolution runs. These need docker plus
+both build secrets and were not runnable where the implementation happened.
+
+**Therefore this plan stays READY, not COMPLETE.** Run the image gates when host access returns and
+record the results here, as D3a's verification was recorded.
+
 ## Exit gates
 
 - `docker exec <container> ls /app/scripts` lists exactly D2's curated set.
