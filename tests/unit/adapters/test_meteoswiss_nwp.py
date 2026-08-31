@@ -984,12 +984,21 @@ class TestFetchGribFiles:
         assert exc_info.value.limit == 5 * huge
 
     def test_raises_on_file_count_exceeded(self, tmp_path: Path) -> None:
-        """Plan 223 — the real 2026-08-29 outage shape: 501 small GRIB
-        files trip the file-count cap, not the byte cap. The exception
-        must carry structured fields naming the CAP KIND plus the
-        observed/limit numbers (D6), distinct from the byte-cap case."""
+        """Plan 223 — the 2026-08-29 outage shape: many small GRIB files
+        trip the file-count cap, not the byte cap. The exception must
+        carry structured fields naming the CAP KIND plus the
+        observed/limit numbers (D6), distinct from the byte-cap case.
+
+        Plan 221: this deliberately builds `_MAX_FILE_COUNT + 1` items
+        rather than a literal 501. The original literal encoded the cap's
+        value (then 500) rather than its CONTRACT, so raising the cap to
+        2000 turned a passing test red without any behaviour regressing.
+        A guard test must assert "exceeding the cap raises", never a
+        specific number the cap is expected to change to."""
+        from sapphire_flow.adapters.meteoswiss_nwp import _MAX_FILE_COUNT
+
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
-        features = [_make_item("tot_prec", step=s) for s in range(501)]
+        features = [_make_item("tot_prec", step=s) for s in range(_MAX_FILE_COUNT + 1)]
 
         def handler(request: httpx.Request) -> httpx.Response:
             if "/items" in str(request.url):
@@ -1005,8 +1014,8 @@ class TestFetchGribFiles:
             adapter._fetch_grib_files(cycle)
 
         assert exc_info.value.kind == "file_count"
-        assert exc_info.value.observed == 501
-        assert exc_info.value.limit == 500
+        assert exc_info.value.observed == _MAX_FILE_COUNT + 1
+        assert exc_info.value.limit == _MAX_FILE_COUNT
 
     def test_creates_per_cycle_scratch_dir(self, tmp_path: Path) -> None:
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
