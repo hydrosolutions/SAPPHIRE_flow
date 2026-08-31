@@ -242,16 +242,28 @@ from.
    from no error at all, at any of the three leads measured.
 4. **Neither pole of the plan's own decision rule applies cleanly.** This is not "apparent alignment"
    (mid/high bands are clearly non-zero) and it is not "a repeated half-day (~12 h) displacement" either
-   — the measured displacement is real, resolved, and repeated, but at roughly 40-50% of ERA5-Land's
-   magnitude.
+   — the measured displacement is real, resolved and repeated, but smaller than ERA5-Land's.
+   ⚠️ **An earlier revision put it at "roughly 40-50% of ERA5-Land's magnitude" from JJAS 2025 alone;
+   six seasons show no single ratio holds** (Plan 220). ⛔ The direction survives; the fraction does not.
 
 ## Verdict (bounded by D4)
 
-**NO-GO on deploying the originally proposed ~12 h correction as designed** — IFS's own measured
-displacement in the two affected bands is roughly 40-55% of that magnitude; applying ERA5-Land's
-larger correction to IFS forcing would systematically over-correct, by ~6-9 h.
+⚠️ **SUPERSEDED IN PART, 2026-08-31 (Plan 220).** This verdict was drawn from **JJAS 2025
+alone**. Six seasons now show the mid-band offset spanning ~9 h (−2.31 h to −11.48 h on the
+preregistered branch; still 8.22 h under a fixed four-station panel), with 2025 near the
+middle by chance. ⛔ **The magnitude statements below no longer hold and must not be used to
+size anything** — see the multi-season section. The NO-GO stands and is strengthened.
 
-**GO on finer-resolution correction work, calibrated to IFS itself rather than to ERA5-Land** — the
+**NO-GO on deploying the originally proposed ~12 h correction as designed** — IFS's displacement differs
+from ERA5-Land's in every season measured, so ERA5-Land's correction would misapply to IFS forcing.
+⛔ **The over-correction is NOT quantified here**: an earlier revision put it at "~6-9 h" from the 2025
+season alone, and the six-season spread shows that figure was an artefact of which year was drawn.
+
+**GO on further MEASUREMENT — not on constructing a correction** — ⛔ an earlier revision said "calibrated
+to IFS itself", which presumes IFS has a single displacement to calibrate against. **It does not**, on
+this evidence. What is supported is more measurement (finer than 6-hourly, more stations, branch-robust
+aggregation); what is **not** supported is building a correction from these numbers. The underlying
+observation still stands — the
 mid/high-band error is real (well beyond the ±3 h bound), repeated across three correlated lead strata
 (D+1/D+2/D+3 pool overlapping initialisations and the same stations, so they are not independent
 samples — the repetition still shows the same displacement is not a one-lead artefact, but it does not

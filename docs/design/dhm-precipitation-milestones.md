@@ -1122,11 +1122,13 @@ actually flies. M-A11 re-measures the same phase question against ECMWF IFS cont
 D+3), reusing M-A6's own phase estimator unmodified. Screening only — no correction, no magnitude
 claim, no operational dependency (a measured ~48 h TIGGE embargo rules that out for any centre).
 
-**✅ COMPLETE 2026-08-29.** IFS shares the mid/high-elevation-band error's DIRECTION but at roughly
-**a third to a half of ERA5-Land's magnitude** (mid ~−5.2 to −5.7 h vs ERA5-Land's −14.4 h; high ~−5.2
-to −5.7 h vs −11.9 h), resolved well beyond the ±3 h bound 6-hourly data permits; the low band is
-unresolved from zero at every lead. **NO-GO on the originally proposed ~12 h correction as designed;
-GO on finer-resolution correction work calibrated to IFS's own, smaller displacement.** Full
+**✅ COMPLETE 2026-08-29 — ⚠️ MAGNITUDE SUPERSEDED 2026-08-31 by Plan 220.** IFS shares the
+mid/high-elevation-band error's DIRECTION. ⛔ The single-season magnitude claim ("a third to a half of
+ERA5-Land's") **does not survive six seasons**: the mid band spans ~9 h across 2020-2025 on the
+preregistered branch, with JJAS 2025 near the middle by chance. **There is no single IFS displacement to
+calibrate against**, so nothing here sizes a correction. The low band is unresolved from zero at every
+lead. **NO-GO on the originally proposed ~12 h correction as designed;
+GO on further MEASUREMENT (finer than 6-hourly, more stations, branch-robust aggregation) — ⛔ NOT on constructing a correction.** Full
 measurement: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md`. Code:
 `scripts/dhm_precip/tigge_ifs.py` (T1 retrieval/extraction), `scripts/dhm_precip/
 tigge_gauge_timing.py` (T2 comparison), `scripts/dhm_precip/diurnal_phase.py` (D5's shared,
