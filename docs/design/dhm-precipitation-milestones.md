@@ -1142,6 +1142,32 @@ nearest-cell extraction operator is unaffected.
 **Exit:** a measured answer, with lead-dependence, the ±3 h resolution bound, and a screening verdict
 bounded by D4. Owner decides (M-DEC).
 
+### M-A11b · Multi-season IFS timing (Plan 220)
+**Depends: M-A11.** Does **not** gate M-DEC (M-DEC already resolves off M-A9 + M-A11's single-season
+screen) — it closes prerequisite 2 of the independent verdict that reviewed M-A11 ("potentially several
+hours or a sign change" across seasons) and feeds a later retraining decision, not the Track G
+deployment gate.
+
+M-A11 measured JJAS **2025 only** — one season cannot show interannual variability. `tigge_ifs.py` and
+`tigge_gauge_timing.py` are parameterised by `--year` (D1: the `TIGGE_YEAR` module constant that used to
+default both the schedule and the identity gate is deleted, not checked-around) and JJAS 2020-2024 are
+retrieved alongside the already-archived 2025, reusing the exact same estimator, amplitude gate, branch
+convention and elevation/lead bands (D5 — no method change). The 244-run schedule is now the *expected*
+count, not a required one (D2): a missing forecast run is recorded as a named gap
+(`SeasonCompleteness.missing_inits`), never a season-wide rejection — real archives have unpublished
+runs. The report is per-year **and** pooled (D3: `run_multi_season` concatenates the six seasons' raw
+paired frames and reruns the unchanged station-equal estimator once on the union — never a median of six
+already-computed point estimates, which is a different statistic), with 2020 included and hedged (D4: it
+carries only 3 high-band gauges against 6-8 in later years).
+
+**Status 2026-08-31: code complete and gated; T2's live retrieval in progress.** See
+`docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11b for the results once T2/T3
+complete.
+
+**Exit:** the IFS-vs-gauge phase offset for every overlapping JJAS season (2020-2025), per-year and
+pooled, with per-cell `n`, station counts and a per-season completeness figure; the re-run 2025 row
+matching the published table (MEASURED — see the design doc addendum).
+
 ---
 
 ## Working on this track — the research data is gitignored, so a worktree starts empty
@@ -1346,6 +1372,8 @@ scheduled against a live feed before M-I4.**
     {"id": "M-A9",  "depends_on": ["M-A6", "M-A7", "M-A8", "M-A10"]},
     {"id": "M-A11", "depends_on": ["M-A6", "M-A7", "M-A8", "M-A9"],
      "note": "Plan 216. Re-measures M-A9's Use-1 timing question against the operational ECMWF IFS forecast (TIGGE via ECDS) instead of ERA5-Land. Screening only — see docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md."},
+    {"id": "M-A11b", "depends_on": ["M-A11"],
+     "note": "Plan 220. Closes prerequisite 2 of M-A11's independent verdict — JJAS 2020-2024 alongside 2025, per-year and pooled, same estimator. Does NOT gate M-DEC; feeds a later retraining decision."},
     {"id": "M-DEC", "depends_on": ["M-A9", "M-A11"], "kind": "decision",
      "note": "Owner Phase-2 GO / NO-GO. M-A9 exits with a RECOMMENDATION; only this node authorises Track G."},
     {"id": "M-G1",  "depends_on": ["M-DEC"]},

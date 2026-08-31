@@ -48,8 +48,10 @@ from scripts.dhm_precip.tigge_gauge_timing import (
     estimate_station_phase,
     restrict_to_pinned_season,
     run_all_bands,
+    run_multi_season,
     station_amplitude_rows,
     station_day_count,
+    write_multi_season_csv,
 )
 from scripts.dhm_precip.tigge_ifs import LEAD_BANDS
 
@@ -736,7 +738,7 @@ class TestResultMatrixIsComplete:
 
     def test_every_lead_band_elevation_band_reading_cell_is_present(self) -> None:
         series, population, coords = _synthetic_inputs()
-        results = run_all_bands(series, population, coords)
+        results = run_all_bands(series, population, coords, year=2025)
         assert len(results) == 3 * 3 * 2
         assert {
             (r.lead_band, r.elevation_band, r.gauge_shift_reading) for r in results
@@ -754,6 +756,189 @@ class TestResultMatrixIsComplete:
             for r in results
             if not r.elevation_band.startswith("low")
         )
+
+
+def _year_inputs(
+    *,
+    year: int,
+    station: str,
+    tigge_peak_hour: int,
+    gauge_peak_hour: int = 6,
+    mass: float = 10.0,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Plan 220 D3 test fixture — one low-band station-season: a single D+1
+    init whose four valid times cover exactly `REQUIRED_CLOCK_HOURS` (0/6/
+    12/18), TIGGE mass concentrated at `tigge_peak_hour`, and an hourly
+    gauge record whose 6h period-ending windows concentrate mass at
+    `gauge_peak_hour`. Returns `(tigge_series, gauge_frame)` for `year`,
+    in the raw (unpaired) schema `run_all_bands`/`build_paired_frame`
+    consume — never the pre-paired schema `_cycle_rows` builds."""
+    init = f"{year}-06-01T00:00:00"
+    steps = LEAD_BANDS["D+1"]  # 24,30,36,42 -> clock hours 0,6,12,18
+    tigge_series = pl.DataFrame(
+        {
+            "station": [station] * len(steps),
+            "init_time_utc": [init] * len(steps),
+            "ending_lead_hours": list(steps),
+            "valid_time_utc": [
+                (np.datetime64(init, "ns") + np.timedelta64(h, "h"))
+                .astype("datetime64[s]")
+                .astype(str)
+                for h in steps
+            ],
+            "tigge_mm": [mass if h % 24 == tigge_peak_hour else 0.0 for h in steps],
+        }
+    ).with_columns(
+        pl.col("init_time_utc").str.to_datetime(),
+        pl.col("valid_time_utc").str.to_datetime().cast(pl.Datetime("ns")),
+    )
+    # D+1's valid times run 2025-06-02T00:00..18:00 (init + 24..42h); the
+    # gauge lookup needs the full 6h window BEHIND each of those, so the
+    # stamps range must reach back to the day before and forward past the
+    # last valid time itself.
+    stamps = pl.datetime_range(
+        pl.datetime(year, 5, 31, 0, 0),
+        pl.datetime(year, 6, 3, 0, 0),
+        interval="1h",
+        eager=True,
+    )
+    gauge_frame = pl.DataFrame(
+        {
+            "station": [station] * len(stamps),
+            "timestamp": stamps,
+            "value_mm": [mass if t.hour == gauge_peak_hour else 0.0 for t in stamps],
+        }
+    )
+    return tigge_series, gauge_frame
+
+
+class TestRunMultiSeason:
+    """Plan 220 (M-A11b) D3 — the report is PER-YEAR *and* POOLED, never
+    pooled-only, and 'pooled' means concatenating the raw per-year paired
+    frames and re-running the UNCHANGED station-equal estimator ONCE, never
+    averaging or medianing the per-year point estimates."""
+
+    def _cell(
+        self, results: list[tuple[str, PhaseEstimate]], *, season: str
+    ) -> PhaseEstimate:
+        return next(
+            r
+            for s, r in results
+            if s == season
+            and r.lead_band == "D+1"
+            and r.elevation_band.startswith("low")
+            and r.gauge_shift_reading == "as_labelled_utc"
+        )
+
+    def test_every_year_and_a_pooled_row_are_present_with_their_own_n(self) -> None:
+        tigge_2024, gauge_2024 = _year_inputs(year=2024, station="A", tigge_peak_hour=0)
+        tigge_2025, gauge_2025 = _year_inputs(year=2025, station="A", tigge_peak_hour=0)
+        population = GaugeMaskedPopulation(
+            by_station={
+                Station("A"): MaskedGaugeSeries(
+                    frame=pl.concat([gauge_2024, gauge_2025])
+                )
+            },
+            excluded=(),
+            accounting=(),
+        )
+        coords = StationCoordinateTable(
+            by_station={
+                Station("A"): StationCoordinate(
+                    station=Station("A"),
+                    excel_col="A",
+                    lat=28.0,
+                    lon=84.0,
+                    elev_m=500.0,
+                )
+            }
+        )
+        results = run_multi_season(
+            {2024: tigge_2024, 2025: tigge_2025}, population, coords
+        )
+        assert {season for season, _ in results} == {"2024", "2025", "pooled"}
+
+        year_2024 = self._cell(results, season="2024")
+        year_2025 = self._cell(results, season="2025")
+        pooled = self._cell(results, season="pooled")
+        assert year_2024.status is PhaseStatus.OK
+        assert year_2025.status is PhaseStatus.OK
+        assert pooled.status is PhaseStatus.OK
+        # Same station, same-direction signal both years -> pooling is a
+        # concatenation of windows, not an average of two point estimates:
+        # the pooled `n` is the UNION of both years'.
+        assert pooled.n_windows == year_2024.n_windows + year_2025.n_windows
+        assert pooled.n_stations == 1  # still one station, never one-per-year
+        assert pooled.lag_h == pytest.approx(year_2024.lag_h)
+        assert pooled.lag_h == pytest.approx(year_2025.lag_h)
+
+    def test_pooling_can_wash_out_a_signal_every_year_shows_on_its_own(self) -> None:
+        """THE key D3 distinction: a NAIVE median of two per-year OK lags
+        would report a plausible-looking number. Concatenating the raw
+        windows first is a DIFFERENT computation and can reach a DIFFERENT
+        conclusion — here, the opposite-phase years cancel in the combined
+        cycle and the pooled cell is UNIDENTIFIABLE even though both
+        per-year cells are OK. That is proof pooling is not a median of
+        aggregated cells."""
+        tigge_2024, gauge_2024 = _year_inputs(year=2024, station="A", tigge_peak_hour=0)
+        tigge_2025, gauge_2025 = _year_inputs(
+            year=2025, station="A", tigge_peak_hour=12
+        )
+        population = GaugeMaskedPopulation(
+            by_station={
+                Station("A"): MaskedGaugeSeries(
+                    frame=pl.concat([gauge_2024, gauge_2025])
+                )
+            },
+            excluded=(),
+            accounting=(),
+        )
+        coords = StationCoordinateTable(
+            by_station={
+                Station("A"): StationCoordinate(
+                    station=Station("A"),
+                    excel_col="A",
+                    lat=28.0,
+                    lon=84.0,
+                    elev_m=500.0,
+                )
+            }
+        )
+        results = run_multi_season(
+            {2024: tigge_2024, 2025: tigge_2025}, population, coords
+        )
+        year_2024 = self._cell(results, season="2024")
+        year_2025 = self._cell(results, season="2025")
+        pooled = self._cell(results, season="pooled")
+        assert year_2024.status is PhaseStatus.OK
+        assert year_2025.status is PhaseStatus.OK
+        assert pooled.status is PhaseStatus.PHASE_UNIDENTIFIABLE
+        assert pooled.n_stations == 0
+
+
+class TestWriteMultiSeasonCsv:
+    def test_the_season_column_labels_every_row(self, tmp_path: Path) -> None:
+        est = PhaseEstimate(
+            lead_band="D+1",
+            elevation_band="low (< 1,000 m)",
+            gauge_shift_reading="as_labelled_utc",
+            status=PhaseStatus.OK,
+            n_windows=4,
+            n_station_days=1,
+            n_stations=1,
+            gauge_peak_hour_utc=6,
+            tigge_peak_hour_utc=0,
+            lag_h=-6.0,
+            lag_principal_h=-6.0,
+            gauge_amplitude=1.0,
+            tigge_amplitude=1.0,
+            min_amplitude=MIN_HARMONIC_AMPLITUDE,
+        )
+        path = tmp_path / "multiseason.csv"  # type: ignore[operator]
+        write_multi_season_csv([("2024", est), ("pooled", est)], path)
+        out = pl.read_csv(path)
+        assert out["season"].to_list() == ["2024", "pooled"]
+        assert out.height == 2
 
 
 class TestWriteCsv:
@@ -811,7 +996,9 @@ class TestWriteCsv:
         swept = 0.10
         assert swept != MIN_HARMONIC_AMPLITUDE
         series, population, coords = _synthetic_inputs()
-        results = run_all_bands(series, population, coords, min_amplitude=swept)
+        results = run_all_bands(
+            series, population, coords, year=2025, min_amplitude=swept
+        )
         path = tmp_path / "swept.csv"
         tigge_gauge_timing.write_csv(results, path)
         out = pl.read_csv(path)
@@ -1010,7 +1197,7 @@ class TestAmplitudeFloorIsReproducible:
 
     def test_station_rows_publish_the_amplitudes_and_the_swept_decision(self) -> None:
         series, population, coords = _synthetic_inputs()
-        rows = station_amplitude_rows(series, population, coords)
+        rows = station_amplitude_rows(series, population, coords, year=2025)
         # One row per (lead band, station) CYCLE, not per D7 reading: the
         # rotation moves the angle, never the magnitude.
         assert rows.height == len(LEAD_BANDS)
@@ -1018,7 +1205,9 @@ class TestAmplitudeFloorIsReproducible:
         assert rows["included"].all()
         assert rows["min_harmonic_amplitude"].to_list() == [MIN_HARMONIC_AMPLITUDE] * 3
 
-        swept = station_amplitude_rows(series, population, coords, min_amplitude=0.99)
+        swept = station_amplitude_rows(
+            series, population, coords, year=2025, min_amplitude=0.99
+        )
         assert not swept["included"].any()
         assert set(swept["status"].to_list()) == {
             PhaseStatus.PHASE_UNIDENTIFIABLE.value

@@ -20,10 +20,14 @@ import argparse
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
 import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from sapphire_flow.exceptions import SapphireError
 from scripts.dhm_precip.diurnal_phase import (
@@ -43,9 +47,10 @@ from scripts.dhm_precip.ma6_pairs import (
     load_gauge_masked_population,
 )
 from scripts.dhm_precip.tigge_ifs import (
+    DEFAULT_TIGGE_ROOT,
     LEAD_BANDS,
     TIGGE_MONTHS,
-    TIGGE_YEAR,
+    points_filename,
     write_tigge_attribution,
 )
 
@@ -178,7 +183,7 @@ def build_paired_frame(
     gauge_population: GaugeMaskedPopulation,
     *,
     lead_band: str,
-    jjas_year: int = TIGGE_YEAR,
+    jjas_year: int,
     jjas_months: tuple[int, ...] = TIGGE_MONTHS,
 ) -> pl.DataFrame:
     """T2 — one (station, valid_time) row per surviving pair: `tigge_mm`
@@ -187,7 +192,9 @@ def build_paired_frame(
     ⛔ Exactly ONE pairing, shared by both D7 readings (which rotate the
     built cycle, never re-pair at another alignment — that would change the
     surviving windows and their `n`). D2 — filtered on BOTH `jjas_year` and
-    `jjas_months`, never month alone."""
+    `jjas_months`, never month alone. Plan 220 D1: `jjas_year` has no
+    default — the caller's season selection is the ONLY source of truth,
+    never a module constant a request could silently disagree with."""
     banded = dedup_most_recent_init(tigge_series, band_steps=LEAD_BANDS[lead_band])
     if banded.height == 0:
         return banded.with_columns(pl.lit(None, dtype=pl.Float64).alias("gauge_mm"))
@@ -451,6 +458,7 @@ def run_all_bands(
     gauge_population: GaugeMaskedPopulation,
     coords: StationCoordinateTable,
     *,
+    year: int,
     min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
 ) -> list[PhaseEstimate]:
     """T2 driver — the COMPLETE (lead band x elevation band x D7 reading)
@@ -458,12 +466,15 @@ def run_all_bands(
     `band_of` banding). Every combination yields exactly one row, including
     the ones no station supports — never a silently short matrix. The
     pairing is built ONCE per lead band and reused by both D7 readings, so
-    the two are computed from identical windows."""
+    the two are computed from identical windows. Plan 220 D1: `year` has no
+    default and is forwarded to `build_paired_frame` as `jjas_year` — this
+    function used to rely on that default, which is exactly the "value
+    carried alongside rather than derived" defect D1 closes."""
     elev_of = {s: c.elev_m for s, c in coords.by_station.items()}
     results: list[PhaseEstimate] = []
     for lead_band in LEAD_BANDS:
         paired = build_paired_frame(
-            tigge_series, gauge_population, lead_band=lead_band
+            tigge_series, gauge_population, lead_band=lead_band, jjas_year=year
         ).with_columns(
             pl.col("station")
             .map_elements(
@@ -487,11 +498,82 @@ def run_all_bands(
     return results
 
 
+def run_multi_season(
+    tigge_series_by_year: Mapping[int, pl.DataFrame],
+    gauge_population: GaugeMaskedPopulation,
+    coords: StationCoordinateTable,
+    *,
+    min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
+) -> list[tuple[str, PhaseEstimate]]:
+    """Plan 220 (M-A11b) T3 driver — D3's PER-YEAR *and* POOLED report, never
+    pooled-only. Each year's own rows come from `run_all_bands` (D1/D2/D5,
+    UNCHANGED). The pooled row concatenates the SAME per-year paired frames
+    `run_all_bands` builds internally (via `build_paired_frame`, one call per
+    year), then runs the UNCHANGED `estimate_phase` station-equal estimator
+    ONCE MORE on the union — an "available-case aggregate", never a median of
+    six already-aggregated cells, which is a DIFFERENT statistic (D3: the
+    estimator computes each station's own phase first and medians across
+    stations, so pooling raw pairs before that step is not equivalent to
+    pooling the resulting per-year lags). Every returned row is tagged with
+    its season (`str(year)` or `"pooled"`) and carries its own `n` — a 2020
+    cell resting on 3 high-band stations is never conflated with a 2022 cell
+    resting on 8 (D4)."""
+    results: list[tuple[str, PhaseEstimate]] = [
+        (str(year), estimate)
+        for year, tigge_series in tigge_series_by_year.items()
+        for estimate in run_all_bands(
+            tigge_series,
+            gauge_population,
+            coords,
+            year=year,
+            min_amplitude=min_amplitude,
+        )
+    ]
+
+    elev_of = {s: c.elev_m for s, c in coords.by_station.items()}
+    for lead_band in LEAD_BANDS:
+        pooled = pl.concat(
+            [
+                build_paired_frame(
+                    tigge_series,
+                    gauge_population,
+                    lead_band=lead_band,
+                    jjas_year=year,
+                )
+                for year, tigge_series in tigge_series_by_year.items()
+            ]
+        ).with_columns(
+            pl.col("station")
+            .map_elements(
+                lambda s: band_of(elev_of.get(Station(str(s)), float("nan"))),
+                return_dtype=pl.Int64,
+            )
+            .alias("elev_band")
+        )
+        for reading_name, shift in GAUGE_SHIFT_READINGS.items():
+            for band_idx, band_name in enumerate(BAND_NAMES):
+                results.append(
+                    (
+                        "pooled",
+                        estimate_phase(
+                            pooled.filter(pl.col("elev_band") == band_idx),
+                            lead_band=lead_band,
+                            elevation_band=band_name,
+                            gauge_shift_reading=reading_name,
+                            gauge_hour_shift=shift,
+                            min_amplitude=min_amplitude,
+                        ),
+                    )
+                )
+    return results
+
+
 def station_amplitude_rows(
     tigge_series: pl.DataFrame,
     gauge_population: GaugeMaskedPopulation,
     coords: StationCoordinateTable,
     *,
+    year: int,
     min_amplitude: float = MIN_HARMONIC_AMPLITUDE,
 ) -> pl.DataFrame:
     """T3 Verify — one row per (lead band, station) cycle: BOTH first-harmonic
@@ -499,11 +581,14 @@ def station_amplitude_rows(
     station-level identifiability claims and the floor sensitivity are
     regenerable rather than resting on the aggregate CSV (which publishes only
     band medians and the configured floor). One row per CYCLE, not per D7
-    reading: `np.roll` moves the angle, never the magnitude."""
+    reading: `np.roll` moves the angle, never the magnitude. Plan 220 D1:
+    `year` has no default (see `run_all_bands`)."""
     elev_of = {s: c.elev_m for s, c in coords.by_station.items()}
     rows: list[dict[str, object]] = []
     for lead_band in LEAD_BANDS:
-        paired = build_paired_frame(tigge_series, gauge_population, lead_band=lead_band)
+        paired = build_paired_frame(
+            tigge_series, gauge_population, lead_band=lead_band, jjas_year=year
+        )
         for station, station_frame in paired.group_by("station"):
             st = Station(str(station[0]))
             outcome = estimate_station_phase(
@@ -571,15 +656,59 @@ def write_csv(results: list[PhaseEstimate], path: Path) -> None:
     ).write_csv(path)
 
 
+def write_multi_season_csv(
+    results: list[tuple[str, PhaseEstimate]], path: Path
+) -> None:
+    """D3 — every row carries its `season` (a year, or `"pooled"`) beside the
+    same fields `write_csv` publishes for the single-season case."""
+    pl.DataFrame(
+        [
+            {
+                "season": season,
+                "lead_band": r.lead_band,
+                "elevation_band": r.elevation_band,
+                "gauge_timezone_reading": r.gauge_shift_reading,
+                "status": r.status.value,
+                "n_paired_windows": r.n_windows,
+                "n_station_days": r.n_station_days,
+                "n_stations": r.n_stations,
+                "gauge_peak_hour_npt": (
+                    npt_label(r.gauge_peak_hour_utc)
+                    if r.gauge_peak_hour_utc is not None
+                    else ""
+                ),
+                "tigge_peak_hour_npt": (
+                    npt_label(r.tigge_peak_hour_utc)
+                    if r.tigge_peak_hour_utc is not None
+                    else ""
+                ),
+                "lag_hours_same_day_branch": round(r.lag_h, 2),
+                "lag_hours_shortest_arc": round(r.lag_principal_h, 2),
+                "gauge_harmonic_amplitude": round(r.gauge_amplitude, 3),
+                "tigge_harmonic_amplitude": round(r.tigge_amplitude, 3),
+                "min_harmonic_amplitude": r.min_amplitude,
+                "resolution_bound_h": 3.0,
+            }
+            for season, r in results
+        ]
+    ).write_csv(path)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--tigge-points",
-        type=Path,
-        default=Path(
-            "data/dhm_precip/tigge/points/tigge_station_series_jjas2025.parquet"
+        "--year",
+        type=int,
+        nargs="+",
+        required=True,
+        help=(
+            "one or more JJAS season years (Plan 220 D1) — replaces the old "
+            "--tigge-points selector, which was a second, user-controlled "
+            "identity source. A single year reproduces the single-season "
+            "report; more than one triggers D3's per-year + pooled report."
         ),
     )
+    ap.add_argument("--root", type=Path, default=DEFAULT_TIGGE_ROOT)
     ap.add_argument("--out", type=Path, default=Path("data/dhm_precip/tigge/points"))
     ap.add_argument(
         "--min-amplitude",
@@ -593,53 +722,108 @@ def main() -> int:
         ),
     )
     args = ap.parse_args()
+    years: list[int] = args.year
 
-    tigge_series = pl.read_parquet(args.tigge_points)
     gauge_population = load_gauge_masked_population()
     coords_path = resolve_coords_path()
     all_stations = frozenset(gauge_population.by_station.keys())
     coords = load_station_coordinates(coords_path, expected_stations=all_stations)
-
     min_amplitude = float(args.min_amplitude)
-    results = run_all_bands(
-        tigge_series, gauge_population, coords, min_amplitude=min_amplitude
-    )
-    if not any(r.status is PhaseStatus.OK for r in results):
-        raise TiggeTimingMatrixError(
-            f"none of the {len(results)} (lead band x elevation band x reading) "
-            "cells produced a lag — refusing to write an all-empty matrix"
-        )
-    args.out.mkdir(parents=True, exist_ok=True)
     # A swept floor never lands on the published filenames.
     suffix = (
         "" if min_amplitude == MIN_HARMONIC_AMPLITUDE else f"_minamp{min_amplitude:g}"
     )
-    out_csv = args.out / f"tigge_gauge_timing_offsets{suffix}.csv"
-    write_csv(results, out_csv)
-    attribution_path = write_tigge_attribution(out_csv)
-    stations_csv = args.out / f"tigge_station_amplitudes{suffix}.csv"
-    station_amplitude_rows(
-        tigge_series, gauge_population, coords, min_amplitude=min_amplitude
-    ).write_csv(stations_csv)
-    write_tigge_attribution(stations_csv)
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    if len(years) == 1:
+        year = years[0]
+        tigge_series = pl.read_parquet(args.root / "points" / points_filename(year))
+        results = run_all_bands(
+            tigge_series,
+            gauge_population,
+            coords,
+            year=year,
+            min_amplitude=min_amplitude,
+        )
+        if not any(r.status is PhaseStatus.OK for r in results):
+            raise TiggeTimingMatrixError(
+                f"none of the {len(results)} (lead band x elevation band x "
+                "reading) cells produced a lag — refusing to write an "
+                "all-empty matrix"
+            )
+        out_csv = args.out / f"tigge_gauge_timing_offsets{suffix}.csv"
+        write_csv(results, out_csv)
+        attribution_path = write_tigge_attribution(out_csv, extra={"season_year": year})
+        stations_csv = args.out / f"tigge_station_amplitudes{suffix}.csv"
+        station_amplitude_rows(
+            tigge_series,
+            gauge_population,
+            coords,
+            year=year,
+            min_amplitude=min_amplitude,
+        ).write_csv(stations_csv)
+        write_tigge_attribution(stations_csv, extra={"season_year": year})
+        log.info(
+            "tigge_gauge_timing.cli.complete",
+            out=str(out_csv),
+            stations=str(stations_csv),
+            min_amplitude=min_amplitude,
+            n_estimates=len(results),
+            years=years,
+        )
+        print(
+            f"wrote {out_csv}: {len(results)} (lead-band x elev-band x "
+            "reading) estimates"
+        )
+        print(f"wrote {attribution_path}")
+        print(
+            f"wrote {stations_csv}: per-(lead band, station) amplitudes and inclusion"
+        )
+        for r in results:
+            print(
+                f"  {r.lead_band:4s} {r.elevation_band:22s} "
+                f"{r.gauge_shift_reading:20s} {r.status.value:28s} "
+                f"n={r.n_windows:5d} windows, {r.n_station_days:4d} "
+                f"station-days ({r.n_stations} stations) lag={r.lag_h:+6.2f} h "
+                f"(±3 h bound) R={r.gauge_amplitude:.2f}/{r.tigge_amplitude:.2f}"
+            )
+        return 0
+
+    # D3 — more than one year: per-year AND pooled report.
+    tigge_series_by_year = {
+        year: pl.read_parquet(args.root / "points" / points_filename(year))
+        for year in years
+    }
+    results = run_multi_season(
+        tigge_series_by_year, gauge_population, coords, min_amplitude=min_amplitude
+    )
+    if not any(r.status is PhaseStatus.OK for _, r in results):
+        raise TiggeTimingMatrixError(
+            f"none of the {len(results)} (season x lead band x elevation "
+            "band x reading) cells produced a lag — refusing to write an "
+            "all-empty matrix"
+        )
+    out_csv = args.out / f"tigge_gauge_timing_offsets_multiseason{suffix}.csv"
+    write_multi_season_csv(results, out_csv)
+    attribution_path = write_tigge_attribution(out_csv, extra={"season_years": years})
     log.info(
         "tigge_gauge_timing.cli.complete",
         out=str(out_csv),
-        stations=str(stations_csv),
         min_amplitude=min_amplitude,
         n_estimates=len(results),
+        years=years,
     )
     print(
-        f"wrote {out_csv}: {len(results)} (lead-band x elev-band x reading) estimates"
+        f"wrote {out_csv}: {len(results)} (season x lead-band x elev-band x "
+        "reading) estimates"
     )
     print(f"wrote {attribution_path}")
-    print(f"wrote {stations_csv}: per-(lead band, station) amplitudes and inclusion")
-    for r in results:
+    for season, r in results:
         print(
-            f"  {r.lead_band:4s} {r.elevation_band:22s} {r.gauge_shift_reading:20s} "
-            f"{r.status.value:28s} n={r.n_windows:5d} windows, "
-            f"{r.n_station_days:4d} station-days "
-            f"({r.n_stations} stations) lag={r.lag_h:+6.2f} h "
+            f"  {season:8s} {r.lead_band:4s} {r.elevation_band:22s} "
+            f"{r.gauge_shift_reading:20s} {r.status.value:28s} "
+            f"n={r.n_windows:5d} windows, {r.n_station_days:4d} "
+            f"station-days ({r.n_stations} stations) lag={r.lag_h:+6.2f} h "
             f"(±3 h bound) R={r.gauge_amplitude:.2f}/{r.tigge_amplitude:.2f}"
         )
     return 0
