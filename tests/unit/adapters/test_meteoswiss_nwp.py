@@ -1577,6 +1577,34 @@ class TestMaxFilesCap:
         assert cap_events[0]["max_files_cap"] == 0
 
 
+class TestMaxFileCountRunawayGuard:
+    """Plan 221: ``_MAX_FILE_COUNT`` is a runaway guard, not an operating limit.
+
+    2026-08-31 live outage: ICON-CH2-EPS cycles publishing 501 allowlisted
+    GRIB files tripped the (then) 500-file cap and aborted every affected
+    forecast cycle with zero forecasts written. The cap must sit well clear
+    of the observed 484-501 working range (D3: raised to 2000) while still
+    catching a genuine runaway.
+    """
+
+    def test_observed_working_range_of_501_files_does_not_trip_the_cap(
+        self, tmp_path: Path
+    ) -> None:
+        # 501 is the exact count that caused the outage (D3). No `size` is
+        # set on these items, so each falls back to _ASSET_SIZE_ESTIMATE_BYTES
+        # (2 MiB) — 501 * 2 MiB ≈ 1.0 GiB, well under the 4 GiB byte budget,
+        # so only the file-count cap is exercised here.
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        features = _make_paged_items(501)
+        handler = TestMaxFilesCap._paged_handler(features, page_size=100)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+
+        files = adapter._fetch_grib_files(cycle)
+
+        assert len(files) == 501
+
+
 class TestShippedCycleMinAgeGuard:
     """Plan 213: the guard VALUE shipped in ``config.toml``, not the mechanism.
 
