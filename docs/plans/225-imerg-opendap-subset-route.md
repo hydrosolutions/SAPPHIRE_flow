@@ -89,10 +89,11 @@ strictly, is the whole point.
   2. **Retry 429 honouring `Retry-After`, with backoff** — 429 is currently **not** retryable
      (`imerg_acquire.py:925-938`).
   3. **One authenticated, cookie-bearing session, reused.** The client makes independent `requests.get`
-     calls, so ⛔ **D4's cookie-jar requirement is NOT yet implemented** (`:940-955`).
-  4. **Resolve each day's filenames ONCE**, not per granule — filename resolution currently issues a
-     directory listing before each local-file check (`:1076-1095`), so 105,216 counts *data* requests,
-     not total HTTP traffic.
+     calls with no `Session` (`:943` in `list_directory`, `:951` in `download_to_path`), so ⛔ **D4's
+     cookie-jar requirement is NOT yet implemented**.
+  4. **Resolve each day's filenames ONCE**, not per granule — `acquire_granule` lists the day directory
+     **before** checking whether the file is already on disk (`:983-990`), and is called once per granule
+     (`:1076`), so 105,216 counts *data* requests, not total HTTP traffic.
   ✅ **Resumability already exists** — validate-and-reuse an existing artifact rather than re-downloading
   (`:985-990`). ⇒ Preserve that behaviour for the subset filename; do not build a checkpoint store.
   Record gaps as gaps (Plan 220's rule: a gap is data, a wrong retrieval is not).
