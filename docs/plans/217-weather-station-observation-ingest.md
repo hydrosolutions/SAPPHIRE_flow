@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-30
 plan: 217
 title: M-G1 — weather-station observation ingest (station selection, eligibility, cursor)
@@ -12,13 +12,32 @@ source: docs/design/dhm-precipitation-milestones.md § M-G1, authorised by M-DEC
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-31, after an independent review returned WRONG-SHAPE and the scope
+was corrected subtractively (the QC rule set went back to M-I4).
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
 **This is a gap-fill, not a subsystem.** Onboarding already handles WEATHER; the QC checker, the store,
 the health record and the flow all exist. No new framework, abstraction layer, config surface or file
 format. **Adding length is a cost.**
+
+## ⛔ PER-RUN SCOPE (binding)
+
+- 🔴 **DO NOT TOUCH THE PRECIPITATION QC RULES.** `config/qc_rules.py` and `config.toml` are **out of
+  scope** — they are M-I4's, gated behind M-G2. The section above documents what is broken *so M-I4
+  inherits it*; an independent review already rejected an earlier draft for folding that work in here.
+  ⛔ Reading "the rules are broken" as an invitation to fix them re-creates the exact defect that review
+  caught. If a test seems to need corrected rules, **that test belongs to M-I4** — say so and stop.
+- ✅ **No network, and no gitignored data.** Replay fixtures under `tests/fixtures/reference/` are
+  tracked, and the flow tests have no `data/` dependency, so a fresh worktree works unmodified.
+- **Iterate on the affected unit tests** (`tests/unit/flows/`), not the full suite (~8 min) — running
+  the full suite as an iteration loop has stalled eight subagents on this repo. Full `tests/unit`
+  **once** at the end, measuring your own baseline.
+- **Hold at PR.** Every code commit bumps patch (`uv run bump-my-version bump patch`) folded into the
+  real commit. Stage by explicit path, never `git add -A`. Never merge, never tag on a branch.
+- ⚠️ The pre-push `pyright` hook currently fails in this checkout because `uv` cannot clone the private
+  `recap-dg-client` pin (no token here). Run `uv run pyright` directly on your touched files instead,
+  and report the count.
 
 ## Why this plan exists
 
