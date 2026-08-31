@@ -524,15 +524,26 @@ EXPECTED_SUBSET_DTYPE = "float32"
 `scale_factor`/`add_offset` — the same encoding the archive route's own
 `/Grid/precipitation` has always used (D1's dtype/packing warning)."""
 
-#: D1 (fixer review) — the box is entirely in the eastern, northern
-#: hemisphere (80-89E/26-31N), so `contract_from_open_subset_granule`'s own
-#: `lon.min() < 0` rule can only ever derive "UNSIGNED_360" for a granule
-#: honestly covering this box. Pinned to exactly ONE value — not the
-#: two-value membership check the archive contract still needs (the archive
-#: covers the whole globe, crossing the sign boundary; the subset never does).
-EXPECTED_SUBSET_LONGITUDE_CONVENTION = (
-    "SIGNED_180" if STUDY_BOX[1] < 0 else "UNSIGNED_360"
-)
+#: The root-level global attribute the subset response retains for the
+#: archive route's `/Grid` group attribute of the same name — MEASURED on
+#: the live probe granule 2026-08-31: OPeNDAP's flattening renames it
+#: `Grid.GridHeader` (a literal dot) rather than dropping it, exactly as
+#: `FileHeader` (already a root attribute) survives unprefixed.
+SUBSET_GRID_HEADER_ATTR = "Grid.GridHeader"
+
+#: D1 (fixer review round 2, finding 1 — MAJOR) — the box is entirely in the
+#: eastern, northern hemisphere (80-89E/26-31N), so a LOCAL `lon.min() < 0`
+#: rule can only ever derive "UNSIGNED_360" for a granule honestly covering
+#: this box, regardless of what the GLOBAL grid's own convention is. The real
+#: probe response's retained `Grid.GridHeader` carries
+#: `WestBoundingCoordinate=-180;EastBoundingCoordinate=180` — the same
+#: -180..180 grid the archive contract's own fixtures pin — and `/lon`'s
+#: `LongName` attribute independently confirms it ("...from -180 to 180.").
+#: ⇒ the box can only ever be cut from a SIGNED_180 global grid; pinned to
+#: exactly that ONE value, DERIVED from the retained header (not the box's
+#: own sign) in `contract_from_open_subset_granule` — never a bare literal
+#: restating what was measured.
+EXPECTED_SUBSET_LONGITUDE_CONVENTION = "SIGNED_180"
 
 #: D1 (fixer review) — the T2-approved EXACT cell-centre coordinates, DERIVED
 #: from the frozen box + CENTER registration + the product's own 0.1 deg
@@ -666,6 +677,24 @@ def _attr_scalar_float(raw: object) -> float:
     return float(array[0])
 
 
+def read_subset_grid_header_global(f: object) -> str:
+    """The subset response's own retained `Grid.GridHeader` global attribute
+    (D1, fixer review round 2, finding 1) — read the SAME way
+    `read_file_header` reads `FileHeader`, since OPeNDAP's flattening treats
+    both as root-level attributes now. This is the only field that can carry
+    the GLOBAL grid's longitude convention: the box-local `/lon` slice is
+    entirely positive by construction, so its own min/max can never reveal
+    whether the grid it was cut from is signed."""
+    raw = f.attrs.get(SUBSET_GRID_HEADER_ATTR)  # type: ignore[attr-defined]
+    if raw is None:
+        raise ImergReadContractError(
+            f"subset granule is missing the root-level {SUBSET_GRID_HEADER_ATTR!r} "
+            "global attribute (D1) — cannot derive the longitude convention "
+            "from a box-local slice alone"
+        )
+    return _attr_text(raw)
+
+
 def contract_from_open_subset_granule(
     f: object, *, archive_filename: str
 ) -> ImergSubsetReadContract:
@@ -683,15 +712,30 @@ def contract_from_open_subset_granule(
         filename_revision=revision,
         file_header_filename=parse_grid_header_field(file_header, "FileName"),
     )
-    precip = f["precipitation"]  # type: ignore[index]  # OPeNDAP flattens /Grid
-    lat = np.asarray(f["lat"][:], dtype=np.float64)  # type: ignore[index]
-    lon = np.asarray(f["lon"][:], dtype=np.float64)  # type: ignore[index]
+    try:
+        precip = f["precipitation"]  # type: ignore[index]  # OPeNDAP flattens /Grid
+        lat = np.asarray(f["lat"][:], dtype=np.float64)  # type: ignore[index]
+        lon = np.asarray(f["lon"][:], dtype=np.float64)  # type: ignore[index]
+    except KeyError as exc:
+        # (fixer review round 2, finding 4 — minor) — an ARCHIVE-shaped
+        # response (root has no `/precipitation`, only a `/Grid` GROUP) must
+        # fail the SUBSET parser with a typed, reportable error, not a raw
+        # h5py `KeyError` — the "vice versa" of the archive parser's own
+        # subset-shaped refusal (D1, finding 4 of round 1).
+        raise ImergReadContractError(
+            f"granule {archive_filename!r} has no root-level 'precipitation' "
+            "variable — the SUBSET route's contract requires OPeNDAP's "
+            f"flattened /precipitation, and this response is not "
+            f"subset-shaped (D1): {exc}"
+        ) from exc
     grid_shape = tuple(int(n) for n in precip.shape)
     if len(grid_shape) != 3:  # noqa: PLR2004 - D1 pins a 3-D grid
         raise ImergReadContractError(
             f"observed subset 'precipitation' shape {grid_shape} is not 3-D (D1)"
         )
     attrs = precip.attrs
+    grid_header = read_subset_grid_header_global(f)
+    west_bound = float(parse_grid_header_field(grid_header, "WestBoundingCoordinate"))
     return ImergSubsetReadContract(
         variable_path=SUBSET_VARIABLE_PATH,
         dimension_names=tuple(_attr_text(attrs["DimensionNames"]).split(",")),
@@ -702,9 +746,11 @@ def contract_from_open_subset_granule(
             float(attrs["scale_factor"]) if "scale_factor" in attrs else None
         ),
         add_offset=(float(attrs["add_offset"]) if "add_offset" in attrs else None),
-        longitude_convention=(
-            "SIGNED_180" if float(lon.min()) < 0.0 else "UNSIGNED_360"
-        ),
+        # (fixer review round 2, finding 1 — MAJOR) — derived from the
+        # RETAINED global grid's own bounds, never the box-local `lon`
+        # slice's min/max (that is always positive for this box and would
+        # silently derive "UNSIGNED_360" regardless of the true convention).
+        longitude_convention=("SIGNED_180" if west_bound < 0.0 else "UNSIGNED_360"),
         grid_shape=(grid_shape[0], grid_shape[1], grid_shape[2]),
         lat_vector=exact_coordinate_vector(lat),
         lon_vector=exact_coordinate_vector(lon),
@@ -850,6 +896,27 @@ def subset_granule_artifact_path(data_root: Path, *, archive_filename: str) -> P
     return imerg_subset_raw_dir(data_root) / f"{archive_filename}.dap.nc4"
 
 
+def _validate_subset_artifact(
+    path: Path, *, archive_filename: str
+) -> ImergSubsetReadContract:
+    """D2/D3 (fixer review round 2, finding 2 — MAJOR) — the ONE place
+    `acquire_subset_granule` trusts bytes on disk, existing or freshly
+    downloaded. An HTTP-200 login page or a truncated download is not valid
+    HDF5/NetCDF4 and would otherwise raise a raw `OSError` from `h5py.File`;
+    this converts that into the same typed `ImergReadContractError` a
+    structural mismatch already raises, so a caller catching only the typed
+    hierarchy still sees it, matching `ImergReadContractError`'s own
+    docstring ("...or an artifact failed post-acquisition validation")."""
+    try:
+        return observe_subset_read_contract(path, archive_filename=archive_filename)
+    except ImergReadContractError:
+        raise
+    except OSError as exc:
+        raise ImergReadContractError(
+            f"subset artifact {path} could not be opened as HDF5/NetCDF4 (D1): {exc}"
+        ) from exc
+
+
 def acquire_subset_granule(
     granule: ImergGranuleId,
     *,
@@ -863,10 +930,27 @@ def acquire_subset_granule(
     artifact rather than re-fetching (preserves `acquire_granule`'s own
     resumability for the subset filename, per D3). No retry loop, no
     day-listing: T3's window-scale concerns (D3 cadence/backoff/session
-    reuse) are out of this run's scope."""
+    reuse) are out of this run's scope.
+    ⛔ (fixer review round 2, finding 2 — MAJOR) — VALIDATE-and-reuse, not
+    merely exists-and-reuse: an HTTP-200 login page, a truncated download, or
+    a stale malformed cache entry must not be trusted just because a file
+    sits at this path. Only an artifact that PASSES the D1 subset contract
+    suppresses the HTTP call; an invalid cache falls through to a fresh
+    download rather than either serving bad bytes or hard-failing on a
+    corrupt cache a re-fetch would repair. A malformed fresh download is
+    never installed: it must pass the same validation before `os.replace`."""
     target = subset_granule_artifact_path(data_root, archive_filename=archive_filename)
     if target.exists():
-        return target
+        try:
+            _validate_subset_artifact(target, archive_filename=archive_filename)
+        except ImergReadContractError as exc:
+            log.warning(
+                "imerg.acquire.subset_cache_invalid",
+                path=str(target),
+                error=str(exc),
+            )
+        else:
+            return target
     lon_start, lon_stop = lon_bounds
     lat_start, lat_stop = lat_bounds
     url = subset_granule_url(archive_filename=archive_filename, start=granule.start)
@@ -878,6 +962,7 @@ def acquire_subset_granule(
     tmp_path = target.with_name(target.name + ".tmp")
     try:
         tmp_path.write_bytes(content)
+        _validate_subset_artifact(tmp_path, archive_filename=archive_filename)
         os.replace(tmp_path, target)
     except OSError as exc:
         raise ImergStorageError(f"failed to write {target}: {exc}") from exc
@@ -1026,6 +1111,32 @@ def assert_subset_cross_check_passed(report: SubsetCrossCheckReport) -> None:
             "D5 subset/archive cross-check FAILED — stop and report rather "
             f"than adjusting the tolerance to pass: {report}"
         )
+
+
+def run_subset_cross_check(
+    *,
+    archive_path: Path,
+    data_root: Path,
+    client: ImergSubsetHttpClient,
+) -> SubsetCrossCheckReport:
+    """D5 — T2's ONE production entry point (fixer review round 2, finding 3
+    — MAJOR). `cross_check_subset_against_archive` alone RETURNS a failed
+    report on a mismatch rather than raising — a caller that forgets to check
+    `.passed` would silently continue past D5's hard stop, which is exactly
+    what the plan forbids ("a mismatch ends the plan rather than starting
+    T3"). This is the only function any T2 caller should use: it computes the
+    report and enforces the gate itself before ever returning one, so the gate
+    cannot be bypassed by calling the lower-level function directly.
+    ⛔ D5's required ORDERING (coordinates before values) already holds
+    structurally: `ImergSubsetReadContract.__post_init__` pins the exact
+    T2-approved lat/lon vectors and refuses a wrong-position grid at
+    CONSTRUCTION — before this function's value comparison ever runs — so a
+    misaligned grid can never reach the value-comparison branch below."""
+    report = cross_check_subset_against_archive(
+        archive_path=archive_path, data_root=data_root, client=client
+    )
+    assert_subset_cross_check_passed(report)
+    return report
 
 
 # --- storage layout ---

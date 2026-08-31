@@ -316,6 +316,18 @@ def _write_fake_subset_granule(
             f"FileName={archive_filename.removesuffix('.HDF5')}.RT-H5;\n"
             "AlgorithmVersion=3IMERGHH;\nProductVersion=V07B;\n"
         ).encode()
+        # Plan 225 fixer round 2, finding 1 — the root-level `Grid.GridHeader`
+        # global attribute the REAL live probe response retains (measured
+        # 2026-08-31): `contract_from_open_subset_granule` derives the
+        # longitude convention from its `WestBoundingCoordinate`, not from
+        # this fixture's own (always-positive) `/lon` slice.
+        f.attrs["Grid.GridHeader"] = (
+            b"BinMethod=ARITHMETIC_MEAN;\nRegistration=CENTER;\n"
+            b"LatitudeResolution=0.1;\nLongitudeResolution=0.1;\n"
+            b"NorthBoundingCoordinate=90;\nSouthBoundingCoordinate=-90;\n"
+            b"EastBoundingCoordinate=180;\nWestBoundingCoordinate=-180;\n"
+            b"Origin=SOUTHWEST;\n"
+        )
         f.create_dataset("lat", data=lat)
         f.create_dataset("lon", data=lon)
         ds = f.create_dataset("precipitation", data=precip)

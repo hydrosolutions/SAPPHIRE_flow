@@ -1316,6 +1316,20 @@ def _write_fake_archive_granule_for_box(
         ds.attrs["_FillValue"] = fill_value
 
 
+#: The root-level `Grid.GridHeader` global attribute the REAL live probe
+#: response retains (measured 2026-08-31, `data/dhm_precip/imerg_early/
+#: raw_subset/3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.
+#: HDF5.dap.nc4`) — bit-for-bit the same text the archive fixture's `/Grid`
+#: group attribute above carries, since it is the SAME global grid.
+_MEASURED_SUBSET_GRID_HEADER = (
+    b"BinMethod=ARITHMETIC_MEAN;\nRegistration=CENTER;\n"
+    b"LatitudeResolution=0.1;\nLongitudeResolution=0.1;\n"
+    b"NorthBoundingCoordinate=90;\nSouthBoundingCoordinate=-90;\n"
+    b"EastBoundingCoordinate=180;\nWestBoundingCoordinate=-180;\n"
+    b"Origin=SOUTHWEST;\n"
+)
+
+
 def _write_fake_subset_granule(
     path: Path,
     *,
@@ -1325,12 +1339,18 @@ def _write_fake_subset_granule(
     lon: np.ndarray | None = None,
     lat_count: int = 50,
     lon_count: int = 90,
+    grid_header: bytes | None = None,
+    omit_grid_header: bool = False,
 ) -> None:
     """The MEASURED subset shape: root-level `/precipitation`, `/lat`,
     `/lon` (no `/Grid` group — OPeNDAP flattens it), a 1-element-array
-    `_FillValue`. Defaults to the box's own exact slice of `_ARCHIVE_LAT`/
-    `_ARCHIVE_LON`, so a fixture pair built with matching `value`s cross-
-    checks as exact."""
+    `_FillValue`, and a root-level `Grid.GridHeader` global attribute (fixer
+    review round 2, finding 1) carrying the retained GLOBAL grid's own
+    bounding coordinates. Defaults to the box's own exact slice of
+    `_ARCHIVE_LAT`/`_ARCHIVE_LON`, so a fixture pair built with matching
+    `value`s cross-checks as exact. `grid_header` overrides the default
+    -180/180 header text (for a fixture exercising a contradictory one);
+    `omit_grid_header` drops the attribute entirely."""
     lat_vec = (
         lat if lat is not None else _ARCHIVE_LAT[_BOX_LAT_START : _BOX_LAT_STOP + 1]
     )
@@ -1348,6 +1368,10 @@ def _write_fake_subset_granule(
             f"FileName={archive_filename.removesuffix('.HDF5')}.RT-H5;\n"
             "AlgorithmVersion=3IMERGHH;\nProductVersion=V07B;\n"
         ).encode()
+        if not omit_grid_header:
+            f.attrs["Grid.GridHeader"] = (
+                grid_header if grid_header is not None else _MEASURED_SUBSET_GRID_HEADER
+            )
         f.create_dataset("lat", data=lat_vec)
         f.create_dataset("lon", data=lon_vec)
         ds = f.create_dataset("precipitation", data=precip)
@@ -1379,7 +1403,10 @@ def _subset_contract_kwargs() -> dict[str, Any]:
         "dtype": "float32",
         "scale_factor": None,
         "add_offset": None,
-        "longitude_convention": "UNSIGNED_360",
+        # (fixer review round 2, finding 1) — SIGNED_180 is the retained
+        # GLOBAL grid's own convention (the real probe's `Grid.GridHeader`:
+        # WestBoundingCoordinate=-180), not derived from the box's sign.
+        "longitude_convention": "SIGNED_180",
         "grid_shape": ia.EXPECTED_SUBSET_GRID_SHAPE,
         "lat_vector": tuple(float(v) for v in _ARCHIVE_LAT[1160:1210]),
         "lon_vector": tuple(float(v) for v in _ARCHIVE_LON[2600:2690]),
@@ -1503,15 +1530,84 @@ class TestSubsetReadContract:
         with pytest.raises(ia.ImergReadContractError, match="lat_vector"):
             ia.ImergSubsetReadContract(**kwargs, granule_revision="V07B")
 
-    def test_a_signed_180_longitude_convention_is_rejected(self) -> None:
-        """D1 (fixer review, finding 2) — ONE approved convention: the box
-        never crosses the sign boundary, so the OTHER convention, even though
-        the archive contract still accepts it, must be refused here."""
+    def test_an_unsigned_360_longitude_convention_is_rejected(self) -> None:
+        """D1 (fixer review round 2, finding 1 — MAJOR, locking) — ONE
+        approved convention, and it is SIGNED_180: the real probe's own
+        retained `Grid.GridHeader` carries `WestBoundingCoordinate=-180`, so
+        UNSIGNED_360 is the value that must now be refused (this test used
+        to pin the OPPOSITE, wrong expectation — refusing SIGNED_180, the
+        actually-correct value — which is exactly the bug finding 1 caught)."""
         with pytest.raises(ia.ImergReadContractError, match="longitude convention"):
             ia.ImergSubsetReadContract(
-                **_subset_kwargs_with(longitude_convention="SIGNED_180"),
+                **_subset_kwargs_with(longitude_convention="UNSIGNED_360"),
                 granule_revision="V07B",
             )
+
+    def test_derives_signed_180_from_the_retained_grid_header(
+        self, tmp_path: Path
+    ) -> None:
+        """D1 (fixer review round 2, finding 1 — MAJOR, locking) — the
+        fixture's own `/lon` slice is entirely positive (the box never
+        crosses the sign boundary), so a derivation from `lon.min()` alone
+        would read "UNSIGNED_360" no matter what. The retained
+        `Grid.GridHeader` (`WestBoundingCoordinate=-180`) is the only field
+        that can reveal the box was cut from a SIGNED_180 global grid — this
+        fails against the pre-fix `lon.min()` derivation."""
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(path, archive_filename=_ARCHIVE_FILENAME)
+        contract = ia.observe_subset_read_contract(
+            path, archive_filename=_ARCHIVE_FILENAME
+        )
+        assert contract.longitude_convention == "SIGNED_180"
+
+    def test_a_grid_header_implying_unsigned_360_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """D1 (fixer review round 2, finding 1 — MAJOR, locking) — a subset
+        response whose retained header contradicts the SIGNED_180 grid the
+        box can only honestly be cut from (e.g. a hypothetical 0/360-bounded
+        header) must be refused, not silently accepted as a same-shaped grid
+        from the wrong global convention."""
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(
+            path,
+            archive_filename=_ARCHIVE_FILENAME,
+            grid_header=(
+                b"BinMethod=ARITHMETIC_MEAN;\nRegistration=CENTER;\n"
+                b"LatitudeResolution=0.1;\nLongitudeResolution=0.1;\n"
+                b"NorthBoundingCoordinate=90;\nSouthBoundingCoordinate=-90;\n"
+                b"EastBoundingCoordinate=360;\nWestBoundingCoordinate=0;\n"
+                b"Origin=SOUTHWEST;\n"
+            ),
+        )
+        with pytest.raises(ia.ImergReadContractError, match="longitude convention"):
+            ia.observe_subset_read_contract(path, archive_filename=_ARCHIVE_FILENAME)
+
+    def test_a_missing_grid_header_is_rejected(self, tmp_path: Path) -> None:
+        """D1 (fixer review round 2, finding 1) — without the retained
+        header there is no honest way to derive the longitude convention;
+        refuse rather than silently falling back to a `lon.min()` guess."""
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(
+            path, archive_filename=_ARCHIVE_FILENAME, omit_grid_header=True
+        )
+        with pytest.raises(ia.ImergReadContractError, match="Grid.GridHeader"):
+            ia.observe_subset_read_contract(path, archive_filename=_ARCHIVE_FILENAME)
+
+    def test_subset_route_refuses_an_archive_shaped_response(
+        self, tmp_path: Path
+    ) -> None:
+        """D1 (fixer review round 2, finding 4 — minor, locking) — the
+        "vice versa" of `test_archive_route_still_refuses_a_subset_shaped_
+        response`: an ARCHIVE-shaped granule (a real `/Grid` group, no
+        root-level `/precipitation`) offered to the SUBSET parser must raise
+        the typed `ImergReadContractError`, not a raw h5py `KeyError`. The
+        prior "full-field" test built a root-level layout with a full-field
+        SHAPE, which never exercised this route-mismatch KeyError at all."""
+        path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(path, value=3.5)
+        with pytest.raises(ia.ImergReadContractError, match="no root-level"):
+            ia.observe_subset_read_contract(path, archive_filename=_ARCHIVE_FILENAME)
 
     def test_a_scale_factor_is_rejected(self) -> None:
         """D1 (fixer review, finding 3 — locking) — packing must be refused
@@ -1611,6 +1707,96 @@ class TestSubsetContractConsistency:
             ia.assert_subset_contract_consistent(observed, frozen=frozen)
 
 
+def _box_granule() -> ia.ImergGranuleId:
+    return ia.parse_granule_filename(_ARCHIVE_FILENAME)[0]
+
+
+class TestAcquireSubsetGranule:
+    """D2/D3 (fixer review round 2, finding 2 — MAJOR, locking) —
+    validate-and-reuse, exercised directly against `acquire_subset_granule`
+    rather than only through the cross-check: a malformed artifact is a
+    concern independent of any archive comparison."""
+
+    def test_a_malformed_new_download_is_never_installed(self, tmp_path: Path) -> None:
+        """An HTTP-200 login page (garbage bytes, not HDF5) must fail
+        validation and must NOT be atomically installed — the pre-fix code
+        wrote it straight to disk via `os.replace` and returned it as if it
+        were valid."""
+        data_root = tmp_path / "data_root"
+        client = FakeImergSubsetHttpClient(content=b"<html>login required</html>")
+        with pytest.raises(ia.ImergReadContractError):
+            ia.acquire_subset_granule(
+                _box_granule(),
+                archive_filename=_ARCHIVE_FILENAME,
+                client=client,
+                data_root=data_root,
+                lon_bounds=(_BOX_LON_START, _BOX_LON_STOP),
+                lat_bounds=(_BOX_LAT_START, _BOX_LAT_STOP),
+            )
+        target = ia.subset_granule_artifact_path(
+            data_root, archive_filename=_ARCHIVE_FILENAME
+        )
+        assert not target.exists()
+        assert not target.with_name(target.name + ".tmp").exists()
+
+    def test_a_malformed_existing_cache_does_not_suppress_the_http_call(
+        self, tmp_path: Path
+    ) -> None:
+        """A stale/corrupt cache entry must not be trusted merely because it
+        exists at the path — the pre-fix code returned it unread on the
+        `target.exists()` check alone. Only a VALID cache suppresses the
+        HTTP call; an invalid one falls through to a fresh download, which
+        here succeeds and replaces the bad cache."""
+        data_root = tmp_path / "data_root"
+        target = ia.subset_granule_artifact_path(
+            data_root, archive_filename=_ARCHIVE_FILENAME
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"not a real HDF5 file")
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        _write_fake_subset_granule(
+            subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.5
+        )
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        result = ia.acquire_subset_granule(
+            _box_granule(),
+            archive_filename=_ARCHIVE_FILENAME,
+            client=client,
+            data_root=data_root,
+            lon_bounds=(_BOX_LON_START, _BOX_LON_STOP),
+            lat_bounds=(_BOX_LAT_START, _BOX_LAT_STOP),
+        )
+        assert result == target
+        assert len(client.calls) == 1  # the HTTP call was NOT suppressed
+        # the bad cache was actually replaced with the valid download
+        ia.observe_subset_read_contract(target, archive_filename=_ARCHIVE_FILENAME)
+
+    def test_a_valid_existing_cache_suppresses_the_http_call(
+        self, tmp_path: Path
+    ) -> None:
+        data_root = tmp_path / "data_root"
+        target = ia.subset_granule_artifact_path(
+            data_root, archive_filename=_ARCHIVE_FILENAME
+        )
+        _write_fake_subset_granule(
+            target, archive_filename=_ARCHIVE_FILENAME, value=3.5
+        )
+
+        class PoisonClient:
+            def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+                raise AssertionError("must not re-fetch a valid cached artifact")
+
+        result = ia.acquire_subset_granule(
+            _box_granule(),
+            archive_filename=_ARCHIVE_FILENAME,
+            client=PoisonClient(),  # type: ignore[arg-type]
+            data_root=data_root,
+            lon_bounds=(_BOX_LON_START, _BOX_LON_STOP),
+            lat_bounds=(_BOX_LAT_START, _BOX_LAT_STOP),
+        )
+        assert result == target
+
+
 class TestSubsetCrossCheck:
     def test_passes_when_the_subset_exactly_matches_the_archive_box(
         self, tmp_path: Path
@@ -1632,6 +1818,24 @@ class TestSubsetCrossCheck:
         assert report.passed is True
         ia.assert_subset_cross_check_passed(report)  # must not raise
         assert len(client.calls) == 1
+
+    def test_run_subset_cross_check_returns_the_passing_report(
+        self, tmp_path: Path
+    ) -> None:
+        """The happy path of the T2 production entry point (fixer review
+        round 2, finding 3): it must not raise, and must return the same
+        passing report `cross_check_subset_against_archive` would."""
+        archive_path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(archive_path, value=3.5)
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        _write_fake_subset_granule(
+            subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.5
+        )
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        report = ia.run_subset_cross_check(
+            archive_path=archive_path, data_root=tmp_path / "data_root", client=client
+        )
+        assert report.passed is True
 
     def test_a_one_cell_lon_shift_is_refused(self, tmp_path: Path) -> None:
         """T1 verify: "a response whose lon/lat vectors differ by one cell
@@ -1677,6 +1881,13 @@ class TestSubsetCrossCheck:
     def test_a_value_mismatch_exceeding_tolerance_is_refused(
         self, tmp_path: Path
     ) -> None:
+        """T2 verify: "a mismatch stops the plan". (fixer review round 2,
+        finding 3 — MAJOR, locking) — `cross_check_subset_against_archive`
+        alone RETURNS a failed report rather than raising, so a caller that
+        forgets `report.passed` would silently continue past D5's hard stop.
+        `run_subset_cross_check` is the ONE production entry point that
+        enforces the gate; this exercises IT, not the lower-level report
+        function, and fails against pre-fix code where no caller raises."""
         archive_path = tmp_path / _ARCHIVE_FILENAME
         _write_fake_archive_granule_for_box(archive_path, value=3.5)
         subset_bytes_path = tmp_path / "subset_source.dap.nc4"
@@ -1684,13 +1895,12 @@ class TestSubsetCrossCheck:
             subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.6
         )
         client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
-        report = ia.cross_check_subset_against_archive(
-            archive_path=archive_path, data_root=tmp_path / "data_root", client=client
-        )
-        assert report.lat_exact_match is True
-        assert report.lon_exact_match is True
-        assert report.values_within_tolerance is False
-        assert report.passed is False
+        with pytest.raises(ia.ImergReadContractError, match="FAILED"):
+            ia.run_subset_cross_check(
+                archive_path=archive_path,
+                data_root=tmp_path / "data_root",
+                client=client,
+            )
 
     def test_second_run_reuses_the_cached_subset_artifact(self, tmp_path: Path) -> None:
         """D2/D3 — resumability preserved: `acquire_subset_granule` reuses an

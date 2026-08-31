@@ -515,6 +515,59 @@ unconstrained `box` parameter (major x2). The archive parser's "vice versa" refu
 file is now a typed `ImergReadContractError`, not a bare `KeyError` (minor). All six locking tests were
 proven to fail against the pre-fix code before being restored green.
 
+**Fixer round 2 (2026-09-01), independent Codex pass over that commit — four more findings closed.**
+1. **Longitude convention was derived from the wrong field (MAJOR).** `contract_from_open_subset_
+granule` derived `longitude_convention` from the box-local `/lon` slice's own `min()` — which is
+ALWAYS positive for this box (80-89E), so it could only ever derive `"UNSIGNED_360"`, no matter what
+the real global grid's convention is. Inspecting the real committed probe response
+(`data/dhm_precip/imerg_early/raw_subset/…HDF5.dap.nc4`, the actual live 2020-07-15T00:00Z granule)
+confirmed the true source: OPeNDAP's flattening retains the `/Grid` group's own `GridHeader` attribute
+at ROOT level, renamed `Grid.GridHeader` (`WestBoundingCoordinate=-180;EastBoundingCoordinate=180`),
+and `/lon`'s own `LongName` independently reads "...from -180 to 180." — i.e. the box is always cut
+from a SIGNED_180 global grid, and the previous fixer round's pinned `EXPECTED_SUBSET_LONGITUDE_
+CONVENTION` (derived from the box's own sign) had frozen the wrong value. Fixed: `longitude_convention`
+is now derived from the retained `Grid.GridHeader`'s `WestBoundingCoordinate`, and the pinned
+expectation is `"SIGNED_180"` unconditionally. Five locking tests (derivation from the header despite
+an all-positive local slice, rejection of a contradictory header, rejection of a missing header, and
+the corrected — previously backwards — accept/reject pair) all proven to fail against the pre-fix code.
+2. **Subset acquisition trusted bytes on disk without validating them (MAJOR).** `acquire_subset_
+granule` treated `target.exists()` alone as sufficient to reuse a cached artifact, and installed a
+freshly downloaded file via `os.replace` without ever opening it — an HTTP-200 login page, a truncated
+download, or a stale malformed cache entry would be served (or reused) forever, weaker than the archive
+route's own validate-and-reuse. Fixed: both the existing-artifact and the freshly-downloaded-tmp paths
+now run the D1 subset contract (`observe_subset_read_contract`) before being trusted; an invalid cache
+falls through to a fresh download rather than being served, and a malformed download is never installed
+(the HDF5/open failure is converted to a typed `ImergReadContractError`, never a raw `OSError`). Only a
+VALID cache still suppresses the HTTP call. Two locking tests (malformed new download never installed;
+malformed existing cache does not suppress the re-fetch) proven to fail against the pre-fix code.
+3. **The T2 hard gate had no production caller (MAJOR).** `cross_check_subset_against_archive` returns
+a report on a value mismatch rather than raising, and `assert_subset_cross_check_passed` — the function
+that turns a failed report into the plan's required stop — had no caller anywhere in the module; a
+caller computing the report and forgetting to check `.passed` would silently continue past D5's hard
+stop. Fixed: `run_subset_cross_check` is now the ONE production T2 entry point (computes the report,
+then enforces the gate before ever returning it); the "value mismatch is refused" test now drives THIS
+function and asserts the raise, not merely `report.passed is False`. Proven to fail against the pre-fix
+code (no such function existed).
+4. **Offering an archive-shaped file to the subset parser raised a raw `KeyError`, not the typed error
+(minor).** The "vice versa" of the prior round's own archive-parser fix — `contract_from_open_subset_
+granule`'s `f["precipitation"]` lookup was unguarded, and the fixture claiming to test this actually
+built a root-level layout with a full-field SHAPE, never a real `/Grid`-shaped archive file. Fixed:
+the lookup is wrapped and converted to `ImergReadContractError`; a new locking test feeds a REAL
+archive-shaped fixture (`_write_fake_archive_granule_for_box`) to the subset parser and proves the
+typed error, failing against the pre-fix code with a raw `KeyError`.
+
+All nine new/changed locking tests were proven RED against the pre-fix code (source reverted via
+`git stash`, tests kept) before the fix was restored and the suite turned green again.
+⚠️ **Separately noted, not fixed this round (pre-existing, from fixer round 1, out of this round's
+scope):** the round-1 `EXPECTED_SUBSET_LAT_VECTOR`/`LON_VECTOR` exact-pin constants do not bit-for-bit
+match the REAL committed probe file's own float32 coordinate values (both within ~5e-6 of each other,
+which the exact-tuple `!=` check does not tolerate) — re-running `observe_subset_read_contract` against
+the real artifact on disk raises on the lat-vector pin, independent of this round's longitude-convention
+fix (confirmed by reproducing the same raise against the pre-round-2 code). The narrative above
+("coordinate vectors matched exactly, bit-for-bit") describes the ORIGINAL T2 run's archive-vs-subset
+comparison, from BEFORE the round-1 exact-pin constants existed — it does not mean today's code
+validates that same real file end to end. Flagged for the owner; not a Plan 225 D-decision this round.
+
 **Exit (T1+T2 only):** a second, separately-frozen OPeNDAP subset read contract; route-dispatched
 contract validation with a locking test per mismatched combination; a route-distinct raw directory; a
 route-aware reader; and an exact, real-data cross-check against the archive route on the one granule
