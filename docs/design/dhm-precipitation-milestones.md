@@ -1527,7 +1527,7 @@ against**.
 - `ElevationBandForecast` (`types/weather.py:62`) is already a first-class `WeatherForecastResult`
   variant beside `BasinAverageForecast`, so the band-wise route stays open without being taken now.
 
-🔴 **THE REST OF THIS SUBSECTION IS HELD (2026-08-31) AND IS NOT AN INSTRUCTION.** It describes how a
+🔴 **THE OPERATOR DESCRIBED BELOW IS HELD (2026-08-31) AND IS NOT AN INSTRUCTION** (the *seam* is separately authorised — see the sequencing block). It describes how a
 correction *would* be built once the displacement can be sized. ⛔ Do not act on it: OD-13 is held,
 and Plan 220 shows there is no single magnitude to build against. Retained as design reasoning.
 
@@ -1564,8 +1564,9 @@ than *how* it is computed:
 uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
 
 ⇒ **Sequencing** — 🔴 **step 1 is HELD; the sequence resumes only once the displacement can be sized:**
-1. ~~**Now (pre-deployment):** build the correction operator and its seam.~~ 🔴 **HELD 2026-08-31 — do
-   NOT build it yet** (owner; Plan 220). Global pre-training stays on uncorrected forcing either way.
+1. **Now (pre-deployment):** build **the seam only** — ✅ authorised (owner 2026-08-31), it needs no
+   magnitude. 🔴 ~~build the correction operator~~ **HELD** until the displacement can be sized
+   (Plan 220). Global pre-training stays on uncorrected forcing either way.
 2. **At Nepal deployment/re-training:** apply the **same** operator to the Nepali training forcing *and*
    the operational forcing, then re-train. Consistent *and* closer to physical truth.
 3. **Measure both ways at step 2** — corrected-consistent vs uncorrected-consistent — because that is
@@ -1573,11 +1574,12 @@ uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
 
 **And OD-10 remains the better long-run answer:** if DHM's parallel downscaling delivers a
 convection-permitting product, that fixes the phase *physically*, and this correction becomes
-unnecessary rather than merely adequate. ~~Build the seam so that swap costs nothing.~~
-🔴 **HELD 2026-08-31 with the rest of OD-13** — this imperative sits outside the struck-through
-sequencing step but reactivates its "and its seam" half. ⚠️ **Open question for the owner:** a seam
-is an insertion point and needs **no magnitude**, so it may be separable from the operator and
-buildable now. ⛔ Held pending that call rather than assumed either way.
+unnecessary rather than merely adequate. **Build the seam so that swap costs nothing.**
+✅ **OWNER DECISION 2026-08-31 — the SEAM may be built NOW; only the OPERATOR is held.** A seam is an
+insertion point and needs **no magnitude**, so it is separable from the correction it will one day
+carry: building it keeps the option open at no cost and commits to nothing. ⛔ **Do not build the
+operator** (OD-13, held until the displacement can be sized) — an empty seam is the whole of what is
+authorised here.
 
 ### M-D4 · Lightning data — partner ask (NEW, partner-gated)
 **Depends: —.** Ask project partners for stroke-level lightning: **timestamp, lat/lon, detection
