@@ -950,6 +950,20 @@ for the separate Monday-publish transient this subsystem must not be confused wi
   typed against this, not the concrete `HydroScraperAdapter`)
 - `ingest_observations_flow` — fetch → `_append_fetch_health_record` (BEFORE
   store/QC) → store → QC → result union of fetch + QC failures
+- Plan 217 (M-G1): the fetch now also pulls `StationKind.WEATHER` (joining
+  RIVER/LAKE, D1). Weather stations gate on `station_status` alone — the
+  `GaugingStatus.GAUGED` filter is RIVER/LAKE-only (D2), since `gauging_status`
+  *defaults* to GAUGED and is a discharge (rating-curve) concept, not a weather
+  one. The `fetch_latest_timestamp` cursor parameter comes from an explicit
+  `_cursor_parameter_for_kind` mapping (D3, WEATHER → `"precipitation"`) that
+  raises `ConfigurationError` on an unhandled `StationKind` rather than
+  defaulting; calculated-station derivation stays RIVER/LAKE-only regardless of
+  a WEATHER station's `gauging_status` (D4). No adapter maps `WEATHER` yet
+  (`HydroScraperAdapter` drops it, D5) — weather stations are eligible and
+  cursor-correct but unserved until M-G2, and no QC rule matches
+  `"precipitation"` yet (M-I4). See
+  `docs/design/dhm-precipitation-milestones.md` § M-G1 and
+  `docs/plans/217-weather-station-observation-ingest.md`.
 - the two cron defaults, each living in TWO places (compose init env + the Python
   fallback) — see the Prefect/Docker/deployment map for the general pattern
 - Plan 176 D2/D3: `collect_bafu_observations_flow`'s `cycle_at` is now DATA-derived

@@ -15,6 +15,7 @@ from sapphire_flow.types.enums import (
     GaugingStatus,
     ObservationSource,
     QcStatus,
+    StationKind,
     StationStatus,
 )
 from sapphire_flow.types.ids import FormulaId, StationId
@@ -349,3 +350,42 @@ class TestCalculatedStationDerivation:
         assert result.observations_derived == 0
         assert result.observations_missing == 1
         assert _derived_for(obs_store, calc.id)[0].qc_status == QcStatus.MISSING
+
+
+class TestWeatherStationExcludedFromDerivation:
+    """Plan 217 (M-G1) T1/D4 — derivation is a discharge concept; adding
+    WEATHER to the fetch (D1) must not expose it to calculated-station
+    selection even if `gauging_status` happens to read CALCULATED."""
+
+    def test_weather_station_with_calculated_gauging_status_is_never_derived(
+        self,
+    ) -> None:
+        c1 = make_station_config(
+            station_id=StationId(uuid.uuid4()),
+            code="C1",
+            station_kind=StationKind.RIVER,
+        )
+        weather_calc = make_station_config(
+            station_id=StationId(uuid.uuid4()),
+            code="WX-CALC",
+            station_kind=StationKind.WEATHER,
+            gauging_status=GaugingStatus.CALCULATED,
+        )
+        obs_store = FakeObservationStore()
+        _seed_history_qc_passed(obs_store, c1.id, 9.8)
+
+        result = _run(
+            [c1, weather_calc],
+            [_weight(weather_calc.id, c1.id, 1.0)],
+            [_raw(c1.id, 10.0)],
+            obs_store,
+        )
+
+        # Both stations are eligible for the fetch (D2 — weather gates on
+        # station_status alone), so both are polled...
+        assert result.stations_polled == 2
+        # ...but the weather station must never enter calculated derivation,
+        # even though a formula was (incorrectly, by construction) registered
+        # against it and its component reported this run.
+        assert result.observations_derived == 0
+        assert _derived_for(obs_store, weather_calc.id) == []

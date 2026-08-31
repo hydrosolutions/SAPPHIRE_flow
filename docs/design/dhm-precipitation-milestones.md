@@ -1300,9 +1300,20 @@ proving the intended binding rather than treating "unused" as an invariant.
 
 ## Track G — gated (require explicit Phase-2 GO)
 
+**✅ M-G1 IS COMPLETE — 2026-08-31 (Plan 217, T1–T3).** `ingest_observations_flow` now fetches
+`StationKind.WEATHER` alongside RIVER/LAKE (D1); weather stations gate on `station_status` alone,
+never on the river-only `GaugingStatus.GAUGED` filter (D2); the `fetch_latest_timestamp` cursor is
+keyed by an explicit `StationKind → parameter` mapping that raises on an unhandled kind rather than
+defaulting (D3, `_cursor_parameter_for_kind`); and calculated-station derivation stays restricted to
+RIVER/LAKE regardless of a WEATHER station's `gauging_status` (D4). Proven on the replay path (T3).
+**Weather stations are eligible and cursor-correct but UNSERVED** until M-G2 supplies an adapter (D5),
+and any observation that does arrive passes QC only because no rule currently matches
+`"precipitation"` — the rule set is M-I4's, gated behind M-G2, not this plan's. **M-G1 must not be
+scheduled against a live feed before M-I4.**
+
 | ID | Milestone | Note |
 |---|---|---|
-| **M-G1** | Weather-station observation ingest for `StationKind.WEATHER` | `ingest_observations.py:461-462` fetches only RIVER/LAKE. Onboarding already handles WEATHER (`onboarding.py:794`) — ingest is the gap |
+| **M-G1** | Weather-station observation ingest for `StationKind.WEATHER` | ✅ COMPLETE (Plan 217, above) — was: `ingest_observations.py:461-462` fetches only RIVER/LAKE. Onboarding already handles WEATHER (`onboarding.py:794`) — ingest is the gap |
 | **M-G2** | DHM precipitation adapter | Blocked on DHM confirming an operational precipitation API |
 | **M-G3** | *(Programme, not a milestone)* Correction on the operational forcing path | Decomposes into hypothesis selection, correction design, leakage-safe fitting, uncertainty propagation, high-flow evaluation, rollback, monitoring. **Subject to vision D9.** Do not plan as one unit |
 | **M-G4** | Operational-feed characterisation | Tests vision D10's assumption that sample defects recur live. Requires M-G2 |
