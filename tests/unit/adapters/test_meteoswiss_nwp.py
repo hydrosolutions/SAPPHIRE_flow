@@ -974,8 +974,39 @@ class TestFetchGribFiles:
         )
         from sapphire_flow.exceptions import BudgetExceededError
 
-        with pytest.raises(BudgetExceededError, match="Download size cap"):
+        with pytest.raises(BudgetExceededError, match="Download size cap") as exc_info:
             adapter._fetch_grib_files(cycle)
+
+        # Plan 223 D6: structured fields so a downstream constructed reason
+        # can name which cap tripped without parsing `str(exc)`.
+        assert exc_info.value.kind == "byte"
+        assert exc_info.value.observed > 5 * huge
+        assert exc_info.value.limit == 5 * huge
+
+    def test_raises_on_file_count_exceeded(self, tmp_path: Path) -> None:
+        """Plan 223 — the real 2026-08-29 outage shape: 501 small GRIB
+        files trip the file-count cap, not the byte cap. The exception
+        must carry structured fields naming the CAP KIND plus the
+        observed/limit numbers (D6), distinct from the byte-cap case."""
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        features = [_make_item("tot_prec", step=s) for s in range(501)]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "/items" in str(request.url):
+                return httpx.Response(200, json=_make_page(features))
+            return httpx.Response(200, content=b"GRIB" + b"\x00")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
+        from sapphire_flow.exceptions import BudgetExceededError
+
+        with pytest.raises(
+            BudgetExceededError, match="GRIB file count exceeded"
+        ) as exc_info:
+            adapter._fetch_grib_files(cycle)
+
+        assert exc_info.value.kind == "file_count"
+        assert exc_info.value.observed == 501
+        assert exc_info.value.limit == 500
 
     def test_creates_per_cycle_scratch_dir(self, tmp_path: Path) -> None:
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))

@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-31
 plan: 221
 title: The 500-file NWP cap stops roughly half of all forecast cycles
@@ -13,8 +13,8 @@ source: 2026-08-31 live outage — forecasts stopped after 2026-08-30 18:00; nwp
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms. **This is a live outage**, not a
-latent risk — see § Impact.
+**READY.** Owner chose **2000** on 2026-08-31. Codex-reviewed (1 major, 1 minor, both folded).
+**This is a live outage**, not a latent risk — see § Impact.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -50,10 +50,19 @@ enforced. Some ICON-CH2-EPS cycles yield **501** allowlisted GRIB files. From th
 ## Impact
 
 **Forecasts stopped after 2026-08-30 18:00** and two consecutive cycles have failed since. The
-failure is **invisible from the outside**: `forecast_cycle` aborts gracefully
-(`forecast_cycle.nwp_fetch_failed_aborting`) and the Prefect run reports **COMPLETED**, so the
-schedule looks healthy while zero forecasts are written. Roughly half of cycles are affected —
-which cycle is fetched depends on the age-guard walk-back, and cycles differ in file count.
+`forecast_cycle` aborts gracefully (`forecast_cycle.nwp_fetch_failed_aborting`) and the Prefect run
+reports **COMPLETED** while writing zero forecasts, so *the schedule* looks healthy. Roughly half of
+cycles are affected — which cycle is fetched depends on the age-guard walk-back, and cycles differ
+in file count.
+
+**The failure is NOT silent, and an earlier draft of this plan wrongly said it was.** The abort path
+emits a CRITICAL `FORECAST_FRESHNESS` record with zero forecasts
+(`flows/run_forecast_cycle.py:2615`), and the watchdog already treats that as a failure and sends its
+existing alert (`ops/watchdog.py:2000`). **Open question for the owner, NOT a task here:** this
+outage ran ~15 h and was noticed by a human, not by an alert — so either the alert fired and was not
+routed or seen, or the watchdog is not running. Worth checking when host access returns; it is
+arguably a bigger issue than this constant, and it is deliberately not scoped into a one-integer
+fix.
 
 ## Decisions
 
@@ -61,19 +70,31 @@ which cycle is fetched depends on the age-guard walk-back, and cycles differ in 
   could otherwise download without bound. Removing it trades a live outage for an unbounded
   failure mode.
 
-- **D2 — The byte budget is the real guard, and it has ample headroom.**
-  `_DEFAULT_MAX_DOWNLOAD_BYTES = 4 GB` (`:64`). Measured: 484 files = **2.87 GB**, i.e. ~5.9 MB per
-  file, so 501 files is **~2.98 GB — still ~1 GB under the byte budget.** Cost is already bounded
-  by bytes; the file count is a secondary heuristic misfiring on a boundary it was never tuned to.
+- **D2 — The byte budget is an ESTIMATE, not an actual-download bound. An earlier draft of this
+  plan called it "the real guard"; that was wrong and the correction matters.**
+  `_DEFAULT_MAX_DOWNLOAD_BYTES = 4 GB` (`:64`) is accumulated from the STAC `size` field, falling
+  back to `_ASSET_SIZE_ESTIMATE_BYTES` (2 MiB) when the field is absent, and **is never
+  reconciled against the bytes actually downloaded** (`:777-782`). Two consequences:
+  1. **"Bytes always bind first" is FALSE when sizes are missing.** At the 2 MiB fallback, 2001
+     files account for only 3.91 GiB — so a 2000-file cap would fire *before* the byte budget,
+     which is the opposite of the intent.
+  2. **Understated metadata can let real downloads exceed 4 GB**, because nothing checks actual
+     size.
+
+  The measured arithmetic still holds where sizes *are* published: 2,874,343,206 / 484 =
+  **5.939 MB/file**, so 501 projects to **2.975 GB**, and the 4 GiB threshold falls at about
+  **723 files** — not ~700. Fixing the estimator is **out of scope**; the point here is that the
+  owner must choose the file cap knowing the byte guard is weaker than it looks.
 
 - **D3 — Do NOT pick the new value from the observed maximum. This plan must not repeat Plan 213.**
   Plan 213 chose a constant from a handful of observations, and one extra day of data moved the
   maximum past it. Here the observed values are 484 and 501; **why they differ is not understood**
   (+17 files, unexplained), so the true ceiling is unknown and 501 is not evidence of a maximum.
-  Set the file cap high enough that **the byte budget always binds first** — with ~5.9 MB/file and
-  a 4 GB budget, anything at or above ~700 files means bytes bind before count. Proposed: **2000**,
-  which is unambiguously a runaway guard rather than an operating limit. **The value is an owner
-  decision; the implementer must not substitute its own number.**
+  Set the file cap well clear of any plausible legitimate count. **DECIDED 2026-08-31: 2000** — roughly 4x the observed working range (484-501), so it cannot trip
+  on a healthy cycle, while still catching a genuine runaway. **Chosen knowing D2:** it is *not* backed by
+  a reliable byte bound, and with missing size metadata a 2000-file run could reach ~3.9 GiB on the
+  estimator while the true download size is unverified. **The value is an owner decision; the
+  implementer must not substitute its own number.**
 
 - **D4 — The comment must say what the constant is FOR.** Today it is a bare
   `_MAX_FILE_COUNT: int = 500` with no rationale, which is exactly why nobody noticed it was an
@@ -101,11 +122,14 @@ scheduled cycle writes forecasts.
 ## Non-goals
 
 Changing the byte budget · making either cap config-driven · explaining MeteoSwiss's 484-vs-501
-composition · touching the walk-back or the age guard · alerting on silent-abort cycles (real, and
-squarely Plan 214's § detection — not this plan).
+composition · touching the walk-back or the age guard · changing any alerting — the CRITICAL freshness record and watchdog
+alert already exist (see § Impact); whether they reached anyone is an open question, not a task.
+**Plan 214 does not own this**: that plan concerns runs stuck in `RUNNING`, not completed cycles.
 
 ## Exit gates
 
-- `_MAX_FILE_COUNT` carries the owner's value and a comment stating it is a runaway guard.
+- `_MAX_FILE_COUNT` is **2000**, with a comment stating it is a runaway guard, citing the measured
+  484-501 working range and 2026-08-31 as the date, and noting the byte budget is an estimate (D2)
+  so this count is a real backstop rather than a redundant one.
 - A test proves a 501-file fetch succeeds, RED against the old constant.
 - The byte-budget guard is demonstrably still enforced.

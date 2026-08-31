@@ -35,6 +35,7 @@ from sapphire_flow.adapters.recap_gateway import (
 )
 from sapphire_flow.config.recap_gateway import DEFAULT_CYCLE_CADENCE_HOURS
 from sapphire_flow.exceptions import (
+    BudgetExceededError,
     ConfigurationError,
     DiskHardLimitError,
     DiskSoftLimitError,
@@ -259,6 +260,17 @@ class _NwpFetchOutcome:
     the healthy stations' forecasts are used normally, and the alarm is a
     CRITICAL ``pipeline_health`` record naming the affected stations rather
     than a cycle-wide degrade.
+
+    ``fetch_failure_reason`` (Plan 223 D5) is set ONLY by the generic
+    ``except Exception`` clause at the bottom of the adapter-call try block
+    — the sole boundary that still holds the raised exception. When set,
+    this outcome is a FAILURE wearing the outcome shape, not a success:
+    every consumer that used to test ``nwp_outcome is None`` for "fetch
+    failed" must ALSO test ``nwp_outcome.fetch_failure_reason is not
+    None`` (see ``run_forecast_cycle.py:2598, 2615`` and
+    ``scripts/nepal_forcing_run.py:239``). The value is a bounded,
+    SANITISED phrase (D2) — never ``str(exc)`` — constructed by
+    ``_nwp_fetch_failure_reason``.
     """
 
     cycle_time: UtcDatetime
@@ -266,6 +278,7 @@ class _NwpFetchOutcome:
     nwp_unavailable: bool = False
     snow_unavailable: bool = False
     nwp_delivery_partial: bool = False
+    fetch_failure_reason: str | None = None
 
 
 _GRID_EXTRACTOR_CHOICES: tuple[str, ...] = ("mesh", "exactextract")
@@ -711,6 +724,7 @@ def _emit_forecast_freshness_record(
     forecasts_stored: int,
     checked_at: UtcDatetime,
     force_critical: bool = False,
+    reason: str | None = None,
 ) -> None:
     """Plan 116: FORECAST_FRESHNESS heartbeat — a SEPARATE contract from
     ``ForecastCycleHealth`` above. ``health`` encodes operational
@@ -743,6 +757,12 @@ def _emit_forecast_freshness_record(
     currently-healthy production cycle. Scheduled/current cycles (no
     explicit ``cycle_time`` argument) still age by their own
     ``resolved_cycle_time``.
+
+    ``reason`` (Plan 223 D1/D3) rides the existing ``detail`` dict as an
+    OPTIONAL key — only failure paths that have a constructed cause (D2:
+    bounded, sanitised, never ``str(exc)``) pass one. A normal completion
+    passes ``None`` and the key is omitted entirely, never written as
+    ``"reason": null`` — no schema change, no cadence change.
     """
     if cycle_time_param is not None:
         return
@@ -751,13 +771,16 @@ def _emit_forecast_freshness_record(
         if force_critical or forecasts_stored == 0
         else PipelineHealthStatus.OK
     )
+    detail: dict[str, object] = {"forecasts_stored": forecasts_stored}
+    if reason is not None:
+        detail["reason"] = reason
     _append_pipeline_health_record(
         pipeline_health_store,
         check_type=PipelineCheckType.FORECAST_FRESHNESS,
         checked_at=checked_at,
         status=status,
         subject="forecast_cycle",
-        detail=cast("dict[str, object]", {"forecasts_stored": forecasts_stored}),
+        detail=detail,
         cycle_time=resolved_cycle_time,
     )
 
@@ -1109,6 +1132,24 @@ def _forecast_cycle_health(
     return ForecastCycleHealth.HEALTHY
 
 
+def _nwp_fetch_failure_reason(exc: Exception) -> str:
+    """Plan 223 D2/D6: CONSTRUCT — never filter — a bounded, sanitised
+    failure reason from an exception the generic ``except Exception``
+    clause in ``_fetch_nwp_task`` caught. ``str(exc)`` is never used here:
+    MeteoSwiss download hrefs are presigned URLs carrying ``AWSAccessKeyId``
+    and ``Signature`` query params, so any adapter exception wrapping one
+    verbatim (``meteoswiss_nwp.py:670``) could otherwise publish working
+    credentials into Slack and the database. ``BudgetExceededError``
+    carries structured ``kind``/``observed``/``limit`` fields (D6) that let
+    the reason name WHICH budget guard tripped with real numbers; anything
+    else collapses to the same stable generic code the existing
+    ``nwp.fetch_failed`` log event already uses.
+    """
+    if isinstance(exc, BudgetExceededError):
+        return f"nwp_{exc.kind}_exceeded: {exc.observed} > {exc.limit}"
+    return "nwp_fetch_failed"
+
+
 # ---------------------------------------------------------------------------
 # Phase A task — fetch NWP and store weather records
 # ---------------------------------------------------------------------------
@@ -1297,8 +1338,15 @@ def _fetch_nwp_task(
             cycle_time=cycle_time, fallback_used=False, nwp_unavailable=True
         )
     except Exception as exc:
-        log.error("nwp.fetch_failed", error=str(exc))
-        return None
+        # Plan 223 D5: this is the only boundary that still holds the raised
+        # exception, so it is where the sanitised cause (D2) is constructed
+        # and attached. `str(exc)` is logged here (local container log only,
+        # unchanged from before) but NEVER flows into `fetch_failure_reason`.
+        reason = _nwp_fetch_failure_reason(exc)
+        log.error("nwp.fetch_failed", error=str(exc), reason=reason)
+        return _NwpFetchOutcome(
+            cycle_time=cycle_time, fallback_used=False, fetch_failure_reason=reason
+        )
 
     result_object: object = result
     if isinstance(result_object, GriddedForecast):
@@ -2595,8 +2643,12 @@ def run_forecast_cycle_flow(
             # zarrs from cycles older than the retention window. Age-only; the
             # permanent archive is the extracted values in weather_forecasts. A
             # prune failure must never abort the forecast cycle.
+            # Plan 223 D5: `fetch_failure_reason is not None` means the
+            # generic-exception path returned a FAILURE wearing the outcome
+            # shape (not bare None) — success-only, exactly as before.
             if (
                 nwp_outcome is not None
+                and nwp_outcome.fetch_failure_reason is None
                 and config.nwp_grid_archive_base_path is not None
             ):
                 from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
@@ -2612,7 +2664,7 @@ def run_forecast_cycle_flow(
                         "forecast_cycle.nwp_grid_prune_failed",
                         base_path=config.nwp_grid_archive_base_path,
                     )
-            if nwp_outcome is None:
+            if nwp_outcome is None or nwp_outcome.fetch_failure_reason is not None:
                 log.error("forecast_cycle.nwp_fetch_failed_aborting")
                 _emit_forecast_freshness_record(
                     pipeline_health_store,
@@ -2620,6 +2672,11 @@ def run_forecast_cycle_flow(
                     resolved_cycle_time=resolved_cycle_time,
                     forecasts_stored=0,
                     checked_at=clock(),
+                    reason=(
+                        nwp_outcome.fetch_failure_reason
+                        if nwp_outcome is not None
+                        else None
+                    ),
                 )
                 return ForecastCycleResult(
                     cycle_time=resolved_cycle_time,

@@ -503,6 +503,37 @@ jobs:
           # (Dockerfile), never baked into an image layer.
           secrets: |
             recap_dg_client_token=${{ secrets.RECAP_DG_CLIENT_TOKEN }}
+      # Plan 218 fixer round — smoke-check the curated operator scripts (D2)
+      # actually land at /app/scripts in the BUILT image, not just in the
+      # Dockerfile text (tests/unit/deploy/test_dockerfile_operator_scripts.py
+      # covers the text). This is the default (WITH_AQUACAST=0) image and only
+      # proves the files are present and importable enough for argparse to
+      # reach --help — it does NOT prove model resolution
+      # (resolve_required_static_names()/cmal_pool_pt), which needs a second
+      # WITH_AQUACAST=1 build with the aquacast_token secret. That check is
+      # deliberately left to a manual/mac-mini run — see
+      # docs/plans/218-ship-operator-scripts-in-the-image.md § Exit gates.
+      - name: Smoke-check operator scripts in the built image
+        if: ${{ steps.build-image.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          shipped=$(docker run --rm --entrypoint sh "sapphire-flow:ci-${{ github.sha }}" -c 'ls /app/scripts' | sort)
+          expected=$(printf '%s\n' \
+            backfill_era5_land_history.py \
+            backfill_meteoswiss_history.py \
+            import_caravan_attributes.py \
+            onboard.py \
+            validate_forcing_reference.py | sort)
+          if [ "$shipped" != "$expected" ]; then
+            echo "::error::/app/scripts contents do not match the curated list"
+            echo "expected:"; echo "$expected"
+            echo "found:"; echo "$shipped"
+            exit 1
+          fi
+          for script in $expected; do
+            docker run --rm --entrypoint sh "sapphire-flow:ci-${{ github.sha }}" \
+              -c "python /app/scripts/$script --help" >/dev/null
+          done
       # B3 — Trivy image scan, restructured (Plan 180) into scan-once/derive-many so a
       # failure explains itself instead of printing a bare `exit code 1` (the
       # 2026-08-17 incident: `format: sarif` + file `output:` prints nothing to the log):

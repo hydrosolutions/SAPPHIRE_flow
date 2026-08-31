@@ -236,8 +236,17 @@ def run(clock: Callable[[], datetime]) -> int:
                 clock=lambda: ensure_utc(clock()),
                 pipeline_health_store=stores["pipeline_health_store"],
             )
-            if outcome is None:
-                raise RuntimeError("NWP fetch returned None (flow-fatal condition)")
+            # Plan 223 D5: `_fetch_nwp_task` may now return a non-None
+            # `_NwpFetchOutcome` that is STILL a failure (`fetch_failure_reason`
+            # set) rather than bare `None` -- this check must catch both, or a
+            # fatal NWP fetch would silently classify existing rows as success.
+            if outcome is None or outcome.fetch_failure_reason is not None:
+                reason = outcome.fetch_failure_reason if outcome is not None else None
+                raise RuntimeError(
+                    f"NWP fetch failed (flow-fatal condition): {reason}"
+                    if reason is not None
+                    else "NWP fetch returned None (flow-fatal condition)"
+                )
             stored = summarize_stored(conn, cycle)
     except Exception as exc:  # noqa: BLE001 - every failure mode becomes a record
         error = exc

@@ -157,6 +157,35 @@ Rewriting scripts · moving them into `src/` · a packaging migration · shippin
 or research code · changing what any script does · Plan 188 T4 itself — **and this plan does not unblock it**; T4 has its own
 recipe (see above).
 
+## Implementation status — 2026-08-31 — PARTIALLY VERIFIED, do not archive
+
+**The code landed on `main` without a PR, by operator error.** A `git add -A` in the shared main
+tree swept the in-flight `/implement` working files into `c0c493dd`, whose message describes an
+unrelated Plan 221 draft and claims "plan-doc-only … no version bump" — both false. `384deaf7`
+added the missing bump. Consequence for auditing: **`git log --grep=218` does not find the
+implementation**; it is in `c0c493dd`. History was not rewritten, deliberately.
+
+**What IS verified in the tree (re-checked 2026-08-31):**
+
+- The curated `COPY --chown=app:app … /app/scripts/` is in the runtime stage (`Dockerfile:135-144`).
+- **Invocation is documented correctly**: `docker exec`/`compose exec` bypasses the ENTRYPOINT where
+  `DATABASE_URL` is assembled and where root drops to `gosu app`, so operators must call
+  `/entrypoint.sh python /app/scripts/…`. Recorded in both `Dockerfile:137-143` and
+  `docs/deployment/mac-mini-staging.md:755`. `--help` masks this, which is why D3 exists.
+- **The locking test asserts set equality, not substring presence**: it parses logical `COPY`
+  instructions, requires exactly one targeting `/app/scripts`, and asserts
+  `shipped == _CURATED_SCRIPTS` — so neither a missing script nor an extra subtree passes.
+  5 tests green.
+
+**What is NOT verified, and blocks calling this done:** every image-level exit gate.
+No `WITH_AQUACAST=1` build was produced, no `docker exec … ls /app/scripts` listing, no image-size
+delta, and **no check that `resolve_required_static_names()` returns non-empty** — which D3 names as
+the *only* real proof, because `--help` exits before that resolution runs. These need docker plus
+both build secrets and were not runnable where the implementation happened.
+
+**Therefore this plan stays READY, not COMPLETE.** Run the image gates when host access returns and
+record the results here, as D3a's verification was recorded.
+
 ## Exit gates
 
 - `docker exec <container> ls /app/scripts` lists exactly D2's curated set.
@@ -170,3 +199,74 @@ recipe (see above).
 against a 148-code manifest. **That is now stale** — the fleet finished onboarding and the DB holds
 **148**, verified today. T4's station precondition is met; do not cite the old figure.
 - The deployment doc records where operator scripts live and how to run one.
+
+## Post-implementation addendum (2026-08-31 fixer round)
+
+Multi-model review (including an independent Codex pass) of the committed diff raised five
+findings. Four are resolved in this round; one is a genuine gap that is **explicitly waived here**
+rather than silently left unproven:
+
+- **Fixed — the documented invocation bypassed `/entrypoint.sh`.** Both the Dockerfile comment and
+  `docs/deployment/mac-mini-staging.md` § Operator scripts told an operator to run
+  `docker compose exec -T prefect-worker python /app/scripts/onboard.py --help`. `compose exec`
+  does not go through the image `ENTRYPOINT`, so it never runs `docker/entrypoint.sh` — the step
+  that builds `DATABASE_URL` from `DATABASE_URL_TEMPLATE` and drops from root to `gosu app`. Every
+  curated script requires `DATABASE_URL` and would fail on any real (non-`--help`) invocation;
+  `--help` looked fine only because argparse exits before that check runs. Both docs now read
+  `exec -T prefect-worker /entrypoint.sh python /app/scripts/onboard.py --help`.
+  **Attribution note:** this fixer round edited both files first, but before they could be
+  committed here a concurrent session on the same shared working tree ran
+  `git pull --rebase --autostash` followed by its own commit; the autostash round-trip preserved
+  this round's uncommitted edits verbatim, and the concurrent session's next commit
+  (`07825987`, message "docs(plans): Plan 221 — fold the Codex review…", claimed
+  "Plan-doc-only … no version bump") picked them up alongside its own unrelated Plan 221 changes.
+  The fix is correct and live on `origin/main` as of `07825987`; its commit message does not
+  mention Plan 218, repeating the exact misattribution pattern the independent-review finding
+  below describes for `c0c493dd` — this time observed happening live, not reconstructed after
+  the fact. No further action taken here (the content is correct and already on `origin/main`);
+  flagged so `git log --grep=218` still won't find it and so the shared-tree race itself gets
+  reported to the owner.
+
+- **Fixed — the locking test admitted false positives.** The original
+  `tests/unit/deploy/test_dockerfile_operator_scripts.py` searched curated/excluded names as
+  independent substrings across the whole Dockerfile text. A Dockerfile that shipped only
+  `import_caravan_attributes.py`, named the other four curated scripts in a comment, and
+  additionally `COPY`'d `scripts/dhm_precip/` into the image would have passed all five original
+  tests. The suite now parses the Dockerfile into logical instructions (folding backslash
+  continuations), locates the single `COPY` instruction whose destination is `/app/scripts`,
+  and asserts its source basenames equal the curated set exactly — plus a standalone check that no
+  other `COPY` instruction anywhere references an excluded script or directory. Soundness proven:
+  against a reconstruction of the described buggy Dockerfile, the five original tests all passed
+  (false green); three of the five rewritten tests independently fail red on the same input, and
+  all five pass on the actual (correct) Dockerfile.
+
+- **Partially addressed — image-level exit gates.** CI's `build-image-and-scan` job now smoke-checks
+  the *built* default (`WITH_AQUACAST=0`) image after `docker/build-push-action`: `docker run …
+  ls /app/scripts` must equal the curated set exactly, and `python /app/scripts/<script>.py --help`
+  must exit 0 for each. This closes the "static Dockerfile-text test only" gap for the default
+  image.
+
+- **Waived, not evidenced — the `WITH_AQUACAST=1` / `resolve_required_static_names()` gate.** T1's
+  exit gate that a `WITH_AQUACAST=1` image resolves `cmal_pool_pt` via
+  `resolve_required_static_names()`, and the image-size delta, are **still not measured**. Building
+  that image needs the private-repo `recap_dg_client_token` **and** `aquacast_token` BuildKit
+  secrets; this fixer round ran in a sandbox with neither file present and no network route to the
+  mac-mini (`ssh sapphire@192.168.1.136` timed out), so the build could not be attempted, let alone
+  the aquacast-only variant. **This is a real, open gap** — not something to claim done. Follow-up:
+  whoever next has both secrets (mac-mini, or CI once `AQUACAST_TOKEN` is wired into a
+  `WITH_AQUACAST=1` build job) should run `docker build --build-arg WITH_AQUACAST=1 …`, then
+  `resolve_required_static_names()` against `cmal_pool_pt`, and record the image-size delta here.
+
+- **Not a defect, but recurring — commit attribution.** `c0c493dd` (message: "Plan 221 DRAFT…",
+  claimed docs-only/no version bump) is in fact where Plan 218's original Dockerfile edit, the
+  locking test, and the `mac-mini-staging.md` update landed; the version bump followed separately
+  in a commit titled "Plan 218 operator-scripts COPY" (rebased during this fixer round; its content
+  is unchanged, only its hash — now `384deaf7`, formerly `b99565eb`). Both are already on
+  `origin/main`. The same pattern then repeated **live, during this fixer round**: see the
+  attribution note above on `07825987`. Rewriting published history to fix either mislabeled
+  message is out of scope and not attempted. Recorded here so `git log --grep=218` finds this note
+  even though it won't find `c0c493dd` or `07825987` by grep. **Worth the owner's attention**: two
+  independent occurrences of the same class of mistake (an unrelated plan's commit silently
+  carrying another plan's code/doc diff) suggest the shared-working-tree setup, not individual
+  session discipline, is the root cause — see `feedback_worktree_discipline_parallel_sessions.md`
+  in project memory.

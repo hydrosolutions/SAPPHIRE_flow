@@ -750,13 +750,27 @@ A curated set of operator CLIs ships inside the runtime image at
 `backfill_meteoswiss_history.py`, `backfill_era5_land_history.py`, and
 `validate_forcing_reference.py` (see
 `docs/plans/218-ship-operator-scripts-in-the-image.md` D1/D2 for what's
-excluded and why; this is not all of `scripts/`). Invoke one against the
-deployed stack with:
+excluded and why; this is not all of `scripts/`).
+
+**`docker compose exec` bypasses this image's `ENTRYPOINT`**
+(`docker/entrypoint.sh`), which is where `DATABASE_URL` gets assembled from
+`DATABASE_URL_TEMPLATE` + the DB password secret, and where the process
+drops from root to the `app` user via `gosu`. All five scripts require
+`DATABASE_URL` and exit before doing anything real without it — `--help`
+looks fine because argparse exits inside `parse_args()`, before that check
+ever runs, which silently masks the gap. Always invoke through the
+entrypoint explicitly:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.macmini.yml \
-    exec -T prefect-worker python /app/scripts/onboard.py --help
+    exec -T prefect-worker /entrypoint.sh python /app/scripts/onboard.py --help
 ```
+
+The same form is required for a real (non-`--help`) invocation — plain
+`exec -T prefect-worker python …` will fail with "DATABASE_URL environment
+variable is not set" even though the container has a live DB connection,
+because that connection only gets assembled by the entrypoint the plain
+form skips.
 
 `import_caravan_attributes.py` additionally needs its input parquet
 bind-mounted into a one-off container — see
