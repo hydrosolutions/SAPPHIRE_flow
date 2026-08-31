@@ -3527,6 +3527,115 @@ class TestRunOnceForecastFreshness:
         assert "stored 3 forecast(s) then failed" in msg
         assert "status: critical" in msg
 
+    def test_critical_status_with_reason_names_the_cause(self, tmp_path: Path) -> None:
+        """Plan 223 — the defect this plan fixes: fifty identical CRITICAL
+        alerts never carried `GRIB file count exceeded: 501 > 500`. A
+        record whose `detail.reason` is set must have that cause appear
+        in the alert text, driven through the REAL `probe_forecast_freshness`
+        end to end."""
+        import httpx
+
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "checked_at": _NOW.isoformat(),
+                            "cycle_time": _NOW.isoformat(),
+                            "status": "critical",
+                            "detail": {
+                                "forecasts_stored": 0,
+                                "reason": "nwp_file_count_exceeded: 501 > 500",
+                            },
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+
+        def real_probe(url: str) -> ForecastFreshnessResult:
+            return probe_forecast_freshness(url, client=client)
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=real_probe,
+            backup_device_verifier=lambda _: True,
+            launchd_probe=_launchd_ok_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "nwp_file_count_exceeded: 501 > 500" in msg
+
+    def test_critical_status_legacy_record_without_reason_renders_old_text(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 223 exit gate: a record lacking `reason` (older rows, or a
+        non-NWP-abort CRITICAL path that never constructs one) must render
+        EXACTLY today's message -- no appended cause, no `None`/`null`
+        artifact in the text."""
+        import httpx
+
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "checked_at": _NOW.isoformat(),
+                            "cycle_time": _NOW.isoformat(),
+                            "status": "critical",
+                        }
+                    ],
+                    "total": 1,
+                    "limit": 1,
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+
+        def real_probe(url: str) -> ForecastFreshnessResult:
+            return probe_forecast_freshness(url, client=client)
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=real_probe,
+            backup_device_verifier=lambda _: True,
+            launchd_probe=_launchd_ok_probe,
+        )
+
+        assert state.consecutive_forecast_freshness_failures == 1
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "stored ZERO forecasts" in msg
+        assert msg.endswith("status: critical")  # no appended cause suffix
+        assert "cause:" not in msg
+
     def test_dedup_alerts_once_then_silent(self, tmp_path: Path) -> None:
         backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
         cfg = _config(tmp_path, backup_dir=backup_dir)

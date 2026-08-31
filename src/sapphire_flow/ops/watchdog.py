@@ -648,6 +648,11 @@ class ForecastFreshnessResult:
     # 1/blocker) where `forecasts_stored > 0`. None when the record has no
     # `detail.forecasts_stored` (e.g. not present, or the wrong type).
     forecasts_stored: int | None = None
+    # Plan 223 D1: parsed from `detail.reason` -- a short, sanitised cause
+    # string (never a raw exception/URL; see `_nwp_fetch_failure_reason` in
+    # `flows/run_forecast_cycle.py`). None for older rows with no `reason`
+    # key, or a non-NWP-abort CRITICAL path that never constructs one.
+    reason: str | None = None
 
 
 def probe_forecast_freshness(
@@ -702,11 +707,15 @@ def probe_forecast_freshness(
         status: str | None = item.get("status")
         detail_raw = item.get("detail")
         forecasts_stored: int | None = None
+        reason: str | None = None
         if isinstance(detail_raw, dict):
             detail = cast("dict[str, object]", detail_raw)
             raw_forecasts_stored = detail.get("forecasts_stored")
             if isinstance(raw_forecasts_stored, int):
                 forecasts_stored = raw_forecasts_stored
+            raw_reason = detail.get("reason")
+            if isinstance(raw_reason, str):
+                reason = raw_reason
         return ForecastFreshnessResult(
             found=True,
             checked_at=checked_at,
@@ -714,6 +723,7 @@ def probe_forecast_freshness(
             status=status,
             error=None,
             forecasts_stored=forecasts_stored,
+            reason=reason,
         )
     except _HTTP_CALL_EXCEPTIONS as exc:
         return ForecastFreshnessResult(
@@ -1438,10 +1448,16 @@ def _format_forecast_freshness_critical_alert(
         outcome = f"stored {result.forecasts_stored} forecast(s) then failed"
     else:
         outcome = "stored ZERO forecasts"
-    return (
+    message = (
         f"[SAPPHIRE staging] forecast cycle {outcome} — "
         f"host: {hostname}, time: {now.isoformat()}, status: {result.status}"
     )
+    # Plan 223 D1/D3: only present when the record carried a constructed
+    # cause (D2 — bounded, sanitised, never a raw exception/URL). A legacy
+    # record with no `reason` renders EXACTLY today's message, unchanged.
+    if result.reason:
+        message += f", cause: {result.reason}"
+    return message
 
 
 def _format_forecast_freshness_recovery_alert(*, hostname: str, now: datetime) -> str:
