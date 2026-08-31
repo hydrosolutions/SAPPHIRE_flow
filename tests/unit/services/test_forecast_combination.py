@@ -633,6 +633,50 @@ class TestCombineEnsemblesPooledGridAlignment:
         assert set(combined.values["valid_time"].to_list()) == {t2}
         assert combined.values.filter(pl.col("valid_time") == t2).height == 10
 
+    def test_extra_duplicate_row_drops_that_timestamp_even_with_all_members_unique(
+        self,
+    ) -> None:
+        """D2's other half — the previous test (5 rows / 4 unique member
+        ids) locks the `n_unique(member_id)` check, but an implementation
+        that checks ONLY `n_unique` (never comparing row COUNT against the
+        contributor's member total) would still pass it, since `n_unique`
+        alone already flags that shape as incomplete. This test locks the
+        row-count check independently: at t1, member 0's row is
+        duplicated IN ADDITION to its own row (not in its place) — so all
+        5 members `{0..4}` are present and unique, but there are 6 rows.
+        `n_unique(member_id) == 5` says "complete"; only the row-count
+        comparison (`n_rows == 5`) catches the extra row and drops t1.
+        t2 carries the model's full, unique, non-duplicated `{0..4}` set
+        and must stay in the intersection."""
+        t1, t2 = (ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2))
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=[t1, t2], n_members=5
+        )
+        duplicate_member_0_at_t1 = ens_a.values.filter(
+            (pl.col("valid_time") == t1) & (pl.col("member_id") == 0)
+        )
+        ens_a = replace(
+            ens_a,
+            values=pl.concat([ens_a.values, duplicate_member_0_at_t1]),
+        )
+        # t1 now has 6 rows but still all 5 unique member ids — the shape
+        # an n_unique-only check would wrongly accept.
+        at_t1 = ens_a.values.filter(pl.col("valid_time") == t1)
+        assert at_t1.height == 6
+        assert at_t1["member_id"].n_unique() == 5
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=[t1, t2], n_members=5
+        )
+
+        result = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        assert set(combined.values["valid_time"].to_list()) == {t2}
+        assert combined.values.filter(pl.col("valid_time") == t2).height == 10
+
     def test_single_shared_timestamp_pools_directly_but_is_not_persisted(
         self,
     ) -> None:

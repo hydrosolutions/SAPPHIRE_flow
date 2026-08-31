@@ -416,3 +416,21 @@ locking tests proved a weaker invariant than intended. Resolved:
   `cdb182ca`, `23b5ca96`) — pushed directly to `main` between the finding being raised and this
   round starting. `origin/main..HEAD` already shows only the Plan 222 code commit; no action was
   needed.
+
+## Fixer round 4 — post-implementation diff review (D2's row-count half unlocked again)
+
+An independent Codex pass over the diff found that round 3's rewrite of the D2 duplicate-member
+test, while fixing the `n_unique`-only gap, reintroduced the opposite gap it had just closed for
+the row-count half of the check: the rewritten test has 5 rows and 4 unique member ids, a shape
+`n_unique(member_id) == n_members` alone already rejects (4 ≠ 5), so it no longer independently
+exercises `n_rows == n_members`. The 6-row/5-unique case that used to lock that half was removed
+in round 3 rather than kept alongside the rewrite.
+
+- **Major: D2's row-count half of the completeness check was unlocked.** Added
+  `test_extra_duplicate_row_drops_that_timestamp_even_with_all_members_unique` alongside (not
+  instead of) round 3's test: member 0 is duplicated IN ADDITION to its own row at t1, giving 6
+  rows but all 5 members present and unique — the shape an `n_unique`-only check wrongly accepts.
+  Proved red by relaxing the production predicate back to `n_members` (unique) alone, confirming
+  the new test failed while the round-3 test still passed (proving neither test alone was
+  redundant with the other), then restoring. D2's completeness gate is now locked on both axes by
+  two separate tests, each catching the shape the other test's check would miss.
