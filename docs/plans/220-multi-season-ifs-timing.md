@@ -65,16 +65,31 @@ of the high stations begin reporting around 2020-10-12, *after* that JJAS.
   different variable. This is the identity rule this track has re-learned four times: **a value carried
   alongside can disagree; a value derived cannot.**
 
-- **D2 — The 244-init gate is year-invariant and stays exactly as it is.** JJAS is 122 days in every
-  year (June–September contains no February), so 122 × 2 inits = **244** for 2020–2025 alike — verified
-  2026-08-31. ⛔ Do not generalise the constant, do not make it a function of the year: it would be a
-  parameter with one value and a new way to be wrong.
+- **D2 — 244 is the EXPECTED schedule, not a required count. Real seasons have gaps.**
+  ⚠️ **Owner correction 2026-08-31:** *"there may not be full 244 forecast runs — sometimes forecasts
+  are not published."* The current gate demands **exactly** 244 inits and rejects anything else
+  (`tigge_ifs.py`), which would throw away an entire season for one unpublished run. JJAS 2025 happened
+  to be complete; that is luck, not a contract.
+  ⇒ **Check the retrieved inits against the expected 244-run schedule and record every absence as an
+  explicit, named gap** — the same treatment IMERG's missing granules get in Plan 211: a gap is *data*,
+  not a failure. ⛔ Still reject a retrieval that returns runs **outside** the expected schedule,
+  duplicates, or the wrong init hours — those mean the retrieval is wrong, which is different from the
+  archive being incomplete.
+  ⇒ **Publish a completeness figure per season** (inits present / 244) beside every result, and state
+  it in the report. ⛔ A season that is materially incomplete must say so next to its numbers; do not
+  let a 70 %-complete season sit in a table looking like a 100 %-complete one.
+  *(The arithmetic behind 244 is still right and unchanged: JJAS is 122 days in every year — no
+  February — so 122 × 2 = 244 for 2020–2025 alike. What changes is that this is the expected count, not
+  an admission requirement.)*
 
-- **D3 — Report PER-YEAR and POOLED. Never pooled-only.** The question is interannual variability, and a
+- **D3 — Report PER-YEAR *and* POOLED.** *(Owner decision 2026-08-31.)* ⛔ Never pooled-only, and
+  ⚠️ **the pooled figure must state how it weights unequal seasons**: 2020 contributes 3 high-band
+  stations where 2022 contributes 8, so a naive pool silently gives some years more influence.
+  State the weighting; if per-year and pooled disagree, the per-year spread is the finding. The question is interannual variability, and a
   pooled median answers a different question — it would hide exactly the spread the review asked for.
   ⇒ Every band × lead cell carries six per-year values plus the pooled figure, each with its own `n`.
 
-- **D4 — 2020 is reported, and reported as thin.** ⛔ Do not silently pool a 3-station high band with
+- **D4 — 2020 is INCLUDED, with a hedge attached to every 2020 number.** *(Owner decision 2026-08-31: include, do not exclude.)* ⛔ Do not silently pool a 3-station high band with
   6–8-station seasons. Carry its station count beside every 2020 cell, and state in the report that the
   high band that season rests on three gauges. If a 2020 cell fails the existing coverage or amplitude
   gate, that is a result — record it, do not widen a gate to admit it.
@@ -83,10 +98,13 @@ of the high stations begin reporting around 2020-10-12, *after* that JJAS.
   means, first-harmonic phase, `MIN_HARMONIC_AMPLITUDE = 0.05`, same `[-18,+6)` branch, same elevation
   and lead bands. ⛔ Changing the method and the sample together makes the comparison uninterpretable.
 
-- **D6 — The published 2025 numbers must reproduce EXACTLY.** −1.34/−6.47/−5.52, −0.39/−5.78/−5.63,
-  −0.68/−6.15/−6.52. ⇒ **A regression test asserts this**, and the existing `PublishedTableMismatch`
-  guard stays live. ⛔ If parameterising the year moves a 2025 number, the parameterisation is wrong —
-  stop and report rather than re-baselining.
+- **D6 — This is a fresh six-season analysis; the 2025 check is a DIAGNOSTIC, not a freeze.**
+  Owner direction: *"we re-do the analysis."* ⇒ The deliverable is the whole 2020–2025 result, not a
+  patch to the 2025 one. **But still re-run 2025 and compare** against the published
+  −1.34/−6.47/−5.52, −0.39/−5.78/−5.63, −0.68/−6.15/−6.52.
+  ⛔ **A difference is not automatically acceptable — it must be EXPLAINED and attributed** to a named
+  cause (e.g. D2's gap handling admitting runs the old exact-count gate rejected). An unexplained change
+  means the parameterisation broke something. ⛔ Do not silently re-baseline.
 
 ## Tasks
 
@@ -102,7 +120,7 @@ different year is recorded in the manifest — the hazard `tigge_ifs.py:51` name
 **In:** five ECDS requests, same route and read contract as D6 of Plan 216 (`tigge-forecasts`, 0.5°,
 study box, `type: cf`, 6-hourly, `kg m**-2` asserted from the file attribute).
 **Out:** any analysis.
-**Verify:** each season's identity gate passes on its own 244-init schedule; each raw file and its
+**Verify:** each season's inits are checked against the expected 244-run schedule with absences recorded as named gaps (D2), and its completeness figure published; each raw file and its
 points parquet carry the correct year in name and manifest; the 2025 artifacts are **untouched**.
 ⚠️ ECDS queues — expect this to take time, not to fail.
 
@@ -128,8 +146,9 @@ change the retraining answer.
 ## Exit
 
 The IFS-versus-gauge phase offset for **every overlapping JJAS season (2020–2025)**, reported per year
-and pooled, with per-cell `n` and station counts, 2020 flagged as thin, and the 2025 row reproducing the
-published table exactly. **This closes prerequisite 2 of the independent verdict's four remaining
+and pooled, with per-cell `n`, station counts and a per-season completeness figure; 2020 included and hedged;
+and the re-run 2025 row either matching the published table or its difference explained and
+attributed. **This closes prerequisite 2 of the independent verdict's four remaining
 items** — it does not close the other three (estimator/branch sensitivity, station representativeness,
 finer-than-6-hourly forcing), and does not by itself authorise retraining.
 
