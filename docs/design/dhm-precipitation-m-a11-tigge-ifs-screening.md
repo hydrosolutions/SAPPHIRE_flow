@@ -225,6 +225,12 @@ from.
 
 ## Reading the result
 
+⚠️ **THIS SECTION IS THE JJAS 2025 READING. Its MAGNITUDES ARE SUPERSEDED (2026-08-31, Plan 220).**
+Six seasons show the mid band spanning ~9 h on the preregistered branch, with 2025 near the middle by
+chance. ⛔ **Every "~5.5-6.5 h"-style figure below describes 2025 alone and must not be quoted as IFS's
+displacement.** What survives is the **direction** (model too early in mid/high bands, low band
+unresolved from zero in 2025). See the multi-season section for the standing result.
+
 1. **The mid and high bands are NOT aligned.** Every lead in both bands is resolved well beyond the
    ±3 h bound — a ~5.5-6.5 h same-direction offset is roughly 2x the finest lag D4 permits
    distinguishing from zero. IFS shares ERA5-Land's DIRECTION of error (model too early) in the same

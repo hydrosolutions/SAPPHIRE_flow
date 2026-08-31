@@ -1573,7 +1573,11 @@ uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
 
 **And OD-10 remains the better long-run answer:** if DHM's parallel downscaling delivers a
 convection-permitting product, that fixes the phase *physically*, and this correction becomes
-unnecessary rather than merely adequate. Build the seam so that swap costs nothing.
+unnecessary rather than merely adequate. ~~Build the seam so that swap costs nothing.~~
+🔴 **HELD 2026-08-31 with the rest of OD-13** — this imperative sits outside the struck-through
+sequencing step but reactivates its "and its seam" half. ⚠️ **Open question for the owner:** a seam
+is an insertion point and needs **no magnitude**, so it may be separable from the operator and
+buildable now. ⛔ Held pending that call rather than assumed either way.
 
 ### M-D4 · Lightning data — partner ask (NEW, partner-gated)
 **Depends: —.** Ask project partners for stroke-level lightning: **timestamp, lat/lon, detection
