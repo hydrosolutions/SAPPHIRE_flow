@@ -134,8 +134,13 @@ COPY --from=builder --chown=app:app /app/alembic /app/alembic
 
 # Plan 218: curated operator scripts an operator runs AGAINST a deployment
 # (not the whole scripts/ directory — see docs/plans/218-ship-operator-scripts-in-the-image.md
-# D1/D2 for what's excluded and why). Run e.g.:
-#   docker exec -it <container> python /app/scripts/onboard.py --help
+# D1/D2 for what's excluded and why). `docker exec`/`compose exec` bypasses
+# this image's ENTRYPOINT (docker/entrypoint.sh), which is where DATABASE_URL
+# is assembled from DATABASE_URL_TEMPLATE and where the process drops from
+# root to `gosu app` — every one of these scripts requires DATABASE_URL and
+# will exit before doing anything real without it. Invoke through the
+# entrypoint explicitly, e.g.:
+#   docker compose exec -T <service> /entrypoint.sh python /app/scripts/onboard.py --help
 COPY --chown=app:app \
     scripts/import_caravan_attributes.py \
     scripts/onboard.py \
