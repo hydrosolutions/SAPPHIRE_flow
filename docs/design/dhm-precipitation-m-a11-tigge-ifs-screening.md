@@ -229,9 +229,10 @@ from.
    ±3 h bound — a ~5.5-6.5 h same-direction offset is roughly 2x the finest lag D4 permits
    distinguishing from zero. IFS shares ERA5-Land's DIRECTION of error (model too early) in the same
    two bands ERA5-Land flagged.
-2. **The MAGNITUDE is smaller than ERA5-Land's, not the same.** Mid band ~40-45% of ERA5-Land's
-   −14.4 h (−5.78 to −6.47 h, non-monotonic across D+1-D+3, so not a trend); high band ~46-55% of
-   ERA5-Land's −11.9 h (−5.52 to −6.52 h, mildly increasing with lead). A drift toward the reanalysis
+2. **The MAGNITUDE is smaller than ERA5-Land's, not the same.** Mid band −5.78 to −6.47 h;
+   high band −5.52 to −6.52 h (non-monotonic across D+1-D+3, so not a trend).
+   ⚠️ **An earlier revision expressed these as "~40-45%" and "~46-55%" of ERA5-Land's. Those ratios are
+   RETRACTED** — they are single-season, and six seasons show no stable fraction (Plan 220). A drift toward the reanalysis
    number at longer leads is the direction D3 anticipates ("early leads inherit the analysis, later
    leads relax onto the model's attractor") — but three days of lead, on one season, is not enough to
    say whether it continues (this plan's D2 scope is one season at leads to D+3; that question is
@@ -268,8 +269,9 @@ mid/high-band error is real (well beyond the ±3 h bound), repeated across three
 (D+1/D+2/D+3 pool overlapping initialisations and the same stations, so they are not independent
 samples — the repetition still shows the same displacement is not a one-lead artefact, but it does not
 multiply as three independent confirmations would), and in a consistent direction. That supports
-**finer-resolution work to DETERMINE an IFS-calibrated correction** for those two bands — ⛔ not a
-correction designed from this measurement itself, which D4's ±3 h bound cannot support. The low band is
+**finer-resolution MEASUREMENT** of those two bands — ⛔ **not** work to determine a correction, and not
+a correction designed from this measurement, neither of which D4's ±3 h bound nor the six-season spread
+can support (Plan 220: there is no single displacement to calibrate against). The low band is
 unresolved from zero at every lead measured, so any correction there is on much weaker ground and should
 not simply mirror the upper bands' sign.
 
@@ -411,8 +413,9 @@ equally, this still cannot be called *pure* IFS-cycle variability.
 3. **Low band stays closest to zero across every year, but is not uniformly inside the ±3 h bound the
    way the 2025-only reading suggested.** 2023 crosses it at every lead (-4.38/-4.01/-3.39 h); 2020 is
    at or just past it at D+1 (-3.65 h). 2021/2022/2024/2025 stay inside. The low band's own
-   interannual spread (roughly -0.4 to -4.4 h) is real but small next to the mid/high bands' spread, and
-   never approaches their magnitude or reverses sign.
+   interannual spread (roughly -0.4 to -4.4 h on the preregistered branch) is **small next to the
+   mid/high bands' spread** and never approaches their magnitude or reverses sign. ⛔ Like every spread
+   in this section it is branch-selected, not a physical magnitude.
 4. **Pooled numbers track the higher-coverage years, not a simple average** — see above. Read the pooled
    row as an available-case aggregate weighted toward whichever stations have the most years of surviving
    data, never as "the" multi-year answer in place of the per-year spread.

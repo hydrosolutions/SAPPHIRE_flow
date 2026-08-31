@@ -1126,8 +1126,9 @@ claim, no operational dependency (a measured ~48 h TIGGE embargo rules that out 
 mid/high-elevation-band error's DIRECTION. ⛔ The single-season magnitude claim ("a third to a half of
 ERA5-Land's") **does not survive six seasons**: the mid band spans ~9 h across 2020-2025 on the
 preregistered branch, with JJAS 2025 near the middle by chance. **There is no single IFS displacement to
-calibrate against**, so nothing here sizes a correction. The low band is unresolved from zero at every
-lead. **NO-GO on the originally proposed ~12 h correction as designed;
+calibrate against**, so nothing here sizes a correction. The low band is unresolved from zero at every lead **in JJAS 2025** —
+⚠️ across six seasons it crosses the ±3 h bound in **2023 (every lead)** and at D+1 in **2020**.
+**NO-GO on the originally proposed ~12 h correction as designed;
 GO on further MEASUREMENT (finer than 6-hourly, more stations, branch-robust aggregation) — ⛔ NOT on constructing a correction.** Full
 measurement: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md`. Code:
 `scripts/dhm_precip/tigge_ifs.py` (T1 retrieval/extraction), `scripts/dhm_precip/
@@ -1499,6 +1500,21 @@ Phase 1 commits to no correction design.
 
 ## Forcing-correction architecture (added 2026-08-18)
 
+⛔ **OWNER DECISION 2026-08-31 (Plan 220) — OD-13 IS HELD; OD-12 STANDS.**
+These decisions were taken when IFS's diurnal displacement was believed to be a single, stable
+quantity. **It is not**: across JJAS 2020-2025 the mid band spans ~9 h on the preregistered branch
+(8.22 h even under a fixed four-station panel), and there is **no single displacement to calibrate
+against**.
+
+- **OD-12 — SURVIVES.** It settles *where* the correction sits, not how large it is: the model keeps
+  consuming `BasinAverageForecast` and only the forcing is corrected. Unaffected by the magnitude
+  finding. ✅ **Confirmed by the owner 2026-08-31.**
+- 🔴 **OD-13 — HELD. Do NOT build the correction operator yet.** Its instruction was "built now,
+  enabled at the Nepal re-training step". ⇒ **Delay building until the displacement can be sized**
+  (owner, 2026-08-31). Building a correction whose magnitude cannot be determined invites someone to
+  fill it in later from whichever season's number is nearest to hand.
+- 🔴 **"One fix serves both products" — HELD, and doubted.** See the binding section below.
+
 | # | Question | Decision |
 |---|---|---|
 | **OD-12** | Must the modeller train on elevation bands so we can correct band-wise? | **No.** Correct the **basin-average** series in the **forcing pipeline**, using **hypsometric weighting** — the elevation dependence enters only through the weights, which are computed offline, once per basin. **The model never changes and keeps consuming `BasinAverageForecast`.** |
@@ -1729,6 +1745,13 @@ requirement at its **strongest**:
 |---|---|---|
 | **3-hourly** | ~12 h ⇒ **four timesteps** of displacement — rain in the wrong part of the day | the full **intra-day profile** |
 | **daily** | displaces rain **across the day boundary** — a burst lands on *D+1* instead of *D* | correct **day-attribution** |
+
+🔴 **HELD 2026-08-31 (Plan 220) — the owner's reading is that ONE FIX MAY NOT BE ENOUGH.**
+The argument below was made from a single, stable ~12 h error. With a displacement that moves ~9 h
+between seasons, a correction tuned to one product's needs may not suit the other's, so the
+"no trade-off" claim **cannot be assumed**. ⇒ **Hold this conclusion until the displacement can be
+sized.** The structural reasoning may well survive; its premise does not. *(The text below is retained
+as the original argument, not as a live decision.)*
 
 **One fix serves both, and that is the useful part:** getting the intra-day phase right *necessarily*
 fixes day-attribution, because day-boundary displacement is just the phase error crossing midnight.
