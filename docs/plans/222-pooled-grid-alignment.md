@@ -63,6 +63,14 @@ the models holding a `MEMBERS` ensemble for that parameter — the existing `ski
 (`services/forecast_combination.py:58-65`). Fewer than two contributors, or an empty intersection,
 means no combined forecast for that parameter — not a narrower pool.
 
+**Completeness is counted BOTH ways** *(implement round 2, major)*. A timestamp is complete for a
+contributor only when its **row count** AND its `n_unique(member_id)` both equal that contributor's
+member count. Comparing unique members alone lets a duplicate `(valid_time, member_id)` row pass:
+neither `ForecastEnsemble.from_members` nor the database enforces uniqueness of that pair, and
+`_ensemble_points()` then summarises every row (`services/forecast_lab/snapshot.py:251`),
+overweighting the duplicated member and restoring the varying denominator this plan exists to
+remove.
+
 Rejected: a *minimum contributor count* keeps publishing at a varying denominator; *resampling onto
 a common grid* is silent interpolation of a forecast.
 
@@ -70,9 +78,17 @@ a common grid* is silent interpolation of a forecast.
 
 The store fabricates a one-hour `time_step` for a single-timestamp forecast
 (`store/forecast_store.py:316-321`), which would publish `native_step_seconds: 3600` — a fresh
-instance of the defect this plan removes. Require at least two retained timestamps **at the
-persistence boundary**, which is one named reachable place: `build_combined_forecasts()`
-(`services/forecast_combination.py:189`). It must **not** live in the shared combine helper, which
+instance of the defect this plan removes. Require at least two **uniformly spaced** retained
+timestamps **at the persistence boundary**, which is one named reachable place:
+`build_combined_forecasts()` (`services/forecast_combination.py:189`), and derive `time_step` from
+that verified grid.
+
+**Counting is not enough** *(implement round 2, major)*. The intersection can drop an *interior*
+timestamp, leaving e.g. 07:00, 09:00, 10:00 — deltas of 2h then 1h. A count-only floor persists it,
+and the store derives the step from the first pair on readback
+(`store/forecast_store.py:316-321`), publishing one misleading `native_step_seconds` for an
+irregular grid. That is the original defect in a new costume. Non-uniform → do not persist that
+parameter. It must **not** live in the shared combine helper, which
 `services/skill/combined_skill.py:104-110` also calls and where a one-timestamp ensemble is legal.
 
 ### D7 — shipping this takes the combined forecast dark, and that requires T7
@@ -131,13 +147,43 @@ exists and carries a `reason`, so **no `schema_version` change**.
 
 **The predicate cannot be a timestamp comparison.** A scheduled cycle's issue time is `clock()` at
 runtime (`flows/run_forecast_cycle.py:684-690`), so the export cannot reconstruct it; an age bound
-deliberately keeps serving a product that no longer exists. Select one snapshot-wide publication
-cycle from the latest `FORECAST_FRESHNESS.cycle_time` (`store/pipeline_health_store.py:24,48`,
-emitted at `flows/run_forecast_cycle.py:706-714`) and fetch **that exact cycle**.
+deliberately keeps serving a product that no longer exists.
 
-**Locking test (red first):** with a stored `_pooled` row from an earlier cycle and none from the
-current one, the export renders the combined block **unavailable**. Today it renders the stale row
-as `available` and marks those days `complete`.
+**The marker is the forecast rows themselves — NOT `FORECAST_FRESHNESS`** *(revised after implement
+round 2; the heartbeat rule this plan previously prescribed was unsound)*. Select the snapshot-wide
+
+    MAX(forecasts.issued_at) WHERE combination_strategy IS NULL AND issued_at <= data_cutoff_at
+
+and fetch the combined row at **exactly** that `issued_at`.
+
+**Why not the heartbeat.** `FORECAST_FRESHNESS`'s append is **best-effort** — its producer catches
+every failure and continues (`flows/run_forecast_cycle.py:775-800`). Cycle A writes the defective
+`_pooled` row and its heartbeat; cycle B correctly writes no `_pooled` row but its heartbeat append
+fails silently; the newest heartbeat is still A's, so the export pins to A and serves the stale row
+forever while the flow reports success. Making the append fail-loud does not help: the export stays
+pinned to A regardless. The forecast rows are the authoritative record of what was published, and
+need no separate marker that can fail.
+
+**Why `issued_at` and not `nwp_cycle_reference_time`:** the latter is `NULL` for runoff-only models
+and can reference an older fallback cycle. `issued_at` is non-null and receives `resolved_cycle_time`
+on the station, group, fallback and combined paths (`services/run_station_forecast.py:542`,
+`services/run_group_forecast.py:331`).
+
+**Accepted failure semantics** — stated because the previous design failed for want of exactly this:
+- *Fails closed.* The first committed ordinary row from cycle B advances the marker, so a cycle that
+  writes no combined row yields absence, never a fallback to A. `MAX` stops an out-of-order or
+  backfilled write regressing it; `<= data_cutoff_at` stops a future-dated override publishing early.
+- *Torn reads are possible and accepted.* Rows commit separately, so the export can see B's ordinary
+  row before B's `_pooled` row and briefly report the combined forecast unavailable. It never serves
+  A. Closing that window entirely needs cycle-wide transactional publication — disproportionate here,
+  and a transient absence is strictly better than indefinitely serving a known-wrong value.
+- *Backfill/replay* carries the overridden `cycle_time` as `issued_at`, so a historical replay cannot
+  displace a newer scheduled cycle.
+
+**Locking test (red first):** store cycle A's ordinary rows, its `_pooled` row and its heartbeat;
+then store a cycle B ordinary row with **no** `_pooled` row and **no** B heartbeat. The snapshot
+reports `no_combined_forecast`. This is red against the heartbeat implementation currently on the
+branch, which selects A and serves A's stale `_pooled` row.
 
 **Scope, deliberately narrow:** the combined block only. Per-model entries freeze the same way —
 `_sapphire_entries` uses the same unconstrained fetch (`services/forecast_lab/snapshot.py:338-341`)
@@ -154,6 +200,30 @@ accretion round 5 cut. Recorded below; it needs its own plan.
 - Correct the published diagnosis where round 1 found it wrong: the temporal-jump QC rule would
   **not** have caught this sawtooth (`max_rate: 500.0` against a ~330 m³/s jump). *(Already done in
   the artifact; recorded here so the correction is tracked.)*
+
+## ⛔ Per-run scope — THIS run is a FIXER pass, not a fresh build
+
+**The implementation already exists** on `feat/plan-222-intersection-pooling` (commits `e2689c89`,
+`0be3148c`; version 0.1.848; full unit suite green at 4988 passed). `/implement` escalated after two
+rounds, stalled at 1 blocker + 2 majors. **Do not rebuild T3 or T7 from scratch and do not revert
+those commits.** Fix exactly these three, on top of what is there:
+
+1. 🔴 **BLOCKER — T7's marker.** Replace the `FORECAST_FRESHNESS` heartbeat lookup
+   (`services/forecast_lab/db_sources.py:160-176`) with the forecast-row marker specified in T7
+   above. The heartbeat is best-effort (`flows/run_forecast_cycle.py:775-800`), so a swallowed
+   append leaves the export pinned to the previous cycle and serving its stale `_pooled` row.
+2. **MAJOR — interior ragged spacing.** The persistence floor counts timestamps but does not check
+   spacing (`services/forecast_combination.py:322`), so an interior drop persists an irregular grid
+   with one misleading `native_step_seconds`. Enforce D6's uniform-spacing rule. The existing ragged
+   test drops only the FINAL timestamp and therefore misses this — add an interior case
+   (t1..t4 with one contributor incomplete only at t2).
+3. **MAJOR — duplicate member rows.** The completeness gate compares only `n_unique(member_id)`
+   (`services/forecast_combination.py:95-103`), so a duplicate `(valid_time, member_id)` row passes
+   and `_ensemble_points()` overweights that member. Enforce D2's both-ways count. Add a duplicate-row
+   locking test.
+
+Each of the three needs a locking test proven RED against the code currently on the branch. Nothing
+else in this plan is reopened.
 
 ## Deployment
 
@@ -217,3 +287,41 @@ test set as red against current code.
 
 **Round 6 has not run.** T7's publication-cycle predicate is the one substantive item never
 reviewed in the form written here.
+
+## Fixer round — post-implementation diff review
+
+Committed diff (`e2689c89`) reviewed against T3/T7 as implemented. 3 majors, 3 minors; all resolved:
+
+- **T3 ragged members** — `combine_ensembles_pooled`'s `valid_time` intersection checked presence
+  only, so a contributor with a full member set at some timestamps and a short one at others still
+  passed the intersection, reproducing the sawtooth at the ragged timestamp. Fixed: each
+  contributor's per-`valid_time` member count is now checked against its own total member count
+  first; only *complete* timestamps enter the intersection. Locking test
+  `test_ragged_contributor_is_dropped_not_pooled_incomplete` proved red against the pre-fix code.
+- **T3 three-contributor coverage** — every T3 test used exactly two eligible models, so an
+  implementation intersecting only its first two contributors (the actual incident had three) would
+  have passed unnoticed. Added `test_three_contributors_intersect_all_three_not_just_the_first_two`;
+  proved red by transiently truncating the intersection loop to `eligible[:2]`.
+- **T7 "latest heartbeat"** — `FakePipelineHealthStore.fetch_recent()` returned insertion order
+  (`matches[-limit:]`), not PostgreSQL's `checked_at DESC`; every T7 test used exactly one heartbeat,
+  so the fake's divergence from production ordering was never exercised. Fixed the fake to sort by
+  `checked_at` descending, and added tests with multiple out-of-order heartbeats
+  (`TestFetchLatestPublicationCycleTime` in `test_db_sources.py`;
+  `test_newer_heartbeat_with_no_row_beats_an_older_heartbeat_with_a_row` and
+  `test_newer_row_selected_when_both_cycles_have_one` in `test_snapshot.py`). Both proved red against
+  a `records[-1]`-style production mutation, and the snapshot tests separately proved red against the
+  old (unsorted) fake with correct production code — the fake fix was independently necessary.
+- **Minor: unconditional health-store query** — `build_snapshot()` resolved the publication cycle for
+  every strategy, including `PRIMARY`/`CONSENSUS`, which never fetch a combined row. A pipeline-
+  health-store failure there would have turned into a snapshot-wide 500 for an unrelated reason.
+  Fixed to resolve the cycle only for `POOLED`/`BMA`; locking test
+  `test_primary_strategy_never_queries_pipeline_health_store` proved red against the unconditional
+  call.
+- **Minor: stale skip-reason text** — both `run_forecast_cycle.py` call sites still logged
+  `reason="fewer than 2 combinable models"` on a skip, even though the empty-intersection and
+  single-timestamp paths (T3/D6) can now skip with `n_models >= 2`. Changed to the generic
+  `reason="no_combined_forecast"` at both sites (mechanical, no locking test needed).
+- **Minor: recovery-replay documentation gap** — accepted as correct behaviour (consistent with D7),
+  not a code change. `docs/spec/forecast-lab-snapshot.md` now has an explicit operator note: a manual
+  recovery replay's combined forecast will not surface in the export until the next *scheduled*
+  cycle's heartbeat lands, because `FORECAST_FRESHNESS` heartbeats are scheduled-cycle-only.
