@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-31
 plan: 224
 title: M-A5c — close IMERG's two prerequisites, then measure the volume and stop
@@ -13,13 +13,30 @@ source: docs/design/dhm-precipitation-phase2-recommendation.md § 7.3; PR #229
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-31.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
 **Two small fixes and one measurement.** The pipeline exists, is merged and has been through four
 independent review rounds. No new framework, abstraction layer, config surface or file format.
 ⛔ **This plan does NOT retrieve the archive.** **Adding length is a cost.**
+
+## ⛔ PER-RUN SCOPE (binding)
+
+- 🔴 **RETRIEVE EXACTLY ONE GRANULE. NOTHING ELSE.** This is the single hardest constraint. ⛔ Not a
+  day, not a month, not "a small sample to be safe". The projection is arithmetic on **one** measured
+  file. If the retrieval loop looks like it should run again, **stop and report**.
+- ✅ **Network: GES DISC HTTPS archive only**, Earthdata credentials from `~/.netrc`.
+  ⛔ **Never the Copernicus CDS** — a wrong root once triggered a live ERA5-Land download on this track.
+- ⛔ **Publish no bundle.** T1's fixes are to the publisher; ⛔ do not exercise them by publishing.
+- ⛔ Never write under `data/dhm_precip/era5_land*`; never delete anything under any `points/` tree, and
+  ⛔ **do not touch `data/dhm_precip/tigge/`** — that is 110 MB of retrieved research data.
+- ⚠️ **Verify every code reference in this plan against the source before relying on it.** Plan 220 had
+  three plan-stated code facts that were wrong; a citation that was never checked reads exactly like one
+  that was.
+- **Iterate on `tests/unit/scripts/`**, not the full suite (~8 min). Full `tests/unit` **once** at the
+  end, measuring your own baseline.
+- **Hold at PR.** Patch bump folded into the real commit; stage by explicit path, never `git add -A`.
 
 ## Why this plan exists
 
