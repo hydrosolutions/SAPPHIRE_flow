@@ -1160,13 +1160,19 @@ paired frames and reruns the unchanged station-equal estimator once on the union
 already-computed point estimates, which is a different statistic), with 2020 included and hedged (D4: it
 carries only 3 high-band gauges against 6-8 in later years).
 
-**Status 2026-08-31: code complete and gated; T2's live retrieval in progress.** See
-`docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11b for the results once T2/T3
-complete.
+**✅ COMPLETE 2026-08-31.** All five remaining seasons retrieved (244/244 inits, zero gaps, each). **The
+independent review's flagged risk is CONFIRMED**: the mid-elevation band's offset ranges from **-2.31 h
+(2020) to -11.48 h (2021)** — a 9.2 h spread, not a single stable number — and 2020's thin 2-station high
+band shows a probable sign reversal (+0.47/-0.96 h at D+1/D+2) against every other year's clearly
+negative reading. The low band, read as "near zero" off 2025 alone, crosses the ±3 h bound in 2020 and
+2023. Pooled figures track the higher-coverage years, not a naive average of the six per-year values.
+Full table + reading: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11b addendum.
 
 **Exit:** the IFS-vs-gauge phase offset for every overlapping JJAS season (2020-2025), per-year and
-pooled, with per-cell `n`, station counts and a per-season completeness figure; the re-run 2025 row
-matching the published table (MEASURED — see the design doc addendum).
+pooled, with per-cell `n`, station counts and a per-season completeness figure (all 100%); the re-run
+2025 row matches the published table exactly (MEASURED). **Does not by itself authorise retraining** —
+if anything, the confirmed spread argues for more caution, not less, before any single-point IFS
+correction.
 
 ---
 
