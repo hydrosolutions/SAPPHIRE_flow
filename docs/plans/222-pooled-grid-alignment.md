@@ -325,3 +325,58 @@ Committed diff (`e2689c89`) reviewed against T3/T7 as implemented. 3 majors, 3 m
   not a code change. `docs/spec/forecast-lab-snapshot.md` now has an explicit operator note: a manual
   recovery replay's combined forecast will not surface in the export until the next *scheduled*
   cycle's heartbeat lands, because `FORECAST_FRESHNESS` heartbeats are scheduled-cycle-only.
+  **Superseded by the fixer round below** — T7 was later revised to drop the heartbeat marker
+  entirely, so this paragraph (and the operator note it originally produced) no longer reflects the
+  shipped behaviour; see `docs/spec/forecast-lab-snapshot.md`'s current "Operator note" for the
+  correct, heartbeat-free contract (a replay of the *current* gap surfaces immediately, no separate
+  signal required).
+
+## Fixer round 2 — post-implementation diff review (rebase + review findings)
+
+Reviewers (including an independent Codex pass) found the committed branch conflicted with `main`
+(version sequence, a stale duplicate of Plan 226) and raised one more D6 gap plus a real coverage
+hole on T7's production query. All resolved:
+
+- **Blocker: version/branch divergence** — the branch had drifted 14 commits behind `main` (which
+  had independently advanced past `v0.1.850`/`v0.1.852`) and carried a stale duplicate of
+  `docs/plans/224-daily-model-grid-anchoring.md` (main already has it, correctly renumbered to
+  Plan 226). Resolved by rebasing: the three code commits (`e2689c89`, `0be3148c`, `316abdab`) were
+  cherry-picked onto current `main`, dropping the now-redundant plan-doc commits (main already has
+  the same T7-marker-revision and 224→226-renumber content byte-for-byte) and the version/`uv.lock`
+  files were taken from `main` rather than replayed, so the patch bump below is the only version
+  change in the diff.
+- **Major: D6 time_step not derived from the surviving grid** — `_has_uniform_spacing()` (renamed
+  `_derive_uniform_time_step()`) checked spacing UNIFORMITY but `build_combined_forecasts()` still
+  persisted `ref_ensemble.time_step` unchanged. A uniformly COARSENED intersection (every contributor
+  loses the same interior timestamps, e.g. hourly → every other hour) passes the uniformity check
+  with a real 2h delta while the ensemble still carries the stale declared 1h step — an in-memory
+  read and a post-persistence reload (which derives `native_step_seconds` from the actual row
+  spacing) would then disagree about the same forecast. Fixed: the sole consecutive delta is now
+  derived directly and the ensemble is rebuilt via `dataclasses.replace()` with that value before
+  persistence. Locking test `test_uniformly_coarsened_intersection_derives_time_step_from_grid`
+  proved red against the pre-fix code (asserted `timedelta(hours=1)` was returned instead of the
+  correct `timedelta(hours=2)`).
+- **Major: T7's PostgreSQL query had no integration test** — every existing locking test for
+  `fetch_latest_uncombined_issued_at()` exercised `FakeForecastStore` only; a production regression
+  (MAX→MIN, dropping the cutoff, including combined rows) would have left the whole unit suite
+  green. Added `TestFetchLatestUncombinedIssuedAt` to
+  `tests/integration/store/test_forecast_store.py` against a real PostGIS container: excludes
+  combined rows, respects `issued_at <= cutoff`, and returns the true maximum regardless of
+  insertion order. All three were proved red by independently mutating the production query
+  (MAX→MIN, dropping the cutoff filter, dropping the `combination_strategy IS NULL` filter) and
+  confirming the corresponding test failed, then restoring.
+- **Minor: dead `pipeline_health_store` field** — `ForecastLabStores.pipeline_health_store` was
+  still declared and threaded through `api/routes/forecast_lab.py`, `cli/export_forecast_lab.py`,
+  and every test's store construction, but nothing in `db_sources.py`/`snapshot.py` has read it
+  since the T7 marker moved onto `ForecastStore.fetch_latest_uncombined_issued_at()`. Removed the
+  field and all its construction call sites (production and test); `docs/touchpoint-maps.md`
+  updated to describe the removal instead of the wart.
+- **Minor: stale "no heartbeat recorded" docstring** — `fetch_combined_forecast_for_cycle`'s
+  docstring still called `publication_cycle_time=None` "no heartbeat recorded yet"; reworded to "no
+  ordinary forecast recorded yet", matching the phrasing already used two functions above.
+- **Minor: contract text incomplete** — `types-and-protocols.md`'s `build_combined_forecasts` D6
+  paragraph described only the single-timestamp and non-uniform-spacing floors, not the
+  uniformly-coarsened-grid `time_step` derivation added above. Extended.
+- **Superseded-heartbeat-design leftover in this doc** — the "Minor: recovery-replay documentation
+  gap" paragraph in the prior fixer round above is now marked superseded (see its trailing note);
+  the doc is append-only history, not rewritten in place.

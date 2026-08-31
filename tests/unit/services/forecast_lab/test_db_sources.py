@@ -22,20 +22,24 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_basin_area_km2,
     fetch_eligible_station_by_code,
     fetch_eligible_stations,
+    fetch_latest_publication_cycle_time,
     fetch_observation_window,
 )
-from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
+    ForecastStatus,
     ModelAssignmentStatus,
+    NwpCycleSource,
     ObservationSource,
     QcStatus,
     StationKind,
     StationStatus,
 )
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.forecast import OperationalForecast
+from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
 from sapphire_flow.types.model import ModelArtifactProvenance
 from sapphire_flow.types.station import ModelAssignment
-from tests.conftest import make_observation, make_station_config
+from tests.conftest import make_forecast_ensemble, make_observation, make_station_config
 from tests.fakes.fake_stores import (
     FakeArtifactProvenanceStore,
     FakeBasinStore,
@@ -55,11 +59,12 @@ def _make_stores(
     basin_store: FakeBasinStore | None = None,
     artifact_store: FakeModelArtifactStore | None = None,
     provenance_store: FakeArtifactProvenanceStore | None = None,
+    forecast_store: FakeForecastStore | None = None,
 ) -> ForecastLabStores:
     return ForecastLabStores(
         station_store=station_store or FakeStationStore(),
         observation_store=observation_store or FakeObservationStore(),
-        forecast_store=FakeForecastStore(),
+        forecast_store=forecast_store or FakeForecastStore(),
         model_store=FakeModelStore(),
         artifact_store=artifact_store or FakeModelArtifactStore(),
         provenance_store=provenance_store or FakeArtifactProvenanceStore(),
@@ -420,6 +425,100 @@ class TestArtifactInfo:
         info = fetch_artifact_info(stores, ArtifactId(uuid4()))
         assert info.artifact_sha256 is None
         assert info.source_commit is None
+
+
+def _ordinary_forecast_at(
+    issued_at: UtcDatetime, *, station_id: StationId | None = None
+) -> OperationalForecast:
+    """An ORDINARY (`combination_strategy=None`, the dataclass default)
+    forecast row stamped `issued_at`, for `fetch_latest_publication_cycle_time`'s
+    marker query — never a `_pooled`/`_bma` combined row."""
+    sid = station_id or StationId(uuid4())
+    ensemble = replace(make_forecast_ensemble(station_id=sid), issued_at=issued_at)
+    return OperationalForecast(
+        id=ForecastId(uuid4()),
+        station_id=sid,
+        model_id=ModelId("nwp_regression"),
+        model_artifact_id=None,
+        issued_at=issued_at,
+        nwp_cycle_reference_time=issued_at,
+        nwp_cycle_source=NwpCycleSource.PRIMARY,
+        representation=ensemble.representation,
+        status=ForecastStatus.RAW,
+        version=1,
+        warm_up_source=None,
+        warm_up_state_age_hours=None,
+        observation_staleness_hours=0.5,
+        ensemble=ensemble,
+        created_at=issued_at,
+        updated_at=issued_at,
+    )
+
+
+class TestFetchLatestPublicationCycleTime:
+    """Plan 222 fixer round (BLOCKER, revised) — `fetch_latest_publication_cycle_time()`
+    must return `MAX(issued_at)` over ORDINARY (`combination_strategy IS
+    NULL`) forecast rows, bounded by `data_cutoff_at` — never the
+    `FORECAST_FRESHNESS` heartbeat. The heartbeat's append is best-effort
+    (`flows/run_forecast_cycle.py` catches and logs every failure there and
+    continues), so a swallowed append would leave the marker pinned to a
+    stale cycle even though newer forecast rows exist."""
+
+    def test_selects_newest_ordinary_issued_at_when_stored_out_of_order(self) -> None:
+        older = ensure_utc(_EPOCH)
+        newer = ensure_utc(_EPOCH + timedelta(hours=6))
+        forecast_store = FakeForecastStore()
+        # Store the NEWER row first — an implementation that merely
+        # returns "the last stored" rather than the true MAX would return
+        # `older` here.
+        forecast_store.store_forecast(_ordinary_forecast_at(newer))
+        forecast_store.store_forecast(_ordinary_forecast_at(older))
+        stores = _make_stores(forecast_store=forecast_store)
+
+        result = fetch_latest_publication_cycle_time(
+            stores, data_cutoff_at=ensure_utc(_EPOCH + timedelta(hours=12))
+        )
+
+        assert result == newer
+
+    def test_returns_none_when_no_ordinary_forecast_recorded(self) -> None:
+        stores = _make_stores()
+        assert (
+            fetch_latest_publication_cycle_time(stores, data_cutoff_at=_EPOCH) is None
+        )
+
+    def test_a_stale_freshness_heartbeat_is_ignored_in_favour_of_the_newer_row(
+        self,
+    ) -> None:
+        """The BLOCKER this round fixes: a `FORECAST_FRESHNESS` heartbeat
+        pointing at an OLDER cycle must never win over a newer ordinary
+        forecast row — the heartbeat is not consulted at all any more.
+        `ForecastLabStores` no longer even carries a `pipeline_health_store`
+        field, so there is no store left to wire a stale heartbeat into in
+        the first place."""
+        newer_row_cycle = ensure_utc(_EPOCH + timedelta(hours=6))
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(_ordinary_forecast_at(newer_row_cycle))
+        stores = _make_stores(forecast_store=forecast_store)
+
+        result = fetch_latest_publication_cycle_time(
+            stores, data_cutoff_at=ensure_utc(_EPOCH + timedelta(hours=12))
+        )
+
+        assert result == newer_row_cycle
+
+    def test_a_row_after_the_data_cutoff_is_excluded(self) -> None:
+        """A future-dated backfill/replay override must not publish early:
+        `issued_at <= data_cutoff_at` is enforced, not just `MAX`."""
+        cutoff = ensure_utc(_EPOCH)
+        future_row = ensure_utc(_EPOCH + timedelta(hours=6))
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(_ordinary_forecast_at(future_row))
+        stores = _make_stores(forecast_store=forecast_store)
+
+        result = fetch_latest_publication_cycle_time(stores, data_cutoff_at=cutoff)
+
+        assert result is None
 
 
 class TestGeoCoordRejectsNonFinite:

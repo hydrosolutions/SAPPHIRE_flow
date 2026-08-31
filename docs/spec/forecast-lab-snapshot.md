@@ -1,15 +1,23 @@
 # Forecast Lab snapshot (`forecast-lab-snapshot/v2`)
 
-**Plan 198, extended by Plan 204.** One self-contained, versioned JSON
-document for the separate **SAPPHIRE-flow-map** project: BAFU observations,
-archived BAFU forecasts and SAPPHIRE forecasts (per-model and, since Plan 204,
-the combined `_pooled`/`_bma` forecast) at the operational BAFU stations,
-produced by exactly one code path
+**Plan 198, extended by Plan 204 and Plan 222.** One self-contained,
+versioned JSON document for the separate **SAPPHIRE-flow-map** project: BAFU
+observations, archived BAFU forecasts and SAPPHIRE forecasts (per-model and,
+since Plan 204, the combined `_pooled`/`_bma` forecast) at the operational
+BAFU stations, produced by exactly one code path
 (`services/forecast_lab/snapshot.py::build_snapshot()`) whether it is served
 over the REST route or written by the CLI export. See the plan docs
 (`docs/plans/archive/198-forecast-lab-snapshot-export.md`,
-`docs/plans/204-forecast-lab-quantile-models-and-pooled.md`) for the full
-design rationale — this page is the consumer/operator-facing reference.
+`docs/plans/204-forecast-lab-quantile-models-and-pooled.md`,
+`docs/plans/222-pooled-grid-alignment.md`) for the full design rationale —
+this page is the consumer/operator-facing reference.
+
+**Plan 222 (2026-08-31):** fixed a `_pooled` sawtooth caused by pooling
+across the *union* of contributing models' `valid_time` grids instead of
+their intersection, and pinned the combined block's fetch to the current
+publication cycle (see "Combined forecast" below) so the corrected absence
+is visible rather than served stale. No `schema_version` bump — both are
+behavioural fixes, not shape changes.
 
 **`v2` is a breaking cutover, not a compatible addition** — every boundary
 model forbids unknown fields (`ForecastLabModel`'s `extra: "forbid"`), so a
@@ -93,7 +101,7 @@ or a recognised quantile set), never merely the first assignment with any
 forecast at all. A higher-priority candidate the builder renders unavailable
 can never win `is_primary`.
 
-## Combined forecast (`combined_forecast`) — Plan 204
+## Combined forecast (`combined_forecast`) — Plan 204, current-cycle fetch by Plan 222 T7
 
 A sibling block on each station entry, **always present, discriminated on
 `available`** (mirrors the `bafu_forecast` union) — **not** a
@@ -120,10 +128,49 @@ parameter may still exist. Under `consensus` it is a static verdict — no
 query is issued (the forecast cycle raises `NotImplementedError` for
 `consensus` today, so no row could exist regardless).
 
-The block follows the same "latest available run from each source" rule
-every other block in this document uses: once *any* combined discharge row
-exists, a later cycle that produces none still shows the previous run rather
-than going empty. Current-cycle matching is not implemented.
+**Current-cycle matching (Plan 222 T7) — the one exception to the "latest
+available run" rule.** Every other block in this document (per-model
+`sapphire_forecasts[]` included) shows the latest stored row regardless of
+age: once *any* row exists, a later cycle that produces none still shows the
+previous run rather than going empty. The combined block does **not**
+follow that rule, because Plan 222's pooling fix (`combine_ensembles_pooled`
+now requires an intersection over every contributor's `valid_time`s) can
+make a cycle that ran fine produce **no** combined row for a station/
+parameter — an honest, expected absence, not a failure. Serving the last
+cycle that *did* produce a row would silently paper over that absence
+forever.
+
+The fetch is instead pinned to **one snapshot-wide publication cycle**: the
+most recent ORDINARY (`combination_strategy IS NULL`) forecast row's
+`issued_at`, across every station and model, at or before the export's own
+`data_cutoff_at` (never a future-dated backfill/replay override) —
+`ForecastStore.fetch_latest_uncombined_issued_at()`.
+
+**Not the `FORECAST_FRESHNESS` pipeline-health heartbeat** (the original
+Plan 222 design). That append is best-effort — the forecast cycle catches
+and logs every failure there and continues — so a swallowed append after a
+cycle that correctly produced no combined row would leave the export
+pinned to the PREVIOUS cycle, still serving its stale `_pooled`/`_bma`
+row while the flow reports success. The forecast rows are the
+authoritative record of what was actually published and need no separate
+marker that can itself fail to write.
+
+A stored `_pooled`/`_bma` row whose `issued_at` is not that exact cycle —
+or no ordinary forecast ever recorded — renders `available: false, reason:
+"no_combined_forecast"`, identically to no row existing. This is a
+**behavioural contract change with no `schema_version` bump**: the shape
+is unchanged, only which row (if any) is selected.
+
+**Operator note — manual recovery replays.** A manual recovery replay
+(re-running a missed cycle with an explicit `cycle_time` override) writes
+its ordinary rows stamped with that overridden `cycle_time` as
+`issued_at`. Because the marker is `MAX(issued_at)` bounded by
+`data_cutoff_at`, a replay for an OLDER gap can never displace a newer
+scheduled cycle's rows — it stops being eligible the moment a later cycle
+has run. A replay of the *current* gap (no later scheduled cycle has run
+since) does become the selected publication cycle, and its combined row —
+if the pooling intersection produced one — surfaces immediately: unlike
+the earlier heartbeat-based design, no separate signal is required.
 
 **Shape when available:** `representation` (`"members"`/`"quantiles"`,
 same nested-discriminated split as `sapphire_forecasts[]`), `forecast_id`,

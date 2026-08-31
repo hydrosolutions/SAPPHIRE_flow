@@ -2955,7 +2955,7 @@ def run_forecast_cycle_flow(
                         else:
                             log.warning(
                                 "forecast_cycle.combined_forecast_skipped",
-                                reason="fewer than 2 combinable models",
+                                reason="no_combined_forecast",
                                 n_models=len(multi_result.combinable_results),
                             )
 
@@ -3273,7 +3273,7 @@ def run_forecast_cycle_flow(
                     else:
                         log.warning(
                             "forecast_cycle.combined_forecast_skipped",
-                            reason="fewer than 2 combinable models",
+                            reason="no_combined_forecast",
                             n_models=len(multi_result.combinable_results),
                         )
 

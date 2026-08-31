@@ -359,6 +359,16 @@ class FakeForecastStore:
         total = len(matches)
         return matches[offset : offset + limit], total
 
+    def fetch_latest_uncombined_issued_at(
+        self, cutoff: UtcDatetime
+    ) -> UtcDatetime | None:
+        matches = [
+            f.issued_at
+            for f in self._forecasts.values()
+            if f.combination_strategy is None and f.issued_at <= cutoff
+        ]
+        return max(matches) if matches else None
+
 
 class FakeHindcastStore:
     def __init__(self) -> None:
@@ -1150,10 +1160,21 @@ class FakePipelineHealthStore:
         check_type: PipelineCheckType | None = None,
         limit: int = 100,
     ) -> list[PipelineHealthRecord]:
+        """Plan 222 fixer round — mirrors `PgPipelineHealthStore.fetch_recent`'s
+        `ORDER BY checked_at DESC` (newest first), not insertion order. The
+        old `matches[-limit:]` silently relied on tests appending records in
+        chronological order; any caller reading `records[0]` expecting "the
+        newest record" would false-pass against the fake even with a wrong
+        "oldest" or "first-appended" implementation.
+        (`fetch_latest_publication_cycle_time()` no longer reads this store
+        at all as of the same fixer round — its T7 marker moved to
+        `ForecastStore.fetch_latest_uncombined_issued_at()` — but other
+        `FORECAST_FRESHNESS` consumers still rely on this ordering.)"""
         matches = [
             r for r in self._records if check_type is None or r.check_type == check_type
         ]
-        return matches[-limit:]
+        matches.sort(key=lambda r: r.checked_at, reverse=True)
+        return matches[:limit]
 
 
 class FakeRatingCurveStore:

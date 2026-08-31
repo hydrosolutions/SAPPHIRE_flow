@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -24,12 +25,16 @@ from sapphire_flow.types.ids import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime, timedelta
     from uuid import UUID
 
     from sapphire_flow.services.run_station_forecast import MultiModelForecastResult
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import NwpCycleSource
+
+_MIN_POOLED_CONTRIBUTORS = 2
+_MIN_PERSISTED_TIMESTAMPS = 2
 
 log = structlog.get_logger()
 
@@ -39,6 +44,22 @@ _BMA_TARGET_MEMBERS = 100
 def combine_ensembles_pooled(
     ensembles: dict[ModelId, dict[str, ForecastEnsemble]],
 ) -> dict[str, ForecastEnsemble]:
+    """Plan 222 T3 (D2) — pools only where every contributor is present.
+
+    Two model families can sit on different `valid_time` grids (the NWP
+    pair's UTC-midnight buckets vs. `linear_regression_daily`'s wall-clock
+    offsets, `docs/plans/222-pooled-grid-alignment.md`). Concatenating
+    across the union of those grids — the pre-Plan-222 behaviour — makes
+    `_ensemble_points()` summarise each timestamp over whichever rows
+    happen to carry it, so the member count (and therefore the median)
+    alternates timestamp to timestamp: the reported sawtooth.
+
+    A parameter is published only when at least two models contribute a
+    `MEMBERS` ensemble for it, and only at the `valid_time`s every one of
+    those contributors carries — the intersection, not the union. Fewer
+    than two contributors, or an empty intersection, drops the parameter
+    entirely; it is never silently narrowed to a smaller pool.
+    """
     from sapphire_flow.types.ensemble import ForecastEnsemble
 
     all_params: set[str] = set()
@@ -47,10 +68,7 @@ def combine_ensembles_pooled(
 
     result: dict[str, ForecastEnsemble] = {}
     for param in all_params:
-        member_dfs: list[pl.DataFrame] = []
-        ref_ensemble: ForecastEnsemble | None = None
-        offset = 0
-
+        eligible: list[tuple[ModelId, ForecastEnsemble]] = []
         for model_id, param_map in ensembles.items():
             ensemble = param_map.get(param)
             if ensemble is None:
@@ -63,9 +81,68 @@ def combine_ensembles_pooled(
                     representation=ensemble.representation.value,
                 )
                 continue
+            eligible.append((model_id, ensemble))
 
+        if len(eligible) < _MIN_POOLED_CONTRIBUTORS:
+            log.warning(
+                "forecast_combination.pooled_insufficient_contributors",
+                parameter=param,
+                contributor_count=len(eligible),
+            )
+            continue
+
+        common_valid_times: set[datetime] | None = None
+        for model_id, ensemble in eligible:
             n_members = ensemble.values["member_id"].n_unique()
-            remapped = ensemble.values.with_columns(
+            # D2 — completeness is counted BOTH ways: row count AND
+            # `n_unique(member_id)` must each equal the contributor's total
+            # member count. `n_unique` alone lets a duplicate
+            # `(valid_time, member_id)` row pass (neither
+            # `ForecastEnsemble.from_members` nor the database enforces
+            # uniqueness of that pair), and `_ensemble_points()` then
+            # summarises every row, overweighting the duplicated member.
+            per_valid_time = ensemble.values.group_by("valid_time").agg(
+                pl.len().alias("n_rows"),
+                pl.col("member_id").n_unique().alias("n_members"),
+            )
+            complete_valid_times = set(
+                per_valid_time.filter(
+                    (pl.col("n_members") == n_members) & (pl.col("n_rows") == n_members)
+                )["valid_time"].to_list()
+            )
+            ragged_count = per_valid_time.height - len(complete_valid_times)
+            if ragged_count:
+                log.warning(
+                    "forecast_combination.pooled_ragged_contributor",
+                    model_id=str(model_id),
+                    parameter=param,
+                    ragged_valid_time_count=ragged_count,
+                    complete_valid_time_count=len(complete_valid_times),
+                )
+            common_valid_times = (
+                complete_valid_times
+                if common_valid_times is None
+                else common_valid_times & complete_valid_times
+            )
+
+        if not common_valid_times:
+            log.warning(
+                "forecast_combination.pooled_empty_intersection",
+                parameter=param,
+                contributor_count=len(eligible),
+            )
+            continue
+
+        member_dfs: list[pl.DataFrame] = []
+        ref_ensemble: ForecastEnsemble | None = None
+        offset = 0
+
+        for _model_id, ensemble in eligible:
+            n_members = ensemble.values["member_id"].n_unique()
+            filtered = ensemble.values.filter(
+                pl.col("valid_time").is_in(common_valid_times)
+            )
+            remapped = filtered.with_columns(
                 (pl.col("member_id") + offset).alias("member_id")
             )
             member_dfs.append(remapped)
@@ -73,6 +150,11 @@ def combine_ensembles_pooled(
             ref_ensemble = ensemble
 
         if not member_dfs or ref_ensemble is None:
+            # Unreachable: `eligible` has >= _MIN_POOLED_CONTRIBUTORS
+            # entries by the guard above, so the loop always runs. Kept
+            # for the same reason as `combine_ensembles_bma`'s identical
+            # guard — an explicit narrowing pyright can follow, not a
+            # live branch.
             continue
 
         merged = pl.concat(member_dfs)
@@ -186,6 +268,30 @@ def combine_ensembles_bma(
     return result
 
 
+def _derive_uniform_time_step(ensemble: ForecastEnsemble) -> timedelta | None:
+    """D6 fixer round — the retained `valid_time`s must form an evenly
+    spaced grid, AND the `time_step` persisted with them must be the delta
+    that grid actually has. Counting timestamps (`_MIN_PERSISTED_TIMESTAMPS`)
+    is not enough: an intersection that drops an interior timestamp instead
+    of a trailing one still clears that floor while leaving unequal gaps.
+    Nor is `ensemble.time_step` itself trustworthy here — it is the ref
+    contributor's DECLARED step, carried through `combine_ensembles_pooled`
+    unchanged, so a uniformly COARSENED intersection (e.g. an hourly
+    contributor reduced to every other timestamp by the intersection) keeps
+    the stale 1-hour label on an actually-2-hour grid. In-memory callers and
+    a post-persistence reload (`store/forecast_store.py` derives
+    `native_step_seconds` from the first two rows on readback) would then
+    disagree about the same forecast's step.
+
+    Returns the sole consecutive delta when the grid is uniform, else
+    `None`."""
+    valid_times = sorted(ensemble.values["valid_time"].unique().to_list())
+    deltas = {b - a for a, b in zip(valid_times, valid_times[1:], strict=False)}
+    if len(deltas) != 1:
+        return None
+    return next(iter(deltas))
+
+
 def build_combined_forecasts(
     station_id: StationId,
     multi_result: MultiModelForecastResult,
@@ -237,7 +343,47 @@ def build_combined_forecasts(
     source_model_ids = list(combinable_results.keys())
 
     forecasts: list[OperationalForecast] = []
-    for _param, ensemble in combined.items():
+    for param, ensemble in combined.items():
+        # D6 — the store fabricates a one-hour `time_step` for a
+        # single-timestamp forecast (`store/forecast_store.py`), which
+        # would publish `native_step_seconds: 3600`: a fresh instance of
+        # the sawtooth defect this plan removes. A one-timestamp
+        # intersection is legal for `combine_ensembles_pooled()` itself
+        # (`services/skill/combined_skill.py` calls it too, and a single
+        # hindcast step is a normal case there) — the floor belongs only
+        # at this persistence boundary.
+        if ensemble.forecast_horizon_steps < _MIN_PERSISTED_TIMESTAMPS:
+            log.warning(
+                "forecast_combination.pooled_single_timestamp_not_persisted",
+                parameter=param,
+                station_id=str(station_id),
+                forecast_horizon_steps=ensemble.forecast_horizon_steps,
+            )
+            continue
+        # D6 fixer round — counting timestamps is not enough: the
+        # intersection can drop an INTERIOR timestamp (e.g. 07:00, 09:00,
+        # 10:00 — deltas of 2h then 1h), which still clears the count floor
+        # above. The store derives `native_step_seconds` from the first
+        # pair on readback (`store/forecast_store.py`), so persisting a
+        # non-uniform grid publishes one misleading step — the original
+        # defect in a new costume.
+        derived_time_step = _derive_uniform_time_step(ensemble)
+        if derived_time_step is None:
+            log.warning(
+                "forecast_combination.pooled_non_uniform_spacing_not_persisted",
+                parameter=param,
+                station_id=str(station_id),
+            )
+            continue
+        # D6 fixer round (review) — a uniformly COARSENED intersection
+        # (every contributor loses the same interior timestamps, e.g. an
+        # hourly grid reduced to every other step) passes the check above
+        # but leaves `ensemble.time_step` at the ref contributor's stale
+        # DECLARED step. Rebuild the ensemble with the step the surviving
+        # grid actually has before persisting, so an in-memory read and a
+        # post-persistence reload agree.
+        if derived_time_step != ensemble.time_step:
+            ensemble = replace(ensemble, time_step=derived_time_step)
         forecast = OperationalForecast(
             id=ForecastId(uuid_factory()),
             station_id=station_id,
