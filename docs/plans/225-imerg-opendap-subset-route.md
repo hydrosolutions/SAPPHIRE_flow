@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-31
 plan: 225
 title: M-A5d — retrieve IMERG through the OPeNDAP subset route, 847 GB → 2.7 GB
@@ -13,7 +13,30 @@ source: measured subset probe 2026-08-31; docs/plans/224-imerg-prerequisites-and
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-31, after two independent review rounds (the second a
+citation audit that corrected D3).
+
+## ⛔ PER-RUN SCOPE (binding)
+
+- 🔴 **THIS RUN BUILDS T1 AND T2 ONLY. It does NOT run T3.** T3 is 105,216 authenticated
+  requests against NASA GES DISC — a multi-hour, outward-facing operation that needs its own
+  explicit authorisation. ⛔ If the retrieval loop looks ready to run the window, **stop and
+  report**. T2 is a hard gate: a mismatch **ends the plan** rather than starting T3.
+- ✅ **Network: GES DISC OPeNDAP only** (`gpm1.gesdisc.eosdis.nasa.gov`), Earthdata credentials
+  from `~/.netrc`. ⛔ **Never the Copernicus CDS** — a wrong root once triggered a live
+  ERA5-Land download on this track. T2 fetches **exactly one** subset granule.
+- ⛔ Never write under `data/dhm_precip/era5_land*`; never delete anything under any `points/`
+  tree; ⛔ do not touch `data/dhm_precip/tigge/` (110 MB of retrieved research data), and ⛔ do
+  not delete or overwrite the archive-route granule already on disk — **T2 reads it**, and it is
+  the only full-field granule we hold.
+- ⚠️ **Verify every code reference in this plan against the source before relying on it.**
+  Plan 220 shipped three plan-stated code facts that were wrong, and this plan's own D3 citations
+  were corrected in review — a citation that was never checked reads exactly like one that was.
+- **Iterate on `tests/unit/scripts/`**, not the full suite (~8 min). Full `tests/unit` **once** at
+  the end, measuring your own baseline.
+- 🔴 **CI does NOT cover this track's real-data tests.** A green CI run proves nothing here.
+- **Hold at PR.** Patch bump folded into the real commit; stage by explicit path, never
+  `git add -A`. Never merge, never tag on a branch.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
