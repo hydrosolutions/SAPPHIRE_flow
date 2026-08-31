@@ -13,8 +13,10 @@ source: 2026-08-31 — SAPPHIRE-flow-map reported an alternating `_pooled` media
 
 ## Status
 
-**DRAFT** — awaiting owner READY. Three design forks are settled below (owner, 2026-08-31);
-**D1 is the one open fork** and is the riskiest call in the plan.
+**DRAFT** — awaiting owner READY. All four design decisions are settled below (owner,
+2026-08-31). D1 was the last open fork and the owner chose **(a) anchor to the last observed
+daily bucket**; T0 still measures the staleness distribution, but now to size the consequence
+rather than to make the choice.
 
 The diagnosis this plan acts on is published to the map consumer at
 `https://claude.ai/code/artifact/7416ea1c-f884-49ae-bc37-7ce4bcc542ad`. The consumer has asked
@@ -131,13 +133,13 @@ the semantics hindcast and training already assume. This is the fact that de-ris
 
 ## Decisions
 
-### D1 — what the daily models anchor to ⚠️ OPEN FORK
+### D1 — what the daily models anchor to (owner-settled: (a))
 
-**Recommended: (a) anchor to the last observed daily bucket.** `valid_time[k] = last_bucket + k·step`,
+**Chosen: (a) anchor to the last observed daily bucket.** `valid_time[k] = last_bucket + k·step`,
 where `last_bucket` is the final `timestamp` in `past_targets`. Midnight by construction, because
 `past_targets` is midnight-bucketed.
 
-The alternative is **(b) anchor to the issue day**: `midnight(issue_date) + k·step`.
+The rejected alternative was **(b) anchor to the issue day**: `midnight(issue_date) + k·step`.
 
 | | (a) last observed bucket | (b) issue day |
 |---|---|---|
@@ -153,8 +155,11 @@ on exact timestamps it would score the wrong pairs — invisibly, since hindcast
 combined horizon shortens when observations lag, which the intersection rule expresses correctly
 and which `observation_staleness_hours` already records on the forecast row.
 
-**This fork is the human's.** (b) is the smaller, safer diff and a defensible reading; T0 measures
-the real staleness distribution so the choice is made on numbers rather than on this table.
+**Consequence the implementer must not design around.** Under (a) the combined horizon is
+`5 - staleness_days` where the NWP grid starts at `issue_date + 1`. At two days' staleness the
+combined forecast is three days, not five. That is the correct behaviour and T3's intersection
+expresses it; it is **not** a reason to pad, extrapolate or fall back to (b). T0 measures how often
+this bites so the deploy is not surprised by it.
 
 ### D2 — pooling semantics (owner-settled)
 
@@ -222,8 +227,9 @@ This exists because the repo has been wrong four times in one day about operatio
 reasoning instead of measuring. Phase 1 changes production model output; it does not start until
 the grids are measured rather than derived from code.
 
-**Exit:** a recorded table of per-model grids and the intersection size per station, and a stated
-answer to D1 — specifically, the observed distribution of `last_bucket` relative to `issue_date`.
+**Exit:** a recorded table of per-model grids and the intersection size per station, plus the
+observed distribution of `last_bucket` relative to `issue_date` — which, under the settled D1(a),
+sizes how much shorter the combined horizon becomes in practice.
 
 ### T1 — anchor the daily models to the daily bucket grid
 
@@ -315,9 +321,8 @@ Changes production forecast behaviour, so it does not ride along with anything e
 - **Watch the first forecast cycle after deploy.** The success criterion is that 2009 and 2091
   publish a combined forecast on a single grid with a constant member count — not merely that the
   cycle completes.
-- If T0 shows observation staleness routinely exceeding one day, D1(a) shortens the combined
-  horizon. That is correct behaviour, and it must be understood before deploy rather than diagnosed
-  after it.
+- D1(a) shortens the combined horizon by one day per day of observation staleness. That is correct
+  behaviour, and T0 must have quantified it **before** deploy rather than it being diagnosed after.
 
 ## Non-goals
 

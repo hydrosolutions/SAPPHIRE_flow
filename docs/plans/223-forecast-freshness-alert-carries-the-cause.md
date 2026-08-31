@@ -1,7 +1,7 @@
 ---
 status: DRAFT
 created: 2026-08-31
-plan: 222
+plan: 223
 title: The forecast-freshness alert says WHAT failed but never WHY
 scope: A sanitised reason string threaded from the forecast-cycle failure paths into the existing FORECAST_FRESHNESS detail dict, and rendered in the watchdog's alert text. No schema change, no change to alert cadence or hysteresis.
 depends_on: []
@@ -9,7 +9,7 @@ blocks: []
 source: 2026-08-31 — ~50 identical CRITICAL Slack alerts over two days never carried the cause ("GRIB file count exceeded: 501 > 500"), so a systematic outage read as flapping
 ---
 
-# Plan 222 — fifty alerts, none of them actionable
+# Plan 223 — fifty alerts, none of them actionable
 
 ## Status
 
@@ -40,7 +40,7 @@ time: …, status: critical
 ```
 
 **The cause was never in them.** The real fault — `GRIB file count exceeded: 501 > 500`
-(`adapters/meteoswiss_nwp.py:805`) — existed only in the worker's container log. Diagnosing it
+(`adapters/meteoswiss_nwp.py:806`, message at `:807-809`) — existed only in the worker's container log. Diagnosing it
 required SSH access to a host that is only reachable from one LAN.
 
 `_emit_forecast_freshness_record` (`flows/run_forecast_cycle.py:706-714`) accepts
@@ -72,13 +72,27 @@ constructed.** The `except` block is the only place that still holds the excepti
 the safe code is derived (D2) and attached. Two shapes are acceptable; **the implementer picks one
 and does not invent a third:**
 
-1. Extend the existing `_NwpFetchOutcome` (`:1296`) with an optional failure reason and return it
+1. Extend the existing `_NwpFetchOutcome` (`:232`) with an optional failure reason and return it
    instead of bare `None`, updating the `is None` test at `:2615` accordingly; or
 2. Return `tuple[_NwpFetchOutcome | None, str | None]` from the task.
 
 (1) is preferred — the type already exists and already carries outcome flags
 (`nwp_unavailable`). **Whichever is chosen, no raw exception object may cross the boundary**, only
 the constructed string.
+
+**⛔ `None` is a CROSS-FILE contract — a second review caught a consumer outside this flow.**
+`scripts/nepal_forcing_run.py:239` does `if outcome is None: raise RuntimeError("NWP fetch returned
+None (flow-fatal condition)")`. Under option (1) that check silently goes false, so **the
+unattended Nepal forcing job would treat a fatal fetch as a completed one** and classify existing
+rows as success. T1 **must** update it. Full consumer list for option (1):
+
+  - `run_forecast_cycle.py:2598` — the success-only pruning gate
+  - `run_forecast_cycle.py:2615` — the fatal predicate
+  - `scripts/nepal_forcing_run.py:239` — the Nepal job's fatal check
+
+The `nwp_unavailable` outcomes (`:1203`, `:1235`) must keep flowing through **without** aborting —
+they are a deliberate non-fatal path, not a failure. Downstream accesses at `:2643-2682` and
+`:3564-3570` are safe once the fatal predicate returns early.
 
 ## Decisions
 
@@ -118,6 +132,28 @@ the constructed string.
   (`scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist`), giving the observed 30-minute
   cadence. The volume was not the defect — **the emptiness of each message was.** Changing cadence
   here would trade a diagnosable outage for a quieter undiagnosable one.
+
+- **D6 — the reason can only be COARSE unless the exception gains fields. Owner decision.**
+  Both budget guards raise the same bare type: the byte cap (`meteoswiss_nwp.py:790`) and the
+  file-count cap (`:806`) both raise `BudgetExceededError`, which carries **no structured fields**
+  (`exceptions.py:42-43`). Under D2's construct-don't-filter rule the `except` block can therefore
+  build only something like `"nwp_budget_exceeded"` — it **cannot** say *which* budget, and cannot
+  recover `501 > 500`, without parsing `str(exc)` (forbidden) or changing the adapter.
+
+  **That matters, because the coarse code would not have solved this outage.**
+  `nwp_budget_exceeded` does not distinguish the file cap from the byte cap, so an operator would
+  still have needed SSH to learn which — the exact failure this plan exists to remove.
+
+  Two options, **owner picks**:
+  1. **Accept the coarse code.** Zero adapter change, and still a large improvement on today's
+     empty alert.
+  2. **Add structured fields to `BudgetExceededError`** (e.g. `kind`, `observed`, `limit`) and
+     construct the reason from them. Small and contained — one exception class plus two raise
+     sites — and it makes the alert say `nwp_file_count_exceeded: 501 > 500` safely, because every
+     component is a value we computed rather than text we parsed.
+
+  **Recommended: (2)**, on the grounds that (1) leaves the diagnosis one SSH short. It widens scope
+  beyond "one optional string", so it is explicitly the owner's call, not the implementer's.
 
 ## Task
 
