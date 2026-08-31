@@ -385,8 +385,11 @@ equally, this still cannot be called *pure* IFS-cycle variability.
    **reproducible point-estimate sign change, unresolved from zero**, not a demonstrated reversal. The
    2025-only screening this document opened with (mid ≈ -5.8 to -6.5 h, "40-55% of ERA5-Land's -14.4 h")
    sits roughly in the MIDDLE of this range, not at either end — a single season understated how far the
-   true year-to-year spread reaches: 2021/2022 alone would have suggested a correction close to
-   ERA5-Land's own magnitude, not a third-to-half of it.
+   **branch-selected** year-to-year spread reaches. ⛔ **Do not read a correction magnitude off these
+   numbers**: had 2021/2022 been the season drawn, the same procedure would have reported a figure close
+   to ERA5-Land's own — which shows the estimate is season-dependent, **not** that any of these values
+   sizes a correction. The spread is measured on the preregistered branch and the aggregate is
+   branch-dependent (above).
 2. **High band (≥ 2,000 m) is directionally more consistent in the four full-coverage years
    (2021-2024: -6.4 to -9.9 h) but 2020's thin 2-station cell breaks that pattern** — near zero or
    positive at D+1/D+2 (+0.47 h, -0.96 h) before swinging to -7.91 h at D+3. Given D4's hedge (n=2), this
@@ -404,15 +407,18 @@ equally, this still cannot be called *pure* IFS-cycle variability.
 
 ### What this does and does not settle
 
-**Settled:** the M-A9/M-A11 question "is IFS's mid/high-band diurnal timing error a single, stable
-number close to a third-to-half of ERA5-Land's" is now answered **no** — it is a number that moves by
+**Answered, on the preregistered branch:** the M-A9/M-A11 question "is IFS's mid/high-band diurnal
+timing error a single, stable number close to a third-to-half of ERA5-Land's" is answered **no** — it is a number that moves by
 several hours between seasons on the preregistered branch, including one year whose point estimate is
 near-zero and sign-changed but **unresolved from zero at n=2 under the ±3 h bound**, in the
-thinnest-coverage band. Any IFS-calibrated correction (this document's own GO recommendation, above)
-would need to either (a) accept and report this spread rather than a single point value, or (b) be
-built from more seasons/stations than any single year offers — which is exactly this section's own
-2020-caveat (D4) repeated at the interannual scale: more years help, but station coverage still
-constrains how much any one year can be trusted alone.
+thinnest-coverage band.
+
+⛔ **What this does NOT settle, and this document does not advance:** how any IFS-calibrated correction
+should be constructed. **This analysis cannot determine a single correction magnitude** — the spread is
+branch-dependent in aggregate, rests on 2–9 stations per cell, and carries a ±3 h resolution bound.
+⛔ Do not read the options for building one out of these numbers; that is later work under whatever
+M-DEC authorises. The bounded conclusion is exactly two sentences: **2025 is not universal, and a single
+correction magnitude is not determinable from this.**
 
 **Not settled — the other three prerequisites the original independent verdict named remain open:**
 estimator/branch sensitivity, station representativeness (the 2020 vs. 2022+ coverage gap is itself
