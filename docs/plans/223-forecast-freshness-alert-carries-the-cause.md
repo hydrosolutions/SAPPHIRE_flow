@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-31
 plan: 223
 title: The forecast-freshness alert says WHAT failed but never WHY
@@ -13,7 +13,8 @@ source: 2026-08-31 — ~50 identical CRITICAL Slack alerts over two days never c
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** All six decisions confirmed by the owner 2026-08-31, D6 resolved as option (2).
+Two independent Codex rounds folded (1 blocker each round).
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -126,7 +127,9 @@ they are a deliberate non-fatal path, not a failure. Downstream accesses at `:26
   (`run_forecast_cycle.py:1715, 2338, 2617, 3448, 3548`). Normal completion passes nothing and its
   alert text is unchanged; a successful cycle must not grow a spurious `reason: null`.
 
-- **D4 — Do NOT touch the hysteresis. It is correct.** `should_alert_health`
+- **D4 — Leave the hysteresis alone FOR NOW. It is correct.** Owner 2026-08-31: *"for now, we
+  leave the alert timing alone"* — i.e. deliberately deferred, not settled forever. Once alerts
+  carry a cause, revisit whether 30-minute repeats are still the right cadence. `should_alert_health`
   (`ops/watchdog.py:1107-1119`) alerts on the 1st failure, then every 6th consecutive failure, plus
   recovery; the launchd agent ticks every 300 s
   (`scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist`), giving the observed 30-minute
@@ -152,13 +155,18 @@ they are a deliberate non-fatal path, not a failure. Downstream accesses at `:26
      sites — and it makes the alert say `nwp_file_count_exceeded: 501 > 500` safely, because every
      component is a value we computed rather than text we parsed.
 
-  **Recommended: (2)**, on the grounds that (1) leaves the diagnosis one SSH short. It widens scope
-  beyond "one optional string", so it is explicitly the owner's call, not the implementer's.
+  **DECIDED 2026-08-31 — option (2).** Owner: *"option B would be more valuable."* The coarse code
+  leaves the diagnosis one SSH short, which is the failure this plan exists to remove. **Scope is
+  therefore wider than "one optional string": the adapter change is IN.** Concretely: add
+  `kind`/`observed`/`limit` to `BudgetExceededError` (`exceptions.py:42`), set them at both raise
+  sites (`meteoswiss_nwp.py:790` byte cap, `:806` file cap), and build the reason from those fields
+  — never from `str(exc)` (D2 still binds).
 
 ## Task
 
-**T1 — thread a sanitised cause into the record and the alert.**
-*In:* an optional `reason` on `_emit_forecast_freshness_record`, written into `detail` (D1);
+**T1 — thread a constructed cause into the record and the alert.**
+*In:* `kind`/`observed`/`limit` on `BudgetExceededError` and both raise sites (D6); an optional
+`reason` on `_emit_forecast_freshness_record`, written into `detail` (D1);
 the NWP-abort call site (`:2617`) passing a constructed cause (D2), which requires D5's
 boundary change in `_fetch_nwp_task` (`:1299-1301`); `probe_forecast_freshness`
 (`ops/watchdog.py:653`) parsing it; and `_format_forecast_freshness_critical_alert`
@@ -173,7 +181,8 @@ no `reason` still render the old text (older rows exist and must not crash the p
 
 ## Non-goals
 
-Changing cadence or hysteresis · a new alert channel or check type · fixing the GRIB cap (Plan 221)
+Changing cadence or hysteresis (D4, deferred not settled) · a new alert channel or check type ·
+fixing the GRIB cap itself (Plan 221 — this plan only makes it *legible*, it does not raise it)
 · making the Prefect run report FAILED instead of COMPLETED (real, separate, and arguably wanted —
 but not this plan) · backfilling reasons onto historical records.
 
@@ -184,3 +193,5 @@ but not this plan) · backfilling reasons onto historical records.
   exception object or `str(exc)` reaches the record.
 - A test proves a presigned-URL exception cannot reach the alert or the stored detail.
 - A record lacking `reason` renders exactly today's message.
+- The alert distinguishes the file-count cap from the byte cap by name, with observed and limit
+  values — e.g. `nwp_file_count_exceeded: 501 > 500` — built from the new exception fields.
