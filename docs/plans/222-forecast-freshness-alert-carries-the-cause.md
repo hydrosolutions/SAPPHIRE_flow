@@ -53,6 +53,33 @@ resulting shape — critical, recovered, critical, recovered — reads as *trans
 reality was a systematic ~50 % loss of forecasts lasting 36 hours. **A cause string is what
 distinguishes those two readings**, and no amount of alert tuning substitutes for it.
 
+## ⛔ BLOCKER found in review — the cause is thrown away one frame too early
+
+`_fetch_nwp_task` ends with:
+
+```python
+except Exception as exc:
+    log.error("nwp.fetch_failed", error=str(exc))
+    return None
+```
+
+(`flows/run_forecast_cycle.py:1299-1301`). The abort site tests `if nwp_outcome is None`
+(`:2615`) and therefore **knows only that NWP failed, never why**. T1 as first written was
+unimplementable: there is no cause at the call site to pass.
+
+**D5 settles it — the reason must survive that boundary, and the boundary is where it gets
+constructed.** The `except` block is the only place that still holds the exception, so it is where
+the safe code is derived (D2) and attached. Two shapes are acceptable; **the implementer picks one
+and does not invent a third:**
+
+1. Extend the existing `_NwpFetchOutcome` (`:1296`) with an optional failure reason and return it
+   instead of bare `None`, updating the `is None` test at `:2615` accordingly; or
+2. Return `tuple[_NwpFetchOutcome | None, str | None]` from the task.
+
+(1) is preferred — the type already exists and already carries outcome flags
+(`nwp_unavailable`). **Whichever is chosen, no raw exception object may cross the boundary**, only
+the constructed string.
+
 ## Decisions
 
 - **D1 — Reuse the `detail` dict; no schema change.** The record already writes
@@ -68,7 +95,18 @@ distinguishes those two readings**, and no amount of alert tuning substitutes fo
   database.** The reason written to `detail` must be a **bounded, sanitised** string: no URLs, no
   query strings, length-capped. Prefer a short stable phrase plus safe numbers — e.g.
   `"nwp_fetch_failed: GRIB file count exceeded: 501 > 500"` — over `str(exc)`.
-  **A test must prove a URL-bearing exception cannot reach the alert.**
+  **Construct the reason; do not filter one.** An earlier independent review reached this
+  conclusion for DSNs and it generalises: *"do NOT log any part of the DSN —
+  `split("@")[-1]` strips a userinfo password but leaks a query-parameter one (demonstrated)"*
+  (`scripts/import_caravan_attributes.py:374-378`). Filtering an arbitrary string requires
+  anticipating every leak vector, and upstream error text changes without notice. **This file
+  already does it correctly**: `detail={"reason": "source_data_missing"}`
+  (`flows/run_forecast_cycle.py:1293`) is a stable code the code itself chose. Follow that —
+  map known failures to short constructed phrases plus numbers we computed, and **never** pass
+  `str(exc)` through. There is no reusable sanitiser in the repo to lean on (checked), which is
+  another reason not to need one.
+
+  **A test must prove a URL-bearing exception cannot reach the alert or the stored detail.**
 
 - **D3 — Only the failure paths carry a reason.** There are five call sites
   (`run_forecast_cycle.py:1715, 2338, 2617, 3448, 3548`). Normal completion passes nothing and its
@@ -85,7 +123,8 @@ distinguishes those two readings**, and no amount of alert tuning substitutes fo
 
 **T1 — thread a sanitised cause into the record and the alert.**
 *In:* an optional `reason` on `_emit_forecast_freshness_record`, written into `detail` (D1);
-the NWP-abort call site (`:2617`) passing a sanitised cause (D2); `probe_forecast_freshness`
+the NWP-abort call site (`:2617`) passing a constructed cause (D2), which requires D5's
+boundary change in `_fetch_nwp_task` (`:1299-1301`); `probe_forecast_freshness`
 (`ops/watchdog.py:653`) parsing it; and `_format_forecast_freshness_critical_alert`
 (`ops/watchdog.py:1437-1443`) appending it when present.
 *Out:* the other four call sites unless trivially free · alert cadence or hysteresis · any new
@@ -105,5 +144,7 @@ but not this plan) · backfilling reasons onto historical records.
 ## Exit gates
 
 - An NWP-abort alert names the cause; a healthy cycle's alert text is unchanged.
+- The cause is constructed in the `except` block and crosses the task boundary per D5; no
+  exception object or `str(exc)` reaches the record.
 - A test proves a presigned-URL exception cannot reach the alert or the stored detail.
 - A record lacking `reason` renders exactly today's message.
