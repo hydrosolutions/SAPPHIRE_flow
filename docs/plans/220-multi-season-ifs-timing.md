@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-31
 plan: 220
 title: M-A11b — the remaining overlapping JJAS seasons, per-year and pooled
@@ -13,13 +13,31 @@ source: docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md — independe
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-31, after two independent review rounds and five owner decisions.
 
 ## ⛔ PROPORTIONALITY IS BINDING
 
 **This is more data through an existing, reviewed pipeline — not a new measurement.** The estimator,
 amplitude gate, branch convention, elevation bands and lead bands are all settled and **must not
 change**. No new framework, abstraction layer or file format. **Adding length is a cost.**
+
+## ⛔ PER-RUN SCOPE (binding)
+
+- ✅ **Network: ECDS only** (`https://ecds.ecmwf.int/api`), credentials from `~/.cdsapirc`; both licence
+  acceptances are already in place. **Five requests, ~90 MB total** — no projection gate needed.
+  ⛔ **Never call the Copernicus CDS** — a wrong root once triggered a live ERA5-Land download here.
+- ⛔ **Do not re-download JJAS 2025** — it is on disk and its artifacts must be left untouched.
+- ⛔ **No estimator, gate, band or branch change beyond D1/D2.** This is more data through reviewed
+  code. If a test seems to need a different estimator, that is a different plan — say so and stop.
+- 🔴 **Three code facts in earlier revisions of this plan were WRONG and are now corrected — trust the
+  code, not prose.** There is no `PublishedTableMismatch` (it is `TiggeTimingMatrixError`); ECDS takes
+  **no `grid` field** (native reduced-Gaussian); and the request selector is
+  `forecast_type: control_forecast`, **not** `type: cf` (`cf` is the returned GRIB `dataType`).
+  ⛔ **Verify every code reference in this plan against the source before relying on it.**
+- **Iterate on `tests/unit/scripts/`**, not the full suite (~8 min). Full `tests/unit` **once** at the
+  end, measuring your own baseline.
+- **Hold at PR.** Every code commit bumps patch (`uv run bump-my-version bump patch`) folded into the
+  real commit. Stage by explicit path, never `git add -A`. Never merge, never tag on a branch.
 
 ## Why this plan exists
 
