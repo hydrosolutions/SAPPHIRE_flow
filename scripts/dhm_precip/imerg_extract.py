@@ -64,6 +64,7 @@ from scripts.dhm_precip.era5_manifest import checksum_file  # noqa: E402
 from scripts.dhm_precip.era5_request import STUDY_YEARS  # noqa: E402
 from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     MEASURED_ACQUISITION_LATENCY,
+    SUBSET_ROUTE,
     ImergAcquisitionError,
     ImergAcquisitionManifest,
     ImergCredentialsError,
@@ -75,6 +76,7 @@ from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     acquisition_record_identity_content,
     assert_acquisition_manifest_complete,
     assert_contract_consistent,
+    assert_subset_contract_consistent,
     contract_from_open_granule,
     contract_from_open_subset_granule,
     imerg_early_root,
@@ -83,6 +85,7 @@ from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     parse_granule_filename,
     pinned_provenance_violations,
     read_acquisition_manifest,
+    subset_granule_artifact_path,
     window_accounting_violations,
 )
 from scripts.dhm_precip.loader import (  # noqa: E402
@@ -1161,9 +1164,21 @@ def run(
         )
     assert_acquisition_manifest_complete(acquisition)
 
+    # Plan 225 (M-A5d) D2 (fixer review, finding 1) — route DISPATCH: the
+    # acquisition manifest's own `route` decides where each granule's bytes
+    # live on disk and which reader can parse them. `assert_acquisition_
+    # manifest_complete` above already rejects any route outside
+    # `{ROUTE, SUBSET_ROUTE}` (via `pinned_provenance_violations`), so by this
+    # point `acquisition.route` is one of exactly the two known routes.
+    is_subset_route = acquisition.route == SUBSET_ROUTE
+    granule_names = sorted(acquisition.granule_checksums)
     granule_paths = [
-        imerg_raw_dir(data_root) / name
-        for name in sorted(acquisition.granule_checksums)
+        (
+            subset_granule_artifact_path(data_root, archive_filename=name)
+            if is_subset_route
+            else imerg_raw_dir(data_root) / name
+        )
+        for name in granule_names
     ]
     half_hourly_nearest: dict[Station, dict[datetime, float]] = {
         s: {} for s in stations.stations
@@ -1172,23 +1187,26 @@ def run(
         s: {} for s in stations.stations
     }
     grid_cell_by_station: dict[Station, tuple[float, float]] = {}
-    frozen_contract: ImergReadContract | None = None
+    frozen_contract: ImergReadContract | ImergSubsetReadContract | None = None
 
-    for path in granule_paths:
+    for name, path in zip(granule_names, granule_paths, strict=True):
         if not path.exists():
             raise ExtractionInputAbsentError(
-                f"granule {path.name} listed in the acquisition manifest is "
-                "absent from disk (D9)"
+                f"granule {name} listed in the acquisition manifest is "
+                f"absent from disk at {path} (D9)"
             )
         actual_checksum = checksum_file(path)
-        if actual_checksum != acquisition.granule_checksums[path.name]:
+        if actual_checksum != acquisition.granule_checksums[name]:
             raise ExtractionPostConditionError(
-                f"granule {path.name} checksum {actual_checksum} != the "
+                f"granule {name} checksum {actual_checksum} != the "
                 f"acquisition manifest's recorded "
-                f"{acquisition.granule_checksums[path.name]} (D9) — the file "
+                f"{acquisition.granule_checksums[name]} (D9) — the file "
                 "was modified after T1 acquired it"
             )
-        ds, contract = read_granule(path)
+        if is_subset_route:
+            ds, contract = read_subset_granule(path, archive_filename=name)
+        else:
+            ds, contract = read_granule(path)
         if frozen_contract is None:
             frozen_contract = contract
             # D1/D9 — the WHOLE contract must be the one T1 recorded; anything
@@ -1200,8 +1218,22 @@ def run(
                     "the first read granule's D1 read contract differs from "
                     "the one T1 recorded in the acquisition manifest (D1/D9)"
                 )
-        else:
+        elif isinstance(contract, ImergSubsetReadContract) and isinstance(
+            frozen_contract, ImergSubsetReadContract
+        ):
+            assert_subset_contract_consistent(contract, frozen=frozen_contract)
+        elif isinstance(contract, ImergReadContract) and isinstance(
+            frozen_contract, ImergReadContract
+        ):
             assert_contract_consistent(contract, frozen=frozen_contract)
+        else:
+            # Unreachable in practice — every granule this run reads comes
+            # through the SAME route dispatch above — but typed and reported
+            # rather than left to an AttributeError if that ever changes.
+            raise ExtractionPostConditionError(
+                "granule read contract type does not match the frozen "
+                "contract's type within one run (D1/D2)"
+            )
         granule_start = (
             ds["valid_time"]
             .values[0]

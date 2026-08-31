@@ -499,6 +499,22 @@ NOT run this pass** — it is a multi-hour, outward-facing operation gated on it
 per Plan 225's per-run scope; the projected ~2.7 GB is a **measured extrapolation** from one granule's
 subset size, not yet a bulk-retrieval result.
 
+**Fixer round (2026-08-31), same commit's follow-up review — six findings closed.** The
+route-dispatched CONTRACT validation above existed at commit time, but `imerg_extract.run()` itself
+still unconditionally called the archive reader against `raw/` regardless of the acquisition record's
+`route` — a subset-route bundle could not actually be extracted end to end. Closed: `run()` now
+dispatches on `acquisition.route` (subset → `raw_subset/<archive-name>.dap.nc4` +
+`read_subset_granule`; archive → unchanged), with its own `assert_subset_contract_consistent` and an
+end-to-end `run()` test over a synthetic subset manifest (blocker). `ImergSubsetReadContract` was
+tightened to pin the T2-approved lat/lon vectors and longitude convention EXACTLY (previously only
+their lengths were checked, so a same-shaped grid at the wrong location — or in the wrong hemisphere
+convention — would have passed) and to reject any packed (`scale_factor`/`add_offset`) response at
+construction, protecting every subset read `run()` performs, not only T2's one cross-checked granule;
+`cross_check_subset_against_archive` gained a matching archive-side packing/dtype check and dropped its
+unconstrained `box` parameter (major x2). The archive parser's "vice versa" refusal of a subset-shaped
+file is now a typed `ImergReadContractError`, not a bare `KeyError` (minor). All six locking tests were
+proven to fail against the pre-fix code before being restored green.
+
 **Exit (T1+T2 only):** a second, separately-frozen OPeNDAP subset read contract; route-dispatched
 contract validation with a locking test per mismatched combination; a route-distinct raw directory; a
 route-aware reader; and an exact, real-data cross-check against the archive route on the one granule

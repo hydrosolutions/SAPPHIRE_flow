@@ -864,6 +864,46 @@ def _write_complete_acquisition_manifest(
     )
 
 
+def _complete_subset_acquisition_manifest(
+    data_root: Path, *, granule_checksums: dict[str, str]
+) -> ia.ImergAcquisitionManifest:
+    """Plan 225 (M-A5d) D2 (fixer review, finding 1) — the SUBSET_ROUTE
+    counterpart of `_complete_acquisition_manifest`: `granule_checksums` is
+    keyed by the ARCHIVE filename (D2's own identity, mirroring
+    `acquire_subset_granule`), and `read_contract` is the SUBSET contract
+    (`ImergSubsetReadContract`), not the archive one."""
+    retrieved_starts = {
+        ia.parse_granule_filename(name)[0].start for name in granule_checksums
+    }
+    probe_name = sorted(granule_checksums)[0]
+    probe_path = ia.subset_granule_artifact_path(data_root, archive_filename=probe_name)
+    contract = ia.observe_subset_read_contract(
+        probe_path, archive_filename=probe_name
+    ).as_manifest_dict()
+    return ia.ImergAcquisitionManifest(
+        route=ia.SUBSET_ROUTE,
+        collection_short_name=ia.COLLECTION_SHORT_NAME,
+        granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
+        requested_window_start=ia.FIRST_GRANULE_START,
+        requested_window_end=ia.LAST_GRANULE_START,
+        box=ia.STUDY_BOX,
+        read_contract=contract,
+        requested=ia.EXPECTED_GRANULE_COUNT,
+        retrieved=len(granule_checksums),
+        missing=tuple(
+            start.isoformat()
+            for start in ia.all_granule_starts()
+            if start not in retrieved_starts
+        ),
+        granule_checksums=granule_checksums,
+        granule_retrieved_at={
+            name: datetime(2026, 8, 28, tzinfo=UTC) for name in granule_checksums
+        },
+        retrospective=True,
+        generated_at=datetime(2026, 8, 28, tzinfo=UTC),
+    )
+
+
 class TestRunEndToEnd:
     def _write_two_granules(self, data_root: Path) -> dict[str, str]:
         from scripts.dhm_precip.imerg_acquire import (
@@ -1170,6 +1210,109 @@ class TestRunEndToEnd:
             expected_stations=frozenset({Station("A")}),
         )
         assert code == 5  # noqa: PLR2004
+
+    def _write_two_subset_granules(self, data_root: Path) -> dict[str, str]:
+        """Plan 225 (M-A5d) D2 (fixer review, finding 1) — the SUBSET_ROUTE
+        counterpart of `_write_two_granules`: artifacts land under
+        `imerg_subset_raw_dir`, keyed (in the returned dict, and therefore in
+        the manifest's `granule_checksums`) by the ARCHIVE filename, exactly
+        as `acquire_subset_granule`/`subset_granule_artifact_path` do."""
+        from scripts.dhm_precip.imerg_acquire import (
+            FIRST_GRANULE_START,
+            ImergGranuleId,
+            subset_granule_artifact_path,
+        )
+
+        starts = [FIRST_GRANULE_START, FIRST_GRANULE_START + timedelta(minutes=30)]
+        values = [2.0, 4.0]  # mean == 3.0, matching the archive-route test
+        checksums: dict[str, str] = {}
+        for start, value in zip(starts, values, strict=True):
+            archive_filename = ImergGranuleId(start=start).filename(revision="V07B")
+            path = subset_granule_artifact_path(
+                data_root, archive_filename=archive_filename
+            )
+            _write_fake_subset_granule(
+                path, archive_filename=archive_filename, value=value
+            )
+            checksums[archive_filename] = checksum_file(path)
+        return checksums
+
+    def test_run_dispatches_to_the_subset_reader_for_a_subset_route_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 225 (M-A5d) D2 (fixer review, finding 1 — locking) — `run()`
+        must DISPATCH on the acquisition manifest's own `route`: a
+        SUBSET_ROUTE manifest must be read through `read_subset_granule` and
+        `imerg_subset_raw_dir`, never the archive reader/directory. Before
+        this fix `run()` unconditionally called `read_granule` against
+        `imerg_raw_dir`, which would either read nothing (wrong directory)
+        or crash on a subset-shaped file — this end-to-end run is the
+        pipeline-shaped proof the dispatch actually wires up."""
+        data_root = tmp_path / "data_root"
+        checksums = self._write_two_subset_granules(data_root)
+        ia.write_acquisition_manifest(
+            _complete_subset_acquisition_manifest(
+                data_root, granule_checksums=checksums
+            ),
+            ia.acquisition_manifest_path(data_root),
+        )
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+
+        args = ie.build_parser().parse_args(["--data-root", str(data_root)])
+        code = ie.run(
+            args,
+            clock=lambda: datetime(2026, 8, 28, tzinfo=UTC),
+            coords_path=coords_path,
+            expected_stations=frozenset({Station("A")}),
+        )
+        assert code == 0
+
+        found_dir, manifest = ie.discover_imerg_bundle(data_root)
+        assert manifest.route == ia.SUBSET_ROUTE
+        assert manifest.granule_revision == "V07B"
+        assert manifest.granules_retrieved == 2  # noqa: PLR2004
+
+        series = pl.read_csv(found_dir / ie._NEAREST_SERIES_FILENAME)
+        first_row = series.filter(pl.col("timestamp_utc") == "2020-01-01T00:00:00")
+        assert first_row["precip_mm_per_h"][0] == pytest.approx(3.0)
+        assert first_row["granule_count"][0] == 2  # noqa: PLR2004
+
+    def test_run_refuses_a_subset_manifest_whose_artifact_is_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """D9 (locking) — the subset-route path resolution must look for the
+        subset artifact (`raw_subset/<archive-name>.dap.nc4`), not the
+        archive one; a manifest naming a granule whose SUBSET artifact is
+        absent must be refused even if an archive-shaped file of the same
+        name happens to sit under `raw/`."""
+        from scripts.dhm_precip.imerg_acquire import FIRST_GRANULE_START, ImergGranuleId
+
+        data_root = tmp_path / "data_root"
+        checksums = self._write_two_subset_granules(data_root)
+        ia.write_acquisition_manifest(
+            _complete_subset_acquisition_manifest(
+                data_root, granule_checksums=checksums
+            ),
+            ia.acquisition_manifest_path(data_root),
+        )
+        # Remove one subset artifact from disk without updating the manifest.
+        removed_name = ImergGranuleId(start=FIRST_GRANULE_START).filename(
+            revision="V07B"
+        )
+        ia.subset_granule_artifact_path(
+            data_root, archive_filename=removed_name
+        ).unlink()
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+        args = ie.build_parser().parse_args(["--data-root", str(data_root)])
+        with pytest.raises(ExtractionInputAbsentError, match="absent from disk"):
+            ie.run(
+                args,
+                clock=lambda: datetime(2026, 8, 28, tzinfo=UTC),
+                coords_path=coords_path,
+                expected_stations=frozenset({Station("A")}),
+            )
 
 
 # --- main() must catch a mid-extraction D1 read-contract/revision

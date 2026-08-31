@@ -346,7 +346,19 @@ def contract_from_open_granule(f: object, *, filename: str) -> ImergReadContract
         filename_revision=revision,
         file_header_filename=parse_grid_header_field(file_header, "FileName"),
     )
-    grid = f["Grid"]  # type: ignore[index]
+    try:
+        grid = f["Grid"]  # type: ignore[index]
+    except KeyError as exc:
+        # (fixer review, finding 4) — a subset-shaped response (root-level
+        # `/precipitation`, no `/Grid` group) must fail the ARCHIVE parser
+        # with a typed, reportable error, not a raw h5py `KeyError`: this is
+        # the "vice versa" of T1's own verify clause, and a caller catching
+        # only `ImergReadContractError` must not see it slip through.
+        raise ImergReadContractError(
+            f"granule {filename!r} has no top-level 'Grid' group — the "
+            "ARCHIVE route's contract requires /Grid/precipitation, and this "
+            f"response is not archive-shaped (D1): {exc}"
+        ) from exc
     precip = grid["precipitation"]
     lat = np.asarray(grid["lat"][:], dtype=np.float64)
     lon = np.asarray(grid["lon"][:], dtype=np.float64)
@@ -512,6 +524,42 @@ EXPECTED_SUBSET_DTYPE = "float32"
 `scale_factor`/`add_offset` — the same encoding the archive route's own
 `/Grid/precipitation` has always used (D1's dtype/packing warning)."""
 
+#: D1 (fixer review) — the box is entirely in the eastern, northern
+#: hemisphere (80-89E/26-31N), so `contract_from_open_subset_granule`'s own
+#: `lon.min() < 0` rule can only ever derive "UNSIGNED_360" for a granule
+#: honestly covering this box. Pinned to exactly ONE value — not the
+#: two-value membership check the archive contract still needs (the archive
+#: covers the whole globe, crossing the sign boundary; the subset never does).
+EXPECTED_SUBSET_LONGITUDE_CONVENTION = (
+    "SIGNED_180" if STUDY_BOX[1] < 0 else "UNSIGNED_360"
+)
+
+#: D1 (fixer review) — the T2-approved EXACT cell-centre coordinates, DERIVED
+#: from the frozen box + CENTER registration + the product's own 0.1 deg
+#: spacing (never a bare literal): cell edges `STUDY_BOX[1]..STUDY_BOX[3]`
+#: (lon) / `STUDY_BOX[2]..STUDY_BOX[0]` (lat) at CENTER registration put the
+#: first centre half a cell in from the edge. Round-tripped through float32
+#: because every lat/lon value this contract ever holds was ITSELF read out
+#: of a float32 HDF5 array (`exact_coordinate_vector`) — comparing a bare
+#: float64 arithmetic result against that would spuriously fail on the
+#: sub-6-decimal float32 rounding every real granule carries.
+EXPECTED_SUBSET_LON_VECTOR: tuple[float, ...] = tuple(
+    float(
+        np.float32(
+            round(STUDY_BOX[1] + _GRID_SPACING_DEG / 2 + i * _GRID_SPACING_DEG, 6)
+        )
+    )
+    for i in range(EXPECTED_SUBSET_LON_COUNT)
+)
+EXPECTED_SUBSET_LAT_VECTOR: tuple[float, ...] = tuple(
+    float(
+        np.float32(
+            round(STUDY_BOX[2] + _GRID_SPACING_DEG / 2 + i * _GRID_SPACING_DEG, 6)
+        )
+    )
+    for i in range(EXPECTED_SUBSET_LAT_COUNT)
+)
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ImergSubsetReadContract:
@@ -553,10 +601,27 @@ class ImergSubsetReadContract:
                 f"observed subset fill value {self.fill_value!r} != expected "
                 f"{EXPECTED_FILL_VALUE!r} (D1)"
             )
-        if self.longitude_convention not in ("SIGNED_180", "UNSIGNED_360"):
+        # (fixer review, finding 2/3) — ⛔ ONE approved longitude convention,
+        # not a two-value membership check: the subset never crosses the sign
+        # boundary, so admitting the OTHER convention would silently accept a
+        # response the box could never honestly produce.
+        if self.longitude_convention != EXPECTED_SUBSET_LONGITUDE_CONVENTION:
             raise ImergReadContractError(
-                f"unrecognised subset longitude convention "
-                f"{self.longitude_convention!r} (D1)"
+                f"observed subset longitude convention "
+                f"{self.longitude_convention!r} != the box-pinned "
+                f"{EXPECTED_SUBSET_LONGITUDE_CONVENTION!r} (D1)"
+            )
+        # (fixer review, finding 3) — packing DECIDES what a decoded value
+        # IS, and D5's cross-check tolerance is derived assuming there is
+        # none. Rejecting it HERE — at contract construction, which
+        # `read_subset_granule` always goes through before it ever touches a
+        # raw value — protects every subset read this run performs, not only
+        # the one granule T2's cross-check happens to compare.
+        if self.scale_factor is not None or self.add_offset is not None:
+            raise ImergReadContractError(
+                "the subset response is PACKED (scale_factor/add_offset "
+                "present) — this contract's decoded values assume none; "
+                "refusing to accept a packed subset granule (D1)"
             )
         if len(self.lat_vector) != self.grid_shape[2]:
             raise ImergReadContractError(
@@ -567,6 +632,22 @@ class ImergSubsetReadContract:
             raise ImergReadContractError(
                 f"subset lon_vector length {len(self.lon_vector)} != "
                 f"grid_shape[1] {self.grid_shape[1]} (D1)"
+            )
+        # (fixer review, finding 2) — the LENGTH checks above accept ANY
+        # same-sized grid; only an EXACT match against the T2-approved,
+        # box-derived cell centres proves this response actually covers the
+        # frozen box rather than some other same-shaped patch of the globe.
+        if self.lat_vector != EXPECTED_SUBSET_LAT_VECTOR:
+            raise ImergReadContractError(
+                "observed subset lat_vector does not exactly match the "
+                "T2-approved frozen box coordinates (D1) — a same-sized grid "
+                "at the wrong location must not be accepted"
+            )
+        if self.lon_vector != EXPECTED_SUBSET_LON_VECTOR:
+            raise ImergReadContractError(
+                "observed subset lon_vector does not exactly match the "
+                "T2-approved frozen box coordinates (D1) — a same-sized grid "
+                "at the wrong location must not be accepted"
             )
 
     def as_manifest_dict(self) -> dict[str, object]:
@@ -645,6 +726,27 @@ def observe_subset_read_contract(
         return contract_from_open_subset_granule(f, archive_filename=archive_filename)
 
 
+def assert_subset_contract_consistent(
+    observed: ImergSubsetReadContract, *, frozen: ImergSubsetReadContract
+) -> None:
+    """D1/D2 (fixer review, finding 1) — the subset route's own counterpart
+    of `assert_contract_consistent`, frozen on the first subset granule a run
+    reads and asserted on every subsequent one. ⛔ A separate function, not a
+    shared/parameterised one: the two contracts are separately frozen and
+    must stay that way (D1)."""
+    if observed.granule_revision != frozen.granule_revision:
+        raise ImergReadContractError(
+            f"subset granule revision {observed.granule_revision!r} != frozen "
+            f"{frozen.granule_revision!r} — stop and report rather than "
+            "blending mixed revisions into one bundle (D1)"
+        )
+    if observed != replace(frozen, granule_revision=observed.granule_revision):
+        raise ImergReadContractError(
+            "observed subset read contract differs from the frozen one on a "
+            "field other than revision (D1) — refusing to blend"
+        )
+
+
 def subset_box_indices(
     vector: Sequence[float], *, low: float, high: float
 ) -> tuple[int, int]:
@@ -686,6 +788,23 @@ def subset_constraint(
     )
 
 
+def _raise_for_http_status(status: int, *, url: str) -> None:
+    """One status ladder, shared by BOTH real HTTP clients (fixer review,
+    finding 5): 404 missing (D4 counts it), 401/403 credentials (exit 2),
+    5xx retryable. ⛔ A MODULE-level function, not a method on either client
+    class — `RealImergSubsetHttpClient` needs the identical ladder and
+    reaching into a sibling class's underscore-named method would be a
+    private-boundary violation, not a shared helper."""
+    if status == 404:  # noqa: PLR2004 - HTTP status literal
+        raise ImergGranuleMissingError(f"not found: {url}")
+    if status in (401, 403):
+        raise ImergCredentialsError(f"Earthdata Login rejected {url} (status {status})")
+    if status >= 500:  # noqa: PLR2004 - HTTP status literal
+        raise ImergTransientError(f"{url} returned status {status}")
+    if status != 200:  # noqa: PLR2004 - HTTP status literal
+        raise ImergRequestFailedError(f"{url} returned unexpected status {status}")
+
+
 @runtime_checkable
 class ImergSubsetHttpClient(Protocol):
     """D4's injected OPeNDAP seam — fetch, not list/download-to-path: the
@@ -716,7 +835,7 @@ class RealImergSubsetHttpClient:
             )
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to fetch subset {url}: {exc}") from exc
-        RealImergHttpClient._raise_for_status(response.status_code, url=url)
+        _raise_for_http_status(response.status_code, url=url)
         return response.content
 
 
@@ -823,14 +942,17 @@ def cross_check_subset_against_archive(
     archive_path: Path,
     data_root: Path,
     client: ImergSubsetHttpClient,
-    box: tuple[int, int, int, int] = STUDY_BOX,
 ) -> SubsetCrossCheckReport:
     """D5 — T2: fetch (or reuse) the OPeNDAP subset for the granule already
-    held via the archive route, and compare cell for cell over `box`. ⛔ The
+    held via the archive route, and compare cell for cell over the frozen
+    `STUDY_BOX`. ⛔ Not parameterised over an arbitrary box (fixer review,
+    finding 2): D1 pins ONE box, and the T2 gate this function IS must
+    compare against exactly that box, never a caller-supplied one. ⛔ The
     coordinate VECTORS are compared first and exactly — "all cells match" is
     only indirect evidence of alignment."""
     import h5py
 
+    box = STUDY_BOX
     archive_filename = archive_path.name
     archive_contract = observe_read_contract(archive_path, filename=archive_filename)
     granule, _revision = parse_granule_filename(archive_filename)
@@ -849,12 +971,33 @@ def cross_check_subset_against_archive(
         lat_bounds=(lat_start, lat_stop),
     )
     with h5py.File(archive_path, "r") as f:
-        archive_box = np.asarray(
-            f["Grid"]["precipitation"][
-                0, lon_start : lon_stop + 1, lat_start : lat_stop + 1
-            ],  # type: ignore[index]
-            dtype=np.float64,
+        archive_precip = f["Grid"]["precipitation"]  # type: ignore[index]
+        archive_attrs = archive_precip.attrs
+        # (fixer review, finding 3) — verify the ARCHIVE side's own
+        # dtype/packing too, not only the subset side: D5's tolerance is
+        # derived assuming BOTH grids are unpacked float32, and the archive
+        # contract has never recorded these attributes to check them itself.
+        archive_is_packed = (
+            "scale_factor" in archive_attrs or "add_offset" in archive_attrs
         )
+        if archive_is_packed:
+            raise ImergReadContractError(
+                "the archive route's precipitation is PACKED (scale_factor/"
+                "add_offset present) — D5's tolerance assumes an unpacked "
+                "archive side; refusing to compare without a tolerance "
+                "derived for this encoding (D1)"
+            )
+        archive_dtype = str(archive_precip.dtype)  # type: ignore[attr-defined]
+        if archive_dtype != EXPECTED_SUBSET_DTYPE:
+            raise ImergReadContractError(
+                f"the archive route's precipitation dtype {archive_dtype!r} != "
+                f"the expected unpacked {EXPECTED_SUBSET_DTYPE!r} — D5's "
+                "tolerance assumes matching unpacked encodings on both sides (D1)"
+            )
+        lon_slice = slice(lon_start, lon_stop + 1)
+        lat_slice = slice(lat_start, lat_stop + 1)
+        archive_slice = archive_precip[0, lon_slice, lat_slice]  # type: ignore[index]
+        archive_box = np.asarray(archive_slice, dtype=np.float64)
     subset_contract = observe_subset_read_contract(
         subset_path, archive_filename=archive_filename
     )
@@ -1364,21 +1507,6 @@ class RealImergHttpClient:
 
     timeout_seconds: float = 60.0
 
-    @staticmethod
-    def _raise_for_status(status: int, *, url: str) -> None:
-        """One status ladder: 404 missing (D4 counts it), 401/403 credentials
-        (exit 2), 5xx retryable."""
-        if status == 404:  # noqa: PLR2004 - HTTP status literal
-            raise ImergGranuleMissingError(f"not found: {url}")
-        if status in (401, 403):
-            raise ImergCredentialsError(
-                f"Earthdata Login rejected {url} (status {status})"
-            )
-        if status >= 500:  # noqa: PLR2004 - HTTP status literal
-            raise ImergTransientError(f"{url} returned status {status}")
-        if status != 200:  # noqa: PLR2004 - HTTP status literal
-            raise ImergRequestFailedError(f"{url} returned unexpected status {status}")
-
     def list_directory(self, url: str) -> str:
         import requests
 
@@ -1386,7 +1514,7 @@ class RealImergHttpClient:
             response = requests.get(url, timeout=self.timeout_seconds)
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to list {url}: {exc}") from exc
-        self._raise_for_status(response.status_code, url=url)
+        _raise_for_http_status(response.status_code, url=url)
         return response.text
 
     def download_to_path(self, *, url: str, target: Path) -> None:
@@ -1396,7 +1524,7 @@ class RealImergHttpClient:
             response = requests.get(url, timeout=self.timeout_seconds, stream=True)
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to download {url}: {exc}") from exc
-        self._raise_for_status(response.status_code, url=url)
+        _raise_for_http_status(response.status_code, url=url)
         try:
             with target.open("wb") as fh:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):

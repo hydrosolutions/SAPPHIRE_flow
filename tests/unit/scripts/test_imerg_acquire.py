@@ -1387,6 +1387,17 @@ def _subset_contract_kwargs() -> dict[str, Any]:
     }
 
 
+def _subset_kwargs_with(**overrides: Any) -> dict[str, Any]:
+    """`_subset_contract_kwargs()` with exactly the given fields replaced.
+    A dedicated helper (rather than an inline `{**kwargs, "field": value}`)
+    keeps the merged dict typed as plain `dict[str, Any]`: pyright otherwise
+    widens the merge's inferred type per-key, and every keyword the result is
+    later spread into reports a spurious `Any | <literal>` mismatch."""
+    merged = dict(_subset_contract_kwargs())
+    merged.update(overrides)
+    return merged
+
+
 _ARCHIVE_FILENAME = "3B-HHR-E.MS.MRG.3IMERG.20200715-S000000-E002959.0000.V07B.HDF5"
 
 
@@ -1430,11 +1441,15 @@ class TestSubsetReadContract:
         self, tmp_path: Path
     ) -> None:
         """T1 verify, "vice versa": `contract_from_open_granule`/
-        `observe_read_contract` stay UNTOUCHED (D1) and must still refuse a
-        subset-shaped file on their own, unmodified."""
+        `observe_read_contract` must refuse a subset-shaped file (no
+        top-level `Grid` group). (fixer review, finding 4 — locking) — the
+        EXACT typed error and message, not a bare `Exception`: a raw h5py
+        `KeyError` would silently defeat a caller that only catches
+        `ImergReadContractError`, as every other D1 refusal in this module
+        does."""
         path = tmp_path / _ARCHIVE_FILENAME
         _write_fake_subset_granule(path, archive_filename=_ARCHIVE_FILENAME)
-        with pytest.raises(Exception):  # noqa: B017, PT011 - the UNTOUCHED archive parser's own natural refusal, whatever shape it takes
+        with pytest.raises(ia.ImergReadContractError, match="no top-level 'Grid'"):
             ia.observe_read_contract(path)
 
     def test_a_subset_lat_vector_short_by_one_cell_is_rejected(self) -> None:
@@ -1444,6 +1459,156 @@ class TestSubsetReadContract:
             ia.ImergSubsetReadContract(
                 **{**kwargs, "lat_vector": short_lat}, granule_revision="V07B"
             )
+
+    def test_lat_lon_vectors_match_the_derived_t2_approved_box_constants(
+        self,
+    ) -> None:
+        """The fixture's own coordinates (sliced straight from the real
+        archive vectors) and the module's DERIVED `EXPECTED_SUBSET_LAT/LON_
+        VECTOR` constants must be the SAME numbers — otherwise the exact-pin
+        check below is testing a fixture-only accident, not the real box."""
+        kwargs = _subset_contract_kwargs()
+        assert kwargs["lat_vector"] == ia.EXPECTED_SUBSET_LAT_VECTOR
+        assert kwargs["lon_vector"] == ia.EXPECTED_SUBSET_LON_VECTOR
+
+    def test_a_lat_vector_shifted_by_one_cell_is_rejected(self) -> None:
+        """D1 (fixer review, finding 2 — locking) — the length checks alone
+        accept ANY same-sized grid; a full-shape, correctly-typed grid whose
+        coordinates are one cell off the frozen box must still be refused.
+        Mirrors the archive contract's own shifted-vector test: the shifted
+        tuple is assigned into the (already `dict[str, Any]`-typed) kwargs
+        dict item, not a bare local — matching `_contract_kwargs`'s tests."""
+        kwargs = _subset_contract_kwargs()
+        lat = kwargs["lat_vector"]
+        assert isinstance(lat, tuple)
+        kwargs["lat_vector"] = tuple(v + 0.1 for v in lat)
+        with pytest.raises(ia.ImergReadContractError, match="lat_vector"):
+            ia.ImergSubsetReadContract(**kwargs, granule_revision="V07B")
+
+    def test_a_lon_vector_shifted_by_one_cell_is_rejected(self) -> None:
+        kwargs = _subset_contract_kwargs()
+        lon = kwargs["lon_vector"]
+        assert isinstance(lon, tuple)
+        kwargs["lon_vector"] = tuple(v + 0.1 for v in lon)
+        with pytest.raises(ia.ImergReadContractError, match="lon_vector"):
+            ia.ImergSubsetReadContract(**kwargs, granule_revision="V07B")
+
+    def test_a_lat_vector_perturbed_below_six_decimals_is_rejected(self) -> None:
+        """Mirrors the archive contract's own below-6-decimals test: the
+        exact-pin check compares the FULL float64 value, not a rounded one."""
+        kwargs = _subset_contract_kwargs()
+        lat = kwargs["lat_vector"]
+        assert isinstance(lat, tuple)
+        kwargs["lat_vector"] = (lat[0] + 1e-9, *lat[1:])
+        with pytest.raises(ia.ImergReadContractError, match="lat_vector"):
+            ia.ImergSubsetReadContract(**kwargs, granule_revision="V07B")
+
+    def test_a_signed_180_longitude_convention_is_rejected(self) -> None:
+        """D1 (fixer review, finding 2) — ONE approved convention: the box
+        never crosses the sign boundary, so the OTHER convention, even though
+        the archive contract still accepts it, must be refused here."""
+        with pytest.raises(ia.ImergReadContractError, match="longitude convention"):
+            ia.ImergSubsetReadContract(
+                **_subset_kwargs_with(longitude_convention="SIGNED_180"),
+                granule_revision="V07B",
+            )
+
+    def test_a_scale_factor_is_rejected(self) -> None:
+        """D1 (fixer review, finding 3 — locking) — packing must be refused
+        at CONTRACT CONSTRUCTION, which `read_subset_granule` always goes
+        through: this protects every subset read, not only the one granule
+        T2's cross-check happens to compare."""
+        with pytest.raises(ia.ImergReadContractError, match="PACKED"):
+            ia.ImergSubsetReadContract(
+                **_subset_kwargs_with(scale_factor=0.01), granule_revision="V07B"
+            )
+
+    def test_an_add_offset_is_rejected(self) -> None:
+        with pytest.raises(ia.ImergReadContractError, match="PACKED"):
+            ia.ImergSubsetReadContract(
+                **_subset_kwargs_with(add_offset=1.0), granule_revision="V07B"
+            )
+
+
+def _unchecked_subset_contract(**overrides: Any) -> ia.ImergSubsetReadContract:
+    """Bypasses `ImergSubsetReadContract.__post_init__` (`object.__new__` +
+    `object.__setattr__`), so a locking test can exercise
+    `subset_cross_check_tolerance`'s OWN internal guards in isolation — a
+    conceptually-invalid contract that D1's constructor would itself now
+    refuse to build (finding 2/3's fix) is exactly what proves THIS
+    function's guard is not dead code: two independent gates, neither
+    substituting for the other (D1 defense in depth)."""
+    kwargs: dict[str, Any] = {
+        **_subset_contract_kwargs(),
+        "granule_revision": "V07B",
+        **overrides,
+    }
+    obj = object.__new__(ia.ImergSubsetReadContract)
+    for key, value in kwargs.items():
+        object.__setattr__(obj, key, value)
+    return obj
+
+
+class TestSubsetCrossCheckTolerance:
+    """D5 (fixer review, finding 6 — locking) — direct unit tests against
+    `subset_cross_check_tolerance` itself: the function D5 frames as "the
+    stop rule", so a regression that made it always return 0.0 must fail a
+    test that calls exactly this function, not merely one further downstream
+    that happens to be unreachable once the constructor also guards the same
+    invariant."""
+
+    def test_rejects_a_dtype_mismatch(self) -> None:
+        contract = _unchecked_subset_contract(dtype="float64")
+        with pytest.raises(ia.ImergReadContractError, match="dtype"):
+            ia.subset_cross_check_tolerance(subset_contract=contract)
+
+    def test_rejects_a_packed_contract(self) -> None:
+        contract = _unchecked_subset_contract(scale_factor=1.0)
+        with pytest.raises(ia.ImergReadContractError, match="PACKED"):
+            ia.subset_cross_check_tolerance(subset_contract=contract)
+
+    def test_returns_zero_for_a_valid_unpacked_float32_contract(self) -> None:
+        contract = ia.ImergSubsetReadContract(
+            **_subset_contract_kwargs(), granule_revision="V07B"
+        )
+        assert ia.subset_cross_check_tolerance(subset_contract=contract) == 0.0
+
+
+class TestSubsetContractConsistency:
+    """D1/D2 (fixer review, finding 1 — locking) — the subset route's own
+    counterpart of `TestReadContract`'s `assert_contract_consistent` tests:
+    `assert_subset_contract_consistent` must freeze on the first subset
+    granule and refuse a drifting one on every subsequent read, exactly as
+    strictly as the archive route's own comparator (⛔ neither weakened into
+    the other)."""
+
+    def test_passes_for_an_identical_contract(self) -> None:
+        contract = ia.ImergSubsetReadContract(
+            **_subset_contract_kwargs(), granule_revision="V07B"
+        )
+        ia.assert_subset_contract_consistent(contract, frozen=contract)
+
+    def test_raises_on_a_revision_mismatch(self) -> None:
+        base_kwargs = _subset_contract_kwargs()
+        frozen = ia.ImergSubsetReadContract(granule_revision="V07B", **base_kwargs)
+        observed = ia.ImergSubsetReadContract(granule_revision="V07C", **base_kwargs)
+        with pytest.raises(ia.ImergReadContractError, match="V07C.*V07B|V07B.*V07C"):
+            ia.assert_subset_contract_consistent(observed, frozen=frozen)
+
+    def test_raises_on_a_field_mismatch_other_than_revision(self) -> None:
+        """`file_header_product_version` is the one subset field NOT already
+        pinned to a single value by `__post_init__`, so it is the one field
+        that can vary between two otherwise-valid, separately-constructed
+        contracts — exactly what this comparator exists to catch."""
+        frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        observed = ia.ImergSubsetReadContract(
+            granule_revision="V07B",
+            **_subset_kwargs_with(file_header_product_version="V07B-different"),
+        )
+        with pytest.raises(ia.ImergReadContractError, match="other than revision"):
+            ia.assert_subset_contract_consistent(observed, frozen=frozen)
 
 
 class TestSubsetCrossCheck:
@@ -1470,7 +1635,11 @@ class TestSubsetCrossCheck:
 
     def test_a_one_cell_lon_shift_is_refused(self, tmp_path: Path) -> None:
         """T1 verify: "a response whose lon/lat vectors differ by one cell
-        is refused" (D5's own stop rule — locking)."""
+        is refused" (D5's own stop rule — locking). (fixer review, finding 2)
+        — a shifted grid is now refused EARLIER, at contract construction:
+        `ImergSubsetReadContract` pins the exact T2-approved box coordinates,
+        so a same-shaped grid at the wrong location fails before the
+        cross-check ever gets to compute a report."""
         archive_path = tmp_path / _ARCHIVE_FILENAME
         _write_fake_archive_granule_for_box(archive_path, value=3.5)
         subset_bytes_path = tmp_path / "subset_source.dap.nc4"
@@ -1482,11 +1651,26 @@ class TestSubsetCrossCheck:
             lon=shifted_lon,
         )
         client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
-        report = ia.cross_check_subset_against_archive(
-            archive_path=archive_path, data_root=tmp_path / "data_root", client=client
+        with pytest.raises(ia.ImergReadContractError, match="lon_vector"):
+            ia.cross_check_subset_against_archive(
+                archive_path=archive_path,
+                data_root=tmp_path / "data_root",
+                client=client,
+            )
+
+    def test_assert_subset_cross_check_passed_raises_on_a_failed_report(self) -> None:
+        """The FAILURE branch of `assert_subset_cross_check_passed` — the
+        happy-path test above only proves it does NOT raise on a passing
+        report; this proves it DOES raise, with the "FAILED" message, on one
+        that didn't (D5's stop rule), independent of what produced the
+        failing report."""
+        report = ia.SubsetCrossCheckReport(
+            lat_exact_match=True,
+            lon_exact_match=False,
+            max_abs_diff=0.0,
+            tolerance=0.0,
+            values_within_tolerance=True,
         )
-        assert report.lon_exact_match is False
-        assert report.passed is False
         with pytest.raises(ia.ImergReadContractError, match="FAILED"):
             ia.assert_subset_cross_check_passed(report)
 
@@ -1532,6 +1716,54 @@ class TestSubsetCrossCheck:
             archive_path=archive_path, data_root=data_root, client=PoisonClient()
         )
         assert report.passed is True
+
+    def test_a_packed_archive_side_is_refused(self, tmp_path: Path) -> None:
+        """D1/D5 (fixer review, finding 3 — locking) — the archive contract
+        has never RECORDED `scale_factor`/`add_offset` (D1 has no field for
+        them), so a packed archive granule would otherwise sail past
+        `observe_read_contract` unnoticed; the cross-check must catch it by
+        reading the HDF5 attribute directly, before deriving a tolerance."""
+        archive_path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(archive_path, value=3.5)
+        with h5py.File(archive_path, "a") as f:
+            f["Grid/precipitation"].attrs["scale_factor"] = np.float32(0.01)
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        _write_fake_subset_granule(
+            subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.5
+        )
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        with pytest.raises(ia.ImergReadContractError, match="PACKED"):
+            ia.cross_check_subset_against_archive(
+                archive_path=archive_path,
+                data_root=tmp_path / "data_root",
+                client=client,
+            )
+
+    def test_an_archive_side_dtype_mismatch_is_refused(self, tmp_path: Path) -> None:
+        """D1/D5 (fixer review, finding 3 — locking) — the archive contract
+        has never recorded a dtype either; a float64 archive dataset (never
+        observed, but not impossible) must not be silently compared as if it
+        were the expected unpacked float32."""
+        archive_path = tmp_path / _ARCHIVE_FILENAME
+        _write_fake_archive_granule_for_box(archive_path, value=3.5)
+        with h5py.File(archive_path, "a") as f:
+            precip64 = np.asarray(f["Grid/precipitation"][:], dtype=np.float64)
+            del f["Grid/precipitation"]
+            ds = f["Grid"].create_dataset("precipitation", data=precip64)
+            ds.attrs["DimensionNames"] = b"time,lon,lat"
+            ds.attrs["units"] = b"mm/hr"
+            ds.attrs["_FillValue"] = -9999.9
+        subset_bytes_path = tmp_path / "subset_source.dap.nc4"
+        _write_fake_subset_granule(
+            subset_bytes_path, archive_filename=_ARCHIVE_FILENAME, value=3.5
+        )
+        client = FakeImergSubsetHttpClient(content=subset_bytes_path.read_bytes())
+        with pytest.raises(ia.ImergReadContractError, match="dtype"):
+            ia.cross_check_subset_against_archive(
+                archive_path=archive_path,
+                data_root=tmp_path / "data_root",
+                client=client,
+            )
 
 
 class TestSubsetRouteDispatch:
