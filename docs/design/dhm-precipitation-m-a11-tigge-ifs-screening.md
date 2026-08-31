@@ -198,6 +198,11 @@ the record — pre-normalisation-fix (same cells): D+1 −1.51 / −5.33 / −5.
 
 ### D7 alternate reading — gauge labels are really NPT (+6 h rotation)
 
+⛔ **HISTORICAL SENSITIVITY ONLY, as of 2026-08-31.** ✅ **RESOLVED 2026-08-31 — DHM confirmed the timestamps are UTC and PERIOD-ENDING.** The as-labelled reading is correct; the NPT alternative is dead. This section is kept
+because the rotation is still computed and published, and because its branch-cut behaviour
+documents the estimator — **but the hypothesis it tests is settled, and nothing below qualifies
+the primary result any more.**
+
 Reported alongside, never gating (D7). This reading is now a **circular rotation of the very same
 contributing cycles**, not a second pairing: the windows and every `n` are identical to the primary
 reading, cell for cell (2,940 / 3,498 / 2,168 at D+1, and so on). An earlier revision rebuilt the

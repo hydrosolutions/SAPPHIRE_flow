@@ -101,17 +101,12 @@ measurement of the one we do.
     Nothing here may become an operational dependency, for any centre — this is not a licence artefact.
   - **Attribution** to ECMWF and acknowledgement of TIGGE are licence conditions on any output.
 
-- **D7 — The gauge timezone rides along; it does not gate.** `Time (UTC)` is corroborated three ways
-  (2,415 stamps at exactly `:15` — what an on-the-hour NPT stamp becomes under −5:45; DHM's
-  PERIOD_ENDING answer; the Pyramid cross-check) but unproven. Report both readings.
-  **AMENDED 2026-08-30** (the original wording — "an NPT reading shifts every offset uniformly +6 h
-  while leaving the between-band contrast invariant" — was mathematically wrong about the reported
-  statistic, not a description of a code defect): the alternate NPT reading circularly rotates each
-  station's gauge cycle on exactly the same paired windows, so **each station's circular offset changes
-  by +6 h modulo 24**. Because D5 reports an *arithmetic* median of same-day-branch representatives,
-  reported band medians and their ordinary between-band differences **need not** shift by +6 h or remain
-  invariant when stations cross the +6/−18 branch cut. (A *proper circular* median could be
-  rotation-equivariant; `np.median` on branch-mapped values is not.)
+- **D7 — The gauge timebase is RESOLVED.** ✅ **RESOLVED 2026-08-31 — DHM confirmed the timestamps are UTC and PERIOD-ENDING.** The as-labelled reading is correct; the NPT alternative is dead. DHM's answer replaces the
+  three corroborating lines this plan relied on (2,415 stamps at exactly `:15`; the M-D3
+  period-ending answer; the Pyramid cross-check) with an authoritative one. ⇒ **The primary
+  as-labelled reading is THE reading.** The D7 alternate NPT rotation is retained in the output as a
+  **historical sensitivity only** — it is no longer a live hypothesis, and no verdict may rest on it.
+  ⚠️ Its branch-cut behaviour (below) still describes the code and stays accurate.
 
 ## Tasks
 

@@ -100,8 +100,8 @@ normalised per-station diurnal cycles, circular lag estimators, NPT rather than 
 Stable to ≲1.5 h under exclusions, season definition (JJA/JJAS/MJJASO/JA), band edges, nearest-vs-
 bilinear extraction, and ±1 h period-convention flips. ⛔ **The SIGN is not identifiable** — at near
 antiphase −14.4 h and +9.6 h are the same angle; the **magnitude** is what is measured, and physics
-(parameterized convection firing at local noon) is what favours "model too early". The gauge-timezone
-hypothesis shifts everything +6 h uniformly but leaves the **between-band contrast invariant**.
+(parameterized convection firing at local noon) is what favours "model too early". ~~The gauge-timezone hypothesis shifts everything +6 h uniformly but leaves the between-band
+contrast invariant.~~ ✅ **RESOLVED 2026-08-31 — DHM confirmed the timestamps are UTC and PERIOD-ENDING.** The as-labelled reading is correct; the NPT alternative is dead. The absolute offsets stand as published.
 
 ⇒ Condition (1) is now supported by two independent methods. **Condition (2) — band weights from a
 source other than the profiles being weighted — remains unmet, so the verdict is UNCHANGED.**
