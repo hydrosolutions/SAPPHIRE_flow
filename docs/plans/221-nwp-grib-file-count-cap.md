@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-31
 plan: 221
 title: The 500-file NWP cap stops roughly half of all forecast cycles
@@ -13,8 +13,8 @@ source: 2026-08-31 live outage — forecasts stopped after 2026-08-30 18:00; nwp
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms. **This is a live outage**, not a
-latent risk — see § Impact.
+**READY.** Owner chose **2000** on 2026-08-31. Codex-reviewed (1 major, 1 minor, both folded).
+**This is a live outage**, not a latent risk — see § Impact.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -90,8 +90,8 @@ fix.
   Plan 213 chose a constant from a handful of observations, and one extra day of data moved the
   maximum past it. Here the observed values are 484 and 501; **why they differ is not understood**
   (+17 files, unexplained), so the true ceiling is unknown and 501 is not evidence of a maximum.
-  Set the file cap well clear of any plausible legitimate count. Proposed: **2000** — unambiguously
-  a runaway guard rather than an operating limit. **Choose it knowing D2:** it is *not* backed by
+  Set the file cap well clear of any plausible legitimate count. **DECIDED 2026-08-31: 2000** — roughly 4x the observed working range (484-501), so it cannot trip
+  on a healthy cycle, while still catching a genuine runaway. **Chosen knowing D2:** it is *not* backed by
   a reliable byte bound, and with missing size metadata a 2000-file run could reach ~3.9 GiB on the
   estimator while the true download size is unverified. **The value is an owner decision; the
   implementer must not substitute its own number.**
@@ -128,6 +128,8 @@ alert already exist (see § Impact); whether they reached anyone is an open ques
 
 ## Exit gates
 
-- `_MAX_FILE_COUNT` carries the owner's value and a comment stating it is a runaway guard.
+- `_MAX_FILE_COUNT` is **2000**, with a comment stating it is a runaway guard, citing the measured
+  484-501 working range and 2026-08-31 as the date, and noting the byte budget is an estimate (D2)
+  so this count is a real backstop rather than a redundant one.
 - A test proves a 501-file fetch succeeds, RED against the old constant.
 - The byte-budget guard is demonstrably still enforced.
