@@ -2030,14 +2030,46 @@ class _RaisingCycleLookupForecastStore(FakeForecastStore):
         )
 
 
+class _CountingCycleLookupForecastStore(FakeForecastStore):
+    """Plan 222 fixer round — counts calls to
+    `fetch_latest_uncombined_issued_at` so a test can prove
+    `build_snapshot()` resolves the T7 cycle marker EXACTLY ONCE per
+    snapshot, never once per station. A per-station lookup could in
+    principle pin different stations to different cycles inside the same
+    snapshot — see `build_snapshot()`'s "resolved once and reused" note."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_count = 0
+
+    def fetch_latest_uncombined_issued_at(
+        self, cutoff: UtcDatetime
+    ) -> UtcDatetime | None:
+        self.call_count += 1
+        return super().fetch_latest_uncombined_issued_at(cutoff)
+
+
 class TestCombinedForecastCycleLookupGatedOnStrategy:
     """Plan 222 fixer round — `fetch_latest_publication_cycle_time` is
     resolved only for POOLED/BMA (the strategies `_build_combined_forecast`
-    actually queries a cycle for). Under PRIMARY it must never be called at
-    all, so a forecast-store outage in that lookup cannot turn into a
-    snapshot-wide 500 for an unrelated reason."""
+    actually queries a cycle for). Under PRIMARY or CONSENSUS it must never
+    be called at all, so a forecast-store outage in that lookup cannot turn
+    into a snapshot-wide 500 for an unrelated reason; and for a multi-station
+    snapshot under POOLED/BMA it must be resolved exactly once, not
+    per-station."""
 
-    def test_primary_strategy_never_queries_the_cycle_marker(self) -> None:
+    @pytest.mark.parametrize(
+        ("strategy", "expected_reason"),
+        [
+            (ModelCombinationStrategy.PRIMARY, "strategy_primary"),
+            (ModelCombinationStrategy.CONSENSUS, "no_combined_forecast"),
+        ],
+    )
+    def test_strategy_never_queries_the_cycle_marker(
+        self,
+        strategy: ModelCombinationStrategy,
+        expected_reason: str,
+    ) -> None:
         station = make_station_config(code="2009")
         station_store = FakeStationStore()
         station_store.store_station(station)
@@ -2051,13 +2083,41 @@ class TestCombinedForecastCycleLookupGatedOnStrategy:
             stores,
             stations=[station],
             archive_base_path=None,
-            combination_strategy=ModelCombinationStrategy.PRIMARY,
+            combination_strategy=strategy,
             clock=_frozen_clock(),
         )
 
         combined = snapshot.stations[0].combined_forecast
         assert isinstance(combined, CombinedForecastUnavailableSchema)
-        assert combined.reason == "strategy_primary"
+        assert combined.reason == expected_reason
+
+    def test_pooled_multi_station_resolves_the_marker_exactly_once(self) -> None:
+        station_a = make_station_config(code="2009")
+        station_b = make_station_config(code="2091")
+        station_store = FakeStationStore()
+        station_store.store_station(station_a)
+        station_store.store_station(station_b)
+        counting_store = _CountingCycleLookupForecastStore()
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=counting_store,
+            seed_default_cycle=True,
+        )
+        # `_stores()`'s own auto-seed probe (line ~115) calls
+        # `fetch_latest_uncombined_issued_at` once during fixture setup —
+        # reset the counter so it only reflects calls made by
+        # `build_snapshot()` itself.
+        counting_store.call_count = 0
+
+        build_snapshot(
+            stores,
+            stations=[station_a, station_b],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        assert counting_store.call_count == 1
 
 
 # ---------------------------------------------------------------------------

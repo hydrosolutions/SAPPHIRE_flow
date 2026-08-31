@@ -586,23 +586,40 @@ class TestCombineEnsemblesPooledGridAlignment:
         self,
     ) -> None:
         """D2 — completeness is counted BOTH ways (row count AND
-        `n_unique(member_id)`), not `n_unique(member_id)` alone. A
-        duplicated `(valid_time, member_id)` row at t1 keeps the unique
-        member set at the full `{0..4}` (`n_unique` unchanged) while the
-        row count there climbs to 6 — neither `ForecastEnsemble.from_members`
-        nor the database enforces uniqueness of that pair. A
-        unique-members-only completeness check lets t1 pass anyway, and
-        `_ensemble_points()` then summarises all 6 rows, overweighting the
-        duplicated member. t1 must be dropped from the intersection
-        instead; t2 (no duplicate) stays."""
+        `n_unique(member_id)`), each independently able to catch a defect
+        the other misses. At t1, member 1's row is dropped and member 0's
+        row is duplicated in its place: still 5 rows total (row count
+        alone says "complete"), but only 4 unique member ids — `{0, 2, 3,
+        4}` — with member 1 silently missing (`n_unique` alone says
+        "incomplete", but only by comparing against the wrong signal if a
+        row-count check is skipped). A check that only counts rows would
+        wrongly accept t1 as complete and let `_ensemble_points()`
+        overweight member 0's duplicated value while silently dropping
+        member 1 — neither `ForecastEnsemble.from_members` nor the
+        database enforces uniqueness of `(valid_time, member_id)`. t2
+        carries the model's full, unique `{0..4}` set (establishing the
+        contributor's true 5-member total) and has no duplicate, so it
+        must stay; t1 must be dropped from the intersection."""
         t1, t2 = (ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2))
         ens_a = _members_ensemble_at(
             model_id=_MODEL_A, valid_times=[t1, t2], n_members=5
         )
-        duplicate_row = ens_a.values.filter(
+        without_member_1_at_t1 = ens_a.values.filter(
+            ~((pl.col("valid_time") == t1) & (pl.col("member_id") == 1))
+        )
+        duplicate_member_0_at_t1 = ens_a.values.filter(
             (pl.col("valid_time") == t1) & (pl.col("member_id") == 0)
         )
-        ens_a = replace(ens_a, values=pl.concat([ens_a.values, duplicate_row]))
+        ens_a = replace(
+            ens_a,
+            values=pl.concat([without_member_1_at_t1, duplicate_member_0_at_t1]),
+        )
+        # t1 now has 5 rows (row count matches the full 5-member total) but
+        # only 4 unique member ids — the shape a row-count-only check would
+        # wrongly accept.
+        at_t1 = ens_a.values.filter(pl.col("valid_time") == t1)
+        assert at_t1.height == 5
+        assert at_t1["member_id"].n_unique() == 4
         ens_b = _members_ensemble_at(
             model_id=_MODEL_B, valid_times=[t1, t2], n_members=5
         )

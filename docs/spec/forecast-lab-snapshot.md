@@ -19,6 +19,15 @@ publication cycle (see "Combined forecast" below) so the corrected absence
 is visible rather than served stale. No `schema_version` bump — both are
 behavioural fixes, not shape changes.
 
+**⚠️ Operational notice for SAPPHIRE-flow-map, before this deploys:** the
+corrected intersection means `combined_forecast` will read `available:
+false, reason: "no_combined_forecast"` for stations **2009 and 2091** —
+their contributing models do not share a `valid_time` grid, so the (now
+correct) intersection is empty every cycle — **until Plan 226 lands**
+(currently `DRAFT`, not yet scheduled). This is deliberate: it replaces a
+`_pooled` row that was silently wrong (the sawtooth) with an honest
+absence, not a regression to flag as a bug.
+
 **`v2` is a breaking cutover, not a compatible addition** — every boundary
 model forbids unknown fields (`ForecastLabModel`'s `extra: "forbid"`), so a
 `v1` validator rejects a document carrying `combined_forecast` or the new

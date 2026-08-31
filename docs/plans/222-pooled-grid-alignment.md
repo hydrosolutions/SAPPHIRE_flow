@@ -380,3 +380,39 @@ hole on T7's production query. All resolved:
 - **Superseded-heartbeat-design leftover in this doc** — the "Minor: recovery-replay documentation
   gap" paragraph in the prior fixer round above is now marked superseded (see its trailing note);
   the doc is append-only history, not rewritten in place.
+
+## Fixer round 3 — post-implementation diff review (version-bump discipline + two locking-test gaps)
+
+Reviewers (including an independent Codex pass) found the branch's four code commits carried only
+one patch bump between them (violating the mandatory per-commit rule), and that two of round 2's
+locking tests proved a weaker invariant than intended. Resolved:
+
+- **Blocker: three of the four code commits retained an unbumped 0.1.852.** Squashed the four
+  commits (`0c32152a`, `60cd299e`, `590a8dd4`, `1d50b58c`) into one, keeping the single 0.1.853
+  bump — the whole Plan 222 implementation is now one code commit with one version bump, per the
+  mandatory rule.
+- **Major: D2's duplicate-member locking test didn't isolate the "row count AND unique count"
+  invariant.** The original test duplicated member 0 at t1 (6 rows, 5 unique) — a row-count-only
+  check (`n_rows == n_members`) already catches that shape (6 ≠ 5), so the test never exercised the
+  `n_unique(member_id) == n_members` half of the D2 check. Rewrote it: member 1's row is dropped and
+  member 0's is duplicated in its place, giving t1 exactly 5 rows (row count matches) but only 4
+  unique ids — the shape a row-count-only check wrongly accepts. Proved red by relaxing the
+  production predicate to `n_rows == n_members` alone and confirming the test failed, then
+  restoring.
+- **Minor: T7's query-shape locks didn't cover CONSENSUS or prove exactly-once resolution.** Only
+  PRIMARY had a raising-store test; nothing exercised CONSENSUS (the other strategy that must never
+  query the marker) or proved the marker is resolved once, not per-station, in a multi-station
+  snapshot. Parametrized the raising-store test over PRIMARY/CONSENSUS and added a two-station
+  counting-store test asserting exactly one call to
+  `fetch_latest_uncombined_issued_at()`. Proved red by moving the resolution inside the per-station
+  loop (a plausible per-station-lookup bug) and confirming the two-station test then counted 2 calls
+  instead of 1, then restoring.
+- **Minor: the T6 consumer notice was missing the Plan 226 dependency and station list.**
+  `docs/spec/forecast-lab-snapshot.md` explained the behavioural change but not that stations 2009
+  and 2091 specifically will read `no_combined_forecast` until Plan 226 (still `DRAFT`) lands. Added
+  an explicit operational notice at the top of the doc.
+- **Disputed: "Plan-225 doc commits bundled into this PR."** By the time this round ran,
+  `origin/main` already contained the exact three Plan-225 doc commits in question (`b9c35ca6`,
+  `cdb182ca`, `23b5ca96`) — pushed directly to `main` between the finding being raised and this
+  round starting. `origin/main..HEAD` already shows only the Plan 222 code commit; no action was
+  needed.
