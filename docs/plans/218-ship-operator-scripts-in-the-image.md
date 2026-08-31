@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-31
 plan: 218
 title: Ship the operator scripts in the runtime image so a deployment can be reproduced
@@ -13,7 +13,7 @@ source: 2026-08-31 — scripts/import_caravan_attributes.py, merged by Plan 188 
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-08-31 after two independent Codex rounds and a direct verification of the curated list (D3a).
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
