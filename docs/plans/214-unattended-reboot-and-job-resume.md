@@ -316,6 +316,12 @@ lost; a Prefect query failure produces a "probe unreadable" alert, not silence.
 
 ## Deferred — opt-in auto-resume (NOT in this plan)
 
+**Owner decision 2026-08-31: DEFERRED for now.** Confirmed deliberately, not by omission — the
+review moved auto-resume out of scope and the owner was asked whether to pull it back in. Note for
+whoever revisits: three separate incidents on 2026-08-31 would each have been shortened by it — the
+macOS auto-update reboot, an operator redeploy recreating containers under a running job, and an
+/implement run that left work uncommitted. Prevention (T1) and detection (T2) ship without it.
+
 The earlier draft's T3 ("mark the killed run CRASHED and re-trigger it once, for deployments
 flagged resumable") is **cut**. Four preconditions do not hold today, and meeting them is a plan of
 its own:
