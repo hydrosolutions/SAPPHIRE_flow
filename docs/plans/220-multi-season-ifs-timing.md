@@ -94,8 +94,11 @@ of the high stations begin reporting around 2020-10-12, *after* that JJAS.
   requirement.)*
   ⛔ **There is no `244` constant in production and none should be added.** The schedule is derived as
   exact dates via `calendar.monthrange` (`tigge_ifs.py:200`); keep using
-  `expected_init_schedule(year=year)` and **do not introduce `expected_init_count(year)`**. Only the
-  year default changes — the gate logic stays.
+  `expected_init_schedule(year=year)` and **do not introduce `expected_init_count(year)`**.
+  ⛔ **The SCHEDULE DERIVATION stays; the EQUALITY GATE does NOT.** `tigge_ifs.py:291` currently
+  rejects any season whose inits do not match the schedule exactly — that is the behaviour this
+  decision overturns. It must **allow missing expected inits** (recorded as named gaps) while **still
+  rejecting extras, duplicates and wrong init hours**.
 
 - **D3 — Report PER-YEAR *and* POOLED.** *(Owner decision 2026-08-31.)* ⛔ Never pooled-only.
   🔴 **"Pooled" means: concatenate the six season frames, then run the UNCHANGED station-equal estimator
@@ -135,22 +138,29 @@ of the high stations begin reporting around 2020-10-12, *after* that JJAS.
 ## Tasks
 
 ### T1 — parameterise the season (depends: nothing)
-**In:** D1 — thread a single year value through retrieval, filenames, manifest, attribution and logs;
-D2 leaves the 244 gate untouched.
+**In:** D1's three deletions — `TIGGE_YEAR`'s default, the `--tigge-points` selector, and the pairing
+path's own 2025 default — so filename, points file, **attribution sidecar** (⛔ there is no manifest)
+and logs all derive from one year value. Plus D2's gate change: missing expected inits become named
+gaps, extras and duplicates still fail.
 **Out:** any retrieval; any analysis change.
-**Verify:** D6's 2025 regression test passes **before any new data is fetched** — the parameterisation
-alone must be inert. ⛔ Plus a test that a mismatched year cannot be written into a filename while a
-different year is recorded in the manifest — the hazard `tigge_ifs.py:51` names.
+**Verify:** D6's 2025 regression comparison holds **before any new data is fetched** — the
+parameterisation alone must be inert. ⛔ **No new mismatch checker** — the existing boundary gate
+already compares the file's actual init axis against the selected year (`tigge_ifs.py:250`, `:275`);
+the hazard is closed by the deletions, not by a check.
 
 ### T2 — retrieve 2020–2024 (depends: T1)
 **In:** five ECDS requests, same route and read contract as D6 of Plan 216 (`tigge-forecasts`,
-study box, `type: cf`, 6-hourly, `kg m**-2` asserted from the file attribute).
+study box, 6-hourly, `kg m**-2` asserted from the file attribute).
+🔴 **The ECDS request selector is `forecast_type: control_forecast`** (`tigge_ifs.py:167`) — ⛔ **NOT
+`type: cf`**, which an earlier revision of this plan said. `cf` is the **returned GRIB `dataType`**,
+verified on the file (`tigge_ifs.py:235`). The two are different vocabularies and only one is a request
+field.
 🔴 **NOT `0.5°` — an earlier revision of this plan said so and was wrong.** ECDS exposes **no
 `grid` request field**; it returns the **native reduced-Gaussian grid** (`tigge_ifs.py:7`,
 M-A11 report `:59`). ⛔ Do not send a `grid` parameter.
 **Out:** any analysis.
 **Verify:** each season's inits are checked against the expected 244-run schedule with absences recorded as named gaps (D2), and its completeness figure published; each raw file and its
-points parquet carry the correct year in name and manifest; the 2025 artifacts are **untouched**.
+points parquet carry the correct year in name and attribution sidecar; the 2025 artifacts are **untouched**.
 ⚠️ ECDS queues — expect this to take time, not to fail.
 
 ### T3 — per-year and pooled report (depends: T2)
