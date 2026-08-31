@@ -1518,7 +1518,7 @@ against**.
 | # | Question | Decision |
 |---|---|---|
 | **OD-12** | Must the modeller train on elevation bands so we can correct band-wise? | **No.** Correct the **basin-average** series in the **forcing pipeline**, using **hypsometric weighting** — the elevation dependence enters only through the weights, which are computed offline, once per basin. **The model never changes and keeps consuming `BasinAverageForecast`.** |
-| **OD-13** | Where does the correction live, and when is it switched on? | **In the forcing pipeline, behind a seam — built now, enabled at the Nepal re-training step, never before.** See the train/serve invariant below: it is the binding constraint, not the correction itself |
+| **OD-13** | Where does the correction live, and when is it switched on? | 🔴 **HELD 2026-08-31 — DO NOT BUILD YET** (owner; Plan 220: no single displacement to size it against). *Superseded wording: "in the forcing pipeline, behind a seam — built now, enabled at the Nepal re-training step, never before."* **Where** it lives is unchanged; **when it is built** is now: after the displacement can be sized.** See the train/serve invariant below: it is the binding constraint, not the correction itself |
 
 ### Why band-wise modelling is not required — the pieces already exist
 
@@ -1526,6 +1526,10 @@ against**.
   `max_elevation_m` and **`area_km2`** per band. **That is hypsometry, already in the basin package.**
 - `ElevationBandForecast` (`types/weather.py:62`) is already a first-class `WeatherForecastResult`
   variant beside `BasinAverageForecast`, so the band-wise route stays open without being taken now.
+
+🔴 **THE REST OF THIS SUBSECTION IS HELD (2026-08-31) AND IS NOT AN INSTRUCTION.** It describes how a
+correction *would* be built once the displacement can be sized. ⛔ Do not act on it: OD-13 is held,
+and Plan 220 shows there is no single magnitude to build against. Retained as design reasoning.
 
 **The cheap operator:** take the **observed elevation-banded diurnal profiles** (M-A7's deliverable),
 weight them by each basin's **band `area_km2`**, and collapse to an **observation-derived expected
@@ -1559,9 +1563,9 @@ than *how* it is computed:
 **The invariant, whichever way that goes: TRAIN AND SERVE MUST MATCH.** An
 uncorrected-but-consistent pipeline can beat a corrected-but-inconsistent one.
 
-⇒ **Sequencing:**
-1. **Now (pre-deployment):** build the correction operator and its seam. **Do not enable it.** Global
-   pre-training stays on uncorrected forcing.
+⇒ **Sequencing** — 🔴 **step 1 is HELD; the sequence resumes only once the displacement can be sized:**
+1. ~~**Now (pre-deployment):** build the correction operator and its seam.~~ 🔴 **HELD 2026-08-31 — do
+   NOT build it yet** (owner; Plan 220). Global pre-training stays on uncorrected forcing either way.
 2. **At Nepal deployment/re-training:** apply the **same** operator to the Nepali training forcing *and*
    the operational forcing, then re-train. Consistent *and* closer to physical truth.
 3. **Measure both ways at step 2** — corrected-consistent vs uncorrected-consistent — because that is

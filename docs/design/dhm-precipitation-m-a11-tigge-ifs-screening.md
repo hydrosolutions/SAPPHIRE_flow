@@ -275,8 +275,10 @@ can support (Plan 220: there is no single displacement to calibrate against). Th
 unresolved from zero at every lead measured, so any correction there is on much weaker ground and should
 not simply mirror the upper bands' sign.
 
-This conclusion does **not** extend to "no timing correction is needed" (D4) — a ~5.5-6.5 h,
-well-resolved, repeated error is not "no error", even though it is smaller than ERA5-Land's.
+This conclusion does **not** extend to "no timing correction is needed" (D4) — the error is resolved
+and repeated in every season measured, so it is not "no error". ⚠️ **An earlier revision quantified it
+as "~5.5-6.5 h" from JJAS 2025 alone; that figure is superseded** — across six seasons the displacement
+is real in direction but has **no single magnitude** (Plan 220).
 
 ## Attribution
 
