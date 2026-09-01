@@ -228,6 +228,41 @@ class TestCombinationStrategyPropagation:
             source_model_ids=[ModelId("nwp_regression")],  # type: ignore[list-item]
         )
         fake_stores["forecast_store"].store_forecast(forecast)
+        # Plan 222 T7 (fixer round) — an ORDINARY (`combination_strategy=
+        # None`) forecast row at the SAME `issued_at` as the stored
+        # `_pooled` row: this is what `fetch_latest_publication_cycle_time`
+        # now pins its fetch to (D7, revised) — never the best-effort
+        # `FORECAST_FRESHNESS` heartbeat. Without it, the row reads as
+        # absent.
+        ordinary_ensemble = ForecastEnsemble.from_members(
+            station_id=station.id,
+            issued_at=issued_at,
+            parameter="discharge",
+            units="m3/s",
+            time_step=timedelta(days=1),
+            values=df,
+            model_id=ModelId("nwp_regression"),
+        )
+        fake_stores["forecast_store"].store_forecast(
+            OperationalForecast(
+                id=ForecastId(uuid4()),
+                station_id=station.id,
+                model_id=ModelId("nwp_regression"),
+                model_artifact_id=None,
+                issued_at=issued_at,
+                nwp_cycle_reference_time=issued_at,
+                nwp_cycle_source=NwpCycleSource.PRIMARY,
+                representation=ordinary_ensemble.representation,
+                status=ForecastStatus.RAW,
+                version=1,
+                warm_up_source=None,
+                warm_up_state_age_hours=None,
+                observation_staleness_hours=0.3,
+                ensemble=ordinary_ensemble,
+                created_at=issued_at,
+                updated_at=issued_at,
+            )
+        )
 
         app.dependency_overrides[get_forecast_combination_strategy] = lambda: (
             ModelCombinationStrategy.POOLED

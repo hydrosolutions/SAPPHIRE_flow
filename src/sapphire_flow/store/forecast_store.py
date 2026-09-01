@@ -237,6 +237,17 @@ class PgForecastStore:
 
         return [_row_to_summary(row) for row in rows], total
 
+    def fetch_latest_uncombined_issued_at(
+        self, cutoff: UtcDatetime
+    ) -> UtcDatetime | None:
+        stmt = (
+            sa.select(sa.func.max(forecasts.c.issued_at))
+            .where(forecasts.c.combination_strategy.is_(None))
+            .where(forecasts.c.issued_at <= cutoff)
+        )
+        result = self._conn.execute(stmt).scalar_one_or_none()
+        return utc_or_none(result)
+
     def _fetch_by_ids(self, fids: list[ForecastId]) -> list[OperationalForecast]:
         if not fids:
             return []

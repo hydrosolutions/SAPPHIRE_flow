@@ -325,3 +325,112 @@ Committed diff (`e2689c89`) reviewed against T3/T7 as implemented. 3 majors, 3 m
   not a code change. `docs/spec/forecast-lab-snapshot.md` now has an explicit operator note: a manual
   recovery replay's combined forecast will not surface in the export until the next *scheduled*
   cycle's heartbeat lands, because `FORECAST_FRESHNESS` heartbeats are scheduled-cycle-only.
+  **Superseded by the fixer round below** — T7 was later revised to drop the heartbeat marker
+  entirely, so this paragraph (and the operator note it originally produced) no longer reflects the
+  shipped behaviour; see `docs/spec/forecast-lab-snapshot.md`'s current "Operator note" for the
+  correct, heartbeat-free contract (a replay of the *current* gap surfaces immediately, no separate
+  signal required).
+
+## Fixer round 2 — post-implementation diff review (rebase + review findings)
+
+Reviewers (including an independent Codex pass) found the committed branch conflicted with `main`
+(version sequence, a stale duplicate of Plan 226) and raised one more D6 gap plus a real coverage
+hole on T7's production query. All resolved:
+
+- **Blocker: version/branch divergence** — the branch had drifted 14 commits behind `main` (which
+  had independently advanced past `v0.1.850`/`v0.1.852`) and carried a stale duplicate of
+  `docs/plans/224-daily-model-grid-anchoring.md` (main already has it, correctly renumbered to
+  Plan 226). Resolved by rebasing: the three code commits (`e2689c89`, `0be3148c`, `316abdab`) were
+  cherry-picked onto current `main`, dropping the now-redundant plan-doc commits (main already has
+  the same T7-marker-revision and 224→226-renumber content byte-for-byte) and the version/`uv.lock`
+  files were taken from `main` rather than replayed, so the patch bump below is the only version
+  change in the diff.
+- **Major: D6 time_step not derived from the surviving grid** — `_has_uniform_spacing()` (renamed
+  `_derive_uniform_time_step()`) checked spacing UNIFORMITY but `build_combined_forecasts()` still
+  persisted `ref_ensemble.time_step` unchanged. A uniformly COARSENED intersection (every contributor
+  loses the same interior timestamps, e.g. hourly → every other hour) passes the uniformity check
+  with a real 2h delta while the ensemble still carries the stale declared 1h step — an in-memory
+  read and a post-persistence reload (which derives `native_step_seconds` from the actual row
+  spacing) would then disagree about the same forecast. Fixed: the sole consecutive delta is now
+  derived directly and the ensemble is rebuilt via `dataclasses.replace()` with that value before
+  persistence. Locking test `test_uniformly_coarsened_intersection_derives_time_step_from_grid`
+  proved red against the pre-fix code (asserted `timedelta(hours=1)` was returned instead of the
+  correct `timedelta(hours=2)`).
+- **Major: T7's PostgreSQL query had no integration test** — every existing locking test for
+  `fetch_latest_uncombined_issued_at()` exercised `FakeForecastStore` only; a production regression
+  (MAX→MIN, dropping the cutoff, including combined rows) would have left the whole unit suite
+  green. Added `TestFetchLatestUncombinedIssuedAt` to
+  `tests/integration/store/test_forecast_store.py` against a real PostGIS container: excludes
+  combined rows, respects `issued_at <= cutoff`, and returns the true maximum regardless of
+  insertion order. All three were proved red by independently mutating the production query
+  (MAX→MIN, dropping the cutoff filter, dropping the `combination_strategy IS NULL` filter) and
+  confirming the corresponding test failed, then restoring.
+- **Minor: dead `pipeline_health_store` field** — `ForecastLabStores.pipeline_health_store` was
+  still declared and threaded through `api/routes/forecast_lab.py`, `cli/export_forecast_lab.py`,
+  and every test's store construction, but nothing in `db_sources.py`/`snapshot.py` has read it
+  since the T7 marker moved onto `ForecastStore.fetch_latest_uncombined_issued_at()`. Removed the
+  field and all its construction call sites (production and test); `docs/touchpoint-maps.md`
+  updated to describe the removal instead of the wart.
+- **Minor: stale "no heartbeat recorded" docstring** — `fetch_combined_forecast_for_cycle`'s
+  docstring still called `publication_cycle_time=None` "no heartbeat recorded yet"; reworded to "no
+  ordinary forecast recorded yet", matching the phrasing already used two functions above.
+- **Minor: contract text incomplete** — `types-and-protocols.md`'s `build_combined_forecasts` D6
+  paragraph described only the single-timestamp and non-uniform-spacing floors, not the
+  uniformly-coarsened-grid `time_step` derivation added above. Extended.
+- **Superseded-heartbeat-design leftover in this doc** — the "Minor: recovery-replay documentation
+  gap" paragraph in the prior fixer round above is now marked superseded (see its trailing note);
+  the doc is append-only history, not rewritten in place.
+
+## Fixer round 3 — post-implementation diff review (version-bump discipline + two locking-test gaps)
+
+Reviewers (including an independent Codex pass) found the branch's four code commits carried only
+one patch bump between them (violating the mandatory per-commit rule), and that two of round 2's
+locking tests proved a weaker invariant than intended. Resolved:
+
+- **Blocker: three of the four code commits retained an unbumped 0.1.852.** Squashed the four
+  commits (`0c32152a`, `60cd299e`, `590a8dd4`, `1d50b58c`) into one, keeping the single 0.1.853
+  bump — the whole Plan 222 implementation is now one code commit with one version bump, per the
+  mandatory rule.
+- **Major: D2's duplicate-member locking test didn't isolate the "row count AND unique count"
+  invariant.** The original test duplicated member 0 at t1 (6 rows, 5 unique) — a row-count-only
+  check (`n_rows == n_members`) already catches that shape (6 ≠ 5), so the test never exercised the
+  `n_unique(member_id) == n_members` half of the D2 check. Rewrote it: member 1's row is dropped and
+  member 0's is duplicated in its place, giving t1 exactly 5 rows (row count matches) but only 4
+  unique ids — the shape a row-count-only check wrongly accepts. Proved red by relaxing the
+  production predicate to `n_rows == n_members` alone and confirming the test failed, then
+  restoring.
+- **Minor: T7's query-shape locks didn't cover CONSENSUS or prove exactly-once resolution.** Only
+  PRIMARY had a raising-store test; nothing exercised CONSENSUS (the other strategy that must never
+  query the marker) or proved the marker is resolved once, not per-station, in a multi-station
+  snapshot. Parametrized the raising-store test over PRIMARY/CONSENSUS and added a two-station
+  counting-store test asserting exactly one call to
+  `fetch_latest_uncombined_issued_at()`. Proved red by moving the resolution inside the per-station
+  loop (a plausible per-station-lookup bug) and confirming the two-station test then counted 2 calls
+  instead of 1, then restoring.
+- **Minor: the T6 consumer notice was missing the Plan 226 dependency and station list.**
+  `docs/spec/forecast-lab-snapshot.md` explained the behavioural change but not that stations 2009
+  and 2091 specifically will read `no_combined_forecast` until Plan 226 (still `DRAFT`) lands. Added
+  an explicit operational notice at the top of the doc.
+- **Disputed: "Plan-225 doc commits bundled into this PR."** By the time this round ran,
+  `origin/main` already contained the exact three Plan-225 doc commits in question (`b9c35ca6`,
+  `cdb182ca`, `23b5ca96`) — pushed directly to `main` between the finding being raised and this
+  round starting. `origin/main..HEAD` already shows only the Plan 222 code commit; no action was
+  needed.
+
+## Fixer round 4 — post-implementation diff review (D2's row-count half unlocked again)
+
+An independent Codex pass over the diff found that round 3's rewrite of the D2 duplicate-member
+test, while fixing the `n_unique`-only gap, reintroduced the opposite gap it had just closed for
+the row-count half of the check: the rewritten test has 5 rows and 4 unique member ids, a shape
+`n_unique(member_id) == n_members` alone already rejects (4 ≠ 5), so it no longer independently
+exercises `n_rows == n_members`. The 6-row/5-unique case that used to lock that half was removed
+in round 3 rather than kept alongside the rewrite.
+
+- **Major: D2's row-count half of the completeness check was unlocked.** Added
+  `test_extra_duplicate_row_drops_that_timestamp_even_with_all_members_unique` alongside (not
+  instead of) round 3's test: member 0 is duplicated IN ADDITION to its own row at t1, giving 6
+  rows but all 5 members present and unique — the shape an `n_unique`-only check wrongly accepts.
+  Proved red by relaxing the production predicate back to `n_members` (unique) alone, confirming
+  the new test failed while the round-3 test still passed (proving neither test alone was
+  redundant with the other), then restoring. D2's completeness gate is now locked on both axes by
+  two separate tests, each catching the shape the other test's check would miss.

@@ -61,7 +61,9 @@ from sapphire_flow.services.forecast_lab.db_sources import (
     fetch_active_model_assignments,
     fetch_artifact_info,
     fetch_basin_area_km2,
+    fetch_combined_forecast_for_cycle,
     fetch_latest_forecast_for_model,
+    fetch_latest_publication_cycle_time,
     fetch_model_display,
     fetch_observation_window,
 )
@@ -415,6 +417,7 @@ def _build_combined_forecast(
     station: StationConfig,
     *,
     combination_strategy: ModelCombinationStrategy,
+    publication_cycle_time: UtcDatetime | None,
 ) -> CombinedForecastEntry:
     """Plan 204 T1, decision 3 — strategy-gated, never fetched
     unconditionally: `ForecastStore.fetch_latest_forecast()` has no age or
@@ -422,7 +425,16 @@ def _build_combined_forecast(
     a stale `_pooled` row forever after a `pooled` -> `primary` switch.
     Dispatch is over the WHOLE enum (exhaustive `match`), never a `PRIMARY`
     special case with an "everything else fetches `_pooled`" tail — that
-    shape would leak a stale `_pooled` row under `BMA`/`CONSENSUS`."""
+    shape would leak a stale `_pooled` row under `BMA`/`CONSENSUS`.
+
+    Plan 222 T7 (D6/D7) — `publication_cycle_time` (the ONE snapshot-wide
+    cycle `build_snapshot()` selected, `fetch_latest_publication_cycle_time`)
+    pins the fetch to that EXACT cycle. A row from an earlier cycle is not
+    "the latest available run" any more — it reads as absent, because
+    `combine_ensembles_pooled`'s intersection (Plan 222 T3) can now go
+    empty for a parameter on a cycle that ran fine, and an unconstrained
+    fetch would otherwise keep serving the last cycle that did produce a
+    row, forever, marked `available`."""
     match combination_strategy:
         case ModelCombinationStrategy.PRIMARY:
             return CombinedForecastUnavailableSchema(reason="strategy_primary")
@@ -438,7 +450,9 @@ def _build_combined_forecast(
             # document, so it is deliberately not tested.
             return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
 
-    forecast = fetch_latest_forecast_for_model(stores, station.id, model_id)
+    forecast = fetch_combined_forecast_for_cycle(
+        stores, station.id, model_id, publication_cycle_time
+    )
     if forecast is None:
         return CombinedForecastUnavailableSchema(reason="no_combined_forecast")
 
@@ -736,6 +750,22 @@ def build_snapshot(
 
     ordered_stations = sorted(stations, key=lambda s: s.code)
 
+    # Plan 222 T7 (D7) — ONE snapshot-wide publication cycle, resolved once
+    # and reused for every station's combined-forecast fetch below (never
+    # per-station — a per-station lookup could pin different stations to
+    # different cycles inside the same snapshot). Resolved only for
+    # POOLED/BMA, the two strategies `_build_combined_forecast` actually
+    # queries a cycle for: under PRIMARY/CONSENSUS it never fetches a
+    # combined row (see the `match` there), so an unconditional lookup here
+    # would turn an unrelated forecast-store failure into a snapshot-wide
+    # 500 even when the combined block was never going to be rendered.
+    publication_cycle_time = (
+        fetch_latest_publication_cycle_time(stores, data_cutoff_at=data_cutoff_at)
+        if combination_strategy
+        in (ModelCombinationStrategy.POOLED, ModelCombinationStrategy.BMA)
+        else None
+    )
+
     station_entries: list[StationEntrySchema] = []
     obs_flags: list[bool] = []
     obs_times: list[UtcDatetime] = []
@@ -752,7 +782,10 @@ def build_snapshot(
         bafu_entry = _build_bafu_entry(archive_base_path, station, now=data_cutoff_at)
         sapphire_entries = _sapphire_entries(stores, station)
         combined_entry = _build_combined_forecast(
-            stores, station, combination_strategy=combination_strategy
+            stores,
+            station,
+            combination_strategy=combination_strategy,
+            publication_cycle_time=publication_cycle_time,
         )
         # The ONE shared "rendered SAPPHIRE sources" list (Plan 204 T1) —
         # every derived view below consumes this, not `sapphire_entries`
