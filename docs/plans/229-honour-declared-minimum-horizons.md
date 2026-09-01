@@ -122,15 +122,19 @@ problem nobody has, and this plan's proportionality rules forbid it.
 
 ## Decisions
 
-- **D1 — Let the interim rung retire itself, in the order its own docstring prescribes.**
-  `services/horizon_semantics.py` declares itself **DELETE-ON-ARRIVAL** (`:1-20`): the static
-  provider table exists only until a model declares its own minimum, and *"the interim rung
-  disappears on its own"*. So: **do not delete `HORIZON_CEILING_FLOORS` before T2 makes declarations
-  flow** — until then it is the working short-record support, and removing it early would break
-  what works (a mistake an earlier draft of Plan 227 nearly recommended). **After T2, the
-  `cmal_pool_pt` entry is dead by construction and should go**, leaving the table for models that
-  declare nothing. Retiring it in that order honours the existing design instead of contradicting
-  it.
+- **D1 — Delete the interim rung once declarations flow. Owner ruling 2026-09-01.**
+  `services/horizon_semantics.py` declares itself **DELETE-ON-ARRIVAL** (`:1-20`) — the static
+  provider table exists only until a model declares its own minimum. The table holds exactly one
+  entry today, `cmal_pool_pt` (`types/ids.py:69-71`), i.e. the imported model that could not
+  declare. Once T2 makes its declaration reach the gate, that entry is dead and **the table and its
+  rung go with it**, exactly as the module intended.
+
+  **Order matters: do NOT delete before T2 lands.** Until declarations flow, the table *is* the
+  working short-record support and removing it early would break what works — a mistake an earlier
+  draft of Plan 227 nearly recommended. Delete after, in the same change, so the two never overlap.
+
+  *(Our own models are unaffected either way: at least one, `nwp_regression:200`, defines
+  `input_requirement` and could declare a minimum if it ever needed one. None does today.)*
 
 - **D2 — The minimum travels beside the desired horizon; it does not replace it.** Both are needed:
   the desired horizon still drives what we fetch, the minimum only decides what we accept. A single
@@ -208,6 +212,17 @@ Also mark **Plan 227 superseded**: it sits BLOCKED awaiting a decision this plan
 an active blocked plan pointing at an answer given elsewhere is how work gets silently lost.
 *Exit:* a reader of 151 cannot mistake the compromise for a permanent design choice, and 227 no
 longer reads as awaiting an answer.
+
+## After implementation — one decision, do not let it drift
+
+**Do the simpler models need this too?** This plan relaxes the *"can the model cope?"* check, which
+is the one the GROUP route reaches. The earlier *"is this weather batch complete?"* check — which
+runs before any model is consulted and gates the other routes — stays strict (D3). No model on
+those routes asks for a minimum today, which is why it is scoped out.
+
+**Once this is running, decide explicitly whether to extend it there or to close the question.**
+Owner asked for this note on 2026-09-01 so it is not forgotten. Deciding "no" is a fine outcome;
+letting it lapse silently is not.
 
 ## Non-goals
 
