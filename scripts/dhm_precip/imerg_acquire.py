@@ -74,6 +74,16 @@ class ImergReadContractError(ImergRequestFailedError):
     frozen read contract. ⛔ Stop and report rather than blending."""
 
 
+class ImergSubsetCoordinateMismatchError(ImergReadContractError):
+    """D5 step 1 (fixer round 3, finding MINOR 2) — the subset response's
+    coordinate vectors disagree with the archive route's own slice over the
+    frozen box. ⛔ Raised BEFORE any precipitation value is read: the
+    coordinate vectors are the station-mapping invariant, so a mismatch here
+    means every value comparison downstream would be comparing different
+    places. A distinct type so a caller can tell "the two routes disagree
+    about WHERE" from "they disagree about HOW MUCH"."""
+
+
 class ImergStorageError(ImergAcquisitionError):
     """Storage or manifest write/read failed. CLI exit code 5."""
 
@@ -545,30 +555,189 @@ SUBSET_GRID_HEADER_ATTR = "Grid.GridHeader"
 #: restating what was measured.
 EXPECTED_SUBSET_LONGITUDE_CONVENTION = "SIGNED_180"
 
-#: D1 (fixer review) — the T2-approved EXACT cell-centre coordinates, DERIVED
-#: from the frozen box + CENTER registration + the product's own 0.1 deg
-#: spacing (never a bare literal): cell edges `STUDY_BOX[1]..STUDY_BOX[3]`
-#: (lon) / `STUDY_BOX[2]..STUDY_BOX[0]` (lat) at CENTER registration put the
-#: first centre half a cell in from the edge. Round-tripped through float32
-#: because every lat/lon value this contract ever holds was ITSELF read out
-#: of a float32 HDF5 array (`exact_coordinate_vector`) — comparing a bare
-#: float64 arithmetic result against that would spuriously fail on the
-#: sub-6-decimal float32 rounding every real granule carries.
-EXPECTED_SUBSET_LON_VECTOR: tuple[float, ...] = tuple(
-    float(
-        np.float32(
-            round(STUDY_BOX[1] + _GRID_SPACING_DEG / 2 + i * _GRID_SPACING_DEG, 6)
-        )
-    )
-    for i in range(EXPECTED_SUBSET_LON_COUNT)
+#: D1 (fixer round 3 — BLOCKER) — the T2-approved EXACT cell centres,
+#: MEASURED, not derived. ⛔ No arithmetic defines this pin any more: the
+#: previous derivation (`float(np.float32(round(edge + spacing/2 + i*spacing,
+#: 6)))`) was MEASURED WRONG against the real OPeNDAP response held at
+#: `data/dhm_precip/imerg_early/raw_subset/3B-HHR-E.MS.MRG.3IMERG.20200715-
+#: S000000-E002959.0000.V07B.HDF5.dap.nc4` — 20 of 50 lat values differed (max
+#: 1.907e-06) and 18 of 90 lon values differed (max 7.629e-06), so the contract
+#: rejected the very granule T2 is built on, and would have rejected EVERY
+#: subset granule: IMERG's grid is fixed and global. The `round(..., 6)` before
+#: the float32 cast is the defect — six-decimal rounding lands on a DIFFERENT
+#: float32 than the one NASA's own grid carries.
+#:
+#: ⇒ These 50 + 90 values are TRANSCRIBED from observed float32 data: the
+#: archive granule's own `/Grid/lat[1160:1210]` and `/Grid/lon[2600:2690]`
+#: (float32, 1800 / 3600), which is exactly D4's published constraint
+#: `/precipitation[0][2600:2689][1160:1209]`. Measured 2026-09-01:
+#: `np.array_equal` against the real subset response is True for BOTH — bit
+#: for bit, no tolerance. `exact_coordinate_vector`'s own rule ("⛔ No
+#: rounding") is what D1 cites; this is that rule applied to the pin itself.
+#: ⛔ Do NOT re-derive these arithmetically and do NOT widen the comparison to
+#: a tolerance: a tolerance would let a subset service's own grid pass, which
+#: is the precise hazard this contract exists to prevent.
+#: `tests/unit/scripts/test_imerg_acquire.py::TestSubsetContractAgainstTheRealArtifact`
+#: locks them against the committed artifacts (skipped where `data/` is absent).
+EXPECTED_SUBSET_LAT_VECTOR: tuple[float, ...] = (
+    26.049999237060547,
+    26.149999618530273,
+    26.25,
+    26.349998474121094,
+    26.44999885559082,
+    26.549999237060547,
+    26.649999618530273,
+    26.75,
+    26.849998474121094,
+    26.94999885559082,
+    27.049999237060547,
+    27.149999618530273,
+    27.25,
+    27.349998474121094,
+    27.44999885559082,
+    27.549999237060547,
+    27.649999618530273,
+    27.75,
+    27.849998474121094,
+    27.94999885559082,
+    28.049999237060547,
+    28.149999618530273,
+    28.25,
+    28.349998474121094,
+    28.44999885559082,
+    28.549999237060547,
+    28.649999618530273,
+    28.75,
+    28.849998474121094,
+    28.94999885559082,
+    29.049999237060547,
+    29.149999618530273,
+    29.25,
+    29.349998474121094,
+    29.44999885559082,
+    29.549999237060547,
+    29.649999618530273,
+    29.75,
+    29.849998474121094,
+    29.94999885559082,
+    30.049999237060547,
+    30.149999618530273,
+    30.25,
+    30.349998474121094,
+    30.44999885559082,
+    30.549999237060547,
+    30.649999618530273,
+    30.75,
+    30.849998474121094,
+    30.94999885559082,
 )
-EXPECTED_SUBSET_LAT_VECTOR: tuple[float, ...] = tuple(
-    float(
-        np.float32(
-            round(STUDY_BOX[2] + _GRID_SPACING_DEG / 2 + i * _GRID_SPACING_DEG, 6)
-        )
-    )
-    for i in range(EXPECTED_SUBSET_LAT_COUNT)
+
+EXPECTED_SUBSET_LON_VECTOR: tuple[float, ...] = (
+    80.04999542236328,
+    80.1500015258789,
+    80.25,
+    80.3499984741211,
+    80.44999694824219,
+    80.54999542236328,
+    80.6500015258789,
+    80.75,
+    80.8499984741211,
+    80.94999694824219,
+    81.04999542236328,
+    81.1500015258789,
+    81.25,
+    81.3499984741211,
+    81.44999694824219,
+    81.54999542236328,
+    81.6500015258789,
+    81.75,
+    81.8499984741211,
+    81.94999694824219,
+    82.04999542236328,
+    82.1500015258789,
+    82.25,
+    82.3499984741211,
+    82.44999694824219,
+    82.54999542236328,
+    82.6500015258789,
+    82.75,
+    82.8499984741211,
+    82.94999694824219,
+    83.04999542236328,
+    83.1500015258789,
+    83.25,
+    83.3499984741211,
+    83.44999694824219,
+    83.54999542236328,
+    83.6500015258789,
+    83.75,
+    83.8499984741211,
+    83.94999694824219,
+    84.04999542236328,
+    84.1500015258789,
+    84.25,
+    84.3499984741211,
+    84.44999694824219,
+    84.54999542236328,
+    84.6500015258789,
+    84.75,
+    84.8499984741211,
+    84.94999694824219,
+    85.04999542236328,
+    85.1500015258789,
+    85.25,
+    85.3499984741211,
+    85.44999694824219,
+    85.54999542236328,
+    85.6500015258789,
+    85.75,
+    85.8499984741211,
+    85.94999694824219,
+    86.04999542236328,
+    86.1500015258789,
+    86.25,
+    86.3499984741211,
+    86.44999694824219,
+    86.54999542236328,
+    86.6500015258789,
+    86.75,
+    86.8499984741211,
+    86.94999694824219,
+    87.04999542236328,
+    87.1500015258789,
+    87.25,
+    87.3499984741211,
+    87.44999694824219,
+    87.54999542236328,
+    87.6500015258789,
+    87.75,
+    87.8499984741211,
+    87.94999694824219,
+    88.04999542236328,
+    88.1500015258789,
+    88.25,
+    88.3499984741211,
+    88.44999694824219,
+    88.54999542236328,
+    88.6500015258789,
+    88.75,
+    88.8499984741211,
+    88.94999694824219,
+)
+
+#: D1 (fixer round 3 — MAJOR) — the retained GLOBAL grid's own bounding box,
+#: (north, west, south, east) in `STUDY_BOX`'s own order. MEASURED on the real
+#: probe response's `Grid.GridHeader` 2026-09-01: `NorthBoundingCoordinate=90;
+#: SouthBoundingCoordinate=-90; EastBoundingCoordinate=180;
+#: WestBoundingCoordinate=-180`. ⛔ Pinned EXACTLY rather than reduced to a
+#: single `west < 0` sign test: a changed east bound, or another malformed
+#: negative-west convention, would otherwise pass while extraction still
+#: treats the coordinates as cell centres of a -180..180 grid.
+EXPECTED_SUBSET_GLOBAL_BOUNDS: tuple[float, float, float, float] = (
+    90.0,
+    -180.0,
+    -90.0,
+    180.0,
 )
 
 
@@ -587,6 +756,8 @@ class ImergSubsetReadContract:
     dtype: str
     scale_factor: float | None
     add_offset: float | None
+    coordinate_registration: str
+    global_bounds: tuple[float, float, float, float]
     longitude_convention: str
     grid_shape: tuple[int, int, int]
     lat_vector: tuple[float, ...]
@@ -601,6 +772,23 @@ class ImergSubsetReadContract:
             ("dimension order", self.dimension_names, EXPECTED_DIMENSION_NAMES),
             ("dtype", self.dtype, EXPECTED_SUBSET_DTYPE),
             ("grid shape", self.grid_shape, EXPECTED_SUBSET_GRID_SHAPE),
+            # (fixer round 3, finding MAJOR 1) — the frozen cell centres above
+            # are only meaningful under CENTER registration: under CORNER the
+            # same numbers name cell EDGES and every station maps half a cell
+            # away. Pinned explicitly rather than assumed.
+            (
+                "registration",
+                self.coordinate_registration,
+                EXPECTED_REGISTRATION,
+            ),
+            # (fixer round 3, finding MAJOR 1) — the EXACT global bounds, not a
+            # single `west < 0` sign test: a changed east bound or another
+            # malformed negative-west convention must not pass.
+            (
+                "global bounds",
+                self.global_bounds,
+                EXPECTED_SUBSET_GLOBAL_BOUNDS,
+            ),
         ):
             if observed != expected:
                 raise ImergReadContractError(
@@ -695,6 +883,28 @@ def read_subset_grid_header_global(f: object) -> str:
     return _attr_text(raw)
 
 
+def subset_global_bounds(grid_header: str) -> tuple[float, float, float, float]:
+    """D1 (fixer round 3, finding MAJOR 1) — the RETAINED global grid's own
+    bounding box as `(north, west, south, east)`, `STUDY_BOX`'s own order.
+    ⛔ Every one of the four is read and pinned: reducing the header to a
+    single `west < 0` sign test let `Registration=CORNER`, a changed east
+    bound, or another malformed negative-west convention through while
+    extraction still treated the coordinates as cell centres of a -180..180
+    grid."""
+    try:
+        return (
+            float(parse_grid_header_field(grid_header, "NorthBoundingCoordinate")),
+            float(parse_grid_header_field(grid_header, "WestBoundingCoordinate")),
+            float(parse_grid_header_field(grid_header, "SouthBoundingCoordinate")),
+            float(parse_grid_header_field(grid_header, "EastBoundingCoordinate")),
+        )
+    except ValueError as exc:
+        raise ImergReadContractError(
+            f"a bounding coordinate in the retained {SUBSET_GRID_HEADER_ATTR!r} "
+            f"is not a number: {grid_header!r} (D1): {exc}"
+        ) from exc
+
+
 def contract_from_open_subset_granule(
     f: object, *, archive_filename: str
 ) -> ImergSubsetReadContract:
@@ -735,21 +945,42 @@ def contract_from_open_subset_granule(
         )
     attrs = precip.attrs
     grid_header = read_subset_grid_header_global(f)
-    west_bound = float(parse_grid_header_field(grid_header, "WestBoundingCoordinate"))
+    bounds = subset_global_bounds(grid_header)
+    # (fixer round 3, finding MAJOR 1) — derived from the RETAINED global
+    # grid's own bounds, never the box-local `lon` slice's min/max (that is
+    # always positive for this box and would silently derive "UNSIGNED_360"
+    # regardless of the true convention). The bounds themselves are pinned
+    # EXACTLY by the contract, so this sign test can no longer be the only
+    # thing standing between a malformed header and acceptance.
+    west_bound = bounds[1]
+    # (fixer round 3, finding MINOR 1) — a valid-but-malformed HDF5 (openable,
+    # but missing `units` / `DimensionNames` / `_FillValue`) must fail with the
+    # typed contract error every other D1 refusal raises, not a raw `KeyError`:
+    # `acquire_subset_granule`'s validate-and-reuse only catches
+    # `ImergReadContractError`, so a raw `KeyError` would escape the recovery
+    # path and a poisoned cache entry could never be refetched.
+    try:
+        dimension_names = tuple(_attr_text(attrs["DimensionNames"]).split(","))
+        units = _attr_text(attrs["units"])
+        fill_value = _attr_scalar_float(attrs["_FillValue"])
+    except KeyError as exc:
+        raise ImergReadContractError(
+            f"subset granule {archive_filename!r} is missing the required "
+            f"'precipitation' attribute {exc} — the response is openable but "
+            "does not carry the D1 subset contract's fields (D1)"
+        ) from exc
     return ImergSubsetReadContract(
         variable_path=SUBSET_VARIABLE_PATH,
-        dimension_names=tuple(_attr_text(attrs["DimensionNames"]).split(",")),
-        units=_attr_text(attrs["units"]),
-        fill_value=_attr_scalar_float(attrs["_FillValue"]),
+        dimension_names=dimension_names,
+        units=units,
+        fill_value=fill_value,
         dtype=str(precip.dtype),
         scale_factor=(
             float(attrs["scale_factor"]) if "scale_factor" in attrs else None
         ),
         add_offset=(float(attrs["add_offset"]) if "add_offset" in attrs else None),
-        # (fixer review round 2, finding 1 — MAJOR) — derived from the
-        # RETAINED global grid's own bounds, never the box-local `lon`
-        # slice's min/max (that is always positive for this box and would
-        # silently derive "UNSIGNED_360" regardless of the true convention).
+        coordinate_registration=parse_grid_header_field(grid_header, "Registration"),
+        global_bounds=bounds,
         longitude_convention=("SIGNED_180" if west_bound < 0.0 else "UNSIGNED_360"),
         grid_shape=(grid_shape[0], grid_shape[1], grid_shape[2]),
         lat_vector=exact_coordinate_vector(lat),
@@ -915,6 +1146,17 @@ def _validate_subset_artifact(
         raise ImergReadContractError(
             f"subset artifact {path} could not be opened as HDF5/NetCDF4 (D1): {exc}"
         ) from exc
+    except (KeyError, ValueError) as exc:
+        # (fixer round 3, finding MINOR 1) — a BACKSTOP behind the parser's own
+        # typed translation: a file that OPENS as HDF5 but is missing a
+        # variable or attribute the contract needs must still reach the
+        # validate-and-reuse recovery path, which catches only the typed
+        # hierarchy. ⛔ Not a bare `except Exception`: only the two shapes a
+        # malformed-but-openable file can produce.
+        raise ImergReadContractError(
+            f"subset artifact {path} opened but does not carry the D1 subset "
+            f"contract's structure (D1): {exc!r}"
+        ) from exc
 
 
 def acquire_subset_granule(
@@ -1022,6 +1264,39 @@ def subset_cross_check_tolerance(*, subset_contract: ImergSubsetReadContract) ->
     return 0.0
 
 
+def _first_disagreement(a: Sequence[float], b: Sequence[float]) -> int:
+    """The index of the first differing element, or the shorter length."""
+    for i, (x, y) in enumerate(zip(a, b, strict=False)):
+        if x != y:
+            return i
+    return min(len(a), len(b))
+
+
+def assert_subset_coordinates_match(
+    *,
+    archive_lat: tuple[float, ...],
+    archive_lon: tuple[float, ...],
+    subset_contract: ImergSubsetReadContract,
+) -> None:
+    """D5 step 1 — the coordinate vectors, compared EXACTLY and in order,
+    before anything reads a precipitation value. ⛔ No tolerance: D1's whole
+    point is that a subset service's own grid must not pass."""
+    for label, archive_vector, subset_vector in (
+        ("lat", archive_lat, subset_contract.lat_vector),
+        ("lon", archive_lon, subset_contract.lon_vector),
+    ):
+        if archive_vector != subset_vector:
+            raise ImergSubsetCoordinateMismatchError(
+                f"the subset response's {label} vector does not match the "
+                f"archive route's own slice over the frozen box (D5): "
+                f"{len(subset_vector)} subset value(s) vs "
+                f"{len(archive_vector)} archive value(s), first disagreement "
+                f"at index {_first_disagreement(archive_vector, subset_vector)} "
+                "— stop and report rather than comparing values across "
+                "different places"
+            )
+
+
 def cross_check_subset_against_archive(
     *,
     archive_path: Path,
@@ -1055,6 +1330,22 @@ def cross_check_subset_against_archive(
         lon_bounds=(lon_start, lon_stop),
         lat_bounds=(lat_start, lat_stop),
     )
+    subset_contract = observe_subset_read_contract(
+        subset_path, archive_filename=archive_filename
+    )
+    archive_lat = tuple(archive_contract.lat_vector[lat_start : lat_stop + 1])
+    archive_lon = tuple(archive_contract.lon_vector[lon_start : lon_stop + 1])
+    # (fixer round 3, finding MINOR 2) — D5 step 1, BEFORE a single
+    # precipitation value is read: the coordinate vectors ARE the
+    # station-mapping invariant, values are only indirect evidence. Comparing
+    # them last let a mismatched grid reach the value comparison — or raise a
+    # raw numpy broadcasting error — before the gate that exists to catch it
+    # ever fired.
+    assert_subset_coordinates_match(
+        archive_lat=archive_lat,
+        archive_lon=archive_lon,
+        subset_contract=subset_contract,
+    )
     with h5py.File(archive_path, "r") as f:
         archive_precip = f["Grid"]["precipitation"]  # type: ignore[index]
         archive_attrs = archive_precip.attrs
@@ -1083,14 +1374,9 @@ def cross_check_subset_against_archive(
         lat_slice = slice(lat_start, lat_stop + 1)
         archive_slice = archive_precip[0, lon_slice, lat_slice]  # type: ignore[index]
         archive_box = np.asarray(archive_slice, dtype=np.float64)
-    subset_contract = observe_subset_read_contract(
-        subset_path, archive_filename=archive_filename
-    )
     with h5py.File(subset_path, "r") as f:
         subset_values = np.asarray(f["precipitation"][:], dtype=np.float64)[0]  # type: ignore[index]
 
-    archive_lat = tuple(archive_contract.lat_vector[lat_start : lat_stop + 1])
-    archive_lon = tuple(archive_contract.lon_vector[lon_start : lon_stop + 1])
     tolerance = subset_cross_check_tolerance(subset_contract=subset_contract)
     max_abs_diff = float(np.max(np.abs(archive_box - subset_values)))
     return SubsetCrossCheckReport(
@@ -1127,11 +1413,13 @@ def run_subset_cross_check(
     T3"). This is the only function any T2 caller should use: it computes the
     report and enforces the gate itself before ever returning one, so the gate
     cannot be bypassed by calling the lower-level function directly.
-    ⛔ D5's required ORDERING (coordinates before values) already holds
-    structurally: `ImergSubsetReadContract.__post_init__` pins the exact
-    T2-approved lat/lon vectors and refuses a wrong-position grid at
-    CONSTRUCTION — before this function's value comparison ever runs — so a
-    misaligned grid can never reach the value-comparison branch below."""
+    ⛔ D5's required ORDERING (coordinates before values) is now EXECUTED,
+    not merely implied: `cross_check_subset_against_archive` calls
+    `assert_subset_coordinates_match` immediately after reading both
+    contracts and before it opens either precipitation array (fixer round 3,
+    finding MINOR 2). `ImergSubsetReadContract.__post_init__`'s own exact
+    lat/lon pin is a second, independent gate against the FROZEN box; the
+    cross-check gate is against the ARCHIVE's own slice."""
     report = cross_check_subset_against_archive(
         archive_path=archive_path, data_root=data_root, client=client
     )
@@ -1302,19 +1590,31 @@ def _write_acquisition_manifest_locked(
                 f"({'; '.join(violations[:3])}) — the permanent record must "
                 "never be downgraded (D10)"
             )
-        revised = sorted(
-            name
-            for name, sha in manifest.granule_checksums.items()
-            if name in existing.granule_checksums
-            and existing.granule_checksums[name] != sha
-        )
-        if revised:
-            raise ImergStorageError(
-                f"re-download checksum(s) for {revised[:5]} "
-                f"({len(revised)} granule(s)) disagree with the retained "
-                f"COMPLETE acquisition manifest at {path} — GES DISC revised "
-                "the archive; resolve that before replacing the record (D10)"
+        # D2/D10 (fixer round 3, finding MAJOR 2) — the revision guard is
+        # SAME-ROUTE ONLY. Raw storage is keyed by the ARCHIVE filename on both
+        # routes, so an archive record and a subset record of the same granule
+        # share every key while NECESSARILY carrying different bytes: an
+        # 8 MB global HDF5 against a 25 KB OPeNDAP `.dap.nc4`. Comparing them
+        # made a legitimate route switch look exactly like a GES DISC archive
+        # revision and refused it. ⛔ A real route change is not waved through:
+        # `route` is part of the identity content, so the orphan guard below
+        # still refuses to strand any published bundle, and the completeness
+        # check above still refuses a downgrade.
+        if existing.route == manifest.route:
+            revised = sorted(
+                name
+                for name, sha in manifest.granule_checksums.items()
+                if name in existing.granule_checksums
+                and existing.granule_checksums[name] != sha
             )
+            if revised:
+                raise ImergStorageError(
+                    f"re-download checksum(s) for {revised[:5]} "
+                    f"({len(revised)} granule(s)) disagree with the retained "
+                    f"COMPLETE acquisition manifest at {path} — GES DISC "
+                    "revised the archive; resolve that before replacing the "
+                    "record (D10)"
+                )
     if existing is not None and acquisition_record_identity_content(
         manifest
     ) != acquisition_record_identity_content(existing):

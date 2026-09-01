@@ -300,15 +300,30 @@ def _write_fake_subset_granule(
     lat_count: int = 50,
     lon_count: int = 90,
     value: float = 1.0,
-    lat_start: float = 26.05,
-    lon_start: float = 80.05,
+    lat_start: float | None = None,
+    lon_start: float | None = None,
 ) -> None:
-    lat = np.round(
-        np.linspace(lat_start, lat_start + 0.1 * (lat_count - 1), lat_count), 6
-    ).astype(np.float32)
-    lon = np.round(
-        np.linspace(lon_start, lon_start + 0.1 * (lon_count - 1), lon_count), 6
-    ).astype(np.float32)
+    # 🔴 Plan 225 fixer round 3 (BLOCKER) — the BOX's coordinates come from the
+    # MEASURED float32 constants, never from a `linspace` derivation: the
+    # subset contract pins them EXACTLY, and a fixture that regenerated them
+    # arithmetically would only ever test its own arithmetic (measured
+    # 2026-09-01: the two disagree on 20 of 50 lat / 18 of 90 lon values).
+    # `lat_start`/`lon_start` stay only for the deliberately WRONG full-field
+    # grid a refusal test needs.
+    lat = (
+        np.asarray(ia.EXPECTED_SUBSET_LAT_VECTOR, dtype=np.float32)
+        if lat_start is None
+        else np.round(
+            np.linspace(lat_start, lat_start + 0.1 * (lat_count - 1), lat_count), 6
+        ).astype(np.float32)
+    )
+    lon = (
+        np.asarray(ia.EXPECTED_SUBSET_LON_VECTOR, dtype=np.float32)
+        if lon_start is None
+        else np.round(
+            np.linspace(lon_start, lon_start + 0.1 * (lon_count - 1), lon_count), 6
+        ).astype(np.float32)
+    )
     precip = np.full((1, lon_count, lat_count), value, dtype=np.float32)
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:

@@ -494,7 +494,13 @@ cell-for-cell against the archive-route granule already on disk. **Coordinate ve
 (50 lat + 90 lon values, bit-for-bit) and **all 4,500 decoded values matched exactly** (max abs diff
 `0.0`, tolerance frozen at `0.0` from the observed unpacked-float32/no-packing dtype on both sides,
 before the comparison ran, per D5) — the subset route reads the identical underlying grid, not a
-resampled one. ⛔ **T3 (retrieving the full 105,216-granule window through this route) was explicitly
+resampled one. ⚠️ That claim was briefly UNREPRODUCIBLE on HEAD: fixer round 1's derived exact-pin
+constants rejected the very file it describes (see fixer round 3 below). It is true again, and now
+RE-MEASURED through the production path rather than remembered — `run_subset_cross_check` over the two
+committed artifacts returns `lat_exact_match=True, lon_exact_match=True, max_abs_diff=0.0,
+tolerance=0.0` (2026-09-01, no network: the cached subset artifact validates and is reused), locked by
+`TestSubsetContractAgainstTheRealArtifact`, which skips where `data/` is absent (CI) and runs on any
+host that holds the two files. ⛔ **T3 (retrieving the full 105,216-granule window through this route) was explicitly
 NOT run this pass** — it is a multi-hour, outward-facing operation gated on its own authorisation,
 per Plan 225's per-run scope; the projected ~2.7 GB is a **measured extrapolation** from one granule's
 subset size, not yet a bulk-retrieval result.
@@ -558,15 +564,61 @@ typed error, failing against the pre-fix code with a raw `KeyError`.
 
 All nine new/changed locking tests were proven RED against the pre-fix code (source reverted via
 `git stash`, tests kept) before the fix was restored and the suite turned green again.
-⚠️ **Separately noted, not fixed this round (pre-existing, from fixer round 1, out of this round's
-scope):** the round-1 `EXPECTED_SUBSET_LAT_VECTOR`/`LON_VECTOR` exact-pin constants do not bit-for-bit
-match the REAL committed probe file's own float32 coordinate values (both within ~5e-6 of each other,
-which the exact-tuple `!=` check does not tolerate) — re-running `observe_subset_read_contract` against
-the real artifact on disk raises on the lat-vector pin, independent of this round's longitude-convention
-fix (confirmed by reproducing the same raise against the pre-round-2 code). The narrative above
-("coordinate vectors matched exactly, bit-for-bit") describes the ORIGINAL T2 run's archive-vs-subset
-comparison, from BEFORE the round-1 exact-pin constants existed — it does not mean today's code
-validates that same real file end to end. Flagged for the owner; not a Plan 225 D-decision this round.
+
+**Fixer round 3 (2026-09-01), escalated round — one blocker and two majors closed, plus the two minors
+the previous round deferred.**
+1. 🔴 **BLOCKER — the frozen subset coordinate vectors rejected real data, so the route could not
+ingest a single granule.** Round 1's `EXPECTED_SUBSET_LAT_VECTOR`/`LON_VECTOR` were built by idealised
+arithmetic (`float(np.float32(round(edge + spacing/2 + i*spacing, 6)))`). Measured against the real
+committed OPeNDAP response: **20 of 50 lat values differed** (max `1.907e-06`) and **18 of 90 lon
+values differed** (max `7.629e-06`), so `ImergSubsetReadContract.__post_init__` raised on the very
+granule T2 is built on — and because IMERG's grid is fixed and global, on **every** subset granule.
+The `round(..., 6)` before the float32 cast is the defect: six-decimal rounding lands on a different
+float32 than the one NASA's grid carries. ⛔ Fixed by **deleting the derivation**, not by widening the
+comparison: the pin is now 50 + 90 float32 literals **transcribed from observed data** — the archive
+granule's own `/Grid/lat[1160:1210]` and `/Grid/lon[2600:2690]`, which is exactly D4's published
+constraint. `np.array_equal` against the real subset response is `True` for both, bit for bit, no
+tolerance. (A tolerance was explicitly rejected: it is what would let a subset service's own grid pass,
+the precise hazard D1 exists to prevent.)
+   **The tests were circular too.** Every fixture — `_ARCHIVE_LAT`/`_ARCHIVE_LON`,
+`_write_fake_subset_granule`, and `test_imerg_extract.py`'s — was `np.linspace`-generated and therefore
+coincided with the formula under test, and a `test_lat_lon_vectors_match_the_derived_t2_approved_box_
+constants` compared the fixture to the production derivation while its own docstring warned against
+exactly that "fixture-only accident". That test is deleted; the fixtures' box slice now comes from the
+measured constants; and the new `TestSubsetContractAgainstTheRealArtifact` validates the **real**
+artifacts through the production path (`observe_subset_read_contract`, `run_subset_cross_check`), with
+a clean skip where `data/` is absent. **Revert-proof: all three real-data tests FAIL against the
+restored idealised derivation and pass against the fix.**
+2. **MAJOR — registration and bounds were under-validated.** The subset contract had **no**
+`coordinate_registration` field at all, although its frozen cell centres assume `CENTER` (under
+`CORNER` the same numbers name cell EDGES and every station maps half a cell away), and the
+longitude-convention check collapsed to a single `west_bound < 0` sign test, so a changed east bound or
+another malformed negative-west convention passed silently. Fixed: `coordinate_registration` is pinned
+to `CENTER` and `global_bounds` pins all four measured global bounds `(90, -180, -90, 180)` exactly,
+both parsed from the retained `Grid.GridHeader`. Independent mutation tests for registration, west,
+east and north, plus contract-level mutations for a recorded (manifest round-trip) contract.
+3. **MAJOR — the permanent manifest writer was not route-aware.** The checksum-based archive-revision
+guard ran **before** route identity was considered. Raw storage is keyed by the ARCHIVE filename on
+both routes, so a complete archive record and a complete subset record of the same granule share every
+key while necessarily carrying different bytes (8 MB global HDF5 vs 25 KB OPeNDAP response) — a
+legitimate route switch looked exactly like a GES DISC revision and was refused. Fixed: the retained-
+checksum revision guard applies **only when old and new records share a route**; a real route change is
+still not waved through, because `route` is part of the identity content and the existing orphan guard
+refuses to strand any published bundle. Four locking tests: archive→subset, subset→archive, same-route
+disagreement still refused, and a route switch beside a published bundle still refused.
+4. **MINOR — malformed-but-openable HDF5 bypassed recovery.** A valid HDF5 missing `units`,
+`DimensionNames` or `_FillValue` raised a raw `KeyError`; `_validate_subset_artifact` wrapped only
+`OSError`, so validate-and-reuse could never refetch a poisoned-but-openable cache entry (the existing
+tests covered only garbage bytes). Fixed at the parser, with a backstop in the validation path; locking
+tests per attribute plus a cached-file recovery test.
+5. **MINOR — D5's mandated comparison ORDER was not implemented.** D5 requires the coordinate vectors
+be compared FIRST, precisely because they are the station-mapping invariant; values are only indirect
+evidence. The coordinate equality was evaluated last, so a mismatched grid could reach value comparison
+or raise a raw numpy broadcasting error before the gate fired. Fixed: `cross_check_subset_against_
+archive` calls the new `assert_subset_coordinates_match` immediately after reading both contracts and
+before opening either precipitation array, raising the typed
+`ImergSubsetCoordinateMismatchError` (an `ImergReadContractError` subclass). The locking test builds an
+archive covering the box with 91 lon cells, so the pre-fix code crashed on broadcasting instead.
 
 **Exit (T1+T2 only):** a second, separately-frozen OPeNDAP subset read contract; route-dispatched
 contract validation with a locking test per mismatched combination; a route-distinct raw directory; a
