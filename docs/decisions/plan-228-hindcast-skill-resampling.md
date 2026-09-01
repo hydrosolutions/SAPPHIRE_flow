@@ -1,7 +1,9 @@
 # Decision Record — hindcast and skill scoring ran on the wrong data (Plan 228)
 
 **Date**: 2026-09-01
-**Status**: Fix implemented and merged; **existing scores not yet marked/recomputed**
+**Status**: Fix implemented and committed on `feat/plan-228-hindcast-skill-resampling`,
+**held at PR — not yet merged to `main`**; two independent-review fixer rounds
+complete (see below); **existing scores not yet marked/recomputed**
 (gated on the mac-mini's in-flight onboarding/hindcasting test run — see D3 below)
 **Owners**: Bea (orchestrator)
 **Cross-reference**: `docs/plans/228-hindcast-and-skill-on-wrong-data.md` (source plan),
@@ -72,13 +74,11 @@ present in every skill score regardless of forecast quality.
   method the model trains against (`training_data.py::aggregation_method_for`
   — MEAN for discharge/water_level, SUM for precipitation, etc.), anchored to
   a `valid_time` drawn from the hindcasts (review fixer round, below). The
-  `time_step` itself is inferred from the hindcast data
-  (`_infer_forecast_time_step`): the lead-to-lead gap inside one hindcast's own
-  ensemble, falling back to the issue-to-issue gap only for a horizon-1 model.
-  When neither signal is available (a single hindcast with a single lead
-  step), `compute_skill_for_station` returns no scores at all
-  (`compute_skill_for_station.time_step_unknown_no_scores`) — see the fixer
-  round below for why the original instantaneous-join fallback was removed.
+  `time_step` itself is read directly off the hindcasts'
+  `ForecastEnsemble.time_step` (`_infer_forecast_time_step`, now
+  `min(hc.ensemble.time_step for hc in hindcasts)`) — see the round-2 fixer
+  notes below for why the earlier gap-inference approach (and its
+  single-hindcast `None` fallback) was replaced rather than merely patched.
 
 No model math, coefficients, or artifacts changed. Training was investigated
 and found clean: `build_station_training_data` already resamples
@@ -191,23 +191,93 @@ resolved:
   explicitly that `training_data.py` resamples but does not additionally
   validate, and why (real historical gaps are expected, not a bug to reject).
 - **MINOR — the single-hindcast/single-lead-step fallback silently
-  reintroduced P2.** When `_infer_forecast_time_step` returns `None`,
+  reintroduced P2.** When `_infer_forecast_time_step` returned `None`,
   `compute_skill_for_station` used to fall back to the exact pre-fix raw
-  instantaneous join. It now returns no scores at all — a missing score is
-  preferable to a wrong one — logged as
-  `compute_skill_for_station.time_step_unknown_no_scores`. Locked by
-  `TestUnknownTimeStepProducesNoScores` (test_service.py).
+  instantaneous join. **Superseded by the round-2 fixer notes below**: rather
+  than keep the gap-inference/`None`-fallback shape and patch its exit, the
+  function was replaced outright with a direct read of
+  `ForecastEnsemble.time_step` (see the P2 fix bullet above), which cannot
+  fail to resolve once `hindcasts` is non-empty — there is no `None` branch,
+  no fallback join, and no `time_step_unknown_no_scores` log event left to
+  hit. `TestUnknownTimeStepProducesNoScores` was removed along with the
+  branch it locked (obsolete, not silently deleted: see round 2 below).
 
-**Disputed, not implemented**: the review additionally suggested a test
-proving `validate_time_step_cadence` *tolerates* a realistically-gappy
+**Disputed, not implemented** (round 1): the review additionally suggested a
+test proving `validate_time_step_cadence` *tolerates* a realistically-gappy
 lookback window (e.g. one missing daily bucket out of seven), to avoid
 "starving stations of forecasts in production." That is the opposite of the
 adjacent MAJOR finding above, which requires the validator to *reject* an
 isolated missing bucket — tolerating it would silently reintroduce the same
-positional-misread bug the strict per-gap check exists to catch. The
-strict, reject-on-any-gap behavior was kept; see the fixer's `disputedFindings`
-for the full reasoning. Whether a single missing operational reading should
-degrade a station gracefully (skip cleanly) rather than raise is a genuine,
-separate operational-policy question or the existing per-station
-`except Exception` wrapping in `run_forecast_cycle.py` — not one this fixer
-round settles.
+positional-misread bug the strict per-gap check exists to catch. The strict,
+reject-on-any-gap behavior was kept. **Round 1 left open** whether a single
+missing operational reading should degrade a station gracefully (skip
+cleanly) rather than raise; **round 2 (below) closes that question**: it does
+already degrade gracefully, at all three call sites, as of the same commit
+that introduced this paragraph — the paragraph above was simply never updated
+to say so.
+
+## Fixer round 2 (multi-model review response, 2026-09-01, second pass)
+
+A second independent Codex pass plus a Claude design review ran over commit
+`d5d188d0` ("recovered fixer-round work from a stalled agent") and raised two
+majors. Both findings targeted an intermediate state of the code
+(`8f87eb68`) that `d5d188d0` had already superseded by the time the review
+ran; neither required a further code change. Both are recorded in the
+fixer's `disputedFindings` with the diff evidence, and are summarized here so
+this record does not go stale a second time:
+
+- **"`_infer_forecast_time_step` re-derives via gap-inference and can return
+  `None`, dropping scores for a freshly-onboarded station/model."** This
+  described `8f87eb68`. `d5d188d0` had already replaced the function with
+  `min(hc.ensemble.time_step for hc in hindcasts)` — reading the mandatory,
+  authoritative field every model sets at construction and migration 0050
+  persists losslessly — and removed the `None` branch, its log event, and
+  `TestUnknownTimeStepProducesNoScores` entirely. Verified: `grep -n
+  "_infer_forecast_time_step"` in `services/skill/service.py` at HEAD shows
+  only the `min(...)` implementation; the test class no longer exists in
+  `tests/unit/services/skill/test_service.py`.
+- **"A cadence mismatch in `past_targets` raises `ConfigurationError` into
+  the operational path's generic `except Exception`, counting the station as
+  FAILED — a new, unmeasured failure mode on a path the plan's non-goals say
+  must stay unchanged."** This described `8f87eb68`, where
+  `operational_inputs.py`, `track_assembly.py`, and `hindcast.py` all called
+  `validate_time_step_cadence` unguarded. `d5d188d0` wrapped all three call
+  sites in `try/except ConfigurationError`, degrading to the SAME
+  insufficient-data handling already used for `no_observations`/`no_nwp`
+  (`operational_inputs.py` and `track_assembly.py` return a clean sentinel —
+  `None` / `UnavailableTrackContext` — that the caller's non-failure branch
+  consumes; `hindcast.py` returns `None`, recorded as one
+  `HindcastStepResult(success=False, error="insufficient data")`, the same
+  per-step outcome an isolated forcing/observation gap already produces).
+  Confirmed by reading `run_forecast_cycle.py`'s caller: the
+  `inputs_result is None` branch (`forecast_cycle.station_skipped_no_nwp`)
+  does **not** increment `stations_failed` — only the `except Exception`
+  branch around the *call itself* does, and a caught-and-returned `None`
+  never reaches it. All three graceful-degradation paths already carry
+  locking tests (`TestOperationalInputsCadenceMismatchSkipsGracefully`,
+  `TestHindcastCadenceMismatchSkipsStepGracefully`, and the
+  `track_assembly.cadence_mismatch_skip` case in `test_track_assembly.py`),
+  added in the same `d5d188d0` commit.
+
+**What genuinely remains open (escalated, not resolved by this fixer round):**
+the strict per-gap check is still a **new** condition on the operational and
+hindcast paths — before Plan 228, neither path validated cadence at all,
+so an isolated missing bucket simply flowed through positionally-shifted
+rather than triggering a skip. The skip is clean (no crash, no station
+double-counted as failed), but its real-world incidence is **unmeasured**:
+the only fixture data available in this dev environment
+(`tests/fixtures/reference/bafu_observations.parquet`) is a fully complete,
+zero-gap 2-year synthetic series and cannot stand in for real BAFU/
+SwissMetNet sensor-and-comms gap statistics (a real, non-hypothetical
+condition — the mac-mini has already logged BAFU-obs DEGRADED alerts caused
+by LINDAS rate-limiting, a live source of real observation gaps, not a
+hypothetical one). **Recommendation for whoever merges this PR**: watch
+`operational_inputs.cadence_mismatch_skip`,
+`hindcast.skip.cadence_mismatch`, and `track_assembly.cadence_mismatch_skip`
+on the mac-mini for the first several cycles after this deploys, and confirm
+with the owner that a clean per-cycle skip (rather than tolerating an
+isolated gap) is the intended behavior for the live forecast path — the
+graceful-degradation mechanics are in place either way, so reversing the
+*policy* later (tolerate one gap, e.g. by relaxing to "reject only when a gap
+exceeds N × time_step") would not require re-touching the call sites, only
+`validate_time_step_cadence` itself.
