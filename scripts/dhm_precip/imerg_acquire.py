@@ -19,6 +19,7 @@ import fcntl
 import os
 import re
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -84,6 +85,16 @@ class ImergRequestFailedError(ImergAcquisitionError):
 class ImergGranuleMissingError(ImergRequestFailedError):
     """404 / absent from the listing: counted for a window (D4), fatal for a
     probe."""
+
+
+class ImergRetriesExhaustedError(ImergRequestFailedError):
+    """The pacer used every attempt on ONE logical request and never got an
+    answer. ⛔ A DISTINCT type, not the generic parent, because the window
+    runner must be able to turn *this* into a gap and continue while a
+    `ImergReadContractError` — same parent, also a `ImergRequestFailedError` —
+    still stops the run. Catching the parent would silently convert a contract
+    violation into a gap, which is exactly the "wrong retrieval" Plan 220
+    forbids."""
 
 
 class ImergReadContractError(ImergRequestFailedError):
@@ -1190,6 +1201,37 @@ class ImergSubsetHttpClient(Protocol):
     def fetch_subset(self, *, url: str, constraint: str) -> bytes: ...
 
 
+#: D3 — the TOTAL-ELAPSED bound on ONE subset request, in seconds.
+#:
+#: Measured on the 48-granule trial (2026-08-31): 47 fetches took 112.5 s in
+#: total (mean 2.394 s each, ~10.7 kB/s for a ~25 KB body); the 48th was held
+#: open for 1,971 s. GES DISC never answered 429 — it TRICKLED, so every recv
+#: reset `timeout_seconds` and the per-recv read timeout never fired. ⇒ A
+#: per-recv timeout catches a DEAD connection; only a total-elapsed bound
+#: catches a live-but-useless one.
+#:
+#: Why 120 s and not something tighter:
+#:   * it is 50x the measured healthy mean and 6.1% of the observed stall —
+#:     healthy and stalled are separated by nearly three orders of magnitude,
+#:     so any bound in that gap kills the outlier;
+#:   * to trip it, the ~25 KB body would have to arrive slower than ~213 B/s,
+#:     a 50x throughput collapse;
+#:   * ⛔ the asymmetry decides the side to err on. Abandoning too eagerly is
+#:     NOT merely a cheap extra retry: if GES DISC is genuinely slow for a
+#:     stretch, every attempt trips and the granule is recorded as a gap that
+#:     is not one — a WRONG record, which Plan 220 ranks worse than a slow
+#:     one. The deadline is therefore deliberately generous, because the
+#:     deadline also covers GES DISC's own server-side subsetting time, not
+#:     just the transfer.
+#: ⛔ A property of one request, like the timeout beside it — not a config
+#: surface, not a scheduler (D3).
+DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS = 120.0
+
+#: Read granularity for the streamed body; the deadline is checked once per
+#: chunk, so this is also how often a trickle is re-examined.
+SUBSET_STREAM_CHUNK_BYTES = 65536
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RealImergSubsetHttpClient:
     """D4 — the SAME `.netrc`-based Earthdata Login auth as the archive
@@ -1202,16 +1244,35 @@ class RealImergSubsetHttpClient:
     throwaway per-call session is a transport property, not a policy."""
 
     timeout_seconds: float = 60.0
+    """PER-RECV read timeout. ⚠️ It RESETS on every byte received, so it
+    bounds a dead connection and nothing else — see `deadline_seconds`."""
+    deadline_seconds: float = DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS
+    """TOTAL elapsed bound on this one request, measured from just before the
+    request is issued. A trickling response is ABANDONED as a transient
+    failure, so `RequestPacer` retries it on exactly the path it already uses
+    for a fired read timeout."""
     session: requests.Session | None = None
     """D3.3 — see `RealImergHttpClient.session`; both default to the SAME
     process-wide `earthdata_session()`."""
+    monotonic: Callable[[], float] | None = None
+    """The test seam for `deadline_seconds`, alongside `session`: `None` means
+    `time.monotonic`. ⛔ Injected rather than called directly so a trickle can
+    be proved without a 120-second test."""
 
     def fetch_subset(self, *, url: str, constraint: str) -> bytes:
         import requests
 
+        now = self.monotonic if self.monotonic is not None else time.monotonic
+        started = now()
         try:
             response = _session_for(self.session).get(
-                url, params={"dap4.ce": constraint}, timeout=self.timeout_seconds
+                url,
+                params={"dap4.ce": constraint},
+                timeout=self.timeout_seconds,
+                # ⛔ stream=True is what makes the deadline enforceable at all:
+                # `response.content` blocks inside requests until the whole
+                # body has arrived, with no seam to check elapsed time.
+                stream=True,
             )
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to fetch subset {url}: {exc}") from exc
@@ -1220,7 +1281,26 @@ class RealImergSubsetHttpClient:
             url=url,
             retry_after=response.headers.get("Retry-After"),
         )
-        content = response.content
+        chunks: list[bytes] = []
+        try:
+            for chunk in response.iter_content(chunk_size=SUBSET_STREAM_CHUNK_BYTES):
+                chunks.append(chunk)
+                elapsed = now() - started
+                if elapsed > self.deadline_seconds:
+                    raise ImergTransientError(
+                        f"abandoned {url} after {elapsed:.1f}s "
+                        f"(deadline {self.deadline_seconds:.0f}s, "
+                        f"{sum(len(c) for c in chunks)} bytes received): the "
+                        "response is trickling, so the per-recv read timeout "
+                        "would never fire"
+                    )
+        except requests.RequestException as exc:
+            raise ImergTransientError(f"failed to fetch subset {url}: {exc}") from exc
+        finally:
+            # ⛔ An abandoned stream must release its connection back to the
+            # pool, or the retry competes with the attempt it replaced.
+            response.close()
+        content = b"".join(chunks)
         log.info(
             "imerg.acquire.subset_fetched",
             url=url,
@@ -1294,7 +1374,7 @@ class RequestPacer:
                 )
                 if attempt < self._max_attempts:
                     self._sleep(delay)
-        raise ImergRequestFailedError(
+        raise ImergRetriesExhaustedError(
             f"exhausted {self._max_attempts} attempts against GES DISC"
         ) from last
 
@@ -1748,7 +1828,11 @@ class ImergAcquisitionManifest(BaseModel):
     requested: int
     retrieved: int
     missing: tuple[str, ...] = ()
-    """ISO timestamps of granules requested but absent (404) from the archive."""
+    """ISO timestamps of granules requested but not obtained: absent (404)
+    from the archive, or unretrievable after the pacer exhausted its attempts
+    (each attempt bounded by `DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS`). ⛔ A
+    gap either way — the record never fabricates, scales or fills one — but
+    the run report's `failed` count is what separates the two causes."""
     granule_checksums: dict[str, str] = {}
     granule_retrieved_at: dict[str, datetime] = {}
     retrospective: bool
@@ -2392,6 +2476,12 @@ class SubsetWindowRetrievalReport:
     total_bytes: int
     requests_issued: int
     rate_limited: int
+    failed: int = 0
+    """How many of `missing` are there because the pacer EXHAUSTED its
+    attempts rather than because GES DISC does not hold the granule. ⛔ Both
+    are gaps in the record, but they are not the same finding: a non-zero
+    `failed` says the run met the request deadline repeatedly and its gaps
+    deserve a re-run before anyone reads them as absent data."""
 
 
 def retrieve_subset_window(
@@ -2420,6 +2510,7 @@ def retrieve_subset_window(
     requested = 0
     retrieved = 0
     reused = 0
+    failed = 0
     total_bytes = 0
     missing: list[str] = []
     checksums: dict[str, str] = {}
@@ -2446,6 +2537,26 @@ def retrieve_subset_window(
             except ImergGranuleMissingError:
                 missing.append(start.isoformat())
                 continue
+            except ImergRetriesExhaustedError as exc:
+                # ⛔ ONE stalled granule must not kill a 105,216-granule run.
+                # Pre-deadline this propagated and aborted the window: the
+                # trial's 1,971 s stall succeeded on its retry, but a granule
+                # that stalls on EVERY attempt would have ended the run with
+                # everything after it unattempted. It is a gap instead —
+                # Plan 220's rule — and ⛔ nothing fills it.
+                # ⚠️ Caught by the NARROW type on purpose: the parent
+                # `ImergRequestFailedError` also covers `ImergReadContractError`,
+                # and turning a contract violation into a gap would be exactly
+                # the wrong retrieval D1/D5 exist to stop.
+                log.warning(
+                    "imerg.acquire.subset_granule_unretrievable",
+                    granule=start.isoformat(),
+                    filename=filename,
+                    error=str(exc),
+                )
+                failed += 1
+                missing.append(start.isoformat())
+                continue
             contract = observe_subset_read_contract(path, archive_filename=filename)
             if frozen is None:
                 frozen = contract
@@ -2469,6 +2580,7 @@ def retrieve_subset_window(
         total_bytes=total_bytes,
         requests_issued=pacer.requests_issued,
         rate_limited=pacer.rate_limited,
+        failed=failed,
     )
     if frozen is not None:
         write_acquisition_manifest(
@@ -2497,6 +2609,7 @@ def retrieve_subset_window(
         retrieved=report.retrieved,
         reused=report.reused,
         missing=len(report.missing),
+        failed=report.failed,
         total_bytes=report.total_bytes,
         requests_issued=report.requests_issued,
         rate_limited=report.rate_limited,

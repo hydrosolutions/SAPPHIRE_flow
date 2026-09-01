@@ -2610,7 +2610,7 @@ def _run_window(
     starts: Sequence[datetime],
     *,
     client: FakeImergHttpClient | None = None,
-    subset_client: FakeSubsetWindowClient | None = None,
+    subset_client: ia.ImergSubsetHttpClient | None = None,
     sleep: RecordingSleep | None = None,
     data_root: Path | None = None,
     interval_seconds: float = 0.25,
@@ -2781,9 +2781,24 @@ class _FakeResponse:
     content: bytes = b""
     headers: dict[str, str] = field(default_factory=dict)
     history: list[object] = field(default_factory=list)
+    trickle_chunk_bytes: int | None = None
+    """When set, the body arrives in chunks of this size rather than at once —
+    the shape of the measured 2026-08-31 stall. ⚠️ Bytes KEEP ARRIVING, so the
+    per-recv read timeout keeps resetting and never fires; only a total-elapsed
+    deadline can end it."""
+    closed: bool = False
 
     def iter_content(self, chunk_size: int = 1) -> Any:
-        yield self.content
+        if self.trickle_chunk_bytes is None:
+            yield self.content
+            return
+        # ⛔ FINITE on purpose: with the deadline reverted this test must FAIL,
+        # not hang, or the revert-proof proves nothing.
+        for i in range(0, len(self.content), self.trickle_chunk_bytes):
+            yield self.content[i : i + self.trickle_chunk_bytes]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @dataclass
@@ -2908,6 +2923,197 @@ class TestSubsetWindowGapsAreRecordedAsGaps:
         assert manifest.missing == (starts[3].isoformat(),)
         assert manifest.requested == 4
         assert manifest.retrieved == 3
+
+
+@dataclass
+class _SteppingClock:
+    """A `time.monotonic` stand-in that advances a fixed step on every read.
+    ⛔ No real time passes: proving a 120-second deadline must not cost 120
+    seconds, and `sleep` is injected for the same reason."""
+
+    step: float
+    now: float = 0.0
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
+@dataclass
+class _TricklingSubsetSession:
+    """A no-network `requests.Session` double for the SUBSET route: one body
+    per URL, and a set of URLs whose body TRICKLES a byte at a time."""
+
+    content_by_url: dict[str, bytes] = field(default_factory=dict[str, bytes])
+    stalling: set[str] = field(default_factory=set[str])
+    calls: list[str] = field(default_factory=list[str])
+
+    def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self.calls.append(url)
+        if url in self.stalling:
+            return _FakeResponse(content=b"\x00" * 4096, trickle_chunk_bytes=1)
+        try:
+            return _FakeResponse(content=self.content_by_url[url])
+        except KeyError:
+            return _FakeResponse(status_code=404)
+
+
+class TestSubsetRequestDeadline:
+    """The 2026-08-31 trial measured ONE fetch held open 1,971 s (32.9 min)
+    against 2.394 s for the other 47. GES DISC never answered 429 — it
+    TRICKLED, so `timeout_seconds` reset on every recv and never fired.
+    ⇒ The per-recv timeout bounds a DEAD connection; the deadline bounds a
+    live-but-useless one. Correctness was never at risk here; wall clock was
+    (~51 days over the 105,216-granule window at the observed 1-in-47 rate)."""
+
+    def _client(
+        self, session: _TricklingSubsetSession | _RecordingSession
+    ) -> ia.RealImergSubsetHttpClient:
+        return ia.RealImergSubsetHttpClient(
+            session=session,  # type: ignore[arg-type]
+            monotonic=_SteppingClock(step=10.0),
+            deadline_seconds=120.0,
+        )
+
+    def test_the_default_deadline_is_the_measured_outlier_killer(self) -> None:
+        """50x the 2.394 s healthy mean and 6.1 % of the 1,971 s stall — a
+        bound in the gap between them, biased generous because a premature
+        abandon on all five attempts would record a gap that is not one."""
+        assert ia.DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS == 120.0
+        assert ia.RealImergSubsetHttpClient().deadline_seconds == (
+            ia.DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS
+        )
+        # ⛔ The per-recv timeout is NOT the bound and must stay beside it.
+        assert ia.RealImergSubsetHttpClient().timeout_seconds == 60.0
+
+    def test_a_trickling_response_is_abandoned_and_the_retry_then_succeeds(
+        self,
+    ) -> None:
+        """The locking test: a body that keeps arriving past the deadline is
+        abandoned as a TRANSIENT failure, so `RequestPacer` retries it on
+        exactly the path a fired read timeout already takes, and the next
+        healthy response wins."""
+        session = _RecordingSession(
+            responses=[
+                _FakeResponse(content=b"\x00" * 4096, trickle_chunk_bytes=1),
+                _FakeResponse(content=b"subset bytes"),
+            ]
+        )
+        sleep = RecordingSleep()
+        pacer = ia.RequestPacer(sleep=sleep, interval_seconds=0.0)
+        paced = ia.PacedSubsetClient(client=self._client(session), pacer=pacer)
+        got = paced.fetch_subset(
+            url="https://gpm1/g.dap.nc4", constraint="/precipitation"
+        )
+        assert got == b"subset bytes"
+        assert len(session.calls) == 2  # abandoned, then retried
+        assert pacer.requests_issued == 2
+        assert 2.0 in sleep.calls  # the existing backoff, unchanged
+        assert session.responses == []
+
+    def test_the_abandoned_stream_is_closed(self) -> None:
+        """⛔ An abandoned stream must release its connection, or the retry
+        competes with the attempt it replaced."""
+        trickler = _FakeResponse(content=b"\x00" * 4096, trickle_chunk_bytes=1)
+        session = _RecordingSession(responses=[trickler])
+        with pytest.raises(ia.ImergTransientError, match="trickling"):
+            self._client(session).fetch_subset(
+                url="https://gpm1/g.dap.nc4", constraint="/precipitation"
+            )
+        assert trickler.closed
+
+    def test_a_healthy_fetch_well_inside_the_deadline_is_untouched(self) -> None:
+        session = _RecordingSession(responses=[_FakeResponse(content=b"subset bytes")])
+        assert (
+            self._client(session).fetch_subset(
+                url="https://gpm1/g.dap.nc4", constraint="/precipitation"
+            )
+            == b"subset bytes"
+        )
+
+
+class TestAGranuleStallingOnEveryAttempt:
+    """⛔ The retry budget must not turn one stalled granule into an aborted
+    window. Pre-deadline the pacer's exhaustion raised straight through
+    `retrieve_subset_window`, so granule N+1..105,216 would never be
+    attempted. It is a GAP instead — Plan 220: a gap is data, a wrong
+    retrieval is not — and ⛔ nothing fills, scales or interpolates it."""
+
+    def _run(self, tmp_path: Path) -> tuple[ia.SubsetWindowRetrievalReport, Path, str]:
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        stalled = starts[2]
+        stalled_url = ia.subset_granule_url(
+            archive_filename=_archive_name(stalled), start=stalled
+        )
+        session = _TricklingSubsetSession(
+            content_by_url={
+                ia.subset_granule_url(archive_filename=_archive_name(s), start=s): (
+                    _subset_fixture_bytes(tmp_path, s, value=1.5)
+                )
+                for s in starts
+            },
+            stalling={stalled_url},
+        )
+        data_root = tmp_path / "data_root"
+        report = _run_window(
+            tmp_path,
+            starts,
+            subset_client=ia.RealImergSubsetHttpClient(
+                session=session,  # type: ignore[arg-type]
+                monotonic=_SteppingClock(step=10.0),
+                deadline_seconds=120.0,
+            ),
+            data_root=data_root,
+        )
+        assert session.calls.count(stalled_url) == 5  # every attempt, then a gap
+        return report, data_root, stalled.isoformat()
+
+    def test_the_run_continues_and_the_stalled_granule_becomes_a_gap(
+        self, tmp_path: Path
+    ) -> None:
+        report, _, stalled = self._run(tmp_path)
+        assert report.requested == 4
+        assert report.retrieved == 3  # the run did NOT abort
+        assert report.missing == (stalled,)
+        # ⛔ A gap for a DIFFERENT reason than a 404, and the report says so:
+        # these gaps deserve a re-run before anyone reads them as absent data.
+        assert report.failed == 1
+
+    def test_the_gap_reaches_the_permanent_record(self, tmp_path: Path) -> None:
+        _, data_root, stalled = self._run(tmp_path)
+        manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert manifest is not None
+        assert manifest.missing == (stalled,)
+        assert manifest.requested == 4
+        assert manifest.retrieved == 3
+
+    def test_a_contract_violation_is_still_fatal(self, tmp_path: Path) -> None:
+        """⛔ The gap path catches `ImergRetriesExhaustedError` ONLY. Catching
+        its parent would swallow `ImergReadContractError` — the same parent —
+        and turn a route/grid disagreement into a silent gap, which is exactly
+        the wrong retrieval D1 and D5 exist to stop."""
+        assert issubclass(ia.ImergReadContractError, ia.ImergRequestFailedError)
+        assert issubclass(ia.ImergRetriesExhaustedError, ia.ImergRequestFailedError)
+        assert not issubclass(ia.ImergReadContractError, ia.ImergRetriesExhaustedError)
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        session = _TricklingSubsetSession(
+            content_by_url={
+                ia.subset_granule_url(archive_filename=_archive_name(s), start=s): (
+                    b"not an HDF5 file at all"
+                )
+                for s in starts
+            }
+        )
+        with pytest.raises(ia.ImergReadContractError):
+            _run_window(
+                tmp_path,
+                starts,
+                subset_client=ia.RealImergSubsetHttpClient(
+                    session=session,  # type: ignore[arg-type]
+                    monotonic=_SteppingClock(step=10.0),
+                ),
+                data_root=tmp_path / "data_root",
+            )
 
 
 class TestSubsetWindowManifest:
