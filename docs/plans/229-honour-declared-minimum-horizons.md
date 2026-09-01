@@ -162,6 +162,18 @@ problem nobody has, and this plan's proportionality rules forbid it.
   `resolve_required_steps()` -> `_model_declared_floor()` -> `assess_future_coverage()`, and that is
   what this plan changes.
 
+- **D6 — A short record must be a clean LEADING run, and ONE measure must decide both acceptance
+  and delivery.** The existing check is position-blind: `_nonnull_count`
+  (`services/nwp_coverage.py:60-71`) counts non-null values *anywhere* in a column and
+  `assess_future_coverage` then compares `min(counts) >= required_steps` (`:144`). With a declared
+  minimum of 1, a column that is NULL at step 1 but clean for steps 2-15 counts 14 and is
+  **accepted** — yet its leading clean run is zero, and FI's contract forbids delivering a frame
+  with a leading or interior gap.
+
+  So when a minimum is in play, acceptance must be computed from the **leading contiguous clean
+  run**, and that same value must decide what is delivered. Two different measures deciding
+  "is it enough?" and "what do we send?" can disagree, and this is exactly where they would.
+
 - **D5 — This supersedes 151 D34, and says so in both documents.** A plan that quietly contradicts a
   ruling marked "settled, do not reopen" is worse than one that names it.
 
@@ -184,7 +196,10 @@ The seam named in D5a, on **all three** runner routes — station legacy, statio
 GROUP. The single-value carriers in the table above are touched only where they actually block that
 seam; this plan does **not** rebuild them for per-feature minimums (§ Scope ruling).
 *Exit:* a record shorter than desired but at or above the declared minimum **produces a forecast**;
-one below the minimum still fails; a model declaring no minimum behaves exactly as today. Red-first.
+one below the minimum still fails; a model declaring no minimum behaves exactly as today.
+**Plus, per D6, on all three routes: a record with an isolated NULL at the FIRST future step is
+rejected even though its total non-null count exceeds the minimum** — the case the current
+position-blind count would wrongly accept. Red-first.
 
 ### T4 — correct the record in Plan 151, and close out Plan 227
 Note against D34/D10a that the acceptance was a workaround pending the FI bump, that the trigger has
