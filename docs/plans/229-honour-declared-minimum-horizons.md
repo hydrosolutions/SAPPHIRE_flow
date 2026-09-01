@@ -36,7 +36,13 @@ dependency bump and deliberately smaller than a redesign.
    short-record support today.
 6. **Do not re-argue whether to do this at all.** The owner ruled on 2026-09-01 that the August
    compromise was a workaround pending exactly this update.
-7. **Adding length is a cost.** Prefer deleting to adding; a shorter plan that still passes its exit
+7. **This document has already been over-expanded once — do not repeat it.** A `plan` workflow run
+   on 2026-09-01 grew it from 148 to 441 lines, escalated with 2 blockers and 3 majors, and several
+   of those findings were against decisions the run had itself added. Of the findings raised, one
+   was rejected on measurement (per-feature minimums, which no model declares) and one cited a file
+   that does not exist. **If you add a decision, you own justifying it against the code**, and a
+   finding against your own addition is not a finding against this plan.
+8. **Adding length is a cost.** Prefer deleting to adding; a shorter plan that still passes its exit
    gates is a better plan.
 
 ## In plain terms, before the detail
