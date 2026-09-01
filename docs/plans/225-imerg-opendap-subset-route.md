@@ -18,10 +18,20 @@ citation audit that corrected D3).
 
 ## ⛔ PER-RUN SCOPE (binding)
 
-- 🔴 **THIS RUN BUILDS T1 AND T2 ONLY. It does NOT run T3.** T3 is 105,216 authenticated
-  requests against NASA GES DISC — a multi-hour, outward-facing operation that needs its own
-  explicit authorisation. ⛔ If the retrieval loop looks ready to run the window, **stop and
-  report**. T2 is a hard gate: a mismatch **ends the plan** rather than starting T3.
+- ✅ **T1 and T2 are DONE** (branch `docs/plan-225`, v0.1.856). T2 passed on the real pair:
+  coordinate vectors exact, `max_abs_diff = 0.0`. The gate is cleared.
+- 🔴 **THIS RUN BUILDS T3 AND THEN RETRIEVES ONE DAY — 48 GRANULES. NOT THE WINDOW.**
+  The full 105,216-granule retrieval needs its own authorisation *after* the trial reports.
+  ⛔ If the loop looks ready to continue past the trial day, **stop and report**.
+  **Why a trial at all:** the subset route has never fetched more than one granule, and D3's
+  four behaviours do not exist yet — measured on HEAD, there is **no cadence, no `429`/`Retry-After`
+  handling, no reused `Session`, and no per-day filename resolution**; `fetch_one_subset_granule`'s
+  own docstring records them as deferred. A window run before they exist would be 105,216 bare
+  `requests.get` calls with no delay, and NASA's first 429 would abort on a non-retryable branch.
+- **D3's four behaviours are part of THIS task**, not the window run: fixed cadence between
+  successful requests; 429 retried honouring `Retry-After` with backoff; **one** authenticated
+  cookie-bearing session reused across calls; each day's filenames resolved **once**.
+  ⛔ Build them as behaviours of the existing client — no scheduler, no new config surface.
 - ✅ **Network: GES DISC OPeNDAP only** (`gpm1.gesdisc.eosdis.nasa.gov`), Earthdata credentials
   from `~/.netrc`. ⛔ **Never the Copernicus CDS** — a wrong root once triggered a live
   ERA5-Land download on this track. T2 fetches **exactly one** subset granule.
