@@ -16,8 +16,21 @@ source: 2026-08-31 — split out of Plan 222 after two review rounds showed the 
 **DRAFT** — not reviewed. Split from Plan 222 (owner, 2026-08-31) after round 2 of that plan's
 independent review found the anchoring half entangled with defects it never set out to fix.
 
-**This plan has NOT been through a review round of its own.** Plan 222's rounds established the
-problem; they did not review this solution, which did not exist in this shape.
+**This plan has NOT been through a usable review round of its own.** Plan 222's rounds established
+the problem; they did not review this solution.
+
+**A `plan` workflow round was attempted 2026-09-01 and its output was DISCARDED.** It stalled after
+three rounds at 5 blockers + 2 majors — but every one of those findings was about material the loop
+had itself added. It grew the document from 186 lines to 526, inventing a `computation_version`
+cutover, an Alembic migration, a ForecastInterface conversion prerequisite, a "P3" section and a
+skill-store version-selection rewrite — none of which this plan proposes. The Proportionality guard
+above was already in the document and was ignored. The working copy was reverted; nothing was
+committed.
+
+**For the next reviewer:** the guard above is not decoration. This plan is 186 lines and three
+concerns (anchoring, P1, P2) with six deliberately-open questions. If a round returns findings about
+schema migrations, version cutovers or FI conversion, it has expanded the plan rather than reviewed
+it, and its output should be discarded rather than folded.
 
 ## ⛔ Proportionality — BINDING on this plan AND on its review
 
