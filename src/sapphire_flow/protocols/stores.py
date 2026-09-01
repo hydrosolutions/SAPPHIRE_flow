@@ -210,6 +210,18 @@ class ForecastStore(Protocol):
     ) -> tuple[list[ForecastSummaryRow], int]:
         raise NotImplementedError
 
+    def fetch_latest_uncombined_issued_at(
+        self, cutoff: UtcDatetime
+    ) -> UtcDatetime | None:
+        """Plan 222 T7 (D7, revised) — the snapshot-wide
+        `MAX(issued_at) WHERE combination_strategy IS NULL AND issued_at <=
+        cutoff`, across every station and model. This is the ONE marker
+        the Forecast Lab export pins the combined (`_pooled`/`_bma`) fetch
+        to: it is the forecast rows themselves, never the best-effort
+        `FORECAST_FRESHNESS` heartbeat, which can silently fail to append
+        and leave a stale marker behind."""
+        raise NotImplementedError
+
 
 @runtime_checkable
 class ForeignForecastStore(Protocol):

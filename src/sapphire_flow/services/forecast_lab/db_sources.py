@@ -152,6 +152,58 @@ def fetch_latest_forecast_for_model(
     )
 
 
+def fetch_latest_publication_cycle_time(
+    stores: ForecastLabStores,
+    *,
+    data_cutoff_at: UtcDatetime,
+) -> UtcDatetime | None:
+    """Plan 222 T7 (D7, revised after implement round 2) — the ONE
+    snapshot-wide publication cycle every combined-forecast fetch is pinned
+    to: `MAX(forecasts.issued_at) WHERE combination_strategy IS NULL AND
+    issued_at <= data_cutoff_at`, across every station and model.
+
+    NOT the `FORECAST_FRESHNESS` heartbeat. That append is best-effort —
+    its producer catches every failure and continues
+    (`flows/run_forecast_cycle.py`) — so a cycle that correctly writes no
+    combined row but whose heartbeat append silently fails would leave the
+    export pinned to the PREVIOUS cycle, still serving its stale
+    `_pooled`/`_bma` row while the flow reports success. The forecast rows
+    are the authoritative record of what was actually published and need
+    no separate marker that can itself fail to write.
+
+    Deliberately not a timestamp comparison against `clock()`: a scheduled
+    cycle's issue time is a runtime read the export cannot reconstruct
+    ahead of time, so "current" is answered by looking up what was
+    actually published, bounded by `data_cutoff_at` so a future-dated
+    backfill/replay override can never publish early. `None` means no
+    ordinary forecast has ever been recorded — there is no cycle to pin to
+    yet."""
+    return stores.forecast_store.fetch_latest_uncombined_issued_at(data_cutoff_at)
+
+
+def fetch_combined_forecast_for_cycle(
+    stores: ForecastLabStores,
+    station_id: StationId,
+    model_id: ModelId,
+    publication_cycle_time: UtcDatetime | None,
+) -> OperationalForecast | None:
+    """Plan 222 T7 (D6/D7) — fetches the combined (`_pooled`/`_bma`) row
+    for the EXACT selected publication cycle
+    (`fetch_latest_publication_cycle_time`), never
+    `ForecastStore.fetch_latest_forecast()` (which returns whatever
+    `_pooled`/`_bma` row was written last, however old, and would keep
+    serving it as `available` forever once the pooling intersection goes
+    empty — see Plan 222's D7). `publication_cycle_time=None` (no
+    ordinary forecast recorded yet) means there is no current cycle to
+    serve, so no row is ever returned."""
+    if publication_cycle_time is None:
+        return None
+    candidates = stores.forecast_store.fetch_forecasts_for_cycle(
+        publication_cycle_time, station_id, _DISCHARGE_PARAMETER
+    )
+    return next((f for f in candidates if f.model_id == model_id), None)
+
+
 def fetch_model_display(
     stores: ForecastLabStores, model_id: ModelId
 ) -> ModelRecord | None:

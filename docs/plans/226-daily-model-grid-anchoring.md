@@ -16,8 +16,57 @@ source: 2026-08-31 — split out of Plan 222 after two review rounds showed the 
 **DRAFT** — not reviewed. Split from Plan 222 (owner, 2026-08-31) after round 2 of that plan's
 independent review found the anchoring half entangled with defects it never set out to fix.
 
-**This plan has NOT been through a review round of its own.** Plan 222's rounds established the
-problem; they did not review this solution, which did not exist in this shape.
+**This plan has NOT been through a usable review round of its own.** Plan 222's rounds established
+the problem; they did not review this solution.
+
+**A `plan` workflow round was attempted 2026-09-01 and its output was DISCARDED.** It stalled after
+three rounds at 5 blockers + 2 majors — but every one of those findings was about material the loop
+had itself added. It grew the document from 186 lines to 526, inventing a `computation_version`
+cutover, an Alembic migration, a ForecastInterface conversion prerequisite, a "P3" section and a
+skill-store version-selection rewrite — none of which this plan proposes. The Proportionality guard
+above was already in the document and was ignored. The working copy was reverted; nothing was
+committed.
+
+**For the next reviewer:** the guard above is not decoration. This plan is 186 lines and three
+concerns (anchoring, P1, P2) with six deliberately-open questions. If a round returns findings about
+schema migrations, version cutovers or FI conversion, it has expanded the plan rather than reviewed
+it, and its output should be discarded rather than folded.
+
+## ⛔ Proportionality — BINDING on this plan AND on its review
+
+**Read this before reviewing.** Plan 222, this plan's sibling, went through four adversarial review
+rounds that each ADDED, growing a fix for one reported defect from five tasks to eight. A fifth
+round — a proportionality review — cut it back to three and returned **TOO BIG BY 5 TASKS**. That
+round-trip cost more than the fix. Do not repeat it here.
+
+**A finding that GROWS this plan is a worse finding than one that shrinks it.**
+
+**This is a MEASURE-FIRST plan and it is deliberately incomplete.** The six design questions below
+are open ON PURPOSE. T-M measures before anything is designed, because answering first is precisely
+what cost Plan 222 two rounds: its D1 was settled on a confident argument that a later round proved
+false against the code.
+
+**In scope for findings:** a stated fact is false; a citation does not say what the plan claims;
+T-M would not actually measure what it claims to measure; the scope boundary against Plan 222 is
+wrong.
+
+**Explicitly OUT of scope — do not propose, and reject if proposed:**
+
+- **Answering the six open design questions.** Recommending an answer, narrowing the options, or
+  declaring one "obvious" is over-reach until T-M reports. Saying *"question 3 is missing a case"*
+  is useful; saying *"question 3 should be resolved as X"* is not.
+- New tasks, phases, abstractions, registries or plug-in points.
+- Exit gates beyond those already fixed. They are deliberately unwritten pending T-M.
+- Anything Plan 222 owns or deferred: pooling semantics, the member-id collision, per-parameter
+  `source_model_ids`, the alert-path union, BMA. All have their own homes.
+- Backfill, recomputation, or migration of stored forecasts or hindcasts.
+- Performance work.
+
+**"No findings" is a complete and valuable review.** A round that reports the plan checks out is a
+success, not a wasted round. Do not manufacture findings to justify the pass.
+
+**If a reviewer believes a genuinely blocking problem sits outside these bounds, say so in one
+sentence and stop there** — do not design the fix into this plan.
 
 ## Why this is a separate plan
 
@@ -77,6 +126,44 @@ distribution of `last_bucket` relative to `issue_date`.
 **No writes, no deploy, no interruption of a running flow.** This plan does not proceed to design
 until P1 and P2 are sized. The repo has a recorded habit of being wrong about operational numbers
 by reasoning rather than measuring, and two review rounds have now made that concrete here.
+
+## T-M RESULTS — measured 2026-09-01 against the live mini (read-only)
+
+Queries only, no writes, no flow interrupted; the station-onboarding backfill was running throughout
+and the DB showed one active query (ours) at the time.
+
+| # | Measurement | Result |
+|---|---|---|
+| M1 | Observation cadence (`discharge`, 14 d) | **604 s ≈ 10 min**, uniform across every station sampled |
+| M2 | What `_extract_discharge()` consumes in a hindcast | 7 rows × 10 min = **70 minutes**, against a declared 7-day (10 080 min) window — a **144× shortfall**. P1 CONFIRMED on real data |
+| M3 | Daily mean vs the instantaneous 00:00 reading | median **6.4 %**, mean 12.4 %, p95 **48.6 %**, max 78.8 % (n = 134 station-days). P2 CONFIRMED and material |
+| M4 | Observation staleness at issue | **0.00 h on every cycle**; `bucket_lag_days = 0` throughout |
+
+**Scale, which differs from the original report.** 148 stations now carry all six model assignments,
+but only **37** produce any forecast, only **2** produce `linear_regression_daily` / `nwp_regression`
+/ `_pooled`, and 36 produce `nwp_rainfall_runoff`. Most stations therefore have a single combinable
+model producing and no combination to make. Plan 222's "dark for 2009 and 2091" remains exact.
+
+**Production issue times carry the sub-second wall clock**, live: `06:00:02.768568`,
+`18:00:02.599972`, `18:00:01.851153`. The raw `clock()` read this plan describes is not theoretical.
+
+### What the measurements bear on — WITHOUT closing the questions
+
+- **Q3 (anchor to last observed day vs issue day) is empirically MOOT in this deployment.** At zero
+  staleness the last observation's daily bucket *is* midnight of the issue day, so (a) and (b) give
+  the identical timestamp on every cycle measured. The choice is therefore about failure behaviour
+  under staleness that does not currently occur — not about today's output. It remains the human's,
+  and (a) still degrades correctly where (b) silently mislabels.
+- **Anchoring should restore the combined forecast in full.** Under (a) with zero staleness,
+  `linreg` step 1 = midnight(issue day) + 1 d. The NWP path drops the issue-day bucket as backdated
+  at a non-midnight issue (`services/operational_inputs.py:225-236`), so its first future bucket is
+  the same day. The grids coincide and the intersection is the whole 5-day horizon. **Arithmetic
+  from the measurements, not a live test** — it needs proving against a real cycle before it is
+  relied on.
+- **Q4 (all steps backdated) does not arise at current staleness**, and Q6 (multi-parameter
+  fallbacks) is untouched by these measurements.
+- **P1 and P2 are confirmed as live defects, and P2 is now sized.** A skill score computed on this
+  path carries a median 6.4 % and tail ~49 % mismatch that is pure quantity error.
 
 ## Open design questions — deliberately NOT answered yet
 

@@ -71,16 +71,53 @@ from tests.fakes.fake_stores import (
 _EPOCH = ensure_utc(datetime(2026, 8, 21, 10, 45, 0, tzinfo=UTC))
 
 
+_MARKER_STATION_ID = StationId(uuid4())
+_MARKER_MODEL_ID = ModelId("__plan222_cycle_marker__")
+
+
+def _seed_publication_cycle(
+    forecast_store: FakeForecastStore, cycle_time: UtcDatetime
+) -> None:
+    """Plan 222 fixer round — the T7 marker (`fetch_latest_publication_cycle_time`)
+    is now the most recent ORDINARY (`combination_strategy IS NULL`)
+    forecast row's `issued_at`, never a `FORECAST_FRESHNESS` heartbeat.
+    Seeds one throwaway ordinary row at `cycle_time` on a station distinct
+    from any test's station under test, so it can never surface as a
+    spurious per-model `sapphire_forecasts[]` entry there."""
+    ensemble = _members_ensemble(
+        _MARKER_STATION_ID, issued_at=cycle_time, rng=random.Random(0), n_members=1
+    )
+    forecast_store.store_forecast(
+        _forecast(
+            station_id=_MARKER_STATION_ID,
+            model_id=_MARKER_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=cycle_time,
+        )
+    )
+
+
 def _stores(
     *,
     station_store: FakeStationStore | None = None,
     observation_store: FakeObservationStore | None = None,
     forecast_store: FakeForecastStore | None = None,
+    seed_default_cycle: bool = True,
 ) -> ForecastLabStores:
+    # Plan 222 fixer round — every existing combined-forecast fixture in
+    # this file stamps its stored row `issued_at=_EPOCH` and usually
+    # already has an ordinary per-model row there too (which now DOUBLES
+    # as the T7 marker). Auto-seed a throwaway marker ONLY when the
+    # caller's `forecast_store` carries no ordinary row at/before `_EPOCH`
+    # yet, so a test exercising the marker explicitly (its own ordinary
+    # rows, `seed_default_cycle=False`) is never second-guessed.
+    fs = forecast_store or FakeForecastStore()
+    if seed_default_cycle and fs.fetch_latest_uncombined_issued_at(_EPOCH) is None:
+        _seed_publication_cycle(fs, _EPOCH)
     return ForecastLabStores(
         station_store=station_store or FakeStationStore(),
         observation_store=observation_store or FakeObservationStore(),
-        forecast_store=forecast_store or FakeForecastStore(),
+        forecast_store=fs,
         model_store=FakeModelStore(),
         artifact_store=FakeModelArtifactStore(),
         provenance_store=FakeArtifactProvenanceStore(),
@@ -1680,6 +1717,407 @@ class TestCombinedForecastRollUp:
         assert snapshot.status.sapphire_forecasts.latest_available_at == ensure_utc(
             combined.issued_at
         )
+
+
+class TestCombinedForecastCyclePinning:
+    """Plan 222 T7 (D6/D7, revised) — a `_pooled`/`_bma` row not from the
+    CURRENT publication cycle (the most recent ORDINARY forecast row's
+    `issued_at`, snapshot-wide) must read as absent.
+    `ForecastStore.fetch_latest_forecast()` has no age or cycle constraint
+    and would otherwise keep serving the last cycle that DID produce a
+    row, forever, marked `available` — exactly the failure mode Plan 222's
+    T3 intersection fix newly creates once a parameter's grid intersection
+    goes empty on a cycle that ran fine."""
+
+    def test_stale_row_from_an_earlier_cycle_reads_as_unavailable(self) -> None:
+        """Today: the export renders the stale row as `available` and
+        marks those days `complete`. After the fix: the combined block is
+        unavailable and no daily-alignment row claims `_pooled`."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        stale_ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=5
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=stale_ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        # The CURRENT cycle ran (an ordinary row was written) but produced
+        # no combined row for this station/parameter — D7's "honest
+        # absence".
+        current_cycle = ensure_utc(_EPOCH + timedelta(hours=6))
+        _seed_publication_cycle(forecast_store, current_cycle)
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=forecast_store,
+            seed_default_cycle=False,
+        )
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(current_cycle),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+        for row in snapshot.stations[0].aligned_daily_comparison:
+            assert "_pooled" not in row.sapphire
+
+    def test_no_ordinary_forecast_recorded_yet_reads_as_unavailable(self) -> None:
+        """No ordinary (`combination_strategy IS NULL`) forecast row exists
+        at all — there is no current cycle to pin to, so even a
+        fresh-looking stored combined row must not be served: it cannot be
+        confirmed as belonging to any completed cycle."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        ensemble = _members_ensemble(
+            station.id, issued_at=_EPOCH, rng=random.Random(1), n_members=5
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=ensemble,
+                issued_at=_EPOCH,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=forecast_store,
+            seed_default_cycle=False,
+        )
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+
+    def test_newer_ordinary_row_with_no_combined_row_beats_an_older_cycle_with_one(
+        self,
+    ) -> None:
+        """An older cycle produced a combined row; a NEWER cycle ran (its
+        ordinary row was written) but produced no combined row. Pinning
+        must follow the newest ordinary row and read absent — never fall
+        back to serving the older cycle's stale row."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        older_cycle = ensure_utc(_EPOCH)
+        newer_cycle = ensure_utc(_EPOCH + timedelta(hours=6))
+        older_ensemble = _members_ensemble(
+            station.id, issued_at=older_cycle, rng=random.Random(1), n_members=5
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=older_ensemble,
+                issued_at=older_cycle,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        _seed_publication_cycle(forecast_store, older_cycle)
+        # Stored AFTER the older marker, proving `MAX(issued_at)` is used —
+        # not "the first row found" or "the last one appended".
+        _seed_publication_cycle(forecast_store, newer_cycle)
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=forecast_store,
+            seed_default_cycle=False,
+        )
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(newer_cycle),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+
+    def test_newer_row_selected_when_both_cycles_have_one(self) -> None:
+        """Both the older and the newer cycle produced a combined row.
+        Pinning to the newest ordinary row must surface the NEWER row, not
+        whichever one the store happens to return first."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        older_cycle = ensure_utc(_EPOCH)
+        newer_cycle = ensure_utc(_EPOCH + timedelta(hours=6))
+        older_ensemble = _members_ensemble(
+            station.id, issued_at=older_cycle, rng=random.Random(1), n_members=5
+        )
+        newer_ensemble = _members_ensemble(
+            station.id, issued_at=newer_cycle, rng=random.Random(2), n_members=5
+        )
+        forecast_store = FakeForecastStore()
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=older_ensemble,
+                issued_at=older_cycle,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=newer_ensemble,
+                issued_at=newer_cycle,
+                combination_strategy="pooled",
+                source_model_ids=[ModelId("nwp_regression")],
+            )
+        )
+        _seed_publication_cycle(forecast_store, newer_cycle)
+        _seed_publication_cycle(forecast_store, older_cycle)
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=forecast_store,
+            seed_default_cycle=False,
+        )
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(newer_cycle),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastAvailableSchema)
+        assert combined.issued_at == newer_cycle
+
+
+class TestPublicationCycleMarkerUsesForecastRowsNotHeartbeat:
+    """Plan 222 fixer round — BLOCKER. `fetch_latest_publication_cycle_time`
+    must pin to the most recent ORDINARY forecast row's `issued_at`
+    (`combination_strategy IS NULL`), never the `FORECAST_FRESHNESS`
+    heartbeat: the heartbeat's append is best-effort
+    (`flows/run_forecast_cycle.py` catches and logs every failure there and
+    continues), so a swallowed append after a cycle that correctly produced
+    no combined row would leave the export pinned to the PREVIOUS cycle,
+    still serving its stale `_pooled` row."""
+
+    def test_newer_cycle_with_no_combined_row_and_no_heartbeat_reads_absent(
+        self,
+    ) -> None:
+        """Cycle A: ordinary rows, a `_pooled` row, and its heartbeat.
+        Cycle B (newer): an ordinary row only — no `_pooled` row, and its
+        heartbeat append silently failed (the common real-world case this
+        plan exists for). The snapshot must report `no_combined_forecast`,
+        never fall back to serving A's stale row because A's heartbeat is
+        still the only one on record."""
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        cycle_a = ensure_utc(_EPOCH)
+        cycle_b = ensure_utc(_EPOCH + timedelta(hours=6))
+
+        forecast_store = FakeForecastStore()
+        # Cycle A: an ordinary per-model row plus the combined `_pooled` row.
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("nwp_regression"),
+                ensemble=_members_ensemble(
+                    station.id, issued_at=cycle_a, rng=random.Random(1), n_members=5
+                ),
+                issued_at=cycle_a,
+            )
+        )
+        forecast_store.store_forecast(
+            _combined_forecast(
+                station_id=station.id,
+                model_id=POOLED_MODEL_ID,
+                ensemble=_members_ensemble(
+                    station.id, issued_at=cycle_a, rng=random.Random(2), n_members=8
+                ),
+                issued_at=cycle_a,
+                combination_strategy="pooled",
+                source_model_ids=[
+                    ModelId("nwp_regression"),
+                    ModelId("linear_regression_daily"),
+                ],
+            )
+        )
+        # Cycle B: an ordinary row only — the pooling intersection went
+        # empty (the actual Plan 222 scenario) and its heartbeat append
+        # failed, so no FORECAST_FRESHNESS record exists for it at all.
+        forecast_store.store_forecast(
+            _forecast(
+                station_id=station.id,
+                model_id=ModelId("nwp_regression"),
+                ensemble=_members_ensemble(
+                    station.id, issued_at=cycle_b, rng=random.Random(3), n_members=5
+                ),
+                issued_at=cycle_b,
+            )
+        )
+
+        # A FORECAST_FRESHNESS heartbeat for cycle_a would say OK here in the
+        # pre-Plan-222 design. `ForecastLabStores` no longer even carries a
+        # `pipeline_health_store` field (the marker is
+        # `fetch_latest_uncombined_issued_at` over ordinary forecast rows,
+        # asserted below) — there is nothing left for a heartbeat to
+        # override.
+        stores = ForecastLabStores(
+            station_store=station_store,
+            observation_store=FakeObservationStore(),
+            forecast_store=forecast_store,
+            model_store=FakeModelStore(),
+            artifact_store=FakeModelArtifactStore(),
+            provenance_store=FakeArtifactProvenanceStore(),
+            basin_store=FakeBasinStore(),
+        )
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(cycle_b),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == "no_combined_forecast"
+
+
+class _RaisingCycleLookupForecastStore(FakeForecastStore):
+    """Plan 222 fixer round — a `forecast_store` whose
+    `fetch_latest_uncombined_issued_at` always raises, so a test can prove
+    `_build_combined_forecast`'s T7 cycle lookup is never even attempted
+    when the strategy cannot use it. Every other method is the real fake's
+    behaviour (inherited), so the rest of `build_snapshot()` still works."""
+
+    def fetch_latest_uncombined_issued_at(
+        self, cutoff: UtcDatetime
+    ) -> UtcDatetime | None:
+        raise RuntimeError(
+            "fetch_latest_uncombined_issued_at must not be queried under PRIMARY"
+        )
+
+
+class _CountingCycleLookupForecastStore(FakeForecastStore):
+    """Plan 222 fixer round — counts calls to
+    `fetch_latest_uncombined_issued_at` so a test can prove
+    `build_snapshot()` resolves the T7 cycle marker EXACTLY ONCE per
+    snapshot, never once per station. A per-station lookup could in
+    principle pin different stations to different cycles inside the same
+    snapshot — see `build_snapshot()`'s "resolved once and reused" note."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_count = 0
+
+    def fetch_latest_uncombined_issued_at(
+        self, cutoff: UtcDatetime
+    ) -> UtcDatetime | None:
+        self.call_count += 1
+        return super().fetch_latest_uncombined_issued_at(cutoff)
+
+
+class TestCombinedForecastCycleLookupGatedOnStrategy:
+    """Plan 222 fixer round — `fetch_latest_publication_cycle_time` is
+    resolved only for POOLED/BMA (the strategies `_build_combined_forecast`
+    actually queries a cycle for). Under PRIMARY or CONSENSUS it must never
+    be called at all, so a forecast-store outage in that lookup cannot turn
+    into a snapshot-wide 500 for an unrelated reason; and for a multi-station
+    snapshot under POOLED/BMA it must be resolved exactly once, not
+    per-station."""
+
+    @pytest.mark.parametrize(
+        ("strategy", "expected_reason"),
+        [
+            (ModelCombinationStrategy.PRIMARY, "strategy_primary"),
+            (ModelCombinationStrategy.CONSENSUS, "no_combined_forecast"),
+        ],
+    )
+    def test_strategy_never_queries_the_cycle_marker(
+        self,
+        strategy: ModelCombinationStrategy,
+        expected_reason: str,
+    ) -> None:
+        station = make_station_config(code="2009")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=_RaisingCycleLookupForecastStore(),
+            seed_default_cycle=False,
+        )
+
+        snapshot = build_snapshot(
+            stores,
+            stations=[station],
+            archive_base_path=None,
+            combination_strategy=strategy,
+            clock=_frozen_clock(),
+        )
+
+        combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastUnavailableSchema)
+        assert combined.reason == expected_reason
+
+    def test_pooled_multi_station_resolves_the_marker_exactly_once(self) -> None:
+        station_a = make_station_config(code="2009")
+        station_b = make_station_config(code="2091")
+        station_store = FakeStationStore()
+        station_store.store_station(station_a)
+        station_store.store_station(station_b)
+        counting_store = _CountingCycleLookupForecastStore()
+        stores = _stores(
+            station_store=station_store,
+            forecast_store=counting_store,
+            seed_default_cycle=True,
+        )
+        # `_stores()`'s own auto-seed probe (line ~115) calls
+        # `fetch_latest_uncombined_issued_at` once during fixture setup —
+        # reset the counter so it only reflects calls made by
+        # `build_snapshot()` itself.
+        counting_store.call_count = 0
+
+        build_snapshot(
+            stores,
+            stations=[station_a, station_b],
+            archive_base_path=None,
+            combination_strategy=ModelCombinationStrategy.POOLED,
+            clock=_frozen_clock(),
+        )
+
+        assert counting_store.call_count == 1
 
 
 # ---------------------------------------------------------------------------

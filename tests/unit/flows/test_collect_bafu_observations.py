@@ -484,7 +484,9 @@ class TestHeartbeatOnDedupSkip:
         check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
         records = health_store.fetch_recent(check_type)
         assert len(records) == 2  # one per run, including the skip
-        latest = records[-1]
+        # `fetch_recent()` orders newest-first (mirrors PostgreSQL's
+        # `checked_at DESC`), so the latest heartbeat is `records[0]`.
+        latest = records[0]
         assert latest.status is PipelineHealthStatus.OK
         assert latest.checked_at == ensure_utc(second_run_at)
         assert latest.detail["row_count"] == 1
@@ -522,7 +524,8 @@ class TestHeartbeatOnDedupSkip:
 
         check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
         records = health_store.fetch_recent(check_type)
-        latest = records[-1]
+        # `fetch_recent()` orders newest-first — see the comment above.
+        latest = records[0]
         assert latest.status is PipelineHealthStatus.CRITICAL
         assert latest.detail["error_type"] == "stale_measurement_time"
         assert latest.checked_at == frozen_run_at

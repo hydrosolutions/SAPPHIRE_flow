@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import random
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -307,6 +308,95 @@ class TestFetchLatest:
     ) -> None:
         store = PgForecastStore(db_connection)
         result = store.fetch_latest_forecast(StationId(uuid4()))
+        assert result is None
+
+
+class TestFetchLatestUncombinedIssuedAt:
+    """Plan 222 fixer round (review) — T7's freshness predicate has a real
+    PostgreSQL query (`MAX(issued_at)` over uncombined rows, `issued_at <=
+    cutoff`) with no integration test: every prior locking test only
+    exercised `FakeForecastStore`, so a regression that swapped MAX for
+    MIN, dropped the cutoff filter, or included combined rows would leave
+    the whole unit suite green. These tests run the real query."""
+
+    def test_excludes_combined_rows(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        uncombined = _make_forecast(
+            sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(11)
+        )
+        combined = dataclasses.replace(
+            _make_forecast(sid, mid, aid, issued_at=_ISSUED_B, rng=random.Random(12)),
+            combination_strategy="pooled",
+        )
+        store.store_forecast(uncombined)
+        store.store_forecast(combined)
+
+        # _ISSUED_B (the combined row) is both later and within cutoff, so a
+        # query that forgot the `combination_strategy IS NULL` filter would
+        # return it instead of the older uncombined row.
+        result = store.fetch_latest_uncombined_issued_at(cutoff=_ISSUED_B)
+        assert result == _ISSUED_A
+
+    def test_respects_cutoff(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        fc_old = _make_forecast(
+            sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(13)
+        )
+        fc_new = _make_forecast(
+            sid, mid, aid, issued_at=_ISSUED_B, rng=random.Random(14)
+        )
+        store.store_forecast(fc_old)
+        store.store_forecast(fc_new)
+
+        # Cutoff sits exactly on the older row: the newer one must be
+        # excluded, not just de-prioritised.
+        result = store.fetch_latest_uncombined_issued_at(cutoff=_ISSUED_A)
+        assert result == _ISSUED_A
+
+        # Cutoff before both rows: nothing qualifies.
+        before_both = ensure_utc(datetime(2024, 12, 31, tzinfo=UTC))
+        assert store.fetch_latest_uncombined_issued_at(cutoff=before_both) is None
+
+    def test_out_of_order_insertion_still_returns_the_maximum(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Insert the LATER `issued_at` first — guards against a query that
+        (accidentally) relies on insertion/row order (e.g. `ORDER BY id
+        LIMIT 1`) rather than `MAX(issued_at)` over the values themselves."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        fc_new = _make_forecast(
+            sid, mid, aid, issued_at=_ISSUED_B, rng=random.Random(15)
+        )
+        fc_old = _make_forecast(
+            sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(16)
+        )
+        store.store_forecast(fc_new)
+        store.store_forecast(fc_old)
+
+        result = store.fetch_latest_uncombined_issued_at(cutoff=_ISSUED_B)
+        assert result == _ISSUED_B
+
+    def test_returns_none_when_empty(self, db_connection: sa.Connection) -> None:
+        store = PgForecastStore(db_connection)
+        result = store.fetch_latest_uncombined_issued_at(cutoff=_NOW)
         assert result is None
 
 

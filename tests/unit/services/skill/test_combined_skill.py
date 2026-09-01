@@ -359,7 +359,7 @@ class TestNoOverlap:
 
 
 class TestSingleModel:
-    def test_single_model_still_computes(
+    def test_single_model_yields_no_combined_skill(
         self,
         station_id: StationId,
         model_a: ModelId,
@@ -367,6 +367,14 @@ class TestSingleModel:
         clock: object,
         seasons: list[SeasonDefinition],
     ) -> None:
+        """Plan 222 T3 (D2) — `combine_ensembles_pooled` now requires at
+        least two `MEMBERS` contributors per parameter; a single-model
+        POOLED call produces no combined ensemble for any step, so
+        `compute_combined_skill` computes nothing. Pre-Plan-222 this
+        "pooled" a single model on its own. The real caller
+        (`flows/compute_skills.py`) already gates `len(hindcasts_by_model)
+        < 2` before reaching here — this direct-call test locks the
+        underlying function's own behaviour, not just the caller's guard."""
         steps = [_utc(2025, 1, i + 1) for i in range(4)]
         hindcasts = [
             _make_hindcast(
@@ -403,8 +411,8 @@ class TestSingleModel:
             uuid_factory=uuid4,
         )
 
-        assert len(scores) > 0
-        assert all(s.model_id == POOLED_MODEL_ID for s in scores)
+        assert scores == []
+        assert diagrams == []
 
 
 class TestCoverageLogging:

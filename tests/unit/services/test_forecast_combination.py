@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import random
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import polars as pl
 import pytest
 
 from sapphire_flow.services.forecast_combination import (
@@ -16,7 +18,8 @@ from sapphire_flow.services.run_station_forecast import (
     MultiModelForecastResult,
     StationForecastResult,
 )
-from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ModelCombinationStrategy,
@@ -96,6 +99,83 @@ def _make_multi(
     )
 
 
+def _members_ensemble_at(
+    *,
+    model_id: ModelId,
+    valid_times: list[UtcDatetime],
+    n_members: int,
+    parameter: str = "discharge",
+) -> ForecastEnsemble:
+    """Plan 222 T3 — unlike `tests.conftest.make_forecast_ensemble` (always
+    hourly steps from a shared epoch, so every fixture sits on the same
+    grid), this places an ensemble at an EXPLICIT `valid_times` set so a
+    test can put two models on disjoint or partially-overlapping grids —
+    the exact shape `combine_ensembles_pooled` never saw before Plan 222."""
+    rows = [
+        {"valid_time": vt, "member_id": m, "value": float(m) + 1.0}
+        for vt in valid_times
+        for m in range(n_members)
+    ]
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+        pl.col("member_id").cast(pl.Int32),
+    )
+    return ForecastEnsemble.from_members(
+        station_id=_STATION,
+        issued_at=_NOW,
+        parameter=parameter,
+        units="m3/s",
+        time_step=timedelta(hours=1),
+        values=df,
+        model_id=model_id,
+    )
+
+
+def _members_ensemble_ragged(
+    *,
+    model_id: ModelId,
+    member_counts: dict[UtcDatetime, int],
+    parameter: str = "discharge",
+) -> ForecastEnsemble:
+    """Plan 222 fixer round — unlike `_members_ensemble_at` (every
+    `valid_time` carries the FULL `n_members` set), this drops the
+    highest-numbered members at specific timestamps per `member_counts`, so
+    a single contributor can present a full member set at some timestamps
+    and a short one at others — the ragged-member shape the T3 fix's
+    presence-only intersection let through."""
+    rows = [
+        {"valid_time": vt, "member_id": m, "value": float(m) + 1.0}
+        for vt, count in member_counts.items()
+        for m in range(count)
+    ]
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+        pl.col("member_id").cast(pl.Int32),
+    )
+    return ForecastEnsemble.from_members(
+        station_id=_STATION,
+        issued_at=_NOW,
+        parameter=parameter,
+        units="m3/s",
+        time_step=timedelta(hours=1),
+        values=df,
+        model_id=model_id,
+    )
+
+
+def _result_with_ensemble(
+    model_id: ModelId, ensemble: ForecastEnsemble, parameter: str = "discharge"
+) -> StationForecastResult:
+    return StationForecastResult(
+        station_id=_STATION,
+        model_id=model_id,
+        artifact_id=ArtifactId(uuid4()),
+        forecasts=[],
+        new_state=None,
+        ensembles={parameter: ensemble},
+    )
+
+
 class TestCombineEnsemblesPooled:
     def test_two_members_ensembles_merged(self) -> None:
         rng_a = random.Random(1)
@@ -145,6 +225,49 @@ class TestCombineEnsemblesPooled:
         assert combined_max >= max(max_a, max_b) - 1e-9
 
     def test_quantiles_model_skipped(self) -> None:
+        """A quantiles-representation contributor is excluded from the
+        pool. A third MEMBERS model (`_MODEL_C`) keeps the surviving
+        contributor count at the D2 floor of two, on the same n_steps=10
+        grid as `_MODEL_A` — otherwise this would collapse into
+        `test_pooled_drops_parameter_below_two_contributors` below."""
+        ens_members_a = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=5,
+            n_steps=10,
+            model_id=_MODEL_A,
+        )
+        ens_members_c = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=4,
+            n_steps=10,
+            model_id=_MODEL_C,
+        )
+        ens_quantiles = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.QUANTILES,
+            n_members=9,
+            n_steps=10,
+            model_id=_MODEL_B,
+        )
+        result = combine_ensembles_pooled(
+            {
+                _MODEL_A: {"discharge": ens_members_a},
+                _MODEL_B: {"discharge": ens_quantiles},
+                _MODEL_C: {"discharge": ens_members_c},
+            }
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        # 5 + 4 members from models A and C (quantiles model skipped)
+        assert combined.member_count == 9
+
+    def test_pooled_drops_parameter_below_two_contributors(self) -> None:
+        """D2 (Plan 222 T3) — a parameter with only one MEMBERS contributor
+        is not published at all, not pooled on its own. Pre-Plan-222 this
+        published a single-model 'pool'."""
         ens_members = make_forecast_ensemble(
             station_id=_STATION,
             representation=EnsembleRepresentation.MEMBERS,
@@ -166,10 +289,7 @@ class TestCombineEnsemblesPooled:
             }
         )
 
-        assert "discharge" in result
-        combined = result["discharge"]
-        # Only 5 members from model A (quantiles model skipped)
-        assert combined.member_count == 5
+        assert result == {}
 
     def test_two_parameters_both_in_result(self) -> None:
         ens_a_q = make_forecast_ensemble(
@@ -359,6 +479,243 @@ class TestCombineEnsemblesBma:
         assert result["discharge"].model_id == BMA_MODEL_ID
 
 
+class TestCombineEnsemblesPooledGridAlignment:
+    """Plan 222 T3 (D2) — pooling on the `valid_time` INTERSECTION, not the
+    union. Reproduces the reported `_pooled` sawtooth: two models on
+    disjoint or partially-overlapping grids used to concatenate into a
+    union ensemble whose member count (and therefore the median)
+    alternated timestamp to timestamp
+    (`docs/plans/222-pooled-grid-alignment.md`)."""
+
+    def test_disjoint_grids_drop_the_parameter(self) -> None:
+        """Today: a union ensemble with an alternating member count — the
+        reported defect. After the fix: the parameter is absent entirely,
+        since the intersection is empty."""
+        vts_a = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3)]
+        vts_b = [ensure_utc(_NOW + timedelta(hours=h, minutes=1)) for h in (1, 2, 3)]
+        ens_a = _members_ensemble_at(model_id=_MODEL_A, valid_times=vts_a, n_members=5)
+        ens_b = _members_ensemble_at(model_id=_MODEL_B, valid_times=vts_b, n_members=3)
+
+        result = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+
+        assert "discharge" not in result
+
+    def test_partially_overlapping_grids_pool_only_the_intersection(self) -> None:
+        """Proves intersection rather than all-or-nothing suppression: the
+        3 shared timestamps are pooled, each with the FULL 8-member
+        contributor count — never an alternating one."""
+        vts_a = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3, 4)]
+        vts_b = [ensure_utc(_NOW + timedelta(hours=h)) for h in (2, 3, 4, 5)]
+        ens_a = _members_ensemble_at(model_id=_MODEL_A, valid_times=vts_a, n_members=5)
+        ens_b = _members_ensemble_at(model_id=_MODEL_B, valid_times=vts_b, n_members=3)
+
+        result = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        overlap = {ensure_utc(_NOW + timedelta(hours=h)) for h in (2, 3, 4)}
+        assert set(combined.values["valid_time"].to_list()) == overlap
+        for vt in overlap:
+            n_rows = combined.values.filter(pl.col("valid_time") == vt).height
+            assert n_rows == 8
+
+    def test_three_contributors_intersect_all_three_not_just_the_first_two(
+        self,
+    ) -> None:
+        """The reported incident involved THREE ensembles, not two — an
+        implementation that only intersects its first two contributors
+        (e.g. accumulating pairwise but stopping early, or ignoring a
+        third model entirely) would still pass every two-model test above.
+        Model C narrows the A/B intersection {t2,t3,t4} down to {t3,t4}."""
+        vts_a = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3, 4)]
+        vts_b = [ensure_utc(_NOW + timedelta(hours=h)) for h in (2, 3, 4, 5)]
+        vts_c = [ensure_utc(_NOW + timedelta(hours=h)) for h in (3, 4, 5, 6)]
+        ens_a = _members_ensemble_at(model_id=_MODEL_A, valid_times=vts_a, n_members=5)
+        ens_b = _members_ensemble_at(model_id=_MODEL_B, valid_times=vts_b, n_members=3)
+        ens_c = _members_ensemble_at(model_id=_MODEL_C, valid_times=vts_c, n_members=4)
+
+        result = combine_ensembles_pooled(
+            {
+                _MODEL_A: {"discharge": ens_a},
+                _MODEL_B: {"discharge": ens_b},
+                _MODEL_C: {"discharge": ens_c},
+            }
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        expected = {ensure_utc(_NOW + timedelta(hours=h)) for h in (3, 4)}
+        assert set(combined.values["valid_time"].to_list()) == expected
+        for vt in expected:
+            n_rows = combined.values.filter(pl.col("valid_time") == vt).height
+            assert n_rows == 12
+        assert combined.values.height == 24
+
+    def test_ragged_contributor_is_dropped_not_pooled_incomplete(self) -> None:
+        """`_MODEL_A` presents its FULL 5-member set at t1 and t2, but only
+        4 members at t3 (one member's row is simply missing — the ragged
+        shape a presence-only `valid_time` intersection let through:
+        `_MODEL_A` still 'has' t3, just incompletely). Pooling on t3 would
+        reproduce the sawtooth (9 rows there vs. 10 at t1/t2); the
+        timestamp must be dropped from the intersection instead."""
+        t1, t2, t3 = (ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3))
+        ens_a = _members_ensemble_ragged(
+            model_id=_MODEL_A,
+            member_counts={t1: 5, t2: 5, t3: 4},
+        )
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=[t1, t2, t3], n_members=5
+        )
+
+        result = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        assert set(combined.values["valid_time"].to_list()) == {t1, t2}
+        for vt in (t1, t2):
+            n_rows = combined.values.filter(pl.col("valid_time") == vt).height
+            assert n_rows == 10
+
+    def test_duplicate_member_row_drops_that_timestamp_not_pooled_overweighted(
+        self,
+    ) -> None:
+        """D2 — completeness is counted BOTH ways (row count AND
+        `n_unique(member_id)`), each independently able to catch a defect
+        the other misses. At t1, member 1's row is dropped and member 0's
+        row is duplicated in its place: still 5 rows total (row count
+        alone says "complete"), but only 4 unique member ids — `{0, 2, 3,
+        4}` — with member 1 silently missing (`n_unique` alone says
+        "incomplete", but only by comparing against the wrong signal if a
+        row-count check is skipped). A check that only counts rows would
+        wrongly accept t1 as complete and let `_ensemble_points()`
+        overweight member 0's duplicated value while silently dropping
+        member 1 — neither `ForecastEnsemble.from_members` nor the
+        database enforces uniqueness of `(valid_time, member_id)`. t2
+        carries the model's full, unique `{0..4}` set (establishing the
+        contributor's true 5-member total) and has no duplicate, so it
+        must stay; t1 must be dropped from the intersection."""
+        t1, t2 = (ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2))
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=[t1, t2], n_members=5
+        )
+        without_member_1_at_t1 = ens_a.values.filter(
+            ~((pl.col("valid_time") == t1) & (pl.col("member_id") == 1))
+        )
+        duplicate_member_0_at_t1 = ens_a.values.filter(
+            (pl.col("valid_time") == t1) & (pl.col("member_id") == 0)
+        )
+        ens_a = replace(
+            ens_a,
+            values=pl.concat([without_member_1_at_t1, duplicate_member_0_at_t1]),
+        )
+        # t1 now has 5 rows (row count matches the full 5-member total) but
+        # only 4 unique member ids — the shape a row-count-only check would
+        # wrongly accept.
+        at_t1 = ens_a.values.filter(pl.col("valid_time") == t1)
+        assert at_t1.height == 5
+        assert at_t1["member_id"].n_unique() == 4
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=[t1, t2], n_members=5
+        )
+
+        result = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        assert set(combined.values["valid_time"].to_list()) == {t2}
+        assert combined.values.filter(pl.col("valid_time") == t2).height == 10
+
+    def test_extra_duplicate_row_drops_that_timestamp_even_with_all_members_unique(
+        self,
+    ) -> None:
+        """D2's other half — the previous test (5 rows / 4 unique member
+        ids) locks the `n_unique(member_id)` check, but an implementation
+        that checks ONLY `n_unique` (never comparing row COUNT against the
+        contributor's member total) would still pass it, since `n_unique`
+        alone already flags that shape as incomplete. This test locks the
+        row-count check independently: at t1, member 0's row is
+        duplicated IN ADDITION to its own row (not in its place) — so all
+        5 members `{0..4}` are present and unique, but there are 6 rows.
+        `n_unique(member_id) == 5` says "complete"; only the row-count
+        comparison (`n_rows == 5`) catches the extra row and drops t1.
+        t2 carries the model's full, unique, non-duplicated `{0..4}` set
+        and must stay in the intersection."""
+        t1, t2 = (ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2))
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=[t1, t2], n_members=5
+        )
+        duplicate_member_0_at_t1 = ens_a.values.filter(
+            (pl.col("valid_time") == t1) & (pl.col("member_id") == 0)
+        )
+        ens_a = replace(
+            ens_a,
+            values=pl.concat([ens_a.values, duplicate_member_0_at_t1]),
+        )
+        # t1 now has 6 rows but still all 5 unique member ids — the shape
+        # an n_unique-only check would wrongly accept.
+        at_t1 = ens_a.values.filter(pl.col("valid_time") == t1)
+        assert at_t1.height == 6
+        assert at_t1["member_id"].n_unique() == 5
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=[t1, t2], n_members=5
+        )
+
+        result = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        assert set(combined.values["valid_time"].to_list()) == {t2}
+        assert combined.values.filter(pl.col("valid_time") == t2).height == 10
+
+    def test_single_shared_timestamp_pools_directly_but_is_not_persisted(
+        self,
+    ) -> None:
+        """D6 — a single shared timestamp is a legal `combine_ensembles_pooled`
+        result (the skill combiner calls the same function per hindcast
+        step, where one timestamp is normal) but must never reach
+        `build_combined_forecasts()`'s output: the store would fabricate a
+        one-hour `time_step` for it — a fresh instance of the sawtooth
+        defect."""
+        vts = [ensure_utc(_NOW + timedelta(hours=1))]
+        ens_a = _members_ensemble_at(model_id=_MODEL_A, valid_times=vts, n_members=5)
+        ens_b = _members_ensemble_at(model_id=_MODEL_B, valid_times=vts, n_members=3)
+
+        direct = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+        assert "discharge" in direct
+        assert direct["discharge"].member_count == 8
+
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+        )
+
+        assert forecasts == []
+
+
 class TestBuildCombinedForecasts:
     def test_pooled_two_models_returns_forecasts(self) -> None:
         result_a = _make_result(_MODEL_A, n_members=5)
@@ -454,3 +811,102 @@ class TestBuildCombinedForecasts:
                 clock=_clock,  # type: ignore[arg-type]
                 uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             )
+
+
+class TestBuildCombinedForecastsUniformSpacing:
+    """D6 fixer round — counting retained timestamps is not enough: an
+    INTERIOR drop (as opposed to a trailing one) leaves a non-uniform grid
+    that a count-only floor still persists. `store/forecast_store.py`
+    derives `native_step_seconds` from the first two rows on readback, so
+    an irregular grid publishes one misleading step — the original defect
+    in a new costume (`docs/plans/222-pooled-grid-alignment.md` D6)."""
+
+    def test_interior_incomplete_timestamp_yields_ragged_grid_not_persisted(
+        self,
+    ) -> None:
+        """4 candidate timestamps t1..t4, hourly. `_MODEL_B` is short one
+        member only at the INTERIOR t2 (not the final timestamp — the case
+        the pre-existing ragged test never covers). The intersection is
+        {t1, t3, t4}: deltas of 2h then 1h, not uniform. Direct pooling
+        still legally returns it (D6 lives only at the persistence
+        boundary); `build_combined_forecasts()` must not persist it."""
+        t1, t2, t3, t4 = (ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3, 4))
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=[t1, t2, t3, t4], n_members=5
+        )
+        ens_b = _members_ensemble_ragged(
+            model_id=_MODEL_B,
+            member_counts={t1: 5, t2: 4, t3: 5, t4: 5},
+        )
+
+        direct = combine_ensembles_pooled(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
+        )
+        assert set(direct["discharge"].values["valid_time"].to_list()) == {
+            t1,
+            t3,
+            t4,
+        }
+
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+        )
+
+        assert forecasts == []
+
+    def test_uniformly_coarsened_intersection_derives_time_step_from_grid(
+        self,
+    ) -> None:
+        """D6 fixer round (review) — both contributors are declared hourly
+        (`_members_ensemble_at` hardcodes `time_step=timedelta(hours=1)`)
+        but are only actually present at every OTHER hour: t1, t3, t5. The
+        intersection {t1, t3, t5} is uniform (`_derive_uniform_time_step`
+        passes it — a single 2h delta), so the count-and-uniformity floor
+        alone would happily persist it with the stale 1h label carried
+        over from `ref_ensemble.time_step`. The persisted forecast's
+        `ensemble.time_step` must reflect the grid that actually survived
+        (2h), not the declared-but-no-longer-true step, or an in-memory
+        read and a post-persistence reload (`store/forecast_store.py`
+        derives `native_step_seconds` from the first two rows) disagree
+        about the same forecast."""
+        t1, t3, t5 = (ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 3, 5))
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=[t1, t3, t5], n_members=5
+        )
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=[t1, t3, t5], n_members=5
+        )
+        assert ens_a.time_step == timedelta(hours=1)
+
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].ensemble.time_step == timedelta(hours=2)

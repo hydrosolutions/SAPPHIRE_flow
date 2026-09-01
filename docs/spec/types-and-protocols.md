@@ -2560,6 +2560,15 @@ class ForecastStore(Protocol):
         status: ForecastStatus | None = None,
         parameter: str | None = None,
     ) -> list[OperationalForecast]: ...
+    def fetch_latest_uncombined_issued_at(
+        self, cutoff: UtcDatetime
+    ) -> UtcDatetime | None: ...
+        # Plan 222 T7 (D7, revised) — MAX(issued_at) WHERE
+        # combination_strategy IS NULL AND issued_at <= cutoff, across every
+        # station and model. The Forecast Lab export's ONE snapshot-wide
+        # publication-cycle marker: forecast rows are the authoritative
+        # record of what was published, unlike the best-effort
+        # FORECAST_FRESHNESS heartbeat.
 ```
 
 #### HindcastStore
@@ -4161,9 +4170,13 @@ Module: `services/forecast_combination.py`
 def combine_ensembles_pooled(
     ensembles: dict[ModelId, dict[str, ForecastEnsemble]],
 ) -> dict[str, ForecastEnsemble]:
-    """Merge all models' member ensembles into a grand pooled ensemble per parameter.
-    Only MEMBERS-representation ensembles are included; QUANTILES ensembles are skipped
-    with a warning. Member IDs are remapped sequentially to avoid collision."""
+    """Merge >=2 models' member ensembles into a pooled ensemble per parameter, over the
+    INTERSECTION of their valid_time sets (Plan 222 D2) — never the union: two model
+    families can sit on different grids, and unioning let the member count (and the
+    median) alternate timestamp to timestamp. Only MEMBERS-representation ensembles are
+    included; QUANTILES ensembles are skipped with a warning. A parameter with fewer
+    than 2 MEMBERS contributors, or an empty intersection, is dropped entirely — never
+    narrowed to a smaller pool. Member IDs are remapped sequentially to avoid collision."""
 
 def compute_bma_weights(
     skill_scores: dict[ModelId, float],  # model_id → mean CRPS (lower is better)
@@ -4210,7 +4223,25 @@ def build_combined_forecasts(
     Returns empty list if fewer than 2 combinable models succeeded (caller falls back to primary).
     Sets combination_strategy, source_model_ids, model_artifact_id=None, and sentinel model_id.
     When strategy=BMA and weights are provided, delegates to combine_ensembles_bma();
-    falls back to combine_ensembles_pooled() if weights are absent."""
+    falls back to combine_ensembles_pooled() if weights are absent.
+    Plan 222 D6: a combined ensemble left with fewer than 2 distinct valid_times (a
+    single-timestamp pooling intersection) is DROPPED here, not persisted — the store
+    would otherwise fabricate a 1-hour time_step for it. A single-timestamp ensemble is
+    still a legal combine_ensembles_pooled() result; the floor is this persistence
+    boundary only (services/skill/combined_skill.py calls the shared combine function
+    directly and is unaffected).
+    Plan 222 D6 (fixer round): >= 2 distinct valid_times is not sufficient either — the
+    intersection can drop an INTERIOR timestamp instead of a trailing one, leaving unequal
+    consecutive gaps; that non-uniform grid is DROPPED here too, for the same
+    persistence-boundary reason (the store derives native_step_seconds from the first
+    pair on readback). Even when the surviving valid_times ARE uniformly spaced, the
+    delta they actually have can differ from the ref contributor's DECLARED time_step —
+    a uniformly COARSENED intersection (e.g. an hourly contributor reduced by the
+    intersection to every other timestamp) keeps combine_ensembles_pooled()'s stale
+    ref_ensemble.time_step. The persisted ensemble's time_step is therefore derived
+    from the surviving grid's sole consecutive delta and rebuilt via
+    dataclasses.replace() before persistence, never taken as-is from the combine
+    functions' output, so an in-memory read and a post-persistence reload agree."""
 ```
 
 ### Combined skill computation service
