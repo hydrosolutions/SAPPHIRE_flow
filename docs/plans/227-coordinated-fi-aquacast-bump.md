@@ -13,16 +13,28 @@ source: 2026-09-01 local test run — re-pinning aquacast alone fails to resolve
 
 ## Status
 
-**BLOCKED on Plan 151 (forecast-cycle redesign Phase 3) — owner decision 2026-09-01: T3 option (b).**
+**BLOCKED — awaiting a fresh owner decision. The previous block was on a dependency that cannot
+deliver it, and that is my error, not the owner's.**
 
-Not deferred vaguely: Phase 1 (Plan 148) and Phase 2 (Plan 150) are COMPLETE and archived, and
-Phase 3 (Plan 151) is **READY** with `services/track_projection.py` and
-`services/track_resolution.py` already written (2026-08-18/20). The two-horizon carrier this plan
-needs is squarely Phase 3's territory, so landing option (a) would mean recording a
-declared-but-not-honoured limitation and removing it weeks later.
+On 2026-09-01 this plan was marked "blocked on Plan 151 (Phase 3) landing a two-horizon carrier".
+**Plan 151 will never deliver that, and has already landed anyway:**
 
-**Do not implement T1 until Plan 151 lands a carrier that can hold an acceptance floor separately
-from a useful maximum.** Then this becomes a small, honest bump.
+- **151 explicitly DROPS `AT_MOST` handling.** Its **D34** chose option (a) — *"DROP the T7
+  route-time `AT_MOST` guard"* — because *"the axis is unreachable twice over (FI pinned at v0.1.19
+  has no `horizon_semantics`; and `discover_models()` hands the runner a `ForecastInterfaceAdapter`
+  that does not expose `input_requirement` at all)"*. Per-feature `AT_MOST` floors are recorded as
+  **not expressible and an accepted cost** (151 D10a).
+- **151's own revisit trigger is this very bump**: *"an FI bump to >= v0.1.20 AND a
+  per-track-eligible model declaring divergent per-variable `min_future_steps`."*
+- **151 is essentially complete**: T1-T4 merged 2026-08-18 (PR #182), T5-T7 on 2026-08-19
+  (PR #192), T8b on 2026-08-28 (PR #227); the design marks Phase 3 **LANDED**
+  (`docs/design/forecast-cycle-redesign.md:305`).
+
+**So the dependency runs the OTHER way.** 151 waits for the FI bump; this plan was set to wait for
+151. Left as written it would sit dormant forever. **The owner chose option (b) on my incorrect
+framing and must be asked again**, with the real choice being: land the bump (which satisfies half
+of D34's revisit trigger, and leaves `AT_MOST` unhonoured exactly as 151 already accepts), or open
+a separate plan for the carrier work 151 deliberately excluded and marked settled.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -89,7 +101,7 @@ inert, while aquacast starts declaring semantics we still cannot see.
    (`adapters/forecast_interface.py:525`);
 2. projection carries that maximum unchanged (`services/track_projection.py:64`);
 3. candidate resolution **rejects** any feed shorter than it, *before the adapter runs*
-   (`services/track_resolution.py:122`).
+   (`services/track_resolution.py:146`).
 
 So a 5-step feed against an `AT_MOST(max=15, min=1)` requirement is thrown out upstream. **No
 adapter-only change can make T2's "shorter horizon succeeds" gate pass.**
@@ -129,7 +141,14 @@ an *acceptance floor* from a *useful maximum*.
 
 ## ⚠️ Carry-forward for Plan 151 — do not lose this
 
-`services/horizon_semantics.py` is **inert today**, independently of any bump.
+**Correction (2026-09-01, third review): the service is NOT dead code, and an earlier draft of
+this section was wrong to imply it.** `resolve_required_steps()` consults a static provider table,
+`HORIZON_CEILING_FLOORS` (`services/horizon_semantics.py:139`), where `cmal_pool_pt` carries a
+floor of **5** (`types/ids.py:69-71`), and runner tests prove that fallback changes acceptance at
+the real seam (`tests/unit/services/test_run_station_forecast.py:1150`). **Retiring the service
+would remove working short-frame support.**
+
+What IS inert is only the *model-declaration branch*:
 `_model_declared_floor()` reads `input_requirement` off the model, but the runners pass the wrapped
 adapter (`services/run_station_forecast.py:255`, `:285`; `services/run_group_forecast.py:389`),
 which exposes only a private `_model`. So the floor lookup always finds nothing and the whole
@@ -154,10 +173,15 @@ new fields, which it already appears to do.
 *Exit:* an AT_MOST declaration is visible to the service through the wrapper, proven by a test
 that fails today; the existing `test_horizon_semantics.py` suite still passes.
 
-### T3 — DECISION REQUIRED, not implementation: the one-horizon carrier
+### T3 — SUPERSEDED. Do not execute either option.
+*The (a)/(b) choice below was put to the owner on a false premise (that Plan 151 would deliver
+the carrier). It is void. No implementer may act on it; the plan is blocked pending a fresh
+decision — see § Status.*
+
+#### Original framing, kept as the record
 **This plan cannot deliver "a shorter horizon is accepted" and must not pretend to.**
 `ForcingRequired` (`types/forcing_track.py:85`) carries one horizon per feature, and resolution
-rejects short feeds before the adapter runs (`services/track_resolution.py:122`). Splitting it
+rejects short feeds before the adapter runs (`services/track_resolution.py:146`). Splitting it
 into floor-and-maximum touches projection, resolution and assembly — **squarely inside
 `docs/design/forecast-cycle-redesign.md`, which this plan is forbidden to pre-empt.**
 
