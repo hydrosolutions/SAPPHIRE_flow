@@ -15,6 +15,27 @@ source: 2026-09-01 — owner ruling that Plan 151's AT_MOST shortcut was a worka
 
 **DRAFT.** Not for implementation until the owner confirms.
 
+## ⛔ Proportionality is a binding constraint on this plan AND on its review
+
+This plan makes **one value into two** along a path that already exists, and lets a declaration
+already being made reach code already written to consume it. It is deliberately larger than a
+dependency bump and deliberately smaller than a redesign.
+
+**Rules binding every reviewer:**
+
+1. **"No findings" is a complete and welcome review.** Do not manufacture findings to justify a pass.
+2. **A finding must name a CONCRETE FAILURE** with `file:line` and a consequence.
+3. **Do not propose new apparatus** — no new abstraction layer, no horizon framework, no strategy
+   pattern, no new service, no CI job, no telemetry.
+4. **Do not widen this into the multi-resolution work** (Plan 153) or reopen Plan 151 beyond
+   D34/D10a. Those non-goals are load-bearing.
+5. **Do not propose deleting `HORIZON_CEILING_FLOORS`.** D1 explains why: it is the working
+   short-record support today.
+6. **Do not re-argue whether to do this at all.** The owner ruled on 2026-09-01 that the August
+   compromise was a workaround pending exactly this update.
+7. **Adding length is a cost.** Prefer deleting to adding; a shorter plan that still passes its exit
+   gates is a better plan.
+
 ## In plain terms, before the detail
 
 Today our system decides how much future weather data a model needs, demands exactly that much, and
