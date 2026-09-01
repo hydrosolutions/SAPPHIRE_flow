@@ -13,7 +13,9 @@ source: 2026-09-01 — measured on the live mini during Plan 226's T-M task
 
 ## Status
 
-**DRAFT — HIGH PRIORITY.** Awaiting owner READY and two decisions (D1, D2).
+**DRAFT — HIGH PRIORITY.** Awaiting owner READY. **All three decisions are settled** (owner,
+2026-09-01) and both investigations they asked for are done — see D1's FI finding and the training
+result below.
 
 Both defects are **live on the mac-mini right now**. Skill scoring ran 1.5 hours before this plan
 was written. Nothing here is hypothetical or projected — every number below was measured.
@@ -71,7 +73,31 @@ ranking — is drawing on corrupted input.
 
 ## Decisions the owner must make
 
-### D1 — where does the daily-averaging fix go? ⚠️ OPEN
+### D1 — where does the daily-averaging fix go? (owner-settled: **C**, and it is CONFORMANCE)
+
+**🔴 The ForecastInterface contract already requires C. We are violating it.** The owner's intuition
+was that "this is what we claim with the ForecastInterface"; checked against the pinned package
+(`forecastinterface` v0.1.19, `.venv/.../forecast_interface/`), it is exactly right:
+
+- `InputRequirement.dynamic` is `dict[datetime.timedelta, SpatialInputSpec]`
+  (`input/requirement.py:41`) — **the time step is the KEY**. A model declaring
+  `{timedelta(days=1): ...}` is declaring that its inputs arrive daily.
+- `PastKnownVariable.lookback` is an `int` (`input/variable.py:14-15`) — **a count of STEPS**, not a
+  duration. "7" means seven of the declared step, and the model is entitled to read it that way.
+- `PastKnownVariable.aggregation: AggregationMethod | None` (`input/variable.py:18`) — the model
+  declares **how** its data should be aggregated to that step. That field is meaningless unless the
+  **provider** performs the aggregation.
+
+So the contract says: *deliver `lookback` steps of size `time_step`, aggregated by `aggregation`.*
+Our hindcast path delivers raw 10-minute rows against a declared `timedelta(days=1)`, and the model
+does precisely what the contract entitles it to do. **This is not a model bug and not a new
+requirement — it is SAP3 failing to meet a contract it already claims**, which
+`CLAUDE.md` § ForecastInterface Adherence classifies as "our code violates the FI → fix our code".
+
+**Therefore C is not the expensive option; it is the correct one.** A is the mechanism (the provider
+aggregates, exactly as `services/operational_inputs.py:551` already does); C is the enforcement that
+makes a silent violation impossible. Implement both: aggregate at the boundary, and validate that
+what was delivered matches what was declared.
 
 | | Option | Cost | Risk |
 |---|---|---|---|
@@ -79,25 +105,38 @@ ranking — is drawing on corrupted input.
 | **B** | **Each model resamples its own lookback** before taking its tail | 2-3 models, via a shared helper | Models become correct regardless of caller; but it changes model internals and must be proven a no-op in the operational path |
 | **C** | **Validate at the boundary** — the model declares a `time_step`, and input assembly fails loudly when the delivered cadence does not match it | Largest | Makes silent recurrence impossible anywhere, but needs a single validation point both paths pass through |
 
-**Recommended: A plus the guard from C** — fix the assembly so scores become correct now, and add a
-cheap assertion that the delivered lookback actually spans the declared window, so this cannot
-silently recur. B is the better long-term shape and is a larger behaviour change; it can follow.
+**Settled: C, implemented as A + enforcement.** B (models resampling their own inputs) is now
+explicitly **rejected**: under the FI contract, aggregation is the provider's responsibility, so
+pushing it into models would move us *further* from conformance, not closer.
 
-### D2 — how is the scoring comparison fixed? ⚠️ OPEN (owner has said "fix", not which)
+### D2 — how is the scoring comparison fixed? (owner-settled: **B**)
 
 | | Option |
 |---|---|
 | **A** | Resample the observation lookup to **daily means** before the join |
 | **B** | Resample to the **forecast's own `time_step`**, whatever it is — the same fix, done once, correct for sub-daily models too |
 
-**Recommended: B.** A is B special-cased to today's only cadence.
+**Settled: B.** A is B special-cased to today's only cadence.
+
+To be explicit about what B means, because it is the whole point: **the observed runoff must be
+aggregated to the forecast's step before comparison.** An instantaneous reading cannot be compared
+against a daily-average forecast. The aggregation method must match the one the model trains
+against (`_V0_AGGREGATION_FALLBACK`, `services/training_data.py:69-73`) — mean for discharge — or
+the fix substitutes one mismatch for another.
 
 ### D3 — what happens to the 106 910 existing scores?
 
-They cannot be repaired in place; they must be recomputed after D1 and D2 land. The owner decides
-whether to **delete** them, **mark them superseded**, or **recompute and overwrite**. Leaving them
-readable and unmarked is the one option this plan rejects: a wrong skill number that looks
-authoritative is worse than an absent one.
+They cannot be repaired in place; they must be recomputed after D1 and D2 land.
+
+**Settled (owner, 2026-09-01): MARK them superseded, and only once the running process finishes.**
+
+⛔ **Do not interfere with the mac-mini.** A station-onboarding run and its hindcasting are in
+flight and are **a deliberate test**. They will keep producing scores that carry both defects; that
+is accepted. The test's value is in exercising the pipeline, not in the numbers it emits.
+
+Sequence: let onboarding and hindcasting finish → mark every score predating the fix as superseded
+→ land D1 and D2 → recompute all hindcasts and scores. Marking is chosen over deletion so the test
+run's *existence* stays auditable while its *numbers* stop being trusted.
 
 ## Tasks
 
@@ -118,8 +157,11 @@ cadence and assert that what the model receives spans the declared lookback wind
 - Anchoring the daily models' `valid_time` — **Plan 226**, which this plan blocks.
 - Any change to model maths, coefficients, or artifacts.
 - Any change to the operational forecast path, which is correct today.
-- Retraining. Training uses its own assembly path; whether it shares this defect is a question for
-  T1's measurement, not an assumption for this plan.
+- Retraining. **Investigated at the owner's request (2026-09-01): the training path is CLEAN.**
+  `build_station_training_data` resamples before use — `past_targets_df = resample_to_time_step(...)`
+  (`services/training_data.py:285-287`) — exactly as the operational path does. **Model artifacts are
+  therefore NOT corrupted, and no retraining is required by this plan.** The defect is confined to
+  the hindcast path: training resamples, operational resamples, hindcast does not.
 
 ## Exit gates
 
