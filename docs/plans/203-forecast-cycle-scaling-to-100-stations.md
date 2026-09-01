@@ -23,6 +23,29 @@ wrong one, and the real one is not yet measured. This plan produces two numbers 
 Reviewers: do not propose `task.map`, async rewrites, worker pools, caching or a queue here — that
 belongs to whichever plan T1's numbers justify.
 
+### ⛔ Note to the `/plan` workflow agents (planner AND reviewers) — read before your first round
+
+**This plan is two tasks and must still be two tasks when you converge. Growth is a defect here,
+not thoroughness.** This repo has a recorded failure mode where `/plan` over-expands a doc until it
+contradicts itself and stalls (that is how Plan 149 died, and Plan 229 needed a dedicated round to
+undo its own expansion). Do not repeat it.
+
+**Do NOT add:** new tasks or phases, a JSON dependency graph, rollback/migration sections, a test
+matrix, new files or modules, CI changes, config flags, or restatements of `CLAUDE.md` conventions
+back at the plan. T1 is a **heredoc measurement**, not a committed script — keep it that way.
+
+**Valid blockers are narrow.** Raise one only if: (a) T1's method would not actually produce the
+two curves it promises; (b) an exit criterion is not checkable as written; (c) a number or citation
+in "What is already measured" is wrong or unsupported by the quoted log line; or (d) the plan
+contradicts the repo (wrong path, wrong config key, wrong flow name — cite `file:line`).
+
+**Explicitly OUT of bounds for review:** proposing any optimisation design, arguing the plan should
+"also" fix the download, or expanding scope to the items under "Separately worth knowing". Those
+are deliberately deferred and their deferral is not a finding.
+
+**Converge fast. A round that finds nothing is a success, not a failed round.** If your only
+suggestion is additive, the correct output is "no blockers, no majors".
+
 ## What is already measured (mac mini, 2026-08-27T13:29Z, 2 stations)
 
 A cycle is **~95 % NWP download, and that cost is FIXED per cycle** — it does not grow with
