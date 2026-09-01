@@ -63,7 +63,7 @@ future-known variables"*. `FutureKnownVariable` gains:
 ## The actual risk — corrected by review; my first framing was wrong
 
 **An earlier draft claimed our side "has never heard of" horizon semantics. That is false.** It
-was based on grepping only the adapter and the shim. They are referenced across  and  in several places,
+was based on grepping only the adapter and the shim. They are referenced across `src/` and `tests/` in several places,
 including a whole service — `services/horizon_semantics.py` (written 2026-08-15) with its own
 tests at `tests/unit/services/test_horizon_semantics.py`.
 
