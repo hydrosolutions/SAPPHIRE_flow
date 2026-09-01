@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: BLOCKED
 created: 2026-09-01
 plan: 227
 title: Bump ForecastInterface and aquacast together, and honour the new horizon semantics
@@ -13,7 +13,16 @@ source: 2026-09-01 local test run — re-pinning aquacast alone fails to resolve
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**BLOCKED on Plan 151 (forecast-cycle redesign Phase 3) — owner decision 2026-09-01: T3 option (b).**
+
+Not deferred vaguely: Phase 1 (Plan 148) and Phase 2 (Plan 150) are COMPLETE and archived, and
+Phase 3 (Plan 151) is **READY** with `services/track_projection.py` and
+`services/track_resolution.py` already written (2026-08-18/20). The two-horizon carrier this plan
+needs is squarely Phase 3's territory, so landing option (a) would mean recording a
+declared-but-not-honoured limitation and removing it weeks later.
+
+**Do not implement T1 until Plan 151 lands a carrier that can hold an acceptance floor separately
+from a useful maximum.** Then this becomes a small, honest bump.
 
 ## ⛔ Proportionality is a binding constraint on this plan AND on its review
 
@@ -117,6 +126,16 @@ an *acceptance floor* from a *useful maximum*.
 - **D4 — This plan does NOT enable aquacast in the deployed image.** That works at the *current*
   pin and is separate (Plan 218's outstanding gate + the `WITH_AQUACAST=1` build). Keeping them
   apart means a failure here cannot block getting a working model onto the mini.
+
+## ⚠️ Carry-forward for Plan 151 — do not lose this
+
+`services/horizon_semantics.py` is **inert today**, independently of any bump.
+`_model_declared_floor()` reads `input_requirement` off the model, but the runners pass the wrapped
+adapter (`services/run_station_forecast.py:255`, `:285`; `services/run_group_forecast.py:389`),
+which exposes only a private `_model`. So the floor lookup always finds nothing and the whole
+service is dead code. **That is a latent defect on its own merits**, not a consequence of the FI
+version, and Phase 3 should either fix it or explicitly retire the service. If Phase 3 ships
+without addressing it, this plan's T2 becomes orphaned work.
 
 ## Tasks
 
