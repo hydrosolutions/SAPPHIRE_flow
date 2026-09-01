@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-01
 plan: 228
 title: Every skill score in the database is computed on the wrong comparison, and two models hindcast on 70 minutes of history
@@ -13,9 +13,14 @@ source: 2026-09-01 — measured on the live mini during Plan 226's T-M task
 
 ## Status
 
-**DRAFT — HIGH PRIORITY.** Awaiting owner READY. **All three decisions are settled** (owner,
-2026-09-01) and both investigations they asked for are done — see D1's FI finding and the training
-result below.
+**READY — HIGH PRIORITY.** Owner confirmed 2026-09-01. Cleared for `/implement`.
+
+All three decisions are settled (D1 = C, D2 = B, D3 = mark superseded), both requested
+investigations are done (the FI contract finding under D1; training is clean, see Non-goals), and
+an independent Codex pass verified all nine load-bearing factual claims with no blockers.
+
+⛔ **Do not implement against the mac-mini until its onboarding and hindcasting test finishes**
+(D3). The code fix can be built and merged meanwhile; only the marking and the recompute wait.
 
 Both defects are **live on the mac-mini right now**. Skill scoring ran 1.5 hours before this plan
 was written. Nothing here is hypothetical or projected — every number below was measured.
