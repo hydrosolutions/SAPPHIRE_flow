@@ -26,7 +26,8 @@ into a redesign of horizon handling — the forecast-cycle redesign
 1. **"No findings" is a complete and welcome review.**
 2. **A finding must name a CONCRETE FAILURE** with `file:line`.
 3. **Do not propose new apparatus** — no new abstraction layer, no horizon framework.
-4. **Do not propose splitting the bump.** § D1 shows the resolver forbids it.
+4. **Do not propose splitting the bump.** D1 explains why coordinated is the smallest sensible
+   unit — note it is a *preference backed by the resolver*, not a literal impossibility.
 5. **Adding length is a cost.**
 
 ## Why this is not a one-line pin change — measured, not assumed
@@ -62,7 +63,7 @@ future-known variables"*. `FutureKnownVariable` gains:
 ## The actual risk — corrected by review; my first framing was wrong
 
 **An earlier draft claimed our side "has never heard of" horizon semantics. That is false.** It
-was based on grepping only the adapter and the shim. Repo-wide there are **20 references**,
+was based on grepping only the adapter and the shim. They are referenced across  and  in several places,
 including a whole service — `services/horizon_semantics.py` (written 2026-08-15) with its own
 tests at `tests/unit/services/test_horizon_semantics.py`.
 
@@ -97,7 +98,12 @@ an *acceptance floor* from a *useful maximum*.
   possible** — aquacast v0.1.346 imports `HorizonSemantics`, so it cannot run on FI v0.1.19.
   An earlier draft called this a resolver impossibility; that was overstated.
 
-- **D2 — Honour `AT_MOST`, or fail loudly. Never silently treat it as `EXACT`.** Silent coercion
+- **D2 — Never SILENTLY treat `AT_MOST` as `EXACT`. Either honour it, or record explicitly that
+  it is declared-but-not-honoured, and why.** The FI rule CLAUDE.md enforces is against
+  *quietly* patching around a contract; a documented, deliberate limitation is not that. Which
+  of the two applies is settled by T3, and the exit gates below branch on that choice — an
+  earlier draft demanded honouring unconditionally while T3 permitted deferring it, which no
+  implementer could satisfy. Silent coercion
   is the FI-adherence violation CLAUDE.md forbids: *if our side cannot express what the contract
   needs, file an issue upstream — do not patch around it on the SAP3 side.* If honouring AT_MOST
   turns out to need more than the adapter can express, **stop and raise an FI issue** rather than
@@ -161,5 +167,10 @@ horizon redesign · onboarding `cmal_small` or any model · touching the mini.
 ## Exit gates
 
 - `uv lock` resolves with both pins bumped, and rich stays 14.x.
-- AT_MOST is honoured, EXACT is unchanged, both locked by tests proven RED first.
+- **If T3 = (a):** the adapter exposes `input_requirement`, `_model_declared_floor()` sees the
+  declaration through the wrapper, and the plan records in-repo that AT_MOST is declared but
+  **not yet honoured**, naming `types/forcing_track.py:85` as the reason. EXACT is unchanged.
+- **If T3 = (b):** AT_MOST is honoured end-to-end — a feed shorter than the declared maximum but
+  at or above `min_future_steps` succeeds — and EXACT still fails on a short horizon.
+- Either way: locked by tests proven RED first, and no silent coercion.
 - The real-package shim tests run (0 skipped) and pass.
