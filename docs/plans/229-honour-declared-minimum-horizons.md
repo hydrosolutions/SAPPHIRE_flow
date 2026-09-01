@@ -63,9 +63,12 @@ a permanent design choice.** That ruling is why this plan exists and why the che
 the dependencies, leave the limitation in place — is explicitly rejected: it would convert a
 temporary compromise into a permanent one, and the note recording its temporariness would be lost.
 
-**Nothing in the repo said the compromise was temporary.** 151 reads as settled and closed, which is
-why a later reader (me, 2026-09-01) mistook it for permanent and recommended the wrong thing. T4
-fixes that record.
+**The PLAN documents did not say the compromise was temporary — the CODE did, and I missed it.**
+`services/horizon_semantics.py` states in its own module docstring: *"This module is
+DELETE-ON-ARRIVAL"*, and *"the interim rung disappears on its own"* once a model declares
+(`:1-20`). Plan 151, by contrast, reads as settled and closed, which is why a later reader (me,
+2026-09-01) mistook the limitation for permanent and briefly recommended the wrong thing. **T4
+fixes the plan-side record; the code-side record was already correct.**
 
 ## What actually has to change
 
@@ -113,10 +116,15 @@ problem nobody has, and this plan's proportionality rules forbid it.
 
 ## Decisions
 
-- **D1 — Replace the hard-coded table with the model's own declaration; do not delete it blind.**
-  `HORIZON_CEILING_FLOORS` becomes the fallback for models that declare nothing, not the primary
-  source. Removing it before declarations flow would remove working support — a mistake an earlier
-  draft of Plan 227 nearly recommended.
+- **D1 — Let the interim rung retire itself, in the order its own docstring prescribes.**
+  `services/horizon_semantics.py` declares itself **DELETE-ON-ARRIVAL** (`:1-20`): the static
+  provider table exists only until a model declares its own minimum, and *"the interim rung
+  disappears on its own"*. So: **do not delete `HORIZON_CEILING_FLOORS` before T2 makes declarations
+  flow** — until then it is the working short-record support, and removing it early would break
+  what works (a mistake an earlier draft of Plan 227 nearly recommended). **After T2, the
+  `cmal_pool_pt` entry is dead by construction and should go**, leaving the table for models that
+  declare nothing. Retiring it in that order honours the existing design instead of contradicting
+  it.
 
 - **D2 — The minimum travels beside the desired horizon; it does not replace it.** Both are needed:
   the desired horizon still drives what we fetch, the minimum only decides what we accept. A single
@@ -126,10 +134,19 @@ problem nobody has, and this plan's proportionality rules forbid it.
   (`track_resolution.py:146`) before any model is consulted. A record shorter than desired but at or
   above the declared minimum must survive that far.
 
-- **D4 — Short runs must be visibly short, never silently short.** `RequiredSteps` already carries a
-  reason *"so callers can log a truncated run distinctly from a full one, rather than silently
-  equating them"* (`horizon_semantics.py:45-48`). Honour that: a forecast produced from a short
-  record must be recorded as such, in the stored forecast and in the logs.
+- **D4 — Short runs are LOGGED distinctly. Persisting the fact is deferred, deliberately.**
+  `RequiredSteps` already carries a reason *"so callers can log a truncated run distinctly from a
+  full one, rather than silently equating them"* (`horizon_semantics.py:45-48`) — honour that at the
+  seam, which needs no new plumbing.
+
+  **What this plan does NOT do, having checked:** `OperationalForecast` has no field for a declared
+  horizon, an accepted minimum, or a shortened flag (`types/forecast.py:48`); neither the
+  `forecasts` table (`db/metadata.py:1084`) nor the store (`store/forecast_store.py:57`) persists
+  one; the station event records only actual lead time (`flows/run_forecast_cycle.py:2983`) and the
+  GROUP event records neither (`:3541`). Persisting "this run was shortened" therefore needs a type
+  change, a migration and event changes — **out of proportion to this plan**. The stored values
+  still reveal the actual end time; what is deferred is recording that it was *shorter than
+  desired*. If that turns out to matter operationally, it is its own small plan.
 
 - **D5a — All THREE runner routes must be covered, and the GROUP route is the one that matters.**
   `cmal_pool_pt` runs as a GROUP model, and the GROUP path has **zero** references to track
@@ -180,6 +197,6 @@ fetch (only what we accept) · the deployed image or the mini · onboarding any 
 
 - A short-but-acceptable record produces a forecast; a too-short one still fails; no-declaration
   models are unchanged.
-- Short runs are recorded as short, not silently equated with full ones.
+- Short runs are LOGGED as short, not silently equated with full ones. (Persistence deferred — D4.)
 - `HORIZON_CEILING_FLOORS` still covers models that declare nothing.
 - Plan 151 no longer reads as though the limitation were permanent.
