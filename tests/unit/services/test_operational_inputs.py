@@ -34,6 +34,7 @@ from sapphire_flow.types.ids import BasinId, ModelId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.weather import WeatherForecastRecord
 from tests.conftest import (
+    make_observation,
     make_observations,
     make_raw_historical_forcing,
     make_station_config,
@@ -464,6 +465,66 @@ class TestAssembleStationOperationalInputs:
         assert result is not None
         inputs, _ = result
         assert inputs.data.past_dynamic.is_empty()
+
+
+class TestOperationalInputsCadenceMismatchSkipsGracefully:
+    """Plan 228 review fixer round (major): a real BAFU/SwissMetNet lookback
+    window can legitimately contain an isolated missing bucket (a
+    sensor/comms gap) — hindcast already treats that as insufficient data
+    for one step, never a bug. The live operational cycle must get the
+    SAME treatment: ``assemble_station_operational_inputs`` returns
+    ``None`` (a clean per-cycle skip — the caller's ``inputs_result is
+    None`` branch, not its generic ``except Exception`` that counts a
+    station as FAILED) rather than letting ``validate_time_step_cadence``'s
+    ``ConfigurationError`` propagate undifferentiated."""
+
+    def test_isolated_missing_daily_bucket_returns_none_not_raises(self) -> None:
+        sid = StationId(uuid4())
+        model = _make_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        )
+
+        issue_time = _utc(2026, 1, 20)
+        data_start = ensure_utc(issue_time - timedelta(days=10))
+        days = [1, 2, 3, 5, 6, 7, 8, 9, 10]  # day 4 missing — isolated gap
+        obs = [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(data_start + timedelta(days=d - 1)),
+                rng=random.Random(d),
+            )
+            for d in days
+        ]
+        obs_store.store_observations(obs)
+
+        with capture_logs() as logs:
+            result = assemble_station_operational_inputs(
+                station_id=sid,
+                model=model,
+                model_id=_MODEL_ID,
+                issue_time=issue_time,
+                cycle_time=issue_time,
+                nwp_source=_NWP_SOURCE,
+                forcing_source=reanalysis,
+                weather_forecast_store=nwp_store,
+                obs_store=obs_store,
+                station_store=station_store,
+                basin_store=basin_store,
+                model_state_store=state_store,
+                clock=lambda: issue_time,
+                forecast_horizon_steps=5,
+                time_step=timedelta(days=1),
+            )
+
+        assert result is None
+        skip_events = [
+            e
+            for e in logs
+            if e.get("event") == "operational_inputs.cadence_mismatch_skip"
+        ]
+        assert skip_events
 
 
 class TestAssembleStationOperationalInputsResolvesCaravanStatics:

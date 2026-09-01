@@ -556,9 +556,27 @@ def assemble_station_operational_inputs(
     )
     # Plan 228 D1(C): backstop shared with the hindcast assembler — see
     # `validate_time_step_cadence` for why this is scoped to past_targets.
-    validate_time_step_cadence(
-        past_targets, time_step, context="operational_inputs.past_targets"
-    )
+    #
+    # Review fixer round (major): a real BAFU/SwissMetNet lookback window
+    # can legitimately contain an isolated missing bucket (sensor/comms
+    # gap) — the SAME real-world condition this module already treats as
+    # "skip this station's forecast for this cycle" (e.g. `no_observations`
+    # above, `no_nwp` below), never as a station-failed bug. Skip the SAME
+    # way here: return `None` so the caller's `inputs_result is None`
+    # branch degrades this one cycle cleanly, instead of raising into the
+    # generic per-station `except Exception` that counts it as a failure.
+    try:
+        validate_time_step_cadence(
+            past_targets, time_step, context="operational_inputs.past_targets"
+        )
+    except ConfigurationError as exc:
+        log.warning(
+            "operational_inputs.cadence_mismatch_skip",
+            station_id=str(station_id),
+            issue_time=str(issue_time),
+            error=str(exc),
+        )
+        return None
 
     latest_obs_ts = max((o.timestamp for o in all_observations), default=None)
     observation_staleness_hours: float | None = None

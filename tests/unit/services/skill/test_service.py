@@ -969,12 +969,9 @@ class TestFlowRegimeStratification:
         uuid_factory: object,
     ) -> None:
         regime_config = _make_flow_regime_config(station_id, p50=150.0, p90=350.0)
-        # Two issue times (Plan 228 review fixer round): a single hindcast
-        # gives `_infer_forecast_time_step` no gap to infer from, and the
-        # fix no longer falls back to an unresampled instantaneous join —
-        # it returns no scores instead (the exact P2 defect this plan
-        # removes). A second issue time one hour later makes the time_step
-        # inferable via the issue-to-issue gap.
+        # Two issue times, one hour apart: exercises `_build_strata` across
+        # multiple hindcasts (`_infer_forecast_time_step` itself reads
+        # `hc.ensemble.time_step` directly and needs only one hindcast).
         step = _utc(2025, 1, 1)
         step2 = ensure_utc(step + timedelta(hours=1))
         vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
@@ -1723,15 +1720,17 @@ class TestObservationBucketsAlignToForecastValidTimePhase:
             )
 
 
-class TestUnknownTimeStepProducesNoScores:
-    """Plan 228 review fixer round (minor): a single hindcast with a single
-    lead step gives `_infer_forecast_time_step` no gap to infer a time_step
-    from. Falling back to an unresampled instantaneous join (as the code did
-    before this fixer round) silently reintroduces the exact P2 defect this
-    plan exists to eliminate. Producing NO score is the correct behaviour —
-    never a WRONG one."""
+class TestSingleHindcastSingleLeadStepStillScores:
+    """Plan 228 review fixer round (major): a single hindcast with a single
+    lead step has no ``valid_time`` gap AND no second hindcast issue time to
+    diff — the OLD gap-inference fallback chain had nothing to infer a
+    time_step from and silently produced ZERO scores (the exact scenario a
+    freshly onboarded station/model hits on its very first hindcast).
+    ``hc.ensemble.time_step`` is a mandatory field every model sets
+    directly, unaffected by how many lead steps or issue times exist, so
+    this must score normally instead of going quiet."""
 
-    def test_single_hindcast_single_lead_step_yields_no_scores(
+    def test_single_hindcast_single_lead_step_yields_scores(
         self,
         station_id: StationId,
         model_id: ModelId,
@@ -1753,7 +1752,7 @@ class TestUnknownTimeStepProducesNoScores:
         ]
         observations = [_make_observation(station_id=station_id, timestamp=vt)]
 
-        scores, diagrams = compute_skill_for_station(
+        scores, _diagrams = compute_skill_for_station(
             station_id=station_id,
             model_id=model_id,
             artifact_id=artifact_id,
@@ -1769,5 +1768,9 @@ class TestUnknownTimeStepProducesNoScores:
             parameter="discharge",
         )
 
-        assert scores == []
-        assert diagrams == []
+        assert scores, (
+            "a single hindcast/single lead step must still score — "
+            "hc.ensemble.time_step is always set, gap-inference is not needed"
+        )
+        mae_scores = [s for s in scores if s.metric == "mae"]
+        assert mae_scores

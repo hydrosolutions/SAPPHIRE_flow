@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import random
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+
+from structlog.testing import capture_logs
 
 from sapphire_flow.services.track_assembly import (
     ForcingContract,
@@ -32,7 +35,7 @@ from sapphire_flow.types.forcing_track import (
 from sapphire_flow.types.ids import ModelId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.weather import WeatherForecastRecord
-from tests.conftest import make_station_config
+from tests.conftest import make_observation, make_station_config
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_stores import (
     FakeBasinStore,
@@ -410,3 +413,66 @@ def test_unavailable_track_outcome_short_circuits_without_assembling() -> None:
         assignment=AssignmentKey((_STATION, _MODEL)),
         reason=StationUnavailableReason.INCOMPLETE_AT_CYCLE,
     )
+
+
+def test_isolated_missing_daily_bucket_yields_incomplete_at_cycle_not_raise() -> None:
+    """Plan 228 review fixer round (major): a real BAFU/SwissMetNet lookback
+    window can legitimately contain an isolated missing bucket (a
+    sensor/comms gap) — a KNOWN per-station data-availability condition,
+    not a bug. ``assemble_assignment_inputs`` must classify it as
+    ``UnavailableTrackContext(reason=INCOMPLETE_AT_CYCLE)`` directly
+    (fallback-advance, `forecast.fallback_advanced` at the runner), never
+    let the raised `ConfigurationError` fall through to the caller's
+    generic `_contained_assemble` catch-all, which would mislabel it
+    `ASSEMBLY_FAILED` (a genuine programming bug)."""
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=10,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    model = _FakeModel(requirements)
+    projection = NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL)))
+
+    data_start = ensure_utc(_ISSUE - timedelta(days=10))
+    days = [1, 2, 3, 5, 6, 7, 8, 9, 10]  # day 4 missing — isolated gap
+    observations = [
+        make_observation(
+            station_id=_STATION,
+            parameter="discharge",
+            timestamp=ensure_utc(data_start + timedelta(days=d - 1)),
+            rng=random.Random(d),
+        )
+        for d in days
+    ]
+    obs_store.store_observations(observations)
+
+    with capture_logs() as logs:
+        result = assemble_assignment_inputs(
+            station_id=_STATION,
+            model_id=_MODEL,
+            model=model,  # type: ignore[arg-type]
+            projection=projection,
+            track_outcome=None,
+            issue_time=_ISSUE,
+            obs_store=obs_store,  # type: ignore[arg-type]
+            station_store=station_store,  # type: ignore[arg-type]
+            basin_store=basin_store,  # type: ignore[arg-type]
+            forcing_source=reanalysis,  # type: ignore[arg-type]
+            clock=_clock,  # type: ignore[arg-type]
+        )
+
+    assert result == UnavailableTrackContext(
+        assignment=AssignmentKey((_STATION, _MODEL)),
+        reason=StationUnavailableReason.INCOMPLETE_AT_CYCLE,
+    )
+    skip_events = [
+        e for e in logs if e.get("event") == "track_assembly.cadence_mismatch_skip"
+    ]
+    assert skip_events

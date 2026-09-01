@@ -69,30 +69,25 @@ def _ensemble_matrix(hindcast: HindcastForecast, valid_time: object) -> np.ndarr
     return filtered["value"].to_numpy()
 
 
-def _infer_forecast_time_step(hindcasts: list[HindcastForecast]) -> timedelta | None:
-    """The forecast's own time_step (Plan 228 D2): the smallest gap between
-    two distinct ``valid_time``s inside a single hindcast's own ensemble —
-    i.e. its lead-step size, which for every model equals its declared
-    ``time_step``. Falls back to the gap between successive hindcast issue
-    times (``hindcast_step``, spaced exactly ``time_step`` apart by
-    ``_issue_times``) only for a horizon-1 model, whose ensembles never carry
-    two valid_times to diff. Returns ``None`` when neither signal is
-    available (a single hindcast with a single lead step).
-    """
-    within_hindcast_gaps: list[timedelta] = []
-    for hc in hindcasts:
-        vts = sorted(hc.ensemble.values["valid_time"].unique().to_list())
-        within_hindcast_gaps.extend(
-            b - a for a, b in zip(vts, vts[1:], strict=False) if b > a
-        )
-    if within_hindcast_gaps:
-        return min(within_hindcast_gaps)
+def _infer_forecast_time_step(hindcasts: list[HindcastForecast]) -> timedelta:
+    """The forecast's own time_step (Plan 228 D2).
 
-    issue_steps = sorted({hc.hindcast_step for hc in hindcasts})
-    issue_gaps = [
-        b - a for a, b in zip(issue_steps, issue_steps[1:], strict=False) if b > a
-    ]
-    return min(issue_gaps) if issue_gaps else None
+    Review fixer round (major): every model sets ``ForecastEnsemble.time_step``
+    directly from its OWN declared ``time_step`` at construction (e.g.
+    ``models/linear_regression_daily.py``, ``models/persistence_fallback.py``)
+    — it is a mandatory field, never inferred — and migration 0050 /
+    ``hindcast_store.py``'s ``_reconstruct_ensemble`` persists it losslessly
+    through the DB round-trip specifically so callers read it back here
+    instead of re-deriving it from ``valid_time`` gaps. The old gap-inference
+    (within a hindcast, falling back to the gap between hindcast issue times)
+    produced NO time_step at all for a horizon-1 model's first hindcast
+    (single lead step, single issue time — no gap either way), silently
+    dropping all scores for a station/model right after onboarding even
+    though the correct value was sitting on ``hc.ensemble.time_step`` the
+    whole time. ``hindcasts`` is guaranteed non-empty by the caller's early
+    ``if not hindcasts: return [], []``.
+    """
+    return min(hc.ensemble.time_step for hc in hindcasts)
 
 
 def _forecast_valid_time_anchor(
@@ -445,25 +440,10 @@ def compute_skill_for_station(
 
     # Plan 228 P2/D2: the forecast is a step-mean; the observation must be
     # aggregated to the SAME step before comparison, never joined against a
-    # raw instantaneous reading.
+    # raw instantaneous reading. `hindcasts` is non-empty here (guarded
+    # above), so `_infer_forecast_time_step` always resolves a real value —
+    # it reads `hc.ensemble.time_step`, a mandatory field every model sets.
     time_step = _infer_forecast_time_step(hindcasts)
-    if time_step is None:
-        # Review fixer round (minor): a single hindcast with a single lead
-        # step (a station/model right after onboarding, or any horizon-1
-        # model's first scoring pass) has no gap to infer a time_step from.
-        # The old fallback here re-joined against RAW instantaneous
-        # observations — exactly the P2 defect this plan exists to remove,
-        # silently, with only a log line to mark it. Producing NO score is
-        # preferable to producing a WRONG one: skip this station/model until
-        # a second hindcast (or a multi-step ensemble) makes the time_step
-        # inferable.
-        log.warning(
-            "compute_skill_for_station.time_step_unknown_no_scores",
-            station_id=str(station_id),
-            model_id=str(model_id),
-            hindcast_count=len(hindcasts),
-        )
-        return [], []
 
     anchor = _forecast_valid_time_anchor(hindcasts)
     obs_lookup = _resample_observations_to_forecast_step(

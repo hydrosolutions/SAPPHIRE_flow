@@ -21,6 +21,7 @@ from sapphire_flow.types.station import StationGroup, StationWeatherSource
 if TYPE_CHECKING:
     from sapphire_flow.types.model import ModelArtifact, StationModelInputs
 from tests.conftest import (
+    make_observation,
     make_observations,
     make_raw_historical_forcing,
     make_station_config,
@@ -1484,6 +1485,54 @@ class TestHindcastResamplesPastTargetsToDeclaredTimeStep:
             f"tail({lookback_steps}) of past_targets spans only {span} "
             f"against a declared {declared_window} lookback window"
         )
+
+
+class TestHindcastCadenceMismatchSkipsStepGracefully:
+    """Plan 228 review fixer round (major): a real BAFU/SwissMetNet lookback
+    window can legitimately contain an isolated missing bucket (a
+    sensor/comms gap). ``validate_time_step_cadence`` must still catch it
+    (a positional misread is worse than no score), but hindcast must treat
+    it exactly like its OTHER insufficient-data conditions
+    (``no_observations``, ``no_forcing``) — return ``None`` so the step is
+    recorded as "insufficient data", never raise an undifferentiated
+    exception out of the assembler."""
+
+    def test_isolated_missing_daily_bucket_returns_none_not_raises(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        issue_time = ensure_utc(datetime(2022, 1, 10, tzinfo=UTC))
+
+        # Days 1,2,3,5,6 before issue_time — an isolated missing bucket on
+        # day 4 (gaps 1d,1d,2d,1d; median is still 1d).
+        data_start = ensure_utc(issue_time - timedelta(days=7))
+        days = [1, 2, 3, 5, 6]
+        observations = [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(data_start + timedelta(days=d - 1)),
+                rng=random.Random(d),
+            )
+            for d in days
+        ]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=7,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+        )
+
+        assert inputs is None
 
 
 class TestHindcastPastTargetsBucketsAlignToIssueTime:

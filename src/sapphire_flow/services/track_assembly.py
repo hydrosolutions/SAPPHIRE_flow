@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.operational_inputs import (
     build_future_dynamic_frame,
@@ -274,9 +275,32 @@ def assemble_assignment_inputs(
     )
     # Plan 228 D1(C): backstop shared with the hindcast assembler — see
     # `validate_time_step_cadence` for why this is scoped to past_targets.
-    validate_time_step_cadence(
-        past_targets, time_step, context="track_assembly.past_targets"
-    )
+    #
+    # Review fixer round (major): a real BAFU/SwissMetNet lookback window
+    # can legitimately contain an isolated missing bucket (sensor/comms
+    # gap) — a KNOWN per-station data-availability condition, not a bug.
+    # `INCOMPLETE_AT_CYCLE` already exists for exactly this (assigned in
+    # `track_resolution.py` for the analogous forcing-side condition);
+    # stamp it here directly rather than letting the exception fall through
+    # to the caller's generic `_contained_assemble` catch-all, which would
+    # mislabel it `ASSEMBLY_FAILED` (a genuine programming bug, `log.exception`
+    # stack trace and all) instead of an expected, recoverable data gap.
+    try:
+        validate_time_step_cadence(
+            past_targets, time_step, context="track_assembly.past_targets"
+        )
+    except ConfigurationError as exc:
+        log.warning(
+            "track_assembly.cadence_mismatch_skip",
+            station_id=str(station_id),
+            model_id=str(model_id),
+            issue_time=str(issue_time),
+            error=str(exc),
+        )
+        return UnavailableTrackContext(
+            assignment=assignment_key,
+            reason=StationUnavailableReason.INCOMPLETE_AT_CYCLE,
+        )
 
     latest_obs_ts = max((o.timestamp for o in all_observations), default=None)
     observation_staleness_hours: float | None = None

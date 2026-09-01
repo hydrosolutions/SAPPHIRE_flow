@@ -16,7 +16,7 @@ from sqlalchemy.exc import (
     PendingRollbackError,
 )
 
-from sapphire_flow.exceptions import StoreError
+from sapphire_flow.exceptions import ConfigurationError, StoreError
 from sapphire_flow.services.caravan_statics import (
     declared_static_naming,
     project_declared_static_attributes,
@@ -221,7 +221,23 @@ def _assemble_hindcast_inputs(
     obs_df = resample_to_time_step(
         obs_df, time_step, aggregation_methods=None, anchor=issue_time
     )
-    validate_time_step_cadence(obs_df, time_step, context="hindcast.past_targets")
+    # Review fixer round (major): a real BAFU/SwissMetNet lookback window
+    # can legitimately contain an isolated missing bucket (sensor/comms gap)
+    # — the SAME real-world condition `no_observations`/`no_forcing` above
+    # already treat as "insufficient data for this step", never as a bug.
+    # A cadence mismatch caught here gets the identical treatment: skip this
+    # ONE step (`HindcastStepResult(success=False, error="insufficient
+    # data")` at the call site), not an undifferentiated exception.
+    try:
+        validate_time_step_cadence(obs_df, time_step, context="hindcast.past_targets")
+    except ConfigurationError as exc:
+        log.warning(
+            "hindcast.skip.cadence_mismatch",
+            station_id=str(station_id),
+            issue_time=str(issue_time),
+            error=str(exc),
+        )
+        return None
 
     # Split forcing into past (≤ issue_time) and future (> issue_time).
     # Reanalysis serves as teacher forcing in hindcast (v0-scope §A13).
