@@ -127,6 +127,44 @@ distribution of `last_bucket` relative to `issue_date`.
 until P1 and P2 are sized. The repo has a recorded habit of being wrong about operational numbers
 by reasoning rather than measuring, and two review rounds have now made that concrete here.
 
+## T-M RESULTS — measured 2026-09-01 against the live mini (read-only)
+
+Queries only, no writes, no flow interrupted; the station-onboarding backfill was running throughout
+and the DB showed one active query (ours) at the time.
+
+| # | Measurement | Result |
+|---|---|---|
+| M1 | Observation cadence (`discharge`, 14 d) | **604 s ≈ 10 min**, uniform across every station sampled |
+| M2 | What `_extract_discharge()` consumes in a hindcast | 7 rows × 10 min = **70 minutes**, against a declared 7-day (10 080 min) window — a **144× shortfall**. P1 CONFIRMED on real data |
+| M3 | Daily mean vs the instantaneous 00:00 reading | median **6.4 %**, mean 12.4 %, p95 **48.6 %**, max 78.8 % (n = 134 station-days). P2 CONFIRMED and material |
+| M4 | Observation staleness at issue | **0.00 h on every cycle**; `bucket_lag_days = 0` throughout |
+
+**Scale, which differs from the original report.** 148 stations now carry all six model assignments,
+but only **37** produce any forecast, only **2** produce `linear_regression_daily` / `nwp_regression`
+/ `_pooled`, and 36 produce `nwp_rainfall_runoff`. Most stations therefore have a single combinable
+model producing and no combination to make. Plan 222's "dark for 2009 and 2091" remains exact.
+
+**Production issue times carry the sub-second wall clock**, live: `06:00:02.768568`,
+`18:00:02.599972`, `18:00:01.851153`. The raw `clock()` read this plan describes is not theoretical.
+
+### What the measurements bear on — WITHOUT closing the questions
+
+- **Q3 (anchor to last observed day vs issue day) is empirically MOOT in this deployment.** At zero
+  staleness the last observation's daily bucket *is* midnight of the issue day, so (a) and (b) give
+  the identical timestamp on every cycle measured. The choice is therefore about failure behaviour
+  under staleness that does not currently occur — not about today's output. It remains the human's,
+  and (a) still degrades correctly where (b) silently mislabels.
+- **Anchoring should restore the combined forecast in full.** Under (a) with zero staleness,
+  `linreg` step 1 = midnight(issue day) + 1 d. The NWP path drops the issue-day bucket as backdated
+  at a non-midnight issue (`services/operational_inputs.py:225-236`), so its first future bucket is
+  the same day. The grids coincide and the intersection is the whole 5-day horizon. **Arithmetic
+  from the measurements, not a live test** — it needs proving against a real cycle before it is
+  relied on.
+- **Q4 (all steps backdated) does not arise at current staleness**, and Q6 (multi-parameter
+  fallbacks) is untouched by these measurements.
+- **P1 and P2 are confirmed as live defects, and P2 is now sized.** A skill score computed on this
+  path carries a median 6.4 % and tail ~49 % mismatch that is pure quantity error.
+
 ## Open design questions — deliberately NOT answered yet
 
 Answering these before T-M reports would repeat the mistake that cost Plan 222 two rounds.
