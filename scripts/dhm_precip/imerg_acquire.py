@@ -22,8 +22,9 @@ import sys
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -41,6 +42,8 @@ from scripts.dhm_precip.era5_request import STUDY_AREA, STUDY_YEARS  # noqa: E40
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
+    import requests
+
 log = structlog.get_logger(__name__)
 
 
@@ -57,6 +60,20 @@ class ImergCredentialsError(ImergAcquisitionError):
 
 class ImergTransientError(ImergAcquisitionError):
     """Retryable transport error or 5xx — never surfaces past the retry loop."""
+
+
+class ImergRateLimitedError(ImergTransientError):
+    """D3.2 — GES DISC answered 429. RETRYABLE, and it carries the server's
+    own `Retry-After` when one was sent, so the retry honours the server's
+    number instead of guessing. ⛔ Before T3 a 429 fell through the status
+    ladder's non-retryable tail into `ImergRequestFailedError`, so NASA's
+    FIRST throttle aborted the whole run."""
+
+    def __init__(
+        self, message: str, *, retry_after_seconds: float | None = None
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class ImergRequestFailedError(ImergAcquisitionError):
@@ -1045,6 +1062,35 @@ def subset_box_indices(
     return start, stop
 
 
+def global_grid_centres(*, count: int, low: float, high: float) -> tuple[float, ...]:
+    """The archive route's own GLOBAL cell CENTRES, derived from the pinned
+    registration (CENTER), global bounds and grid shape. ⛔ Used ONLY to derive
+    the INTEGER box index range for D4's `dap4.ce` constraint — never as a
+    coordinate pin: `EXPECTED_SUBSET_{LAT,LON}_VECTOR` are MEASURED for that,
+    because fixer round 3 measured this very arithmetic wrong at float32
+    precision. Integers are safe where floats were not: the nearest cell centre
+    sits 0.05 deg from a box edge, which no float64 error here can cross."""
+    step = (high - low) / count
+    return tuple(low + step * (index + 0.5) for index in range(count))
+
+
+def subset_box_index_bounds() -> tuple[tuple[int, int], tuple[int, int]]:
+    """D4's `(lon_bounds, lat_bounds)` for the frozen `STUDY_BOX`, DERIVED
+    from the pinned global grid rather than restated as `(2600, 2689)` /
+    `(1160, 1209)`. T2's cross-check reads them off the archive granule it
+    already holds; a window run has no archive granule to read, and must not
+    hand-copy a probe's numbers instead (D10's rule)."""
+    north, west, south, east = EXPECTED_SUBSET_GLOBAL_BOUNDS
+    lon_centres = global_grid_centres(count=EXPECTED_GRID_SHAPE[1], low=west, high=east)
+    lat_centres = global_grid_centres(
+        count=EXPECTED_GRID_SHAPE[2], low=south, high=north
+    )
+    return (
+        subset_box_indices(lon_centres, low=STUDY_BOX[1], high=STUDY_BOX[3]),
+        subset_box_indices(lat_centres, low=STUDY_BOX[2], high=STUDY_BOX[0]),
+    )
+
+
 def subset_granule_url(*, archive_filename: str, start: datetime) -> str:
     """D4 — measured 2026-08-31: OPeNDAP mirrors the archive's own
     year/day-of-year layout, with `.dap.nc4` appended to the ARCHIVE
@@ -1065,21 +1111,73 @@ def subset_constraint(
     )
 
 
-def _raise_for_http_status(status: int, *, url: str) -> None:
+def parse_retry_after(raw: str | None) -> float | None:
+    """D3.2 — RFC 9110 `Retry-After` in its delta-seconds form. ⛔ Returns
+    None (⇒ the caller BACKS OFF instead) for an absent, empty, non-numeric
+    or HTTP-date header rather than guessing: resolving the date form needs a
+    clock, and threading an injected clock through the HTTP seam is a config
+    surface D3 forbids for a case the backoff fallback already covers safely.
+    A negative delay clamps to 0."""
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    return max(seconds, 0.0)
+
+
+def _raise_for_http_status(
+    status: int, *, url: str, retry_after: str | None = None
+) -> None:
     """One status ladder, shared by BOTH real HTTP clients (fixer review,
     finding 5): 404 missing (D4 counts it), 401/403 credentials (exit 2),
-    5xx retryable. ⛔ A MODULE-level function, not a method on either client
-    class — `RealImergSubsetHttpClient` needs the identical ladder and
-    reaching into a sibling class's underscore-named method would be a
-    private-boundary violation, not a shared helper."""
+    429 rate-limited and RETRYABLE (D3.2), 5xx retryable. ⛔ A MODULE-level
+    function, not a method on either client class — `RealImergSubsetHttpClient`
+    needs the identical ladder and reaching into a sibling class's
+    underscore-named method would be a private-boundary violation, not a
+    shared helper."""
     if status == 404:  # noqa: PLR2004 - HTTP status literal
         raise ImergGranuleMissingError(f"not found: {url}")
     if status in (401, 403):
         raise ImergCredentialsError(f"Earthdata Login rejected {url} (status {status})")
+    if status == 429:  # noqa: PLR2004 - HTTP status literal
+        # D3.2 — ⛔ ABOVE the `status != 200` tail, which used to swallow this
+        # into the non-retryable `ImergRequestFailedError`: at 105,216
+        # requests a throttle is expected, not exceptional.
+        raise ImergRateLimitedError(
+            f"{url} returned 429 (rate limited)",
+            retry_after_seconds=parse_retry_after(retry_after),
+        )
     if status >= 500:  # noqa: PLR2004 - HTTP status literal
         raise ImergTransientError(f"{url} returned status {status}")
     if status != 200:  # noqa: PLR2004 - HTTP status literal
         raise ImergRequestFailedError(f"{url} returned unexpected status {status}")
+
+
+@cache
+def earthdata_session() -> requests.Session:
+    """D3.3/D4 — ONE authenticated, cookie-bearing session for the whole
+    process, shared by BOTH real clients. Every call used to be a bare
+    `requests.get`, which builds a THROWAWAY session and discards its cookie
+    jar, so every single request re-ran the full Earthdata Login redirect
+    chain — D4 measured that chain, and that a cookie jar plus
+    `--location-trusted`-equivalent auth is what makes it terminate rather
+    than loop. A `requests.Session` supplies both: the jar persists across
+    calls, and `Session.rebuild_auth` re-resolves `~/.netrc` for the
+    redirect TARGET host, which is exactly what `--location-trusted` does.
+    ⛔ No credential appears in this module."""
+    import requests
+
+    session = requests.Session()
+    session.trust_env = True
+    return session
+
+
+def _session_for(session: requests.Session | None) -> requests.Session:
+    """`None` means the process-wide shared session (D3.3). An injected one
+    is the test seam that proves no bare `requests.get` survives."""
+    return session if session is not None else earthdata_session()
 
 
 @runtime_checkable
@@ -1099,21 +1197,122 @@ class RealImergSubsetHttpClient:
     2026-08-31: a bare `requests.get` with `params={"dap4.ce": ...}`
     succeeds end to end — no extra session/cookie plumbing was needed to
     reproduce curl's `--location-trusted` behaviour). Window-scale
-    reuse/throttling (D3) is T3's concern, not built here."""
+    pacing and retry (D3.1/D3.2) live in `RequestPacer`, so this class stays
+    a thin transport — but the SESSION (D3.3) is shared here, because a
+    throwaway per-call session is a transport property, not a policy."""
 
     timeout_seconds: float = 60.0
+    session: requests.Session | None = None
+    """D3.3 — see `RealImergHttpClient.session`; both default to the SAME
+    process-wide `earthdata_session()`."""
 
     def fetch_subset(self, *, url: str, constraint: str) -> bytes:
         import requests
 
         try:
-            response = requests.get(
+            response = _session_for(self.session).get(
                 url, params={"dap4.ce": constraint}, timeout=self.timeout_seconds
             )
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to fetch subset {url}: {exc}") from exc
-        _raise_for_http_status(response.status_code, url=url)
-        return response.content
+        _raise_for_http_status(
+            response.status_code,
+            url=url,
+            retry_after=response.headers.get("Retry-After"),
+        )
+        content = response.content
+        log.info(
+            "imerg.acquire.subset_fetched",
+            url=url,
+            bytes=len(content),
+            # D3.3 — the number the cookie jar exists to shrink: a cold
+            # Earthdata redirect chain costs several round trips per request,
+            # a warm one none. Logged because "requests issued" is the figure
+            # that decides whether a 105,216-granule window is polite.
+            redirects=len(response.history),
+        )
+        return content
+
+
+_PacedResult = TypeVar("_PacedResult")
+
+
+class RequestPacer:
+    """D3.1/D3.2 — the ONE place a GES DISC request is paced and retried, for
+    day listings and subset fetches alike. ⛔ Not a scheduler and not a config
+    surface: a fixed interval BETWEEN requests, and a bounded retry that
+    honours the server's own `Retry-After` when it sends one and backs off
+    exponentially when it does not. The counters are what a T3 report means by
+    "requests actually issued" — the figure that decides whether a window run
+    is polite, which a granule count alone never showed."""
+
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], None],
+        interval_seconds: float,
+        max_attempts: int = 5,
+        backoff_base_seconds: float = 2.0,
+    ) -> None:
+        self._sleep = sleep
+        self._interval_seconds = interval_seconds
+        self._max_attempts = max_attempts
+        self._backoff_base_seconds = backoff_base_seconds
+        self.requests_issued = 0
+        self.rate_limited = 0
+        self.retry_after_honoured = 0
+
+    def run(self, issue: Callable[[], _PacedResult]) -> _PacedResult:
+        """Issue one logical request, paced and retried. ⛔ The cadence pause
+        is taken BEFORE the request and only once a request has already been
+        issued, so a cached artifact — which never reaches here — costs no
+        delay, and the first request of a run is not delayed either."""
+        if self.requests_issued:
+            self._sleep(self._interval_seconds)
+        last: ImergTransientError | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            self.requests_issued += 1
+            try:
+                return issue()
+            except ImergTransientError as exc:
+                last = exc
+                delay = self._backoff_base_seconds * (2 ** (attempt - 1))
+                rate_limited = isinstance(exc, ImergRateLimitedError)
+                if rate_limited:
+                    self.rate_limited += 1
+                    if exc.retry_after_seconds is not None:
+                        # ⛔ The SERVER's number wins over our backoff curve.
+                        delay = exc.retry_after_seconds
+                        self.retry_after_honoured += 1
+                log.warning(
+                    "imerg.acquire.request_retry",
+                    attempt=attempt,
+                    max_attempts=self._max_attempts,
+                    rate_limited=rate_limited,
+                    delay_seconds=delay,
+                    error=str(exc),
+                )
+                if attempt < self._max_attempts:
+                    self._sleep(delay)
+        raise ImergRequestFailedError(
+            f"exhausted {self._max_attempts} attempts against GES DISC"
+        ) from last
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PacedSubsetClient:
+    """D3.1/D3.2 — an `ImergSubsetHttpClient` whose fetches go through a
+    `RequestPacer`. ⛔ A wrapper around the CLIENT rather than a change to
+    `acquire_subset_granule`: a validated cached artifact issues no request,
+    so it must not consume cadence either, and that falls out for free here."""
+
+    client: ImergSubsetHttpClient
+    pacer: RequestPacer
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        return self.pacer.run(
+            lambda: self.client.fetch_subset(url=url, constraint=constraint)
+        )
 
 
 def imerg_subset_raw_dir(data_root: Path) -> Path:
@@ -1917,25 +2116,38 @@ class RealImergHttpClient:
     no credential appears in this module."""
 
     timeout_seconds: float = 60.0
+    session: requests.Session | None = None
+    """D3.3 — `None` uses the shared `earthdata_session()`; a test injects a
+    double to prove every call goes through ONE reused session."""
 
     def list_directory(self, url: str) -> str:
         import requests
 
         try:
-            response = requests.get(url, timeout=self.timeout_seconds)
+            response = _session_for(self.session).get(url, timeout=self.timeout_seconds)
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to list {url}: {exc}") from exc
-        _raise_for_http_status(response.status_code, url=url)
+        _raise_for_http_status(
+            response.status_code,
+            url=url,
+            retry_after=response.headers.get("Retry-After"),
+        )
         return response.text
 
     def download_to_path(self, *, url: str, target: Path) -> None:
         import requests
 
         try:
-            response = requests.get(url, timeout=self.timeout_seconds, stream=True)
+            response = _session_for(self.session).get(
+                url, timeout=self.timeout_seconds, stream=True
+            )
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to download {url}: {exc}") from exc
-        _raise_for_http_status(response.status_code, url=url)
+        _raise_for_http_status(
+            response.status_code,
+            url=url,
+            retry_after=response.headers.get("Retry-After"),
+        )
         try:
             with target.open("wb") as fh:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -2100,6 +2312,198 @@ def retrieve_window(
     return report, frozen, checksums
 
 
+# --- T3: the SUBSET-route window runner (D2/D3) ---
+
+#: D3.1 — the fixed cadence between successful GES DISC requests. One second
+#: is not a measurement, it is a POLICY choice: at 105,216 granules it caps
+#: the run at ~1 req/s (~29 h) against a service that publishes no documented
+#: rate limit, and `Retry-After` handling (D3.2) is what adapts if GES DISC
+#: disagrees. ⛔ Overridable per run, never per granule.
+DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS = 1.0
+
+
+def granule_starts_between(start: datetime, end: datetime) -> list[datetime]:
+    """The inclusive half-hour starts of an EXPLICIT `[start, end]` bound.
+    ⛔ There is no default bound and no continuation past `end`: a run covers
+    exactly what its caller stated, so a trial day can never quietly become a
+    window."""
+    if not granule_start_in_window(start) or not granule_start_in_window(end):
+        raise ImergRequestFailedError(
+            f"[{start.isoformat()}, {end.isoformat()}] is not a half-hour "
+            f"aligned UTC range inside the pinned D5 window "
+            f"[{FIRST_GRANULE_START.isoformat()}, {LAST_GRANULE_START.isoformat()}]"
+        )
+    if start > end:
+        raise ImergRequestFailedError(
+            f"granule window start {start.isoformat()} is after its end "
+            f"{end.isoformat()}"
+        )
+    starts: list[datetime] = []
+    current = start
+    while current <= end:
+        starts.append(current)
+        current += timedelta(minutes=30)
+    return starts
+
+
+def group_granule_starts_by_day(starts: Sequence[datetime]) -> list[list[datetime]]:
+    """D3.4 — the day directory is listed once per DAY, so the runner walks
+    days and then granules, never granules alone."""
+    grouped: dict[str, list[datetime]] = {}
+    for start in sorted(starts):
+        grouped.setdefault(start.strftime("%Y-%j"), []).append(start)
+    return list(grouped.values())
+
+
+def resolve_day_filenames(
+    day_starts: Sequence[datetime], *, client: ImergHttpClient, pacer: RequestPacer
+) -> dict[datetime, str]:
+    """D3.4 — ONE directory listing per day, resolving every granule of that
+    day from it. ⛔ `acquire_granule` lists the day directory once per GRANULE,
+    and does it BEFORE checking whether the file is already on disk, so a
+    105,216-granule window would have issued 105,216 listings on top of its
+    downloads — which is why 105,216 counts data requests, not HTTP traffic.
+    A start absent from the listing is simply absent from the result: the
+    caller records it as a gap and ⛔ never fills it."""
+    directory_url = ImergGranuleId(start=day_starts[0]).directory_url()
+    listing = pacer.run(lambda: client.list_directory(directory_url))
+    resolved: dict[datetime, str] = {}
+    for start in day_starts:
+        try:
+            resolved[start] = resolve_granule_filename(
+                listing, ImergGranuleId(start=start)
+            )
+        except ImergGranuleMissingError:
+            continue
+    return resolved
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SubsetWindowRetrievalReport:
+    """T3 — what a subset-route run actually did, in BOTH units D3 cares
+    about: granules and requests. `reused` is derived from whether the pacer
+    issued a request, not from a flag the acquisition returns, so a cache hit
+    that secretly re-fetched could not be reported as a reuse."""
+
+    requested: int
+    retrieved: int
+    reused: int
+    missing: tuple[str, ...]
+    total_bytes: int
+    requests_issued: int
+    rate_limited: int
+
+
+def retrieve_subset_window(
+    granule_starts: Sequence[datetime],
+    *,
+    client: ImergHttpClient,
+    subset_client: ImergSubsetHttpClient,
+    data_root: Path,
+    clock: Callable[[], datetime],
+    sleep: Callable[[float], None],
+    interval_seconds: float = DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS,
+) -> SubsetWindowRetrievalReport:
+    """D2/D3 — retrieve exactly `granule_starts` through the OPeNDAP SUBSET
+    route: each day's filenames resolved ONCE (D3.4), every request paced and
+    retried through one `RequestPacer` (D3.1/D3.2) over one reused session
+    (D3.3), already-valid artifacts reused rather than re-fetched, and gaps
+    recorded AS gaps (Plan 220: a gap is data, a wrong retrieval is not —
+    ⛔ nothing here scales, fills or interpolates one). Writes the permanent
+    acquisition manifest with `route=SUBSET_ROUTE` (D2) whenever at least one
+    granule was obtained. ⛔ It iterates the caller's explicit set and stops:
+    there is no default window and no continuation."""
+    starts = sorted(granule_starts)
+    pacer = RequestPacer(sleep=sleep, interval_seconds=interval_seconds)
+    paced_client = PacedSubsetClient(client=subset_client, pacer=pacer)
+    lon_bounds, lat_bounds = subset_box_index_bounds()
+    requested = 0
+    retrieved = 0
+    reused = 0
+    total_bytes = 0
+    missing: list[str] = []
+    checksums: dict[str, str] = {}
+    retrieved_at: dict[str, datetime] = {}
+    frozen: ImergSubsetReadContract | None = None
+    for day_starts in group_granule_starts_by_day(starts):
+        filenames = resolve_day_filenames(day_starts, client=client, pacer=pacer)
+        for start in day_starts:
+            requested += 1
+            filename = filenames.get(start)
+            if filename is None:
+                missing.append(start.isoformat())
+                continue
+            requests_before = pacer.requests_issued
+            try:
+                path = acquire_subset_granule(
+                    ImergGranuleId(start=start),
+                    archive_filename=filename,
+                    client=paced_client,
+                    data_root=data_root,
+                    lon_bounds=lon_bounds,
+                    lat_bounds=lat_bounds,
+                )
+            except ImergGranuleMissingError:
+                missing.append(start.isoformat())
+                continue
+            contract = observe_subset_read_contract(path, archive_filename=filename)
+            if frozen is None:
+                frozen = contract
+            else:
+                assert_subset_contract_consistent(contract, frozen=frozen)
+            # ⛔ Keyed by the ARCHIVE filename on BOTH routes (the permanent
+            # record's own convention), while the checksum is of the SUBSET
+            # bytes — that pairing is exactly what makes a route switch
+            # distinguishable from an archive revision.
+            checksums[filename] = checksum_file(path)
+            retrieved_at[filename] = clock()
+            retrieved += 1
+            total_bytes += path.stat().st_size
+            if pacer.requests_issued == requests_before:
+                reused += 1
+    report = SubsetWindowRetrievalReport(
+        requested=requested,
+        retrieved=retrieved,
+        reused=reused,
+        missing=tuple(sorted(missing)),
+        total_bytes=total_bytes,
+        requests_issued=pacer.requests_issued,
+        rate_limited=pacer.rate_limited,
+    )
+    if frozen is not None:
+        write_acquisition_manifest(
+            ImergAcquisitionManifest(
+                route=SUBSET_ROUTE,
+                collection_short_name=COLLECTION_SHORT_NAME,
+                granule_revision=frozen.granule_revision,
+                requested_window_start=starts[0],
+                requested_window_end=starts[-1],
+                box=STUDY_BOX,
+                read_contract=frozen.as_manifest_dict(),
+                requested=requested,
+                retrieved=retrieved,
+                missing=tuple(missing),
+                granule_checksums=checksums,
+                granule_retrieved_at=retrieved_at,
+                retrospective=True,
+                generated_at=clock(),
+            ),
+            acquisition_manifest_path(data_root),
+        )
+    log.info(
+        "imerg.acquire.subset_window_complete",
+        route=SUBSET_ROUTE,
+        requested=report.requested,
+        retrieved=report.retrieved,
+        reused=report.reused,
+        missing=len(report.missing),
+        total_bytes=report.total_bytes,
+        requests_issued=report.requests_issued,
+        rate_limited=report.rate_limited,
+    )
+    return report
+
+
 # --- D10 disk projection ---
 
 
@@ -2147,6 +2551,31 @@ def build_parser() -> argparse.ArgumentParser:
             "ISO 8601 UTC half-hour timestamp to probe (default: the most "
             "recently likely-available granule, now minus 5 hours)."
         ),
+    )
+    # --- T3: the SUBSET-route window run. ⛔ BOTH bounds are REQUIRED and
+    # have NO default: the retrieval covers exactly the stated range, so a
+    # later run must state its own rather than inherit a trial's.
+    parser.add_argument(
+        "--subset-window-start",
+        type=str,
+        default=None,
+        help=(
+            "ISO 8601 UTC half-hour start of a SUBSET-route retrieval "
+            "(requires --subset-window-end; no default — the bound is always "
+            "stated explicitly)."
+        ),
+    )
+    parser.add_argument(
+        "--subset-window-end",
+        type=str,
+        default=None,
+        help="ISO 8601 UTC half-hour end of the SUBSET-route retrieval, inclusive.",
+    )
+    parser.add_argument(
+        "--request-interval-seconds",
+        type=float,
+        default=DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS,
+        help="D3.1 cadence between successive GES DISC requests.",
     )
     return parser
 
@@ -2249,10 +2678,60 @@ def _exit_code_for(exc: Exception) -> int:
     return 1
 
 
+def _run_subset_window(args: argparse.Namespace, **kwargs: object) -> None:
+    """T3's CLI path: an EXPLICIT `[start, end]` bound, retrieved through the
+    subset route. ⛔ Separate from the probe path, and reached only when both
+    bounds were given."""
+    starts = granule_starts_between(
+        parse_cli_utc_timestamp(args.subset_window_start),
+        parse_cli_utc_timestamp(args.subset_window_end),
+    )
+    report = retrieve_subset_window(
+        starts,
+        client=kwargs.get("client") or RealImergHttpClient(),  # type: ignore[arg-type]
+        subset_client=kwargs.get("subset_client") or RealImergSubsetHttpClient(),  # type: ignore[arg-type]
+        data_root=args.data_root,
+        clock=kwargs.get("clock") or (lambda: datetime.now(UTC)),  # type: ignore[arg-type]
+        sleep=kwargs.get("sleep") or __import__("time").sleep,  # type: ignore[arg-type]
+        interval_seconds=args.request_interval_seconds,
+    )
+    log.warning(
+        "imerg.acquire.cli.subset_window_stop",
+        message=(
+            "the SUBSET-route retrieval covered exactly the requested bound "
+            "and stopped; any further range is a separate, explicitly "
+            "bounded run"
+        ),
+        requested=report.requested,
+        retrieved=report.retrieved,
+        reused=report.reused,
+        missing=len(report.missing),
+        total_bytes=report.total_bytes,
+        requests_issued=report.requests_issued,
+        rate_limited=report.rate_limited,
+    )
+
+
 def main(argv: list[str] | None = None, **kwargs: object) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_cli_logging()
+    if bool(args.subset_window_start) != bool(args.subset_window_end):
+        parser.error(
+            "--subset-window-start and --subset-window-end are given together "
+            "or not at all — a half-stated bound is never completed by a default"
+        )
+    if args.subset_window_start:
+        try:
+            _run_subset_window(args, **kwargs)
+        except (ImergAcquisitionError, OSError, ValueError) as exc:
+            log.error(
+                "imerg.acquire.cli.failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return _exit_code_for(exc)
+        return 0
     granule_start = (
         parse_cli_utc_timestamp(args.granule_start)
         if args.granule_start

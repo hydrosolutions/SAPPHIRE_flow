@@ -23,6 +23,7 @@ from scripts.dhm_precip import imerg_extract as ie
 from scripts.dhm_precip.era5_request import STUDY_AREA
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 # --- a synthetic granule fixture, carrying the D1 structure OBSERVED on the
@@ -2512,3 +2513,534 @@ class TestRouteSwitchIsNotAnArchiveRevision:
         retained = ia.read_acquisition_manifest(path)
         assert retained is not None
         assert retained.route == ia.ROUTE
+
+
+# --- 🔴 Plan 225 T3 — D3's four behaviours and the subset-route window
+# runner. Measured on the pre-T3 HEAD: `grep` returned ZERO matches for `429`,
+# `Retry-After`, `Session` or any cadence, and `acquire_granule` listed the day
+# directory once per GRANULE. Each class below fails against that code. ---
+
+
+_TRIAL_DAY_START = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+_TRIAL_DAY_END = datetime(2020, 7, 15, 23, 30, tzinfo=UTC)
+
+
+def _archive_name(start: datetime) -> str:
+    return ia.ImergGranuleId(start=start).filename(revision="V07B")
+
+
+def _starts_from(first: datetime, count: int) -> list[datetime]:
+    return [first + i * timedelta(minutes=30) for i in range(count)]
+
+
+def _day_listing(starts: Sequence[datetime]) -> str:
+    """A GES DISC day-directory page, in the only shape the resolver reads:
+    the granule names appearing somewhere in the text."""
+    return "\n".join(
+        f'<a href="{_archive_name(s)}">{_archive_name(s)}</a>' for s in starts
+    )
+
+
+def _listing_client(
+    all_starts: Sequence[datetime], *, present: Sequence[datetime] | None = None
+) -> FakeImergHttpClient:
+    """One listing per DAY covering `all_starts`, advertising only `present`."""
+    listed = all_starts if present is None else present
+    by_day: dict[str, list[datetime]] = {
+        ia.ImergGranuleId(start=s).directory_url(): [] for s in all_starts
+    }
+    for start in listed:
+        by_day[ia.ImergGranuleId(start=start).directory_url()].append(start)
+    return FakeImergHttpClient(
+        listings={url: _day_listing(starts) for url, starts in by_day.items()}
+    )
+
+
+def _subset_fixture_bytes(tmp_path: Path, start: datetime, *, value: float) -> bytes:
+    name = _archive_name(start)
+    path = tmp_path / f"source-{name}.dap.nc4"
+    _write_fake_subset_granule(path, archive_filename=name, value=value)
+    return path.read_bytes()
+
+
+@dataclass
+class FakeSubsetWindowClient:
+    """No-network double for the T3 runner: one fixture per OPeNDAP URL, plus
+    an optional queue of exceptions to raise before the next success. An
+    unknown URL is a 404, exactly as GES DISC would answer for a granule the
+    listing advertised but the subset service does not hold."""
+
+    content_by_url: dict[str, bytes] = field(default_factory=dict)
+    failures: list[Exception] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        self.calls.append(url)
+        if self.failures:
+            raise self.failures.pop(0)
+        try:
+            return self.content_by_url[url]
+        except KeyError:
+            raise ia.ImergGranuleMissingError(f"not found: {url}") from None
+
+
+def _subset_client(
+    tmp_path: Path, starts: Sequence[datetime], *, value: float = 1.5
+) -> FakeSubsetWindowClient:
+    return FakeSubsetWindowClient(
+        content_by_url={
+            ia.subset_granule_url(archive_filename=_archive_name(s), start=s): (
+                _subset_fixture_bytes(tmp_path, s, value=value)
+            )
+            for s in starts
+        }
+    )
+
+
+@dataclass
+class RecordingSleep:
+    calls: list[float] = field(default_factory=list)
+
+    def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+
+def _run_window(
+    tmp_path: Path,
+    starts: Sequence[datetime],
+    *,
+    client: FakeImergHttpClient | None = None,
+    subset_client: FakeSubsetWindowClient | None = None,
+    sleep: RecordingSleep | None = None,
+    data_root: Path | None = None,
+    interval_seconds: float = 0.25,
+) -> ia.SubsetWindowRetrievalReport:
+    return ia.retrieve_subset_window(
+        starts,
+        client=client if client is not None else _listing_client(starts),
+        subset_client=(
+            subset_client
+            if subset_client is not None
+            else _subset_client(tmp_path, starts)
+        ),
+        data_root=data_root if data_root is not None else tmp_path / "data_root",
+        clock=_clock,
+        sleep=sleep if sleep is not None else RecordingSleep(),
+        interval_seconds=interval_seconds,
+    )
+
+
+class TestSubsetWindowCadence:
+    """D3.1 — "a fixed cadence between successful requests". ⛔ The pre-T3
+    loop had no delay at all: `RecordingSleep.calls` was empty."""
+
+    def test_a_fixed_interval_separates_successive_requests(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        sleep = RecordingSleep()
+        report = _run_window(tmp_path, starts, sleep=sleep, interval_seconds=0.25)
+        assert report.retrieved == 4
+        # one day listing + four fetches = five requests, four gaps between them
+        assert report.requests_issued == 5
+        assert sleep.calls == [0.25] * 4
+
+    def test_a_reused_artifact_costs_neither_a_request_nor_a_pause(
+        self, tmp_path: Path
+    ) -> None:
+        """D3's resumability, measured in REQUESTS: the cached granule must
+        not consume cadence either, which is why the pacer wraps the client
+        rather than the loop."""
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        data_root = tmp_path / "data_root"
+        cached_name = _archive_name(starts[0])
+        _write_fake_subset_granule(
+            ia.subset_granule_artifact_path(data_root, archive_filename=cached_name),
+            archive_filename=cached_name,
+            value=1.5,
+        )
+        sleep = RecordingSleep()
+        subset_client = _subset_client(tmp_path, starts)
+        report = _run_window(
+            tmp_path,
+            starts,
+            sleep=sleep,
+            subset_client=subset_client,
+            data_root=data_root,
+            interval_seconds=0.25,
+        )
+        assert report.retrieved == 4
+        assert report.reused == 1
+        assert len(subset_client.calls) == 3
+        assert report.requests_issued == 4  # one listing + three fetches
+        assert sleep.calls == [0.25] * 3
+
+
+def _ladder_429(*, retry_after: str | None) -> Exception:
+    """The exception the REAL status ladder raises for a 429 — ⛔ never a
+    hand-written stand-in: the retry tests below must exercise the ladder's
+    own CLASSIFICATION (pre-T3 it was the non-retryable
+    `ImergRequestFailedError`), not merely the pacer's handling of a type the
+    test itself chose."""
+    try:
+        ia._raise_for_http_status(429, url="https://gpm1/x", retry_after=retry_after)
+    except ia.ImergTransientError as exc:
+        return exc
+    except ia.ImergAcquisitionError as exc:  # pragma: no cover - the pre-T3 branch
+        raise AssertionError(
+            f"429 must classify as a RETRYABLE transient failure, got {exc!r}"
+        ) from exc
+    raise AssertionError("429 did not raise at all")
+
+
+class TestSubsetWindowRateLimiting:
+    """D3.2 — "retry 429 honouring Retry-After, with backoff". ⛔ On pre-T3
+    HEAD a 429 fell into the status ladder's non-retryable tail, so the FIRST
+    throttle aborted the run."""
+
+    def test_the_status_ladder_makes_429_retryable_and_reads_retry_after(
+        self,
+    ) -> None:
+        with pytest.raises(ia.ImergRateLimitedError) as excinfo:
+            ia._raise_for_http_status(429, url="https://x/y", retry_after="12")
+        assert isinstance(excinfo.value, ia.ImergTransientError)
+        assert not isinstance(excinfo.value, ia.ImergRequestFailedError)
+        assert excinfo.value.retry_after_seconds == 12.0
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, None),
+            ("", None),
+            ("soon", None),
+            ("5", 5.0),
+            ("-3", 0.0),
+            (" 7 ", 7.0),
+        ],
+    )
+    def test_retry_after_parsing(self, raw: str | None, expected: float | None) -> None:
+        assert ia.parse_retry_after(raw) == expected
+
+    def test_a_429_carrying_retry_after_is_retried_after_the_servers_own_delay(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        subset_client = _subset_client(tmp_path, starts)
+        subset_client.failures = [_ladder_429(retry_after="7")]
+        sleep = RecordingSleep()
+        report = _run_window(
+            tmp_path,
+            starts,
+            subset_client=subset_client,
+            sleep=sleep,
+            interval_seconds=0.25,
+        )
+        assert report.retrieved == 2  # the run did NOT abort
+        assert report.rate_limited == 1
+        assert 7.0 in sleep.calls  # the SERVER's number, not our backoff curve
+        assert 2.0 not in sleep.calls
+
+    def test_a_429_without_retry_after_falls_back_to_backoff(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        subset_client = _subset_client(tmp_path, starts)
+        subset_client.failures = [_ladder_429(retry_after=None)]
+        sleep = RecordingSleep()
+        report = _run_window(
+            tmp_path,
+            starts,
+            subset_client=subset_client,
+            sleep=sleep,
+            interval_seconds=0.25,
+        )
+        assert report.retrieved == 2
+        assert report.rate_limited == 1
+        assert 2.0 in sleep.calls  # backoff_base * 2**0
+
+    def test_a_404_is_never_retried(self, tmp_path: Path) -> None:
+        """⛔ The retry is for TRANSIENT failures only: a missing granule is
+        data (a gap), and retrying it five times would be five wasted
+        requests per gap over a 105,216-granule window."""
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        subset_client = _subset_client(tmp_path, starts)
+        del subset_client.content_by_url[
+            ia.subset_granule_url(
+                archive_filename=_archive_name(starts[1]), start=starts[1]
+            )
+        ]
+        report = _run_window(tmp_path, starts, subset_client=subset_client)
+        assert report.missing == (starts[1].isoformat(),)
+        assert len(subset_client.calls) == 2  # one attempt for the gap, not five
+
+
+@dataclass
+class _FakeResponse:
+    status_code: int = 200
+    text: str = ""
+    content: bytes = b""
+    headers: dict[str, str] = field(default_factory=dict)
+    history: list[object] = field(default_factory=list)
+
+    def iter_content(self, chunk_size: int = 1) -> Any:
+        yield self.content
+
+
+@dataclass
+class _RecordingSession:
+    responses: list[_FakeResponse]
+    calls: list[str] = field(default_factory=list)
+
+    def get(self, url: str, **kwargs: Any) -> _FakeResponse:
+        self.calls.append(url)
+        return self.responses.pop(0)
+
+
+class TestOneReusedSession:
+    """D3.3/D4 — "one authenticated, cookie-bearing session, reused". ⛔ Every
+    call on pre-T3 HEAD was a bare `requests.get`, which builds a throwaway
+    session and discards its cookie jar, so each request re-ran the whole
+    Earthdata redirect chain."""
+
+    def test_every_client_call_goes_through_the_one_injected_session(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import requests
+
+        def boom(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError(
+                "a bare requests.get bypasses the shared cookie-bearing session (D3.3)"
+            )
+
+        monkeypatch.setattr(requests, "get", boom)
+        session = _RecordingSession(
+            responses=[
+                _FakeResponse(text="a listing"),
+                _FakeResponse(content=b"granule bytes"),
+                _FakeResponse(content=b"subset bytes"),
+            ]
+        )
+        archive = ia.RealImergHttpClient(session=session)  # type: ignore[arg-type]
+        subset = ia.RealImergSubsetHttpClient(session=session)  # type: ignore[arg-type]
+        assert archive.list_directory("https://gpm1/2020/197/") == "a listing"
+        archive.download_to_path(url="https://gpm1/g.HDF5", target=tmp_path / "g.HDF5")
+        assert (
+            subset.fetch_subset(
+                url="https://gpm1/g.dap.nc4", constraint="/precipitation"
+            )
+            == b"subset bytes"
+        )
+        assert len(session.calls) == 3
+
+    def test_the_shared_session_is_one_process_wide_object(self) -> None:
+        assert ia.earthdata_session() is ia.earthdata_session()
+
+    def test_both_real_clients_default_to_that_same_session(self) -> None:
+        assert ia.RealImergHttpClient().session is None
+        assert ia.RealImergSubsetHttpClient().session is None
+        assert ia._session_for(None) is ia.earthdata_session()
+
+
+class TestPerDayFilenameResolution:
+    """D3.4 — "resolve each day's filenames ONCE". ⛔ `acquire_granule` lists
+    the day directory once per GRANULE (and before checking the disk), so the
+    archive route would issue 105,216 listings on top of its downloads."""
+
+    def test_one_listing_serves_a_whole_day(self, tmp_path: Path) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 6)
+        client = _listing_client(starts)
+        report = _run_window(tmp_path, starts, client=client)
+        assert report.retrieved == 6
+        assert len(client.list_calls) == 1
+
+    def test_each_day_is_listed_exactly_once(self, tmp_path: Path) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 2) + _starts_from(
+            _TRIAL_DAY_START + timedelta(days=1), 2
+        )
+        client = _listing_client(starts)
+        report = _run_window(tmp_path, starts, client=client)
+        assert report.retrieved == 4
+        assert len(client.list_calls) == 2
+        assert len(set(client.list_calls)) == 2
+
+    def test_a_reused_artifact_still_costs_no_extra_listing(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 3)
+        client = _listing_client(starts)
+        _run_window(tmp_path, starts, client=client, data_root=tmp_path / "dr")
+        _run_window(tmp_path, starts, client=client, data_root=tmp_path / "dr")
+        assert len(client.list_calls) == 2  # one per RUN, not one per granule
+
+
+class TestSubsetWindowGapsAreRecordedAsGaps:
+    """Plan 220's rule — a gap is data, a wrong retrieval is not. ⛔ Nothing
+    here scales, fills or interpolates a missing granule."""
+
+    def test_a_granule_absent_from_the_listing_is_a_gap_and_is_never_fetched(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        present = [s for s in starts if s != starts[2]]
+        subset_client = _subset_client(tmp_path, starts)
+        report = _run_window(
+            tmp_path,
+            starts,
+            client=_listing_client(starts, present=present),
+            subset_client=subset_client,
+        )
+        assert report.requested == 4
+        assert report.retrieved == 3
+        assert report.missing == (starts[2].isoformat(),)
+        assert len(subset_client.calls) == 3
+
+    def test_the_gap_is_carried_into_the_permanent_record(self, tmp_path: Path) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        data_root = tmp_path / "data_root"
+        _run_window(
+            tmp_path,
+            starts,
+            client=_listing_client(starts, present=starts[:3]),
+            data_root=data_root,
+        )
+        manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert manifest is not None
+        assert manifest.missing == (starts[3].isoformat(),)
+        assert manifest.requested == 4
+        assert manifest.retrieved == 3
+
+
+class TestSubsetWindowManifest:
+    """D2 — the ROUTE is recorded, and the recorded contract must satisfy that
+    route's own frozen contract."""
+
+    def test_records_the_subset_route_and_a_contract_that_dispatches_to_it(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 3)
+        data_root = tmp_path / "data_root"
+        report = _run_window(tmp_path, starts, data_root=data_root)
+        manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert manifest is not None
+        assert manifest.route == ia.SUBSET_ROUTE
+        assert (
+            ia.read_contract_violations(
+                manifest.read_contract,
+                granule_revision=manifest.granule_revision,
+                route=manifest.route,
+            )
+            == ()
+        )
+        # ⛔ the ARCHIVE spelling keys the record on BOTH routes
+        assert set(manifest.granule_checksums) == {_archive_name(s) for s in starts}
+        assert manifest.requested_window_start == starts[0]
+        assert manifest.requested_window_end == starts[-1]
+        assert report.total_bytes > 0
+
+    def test_no_record_is_written_when_nothing_was_retrieved(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        data_root = tmp_path / "data_root"
+        report = _run_window(
+            tmp_path,
+            starts,
+            client=_listing_client(starts, present=[]),
+            data_root=data_root,
+        )
+        assert report.retrieved == 0
+        assert report.missing == tuple(s.isoformat() for s in starts)
+        assert not ia.acquisition_manifest_path(data_root).exists()
+
+
+class TestSubsetBoxIndexBounds:
+    def test_derives_the_measured_index_range_without_restating_it(self) -> None:
+        assert ia.subset_box_index_bounds() == (
+            (_BOX_LON_START, _BOX_LON_STOP),
+            (_BOX_LAT_START, _BOX_LAT_STOP),
+        )
+
+    def test_the_derived_bounds_agree_with_the_archive_contracts_own_vectors(
+        self,
+    ) -> None:
+        """The bounds T2 reads off a granule and the bounds a window run
+        derives must be the same numbers — otherwise the two routes would ask
+        for different boxes."""
+        lon_bounds, lat_bounds = ia.subset_box_index_bounds()
+        assert lon_bounds == ia.subset_box_indices(
+            tuple(float(v) for v in _ARCHIVE_LON),
+            low=ia.STUDY_BOX[1],
+            high=ia.STUDY_BOX[3],
+        )
+        assert lat_bounds == ia.subset_box_indices(
+            tuple(float(v) for v in _ARCHIVE_LAT),
+            low=ia.STUDY_BOX[2],
+            high=ia.STUDY_BOX[0],
+        )
+
+
+class TestExplicitWindowBound:
+    """⛔ The bound is always stated: there is no default, and a run stops at
+    the end it was given."""
+
+    def test_the_trial_day_is_forty_eight_half_hour_granules(self) -> None:
+        starts = ia.granule_starts_between(_TRIAL_DAY_START, _TRIAL_DAY_END)
+        assert len(starts) == 48
+        assert starts[0] == _TRIAL_DAY_START
+        assert starts[-1] == _TRIAL_DAY_END
+
+    def test_a_reversed_bound_is_refused(self) -> None:
+        with pytest.raises(ia.ImergRequestFailedError, match="is after its end"):
+            ia.granule_starts_between(_TRIAL_DAY_END, _TRIAL_DAY_START)
+
+    def test_a_start_outside_the_pinned_window_is_refused(self) -> None:
+        with pytest.raises(ia.ImergRequestFailedError, match="pinned D5 window"):
+            ia.granule_starts_between(datetime(2019, 1, 1, tzinfo=UTC), _TRIAL_DAY_END)
+
+    def test_a_non_half_hour_bound_is_refused(self) -> None:
+        with pytest.raises(ia.ImergRequestFailedError, match="half-hour"):
+            ia.granule_starts_between(
+                datetime(2020, 7, 15, 0, 7, tzinfo=UTC), _TRIAL_DAY_END
+            )
+
+
+class TestSubsetWindowCli:
+    def test_a_half_stated_bound_is_refused_rather_than_defaulted(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(SystemExit) as excinfo:
+            ia.main(
+                [
+                    "--data-root",
+                    str(tmp_path),
+                    "--subset-window-start",
+                    "2020-07-15T00:00:00Z",
+                ]
+            )
+        assert excinfo.value.code == 2
+
+    def test_the_cli_retrieves_exactly_the_stated_bound(self, tmp_path: Path) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 3)
+        data_root = tmp_path / "data_root"
+        subset_client = _subset_client(tmp_path, starts)
+        exit_code = ia.main(
+            [
+                "--data-root",
+                str(data_root),
+                "--subset-window-start",
+                starts[0].isoformat(),
+                "--subset-window-end",
+                starts[-1].isoformat(),
+                "--request-interval-seconds",
+                "0",
+            ],
+            client=_listing_client(starts),
+            subset_client=subset_client,
+            clock=_clock,
+            sleep=_sleep,
+        )
+        assert exit_code == 0
+        assert len(subset_client.calls) == 3  # ⛔ not one granule more
+        manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert manifest is not None
+        assert manifest.route == ia.SUBSET_ROUTE
