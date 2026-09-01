@@ -29,6 +29,9 @@ dependency bump and deliberately smaller than a redesign.
    pattern, no new service, no CI job, no telemetry.
 4. **Do not widen this into the multi-resolution work** (Plan 153) or reopen Plan 151 beyond
    D34/D10a. Those non-goals are load-bearing.
+4b. **Do not propose per-feature minimums.** No model declares divergent ones (§ Scope ruling); a
+   previous review round proposed building that machinery and it was rejected as solving a problem
+   nobody has.
 5. **Do not propose deleting `HORIZON_CEILING_FLOORS`.** D1 explains why: it is the working
    short-record support today.
 6. **Do not re-argue whether to do this at all.** The owner ruled on 2026-09-01 that the August
@@ -87,6 +90,27 @@ exposes only a private `_model`.
 at `horizon_semantics.py:139`, and runner tests prove it changes acceptance
 (`tests/unit/services/test_run_station_forecast.py:1150`). **It is the current short-record support.**
 
+## Scope ruling — a MODEL-WIDE minimum, not a per-feature one
+
+**Measured 2026-09-01:** aquacast sets `min_future_steps=1 if relaxable else None`
+(`aquacast/operational/requirement.py:213`) and decides `horizon_semantics` once per model (`:197`)
+— **one uniform value across every variable.** No model declares divergent per-variable minimums
+today.
+
+Plan 151 **D34**'s revisit trigger required **both** *"an FI bump to >= v0.1.20"* **AND** *"a
+per-track-eligible model declaring divergent per-variable `min_future_steps`"*. **Only the first
+has fired.**
+
+So this plan honours a **single minimum per model** — which is exactly what
+`_model_declared_floor()` already returns (`services/horizon_semantics.py:116`) and what
+`assess_future_coverage(..., required_steps: int)` already accepts (`services/nwp_coverage.py:79`).
+**Per-feature minimums are explicitly OUT OF SCOPE** until a model declares divergent ones, at
+which point 151 D34's second condition fires and it becomes its own plan.
+
+A review round proposed building the per-feature machinery now and called the existing single value
+a blocker. It is not a blocker for any declaration that exists — building it would be solving a
+problem nobody has, and this plan's proportionality rules forbid it.
+
 ## Decisions
 
 - **D1 — Replace the hard-coded table with the model's own declaration; do not delete it blind.**
@@ -107,6 +131,14 @@ at `horizon_semantics.py:139`, and runner tests prove it changes acceptance
   equating them"* (`horizon_semantics.py:45-48`). Honour that: a forecast produced from a short
   record must be recorded as such, in the stored forecast and in the logs.
 
+- **D5a — All THREE runner routes must be covered, and the GROUP route is the one that matters.**
+  `cmal_pool_pt` runs as a GROUP model, and the GROUP path has **zero** references to track
+  resolution (verified by grep 2026-09-01). An earlier draft targeted the
+  carrier/projection/resolution chain only — which would have missed the very route the model
+  actually uses. The accept/reject seam common to all three routes is
+  `resolve_required_steps()` -> `_model_declared_floor()` -> `assess_future_coverage()`, and that is
+  what this plan changes.
+
 - **D5 — This supersedes 151 D34, and says so in both documents.** A plan that quietly contradicts a
   ruling marked "settled, do not reopen" is worse than one that names it.
 
@@ -125,14 +157,19 @@ violate its design.
 test that fails today.
 
 ### T3 — carry the minimum end-to-end and accept short records
-The table above, in order: carrier, projection, resolution, coverage.
+The seam named in D5a, on **all three** runner routes — station legacy, station per-track, and
+GROUP. The single-value carriers in the table above are touched only where they actually block that
+seam; this plan does **not** rebuild them for per-feature minimums (§ Scope ruling).
 *Exit:* a record shorter than desired but at or above the declared minimum **produces a forecast**;
 one below the minimum still fails; a model declaring no minimum behaves exactly as today. Red-first.
 
-### T4 — correct the record in Plan 151
+### T4 — correct the record in Plan 151, and close out Plan 227
 Note against D34/D10a that the acceptance was a workaround pending the FI bump, that the trigger has
 fired, and that this plan supersedes it.
-*Exit:* a reader of 151 cannot mistake the compromise for a permanent design choice.
+Also mark **Plan 227 superseded**: it sits BLOCKED awaiting a decision this plan now contains, and
+an active blocked plan pointing at an answer given elsewhere is how work gets silently lost.
+*Exit:* a reader of 151 cannot mistake the compromise for a permanent design choice, and 227 no
+longer reads as awaiting an answer.
 
 ## Non-goals
 
