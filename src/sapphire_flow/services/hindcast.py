@@ -210,8 +210,17 @@ def _assemble_hindcast_inputs(
     # not the model, owns aggregating to it. `validate_time_step_cadence` is
     # the backstop: it fails loudly if a future change breaks this instead
     # of silently shipping raw rows again.
+    #
+    # `anchor=issue_time` (review fixer round): without it, buckets are
+    # UTC-midnight-aligned regardless of `issue_time`'s own phase, so a
+    # non-midnight issue_time got a spurious partial bucket at the boundary
+    # nearest issue_time instead of a full `[issue_time - time_step,
+    # issue_time)` window — contaminating the model's tail lookback with a
+    # partial-day average.
     obs_df = _observations_to_dataframe(observations, parameter)
-    obs_df = resample_to_time_step(obs_df, time_step, aggregation_methods=None)
+    obs_df = resample_to_time_step(
+        obs_df, time_step, aggregation_methods=None, anchor=issue_time
+    )
     validate_time_step_cadence(obs_df, time_step, context="hindcast.past_targets")
 
     # Split forcing into past (≤ issue_time) and future (> issue_time).

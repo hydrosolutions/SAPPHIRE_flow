@@ -107,30 +107,75 @@ def validate_time_step_cadence(
     legitimately carries a finer, unresampled cadence than the model's
     ``time_step`` in the operational path (e.g. hourly reanalysis feeding a
     daily model), so a blanket check would misfire there.
+
+    Checks **every** adjacent gap, not the median (Plan 228 review fixer
+    round): a median-of-N check passes an isolated missing bucket (e.g.
+    resampled days 1,2,3,5,6 — gaps 1d,1d,2d,1d — median is still 1d), which
+    silently lets a model read non-consecutive buckets as if they were
+    consecutive steps (`.tail(n)`/`values[-n:]` are position-based, so a gap
+    shifts every earlier value's apparent recency by one step). Every gap
+    must match ``time_step`` within tolerance; a single bad gap raises.
     """
-    median_diff_us = _detect_cadence_us(df)
-    if median_diff_us is None:
+    if df.is_empty() or df.height < 2:
+        return
+    timestamps = df["timestamp"].sort()
+    diffs_us = timestamps.diff().drop_nulls().cast(pl.Int64)
+    if diffs_us.is_empty():
         return
     target_us = time_step.total_seconds() * 1_000_000
     if target_us <= 0:
         return
-    if abs(median_diff_us - target_us) > target_us * _CADENCE_TOLERANCE_FRACTION:
-        actual = timedelta(microseconds=median_diff_us)
+    tolerance_us = target_us * _CADENCE_TOLERANCE_FRACTION
+    bad_gaps = diffs_us.filter((diffs_us - target_us).abs() > tolerance_us)
+    if bad_gaps.len() > 0:
+        worst_us = bad_gaps.abs().max()
+        actual = timedelta(microseconds=int(cast("float", worst_us)))
         raise ConfigurationError(
-            f"{context}: delivered cadence ~{actual} does not match the "
-            f"declared time_step {time_step}"
+            f"{context}: delivered cadence includes a gap of {actual} that "
+            f"does not match the declared time_step {time_step} "
+            f"({bad_gaps.len()} of {diffs_us.len()} gaps out of tolerance)"
         )
+
+
+def _anchor_phase_shift(anchor: UtcDatetime, time_step: timedelta) -> timedelta:
+    """The portion of ``anchor`` that is not a whole multiple of ``time_step``
+    since the Unix epoch — e.g. an anchor at 06:00 UTC with a daily
+    ``time_step`` gives a 6-hour phase shift. Subtracting this from every
+    timestamp before grouping (then adding it back after) pins bucket
+    boundaries to ``anchor``'s time-of-day instead of UTC midnight, because
+    ``group_by_dynamic``'s calendar truncation (``"1d"`` etc.) is itself
+    epoch/midnight-aligned for a UTC column.
+    """
+    step_seconds = time_step.total_seconds()
+    if step_seconds <= 0:
+        return timedelta(0)
+    phase_seconds = anchor.timestamp() % step_seconds
+    return timedelta(seconds=phase_seconds)
 
 
 def resample_to_time_step(
     df: pl.DataFrame,
     time_step: timedelta,
     aggregation_methods: dict[str, AggregationMethod] | None = None,
+    anchor: UtcDatetime | None = None,
 ) -> pl.DataFrame:
     """Resample a wide-format observations DataFrame to the target time_step.
 
     Expects columns: ``timestamp`` (datetime) + one column per parameter.
     Returns as-is if the data cadence already matches ``time_step``.
+
+    ``anchor`` (Plan 228 review fixer round — aggregation-window alignment):
+    pins bucket boundaries to ``anchor``'s phase within ``time_step``. Without
+    it, ``group_by_dynamic`` truncates to UTC-midnight-aligned boundaries
+    regardless of what instant the caller actually cares about — a daily
+    forecast valid at 06:00 UTC then gets bucketed into a [00:00, 24:00)
+    window whose label never equals its own ``valid_time``, and a lookback
+    ending at a non-midnight ``issue_time`` gets a spurious partial bucket at
+    the boundary instead of the intended `[issue_time - time_step,
+    issue_time)`. Pass the instant whose phase the buckets must match — the
+    forecast's own ``valid_time``/``issue_time`` — whenever bucket labels are
+    compared against or must end at a specific instant; omit it only when the
+    caller has no such instant to align to.
     """
     if df.is_empty() or df.height < 2:
         return df
@@ -166,12 +211,25 @@ def resample_to_time_step(
         else:
             agg_exprs.append(pl.col(col).mean())
 
+    working = df.sort("timestamp")
+    phase_shift: timedelta | None = None
+    if anchor is not None:
+        phase_shift = _anchor_phase_shift(anchor, time_step)
+        working = working.with_columns(
+            (pl.col("timestamp") - phase_shift).alias("timestamp")
+        )
+
     resampled = (
-        df.sort("timestamp")
-        .group_by_dynamic("timestamp", every=_timedelta_to_polars(time_step))
+        working.group_by_dynamic("timestamp", every=_timedelta_to_polars(time_step))
         .agg(agg_exprs)
         .sort("timestamp")
     )
+
+    if phase_shift is not None:
+        resampled = resampled.with_columns(
+            (pl.col("timestamp") + phase_shift).alias("timestamp")
+        )
+
     return resampled
 
 

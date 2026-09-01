@@ -45,7 +45,17 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_COMPUTATION_VERSION = 1
+# Plan 228 review fixer round (blocker): the natural key on `skill_scores`/
+# `skill_diagrams` includes `computation_version` (`uq_skill_scores_natural_key`,
+# `db/metadata.py`), and `store_skill_scores`/`store_skill_diagrams` insert with
+# `ON CONFLICT DO NOTHING`. `mark_stale` (`skill_store.py`) only flips
+# `freshness`, it never changes `computation_version` — so recomputing at the
+# SAME version collides with the now-stale row's still-live natural key and
+# the corrected row is silently dropped, never inserted. Bumping the version
+# here gives every post-Plan-228 recompute a natural key the old (stale) rows
+# never occupy, so the insert succeeds AND `fetch_latest_scores`'s
+# `max(computation_version)` picks the new rows up automatically.
+_COMPUTATION_VERSION = 2
 _DEFAULT_DECISION_PROBABILITY = 0.5
 
 
@@ -85,10 +95,27 @@ def _infer_forecast_time_step(hindcasts: list[HindcastForecast]) -> timedelta | 
     return min(issue_gaps) if issue_gaps else None
 
 
+def _forecast_valid_time_anchor(
+    hindcasts: list[HindcastForecast],
+) -> UtcDatetime | None:
+    """The phase every forecast ``valid_time`` shares (Plan 228 review fixer
+    round): any single ``valid_time`` works as the anchor, since a model
+    issues on a fixed cadence and every ``valid_time`` therefore falls at the
+    same time-of-day modulo its ``time_step``. Returns ``None`` only when no
+    hindcast carries any ``valid_time`` at all (empty ensembles).
+    """
+    for hc in hindcasts:
+        vts = hc.ensemble.values["valid_time"].to_list()
+        if vts:
+            return vts[0]
+    return None
+
+
 def _resample_observations_to_forecast_step(
     observations: list[Observation],
     parameter: str,
     time_step: timedelta,
+    anchor: UtcDatetime | None,
 ) -> dict[object, float]:
     """Aggregate raw observations to ``time_step`` (Plan 228 P2/D2), keyed by
     the resulting bucket ``timestamp`` for an exact-key lookup against a
@@ -101,6 +128,12 @@ def _resample_observations_to_forecast_step(
     forecast quality (measured: median 6.4%, p95 48.6% error). This
     aggregates with the SAME method the model trains against
     (``aggregation_method_for``) rather than substituting a different one.
+
+    ``anchor`` (review fixer round) pins the resulting bucket labels to the
+    forecast's own ``valid_time`` phase — without it, buckets fall on
+    UTC-midnight boundaries regardless of what hour the forecast is valid at,
+    so a non-midnight ``valid_time`` never exact-matches any key here and
+    ``_build_strata`` silently finds no observation for it at all.
     """
     valued = [(o.timestamp, o.value) for o in observations if o.value is not None]
     if not valued:
@@ -115,6 +148,7 @@ def _resample_observations_to_forecast_step(
         df,
         time_step,
         aggregation_methods={parameter: aggregation_method_for(parameter)},
+        anchor=anchor,
     )
     return dict(
         zip(
@@ -414,19 +448,27 @@ def compute_skill_for_station(
     # raw instantaneous reading.
     time_step = _infer_forecast_time_step(hindcasts)
     if time_step is None:
+        # Review fixer round (minor): a single hindcast with a single lead
+        # step (a station/model right after onboarding, or any horizon-1
+        # model's first scoring pass) has no gap to infer a time_step from.
+        # The old fallback here re-joined against RAW instantaneous
+        # observations — exactly the P2 defect this plan exists to remove,
+        # silently, with only a log line to mark it. Producing NO score is
+        # preferable to producing a WRONG one: skip this station/model until
+        # a second hindcast (or a multi-step ensemble) makes the time_step
+        # inferable.
         log.warning(
-            "compute_skill_for_station.time_step_unknown",
+            "compute_skill_for_station.time_step_unknown_no_scores",
             station_id=str(station_id),
             model_id=str(model_id),
             hindcast_count=len(hindcasts),
         )
-        obs_lookup: dict[object, float] = {
-            o.timestamp: o.value for o in observations if o.value is not None
-        }
-    else:
-        obs_lookup = _resample_observations_to_forecast_step(
-            observations, parameter, time_step
-        )
+        return [], []
+
+    anchor = _forecast_valid_time_anchor(hindcasts)
+    obs_lookup = _resample_observations_to_forecast_step(
+        observations, parameter, time_step, anchor
+    )
 
     strata = _build_strata(hindcasts, obs_lookup, seasons, flow_regime_config)
 

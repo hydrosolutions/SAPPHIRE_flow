@@ -76,6 +76,12 @@ class PgHindcastStore:
                     created_at=hindcast.created_at,
                     qc_status=hindcast.qc_status.value,
                     qc_flags=qc_flags_json,
+                    # Plan 228 review fixer round: the ensemble's own
+                    # authoritative time_step, not inferred from valid_time
+                    # gaps on read (which defaulted to a hardcoded 1 hour for
+                    # a horizon-1 hindcast — silently wrong for a horizon-1
+                    # DAILY model).
+                    time_step_seconds=int(ens.time_step.total_seconds()),
                 )
                 .on_conflict_do_update(
                     index_elements=[
@@ -94,6 +100,7 @@ class PgHindcastStore:
                         "representation": hindcast.representation.value,
                         "qc_status": hindcast.qc_status.value,
                         "qc_flags": qc_flags_json,
+                        "time_step_seconds": int(ens.time_step.total_seconds()),
                     },
                 )
                 .returning(hindcast_forecasts.c.id)
@@ -313,12 +320,13 @@ def _reconstruct_ensemble(
     if representation == EnsembleRepresentation.MEMBERS:
         df = df.with_columns(pl.col("member_id").cast(pl.Int32))
 
-    sorted_times = sorted({r["valid_time"] for r in rows})
-    if len(sorted_times) >= 2:
-        delta = sorted_times[1] - sorted_times[0]
-        time_step = timedelta(seconds=delta.total_seconds())
-    else:
-        time_step = timedelta(hours=1)
+    # Plan 228 review fixer round: `time_step_seconds` is the ensemble's own
+    # authoritative value, persisted at write time — NOT inferred from the
+    # gap between stored `valid_time`s. The old inference defaulted to a
+    # hardcoded 1 hour whenever a hindcast has a single lead step (the
+    # normal shape for any horizon-1 model), which was silently wrong for a
+    # horizon-1 DAILY model (true time_step 1 day, not 1 hour).
+    time_step = timedelta(seconds=header["time_step_seconds"])
 
     if representation == EnsembleRepresentation.MEMBERS:
         return ForecastEnsemble.from_members(

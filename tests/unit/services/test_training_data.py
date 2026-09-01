@@ -5,12 +5,15 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import polars as pl
+import pytest
 from structlog.testing import capture_logs
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.training_data import (
     assemble_group_training_data,
     assemble_station_training_data,
     resample_to_time_step,
+    validate_time_step_cadence,
 )
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
@@ -1025,6 +1028,89 @@ class TestResampleToTimeStep:
         )
         assert result.height == 1
         assert abs(result["discharge"][0] - 96.0) < 1e-9  # 24 * 4.0
+
+    def test_anchor_aligns_buckets_to_a_non_midnight_phase(self) -> None:
+        # 3 days of 10-minute discharge starting at 06:00 UTC (never a
+        # midnight boundary) — the exact shape a hindcast/skill lookback
+        # feeds in (Plan 228 review fixer round).
+        start = ensure_utc(datetime(2024, 1, 1, 6, tzinfo=UTC))
+        n = 3 * 24 * 6
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(start.timestamp() + i * 600, tz=UTC)
+                    )
+                    for i in range(n)
+                ],
+                "discharge": [5.0] * n,
+            }
+        )
+        anchor = ensure_utc(datetime(2024, 1, 5, 6, tzinfo=UTC))  # any 06:00 instant
+
+        result = resample_to_time_step(df, timedelta(days=1), anchor=anchor)
+
+        # Every bucket boundary must fall at 06:00 UTC, never at midnight.
+        for ts in result["timestamp"]:
+            assert ts.hour == 6 and ts.minute == 0 and ts.second == 0, (
+                f"bucket at {ts} is not anchored to the 06:00 UTC phase"
+            )
+
+
+class TestValidateTimeStepCadence:
+    """Plan 228 review fixer round (major): direct unit coverage for
+    ``validate_time_step_cadence``, wired as a hard `ConfigurationError`-
+    raising check into the live operational forecast cycle
+    (`operational_inputs.py`, `track_assembly.py`) and hindcast
+    (`hindcast.py`), with previously zero direct tests anywhere."""
+
+    def test_raises_on_a_genuinely_mismatched_cadence(self) -> None:
+        # Raw ~10-minute-cadence data against a declared daily time_step —
+        # the exact P1 shape (144x shortfall).
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(_BASE.timestamp() + i * 600, tz=UTC)
+                    )
+                    for i in range(20)
+                ],
+                "discharge": [1.0] * 20,
+            }
+        )
+        with pytest.raises(ConfigurationError, match="does not match"):
+            validate_time_step_cadence(df, timedelta(days=1), context="test")
+
+    def test_does_not_raise_on_a_clean_uniform_cadence(self) -> None:
+        df = _hourly_discharge(48, value=1.0)
+        # Should not raise: cadence matches declared time_step exactly.
+        validate_time_step_cadence(df, timedelta(hours=1), context="test")
+
+    def test_raises_on_an_isolated_missing_bucket(self) -> None:
+        # Plan 228 review fixer round (major): days 1,2,3,5,6 — gaps
+        # 1d,1d,2d,1d. The median gap is still 1d (3 of 4 gaps match), so a
+        # median-only check passes this straight through; every adjacent
+        # gap must be checked to catch the isolated 2-day gap on day 4.
+        days = [1, 2, 3, 5, 6]
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(
+                            _BASE.timestamp() + (d - 1) * 86400, tz=UTC
+                        )
+                    )
+                    for d in days
+                ],
+                "discharge": [1.0] * len(days),
+            }
+        )
+        with pytest.raises(ConfigurationError, match="does not match"):
+            validate_time_step_cadence(df, timedelta(days=1), context="test")
+
+    def test_does_not_raise_on_fewer_than_two_rows(self) -> None:
+        df = pl.DataFrame({"timestamp": [_BASE], "discharge": [1.0]})
+        validate_time_step_cadence(df, timedelta(days=1), context="test")
 
 
 class TestResampleSnowAggregationFallback:

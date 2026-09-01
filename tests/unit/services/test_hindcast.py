@@ -1484,3 +1484,70 @@ class TestHindcastResamplesPastTargetsToDeclaredTimeStep:
             f"tail({lookback_steps}) of past_targets spans only {span} "
             f"against a declared {declared_window} lookback window"
         )
+
+
+class TestHindcastPastTargetsBucketsAlignToIssueTime:
+    """Plan 228 review fixer round (major): resampling ``past_targets``
+    without an anchor truncates to UTC-midnight boundaries regardless of
+    ``issue_time``'s own phase. For a non-midnight ``issue_time`` this
+    creates a spurious PARTIAL bucket at the boundary nearest ``issue_time``
+    (covering only the hours between the last midnight and ``issue_time``)
+    instead of a full ``[issue_time - time_step, issue_time)`` window —
+    contaminating the model's tail lookback with a partial-day average.
+    """
+
+    def test_last_bucket_ends_exactly_at_a_non_midnight_issue_time(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        lookback_steps = 7
+        # 06:00 UTC — never a midnight boundary.
+        issue_time = ensure_utc(datetime(2022, 1, 15, 6, tzinfo=UTC))
+
+        data_start = ensure_utc(issue_time - timedelta(days=12))
+        observations = make_observations(
+            n=12 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+        )
+
+        assert inputs is not None
+        past_targets = inputs.data.past_targets.sort("timestamp")
+
+        # Anchored to issue_time, the last (left-labeled) bucket must start
+        # exactly one time_step before issue_time — a full day, not a
+        # midnight-truncated partial one.
+        last_bucket_start = past_targets["timestamp"].max()
+        expected = issue_time - time_step
+        assert last_bucket_start == expected, (
+            f"last past_targets bucket starts at {last_bucket_start}, "
+            f"expected exactly {expected} (issue_time - time_step) — "
+            "buckets are not anchored to issue_time's phase"
+        )
+
+        # Every adjacent gap in the tail must equal time_step exactly — no
+        # partial bucket contaminating the model's lookback window.
+        tail = past_targets.tail(lookback_steps)
+        diffs = tail["timestamp"].diff().drop_nulls()
+        for diff in diffs:
+            assert diff == time_step, (
+                f"expected every gap in the lookback tail to equal "
+                f"{time_step}, found {diff}"
+            )

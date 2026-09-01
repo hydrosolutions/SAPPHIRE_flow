@@ -205,6 +205,77 @@ class TestStoreAndFetch:
         assert not fetched.ensemble.values.is_empty()
 
 
+class TestStoreHindcastPersistsAuthoritativeTimeStep:
+    """Plan 228 review fixer round (major): `hindcast_forecasts` never
+    persisted the ensemble's own `time_step` — it was reconstructed on read
+    by inferring from the gap between stored `valid_time`s, defaulting to a
+    hardcoded `timedelta(hours=1)` whenever a hindcast has only one lead
+    step. A horizon-1 DAILY model's hindcast (single valid_time, one day
+    after `hindcast_step`) round-tripped through the store as if its
+    time_step were 1 hour, not 1 day."""
+
+    def test_horizon_one_daily_hindcast_round_trips_its_true_time_step(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from datetime import timedelta
+
+        import polars as pl
+
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        issue = _utc(2025, 3, 1)
+        day = timedelta(days=1)
+        vt = ensure_utc(issue + day)
+        df = pl.DataFrame(
+            {
+                "valid_time": [vt, vt, vt],
+                "member_id": [0, 1, 2],
+                "value": [10.0, 11.0, 12.0],
+            }
+        ).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        ensemble = ForecastEnsemble.from_members(
+            station_id=sid,
+            issued_at=issue,
+            parameter="discharge",
+            units="m³/s",
+            time_step=day,
+            values=df,
+        )
+        hindcast = HindcastForecast(
+            id=HindcastForecastId(uuid4()),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            hindcast_step=issue,
+            forcing_type=ForcingType.REANALYSIS,
+            representation=EnsembleRepresentation.MEMBERS,
+            hindcast_run_id=uuid4(),
+            ensemble=ensemble,
+            created_at=_T0,
+        )
+        store.store_hindcast(hindcast)
+
+        results = store.fetch_hindcasts(sid, mid, _utc(2025, 2, 28), _utc(2025, 3, 2))
+        assert len(results) == 1
+
+        # The buggy gap-inference sees a single valid_time and defaults to
+        # timedelta(hours=1) — wrong for this horizon-1 DAILY hindcast.
+        assert results[0].ensemble.time_step == day, (
+            f"expected the persisted time_step ({day}) to round-trip, got "
+            f"{results[0].ensemble.time_step}"
+        )
+
+
 class TestFetchHalfOpenRange:
     def test_half_open_range(self, db_connection: sa.Connection) -> None:
         sid = _seed_station(db_connection)

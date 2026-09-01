@@ -9,6 +9,7 @@ from sapphire_flow.db.metadata import model_artifacts, models, skill_diagrams, s
 from sapphire_flow.store.skill_store import PgSkillStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    EnsembleRepresentation,
     FlowRegime,
     ForcingType,
     SkillFreshness,
@@ -201,6 +202,150 @@ class TestPgSkillStore:
         assert len(results) == 1
         assert results[0].computation_version == 2
         assert results[0].metric == "nse"
+
+    def test_recompute_after_mark_stale_supersedes_the_corrupted_score(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 228 review fixer round (blocker): `store_skill_scores` inserts
+        with `ON CONFLICT DO NOTHING` on a natural key that includes
+        `computation_version`. `mark_stale` only flips `freshness` — it never
+        frees the key. Recomputing a corrected score at the SAME
+        `computation_version` as the now-stale corrupted row therefore
+        collides and is silently dropped; `fetch_latest_scores` keeps
+        returning the corrupted value forever. This drives the real
+        `compute_skill_for_station` (not a hand-picked literal) end to end:
+        store a corrupted v1 row for a stratum, mark it stale, recompute the
+        SAME stratum with the real fixed service, store the result, and
+        confirm the corrected score — not the stale one — is what
+        `fetch_latest_scores` returns.
+        """
+        import uuid as uuid_mod
+        from datetime import timedelta
+
+        import polars as pl
+
+        from sapphire_flow.services.skill.service import (
+            _COMPUTATION_VERSION,
+            compute_skill_for_station,
+        )
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import HindcastForecastId
+        from tests.conftest import make_observation
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        # A pre-Plan-228 corrupted v1 score for exactly this stratum
+        # (station/artifact/parameter/source/forcing/lead/season/regime/metric).
+        corrupt = _make_score(
+            sid,
+            mid,
+            aid,
+            computation_version=1,
+            lead_time_hours=24,
+            metric="mae",
+            score=40.0,  # the pre-fix instantaneous-join error this plan measured
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+        )
+        store.store_skill_scores([corrupt])
+
+        marked = store.mark_stale(sid, _T0, _T1)
+        assert marked == 1
+
+        # Recompute the SAME stratum with the real, fixed service: two daily
+        # hindcasts whose forecast exactly equals the (resampled) daily-mean
+        # observation, giving a near-zero MAE — nothing like the stale 40.0.
+        day = timedelta(days=1)
+        issue1 = ensure_utc(datetime(2025, 3, 1, tzinfo=UTC))
+        issue2 = ensure_utc(datetime(2025, 3, 2, tzinfo=UTC))
+
+        def _daily_hindcast(issue: object) -> HindcastForecast:
+            vt = ensure_utc(issue + day)  # type: ignore[operator]
+            df = pl.DataFrame(
+                {
+                    "valid_time": [vt, vt, vt],
+                    "member_id": [0, 1, 2],
+                    "value": [42.0, 42.0, 42.0],
+                }
+            ).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+            ensemble = ForecastEnsemble.from_members(
+                station_id=sid,
+                issued_at=issue,  # type: ignore[arg-type]
+                parameter="discharge",
+                units="m³/s",
+                time_step=day,
+                values=df,
+            )
+            return HindcastForecast(
+                id=HindcastForecastId(uuid_mod.uuid4()),
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                hindcast_step=issue,  # type: ignore[arg-type]
+                forcing_type=ForcingType.REANALYSIS,
+                representation=EnsembleRepresentation.MEMBERS,
+                hindcast_run_id=uuid_mod.uuid4(),
+                ensemble=ensemble,
+                created_at=_NOW,
+            )
+
+        hindcasts = [_daily_hindcast(issue1), _daily_hindcast(issue2)]
+        observations = [
+            make_observation(
+                station_id=sid, timestamp=ensure_utc(issue1 + day), value=42.0
+            ),
+            make_observation(
+                station_id=sid, timestamp=ensure_utc(issue2 + day), value=42.0
+            ),
+        ]
+
+        scores, _ = compute_skill_for_station(
+            station_id=sid,
+            model_id=mid,
+            artifact_id=aid,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=[],
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=lambda: _NOW,
+            uuid_factory=uuid_mod.uuid4,
+            parameter="discharge",
+        )
+        corrected_mae = [
+            s
+            for s in scores
+            if s.metric == "mae" and s.lead_time_hours == 24 and s.season is None
+        ]
+        assert corrected_mae
+        assert all(s.computation_version == _COMPUTATION_VERSION for s in corrected_mae)
+
+        store.store_skill_scores(scores)
+
+        results = store.fetch_latest_scores(
+            sid,
+            mid,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            parameter="discharge",
+        )
+        mae_result = next(
+            r for r in results if r.metric == "mae" and r.lead_time_hours == 24
+        )
+        assert mae_result.computation_version == _COMPUTATION_VERSION
+        assert mae_result.score < 1.0, (
+            "expected the recomputed near-zero MAE, got the stale corrupted "
+            f"score {mae_result.score} — recompute was silently dropped by "
+            "the natural-key conflict"
+        )
 
     def test_fetch_latest_scores_with_source_filter(
         self, db_connection: sa.Connection

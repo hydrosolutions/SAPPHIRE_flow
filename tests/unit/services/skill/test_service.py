@@ -7,7 +7,10 @@ from uuid import UUID, uuid4
 import polars as pl
 import pytest
 
-from sapphire_flow.services.skill.service import compute_skill_for_station
+from sapphire_flow.services.skill.service import (
+    _COMPUTATION_VERSION,
+    compute_skill_for_station,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import SeasonDefinition, StationThreshold
 from sapphire_flow.types.enums import (
@@ -666,7 +669,7 @@ class TestSeasonStratification:
         )
 
         assert all(s.freshness == SkillFreshness.CURRENT for s in scores)
-        assert all(s.computation_version == 1 for s in scores)
+        assert all(s.computation_version == _COMPUTATION_VERSION for s in scores)
 
 
 class TestParameterMismatch:
@@ -966,8 +969,16 @@ class TestFlowRegimeStratification:
         uuid_factory: object,
     ) -> None:
         regime_config = _make_flow_regime_config(station_id, p50=150.0, p90=350.0)
+        # Two issue times (Plan 228 review fixer round): a single hindcast
+        # gives `_infer_forecast_time_step` no gap to infer from, and the
+        # fix no longer falls back to an unresampled instantaneous join —
+        # it returns no scores instead (the exact P2 defect this plan
+        # removes). A second issue time one hour later makes the time_step
+        # inferable via the issue-to-issue gap.
         step = _utc(2025, 1, 1)
+        step2 = ensure_utc(step + timedelta(hours=1))
         vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+        vt2 = ensure_utc(datetime.fromtimestamp(step2.timestamp() + 3600, tz=UTC))
         hindcasts = [
             _make_hindcast(
                 station_id=station_id,
@@ -976,10 +987,19 @@ class TestFlowRegimeStratification:
                 hindcast_step=step,
                 n_steps=1,
                 value=80.0,
-            )
+            ),
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step2,
+                n_steps=1,
+                value=80.0,
+            ),
         ]
         observations = [
-            _make_observation(station_id=station_id, timestamp=vt, value=80.0)
+            _make_observation(station_id=station_id, timestamp=vt, value=80.0),
+            _make_observation(station_id=station_id, timestamp=vt2, value=80.0),
         ]
 
         scores, _ = compute_skill_for_station(
@@ -1407,8 +1427,13 @@ class TestParameterStamping:
         uuid_factory: object,
         seasons: list[SeasonDefinition],
     ) -> None:
+        # Two issue times (Plan 228 review fixer round): see
+        # `test_flow_regime_config_id_stamped` for why a single hindcast no
+        # longer produces scores.
         step = _utc(2025, 1, 1)
+        step2 = ensure_utc(step + timedelta(hours=1))
         vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+        vt2 = ensure_utc(datetime.fromtimestamp(step2.timestamp() + 3600, tz=UTC))
         hindcasts = [
             _make_hindcast(
                 station_id=station_id,
@@ -1417,12 +1442,23 @@ class TestParameterStamping:
                 hindcast_step=step,
                 n_steps=1,
                 parameter="water_level",
-            )
+            ),
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step2,
+                n_steps=1,
+                parameter="water_level",
+            ),
         ]
         observations = [
             _make_observation(
                 station_id=station_id, timestamp=vt, parameter="water_level"
-            )
+            ),
+            _make_observation(
+                station_id=station_id, timestamp=vt2, parameter="water_level"
+            ),
         ]
 
         scores, _ = compute_skill_for_station(
@@ -1453,8 +1489,13 @@ class TestParameterStamping:
         uuid_factory: object,
         seasons: list[SeasonDefinition],
     ) -> None:
+        # Two issue times (Plan 228 review fixer round): see
+        # `test_flow_regime_config_id_stamped` for why a single hindcast no
+        # longer produces scores/diagrams.
         step = _utc(2025, 1, 1)
+        step2 = ensure_utc(step + timedelta(hours=1))
         vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+        vt2 = ensure_utc(datetime.fromtimestamp(step2.timestamp() + 3600, tz=UTC))
         hindcasts = [
             _make_hindcast(
                 station_id=station_id,
@@ -1464,12 +1505,24 @@ class TestParameterStamping:
                 n_steps=1,
                 n_members=5,
                 parameter="water_level",
-            )
+            ),
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step2,
+                n_steps=1,
+                n_members=5,
+                parameter="water_level",
+            ),
         ]
         observations = [
             _make_observation(
                 station_id=station_id, timestamp=vt, parameter="water_level"
-            )
+            ),
+            _make_observation(
+                station_id=station_id, timestamp=vt2, parameter="water_level"
+            ),
         ]
 
         _, diagrams = compute_skill_for_station(
@@ -1577,3 +1630,144 @@ class TestDailyMeanComparedAgainstDailyMeanObservation:
                 "expected near-zero MAE comparing a daily-mean forecast to "
                 f"the daily-mean observation, got {s.score}"
             )
+
+
+class TestObservationBucketsAlignToForecastValidTimePhase:
+    """Plan 228 review fixer round (major): resampling observations to a
+    daily bucket without an anchor truncates to UTC-midnight boundaries
+    regardless of the forecast's own ``valid_time``. A forecast valid at a
+    non-midnight hour then never exact-matches any bucket key, and
+    ``_build_strata`` silently drops every pair — producing NO scores at
+    all, not merely a wrong score. ``_resample_observations_to_forecast_step``
+    must anchor buckets to the forecast's own valid-time phase instead."""
+
+    def test_score_produced_for_a_non_midnight_daily_forecast(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        day = timedelta(days=1)
+        hindcasts = []
+        observations = []
+
+        for i in range(3):
+            # Issue + valid_time both at 06:00 UTC — never a midnight
+            # boundary, unlike every other test in this module.
+            issue = _utc(2025, 1, i + 1, hour=6)
+            forecast_day_start = ensure_utc(issue + day)
+            daily_mean = 40.0 + 10.0 * i
+
+            hindcasts.append(
+                _make_daily_hindcast(
+                    station_id=station_id,
+                    model_id=model_id,
+                    artifact_id=artifact_id,
+                    hindcast_step=issue,
+                    forecast_value=daily_mean,
+                )
+            )
+
+            # Two readings spanning the [06:00, 06:00+1d) window whose mean
+            # is `daily_mean`, matching `TestDailyMeanComparedAgainst...`
+            # but phase-shifted 6 hours off midnight.
+            boundary_value = daily_mean - 40.0
+            midday_value = 2 * daily_mean - boundary_value
+            observations.append(
+                _make_observation(
+                    station_id=station_id,
+                    timestamp=forecast_day_start,
+                    value=boundary_value,
+                )
+            )
+            observations.append(
+                _make_observation(
+                    station_id=station_id,
+                    timestamp=ensure_utc(forecast_day_start + timedelta(hours=12)),
+                    value=midday_value,
+                )
+            )
+
+        scores, _ = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
+        )
+
+        mae_scores = [s for s in scores if s.metric == "mae"]
+        # Unanchored resampling buckets at UTC midnight; `valid_time` (06:00)
+        # then never exact-matches any bucket key and `_build_strata` finds
+        # nothing at all for any of the 3 forecasts — mae_scores is empty.
+        assert mae_scores, (
+            "expected scores for a non-midnight daily forecast; got none — "
+            "observation buckets are not aligned to the forecast's own "
+            "valid_time phase"
+        )
+        for s in mae_scores:
+            assert s.score < 1.0, (
+                "expected near-zero MAE comparing a daily-mean forecast to "
+                f"the daily-mean observation, got {s.score}"
+            )
+
+
+class TestUnknownTimeStepProducesNoScores:
+    """Plan 228 review fixer round (minor): a single hindcast with a single
+    lead step gives `_infer_forecast_time_step` no gap to infer a time_step
+    from. Falling back to an unresampled instantaneous join (as the code did
+    before this fixer round) silently reintroduces the exact P2 defect this
+    plan exists to eliminate. Producing NO score is the correct behaviour —
+    never a WRONG one."""
+
+    def test_single_hindcast_single_lead_step_yields_no_scores(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        step = _utc(2025, 1, 1)
+        vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+        hindcasts = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step,
+                n_steps=1,
+            )
+        ]
+        observations = [_make_observation(station_id=station_id, timestamp=vt)]
+
+        scores, diagrams = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
+        )
+
+        assert scores == []
+        assert diagrams == []

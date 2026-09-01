@@ -1253,6 +1253,20 @@ hindcast_forecasts = sa.Table(
         server_default="raw",
     ),
     sa.Column("qc_flags", JSONB, nullable=False, server_default="[]"),
+    # Plan 228 review fixer round: the ensemble's own authoritative time_step
+    # (0050), replacing gap-inference-from-valid_time on read — inference
+    # defaulted to a hardcoded 1 hour for any horizon-1 hindcast, silently
+    # wrong for a horizon-1 DAILY model.
+    sa.Column(
+        "time_step_seconds",
+        sa.Integer,
+        nullable=False,
+        server_default="86400",
+    ),
+    sa.CheckConstraint(
+        "time_step_seconds > 0",
+        name="ck_hindcast_forecasts_time_step_seconds_positive",
+    ),
 )
 
 # Indexes on hindcast_forecasts

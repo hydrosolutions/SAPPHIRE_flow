@@ -55,7 +55,12 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # (model_artifact_provenance table) onto 0047 — advancing the pinned head
 # to 0048. Plan 215 T4 then chained 0049 (access_tokens.scope_mode column +
 # its two CHECK constraints) onto 0048 — advancing the pinned head to 0049.
-_RELEASE_B_HEAD = "0049"
+# Plan 228's review fixer round then chained 0050 (hindcast_forecasts.
+# time_step_seconds column) -> 0051 (restore computation_version to the
+# skill_scores/skill_diagrams natural-key indexes — dropped, without a
+# metadata.py update to match, by migration 0016) onto 0049 — advancing the
+# pinned head to 0051.
+_RELEASE_B_HEAD = "0051"
 
 
 def _down_revisions() -> dict[str, str | None]:
