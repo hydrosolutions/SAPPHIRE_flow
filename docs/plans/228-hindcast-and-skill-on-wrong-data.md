@@ -88,6 +88,10 @@ was that "this is what we claim with the ForecastInterface"; checked against the
   declares **how** its data should be aggregated to that step. That field is meaningless unless the
   **provider** performs the aggregation.
 
+**The FI documentation says so directly**, which is stronger than the inference above: the pinned
+version's `docs/input_requirement.md:3,109-115` assigns coarser-resolution aggregation to the
+preprocessing/SAP3 side explicitly (confirmed by independent review, 2026-09-01).
+
 So the contract says: *deliver `lookback` steps of size `time_step`, aggregated by `aggregation`.*
 Our hindcast path delivers raw 10-minute rows against a declared `timedelta(days=1)`, and the model
 does precisely what the contract entitles it to do. **This is not a model bug and not a new
@@ -156,7 +160,9 @@ cadence and assert that what the model receives spans the declared lookback wind
 
 - Anchoring the daily models' `valid_time` — **Plan 226**, which this plan blocks.
 - Any change to model maths, coefficients, or artifacts.
-- Any change to the operational forecast path, which is correct today.
+- Any change to the operational forecast path, which is correct today: **both** operational
+  assemblers resample before delivery (`services/operational_inputs.py:550-553`,
+  `services/track_assembly.py:268-271`).
 - Retraining. **Investigated at the owner's request (2026-09-01): the training path is CLEAN.**
   `build_station_training_data` resamples before use — `past_targets_df = resample_to_time_step(...)`
   (`services/training_data.py:285-287`) — exactly as the operational path does. **Model artifacts are
