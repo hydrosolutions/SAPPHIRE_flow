@@ -19,6 +19,42 @@ independent review found the anchoring half entangled with defects it never set 
 **This plan has NOT been through a review round of its own.** Plan 222's rounds established the
 problem; they did not review this solution, which did not exist in this shape.
 
+## ⛔ Proportionality — BINDING on this plan AND on its review
+
+**Read this before reviewing.** Plan 222, this plan's sibling, went through four adversarial review
+rounds that each ADDED, growing a fix for one reported defect from five tasks to eight. A fifth
+round — a proportionality review — cut it back to three and returned **TOO BIG BY 5 TASKS**. That
+round-trip cost more than the fix. Do not repeat it here.
+
+**A finding that GROWS this plan is a worse finding than one that shrinks it.**
+
+**This is a MEASURE-FIRST plan and it is deliberately incomplete.** The six design questions below
+are open ON PURPOSE. T-M measures before anything is designed, because answering first is precisely
+what cost Plan 222 two rounds: its D1 was settled on a confident argument that a later round proved
+false against the code.
+
+**In scope for findings:** a stated fact is false; a citation does not say what the plan claims;
+T-M would not actually measure what it claims to measure; the scope boundary against Plan 222 is
+wrong.
+
+**Explicitly OUT of scope — do not propose, and reject if proposed:**
+
+- **Answering the six open design questions.** Recommending an answer, narrowing the options, or
+  declaring one "obvious" is over-reach until T-M reports. Saying *"question 3 is missing a case"*
+  is useful; saying *"question 3 should be resolved as X"* is not.
+- New tasks, phases, abstractions, registries or plug-in points.
+- Exit gates beyond those already fixed. They are deliberately unwritten pending T-M.
+- Anything Plan 222 owns or deferred: pooling semantics, the member-id collision, per-parameter
+  `source_model_ids`, the alert-path union, BMA. All have their own homes.
+- Backfill, recomputation, or migration of stored forecasts or hindcasts.
+- Performance work.
+
+**"No findings" is a complete and valuable review.** A round that reports the plan checks out is a
+success, not a wasted round. Do not manufacture findings to justify the pass.
+
+**If a reviewer believes a genuinely blocking problem sits outside these bounds, say so in one
+sentence and stop there** — do not design the fix into this plan.
+
 ## Why this is a separate plan
 
 Plan 222 originally paired anchoring with intersection pooling, because the intersection is empty
