@@ -131,6 +131,34 @@ strictly, is the whole point.
   (`:985-990`). ⇒ Preserve that behaviour for the subset filename; do not build a checkpoint store.
   Record gaps as gaps (Plan 220's rule: a gap is data, a wrong retrieval is not).
 
+- **D3b — BOUNDED CONCURRENCY within a day, added 2026-09-01 after the 48-granule trial.** The trial
+  measured **2.394 s per granule** of GES DISC round-trip for a ~25 KB body (~10.7 kB/s): the route is
+  **latency-bound**, because GES DISC subsets server-side. Serially the 105,216-granule window is
+  ~4.2 days of almost pure waiting. ⇒ `--subset-workers` fetches N of a **day's** granules at once;
+  ⛔ **never across days** — parallel days would race to list the same directory, and one-listing-per-day
+  (D3.4) then holds **structurally** rather than by a check. Default **1** (the trial's own behaviour);
+  the owner's run is 4.
+  **The four things concurrency would otherwise break, each a locked behaviour:**
+  1. 🔴 **The cadence is a GLOBAL rate limit.** N workers each honouring a 1 s interval is N req/s —
+     the politeness property D3.1 exists for, silently multiplied. The pause is taken **inside** the one
+     shared `RequestPacer`'s mutex, so the interval separates any two requests whatever thread issues
+     them. ⇒ **Peak rate is `1 / --request-interval-seconds` no matter how many workers run**; workers
+     buy latency hiding, never a higher request rate. At the 1.0 s default and 4 workers the run is
+     ~107,400 requests at ~1 req/s ⇒ **~30 h**, mean and peak both ~1.0 req/s (serial: ~0.29 req/s).
+  2. 🔴 **A 429 backs off GLOBALLY.** `Retry-After` is registered as a **deadline on the shared limiter**,
+     not slept inside the receiving call, so every worker waits it out and the delay is served **once**.
+  3. 🔴 **The manifest is folded in granule-start order, never completion order.** The acquisition record
+     is identity-bearing; completion-ordered `granule_checksums` would make two identical runs write
+     different bytes. (The *digest* survives either way — `_canonical_json` sorts keys — but the record's
+     bytes are the record.)
+  4. **Sessions are one per WORKER THREAD.** `requests.Session` is not documented thread-safe, and one
+     session behind a lock would serialise exactly the I/O the workers exist to overlap. ⇒ **D3.3's
+     literal "one session" becomes "one per worker"**; the property it exists for is unchanged — each
+     thread authenticates once and keeps its cookie jar, so a run pays `workers` cold Earthdata redirect
+     chains instead of 105,216 (`redirects=0` after each thread's first request).
+  ⚠️ A fatal contract violation still aborts the run, but the rest of **its own day** is already in
+  flight and is awaited first: the abort is bounded by a day, not by a granule.
+
 - **D4 — OPeNDAP access facts, measured 2026-08-31, not assumed.**
   - Endpoint: `https://gpm1.gesdisc.eosdis.nasa.gov/opendap/GPM_L3/GPM_3IMERGHHE.07/<yyyy>/<ddd>/<granule>.HDF5`
   - 🔴 **Earthdata auth needs `--location-trusted` and a cookie jar** — without them the redirect loops

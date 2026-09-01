@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -23,7 +24,7 @@ from scripts.dhm_precip import imerg_extract as ie
 from scripts.dhm_precip.era5_request import STUDY_AREA
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 # --- a synthetic granule fixture, carrying the D1 structure OBSERVED on the
@@ -2599,10 +2600,25 @@ def _subset_client(
 
 @dataclass
 class RecordingSleep:
+    """The injected `sleep`, and a run's ONLY source of elapsed time: it
+    RECORDS each pause and advances a virtual clock by it, which `monotonic`
+    reads. ⛔ Virtual on purpose — the shared limiter states a 429 backoff as a
+    DEADLINE all workers wait out, and proving that must neither cost seven
+    real seconds nor turn an exact 7.0 into "about 7.0". Lock-guarded because
+    with `--subset-workers` > 1 several threads pause through it."""
+
     calls: list[float] = field(default_factory=list)
+    now: float = 0.0
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __call__(self, seconds: float) -> None:
-        self.calls.append(seconds)
+        with self.lock:
+            self.calls.append(seconds)
+            self.now += seconds
+
+    def monotonic(self) -> float:
+        with self.lock:
+            return self.now
 
 
 def _run_window(
@@ -2614,7 +2630,9 @@ def _run_window(
     sleep: RecordingSleep | None = None,
     data_root: Path | None = None,
     interval_seconds: float = 0.25,
+    workers: int = 1,
 ) -> ia.SubsetWindowRetrievalReport:
+    pauses = sleep if sleep is not None else RecordingSleep()
     return ia.retrieve_subset_window(
         starts,
         client=client if client is not None else _listing_client(starts),
@@ -2625,8 +2643,11 @@ def _run_window(
         ),
         data_root=data_root if data_root is not None else tmp_path / "data_root",
         clock=_clock,
-        sleep=sleep if sleep is not None else RecordingSleep(),
+        sleep=pauses,
         interval_seconds=interval_seconds,
+        workers=workers,
+        # ⛔ The pauses ARE the clock: see `RecordingSleep`.
+        monotonic=pauses.monotonic,
     )
 
 
@@ -2847,8 +2868,27 @@ class TestOneReusedSession:
         )
         assert len(session.calls) == 3
 
-    def test_the_shared_session_is_one_process_wide_object(self) -> None:
+    def test_the_shared_session_is_one_object_per_thread(self) -> None:
+        """⛔ D3.3's literal "one session" is now "one per WORKER THREAD":
+        `requests.Session` is not documented thread-safe, and putting one
+        behind a lock would serialise exactly the I/O `--subset-workers`
+        exists to overlap. The property D3.3 is FOR is unchanged and is what
+        this asserts — a thread authenticates once and keeps its cookie jar,
+        so a run pays `workers` cold Earthdata redirect chains, not 105,216."""
         assert ia.earthdata_session() is ia.earthdata_session()
+        seen: list[object] = []
+        for _ in range(2):
+            worker = threading.Thread(
+                target=lambda: seen.extend(
+                    [ia.earthdata_session(), ia.earthdata_session()]
+                )
+            )
+            worker.start()
+            worker.join()
+        assert seen[0] is seen[1]  # reused WITHIN the thread
+        assert seen[2] is seen[3]
+        assert seen[0] is not seen[2]  # a different thread, a different jar
+        assert seen[0] is not ia.earthdata_session()
 
     def test_both_real_clients_default_to_that_same_session(self) -> None:
         assert ia.RealImergHttpClient().session is None
@@ -3157,6 +3197,395 @@ class TestSubsetWindowManifest:
         assert report.retrieved == 0
         assert report.missing == tuple(s.isoformat() for s in starts)
         assert not ia.acquisition_manifest_path(data_root).exists()
+
+
+# --- 🔴 bounded concurrency: the four things N workers break. Every test
+# below is driven by injected fakes — no network, no `sleep`-based timing
+# race, no wall-clock assertion. `RecordingSleep` is the only clock. ---
+
+
+@dataclass
+class _GateWatchingSleep(RecordingSleep):
+    """A `RecordingSleep` that also records whether the shared limiter's gate
+    was HELD for each pause. ⛔ The one instrument that separates ONE global
+    rate limit from N per-worker ones: both sleep once per request, so
+    counting pauses cannot tell them apart — whether the pauses OVERLAP can,
+    and a pause taken under the gate cannot overlap another."""
+
+    pacer: ia.RequestPacer | None = None
+    gated: list[tuple[float, bool]] = field(default_factory=list[tuple[float, bool]])
+
+    def __call__(self, seconds: float) -> None:
+        assert self.pacer is not None
+        held = self.pacer.gate_locked()
+        super().__call__(seconds)
+        with self.lock:
+            self.gated.append((seconds, held))
+
+
+def _pacer_with_gate_watch(
+    *, interval_seconds: float, max_attempts: int = 5
+) -> tuple[ia.RequestPacer, _GateWatchingSleep]:
+    sleep = _GateWatchingSleep()
+    pacer = ia.RequestPacer(
+        sleep=sleep,
+        interval_seconds=interval_seconds,
+        max_attempts=max_attempts,
+        monotonic=sleep.monotonic,
+    )
+    sleep.pacer = pacer
+    return pacer, sleep
+
+
+def _run_on_threads(target: Callable[[], object], *, count: int) -> None:
+    """Run `target` on `count` real threads and join them. ⛔ No timeout and no
+    sleep: every thread below either completes or blocks on state another
+    thread is guaranteed to set, so the test cannot pass by winning a race."""
+    threads = [threading.Thread(target=target) for _ in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+
+class TestTheCadenceIsOneGlobalRateLimit:
+    """🔴 N workers each honouring a 1 s interval is N requests/second — the
+    politeness property D3.1 exists for, silently multiplied. The interval
+    must separate any two requests WHATEVER worker issues them."""
+
+    def test_every_cadence_pause_is_taken_under_the_shared_gate(self) -> None:
+        """⛔ The revert-proof assertion, and the only one that can tell ONE
+        global limiter from N per-worker ones: both sleep once per request, so
+        counting pauses cannot separate them — whether the pauses may OVERLAP
+        can. Move the pause out of `_take_slot`'s `with self._gate` and four
+        workers pause concurrently: one interval of wall clock, four
+        requests."""
+        pacer, sleep = _pacer_with_gate_watch(interval_seconds=0.25)
+        _run_on_threads(lambda: [pacer.run(lambda: "ok") for _ in range(2)], count=4)
+        assert pacer.requests_issued == 8
+        assert sleep.gated  # the pacer really did pace
+        assert all(held for _, held in sleep.gated)
+        # every request after the first paid the FULL interval, exactly once
+        assert sleep.calls == [0.25] * 7
+        assert pacer.min_issue_gap_seconds == 0.25  # exact: the clock is the pauses
+
+    def test_four_workers_never_start_two_requests_inside_the_interval(
+        self, tmp_path: Path
+    ) -> None:
+        """The whole-run form: ONE limiter for the listings and every worker's
+        fetches, so the rate the run reached is the rate it was configured
+        with. ⛔ `requests_issued` counts the day listing too — a per-worker
+        limiter would each report only its own share."""
+        starts = _starts_from(_TRIAL_DAY_START, 8)
+        sleep = RecordingSleep()
+        report = _run_window(
+            tmp_path, starts, sleep=sleep, interval_seconds=0.25, workers=4
+        )
+        assert report.retrieved == 8
+        assert report.requests_issued == 9  # one listing + eight fetches
+        assert report.min_request_gap_seconds == 0.25
+        assert sleep.calls == [0.25] * 8
+
+
+class TestA429BacksOffEveryWorker:
+    """🔴 If only the receiving worker honours `Retry-After` while the other
+    three keep firing, we answer NASA's "slow down" by continuing at 3/4
+    speed."""
+
+    def test_the_delay_is_registered_on_the_shared_limiter_not_the_caller(
+        self,
+    ) -> None:
+        """⛔ Single-threaded on purpose: the property is that the pause
+        outlives the CALL that received the 429. A later request that never
+        saw a 429 — any other worker, in a run — waits out the remainder.
+        Revert to sleeping the delay inside the failing call and the second
+        request below pays only the cadence."""
+        pacer, sleep = _pacer_with_gate_watch(interval_seconds=0.25, max_attempts=1)
+
+        def throttled() -> str:
+            raise _ladder_429(retry_after="7")
+
+        with pytest.raises(ia.ImergRetriesExhaustedError):
+            pacer.run(throttled)
+        assert sleep.calls == []  # the receiving call did NOT serve it alone
+        assert pacer.run(lambda: "second worker") == "second worker"
+        # ⛔ the server's 7 s FIRST, then the ordinary cadence on top
+        assert sleep.calls == [7.0, 0.25]
+        assert pacer.rate_limited == 1
+        assert pacer.retry_after_honoured == 1
+
+    def test_the_429_one_worker_received_pauses_the_others(self) -> None:
+        """The threaded form, made deterministic: the worker that receives the
+        429 has EXHAUSTED its one attempt and is gone before the others start,
+        so the 7 s they wait cannot be its own retry. It is served ONCE, by
+        whoever reaches the gate first, and the rest resume with it — not each
+        in turn."""
+        pacer, sleep = _pacer_with_gate_watch(interval_seconds=0.25, max_attempts=1)
+        registered = threading.Event()
+
+        def throttled() -> str:
+            raise _ladder_429(retry_after="7")
+
+        def receive_the_429() -> None:
+            with pytest.raises(ia.ImergRetriesExhaustedError):
+                pacer.run(throttled)
+            registered.set()
+
+        def other_worker() -> None:
+            registered.wait()
+            pacer.run(lambda: "ok")
+
+        receiver = threading.Thread(target=receive_the_429)
+        receiver.start()
+        _run_on_threads(other_worker, count=3)
+        receiver.join()
+        assert pacer.rate_limited == 1
+        # ⛔ ONE 7 s pause for all three, not three of them, and taken under
+        # the gate so none of them could issue inside it.
+        assert sleep.calls == [7.0, 0.25, 0.25, 0.25]
+        assert (7.0, True) in sleep.gated
+        assert all(held for _, held in sleep.gated)
+
+    def test_a_throttled_run_with_four_workers_waits_the_delay_out(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 6)
+        subset_client = _subset_client(tmp_path, starts)
+        subset_client.failures = [_ladder_429(retry_after="7")]
+        sleep = RecordingSleep()
+        report = _run_window(
+            tmp_path,
+            starts,
+            subset_client=subset_client,
+            sleep=sleep,
+            interval_seconds=0.25,
+            workers=4,
+        )
+        assert report.retrieved == 6  # the run did NOT abort
+        assert report.rate_limited == 1
+        # the server's own delay was served in full before the run finished
+        assert sleep.now >= 7.0
+
+
+@dataclass
+class _OutOfOrderSubsetClient:
+    """Forces the day's FIRST granule to complete LAST: its fetch blocks until
+    the last granule's fetch has returned. ⛔ Event-driven, never a sleep —
+    the ordering is FORCED, so the test cannot pass by winning a race. It also
+    cannot deadlock: the blocking granule is the only one that waits, and
+    nothing waits on it."""
+
+    content_by_url: dict[str, bytes]
+    first_url: str
+    last_url: str
+    released: threading.Event = field(default_factory=threading.Event)
+    completed: list[str] = field(default_factory=list[str])
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        if url == self.first_url:
+            self.released.wait()
+        body = self.content_by_url[url]
+        with self.lock:
+            self.completed.append(url)
+        if url == self.last_url:
+            self.released.set()
+        return body
+
+
+class TestTheManifestIsIndependentOfCompletionOrder:
+    """🔴 The acquisition record is IDENTITY-BEARING and its digest is
+    compared. If `granule_checksums` / `granule_retrieved_at` serialised in
+    COMPLETION order, two identical runs would write different bytes."""
+
+    def _urls(self, tmp_path: Path, starts: Sequence[datetime]) -> dict[str, bytes]:
+        return {
+            ia.subset_granule_url(archive_filename=_archive_name(s), start=s): (
+                _subset_fixture_bytes(tmp_path, s, value=1.5)
+            )
+            for s in starts
+        }
+
+    def test_out_of_order_completion_writes_the_byte_identical_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        urls = list(self._urls(tmp_path, starts))
+        serial_root = tmp_path / "serial"
+        _run_window(tmp_path, starts, data_root=serial_root, workers=1)
+
+        shuffled = _OutOfOrderSubsetClient(
+            content_by_url=self._urls(tmp_path, starts),
+            first_url=urls[0],
+            last_url=urls[-1],
+        )
+        concurrent_root = tmp_path / "concurrent"
+        _run_window(
+            tmp_path,
+            starts,
+            subset_client=shuffled,
+            data_root=concurrent_root,
+            workers=2,
+        )
+        # the run really did complete out of order
+        assert shuffled.completed[-1] == urls[0]
+        assert shuffled.completed[0] != urls[0]
+
+        serial = ia.acquisition_manifest_path(serial_root).read_text()
+        concurrent = ia.acquisition_manifest_path(concurrent_root).read_text()
+        assert concurrent == serial
+        assert list(json.loads(concurrent)["granule_checksums"]) == [
+            _archive_name(s) for s in starts
+        ]
+
+    def test_the_digest_a_published_bundle_names_is_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """⚠️ NOT a second lock on the ordering, and it must not be read as
+        one: `imerg_extract._canonical_json` dumps with `sort_keys=True`, so
+        the digest survives a reordering ON ITS OWN — measured, by reverting
+        the fold to completion order, which leaves this test green and fails
+        only the byte test above. What it does lock is the CONSEQUENCE a
+        published bundle depends on: if the canonicalisation ever stopped
+        sorting, the byte ordering above would become identity-bearing here
+        too."""
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        urls = list(self._urls(tmp_path, starts))
+        serial_root = tmp_path / "serial"
+        _run_window(tmp_path, starts, data_root=serial_root, workers=1)
+        concurrent_root = tmp_path / "concurrent"
+        _run_window(
+            tmp_path,
+            starts,
+            subset_client=_OutOfOrderSubsetClient(
+                content_by_url=self._urls(tmp_path, starts),
+                first_url=urls[0],
+                last_url=urls[-1],
+            ),
+            data_root=concurrent_root,
+            workers=2,
+        )
+        records = [
+            ia.read_acquisition_manifest(ia.acquisition_manifest_path(root))
+            for root in (serial_root, concurrent_root)
+        ]
+        assert records[0] is not None
+        assert records[1] is not None
+        assert ie.acquisition_record_digest(records[0]) == (
+            ie.acquisition_record_digest(records[1])
+        )
+
+
+class TestTheExistingGuaranteesHoldUnderConcurrency:
+    """Resumability, gap-on-exhaustion and contract-violation-is-fatal are not
+    weakened by `--subset-workers`. ⛔ Each is the same behaviour the serial
+    tests above lock, re-asserted with four workers."""
+
+    def test_an_artifact_already_on_disk_is_not_re_fetched(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 6)
+        data_root = tmp_path / "data_root"
+        # ⛔ the LAST granule of six, against four workers: it cannot start
+        # until a worker has freed itself by COMPLETING a fetch, so "some
+        # other worker has already issued a request" is guaranteed rather
+        # than likely — which is exactly the state a shared request counter
+        # would misread as a fetch.
+        cached_name = _archive_name(starts[5])
+        _write_fake_subset_granule(
+            ia.subset_granule_artifact_path(data_root, archive_filename=cached_name),
+            archive_filename=cached_name,
+            value=1.5,
+        )
+        subset_client = _subset_client(tmp_path, starts)
+        report = _run_window(
+            tmp_path,
+            starts,
+            subset_client=subset_client,
+            data_root=data_root,
+            workers=4,
+        )
+        assert report.retrieved == 6
+        # ⛔ attributed to the RIGHT granule: a before/after delta on the
+        # shared pacer counter would charge this granule other workers'
+        # requests and report a fetch as a reuse.
+        assert report.reused == 1
+        assert len(subset_client.calls) == 5
+        assert report.requests_issued == 6  # one listing + five fetches
+
+    def test_a_granule_stalling_on_every_attempt_is_still_only_a_gap(
+        self, tmp_path: Path
+    ) -> None:
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        stalled = starts[2]
+        stalled_url = ia.subset_granule_url(
+            archive_filename=_archive_name(stalled), start=stalled
+        )
+        session = _TricklingSubsetSession(
+            content_by_url={
+                ia.subset_granule_url(archive_filename=_archive_name(s), start=s): (
+                    _subset_fixture_bytes(tmp_path, s, value=1.5)
+                )
+                for s in starts
+            },
+            stalling={stalled_url},
+        )
+        report = _run_window(
+            tmp_path,
+            starts,
+            subset_client=ia.RealImergSubsetHttpClient(
+                session=session,  # type: ignore[arg-type]
+                monotonic=_SteppingClock(step=10.0),
+                deadline_seconds=120.0,
+            ),
+            data_root=tmp_path / "data_root",
+            workers=4,
+        )
+        assert report.retrieved == 3  # the run did NOT abort
+        assert report.missing == (stalled.isoformat(),)
+        assert report.failed == 1
+
+    def test_a_contract_violation_is_still_fatal(self, tmp_path: Path) -> None:
+        """⛔ A worker catches ONLY the two typed failures that are gaps;
+        anything else escapes into its `Future` and is re-raised — in
+        granule-start order, so WHICH violation aborts the run is
+        deterministic too."""
+        starts = _starts_from(_TRIAL_DAY_START, 4)
+        session = _TricklingSubsetSession(
+            content_by_url={
+                ia.subset_granule_url(archive_filename=_archive_name(s), start=s): (
+                    b"not an HDF5 file at all"
+                )
+                for s in starts
+            }
+        )
+        with pytest.raises(ia.ImergReadContractError):
+            _run_window(
+                tmp_path,
+                starts,
+                subset_client=ia.RealImergSubsetHttpClient(
+                    session=session,  # type: ignore[arg-type]
+                    monotonic=_SteppingClock(step=10.0),
+                ),
+                data_root=tmp_path / "data_root",
+                workers=4,
+            )
+
+
+class TestTheWorkerCountIsExplicit:
+    def test_the_default_is_serial(self) -> None:
+        """⛔ Conservative: the default is the behaviour the 48-granule trial
+        actually measured, so concurrency is something a run ASKS for."""
+        assert ia.DEFAULT_SUBSET_WORKERS == 1
+        assert ia.build_parser().parse_args([]).subset_workers == 1
+
+    def test_the_flag_is_read_from_the_command_line(self) -> None:
+        args = ia.build_parser().parse_args(["--subset-workers", "4"])
+        assert args.subset_workers == 4
+
+    def test_a_run_with_no_worker_is_refused(self, tmp_path: Path) -> None:
+        with pytest.raises(ia.ImergRequestFailedError, match="at least 1"):
+            _run_window(tmp_path, _starts_from(_TRIAL_DAY_START, 2), workers=0)
 
 
 class TestSubsetBoxIndexBounds:

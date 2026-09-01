@@ -19,11 +19,12 @@ import fcntl
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
-from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
 
@@ -42,6 +43,7 @@ from scripts.dhm_precip.era5_request import STUDY_AREA, STUDY_YEARS  # noqa: E40
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
+    from concurrent.futures import Future
 
     import requests
 
@@ -1166,10 +1168,21 @@ def _raise_for_http_status(
         raise ImergRequestFailedError(f"{url} returned unexpected status {status}")
 
 
-@cache
+#: D3.3 — the sessions, one per thread. ⛔ A `requests.Session` is NOT
+#: documented thread-safe, and the window runner now fetches a day's granules
+#: on N worker threads (`--subset-workers`). The alternative — ONE session
+#: behind a lock — would serialise exactly the I/O the workers exist to
+#: overlap, so D3.3's literal "one session" becomes "one per worker thread".
+#: The MEASURABLE property D3.3 exists for is unchanged: each thread
+#: authenticates once and keeps its cookie jar, so only the first request on
+#: each thread pays the Earthdata redirect chain (`redirects=0` thereafter) —
+#: N cold chains for a whole run instead of 105,216.
+_SESSIONS = threading.local()
+
+
 def earthdata_session() -> requests.Session:
-    """D3.3/D4 — ONE authenticated, cookie-bearing session for the whole
-    process, shared by BOTH real clients. Every call used to be a bare
+    """D3.3/D4 — the authenticated, cookie-bearing session of the CALLING
+    THREAD, shared by BOTH real clients on it. Every call used to be a bare
     `requests.get`, which builds a THROWAWAY session and discards its cookie
     jar, so every single request re-ran the full Earthdata Login redirect
     chain — D4 measured that chain, and that a cookie jar plus
@@ -1180,14 +1193,17 @@ def earthdata_session() -> requests.Session:
     ⛔ No credential appears in this module."""
     import requests
 
-    session = requests.Session()
-    session.trust_env = True
+    session = getattr(_SESSIONS, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.trust_env = True
+        _SESSIONS.session = session
     return session
 
 
 def _session_for(session: requests.Session | None) -> requests.Session:
-    """`None` means the process-wide shared session (D3.3). An injected one
-    is the test seam that proves no bare `requests.get` survives."""
+    """`None` means the calling thread's shared session (D3.3). An injected
+    one is the test seam that proves no bare `requests.get` survives."""
     return session if session is not None else earthdata_session()
 
 
@@ -1253,7 +1269,7 @@ class RealImergSubsetHttpClient:
     for a fired read timeout."""
     session: requests.Session | None = None
     """D3.3 — see `RealImergHttpClient.session`; both default to the SAME
-    process-wide `earthdata_session()`."""
+    per-thread `earthdata_session()`."""
     monotonic: Callable[[], float] | None = None
     """The test seam for `deadline_seconds`, alongside `session`: `None` means
     `time.monotonic`. ⛔ Injected rather than called directly so a trickle can
@@ -1324,7 +1340,18 @@ class RequestPacer:
     honours the server's own `Retry-After` when it sends one and backs off
     exponentially when it does not. The counters are what a T3 report means by
     "requests actually issued" — the figure that decides whether a window run
-    is polite, which a granule count alone never showed."""
+    is polite, which a granule count alone never showed.
+
+    🔴 GLOBAL, not per-caller — this is what makes `--subset-workers` safe:
+      * the cadence pause is taken while holding `_gate`, so the interval
+        separates any two requests whatever THREAD issues them. N workers each
+        honouring a 1 s interval of their own would be N requests/second,
+        silently multiplying the very politeness property D3.1 exists for;
+      * a 429's delay is registered on the SHARED `_paused_until`, so it
+        pauses every worker rather than only the one that received it —
+        answering NASA's "slow down" at 3/4 speed is not answering it.
+    ⛔ One `RequestPacer` per RUN, shared by every worker; a second instance
+    would be a second, unsynchronised rate limit."""
 
     def __init__(
         self,
@@ -1333,25 +1360,69 @@ class RequestPacer:
         interval_seconds: float,
         max_attempts: int = 5,
         backoff_base_seconds: float = 2.0,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._sleep = sleep
         self._interval_seconds = interval_seconds
         self._max_attempts = max_attempts
         self._backoff_base_seconds = backoff_base_seconds
+        self._monotonic = monotonic if monotonic is not None else time.monotonic
+        """The 429 pause is a DEADLINE, not a duration: every worker must
+        resume at the same instant, not each sleep the full delay in turn.
+        Injected so that can be proved without real time passing."""
+        self._gate = threading.Lock()
+        self._issued_any = False
+        self._paused_until: float | None = None
+        self._last_issue_at: float | None = None
         self.requests_issued = 0
         self.rate_limited = 0
         self.retry_after_honoured = 0
+        self.min_issue_gap_seconds: float | None = None
+        """The SMALLEST observed gap between two consecutive request starts —
+        the run's measured peak rate, and the number that makes the politeness
+        of a concurrent run visible rather than argued."""
+
+    def gate_locked(self) -> bool:
+        """Whether a thread is currently inside the paced region. ⛔ The public
+        seam a test needs: counting sleeps cannot tell ONE global limiter from
+        N per-worker ones, because both sleep once per request — the
+        difference is whether those sleeps overlap."""
+        return self._gate.locked()
+
+    def _take_slot(self) -> None:
+        """Wait for this request's turn, then claim it. ⛔ Everything here runs
+        under `_gate`, which is what makes the interval and the 429 pause
+        GLOBAL; the request itself is issued outside it, so fetches still
+        overlap and the workers are not serialised."""
+        with self._gate:
+            if self._paused_until is not None:
+                # ⛔ BEFORE the cadence pause: a server-stated backoff is a
+                # floor on when anyone may speak again, not an addition to it.
+                remaining = self._paused_until - self._monotonic()
+                if remaining > 0:
+                    self._sleep(remaining)
+            if self._issued_any:
+                # ⛔ Only once a request has already been issued, so a cached
+                # artifact — which never reaches here — costs no delay, and
+                # the first request of a run is not delayed either.
+                self._sleep(self._interval_seconds)
+            now = self._monotonic()
+            if self._last_issue_at is not None:
+                gap = now - self._last_issue_at
+                self.min_issue_gap_seconds = (
+                    gap
+                    if self.min_issue_gap_seconds is None
+                    else min(self.min_issue_gap_seconds, gap)
+                )
+            self._last_issue_at = now
+            self._issued_any = True
+            self.requests_issued += 1
 
     def run(self, issue: Callable[[], _PacedResult]) -> _PacedResult:
-        """Issue one logical request, paced and retried. ⛔ The cadence pause
-        is taken BEFORE the request and only once a request has already been
-        issued, so a cached artifact — which never reaches here — costs no
-        delay, and the first request of a run is not delayed either."""
-        if self.requests_issued:
-            self._sleep(self._interval_seconds)
+        """Issue one logical request, paced and retried."""
         last: ImergTransientError | None = None
         for attempt in range(1, self._max_attempts + 1):
-            self.requests_issued += 1
+            self._take_slot()
             try:
                 return issue()
             except ImergTransientError as exc:
@@ -1359,11 +1430,18 @@ class RequestPacer:
                 delay = self._backoff_base_seconds * (2 ** (attempt - 1))
                 rate_limited = isinstance(exc, ImergRateLimitedError)
                 if rate_limited:
-                    self.rate_limited += 1
-                    if exc.retry_after_seconds is not None:
-                        # ⛔ The SERVER's number wins over our backoff curve.
-                        delay = exc.retry_after_seconds
-                        self.retry_after_honoured += 1
+                    with self._gate:
+                        self.rate_limited += 1
+                        if exc.retry_after_seconds is not None:
+                            # ⛔ The SERVER's number wins over our backoff curve.
+                            delay = exc.retry_after_seconds
+                            self.retry_after_honoured += 1
+                        # ⛔ Registered even on the LAST attempt: the server
+                        # asked everyone to slow down, and the next granule's
+                        # request is still a request.
+                        until = self._monotonic() + delay
+                        if self._paused_until is None or until > self._paused_until:
+                            self._paused_until = until
                 log.warning(
                     "imerg.acquire.request_retry",
                     attempt=attempt,
@@ -1372,7 +1450,10 @@ class RequestPacer:
                     delay_seconds=delay,
                     error=str(exc),
                 )
-                if attempt < self._max_attempts:
+                if not rate_limited and attempt < self._max_attempts:
+                    # A 429 is NOT slept here: `_take_slot` waits out the
+                    # shared pause above, so the delay is served exactly once
+                    # and every other worker serves it too.
                     self._sleep(delay)
         raise ImergRetriesExhaustedError(
             f"exhausted {self._max_attempts} attempts against GES DISC"
@@ -2201,8 +2282,8 @@ class RealImergHttpClient:
 
     timeout_seconds: float = 60.0
     session: requests.Session | None = None
-    """D3.3 — `None` uses the shared `earthdata_session()`; a test injects a
-    double to prove every call goes through ONE reused session."""
+    """D3.3 — `None` uses the calling thread's `earthdata_session()`; a test
+    injects a double to prove every call goes through ONE reused session."""
 
     def list_directory(self, url: str) -> str:
         import requests
@@ -2403,7 +2484,28 @@ def retrieve_window(
 #: the run at ~1 req/s (~29 h) against a service that publishes no documented
 #: rate limit, and `Retry-After` handling (D3.2) is what adapts if GES DISC
 #: disagrees. ⛔ Overridable per run, never per granule.
+#: 🔴 With `--subset-workers` > 1 this is the GLOBAL cap, enforced inside
+#: `RequestPacer._take_slot`: the peak rate a run can reach is
+#: `1 / interval` NO MATTER how many workers it has, so raising the worker
+#: count buys latency hiding, never a higher request rate.
 DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS = 1.0
+
+#: How many of a DAY's granules are fetched at once. ⛔ Conservative on
+#: purpose: 1 is the serial behaviour the 48-granule trial measured, so the
+#: default changes nothing and concurrency is something a run asks for.
+#:
+#: Why it is worth asking for: the trial measured 2.394 s per granule of GES
+#: DISC round-trip for a ~25 KB body (~10.7 kB/s) — LATENCY-bound, because
+#: GES DISC subsets server-side, so the window's cost is wall-clock waiting
+#: rather than bandwidth. Overlapping those waits is the only lever, and the
+#: shared `RequestPacer` keeps the request RATE fixed while they overlap.
+#:
+#: ⛔ Concurrency is WITHIN a day, never across days. Days run in order, each
+#: after its ONE directory listing (D3.4) — that structure is what keeps D3.4
+#: true by construction rather than by a check, and it is why the request
+#: count stays the number this design exists to keep honest. Parallel days
+#: would race to list the same directory.
+DEFAULT_SUBSET_WORKERS = 1
 
 
 def granule_starts_between(start: datetime, end: datetime) -> list[datetime]:
@@ -2476,12 +2578,104 @@ class SubsetWindowRetrievalReport:
     total_bytes: int
     requests_issued: int
     rate_limited: int
+    min_request_gap_seconds: float | None = None
+    """The SMALLEST gap the run actually left between two request starts —
+    its measured PEAK rate, from the one shared limiter. ⛔ Reported rather
+    than derived from the configured interval: with N workers "we set an
+    interval" and "we honoured it globally" are different claims, and only
+    this one is a measurement."""
     failed: int = 0
     """How many of `missing` are there because the pacer EXHAUSTED its
     attempts rather than because GES DISC does not hold the granule. ⛔ Both
     are gaps in the record, but they are not the same finding: a non-zero
     `failed` says the run met the request deadline repeatedly and its gaps
     deserve a re-run before anyone reads them as absent data."""
+
+
+@dataclass
+class _CountingSubsetClient:
+    """ONE per granule task: `calls == 0` is how the run tells a reused
+    artifact from a fetched one. ⛔ Not a before/after delta on the SHARED
+    pacer's counter, which is what the serial loop used: under N workers that
+    delta attributes other workers' requests to this granule and would report
+    a fetch as a reuse. The property the delta bought — that the reuse count
+    comes from whether the CLIENT was called, never from a flag the
+    acquisition returns — is preserved exactly."""
+
+    client: ImergSubsetHttpClient
+    calls: int = 0
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        self.calls += 1
+        return self.client.fetch_subset(url=url, constraint=constraint)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _SubsetGranuleOutcome:
+    """What one worker did with one granule. ⛔ Deliberately inert: every
+    decision the acquisition record depends on — freezing the contract,
+    checksumming, counting — is taken by the caller in GRANULE-START order,
+    never in completion order."""
+
+    start: datetime
+    filename: str
+    path: Path | None
+    reused: bool
+    exhausted: bool
+
+
+def _fetch_one_subset(
+    start: datetime,
+    *,
+    filename: str,
+    client: ImergSubsetHttpClient,
+    data_root: Path,
+    lon_bounds: tuple[int, int],
+    lat_bounds: tuple[int, int],
+) -> _SubsetGranuleOutcome:
+    """One worker's whole job. ⛔ It catches exactly the two typed failures the
+    serial loop turned into gaps and NOTHING else: anything further —
+    `ImergReadContractError` above all — escapes into the `Future` and is
+    re-raised by the caller, still fatal, still at a deterministic point in
+    the day's order. Catching more here would turn a route/grid disagreement
+    into a silent gap, which is the wrong retrieval D1 and D5 exist to stop."""
+    counting = _CountingSubsetClient(client=client)
+    try:
+        path = acquire_subset_granule(
+            ImergGranuleId(start=start),
+            archive_filename=filename,
+            client=counting,
+            data_root=data_root,
+            lon_bounds=lon_bounds,
+            lat_bounds=lat_bounds,
+        )
+    except ImergGranuleMissingError:
+        return _SubsetGranuleOutcome(
+            start=start, filename=filename, path=None, reused=False, exhausted=False
+        )
+    except ImergRetriesExhaustedError as exc:
+        # ⛔ ONE stalled granule must not kill a 105,216-granule run. Pre-
+        # deadline this propagated and aborted the window: the trial's 1,971 s
+        # stall succeeded on its retry, but a granule that stalls on EVERY
+        # attempt would have ended the run with everything after it
+        # unattempted. It is a gap instead — Plan 220's rule — and ⛔ nothing
+        # fills it.
+        log.warning(
+            "imerg.acquire.subset_granule_unretrievable",
+            granule=start.isoformat(),
+            filename=filename,
+            error=str(exc),
+        )
+        return _SubsetGranuleOutcome(
+            start=start, filename=filename, path=None, reused=False, exhausted=True
+        )
+    return _SubsetGranuleOutcome(
+        start=start,
+        filename=filename,
+        path=path,
+        reused=counting.calls == 0,
+        exhausted=False,
+    )
 
 
 def retrieve_subset_window(
@@ -2493,18 +2687,43 @@ def retrieve_subset_window(
     clock: Callable[[], datetime],
     sleep: Callable[[float], None],
     interval_seconds: float = DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS,
+    workers: int = DEFAULT_SUBSET_WORKERS,
+    monotonic: Callable[[], float] | None = None,
 ) -> SubsetWindowRetrievalReport:
     """D2/D3 — retrieve exactly `granule_starts` through the OPeNDAP SUBSET
     route: each day's filenames resolved ONCE (D3.4), every request paced and
-    retried through one `RequestPacer` (D3.1/D3.2) over one reused session
-    (D3.3), already-valid artifacts reused rather than re-fetched, and gaps
-    recorded AS gaps (Plan 220: a gap is data, a wrong retrieval is not —
-    ⛔ nothing here scales, fills or interpolates one). Writes the permanent
-    acquisition manifest with `route=SUBSET_ROUTE` (D2) whenever at least one
-    granule was obtained. ⛔ It iterates the caller's explicit set and stops:
-    there is no default window and no continuation."""
+    retried through one `RequestPacer` (D3.1/D3.2) over one reused session per
+    worker thread (D3.3), already-valid artifacts reused rather than
+    re-fetched, and gaps recorded AS gaps (Plan 220: a gap is data, a wrong
+    retrieval is not — ⛔ nothing here scales, fills or interpolates one).
+    Writes the permanent acquisition manifest with `route=SUBSET_ROUTE` (D2)
+    whenever at least one granule was obtained. ⛔ It iterates the caller's
+    explicit set and stops: there is no default window and no continuation.
+
+    `workers` fetches that many of a DAY's granules at once — the route is
+    latency-bound (2.394 s measured for a ~25 KB body), so overlap is the only
+    lever. ⛔ Three properties concurrency would otherwise break, and does not:
+      1. the cadence and any 429 backoff are GLOBAL, in the one shared
+         `RequestPacer` (see `_take_slot`), so N workers are not N req/s;
+      2. days stay strictly ordered and each is listed once, so D3.4 holds
+         STRUCTURALLY rather than by a check;
+      3. the record is folded in GRANULE-START order, never completion order,
+         so two identical runs write a byte-identical manifest whatever order
+         the network answered in — the record is identity-bearing and its
+         digest is compared.
+    ⚠️ A fatal error (a contract violation) still aborts the run, but the rest
+    of ITS OWN day has already been submitted and is awaited before the
+    exception leaves the pool: the abort is bounded by a day, not by a
+    granule. Everything after that day is never attempted."""
+    if workers < 1:
+        raise ImergRequestFailedError(
+            f"workers must be at least 1, got {workers} — a run with no worker "
+            "would issue no request at all"
+        )
     starts = sorted(granule_starts)
-    pacer = RequestPacer(sleep=sleep, interval_seconds=interval_seconds)
+    pacer = RequestPacer(
+        sleep=sleep, interval_seconds=interval_seconds, monotonic=monotonic
+    )
     paced_client = PacedSubsetClient(client=subset_client, pacer=pacer)
     lon_bounds, lat_bounds = subset_box_index_bounds()
     requested = 0
@@ -2516,62 +2735,59 @@ def retrieve_subset_window(
     checksums: dict[str, str] = {}
     retrieved_at: dict[str, datetime] = {}
     frozen: ImergSubsetReadContract | None = None
-    for day_starts in group_granule_starts_by_day(starts):
-        filenames = resolve_day_filenames(day_starts, client=client, pacer=pacer)
-        for start in day_starts:
-            requested += 1
-            filename = filenames.get(start)
-            if filename is None:
-                missing.append(start.isoformat())
-                continue
-            requests_before = pacer.requests_issued
-            try:
-                path = acquire_subset_granule(
-                    ImergGranuleId(start=start),
-                    archive_filename=filename,
+    # ⛔ ONE pool for the whole run, not one per day: a worker thread's
+    # Earthdata session (D3.3) is bound to the thread, so a per-day pool would
+    # pay a cold redirect chain 2,192 times over instead of `workers` times.
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="imerg-subset"
+    ) as pool:
+        for day_starts in group_granule_starts_by_day(starts):
+            filenames = resolve_day_filenames(day_starts, client=client, pacer=pacer)
+            pending: dict[datetime, Future[_SubsetGranuleOutcome]] = {
+                start: pool.submit(
+                    _fetch_one_subset,
+                    start,
+                    filename=filename,
                     client=paced_client,
                     data_root=data_root,
                     lon_bounds=lon_bounds,
                     lat_bounds=lat_bounds,
                 )
-            except ImergGranuleMissingError:
-                missing.append(start.isoformat())
-                continue
-            except ImergRetriesExhaustedError as exc:
-                # ⛔ ONE stalled granule must not kill a 105,216-granule run.
-                # Pre-deadline this propagated and aborted the window: the
-                # trial's 1,971 s stall succeeded on its retry, but a granule
-                # that stalls on EVERY attempt would have ended the run with
-                # everything after it unattempted. It is a gap instead —
-                # Plan 220's rule — and ⛔ nothing fills it.
-                # ⚠️ Caught by the NARROW type on purpose: the parent
-                # `ImergRequestFailedError` also covers `ImergReadContractError`,
-                # and turning a contract violation into a gap would be exactly
-                # the wrong retrieval D1/D5 exist to stop.
-                log.warning(
-                    "imerg.acquire.subset_granule_unretrievable",
-                    granule=start.isoformat(),
-                    filename=filename,
-                    error=str(exc),
+                for start in day_starts
+                if (filename := filenames.get(start)) is not None
+            }
+            # ⛔ `day_starts` order, NOT `as_completed`: everything below
+            # writes the permanent record.
+            for start in day_starts:
+                requested += 1
+                future = pending.get(start)
+                if future is None:
+                    missing.append(start.isoformat())
+                    continue
+                outcome = future.result()
+                if outcome.path is None:
+                    # ⛔ A gap for a 404 and a gap for an exhausted retry are
+                    # both gaps, but only the second says the run met the
+                    # request deadline repeatedly and deserves a re-run.
+                    missing.append(start.isoformat())
+                    failed += int(outcome.exhausted)
+                    continue
+                contract = observe_subset_read_contract(
+                    outcome.path, archive_filename=outcome.filename
                 )
-                failed += 1
-                missing.append(start.isoformat())
-                continue
-            contract = observe_subset_read_contract(path, archive_filename=filename)
-            if frozen is None:
-                frozen = contract
-            else:
-                assert_subset_contract_consistent(contract, frozen=frozen)
-            # ⛔ Keyed by the ARCHIVE filename on BOTH routes (the permanent
-            # record's own convention), while the checksum is of the SUBSET
-            # bytes — that pairing is exactly what makes a route switch
-            # distinguishable from an archive revision.
-            checksums[filename] = checksum_file(path)
-            retrieved_at[filename] = clock()
-            retrieved += 1
-            total_bytes += path.stat().st_size
-            if pacer.requests_issued == requests_before:
-                reused += 1
+                if frozen is None:
+                    frozen = contract
+                else:
+                    assert_subset_contract_consistent(contract, frozen=frozen)
+                # ⛔ Keyed by the ARCHIVE filename on BOTH routes (the permanent
+                # record's own convention), while the checksum is of the SUBSET
+                # bytes — that pairing is exactly what makes a route switch
+                # distinguishable from an archive revision.
+                checksums[outcome.filename] = checksum_file(outcome.path)
+                retrieved_at[outcome.filename] = clock()
+                retrieved += 1
+                total_bytes += outcome.path.stat().st_size
+                reused += int(outcome.reused)
     report = SubsetWindowRetrievalReport(
         requested=requested,
         retrieved=retrieved,
@@ -2580,6 +2796,7 @@ def retrieve_subset_window(
         total_bytes=total_bytes,
         requests_issued=pacer.requests_issued,
         rate_limited=pacer.rate_limited,
+        min_request_gap_seconds=pacer.min_issue_gap_seconds,
         failed=failed,
     )
     if frozen is not None:
@@ -2613,6 +2830,8 @@ def retrieve_subset_window(
         total_bytes=report.total_bytes,
         requests_issued=report.requests_issued,
         rate_limited=report.rate_limited,
+        workers=workers,
+        min_request_gap_seconds=report.min_request_gap_seconds,
     )
     return report
 
@@ -2688,7 +2907,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--request-interval-seconds",
         type=float,
         default=DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS,
-        help="D3.1 cadence between successive GES DISC requests.",
+        help=(
+            "D3.1 cadence between successive GES DISC requests — the GLOBAL "
+            "cap: the peak rate is 1/interval however many workers run."
+        ),
+    )
+    parser.add_argument(
+        "--subset-workers",
+        type=int,
+        default=DEFAULT_SUBSET_WORKERS,
+        help=(
+            "How many of a DAY's granules to fetch at once (default "
+            f"{DEFAULT_SUBSET_WORKERS} = serial). The route is latency-bound, "
+            "so this hides waiting; it does NOT raise the request rate, which "
+            "--request-interval-seconds caps globally."
+        ),
     )
     return parser
 
@@ -2807,6 +3040,7 @@ def _run_subset_window(args: argparse.Namespace, **kwargs: object) -> None:
         clock=kwargs.get("clock") or (lambda: datetime.now(UTC)),  # type: ignore[arg-type]
         sleep=kwargs.get("sleep") or __import__("time").sleep,  # type: ignore[arg-type]
         interval_seconds=args.request_interval_seconds,
+        workers=args.subset_workers,
     )
     log.warning(
         "imerg.acquire.cli.subset_window_stop",
@@ -2822,6 +3056,9 @@ def _run_subset_window(args: argparse.Namespace, **kwargs: object) -> None:
         total_bytes=report.total_bytes,
         requests_issued=report.requests_issued,
         rate_limited=report.rate_limited,
+        failed=report.failed,
+        workers=args.subset_workers,
+        min_request_gap_seconds=report.min_request_gap_seconds,
     )
 
 
