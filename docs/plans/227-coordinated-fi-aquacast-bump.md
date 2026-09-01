@@ -59,28 +59,43 @@ future-known variables"*. `FutureKnownVariable` gains:
 
 **The default is `EXACT`, which is today's behaviour** — so the FI bump alone changes nothing.
 
-## The actual risk — and it is not hypothetical
+## The actual risk — corrected by review; my first framing was wrong
 
-**The new aquacast emits the new semantics; our side has never heard of them.**
+**An earlier draft claimed our side "has never heard of" horizon semantics. That is false.** It
+was based on grepping only the adapter and the shim. Repo-wide there are **20 references**,
+including a whole service — `services/horizon_semantics.py` (written 2026-08-15) with its own
+tests at `tests/unit/services/test_horizon_semantics.py`.
 
-| where | references to `horizon_semantics` / `AT_MOST` / `min_future_steps` |
-|---|---|
-| `aquacast/operational/requirement.py` (new rev) | 3 |
-| `aquacast/operational/horizon.py` (new rev) | 1 |
-| `aquacast/operational/model.py` (new rev) | 1 |
-| **`adapters/forecast_interface.py` (ours)** | **0** |
-| **`models/aquacast/_shim.py` (ours)** | **0** |
+**The real defect is subtler and worse: the handling exists and is INERT.**
+`_model_declared_floor()` (`services/horizon_semantics.py:74`) asks a model for its own horizon
+declaration — but the runners pass the *wrapped adapter* (`services/run_station_forecast.py:255`),
+and the adapter exposes no `input_requirement`, only a private `_model`. So the floor lookup finds
+no declaration and the AT_MOST path never engages. Bumping the pins alone would leave it just as
+inert, while aquacast starts declaring semantics we still cannot see.
 
-So after the bump a model may legitimately declare *"I need at most N future steps, and at least
-M"* while our adapter reads only `future_steps` and treats every requirement as EXACT. The likely
-symptom is **spurious failure**: we refuse to run a model that would have been satisfied by a
-shorter horizon — the opposite of the AT_MOST feature's intent.
+**And honouring AT_MOST is blocked further upstream than the adapter.** The chain:
+
+1. the adapter exposes each feature's declared **maximum** `future_steps`
+   (`adapters/forecast_interface.py:525`);
+2. projection carries that maximum unchanged (`services/track_projection.py:64`);
+3. candidate resolution **rejects** any feed shorter than it, *before the adapter runs*
+   (`services/track_resolution.py:122`).
+
+So a 5-step feed against an `AT_MOST(max=15, min=1)` requirement is thrown out upstream. **No
+adapter-only change can make T2's "shorter horizon succeeds" gate pass.**
+
+The root cause is a carrier limitation on our side, not a contract gap: `ForcingRequired`
+(`types/forcing_track.py:85`) carries **one** horizon value per feature, so it cannot distinguish
+an *acceptance floor* from a *useful maximum*.
 
 ## Decisions
 
-- **D1 — The two bumps CANNOT be split.** `uv` rejects two different git URLs for one package, so
-  FI v0.1.20 and aquacast `5cbfdbb7` land in the same commit or neither does. This is a resolver
-  constraint, not a preference.
+- **D1 — Bump both together. This is the smallest sensible unit, not a hard impossibility.**
+  Ordinary resolution *does* reject the v0.1.19/v0.1.20 URL conflict exactly as reproduced. But
+  uv overrides are absolute and this repo already uses them (`pyproject.toml:98`), so an explicit
+  FI v0.1.20 override would permit an FI-first intermediate commit. **The reverse is not
+  possible** — aquacast v0.1.346 imports `HorizonSemantics`, so it cannot run on FI v0.1.19.
+  An earlier draft called this a resolver impossibility; that was overstated.
 
 - **D2 — Honour `AT_MOST`, or fail loudly. Never silently treat it as `EXACT`.** Silent coercion
   is the FI-adherence violation CLAUDE.md forbids: *if our side cannot express what the contract
@@ -104,19 +119,39 @@ shorter horizon — the opposite of the AT_MOST feature's intent.
 *Exit:* `uv lock` succeeds; `uv sync --extra aquacast` installs; `rich` still resolves to 14.x
 (the override must not have been disturbed).
 
-### T2 — teach the adapter the new semantics
-*In:* whatever `adapters/forecast_interface.py` (and `_shim.py` if it translates requirements)
-needs to read `horizon_semantics` and `min_future_steps` and honour AT_MOST.
-*Out:* changing the forecast cycle's horizon handling · anything in the redesign's scope ·
-inventing a horizon abstraction.
-*Exit:* an AT_MOST requirement with `min_future_steps` is satisfied by a shorter horizon and is
-**not** rejected; an EXACT requirement still fails on a short horizon exactly as today; a
-red-first test proves both.
+### T2 — make the EXISTING horizon-semantics service reachable
+*In:* whatever lets `_model_declared_floor()` (`services/horizon_semantics.py:74`) actually see a
+model's declaration through the wrapper — the adapter needs to expose `input_requirement` rather
+than hiding it behind `_model` (`services/run_station_forecast.py:255`). Plus an explicit
+assertion that the shim's `model_copy(update=...)` (`models/aquacast/_shim.py:163`) preserves the
+new fields, which it already appears to do.
+*Out:* the two-horizon carrier (T3) · the forecast cycle's horizon handling · the redesign's scope.
+*Exit:* an AT_MOST declaration is visible to the service through the wrapper, proven by a test
+that fails today; the existing `test_horizon_semantics.py` suite still passes.
 
-### T3 — prove it against the real package
+### T3 — DECISION REQUIRED, not implementation: the one-horizon carrier
+**This plan cannot deliver "a shorter horizon is accepted" and must not pretend to.**
+`ForcingRequired` (`types/forcing_track.py:85`) carries one horizon per feature, and resolution
+rejects short feeds before the adapter runs (`services/track_resolution.py:122`). Splitting it
+into floor-and-maximum touches projection, resolution and assembly — **squarely inside
+`docs/design/forecast-cycle-redesign.md`, which this plan is forbidden to pre-empt.**
+
+*Exit:* **the owner decides** whether to (a) land T1+T2 now, leaving AT_MOST declared-but-not-yet-
+honoured with that limitation recorded, or (b) hold the whole bump until the redesign carries two
+horizons. **No implementer may choose this.**
+
+### T4 — prove it against the real package
 *In:* run the `importorskip`-gated shim tests with the extra installed.
 *Exit:* the previously-skipped tests run and pass (expect 27+/0 skipped, not 21/1); full
 `uv run pytest` green; ruff and the pyright ratchet pass.
+
+## Does this need an upstream FI change? **No.**
+
+FI v0.1.20 fully expresses `EXACT`, `AT_MOST` and the validated minimum, and aquacast v0.1.346
+uses that API correctly. The remaining gap is **SAP3's own carrier** (`types/forcing_track.py:85`),
+which holds one horizon where two are needed. **Filing an FI issue would misattribute a local
+limitation to the shared contract** — precisely the diagnosis error CLAUDE.md's FI rule is meant to
+prevent in the other direction.
 
 ## Non-goals
 
