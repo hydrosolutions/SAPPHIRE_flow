@@ -21,6 +21,10 @@ from sapphire_flow.services.caravan_statics import (
     declared_static_naming,
     project_declared_static_attributes,
 )
+from sapphire_flow.services.training_data import (
+    resample_to_time_step,
+    validate_time_step_cadence,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
@@ -198,7 +202,17 @@ def _assemble_hindcast_inputs(
     else:
         forcing_df = pl.DataFrame(schema={"timestamp": pl.Datetime("us", "UTC")})
 
+    # Plan 228 P1: the operational path resamples observations to the
+    # model's time_step before delivery (`operational_inputs.py`); hindcast
+    # did not, so a model's `lookback_steps` count of RAW rows (~10-minute
+    # cadence) was read as that many days. The FI contract keys
+    # `PastKnownVariable.lookback` on the declared `time_step` (D1) — SAP3,
+    # not the model, owns aggregating to it. `validate_time_step_cadence` is
+    # the backstop: it fails loudly if a future change breaks this instead
+    # of silently shipping raw rows again.
     obs_df = _observations_to_dataframe(observations, parameter)
+    obs_df = resample_to_time_step(obs_df, time_step, aggregation_methods=None)
+    validate_time_step_cadence(obs_df, time_step, context="hindcast.past_targets")
 
     # Split forcing into past (≤ issue_time) and future (> issue_time).
     # Reanalysis serves as teacher forcing in hindcast (v0-scope §A13).

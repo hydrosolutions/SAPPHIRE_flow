@@ -29,7 +29,10 @@ from sapphire_flow.services.operational_inputs import (
     observations_to_wide_dataframe,
     raw_forcing_to_dataframe,
 )
-from sapphire_flow.services.training_data import resample_to_time_step
+from sapphire_flow.services.training_data import (
+    resample_to_time_step,
+    validate_time_step_cadence,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleMode,
@@ -268,6 +271,11 @@ def assemble_assignment_inputs(
     past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
         past_targets, time_step, aggregation_methods=None
+    )
+    # Plan 228 D1(C): backstop shared with the hindcast assembler — see
+    # `validate_time_step_cadence` for why this is scoped to past_targets.
+    validate_time_step_cadence(
+        past_targets, time_step, context="track_assembly.past_targets"
     )
 
     latest_obs_ts = max((o.timestamp for o in all_observations), default=None)

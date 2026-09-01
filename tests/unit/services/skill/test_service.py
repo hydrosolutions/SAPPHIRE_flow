@@ -93,6 +93,54 @@ def _make_hindcast(
     )
 
 
+def _make_daily_hindcast(
+    *,
+    station_id: StationId,
+    model_id: ModelId,
+    artifact_id: ArtifactId,
+    hindcast_step: UtcDatetime,
+    forecast_value: float,
+    n_members: int = 5,
+    parameter: str = "discharge",
+) -> object:
+    """A single-lead, DAILY time_step hindcast (Plan 228 T3): valid_time is
+    exactly one day after ``hindcast_step``, unlike ``_make_hindcast``'s
+    fixed hourly lead spacing."""
+    from sapphire_flow.types.ensemble import ForecastEnsemble
+    from sapphire_flow.types.forecast import HindcastForecast
+
+    day = timedelta(days=1)
+    vt = ensure_utc(hindcast_step + day)
+    rows = [
+        {"valid_time": vt, "member_id": m, "value": forecast_value}
+        for m in range(n_members)
+    ]
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+        pl.col("member_id").cast(pl.Int32),
+    )
+    ensemble = ForecastEnsemble.from_members(
+        station_id=station_id,
+        issued_at=hindcast_step,
+        parameter=parameter,
+        units="m³/s",
+        time_step=day,
+        values=df,
+    )
+    return HindcastForecast(
+        id=HindcastForecastId(_uuid()),
+        station_id=station_id,
+        model_id=model_id,
+        model_artifact_id=artifact_id,
+        hindcast_step=hindcast_step,
+        forcing_type=ForcingType.REANALYSIS,
+        representation=EnsembleRepresentation.MEMBERS,
+        hindcast_run_id=_uuid(),
+        ensemble=ensemble,
+        created_at=_EPOCH,
+    )
+
+
 def _make_observation(
     *,
     station_id: StationId,
@@ -1442,3 +1490,90 @@ class TestParameterStamping:
 
         assert len(diagrams) > 0
         assert all(d.parameter == "water_level" for d in diagrams)
+
+
+class TestDailyMeanComparedAgainstDailyMeanObservation:
+    """Plan 228 T3/P2: the observation compared against a daily-mean
+    forecast must itself be the daily mean, never a single instantaneous
+    reading. Before the fix, ``_build_strata`` looked ``valid_time`` up in an
+    unresampled observation dict, so whichever raw reading happened to land
+    exactly on the forecast's ``valid_time`` decided the score — regardless
+    of the day's true mean (measured live: median 6.4%, p95 48.6% error)."""
+
+    def test_score_reflects_the_daily_mean_not_the_boundary_reading(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        day = timedelta(days=1)
+        hindcasts = []
+        observations = []
+
+        for i in range(3):
+            issue = _utc(2025, 1, i + 1)  # Jan 1/2/3 @ 00:00
+            forecast_day_start = ensure_utc(issue + day)  # Jan 2/3/4 @ 00:00
+            daily_mean = 40.0 + 10.0 * i  # varies: 40, 50, 60
+
+            hindcasts.append(
+                _make_daily_hindcast(
+                    station_id=station_id,
+                    model_id=model_id,
+                    artifact_id=artifact_id,
+                    hindcast_step=issue,
+                    forecast_value=daily_mean,
+                )
+            )
+
+            # Two hourly readings spanning the forecast day. The ONE at the
+            # exact day boundary (== the forecast's valid_time, what the
+            # pre-fix code looked up) is deliberately far below the day's
+            # true mean; the other balances it back to `daily_mean`.
+            boundary_value = daily_mean - 40.0
+            midday_value = 2 * daily_mean - boundary_value
+            observations.append(
+                _make_observation(
+                    station_id=station_id,
+                    timestamp=forecast_day_start,
+                    value=boundary_value,
+                )
+            )
+            observations.append(
+                _make_observation(
+                    station_id=station_id,
+                    timestamp=ensure_utc(forecast_day_start + timedelta(hours=12)),
+                    value=midday_value,
+                )
+            )
+
+        scores, _ = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
+        )
+
+        mae_scores = [s for s in scores if s.metric == "mae"]
+        assert mae_scores
+
+        # The forecast IS the true daily mean, so a correct daily-mean
+        # comparison gives ~0 MAE. The pre-fix instantaneous join compared
+        # every forecast against a reading 40 units off the mean and could
+        # never land here.
+        for s in mae_scores:
+            assert s.score < 1.0, (
+                "expected near-zero MAE comparing a daily-mean forecast to "
+                f"the daily-mean observation, got {s.score}"
+            )

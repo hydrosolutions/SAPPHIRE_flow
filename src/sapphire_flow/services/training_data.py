@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import (
     available_declared_static_keys,
     declared_static_naming,
@@ -53,6 +54,74 @@ _V0_AGGREGATION_FALLBACK: dict[str, AggregationMethod] = {
 }
 
 
+def aggregation_method_for(parameter: str) -> AggregationMethod:
+    """The v0 aggregation method ``parameter`` is TRAINED against (Plan 228
+    D2): a caller comparing a forecast to observations (e.g. skill scoring)
+    must aggregate with this SAME method, never a different one, or the fix
+    substitutes one quantity mismatch for another."""
+    return _V0_AGGREGATION_FALLBACK.get(parameter, AggregationMethod.MEAN)
+
+
+_CADENCE_TOLERANCE_FRACTION = 0.01
+
+
+def _detect_cadence_us(df: pl.DataFrame) -> float | None:
+    """Median gap (microseconds) between sorted, distinct ``timestamp`` rows.
+
+    Returns ``None`` when the frame is too small (or lacks a usable spread)
+    to have a detectable cadence at all — callers treat that as "nothing to
+    check", never as a match.
+    """
+    if df.is_empty() or df.height < 2:
+        return None
+    timestamps = df["timestamp"].sort()
+    diffs = timestamps.diff().drop_nulls()
+    if diffs.is_empty():
+        return None
+    median_diff_us = diffs.cast(pl.Int64).median()
+    if median_diff_us is None:
+        return None
+    # polars .median() is typed PythonLiteral; the cast column is Int64.
+    return cast("float", median_diff_us)
+
+
+def validate_time_step_cadence(
+    df: pl.DataFrame,
+    time_step: timedelta,
+    *,
+    context: str,
+) -> None:
+    """Fail loudly when ``df``'s delivered cadence does not match ``time_step``.
+
+    Plan 228 D1 (option C): a model's ``PastKnownVariable.lookback`` is a
+    count of steps of the declared ``time_step`` (ForecastInterface
+    ``input/variable.py``/``input/requirement.py``) — the model is entitled
+    to assume it, never obliged to check it. P1 was exactly this silently
+    violated: hindcast handed 7 raw ~10-minute rows against a declared
+    ``timedelta(days=1)``. Both assemblers resample ``past_targets`` to
+    ``time_step`` themselves; this is the backstop that makes a future
+    resampling omission (a new caller, a refactor) fail loudly instead of
+    silently, at the one point both paths already call through.
+
+    Deliberately scoped to ``past_targets`` callers only — ``past_dynamic``
+    legitimately carries a finer, unresampled cadence than the model's
+    ``time_step`` in the operational path (e.g. hourly reanalysis feeding a
+    daily model), so a blanket check would misfire there.
+    """
+    median_diff_us = _detect_cadence_us(df)
+    if median_diff_us is None:
+        return
+    target_us = time_step.total_seconds() * 1_000_000
+    if target_us <= 0:
+        return
+    if abs(median_diff_us - target_us) > target_us * _CADENCE_TOLERANCE_FRACTION:
+        actual = timedelta(microseconds=median_diff_us)
+        raise ConfigurationError(
+            f"{context}: delivered cadence ~{actual} does not match the "
+            f"declared time_step {time_step}"
+        )
+
+
 def resample_to_time_step(
     df: pl.DataFrame,
     time_step: timedelta,
@@ -73,17 +142,11 @@ def resample_to_time_step(
     )
 
     # Detect current cadence via median gap between sorted timestamps.
-    timestamps = df["timestamp"].sort()
-    diffs = timestamps.diff().drop_nulls()
-    if diffs.is_empty():
-        return df
-    median_diff_us = diffs.cast(pl.Int64).median()
+    median_diff_us = _detect_cadence_us(df)
     target_us = time_step.total_seconds() * 1_000_000
-    if (
-        median_diff_us is not None
-        # polars .median() is typed PythonLiteral; the cast column is Int64
-        and abs(cast("float", median_diff_us) - target_us) < target_us * 0.01
-    ):
+    if median_diff_us is None:
+        return df
+    if abs(median_diff_us - target_us) < target_us * _CADENCE_TOLERANCE_FRACTION:
         return df
 
     # Build per-column aggregation expressions for wide-format DataFrame.

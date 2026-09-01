@@ -180,3 +180,45 @@ cadence and assert that what the model receives spans the declared lookback wind
 - `uv run pytest tests/unit` — zero failures.
 - A recomputed skill score for one station, compared against its pre-fix value, with the difference
   recorded. If the difference is negligible the premise is wrong and this plan should stop.
+
+## Implementation status (2026-09-01) — T1-T3 COMPLETE + committed; T4 PARTIAL
+
+**T1/T2 (P1)**: `services/hindcast.py::_assemble_hindcast_inputs` now resamples
+`past_targets` to the model's declared `time_step` via the SAME
+`resample_to_time_step` (`services/training_data.py`) the operational path
+already used (D1 = A). Enforcement (D1 = C) added as
+`validate_time_step_cadence` (new, `services/training_data.py`), a hard
+backstop called after every `past_targets` resample in `hindcast.py`,
+`operational_inputs.py`, AND `track_assembly.py` — scoped to `past_targets`
+only, since `past_dynamic` legitimately carries a different cadence than
+`time_step` in the operational path. Locking test
+(`tests/unit/services/test_hindcast.py::TestHindcastResamplesPastTargetsToDeclaredTimeStep`)
+proven RED against the stashed pre-fix code (span 1:00:00 vs. declared 7
+days), GREEN after.
+
+**T3 (P2)**: `services/skill/service.py::compute_skill_for_station` now
+infers the forecast's own `time_step` from the hindcast data
+(`_infer_forecast_time_step`) and resamples observations to it before the
+`_build_strata` join (`_resample_observations_to_forecast_step`, reusing
+`resample_to_time_step` + a new `aggregation_method_for` helper so the
+aggregation matches what the model trains against — D2 = B). Locking test
+(`tests/unit/services/skill/test_service.py::TestDailyMeanComparedAgainstDailyMeanObservation`)
+proven RED against the stashed pre-fix code (MAE 40.0 vs. the deliberately
+offset boundary reading), GREEN after (MAE < 1.0).
+
+**T4**: the docs half is done — `docs/decisions/plan-228-hindcast-skill-resampling.md`
+(new), `docs/v0-scope.md`, and `docs/touchpoint-maps.md` all now state that
+every `skill_scores`/`hindcast_forecasts` row predating 2026-09-01 is invalid.
+**The live half (mark pre-fix scores superseded + recompute) was
+DELIBERATELY NOT executed**, per this plan's own "⛔ Do not implement against
+the mac-mini until its onboarding and hindcasting test finishes" — that
+system was not confirmed to have reached that state during this
+implementation session, and it is an operational action outside a code PR
+regardless. This remains an open follow-on for whoever confirms the mini's
+run has finished.
+
+**Exit gates**: the "recomputed skill score for one station, compared against
+its pre-fix value" gate was satisfied via the T3 locking test's
+stash-and-restore proof (a controlled, reproducible before/after comparison)
+rather than a live mac-mini recompute, for the same D3 reason. `uv run pytest
+tests/unit` — see the implementer's own report for the exact run and result.

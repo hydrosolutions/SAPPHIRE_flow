@@ -1420,3 +1420,67 @@ class TestSnowReachesPastDynamicViaHybridSource:
         for inputs in recording.calls:
             assert "swe" in inputs.data.past_dynamic.columns
             assert not inputs.data.past_dynamic.is_empty()
+
+
+class TestHindcastResamplesPastTargetsToDeclaredTimeStep:
+    """Plan 228 T1/P1: a model's ``lookback_steps`` count of ``past_targets``
+    rows must span its declared ``time_step`` window, exactly as the
+    operational path already delivers (``operational_inputs.py:551``).
+    Before the fix, hindcast handed the model raw ~10-minute-cadence rows
+    against a declared ``timedelta(days=1)``: 7 rows spanned ~70 minutes,
+    not 7 days — a 144x shortfall, measured live on the mac-mini
+    (2026-09-01).
+    """
+
+    def test_tail_lookback_spans_the_declared_window_not_raw_cadence(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        lookback_steps = 7
+        issue_time = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+
+        # 12 days of real mac-mini cadence (~604s / 10min) observations,
+        # ending just before issue_time — far more than 7 RAW rows, but
+        # exactly enough for 7 daily means.
+        data_start = ensure_utc(issue_time - timedelta(days=12))
+        observations = make_observations(
+            n=12 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+        )
+
+        assert inputs is not None
+        past_targets = inputs.data.past_targets
+
+        # This mirrors exactly what a daily model reads
+        # (`LinearRegressionDaily._extract_discharge`: `sorted_df.tail(7)`,
+        # `NwpRegression._initial_lags`: `values[-self._n_lags:]`).
+        tail = past_targets.sort("timestamp").tail(lookback_steps)
+        assert tail.height == lookback_steps
+
+        span = tail["timestamp"].max() - tail["timestamp"].min()
+        declared_window = lookback_steps * time_step
+
+        # Buggy code reports ~70 minutes here (7 raw 10-minute rows); fixed
+        # code must span within one time_step of the full declared window.
+        assert span >= declared_window - time_step, (
+            f"tail({lookback_steps}) of past_targets spans only {span} "
+            f"against a declared {declared_window} lookback window"
+        )
