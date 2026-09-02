@@ -626,6 +626,63 @@ route-aware reader; and an exact, real-data cross-check against the archive rout
 both routes now hold. **Not yet met**: the bulk retrieval (T3) and the resulting published bundle —
 gated on a separate go-ahead, per the plan's binding per-run scope.
 
+**M-A5d follow-up (2026-09-02) — the full-window T3 run hit a MEASURED NASA metadata change, and the
+exit codes could not tell a supervisor whether to retry.** A 30-hour subset backfill over the pinned
+D5 window froze its read contract on a 2020 granule and aborted at **2024-06-02**. Cause, measured
+across every banked granule rather than inferred: NASA writes the HDF5 `FileHeader` field
+`ProductVersion` as **`V07B` for 2020-01 .. 2024-05** and as **`07B` from 2024-06 onward**. All fifteen
+other contract fields — grid shape, both coordinate vectors, units, fill value, dtype, registration,
+global bounds, longitude convention, dimension names, variable path — are **identical across that
+boundary**, and the authoritative revision (`granule_revision`, parsed from the FILENAME, which D1
+treats as the identity axis) reads `V07B` on **both** sides. The leading `V` is therefore cosmetic.
+
+Three changes, all on `scripts/dhm_precip/imerg_acquire.py`:
+
+1. **A narrow, documented comparison tolerance — SUBSET ROUTE ONLY.** `assert_subset_contract_
+consistent` compares `file_header_product_version` with **exactly one leading `V`** removed and nothing
+else, so `07B` vs `07C` and `V07B` vs `V07C` still trip the gate (Plan 211's own probe MEASURED a live
+`V07C`, so a real version change is not hypothetical). ⛔ The tolerance is at **comparison time only**:
+the observed spelling is stored unmodified on the contract, enters the acquisition manifest, and is
+therefore covered by the manifest digest — it is the evidence NASA changed the string.
+2. **The mismatch error names every differing field with both values** (long coordinate vectors
+truncated head-and-tail), replacing a whole-dataclass `!=` that reported only THAT something differed
+— which is what cost the hours of granule-bisecting that found the one cosmetic character. Where the
+revision ALSO differs, the revision message now carries the other differences with it rather than
+dropping them.
+3. **A permanent/transient exit-code split, so a supervising loop can act on the code.** Exit **6 now
+means PERMANENT — do not retry**; exit 3 keeps its previous meaning for everything else. The split is
+by **repairability, not by class family**, and runs in both directions:
+   - `ImergReadContractError` → **6**: a granule that reads cleanly and genuinely disagrees with the
+     frozen contract is stable archive drift; the next attempt reaches the same conclusion.
+   - `ImergMalformedArtifactError` (new, a subclass of the above) → **3**: unreadable bytes — a
+     truncated body, an HTTP-200 login page — are an accident of one transfer that a re-download
+     repairs. ⚠️ This is raised *after* the network retry unit has completed, so classing it permanent
+     would abort a 30-hour run outright on a single transient truncation — worse than the retry waste
+     the split exists to stop.
+   - `ImergPermanentRequestError` (new) → **6**: a 4xx that no retry can fix, such as the HTTP 400 a
+     malformed OPeNDAP `dap4.ce` constraint returns (Plan 225 D4 measured exactly that 400). ⛔ NOT the
+     whole 4xx block: 408/425 are timing faults and keep 3; 401/403/404/429 keep their own codes.
+   - `ImergInvalidRequestError` (caller-argument faults: out-of-window or misordered bounds, `workers <
+     1`) → **6**. Measured motivation: one 308-attempt run burned 307 attempts at 60 s each on
+     permanent failures while also containing one genuinely transient `ImergRetriesExhaustedError`
+     whose re-run succeeded — a single code could not serve both.
+   - `scripts/dhm_precip/imerg_extract.py` now carries the same leaf codes, so a mid-extraction D1
+     violation reports 6 there too; a locking test asserts the two CLIs agree leaf by leaf.
+
+⚠️ **KNOWN GAP, deliberately left open — the ARCHIVE route carries the same `ProductVersion` exposure
+and is NOT fixed.** `assert_contract_consistent` reads the same `FileHeader.ProductVersion` field of the
+same NASA product into the same field name, so an archive-route run spanning 2024-06 would abort at the
+same boundary. It was **not** given the tolerance: Plan 225's hazard section is explicit — *"⛔ Do NOT
+relax, parameterise or share the existing contract"* — and only **one** archive granule (2020-07-15) is
+banked, so extending the tolerance there would be **reasoned, not sampled**, which is exactly the
+standard the subset-side change was held to. The archive parser and contract remain untouched.
+**What would substantiate a fix**: banking archive-route granules on both sides of 2024-06 and
+measuring `FileHeader.ProductVersion` on them directly, as was done for the subset route. Until then
+the archive comparator stays byte-exact, and an equivalence test
+(`test_the_archive_comparator_accepts_exactly_what_it_used_to`) perturbs every one of its twelve fields
+and fails if anyone widens it. **No multi-granule archive-route run should be started across the
+2024-06 boundary without closing this first.**
+
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC
 axis, so the gauge side must be normalised before any pairing.)* **The point of this track.**
