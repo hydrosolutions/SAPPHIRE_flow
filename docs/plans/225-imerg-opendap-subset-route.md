@@ -97,6 +97,24 @@ strictly, is the whole point.
   ⚠️ **"Variable layout" includes the dtype and any `scale_factor`/`add_offset`** — they decide what a
   decoded value *is*, and D5's tolerance is derived from them.
 
+  **D1 ADDENDUM (2026-09-02, measured during the T3 full-window run).** NASA writes the HDF5
+  `FileHeader` `ProductVersion` as `V07B` up to 2024-05 and as `07B` from 2024-06 on, with every other
+  contract field and the filename-derived `granule_revision` unchanged across that boundary. The SUBSET
+  comparator now removes exactly one leading `V` before comparing that ONE field, at comparison time
+  only (the observed spelling is still stored and digested unmodified). ⛔ D1's prohibition **holds**:
+  `assert_contract_consistent` — the ARCHIVE comparator — had its **acceptance predicate** left
+  unchanged. (⚠️ Corrected 2026-09-02, confirming Codex round: the earlier wording here, "was **not**
+  touched", was literally inaccurate — the function *was* edited, to name the differing field in its
+  message. The predicate is now the same whole-dataclass `observed != replace(frozen, granule_revision=…)`
+  it always was, with the field-by-field difference list used only to BUILD that message, so the scope
+  lock is true **by construction** rather than by test.) An equivalence test still perturbs all twelve
+  fields, against both spellings of the frozen product version, and fails if anyone reintroduces a second
+  acceptance predicate. ⚠️ The archive route therefore still
+  carries the same exposure and would abort at the same 2024-06 boundary on a multi-granule run; it is
+  recorded as a **known gap** (with what would substantiate a fix) under M-A5d in
+  `docs/design/dhm-precipitation-milestones.md`, not fixed here — only one archive granule is banked, so
+  a tolerance there would be reasoned, not sampled.
+
 - **D2 — The route is recorded in the acquisition manifest and is part of the identity.** A bundle built
   from subset granules must be distinguishable from one built from full-field granules, because the two
   read different grids. ⇒ The route string enters the record and therefore the digest. ⛔ A bundle whose

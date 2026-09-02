@@ -1401,10 +1401,86 @@ class TestMainCatchesMidExtractionD1Violation:
             expected_stations=frozenset({Station("A")}),
         )
 
-        assert exit_code not in (0, None)
+        # 🔴 TIGHTENED (2026-09-02, Codex review) — "not 0" was true before
+        # and after the acquisition CLI grew a permanent/transient exit split,
+        # so it could not notice that this CLI still reported a PERMANENT
+        # contract violation as the retryable 3. A mid-extraction D1 violation
+        # reads the same banked bytes to the same conclusion for ever.
+        assert exit_code == 6  # noqa: PLR2004
         captured = capsys.readouterr()
         assert "imerg_extract.cli.failed" in captured.err
         assert "ImergReadContractError" in captured.err
+
+    def test_the_extract_cli_mirrors_the_acquire_clis_exit_codes(self) -> None:
+        """⛔ The extract table's own comment promises "the IMERG leaves carry
+        T1's exit codes". Before this it mapped EVERY `ImergAcquisitionError`
+        to 3, so the promise held only for the leaves that happened to be 3.
+        ⇒ Assert the two CLIs agree leaf by leaf, so they cannot drift apart
+        silently again.
+
+        🔴 The leaves are now DISCOVERED, not hand-listed (2026-09-02,
+        confirming Codex round). The hand-written tuple claimed to walk the
+        hierarchy "leaf by leaf" and did not: it omitted
+        `ImergRateLimitedError` outright and spent four of its ten entries on
+        non-leaf parents. A new leaf added to `imerg_acquire` now joins this
+        assertion automatically."""
+        from scripts.dhm_precip import imerg_acquire as ia
+
+        def descendants(cls: type) -> set[type]:
+            subs = set(cls.__subclasses__())
+            return subs.union(*(descendants(s) for s in subs)) if subs else set()
+
+        # ⛔ `__module__`-filtered: `__subclasses__` also sees a subclass any
+        # OTHER test module defined earlier in the same session, which would
+        # make this assertion depend on collection order.
+        # 🔴 The foreign subclass that makes the fragility REAL rather than
+        # hypothetical, and makes this test order-INDEPENDENT: without it the
+        # guard passes either way and locks nothing. Under raw
+        # `__subclasses__()` this test-local class stops
+        # `ImergRateLimitedError` — a PRODUCTION leaf — from counting as one,
+        # silently shrinking the floor below. It lives inside the function, so
+        # it is unreachable to every other test.
+        class _TestLocalRateLimitedError(ia.ImergRateLimitedError):
+            pass
+
+        assert _TestLocalRateLimitedError in ia.ImergRateLimitedError.__subclasses__()
+
+        production = ia.ImergAcquisitionError.__module__
+        family = {
+            c
+            for c in {ia.ImergAcquisitionError} | descendants(ia.ImergAcquisitionError)
+            if c.__module__ == production
+        }
+        # 🔴 The SAME filter on leaf detection (2026-09-02, final Codex round).
+        # The family was filtered and the leaf test was not, so a subclass
+        # defined in another test module — this suite defines several, to lock
+        # the comparators' subclass strictness — stopped its PRODUCTION parent
+        # from counting as a leaf and quietly dropped it from the floor below.
+        # The floor then depended on collection state.
+        leaves = sorted(
+            (
+                c
+                for c in family
+                if not any(s.__module__ == production for s in c.__subclasses__())
+            ),
+            key=lambda c: c.__name__,
+        )
+        # a guard against the discovery itself silently finding nothing
+        assert {c.__name__ for c in leaves} >= {
+            "ImergCredentialsError",
+            "ImergGranuleMissingError",
+            "ImergInvalidRequestError",
+            "ImergMalformedArtifactError",
+            "ImergRateLimitedError",
+            "ImergRetriesExhaustedError",
+            "ImergStorageError",
+            "ImergSubsetCoordinateMismatchError",
+        }
+        # ⛔ EVERY class in the family, leaf or not: a parent that disagreed
+        # would still mis-report any error raised as the parent itself.
+        for cls in sorted(family, key=lambda c: c.__name__):
+            error = cls("x")
+            assert ie._exit_code_for(error) == ia._exit_code_for(error), cls.__name__
 
 
 # --- D9 (BLOCKER) — T2 DERIVES completeness; it never trusts the label ---

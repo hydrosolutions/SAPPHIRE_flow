@@ -23,10 +23,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Final, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -42,7 +42,7 @@ from scripts.dhm_precip.era5_manifest import checksum_file  # noqa: E402
 from scripts.dhm_precip.era5_request import STUDY_AREA, STUDY_YEARS  # noqa: E402
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from concurrent.futures import Future
 
     import requests
@@ -84,6 +84,26 @@ class ImergRequestFailedError(ImergAcquisitionError):
     failed post-acquisition validation."""
 
 
+class ImergPermanentRequestError(ImergRequestFailedError):
+    """GES DISC rejected the request in a way NO retry can repair — a 4xx
+    client error such as the HTTP 400 a malformed OPeNDAP `dap4.ce` constraint
+    returns (Plan 225 D4 MEASURED exactly that 400 for `/Grid/precipitation`).
+    ⛔ PERMANENT: CLI exit code 6.
+
+    ⚠️ Raised for an ENUMERATED set of statuses (`_PERMANENT_CLIENT_STATUSES`),
+    never for "4xx minus a few". An except-list fails unsafely — a status
+    nobody enumerated (409 Conflict, 423 Locked) would be called permanent and
+    stop a recoverable run — so the unlisted default is retryable and only
+    statuses permanent BY CONSTRUCTION are named here."""
+
+
+class ImergInvalidRequestError(ImergPermanentRequestError):
+    """The CALLER's own arguments are invalid — an out-of-window or misordered
+    bound, a worker count below one. ⛔ PERMANENT by construction: the same
+    arguments produce the same failure for ever, so a supervisor must report
+    and stop rather than retry. CLI exit code 6."""
+
+
 class ImergGranuleMissingError(ImergRequestFailedError):
     """404 / absent from the listing: counted for a window (D4), fatal for a
     probe."""
@@ -101,7 +121,27 @@ class ImergRetriesExhaustedError(ImergRequestFailedError):
 
 class ImergReadContractError(ImergRequestFailedError):
     """D1 — an observed granule's structure, revision included, fails the
-    frozen read contract. ⛔ Stop and report rather than blending."""
+    frozen read contract. ⛔ Stop and report rather than blending.
+    PERMANENT — a granule that READS cleanly and genuinely disagrees with the
+    frozen contract is stable archive drift, and the next attempt reads the
+    same bytes to the same conclusion: CLI exit code 6, so a supervising loop
+    reports and stops instead of retrying.
+    ⚠️ EXCEPT `ImergMalformedArtifactError` below, which is the opposite case
+    and stays retryable."""
+
+
+class ImergMalformedArtifactError(ImergReadContractError):
+    """The bytes on disk are not a readable granule AT ALL — a truncated body,
+    an HTTP-200 login page, a file that opens as HDF5 but carries none of the
+    contract's structure.
+
+    🔴 RETRYABLE, so CLI exit code 3 and NOT its parent's permanent 6. Those
+    bytes are an accident of ONE transfer, and a re-download replaces them;
+    treating them as permanent would abort a 30-hour window run outright on a
+    single truncated response — strictly worse than the retry waste the exit
+    split exists to stop. ⛔ The distinction is drawn HERE, at the raising site
+    (`_validate_subset_artifact`), by WHICH failure the bytes produced — never
+    guessed downstream from an exit code."""
 
 
 class ImergSubsetCoordinateMismatchError(ImergReadContractError):
@@ -512,20 +552,219 @@ def assert_identity_matches_plan_and_header(
         )
 
 
+#: (2026-09-02) — MEASURED across every banked granule of the pinned D5 window:
+#: NASA writes the `FileHeader` `ProductVersion` as `V07B` for 2020-01..2024-05
+#: and as `07B` from 2024-06 onward. All FIFTEEN other contract fields — grid
+#: shape, both coordinate vectors, units, fill value, dtype, registration,
+#: global bounds, longitude convention, dimension names, variable path — are
+#: identical across that boundary, and the AUTHORITATIVE revision
+#: (`granule_revision`, parsed from the FILENAME) reads `V07B` on BOTH sides.
+#: The leading `V` is therefore COSMETIC: NASA stopped writing the prefix
+#: inside the header partway through the archive, and a full-window run that
+#: froze its contract on a 2020 granule aborted at 2024-06-02 on it.
+#:
+#: ⇒ A DELIBERATE, DOCUMENTED tolerance: exactly ONE leading `V` is removed
+#: before comparing, and nothing else. `07B` vs `07C` — and `V07B` vs `V07C` —
+#: still differ, so a REAL version change still trips the gate (Plan 211's own
+#: probe saw a live `V07C` drift, so that is not hypothetical).
+#:
+#: ⛔ The tolerance lives HERE, at COMPARISON time only. The observed spelling
+#: is stored UNMODIFIED on the contract: it is identity-bearing (it enters the
+#: acquisition manifest and therefore the digest) and it is the evidence that
+#: NASA changed the string. We record what we saw and compare with a stated
+#: tolerance — we never normalise what we observed.
+#: ⚠️ "Unmodified" means THIS rule changes nothing — not byte-for-byte from the
+#: file: `parse_grid_header_field` has always stripped surrounding whitespace
+#: off every header field. The meaningful `V07B`/`07B` spelling — the whole
+#: point of recording it — is what is preserved.
+def product_version_for_comparison(value: str) -> str:
+    """The `file_header_product_version` spelling two contracts are compared
+    on: the value trimmed, with one leading `V` removed if present."""
+    stripped = value.strip()
+    return stripped[1:] if stripped.startswith("V") else stripped
+
+
+#: 🔴 SUBSET ROUTE ONLY. The one field the SUBSET comparison reads through
+#: `product_version_for_comparison` rather than by equality. A dict, not an
+#: `if`, so the tolerated field is named once.
+#:
+#: ⛔ It is NOT applied to the archive route. Plan 225's hazard section is
+#: explicit — "Do NOT relax, parameterise or share the existing contract"
+#: (`docs/plans/225-imerg-opendap-subset-route.md`) — and D1 keeps
+#: `assert_contract_consistent` exactly as strict as it has always been. The
+#: MEASURED failure is on the subset route; the archive route has ONE banked
+#: granule (2020-07), so extending the tolerance there would be REASONED, not
+#: sampled. See `docs/design/dhm-precipitation-milestones.md` for the recorded
+#: archive-route exposure this deliberately leaves open.
+_SUBSET_CONTRACT_TOLERATED_FIELDS: dict[str, Callable[[str], str]] = {
+    "file_header_product_version": product_version_for_comparison,
+}
+
+#: Values at each end of a truncated coordinate vector. The lat/lon vectors run
+#: to 1800/3600 (archive) and 50/90 (subset) floats: dumping them buries the
+#: field that actually differs.
+_CONTRACT_VALUE_PREVIEW = 4
+
+
+class _AbsentField:
+    """A field one contract carries and the other does not. 🔴 The FORMATTER
+    must SURVIVE that (2026-09-02, final Codex round): it runs only to explain
+    a verdict already reached, so a subclass that adds a field must still
+    produce the typed `ImergReadContractError` a caller catches — never a bare
+    `AttributeError` from reading the subclass's extra field off the base
+    object. Asymmetry is itself a difference, and is reported as one.
+
+    ⛔ Its own CLASS, not a bare `object()`: `isinstance` then NARROWS the
+    `getattr` default away, so a per-field toleration still typechecks against
+    `str` instead of the sentinel's widened `object`."""
+
+    __slots__ = ()
+
+
+_ABSENT_FIELD: Final = _AbsentField()
+
+
+def _render_contract_value(value: object) -> str:
+    """A contract field rendered for an error message, long coordinate vectors
+    truncated head-and-tail with the elided count stated."""
+    if value is _ABSENT_FIELD:
+        return "<no such field on this contract>"
+    if isinstance(value, tuple) and len(value) > 2 * _CONTRACT_VALUE_PREVIEW:
+        head = ", ".join(repr(v) for v in value[:_CONTRACT_VALUE_PREVIEW])
+        tail = ", ".join(repr(v) for v in value[-_CONTRACT_VALUE_PREVIEW:])
+        elided = len(value) - 2 * _CONTRACT_VALUE_PREVIEW
+        return f"({head}, ...{elided} more..., {tail})"
+    return repr(value)
+
+
+#: Either frozen read contract. ⛔ A UNION for one FORMATTER, never a shared
+#: contract: each route keeps its own type, its own frozen instance and its own
+#: assertion (D1). `ImergSubsetReadContract` is defined further down, so the
+#: alias is a string — `from __future__ import annotations` does not defer a
+#: bare assignment.
+AnyImergReadContract: TypeAlias = "ImergReadContract | ImergSubsetReadContract"
+
+
+def contract_field_differences(
+    observed: AnyImergReadContract,
+    frozen: AnyImergReadContract,
+    *,
+    ignore: Sequence[str] = (),
+    tolerated: Mapping[str, Callable[[str], str]] | None = None,
+) -> tuple[str, ...]:
+    """Every field on which two read contracts of the SAME type disagree,
+    rendered `name: observed=<...> frozen=<...>`.
+
+    ⛔ Field by field, not a whole-dataclass `!=`: the whole-dataclass form
+    reported only THAT something differed, which cost hours of bisecting
+    granules to find a one-field, cosmetic difference. Shared by both routes
+    because it is a FORMATTER — each route still owns its own contract type,
+    its own frozen instance and its own assertion (D1).
+
+    ⛔ `tolerated` DEFAULTS TO NOTHING, so the shared formatter is strict by
+    construction and a route opts in explicitly. The archive route passes
+    none and is therefore exactly as strict as the whole-dataclass `!=` it
+    replaced; only the MESSAGE improved."""
+    tolerations: Mapping[str, Callable[[str], str]] = tolerated or {}
+    differences: list[str] = []
+    # ⛔ The UNION of both field lists, observed order first: iterating only
+    # `fields(observed)` assumed the two shapes were symmetric, and a subclass
+    # adding a field then read that field off the BASE object and raised a bare
+    # `AttributeError` out of a function whose whole job is to explain a
+    # failure. A field missing on either side is reported, not raised on.
+    observed_names = [f.name for f in fields(observed)]
+    field_names = observed_names + [
+        f.name for f in fields(frozen) if f.name not in set(observed_names)
+    ]
+    for name in field_names:
+        if name in ignore:
+            continue
+        observed_value = getattr(observed, name, _ABSENT_FIELD)
+        frozen_value = getattr(frozen, name, _ABSENT_FIELD)
+        tolerate = tolerations.get(name)
+        if isinstance(observed_value, _AbsentField) or isinstance(
+            frozen_value, _AbsentField
+        ):
+            pass  # present on one side only — a difference no toleration spans
+        elif tolerate is not None:
+            if tolerate(observed_value) == tolerate(frozen_value):
+                continue
+        elif observed_value == frozen_value:
+            continue
+        differences.append(
+            f"{name}: observed={_render_contract_value(observed_value)} "
+            f"frozen={_render_contract_value(frozen_value)}"
+        )
+    return tuple(differences)
+
+
+def _also_differs_suffix(differences: Sequence[str]) -> str:
+    """The tail appended to a REVISION-mismatch message when other fields
+    differ too. ⛔ Without it the early revision check would report only the
+    revision and silently drop every other difference, so "every differing
+    field is named" would not be true in exactly the case with the most to
+    say."""
+    if not differences:
+        return ""
+    return " — and it ALSO differs on: " + "; ".join(differences)
+
+
 def assert_contract_consistent(
     observed: ImergReadContract, *, frozen: ImergReadContract
 ) -> None:
-    """D1 — frozen on the first granule, asserted on every subsequent one."""
-    if observed.granule_revision != frozen.granule_revision:
+    """D1 — frozen on the first granule, asserted on every subsequent one.
+
+    🔴 The VERDICT is the whole-dataclass expression this function has always
+    used; `contract_field_differences` supplies only the MESSAGE. That makes
+    the scope lock TRUE BY CONSTRUCTION rather than true-by-test: there is no
+    second acceptance predicate that could drift from the first.
+
+    ⛔ Why not let the field iterator decide (2026-09-02, Codex review): a
+    dataclass `==` also requires the two operands to be the SAME concrete
+    class, so the old expression rejects a SUBCLASS of `ImergReadContract`
+    whose every field matches, while a field-by-field loop accepts it. A
+    subclass is valid at the annotated interface, so that is a real widening,
+    not a hypothetical one — and D1's rule is to refuse to blend anything that
+    is not exactly the frozen shape."""
+    # 🔴 VERDICT FIRST, MESSAGE SECOND (2026-09-02, final Codex round). Both
+    # acceptance expressions are evaluated and the clean case returns BEFORE
+    # any formatting runs, so the message builder can never turn an accepted
+    # contract into a crash — and on the failing path a formatter fault would
+    # at worst mis-word an error that was already correctly refused.
+    revision_differs = observed.granule_revision != frozen.granule_revision
+    contract_differs = observed != replace(
+        frozen, granule_revision=observed.granule_revision
+    )
+    if not revision_differs and not contract_differs:
+        return
+    # ⛔ NO `tolerated=`: every non-revision field is compared by EQUALITY,
+    # exactly as strictly as the whole-dataclass `!=`. Plan 225's hazard
+    # section is explicit — "Do NOT relax, parameterise or share the existing
+    # contract" — and the MEASURED `V`-prefix boundary is a SUBSET-route
+    # observation; the archive route has ONE banked granule, so tolerating it
+    # here would be reasoned rather than sampled.
+    differences = contract_field_differences(
+        observed, frozen, ignore=("granule_revision",)
+    )
+    if revision_differs:
         raise ImergReadContractError(
             f"granule revision {observed.granule_revision!r} != frozen "
             f"{frozen.granule_revision!r} — stop and report rather than "
             "blending mixed revisions into one bundle (D1)"
+            + _also_differs_suffix(differences)
         )
-    if observed != replace(frozen, granule_revision=observed.granule_revision):
+    if contract_differs:
         raise ImergReadContractError(
             "observed read contract differs from the frozen one on a field "
-            "other than revision (D1) — refusing to blend"
+            "other than revision (D1) — refusing to blend: "
+            + (
+                "; ".join(differences)
+                if differences
+                # The one disagreement the field loop cannot render: every
+                # field matches but the concrete types differ.
+                else f"observed is a {type(observed).__name__}, frozen is a "
+                f"{type(frozen).__name__}"
+            )
         )
 
 
@@ -887,12 +1126,46 @@ def _attr_scalar_float(raw: object) -> float:
     """The subset response's `_FillValue` was measured as a 1-element ARRAY
     (unlike the archive's scalar) — OPeNDAP's own re-encoding, not ours to
     normalise away silently. Reads either shape the same way."""
-    array = np.asarray(raw, dtype=np.float64).reshape(-1)
+    try:
+        array = np.asarray(raw, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError) as exc:
+        # 🔴 PERMANENT, and typed HERE at the raising site (2026-09-02, Codex
+        # review): an attribute that is PRESENT but not a number reads the same
+        # way from the same bytes for ever, so a re-download cannot repair it.
+        raise ImergReadContractError(
+            f"attribute {raw!r} is not numeric (D1): {exc}"
+        ) from exc
     if array.size != 1:
         raise ImergReadContractError(
             f"expected a scalar (or 1-element) attribute, got shape {array.shape}"
         )
     return float(array[0])
+
+
+def _optional_numeric_attr(
+    attrs: object, name: str, *, archive_filename: str
+) -> float | None:
+    """An optional packing attribute (`scale_factor`, `add_offset`) as a float,
+    or None when absent.
+
+    🔴 The retryable/permanent split drawn AT THE RAISING SITE (2026-09-02,
+    Codex review). ABSENT is fine. PRESENT-but-not-a-number is a STABLE schema
+    violation — the same bytes parse to the same failure for ever — so it is a
+    plain `ImergReadContractError` (permanent, exit 6), never the retryable
+    `ImergMalformedArtifactError`. A bare `float(...)` here used to raise a raw
+    `ValueError` that `_validate_subset_artifact` swept into the malformed
+    bucket, which would have retried an unrepairable granule for ever."""
+    if name not in attrs:  # type: ignore[operator]
+        return None
+    raw = attrs[name]  # type: ignore[index]
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ImergReadContractError(
+            f"subset granule {archive_filename!r} has a non-numeric "
+            f"{name!r} attribute {raw!r} — the response reads cleanly and is "
+            f"structurally wrong, which no re-download repairs (D1): {exc}"
+        ) from exc
 
 
 def read_subset_grid_header_global(f: object) -> str:
@@ -1005,10 +1278,12 @@ def contract_from_open_subset_granule(
         units=units,
         fill_value=fill_value,
         dtype=str(precip.dtype),
-        scale_factor=(
-            float(attrs["scale_factor"]) if "scale_factor" in attrs else None
+        scale_factor=_optional_numeric_attr(
+            attrs, "scale_factor", archive_filename=archive_filename
         ),
-        add_offset=(float(attrs["add_offset"]) if "add_offset" in attrs else None),
+        add_offset=_optional_numeric_attr(
+            attrs, "add_offset", archive_filename=archive_filename
+        ),
         coordinate_registration=parse_grid_header_field(grid_header, "Registration"),
         global_bounds=bounds,
         longitude_convention=("SIGNED_180" if west_bound < 0.0 else "UNSIGNED_360"),
@@ -1040,17 +1315,42 @@ def assert_subset_contract_consistent(
     of `assert_contract_consistent`, frozen on the first subset granule a run
     reads and asserted on every subsequent one. ⛔ A separate function, not a
     shared/parameterised one: the two contracts are separately frozen and
-    must stay that way (D1)."""
+    must stay that way (D1).
+
+    ⚠️ Subclass strictness, DELIBERATELY (2026-09-02, Codex review). The
+    archive comparator gets it free from its whole-dataclass `!=`; this one
+    CANNOT use that expression, because the tolerance must apply per field and
+    `==` has no seam for it. ⇒ The concrete-type check is made EXPLICIT below,
+    so the subset route is exactly as strict about the type as the archive
+    route while still tolerating the measured `V`-prefix spelling — the two
+    properties are independent and both are kept."""
+    if type(observed) is not type(frozen):
+        raise ImergReadContractError(
+            "observed subset read contract is a "
+            f"{type(observed).__name__} but the frozen one is a "
+            f"{type(frozen).__name__} — refusing to blend two shapes (D1)"
+        )
+    # 🔴 The MEASURED `V`-prefix tolerance is applied HERE and ONLY here: the
+    # subset route is where the boundary was observed, and sampled across the
+    # whole pinned window rather than reasoned from one granule.
+    differences = contract_field_differences(
+        observed,
+        frozen,
+        ignore=("granule_revision",),
+        tolerated=_SUBSET_CONTRACT_TOLERATED_FIELDS,
+    )
     if observed.granule_revision != frozen.granule_revision:
         raise ImergReadContractError(
             f"subset granule revision {observed.granule_revision!r} != frozen "
             f"{frozen.granule_revision!r} — stop and report rather than "
             "blending mixed revisions into one bundle (D1)"
+            + _also_differs_suffix(differences)
         )
-    if observed != replace(frozen, granule_revision=observed.granule_revision):
+    if differences:
         raise ImergReadContractError(
             "observed subset read contract differs from the frozen one on a "
-            "field other than revision (D1) — refusing to blend"
+            "field other than revision (D1) — refusing to blend: "
+            + "; ".join(differences)
         )
 
 
@@ -1140,6 +1440,40 @@ def parse_retry_after(raw: str | None) -> float | None:
     return max(seconds, 0.0)
 
 
+#: 🔴 The ENUMERATED permanent 4xx statuses (2026-09-02, Codex review).
+#:
+#: ⭐ THE RULE, so a future reader can classify a NEW status without guessing:
+#: a status belongs here iff the request CANNOT SUCCEED UNLESS THE REQUEST
+#: ITSELF CHANGES. Re-issuing identical bytes can only reproduce it — no
+#: amount of waiting helps. If waiting, or a server-side change, could clear
+#: it, it does NOT belong here.
+#:   400 Bad Request         — malformed syntax (Plan 225 D4 MEASURED exactly
+#:                             this for a `/Grid/precipitation` constraint)
+#:   405 Method Not Allowed  — the method is wrong for the resource
+#:   410 Gone                — the resource is permanently absent
+#:   411 Length Required     — an unchanged retry cannot add `Content-Length`
+#:   414 URI Too Long        — the URI itself is over the server's limit
+#:   415 Unsupported Media   — an unchanged retry cannot change media type
+#:   417 Expectation Failed  — an unchanged retry cannot drop its `Expect`
+#:   422 Unprocessable       — well-formed but semantically rejected
+#:   426 Upgrade Required    — an unchanged retry cannot switch protocol
+#:   428 Precondition Req'd  — an unchanged retry cannot add a precondition
+#:   431 Headers Too Large   — the request headers are over the limit
+#: (RFC 9110 §15.5.x; 428 and 431 are RFC 6585 §§3-5.)
+#:
+#: ⛔ NOT "all 4xx except a listed few". That shape FAILS UNSAFELY: any status
+#: nobody thought of — 409 Conflict and 423 Locked both resolve without the
+#: request changing — would be called permanent and STOP a 30-hour run. The
+#: default therefore falls through to RETRYABLE. Failing toward "retry" wastes
+#: time; failing toward "permanent" throws away the job.
+#: (401/403/404/429 never reach this set — they are classified above it.)
+_PERMANENT_CLIENT_STATUSES: frozenset[int] = frozenset(
+    {400, 405, 410, 411, 414, 415, 417, 422, 426, 428, 431}
+)
+_CLIENT_ERROR_FLOOR = 400
+_SERVER_ERROR_FLOOR = 500
+
+
 def _raise_for_http_status(
     status: int, *, url: str, retry_after: str | None = None
 ) -> None:
@@ -1162,8 +1496,24 @@ def _raise_for_http_status(
             f"{url} returned 429 (rate limited)",
             retry_after_seconds=parse_retry_after(retry_after),
         )
-    if status >= 500:  # noqa: PLR2004 - HTTP status literal
+    if status in _PERMANENT_CLIENT_STATUSES:
+        # ⛔ ABOVE the generic tail: these statuses describe a request that is
+        # itself wrong, so re-issuing the identical request can only reproduce
+        # them. Plan 225 D4 MEASURED such a 400 (a `/Grid/precipitation`
+        # constraint OPeNDAP flattens away).
+        raise ImergPermanentRequestError(
+            f"{url} returned status {status}, which retrying cannot repair"
+        )
+    if status >= _SERVER_ERROR_FLOOR:
         raise ImergTransientError(f"{url} returned status {status}")
+    if _CLIENT_ERROR_FLOOR <= status < _SERVER_ERROR_FLOOR:
+        # 🔴 The UNLISTED 4xx default is RETRYABLE, not permanent: 408 Request
+        # Timeout, 409 Conflict, 423 Locked and 425 Too Early can all clear
+        # without the request changing. Exit 3 — the supervisor may try again.
+        raise ImergRequestFailedError(
+            f"{url} returned status {status}, which is not permanent by "
+            "construction — a later attempt may succeed"
+        )
     if status != 200:  # noqa: PLR2004 - HTTP status literal
         raise ImergRequestFailedError(f"{url} returned unexpected status {status}")
 
@@ -1419,7 +1769,27 @@ class RequestPacer:
             self.requests_issued += 1
 
     def run(self, issue: Callable[[], _PacedResult]) -> _PacedResult:
-        """Issue one logical request, paced and retried."""
+        """Issue one logical request, paced and retried.
+
+        ⚠️ RECORDED, not changed (2026-09-02, confirming Codex round) — the
+        loop retries `ImergTransientError` and NOTHING else. So the two senses
+        of "retryable" in this module are NOT the same set:
+
+        * IN-RUN retryable = `ImergTransientError` (transport faults, 5xx, and
+          429 through `ImergRateLimitedError`). Only these get another attempt
+          here.
+        * SUPERVISOR retryable = every error the CLI maps to exit 3. That is a
+          strictly LARGER set: an unlisted 4xx (408, 409, 423, 425) and a
+          malformed artifact both abort the current run after ONE attempt and
+          exit 3, telling the external supervisor it may re-run the window.
+
+        Wherever a comment in this module calls an error "retryable" without
+        qualification it means the SECOND sense — the exit-code contract — and
+        exit 3 is correct for those cases precisely because the window runner
+        resumes from banked granules, so a re-run costs the failed granule
+        rather than the run. ⛔ Do not widen this `except` to close the gap:
+        the in-run loop is a POLITENESS mechanism bounded by `max_attempts`,
+        not a general recovery layer."""
         last: ImergTransientError | None = None
         for attempt in range(1, self._max_attempts + 1):
             self._take_slot()
@@ -1503,19 +1873,44 @@ def _validate_subset_artifact(
     except ImergReadContractError:
         raise
     except OSError as exc:
-        raise ImergReadContractError(
+        # 🔴 RETRYABLE (2026-09-02, Codex review). These bytes are not a granule
+        # at all — a truncated body or an HTTP-200 login page — and this raise
+        # sits AFTER the network retry unit has completed, so nothing has yet
+        # had a chance to re-download them. Typing it as the permanent parent
+        # would turn one transient truncation into a hard abort of a 30-hour
+        # window run. ⛔ Stable archive drift reads cleanly and fails in
+        # `assert_*_contract_consistent` instead; THAT is the permanent case.
+        raise ImergMalformedArtifactError(
             f"subset artifact {path} could not be opened as HDF5/NetCDF4 (D1): {exc}"
         ) from exc
-    except (KeyError, ValueError) as exc:
+    except KeyError as exc:
         # (fixer round 3, finding MINOR 1) — a BACKSTOP behind the parser's own
-        # typed translation: a file that OPENS as HDF5 but is missing a
-        # variable or attribute the contract needs must still reach the
-        # validate-and-reuse recovery path, which catches only the typed
-        # hierarchy. ⛔ Not a bare `except Exception`: only the two shapes a
-        # malformed-but-openable file can produce.
+        # typed translation: a file that OPENS as HDF5 but is missing a name
+        # the contract needs must still reach the validate-and-reuse recovery
+        # path, which catches only the typed hierarchy. ⛔ Not a bare
+        # `except Exception`.
+        # RETRYABLE, like the `OSError` branch: a name the parser did NOT
+        # anticipate being absent is as consistent with a partially-written
+        # body as with a product change, and the ambiguous case must fail
+        # toward retry — the contract-required names are already typed
+        # PERMANENT by the parser itself, so nothing stable lands here.
+        raise ImergMalformedArtifactError(
+            f"subset artifact {path} opened but is missing a name the D1 "
+            f"subset contract requires (D1): {exc!r}"
+        ) from exc
+    except ValueError as exc:
+        # 🔴 PERMANENT (2026-09-02, confirming Codex round). A `ValueError`
+        # means the file OPENED and a value READ — a `float(...)` on a
+        # non-numeric `scale_factor`, say — and was wrong. Re-downloading
+        # identical bytes cannot repair a stable schema violation, so calling
+        # this retryable would retry for ever: the exact waste the exit split
+        # exists to remove, in the other direction. ⛔ The distinction is drawn
+        # at the RAISING SITES (`_optional_numeric_attr`, `_attr_scalar_float`,
+        # `subset_global_bounds`); this is only the untyped residue, and it
+        # inherits the same verdict.
         raise ImergReadContractError(
-            f"subset artifact {path} opened but does not carry the D1 subset "
-            f"contract's structure (D1): {exc!r}"
+            f"subset artifact {path} opened cleanly but a value it carries is "
+            f"not what the D1 subset contract requires (D1): {exc!r}"
         ) from exc
 
 
@@ -2514,13 +2909,13 @@ def granule_starts_between(start: datetime, end: datetime) -> list[datetime]:
     exactly what its caller stated, so a trial day can never quietly become a
     window."""
     if not granule_start_in_window(start) or not granule_start_in_window(end):
-        raise ImergRequestFailedError(
+        raise ImergInvalidRequestError(
             f"[{start.isoformat()}, {end.isoformat()}] is not a half-hour "
             f"aligned UTC range inside the pinned D5 window "
             f"[{FIRST_GRANULE_START.isoformat()}, {LAST_GRANULE_START.isoformat()}]"
         )
     if start > end:
-        raise ImergRequestFailedError(
+        raise ImergInvalidRequestError(
             f"granule window start {start.isoformat()} is after its end "
             f"{end.isoformat()}"
         )
@@ -2716,7 +3111,7 @@ def retrieve_subset_window(
     exception leaves the pool: the abort is bounded by a day, not by a
     granule. Everything after that day is never attempted."""
     if workers < 1:
-        raise ImergRequestFailedError(
+        raise ImergInvalidRequestError(
             f"workers must be at least 1, got {workers} — a run with no worker "
             "would issue no request at all"
         )
@@ -3009,9 +3404,39 @@ def _nearest_existing_ancestor(path: Path) -> Path:
 #: Ordered subclass-first, mirroring `imerg_extract._EXIT_BY_ERROR`: the
 #: per-subclass exit codes the error docstrings promise are HONORED, not
 #: merely documented. A raw `OSError` never reaches the typed hierarchy.
+#:
+#: ⚠️ (2026-09-02) — exit **6 means PERMANENT: do not retry**. A supervising
+#: loop cannot read exit 3 that way, because 3 is the WHOLE
+#: `ImergAcquisitionError` family and MEASURED over one 308-attempt run it
+#: covered a frozen-contract violation (permanent), an out-of-window bound
+#: (permanent) AND an `ImergRetriesExhaustedError` (genuinely transient — a
+#: re-run of that same day succeeded). A retry loop that treated 3 as fatal
+#: would stop on a recoverable failure; one that treated it as transient burned
+#: 200 attempts x 60 s on a contract violation. ⇒ The PERMANENT classes get
+#: their own code and 3 keeps its meaning unchanged for everything else.
+#:
+#: ⚠️ "Retryable" HERE means retryable BY THE EXTERNAL SUPERVISOR — a re-run of
+#: the CLI — not by `RequestPacer.run`, whose in-run loop retries only
+#: `ImergTransientError`. See that method's docstring: the two sets differ, and
+#: exit 3 is the right answer for both because a re-run resumes from the banked
+#: granules rather than restarting the window.
+#:
+#: 🔴 The split is by REPAIRABILITY, not by class family, and BOTH directions
+#: matter. `ImergMalformedArtifactError` is a contract failure a re-download
+#: CAN repair, so it stays 3 even though its parent is 6 — otherwise ONE
+#: truncated HTTP-200 body would permanently abort a 30-hour window run, which
+#: is worse than the retry waste this split exists to stop.
+#: `ImergPermanentRequestError` is a request failure NO retry can repair (the
+#: OPeNDAP 400 of Plan 225 D4), so it is 6 even though its parent is 3.
 _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (ImergCredentialsError, 2),
     (ImergStorageError, 5),
+    # ⛔ STRICTLY BEFORE its parent: unreadable bytes are the one contract
+    # failure a re-download CAN repair, so they keep the retryable 3.
+    (ImergMalformedArtifactError, 3),
+    (ImergReadContractError, 6),
+    # covers `ImergInvalidRequestError`, its caller-argument subclass.
+    (ImergPermanentRequestError, 6),
     (ImergAcquisitionError, 3),
     (OSError, 5),
 )

@@ -8,6 +8,7 @@ risk note in `imerg_acquire.py`; it is not repeated here.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import pathlib
 import threading
@@ -119,6 +120,26 @@ def _contract_kwargs() -> dict[str, Any]:
         "grid_spacing_deg": 0.1,
         "file_header_product_version": "07B",
     }
+
+
+#: MEASURED, not guessed: of the 27 (field, value) perturbations the archive
+#: equivalence sweep builds, `ImergReadContract.__post_init__` refuses 7 (a
+#: wrong variable path, dimension order, registration, units, fill value, grid
+#: shape, or a short lon vector) before any comparator sees them. The remaining
+#: 20 are the cases that actually exercise the verdict — asserted EXACTLY, so a
+#: case that stops reaching the comparator cannot hide behind a `>=`.
+_ARCHIVE_PERTURBATIONS_THAT_REACH_THE_COMPARATOR = 20
+
+
+def _kwargs_with(**overrides: Any) -> dict[str, Any]:
+    """`_contract_kwargs()` with exactly the given fields replaced — the
+    archive-route mirror of `_subset_kwargs_with`, and for the same reason:
+    an inline `{**kwargs, "field": value}` merge makes pyright widen the
+    result per-key and every spread keyword then reports a spurious
+    `Any | <literal>` mismatch."""
+    merged = dict(_contract_kwargs())
+    merged.update(overrides)
+    return merged
 
 
 def _reference_read_contract() -> dict[str, object]:
@@ -1369,6 +1390,7 @@ def _write_fake_subset_granule(
     lon_count: int = 90,
     grid_header: bytes | None = None,
     omit_grid_header: bool = False,
+    product_version: str = "V07B",
 ) -> None:
     """The MEASURED subset shape: root-level `/precipitation`, `/lat`,
     `/lon` (no `/Grid` group — OPeNDAP flattens it), a 1-element-array
@@ -1394,7 +1416,7 @@ def _write_fake_subset_granule(
     with h5py.File(path, "w") as f:
         f.attrs["FileHeader"] = (
             f"FileName={archive_filename.removesuffix('.HDF5')}.RT-H5;\n"
-            "AlgorithmVersion=3IMERGHH;\nProductVersion=V07B;\n"
+            f"AlgorithmVersion=3IMERGHH;\nProductVersion={product_version};\n"
         ).encode()
         if not omit_grid_header:
             f.attrs["Grid.GridHeader"] = (
@@ -1730,6 +1752,593 @@ class TestSubsetContractConsistency:
         )
         with pytest.raises(ia.ImergReadContractError, match="other than revision"):
             ia.assert_subset_contract_consistent(observed, frozen=frozen)
+
+
+class TestProductVersionComparisonTolerance:
+    """(2026-09-02, locking) — MEASURED across the banked window: NASA writes
+    `FileHeader.ProductVersion` as `V07B` up to 2024-05 and as `07B` from
+    2024-06, while every other contract field and the authoritative
+    filename-derived `granule_revision` (`V07B` on both sides) are unchanged.
+    A full-window run froze on a 2020 granule and aborted at 2024-06-02 on
+    that ONE cosmetic character.
+
+    ⛔ Both halves are locked here: the `V` prefix is tolerated, and a REAL
+    version change still trips the gate."""
+
+    def test_the_normaliser_removes_exactly_one_leading_v(self) -> None:
+        assert ia.product_version_for_comparison("V07B") == "07B"
+        assert ia.product_version_for_comparison("07B") == "07B"
+        # ⛔ ONE `V`, and only a LEADING one: nothing else is absorbed.
+        assert ia.product_version_for_comparison("VV07B") == "V07B"
+        assert ia.product_version_for_comparison("07BV") == "07BV"
+        assert ia.product_version_for_comparison("07C") == "07C"
+
+    def test_a_dropped_v_prefix_compares_equal_on_the_subset_route(self) -> None:
+        frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B",
+            **_subset_kwargs_with(file_header_product_version="V07B"),
+        )
+        observed = ia.ImergSubsetReadContract(
+            granule_revision="V07B",
+            **_subset_kwargs_with(file_header_product_version="07B"),
+        )
+        ia.assert_subset_contract_consistent(observed, frozen=frozen)
+
+    def test_the_archive_route_does_not_tolerate_the_prefix(self) -> None:
+        """🔴 SCOPE LOCK (2026-09-02, Codex review). Plan 225's hazard section
+        says in as many words "Do NOT relax, parameterise or share the existing
+        contract", and the MEASURED boundary is a SUBSET-route observation —
+        only ONE archive granule (2020-07) is banked, so tolerating it there
+        would be REASONED, not sampled.
+
+        ⛔ This test exists to FAIL if anyone widens the tolerance to the
+        archive comparator. The archive route's own exposure is recorded as a
+        known gap in `docs/design/dhm-precipitation-milestones.md`; it is NOT
+        fixed here."""
+        frozen = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version="V07B"),
+        )
+        observed = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version="07B"),
+        )
+        with pytest.raises(
+            ia.ImergReadContractError, match="file_header_product_version"
+        ):
+            ia.assert_contract_consistent(observed, frozen=frozen)
+
+    @pytest.mark.parametrize("frozen_product_version", ["07B", "V07B"])
+    def test_the_archive_comparator_accepts_exactly_what_it_used_to(
+        self, frozen_product_version: str
+    ) -> None:
+        """🔴 The SCOPE LOCK stated as an equivalence, not as one example.
+
+        Perturb EVERY field of `ImergReadContract` (both ways where the field
+        has a tolerated spelling) and require the comparator's verdict to match
+        the whole-dataclass `observed != replace(frozen, granule_revision=...)`
+        it replaced — the exact expression at `b7ae5543^`. ⛔ If anyone widens
+        the archive route by ANY field, this diverges. Cases the contract's own
+        `__post_init__` refuses are skipped: they can never reach a comparator.
+
+        ⚠️ Run against BOTH spellings of the FROZEN side's product version
+        (2026-09-02, confirming Codex round): with the frozen side pinned to
+        one spelling the sweep only ever asked "does the observed V-prefix
+        differ from a bare frozen one", never the mirror image.
+
+        (Since this round the production verdict IS that expression, so the
+        equivalence is true by construction — this sweep is the guard against
+        anyone reintroducing a second predicate.)"""
+        frozen = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version=frozen_product_version),
+        )
+        lat: tuple[float, ...] = _contract_kwargs()["lat_vector"]
+        lon: tuple[float, ...] = _contract_kwargs()["lon_vector"]
+        perturbations: dict[str, list[Any]] = {
+            "hdf5_variable_path": ["/Grid/precip", ia.HDF5_VARIABLE_PATH],
+            "dimension_names": [("time", "lat", "lon"), ("time", "lon", "lat")],
+            "coordinate_registration": ["CORNER", "CENTER"],
+            "longitude_convention": ["UNSIGNED_360", "SIGNED_180"],
+            "units": ["mm/day", "mm/hr"],
+            "fill_value": [-9999.0, -9999.9],
+            "grid_shape": [(1, 3600, 1801), ia.EXPECTED_GRID_SHAPE],
+            "lat_vector": [(lat[0] + 1e-9, *lat[1:]), lat],
+            "lon_vector": [lon[:-1], lon],
+            "grid_spacing_deg": [0.2, 0.1],
+            # 🔴 THE field the SUBSET route tolerates. The archive route must
+            # treat every one of these spellings exactly as it always has.
+            "file_header_product_version": ["V07B", "07B", "07C", "V07C", " 07B "],
+            "granule_revision": ["V07C", "V07B"],
+        }
+        assert {f.name for f in dataclasses.fields(ia.ImergReadContract)} == set(
+            perturbations
+        ), "a new contract field must be perturbed here too"
+
+        def old_accepts(observed: ia.ImergReadContract) -> bool:
+            if observed.granule_revision != frozen.granule_revision:
+                return False
+            return observed == dataclasses.replace(
+                frozen, granule_revision=observed.granule_revision
+            )
+
+        def new_accepts(observed: ia.ImergReadContract) -> bool:
+            try:
+                ia.assert_contract_consistent(observed, frozen=frozen)
+            except ia.ImergReadContractError:
+                return False
+            return True
+
+        reached = 0
+        reached_fields: set[str] = set()
+        for name, values in perturbations.items():
+            for value in values:
+                revision = value if name == "granule_revision" else "V07B"
+                kwargs = (
+                    _kwargs_with(file_header_product_version=frozen_product_version)
+                    if name == "granule_revision"
+                    else _kwargs_with(**{name: value})
+                )
+                try:
+                    observed = ia.ImergReadContract(granule_revision=revision, **kwargs)
+                except ia.ImergReadContractError:
+                    continue  # __post_init__ refuses it: no comparator involved
+                reached += 1
+                reached_fields.add(name)
+                assert new_accepts(observed) == old_accepts(observed), (
+                    f"{name}={value!r} changed the archive comparator's verdict"
+                )
+        # ⛔ EXACT, not `>=` (2026-09-02, confirming Codex round): `>= 20` was
+        # satisfied by 20 of 26 cases, so six could silently stop reaching the
+        # comparator without the sweep noticing.
+        assert reached_fields == set(perturbations)
+        assert reached == _ARCHIVE_PERTURBATIONS_THAT_REACH_THE_COMPARATOR
+
+    def test_a_subclass_instance_is_refused_by_both_comparators(self) -> None:
+        """🔴 THE reason the archive verdict is the whole-dataclass expression
+        and not the field loop (2026-09-02, confirming Codex round).
+
+        A dataclass `==` also requires the SAME concrete class, so the old
+        expression rejects a subclass whose every field matches; a field-by-
+        field loop accepts it. A subclass IS valid at the annotated interface,
+        so that was a real widening. Both routes must refuse it — the archive
+        by construction, the subset by an explicit type check (it cannot use
+        `==`, because its tolerance needs a per-field seam)."""
+
+        class _WidenedArchiveContract(ia.ImergReadContract):
+            pass
+
+        class _WidenedSubsetContract(ia.ImergSubsetReadContract):
+            pass
+
+        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        twin = _WidenedArchiveContract(granule_revision="V07B", **_contract_kwargs())
+        # every field agrees ...
+        assert ia.contract_field_differences(twin, frozen) == ()
+        # ... and it is refused anyway, naming the two concrete types.
+        with pytest.raises(ia.ImergReadContractError, match="_WidenedArchiveContract"):
+            ia.assert_contract_consistent(twin, frozen=frozen)
+
+        subset_frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        subset_twin = _WidenedSubsetContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        assert ia.contract_field_differences(subset_twin, subset_frozen) == ()
+        with pytest.raises(ia.ImergReadContractError, match="_WidenedSubsetContract"):
+            ia.assert_subset_contract_consistent(subset_twin, frozen=subset_frozen)
+
+    def test_a_subclass_that_adds_a_field_still_raises_the_typed_error(
+        self,
+    ) -> None:
+        """🔴 THE REGRESSION THIS ROUND INTRODUCED, locked (2026-09-02, final
+        Codex round). Making the whole-dataclass expression the verdict was
+        right; building the MESSAGE first was not. The field loop walked
+        `fields(observed)`, so a subclass carrying an EXTRA field read that
+        field off the BASE frozen object and raised a bare `AttributeError`
+        out of the formatter — replacing the typed `ImergReadContractError`
+        the exit table (code 6) and every caller are written against.
+
+        ⛔ Acceptance was never loosened by that bug; the FAILURE CONTRACT
+        was, which is exactly the kind of regression a green strictness test
+        cannot see. Both the comparator and the formatter are locked here."""
+
+        @dataclass(frozen=True, kw_only=True, slots=True)
+        class _ExtraFieldArchiveContract(ia.ImergReadContract):
+            extra_field: str = "a field the frozen contract has never had"
+
+        @dataclass(frozen=True, kw_only=True, slots=True)
+        class _ExtraFieldSubsetContract(ia.ImergSubsetReadContract):
+            extra_field: str = "a field the frozen contract has never had"
+
+        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        observed = _ExtraFieldArchiveContract(
+            granule_revision="V07B", **_contract_kwargs()
+        )
+        with pytest.raises(ia.ImergReadContractError) as excinfo:
+            ia.assert_contract_consistent(observed, frozen=frozen)
+        # the asymmetric field is NAMED, not crashed on
+        assert "extra_field" in str(excinfo.value)
+
+        # ⛔ The formatter alone is asymmetry-safe in BOTH directions: the
+        # extra field may sit on either operand, and neither may raise.
+        assert ia.contract_field_differences(observed, frozen) != ()
+        assert ia.contract_field_differences(frozen, observed) != ()
+
+        # The subset comparator NEVER shared the hazard — its explicit
+        # `type(...) is not type(...)` guard returns the typed error before the
+        # formatter is reached — and that ordering is locked here too.
+        subset_frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        subset_observed = _ExtraFieldSubsetContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        with pytest.raises(
+            ia.ImergReadContractError, match="_ExtraFieldSubsetContract"
+        ):
+            ia.assert_subset_contract_consistent(subset_observed, frozen=subset_frozen)
+
+    def test_the_tolerance_table_names_the_subset_route_only(self) -> None:
+        """⛔ The table is the single place the tolerated field is named, and
+        it is reachable ONLY from the subset comparator."""
+        assert set(ia._SUBSET_CONTRACT_TOLERATED_FIELDS) == {
+            "file_header_product_version"
+        }
+        # strict by construction: the shared formatter tolerates nothing unless
+        # a route opts in.
+        frozen = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version="V07B"),
+        )
+        observed = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version="07B"),
+        )
+        assert ia.contract_field_differences(observed, frozen) != ()
+        assert (
+            ia.contract_field_differences(
+                observed,
+                frozen,
+                tolerated=ia._SUBSET_CONTRACT_TOLERATED_FIELDS,
+            )
+            == ()
+        )
+
+    @pytest.mark.parametrize(
+        ("frozen_version", "observed_version"),
+        [("07B", "07C"), ("V07B", "V07C"), ("V07B", "07C"), ("07B", "V07C")],
+    )
+    def test_a_real_product_version_change_still_raises(
+        self, frozen_version: str, observed_version: str
+    ) -> None:
+        """🔴 Plan 211's own probe MEASURED a live `V07C` drift, so this is not
+        hypothetical: the tolerance must absorb the prefix and NOTHING else."""
+        frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B",
+            **_subset_kwargs_with(file_header_product_version=frozen_version),
+        )
+        observed = ia.ImergSubsetReadContract(
+            granule_revision="V07B",
+            **_subset_kwargs_with(file_header_product_version=observed_version),
+        )
+        with pytest.raises(
+            ia.ImergReadContractError, match="file_header_product_version"
+        ):
+            ia.assert_subset_contract_consistent(observed, frozen=frozen)
+
+    def test_a_real_product_version_change_still_raises_on_the_archive_route(
+        self,
+    ) -> None:
+        frozen = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version="V07B"),
+        )
+        observed = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version="07C"),
+        )
+        with pytest.raises(
+            ia.ImergReadContractError, match="file_header_product_version"
+        ):
+            ia.assert_contract_consistent(observed, frozen=frozen)
+
+    def test_the_observed_product_version_is_recorded_verbatim(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ The tolerance is a COMPARISON rule, never a parse rule. The
+        observed string is identity-bearing — it enters the acquisition
+        manifest and therefore the digest — and it is the evidence NASA
+        changed the string, so it is stored exactly as read."""
+        for product_version in ("V07B", "07B"):
+            path = tmp_path / f"subset-{product_version}.dap.nc4"
+            _write_fake_subset_granule(
+                path,
+                archive_filename=_ARCHIVE_FILENAME,
+                product_version=product_version,
+            )
+            contract = ia.observe_subset_read_contract(
+                path, archive_filename=_ARCHIVE_FILENAME
+            )
+            assert contract.file_header_product_version == product_version
+            assert contract.granule_revision == "V07B"
+            assert (
+                contract.as_manifest_dict()["file_header_product_version"]
+                == product_version
+            )
+
+
+class TestContractDifferenceMessage:
+    """(2026-09-02, locking) — the whole-dataclass `observed != replace(...)`
+    comparison said only that SOMETHING differed, which cost hours of
+    bisecting granules to find a one-field, cosmetic difference. ⇒ The message
+    must NAME every offending field and show BOTH values."""
+
+    def test_the_message_names_the_offending_field_and_both_values(self) -> None:
+        frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B",
+            **_subset_kwargs_with(file_header_product_version="V07B"),
+        )
+        observed = ia.ImergSubsetReadContract(
+            granule_revision="V07B",
+            **_subset_kwargs_with(file_header_product_version="07C"),
+        )
+        with pytest.raises(ia.ImergReadContractError) as excinfo:
+            ia.assert_subset_contract_consistent(observed, frozen=frozen)
+        message = str(excinfo.value)
+        assert "file_header_product_version" in message
+        assert "observed='07C'" in message
+        assert "frozen='V07B'" in message
+
+    def test_every_differing_field_is_named_not_only_the_first(self) -> None:
+        """⛔ Two fields differ; naming only the first would still leave the
+        reader bisecting for the second."""
+        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        observed = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(grid_spacing_deg=0.2, file_header_product_version="07C"),
+        )
+        with pytest.raises(ia.ImergReadContractError) as excinfo:
+            ia.assert_contract_consistent(observed, frozen=frozen)
+        message = str(excinfo.value)
+        assert "grid_spacing_deg: observed=0.2 frozen=0.1" in message
+        assert "file_header_product_version: observed='07C' frozen='07B'" in message
+
+    def test_a_revision_mismatch_also_reports_the_other_differing_fields(
+        self,
+    ) -> None:
+        """🔴 (2026-09-02, Codex review) — the revision check fires FIRST, so
+        before this the other differences were computed nowhere and silently
+        dropped: "every differing field is named" was untrue in exactly the
+        case with the most to say. Nothing was ever wrongly ACCEPTED — but the
+        reader was sent bisecting again."""
+        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        observed = ia.ImergReadContract(
+            granule_revision="V07C", **_kwargs_with(grid_spacing_deg=0.2)
+        )
+        with pytest.raises(ia.ImergReadContractError) as excinfo:
+            ia.assert_contract_consistent(observed, frozen=frozen)
+        message = str(excinfo.value)
+        assert "granule revision 'V07C'" in message
+        assert "grid_spacing_deg: observed=0.2 frozen=0.1" in message
+
+    def test_a_subset_revision_mismatch_also_reports_the_other_fields(self) -> None:
+        frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        observed = ia.ImergSubsetReadContract(
+            granule_revision="V07C",
+            **_subset_kwargs_with(file_header_product_version="07C"),
+        )
+        with pytest.raises(ia.ImergReadContractError) as excinfo:
+            ia.assert_subset_contract_consistent(observed, frozen=frozen)
+        message = str(excinfo.value)
+        assert "subset granule revision 'V07C'" in message
+        assert "file_header_product_version: observed='07C'" in message
+
+    def test_a_differing_coordinate_vector_is_named_and_truncated(self) -> None:
+        """⛔ Named, but not dumped: the archive vectors run to 3600 floats."""
+        lat: tuple[float, ...] = _contract_kwargs()["lat_vector"]
+        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        observed = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(lat_vector=(lat[0] + 1e-9, *lat[1:])),
+        )
+        with pytest.raises(ia.ImergReadContractError) as excinfo:
+            ia.assert_contract_consistent(observed, frozen=frozen)
+        message = str(excinfo.value)
+        assert "lat_vector" in message
+        assert "more..." in message
+        # ⛔ 1800 floats twice over would bury the field name it just reported.
+        assert len(message) < 1000
+        assert repr(lat[0]) in message
+
+
+class TestExitCodeSeparatesPermanentFromTransient:
+    """(2026-09-02, locking) — a supervising retry loop MUST be able to tell a
+    permanent failure from a transient one FROM THE EXIT CODE. Exit 3 cannot
+    carry that: measured over one 308-attempt run it covered a frozen-contract
+    violation and an out-of-window bound (both permanent — 307 attempts burned
+    at 60 s each) AND an `ImergRetriesExhaustedError` (transient; the re-run
+    succeeded). ⇒ The two PERMANENT classes exit 6; everything else keeps 3.
+
+    ⛔ Every case is driven through `main()`, so it locks the code the
+    SUPERVISOR actually observes, not an internal mapping table."""
+
+    def test_a_transient_listing_exhaustion_keeps_exit_three(
+        self, tmp_path: Path
+    ) -> None:
+        """🔴 The case that forbids simply treating 3 as fatal: this failure IS
+        worth another attempt, and the supervisor must still make it."""
+
+        class AlwaysTransientClient:
+            def list_directory(self, url: str) -> str:
+                raise ia.ImergTransientError(f"connection reset for {url}")
+
+            def download_to_path(self, *, url: str, target: Path) -> None:
+                raise AssertionError("never reached")
+
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        exit_code = ia.main(
+            [
+                "--data-root",
+                str(tmp_path / "data_root"),
+                "--subset-window-start",
+                starts[0].isoformat(),
+                "--subset-window-end",
+                starts[-1].isoformat(),
+                "--request-interval-seconds",
+                "0",
+            ],
+            client=AlwaysTransientClient(),
+            subset_client=FakeSubsetWindowClient(content_by_url={}),
+            clock=_clock,
+            sleep=_sleep,
+        )
+        assert exit_code == 3  # noqa: PLR2004
+
+    def test_a_malformed_fresh_download_stays_retryable(self, tmp_path: Path) -> None:
+        """🔴 THE REGRESSION GUARD (2026-09-02, Codex review). A truncated body
+        or an HTTP-200 login page is converted into a read-contract error
+        AFTER the network retry unit has already finished, so nothing has yet
+        re-downloaded it — and a re-download is exactly what repairs it.
+        Classing it permanent would abort a 30-hour run outright on ONE
+        transient truncation: strictly worse than the retry waste the exit
+        split exists to stop.
+
+        ⛔ Fatal to THIS run either way — the run still stops at a
+        deterministic granule — but the SUPERVISOR is told it may try again."""
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        subset_client = FakeSubsetWindowClient(
+            content_by_url={
+                ia.subset_granule_url(archive_filename=_archive_name(s), start=s): (
+                    b"HTTP/1.1 200 OK -- Earthdata Login -- not HDF5 at all"
+                )
+                for s in starts
+            }
+        )
+        exit_code = ia.main(
+            [
+                "--data-root",
+                str(tmp_path / "data_root"),
+                "--subset-window-start",
+                starts[0].isoformat(),
+                "--subset-window-end",
+                starts[-1].isoformat(),
+                "--request-interval-seconds",
+                "0",
+            ],
+            client=_listing_client(starts),
+            subset_client=subset_client,
+            clock=_clock,
+            sleep=_sleep,
+        )
+        assert exit_code == 3  # noqa: PLR2004
+
+    def test_a_permanent_http_400_exits_six(self, tmp_path: Path) -> None:
+        """🔴 The other direction (2026-09-02, Codex review): a malformed
+        OPeNDAP `dap4.ce` constraint answers HTTP 400, which NO retry can fix —
+        Plan 225 D4 MEASURED exactly that 400 for `/Grid/precipitation`. It
+        used to raise the mixed parent and report the retryable 3.
+
+        ⛔ Driven through the REAL status ladder, not by raising the new type
+        directly, so it locks the CLASSIFICATION and not just the mapping."""
+
+        class FourHundredSubsetClient:
+            def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+                ia._raise_for_http_status(400, url=url)
+                raise AssertionError("unreachable")
+
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        exit_code = ia.main(
+            [
+                "--data-root",
+                str(tmp_path / "data_root"),
+                "--subset-window-start",
+                starts[0].isoformat(),
+                "--subset-window-end",
+                starts[-1].isoformat(),
+                "--request-interval-seconds",
+                "0",
+            ],
+            client=_listing_client(starts),
+            subset_client=FourHundredSubsetClient(),
+            clock=_clock,
+            sleep=_sleep,
+        )
+        assert exit_code == 6  # noqa: PLR2004
+
+    def test_the_status_ladder_enumerates_permanent_4xx_and_retries_the_rest(
+        self,
+    ) -> None:
+        """🔴 INVERTED (2026-09-02, confirming Codex round). The branch used to
+        read "every 4xx EXCEPT a listed few is permanent", which fails
+        UNSAFELY: 409 Conflict and 423 Locked both clear without the request
+        changing, yet exit 6 tells a supervisor to STOP a 30-hour run. ⇒
+        Permanence is now ENUMERATED and everything unlisted falls through to
+        retryable.
+
+        ⛔ Swept across the WHOLE 4xx block with NO UNASSERTED GAPS
+        (2026-09-02, final Codex round). The sweep used to `continue` past
+        401/403/404/429 and assert them afterwards by TYPE only — 403 not at
+        all — so the four statuses with the most consequential codes (2 =
+        credentials, halt and fix the login) were the four the exit-code
+        assertion never covered. Every status in 400-499 now asserts both the
+        type and the exit code."""
+        # status -> (type it must raise, exit code that type must map to)
+        classified_above_this_branch: dict[int, tuple[type[Exception], int]] = {
+            401: (ia.ImergCredentialsError, 2),
+            403: (ia.ImergCredentialsError, 2),
+            404: (ia.ImergGranuleMissingError, 3),
+            429: (ia.ImergRateLimitedError, 3),
+        }
+        for status in range(400, 500):
+            special = classified_above_this_branch.get(status)
+            if special is not None:
+                expected_type, expected_exit = special
+                with pytest.raises(expected_type) as above:
+                    ia._raise_for_http_status(status, url="https://gpm1/x")
+                # ⛔ never permanent: each of these can clear without the
+                # request changing (fixed credentials, a published granule, a
+                # lifted throttle), so none may reach the halt-the-run 6.
+                assert not isinstance(above.value, ia.ImergPermanentRequestError), (
+                    status
+                )
+                assert ia._exit_code_for(above.value) == expected_exit, status
+                continue
+            with pytest.raises(ia.ImergRequestFailedError) as excinfo:
+                ia._raise_for_http_status(status, url="https://gpm1/x")
+            permanent = isinstance(excinfo.value, ia.ImergPermanentRequestError)
+            assert permanent is (status in ia._PERMANENT_CLIENT_STATUSES), status
+            # the classification IS the supervisor contract, so assert the code
+            assert ia._exit_code_for(excinfo.value) == (6 if permanent else 3), status
+        # Named on both sides too, so the sweep cannot pass vacuously. Each
+        # listed status CANNOT succeed unless the request itself changes;
+        # each excluded one can clear with the identical bytes re-sent.
+        assert {400, 405, 410, 411, 414, 415, 417, 422, 426, 428, 431} == set(
+            ia._PERMANENT_CLIENT_STATUSES
+        )
+        assert ia._PERMANENT_CLIENT_STATUSES.isdisjoint(
+            {401, 403, 404, 408, 409, 423, 425, 429}
+        )
+        with pytest.raises(ia.ImergTransientError):
+            ia._raise_for_http_status(503, url="https://gpm1/x")
+
+    def test_the_permanent_and_retryable_classes_sit_where_the_codes_need_them(
+        self,
+    ) -> None:
+        """The two inversions the exit table depends on, stated as contracts:
+        a repairable contract failure is a `ImergReadContractError` that must
+        still exit 3, and an unrepairable request failure is a
+        `ImergRequestFailedError` that must exit 6."""
+        assert issubclass(ia.ImergMalformedArtifactError, ia.ImergReadContractError)
+        assert issubclass(ia.ImergInvalidRequestError, ia.ImergPermanentRequestError)
+        assert issubclass(ia.ImergPermanentRequestError, ia.ImergRequestFailedError)
+        assert ia._exit_code_for(ia.ImergMalformedArtifactError("x")) == 3  # noqa: PLR2004
+        assert ia._exit_code_for(ia.ImergReadContractError("x")) == 6  # noqa: PLR2004
+        assert ia._exit_code_for(ia.ImergPermanentRequestError("x")) == 6  # noqa: PLR2004
+        assert ia._exit_code_for(ia.ImergRetriesExhaustedError("x")) == 3  # noqa: PLR2004
 
 
 def _box_granule() -> ia.ImergGranuleId:
@@ -2330,6 +2939,11 @@ def _strip_precipitation_attribute(path: Path, attribute: str) -> None:
         del f["precipitation"].attrs[attribute]
 
 
+def _set_precipitation_attribute(path: Path, attribute: str, value: object) -> None:
+    with h5py.File(path, "r+") as f:
+        f["precipitation"].attrs[attribute] = value
+
+
 class TestMalformedButOpenableSubsetArtifact:
     @pytest.mark.parametrize("attribute", ["units", "DimensionNames", "_FillValue"])
     def test_a_missing_attribute_is_a_typed_contract_error(
@@ -2344,6 +2958,48 @@ class TestMalformedButOpenableSubsetArtifact:
         _strip_precipitation_attribute(path, attribute)
         with pytest.raises(ia.ImergReadContractError, match=attribute):
             ia.observe_subset_read_contract(path, archive_filename=_ARCHIVE_FILENAME)
+
+    @pytest.mark.parametrize("attribute", ["scale_factor", "add_offset", "_FillValue"])
+    def test_a_non_numeric_attribute_is_permanent_not_repairable(
+        self, tmp_path: Path, attribute: str
+    ) -> None:
+        """🔴 THE OTHER DIRECTION (2026-09-02, confirming Codex round). A
+        cleanly-openable granule whose `scale_factor` is not a number reached
+        `_validate_subset_artifact`'s `ValueError` catch through the parser's
+        own `float(...)` and was reported as REPAIRABLE (exit 3) — so a
+        supervisor would re-download identical bytes for ever on a schema
+        violation no transfer can fix. It must be permanent (exit 6).
+
+        ⛔ The type is the assertion, not the message: an
+        `ImergMalformedArtifactError` fails this test even though it satisfies
+        `pytest.raises(ImergReadContractError)`."""
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(path, archive_filename=_ARCHIVE_FILENAME)
+        _set_precipitation_attribute(path, attribute, b"not-a-number")
+        # both the parser and the artifact validator behind it: the validator
+        # must not DOWNGRADE a permanent parser verdict to the repairable one.
+        for observe in (
+            lambda: ia.observe_subset_read_contract(
+                path, archive_filename=_ARCHIVE_FILENAME
+            ),
+            lambda: ia._validate_subset_artifact(
+                path, archive_filename=_ARCHIVE_FILENAME
+            ),
+        ):
+            with pytest.raises(ia.ImergReadContractError) as excinfo:
+                observe()
+            assert not isinstance(excinfo.value, ia.ImergMalformedArtifactError)
+            assert ia._exit_code_for(excinfo.value) == 6  # noqa: PLR2004
+
+    def test_unreadable_bytes_stay_repairable(self, tmp_path: Path) -> None:
+        """The paired half of the split, so neither side can drift alone:
+        bytes that are not a granule AT ALL are one transfer's accident and a
+        re-download replaces them — retryable, exit 3."""
+        path = tmp_path / "subset.dap.nc4"
+        path.write_bytes(b"<html>login required</html>")
+        with pytest.raises(ia.ImergMalformedArtifactError) as excinfo:
+            ia._validate_subset_artifact(path, archive_filename=_ARCHIVE_FILENAME)
+        assert ia._exit_code_for(excinfo.value) == 3  # noqa: PLR2004
 
     def test_a_malformed_but_openable_cache_is_refetched(self, tmp_path: Path) -> None:
         """The consequence that matters: validate-and-reuse catches only the
@@ -2561,6 +3217,20 @@ def _subset_fixture_bytes(tmp_path: Path, start: datetime, *, value: float) -> b
     name = _archive_name(start)
     path = tmp_path / f"source-{name}.dap.nc4"
     _write_fake_subset_granule(path, archive_filename=name, value=value)
+    return path.read_bytes()
+
+
+def _subset_bytes_with_product_version(
+    tmp_path: Path, start: datetime, *, product_version: str
+) -> bytes:
+    """A subset fixture identical to `_subset_fixture_bytes`' except for the
+    `FileHeader.ProductVersion` spelling — the ONE thing that changed across
+    the measured 2024-06 boundary."""
+    name = _archive_name(start)
+    path = tmp_path / f"pv-{product_version}-{name}.dap.nc4"
+    _write_fake_subset_granule(
+        path, archive_filename=name, product_version=product_version
+    )
     return path.read_bytes()
 
 
@@ -3679,3 +4349,109 @@ class TestSubsetWindowCli:
         manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
         assert manifest is not None
         assert manifest.route == ia.SUBSET_ROUTE
+
+    def test_the_run_survives_the_measured_v_prefix_boundary(
+        self, tmp_path: Path
+    ) -> None:
+        """🔴 THE regression (2026-09-02, locking). MEASURED: NASA's
+        `FileHeader.ProductVersion` reads `V07B` up to 2024-05 and `07B` from
+        2024-06 on, everything else identical. A run that froze its contract on
+        the early spelling aborted at the boundary — here it must cross it,
+        retrieve every granule, and write ONE manifest."""
+        starts = _starts_from(_TRIAL_DAY_START, 3)
+        data_root = tmp_path / "data_root"
+        subset_client = FakeSubsetWindowClient(
+            content_by_url={
+                ia.subset_granule_url(
+                    archive_filename=_archive_name(start), start=start
+                ): _subset_bytes_with_product_version(
+                    tmp_path, start, product_version=version
+                )
+                # the frozen contract comes from the FIRST granule
+                for start, version in zip(starts, ("V07B", "07B", "07B"), strict=True)
+            }
+        )
+        exit_code = ia.main(
+            [
+                "--data-root",
+                str(data_root),
+                "--subset-window-start",
+                starts[0].isoformat(),
+                "--subset-window-end",
+                starts[-1].isoformat(),
+                "--request-interval-seconds",
+                "0",
+            ],
+            client=_listing_client(starts),
+            subset_client=subset_client,
+            clock=_clock,
+            sleep=_sleep,
+        )
+        assert exit_code == 0
+        manifest = ia.read_acquisition_manifest(ia.acquisition_manifest_path(data_root))
+        assert manifest is not None
+        assert manifest.retrieved == 3  # ⛔ not aborted at the boundary
+        # ⛔ VERBATIM: the manifest records the FIRST granule's own string.
+        assert manifest.read_contract["file_header_product_version"] == "V07B"
+
+    def test_a_real_contract_drift_still_aborts_the_run_and_exits_six(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ The tolerance must not have opened the gate: a granule on a
+        DIFFERENT grid still stops the run — now with a PERMANENT exit code, so
+        a supervising loop reports instead of retrying it 200 times."""
+        starts = _starts_from(_TRIAL_DAY_START, 2)
+        drifted = tmp_path / "drifted.dap.nc4"
+        _write_fake_subset_granule(
+            drifted,
+            archive_filename=_archive_name(starts[1]),
+            lat=_ARCHIVE_LAT[_BOX_LAT_START : _BOX_LAT_STOP + 1] + 0.1,
+        )
+        subset_client = FakeSubsetWindowClient(
+            content_by_url={
+                ia.subset_granule_url(
+                    archive_filename=_archive_name(starts[0]), start=starts[0]
+                ): _subset_fixture_bytes(tmp_path, starts[0], value=1.5),
+                ia.subset_granule_url(
+                    archive_filename=_archive_name(starts[1]), start=starts[1]
+                ): drifted.read_bytes(),
+            }
+        )
+        exit_code = ia.main(
+            [
+                "--data-root",
+                str(tmp_path / "data_root"),
+                "--subset-window-start",
+                starts[0].isoformat(),
+                "--subset-window-end",
+                starts[-1].isoformat(),
+                "--request-interval-seconds",
+                "0",
+            ],
+            client=_listing_client(starts),
+            subset_client=subset_client,
+            clock=_clock,
+            sleep=_sleep,
+        )
+        assert exit_code == 6  # noqa: PLR2004
+
+    def test_an_out_of_window_bound_exits_six_rather_than_three(
+        self, tmp_path: Path
+    ) -> None:
+        """⛔ Deterministic caller misuse: the same arguments fail the same way
+        for ever, so the supervisor must stop rather than retry."""
+        exit_code = ia.main(
+            [
+                "--data-root",
+                str(tmp_path / "data_root"),
+                "--subset-window-start",
+                "2019-01-01T00:00:00Z",
+                "--subset-window-end",
+                "2019-01-01T00:30:00Z",
+            ],
+            client=_listing_client([]),
+            subset_client=FakeSubsetWindowClient(content_by_url={}),
+            clock=_clock,
+            sleep=_sleep,
+        )
+        assert exit_code == 6  # noqa: PLR2004

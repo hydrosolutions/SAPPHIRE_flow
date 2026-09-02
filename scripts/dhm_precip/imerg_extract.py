@@ -68,7 +68,10 @@ from scripts.dhm_precip.imerg_acquire import (  # noqa: E402
     ImergAcquisitionError,
     ImergAcquisitionManifest,
     ImergCredentialsError,
+    ImergMalformedArtifactError,
+    ImergPermanentRequestError,
     ImergReadContract,
+    ImergReadContractError,
     ImergStorageError,
     ImergSubsetReadContract,
     acquisition_completeness_violations,
@@ -135,6 +138,15 @@ IMERG_PAYLOAD_FILES: tuple[str, ...] = (
 # Ordered subclass-first (mirrors extract_era5_t2m.py). The IMERG leaves carry
 # T1's exit codes, so a mid-extraction D1 violation reports as it would at
 # acquisition time.
+#
+# 🔴 (2026-09-02, Codex review) — that claim was only PARTLY true: every
+# `ImergAcquisitionError` fell through to 3, so the permanent/transient split
+# `imerg_acquire._EXIT_BY_ERROR` introduced stopped at the acquisition CLI and
+# a mid-extraction contract violation (`_read_granules`, which calls
+# `assert_contract_consistent` / `assert_subset_contract_consistent`) still
+# reported as retryable. ⇒ The three IMERG leaves that carry a code other than
+# 3 are now listed HERE too, in the SAME order and with the SAME meaning, so
+# the two CLIs agree: 6 = permanent, do not retry.
 _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (DhmPrecipLoaderError, 2),
     (ExtractionInputAbsentError, 2),
@@ -143,6 +155,11 @@ _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (Era5ExtractionError, 4),
     (ImergCredentialsError, 2),
     (ImergStorageError, 5),
+    # ⛔ STRICTLY BEFORE its parent, as in imerg_acquire: damaged bytes are
+    # repairable by a re-acquisition, so they keep the retryable 3.
+    (ImergMalformedArtifactError, 3),
+    (ImergReadContractError, 6),
+    (ImergPermanentRequestError, 6),
     (ImergAcquisitionError, 3),
     # a raw OSError never reaches the typed hierarchy: it is storage.
     (OSError, 5),
