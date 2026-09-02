@@ -188,6 +188,7 @@ class ParameterDomain(Enum):
 class AggregationMethod(Enum):
     SUM = "sum"
     MEAN = "mean"
+    MAX = "max"  # Plan 228 review fixer round — an FI model may legally declare MAX; see `ModelDataRequirements.declared_aggregations` below. Not a valid `parameters.aggregation_method` DB value (conventions.md's master list) — in-memory only.
 
 class PipelineHealthStatus(Enum):
     OK = "ok"
@@ -1573,9 +1574,24 @@ class ModelDataRequirements:
     forecast_horizon_steps: int
     spatial_input_type: SpatialRepresentation
     ensemble_mode: EnsembleMode = EnsembleMode.SINGLE   # SINGLE: model emits one trajectory; ENSEMBLE: forcing carries member-suffixed columns, fanned out per member
+    declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()  # per-parameter FI-declared aggregation, e.g. frozenset({("discharge", AggregationMethod.MAX)})
 ```
 
 `ensemble_mode` (`EnsembleMode` enum: `SINGLE` | `ENSEMBLE`, mirrors the ForecastInterface `FutureKnownVariable.ensemble_mode` values) marks a model whose future-known forcing is delivered as member-suffixed columns (`precipitation_0`, `precipitation_1`, …). The FI adapter projects `ENSEMBLE` when any `future_known` variable declares it; the operational and conformance paths then fan such a model out over the members (see `services/ensemble_fanout.py`), assembling one N-member ensemble from N single-trajectory predictions. Defaulted to `SINGLE` so native single-trajectory models are unaffected. The hindcast path never fans out (reanalysis is a single teacher-forced trajectory).
+
+`declared_aggregations` (Plan 228 review fixer round) carries a model's per-variable FI-declared
+aggregation (`PastKnownVariable.aggregation` / `FutureKnownVariable.aggregation`) into SAP3, keyed
+by parameter name. A `tuple`-of-pairs `frozenset` rather than a `dict`, to keep the dataclass
+hashable; `__post_init__` rejects a parameter declared with two conflicting methods. Input assembly
+(`services/training_data.py::resolved_aggregation_methods`) resolves per-column aggregation for
+`resample_to_time_step` by layering these declared values over the v0 name-keyed fallback table
+(`_V0_AGGREGATION_FALLBACK`) — a declared value always wins, so a model that legally declares e.g.
+`discharge` with `AggregationMethod.MAX` is honoured instead of silently defaulting to `MEAN`. The
+FI adapter (`adapters/forecast_interface.py`) populates this from both `past_known` and
+`future_known` variables, translating FI's own `AggregationMethod` enum via
+`fi_aggregation_to_canonical` — a separate class from SAP3's `AggregationMethod`, so the two are
+never assumed interchangeable merely because their values match. Defaults to an empty `frozenset`
+so a model that declares no per-variable aggregation is unaffected.
 
 **`supported_time_steps` for FI-adapted models (Plan 156):** the FI adapter projects this as the
 `time_step` branch(es) of `InputRequirement.dynamic` whose `future_known` is non-empty — never a
