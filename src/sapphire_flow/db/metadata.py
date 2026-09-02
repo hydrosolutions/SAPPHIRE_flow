@@ -1524,6 +1524,27 @@ sa.Index(
     # above — NULL never equals NULL in a unique index.
     skill_scores.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
+    # Plan 228 fixer round (blocker): `computation_version` is a static
+    # algorithm/schema marker (bumped only when the SCORING CODE changes),
+    # never a per-run identity — every OTHER column above is fixed for the
+    # lifetime of a stratum, so two genuinely distinct computations of the
+    # SAME stratum at the SAME algorithm version (e.g. today's and next
+    # week's `compute_combined_skills_task` run, both scoring
+    # `POOLED_MODEL_ID`/`model_artifact_id=NULL`) shared an identical key
+    # and the later `INSERT ... ON CONFLICT DO NOTHING` silently discarded
+    # the corrected score forever. `eval_period_end` is the run's own
+    # identity: it is fixed for every row a single `compute_skill_for_
+    # station`/`compute_combined_skill` call produces (one `eval_start`/
+    # `eval_end` pair per call — see `service.py::compute_skill_for_
+    # station`), and grows monotonically as more observations become
+    # available to a LATER call. A retry of the same run (same eval
+    # window) still collides and is idempotent; a later recomputation gets
+    # a distinct key, is inserted as a NEW row (the earlier one is never
+    # deleted — full history stays queryable), and
+    # `PgSkillStore.fetch_latest_scores` surfaces it as current by
+    # preferring the greatest `eval_period_end` within the greatest
+    # `computation_version`.
+    skill_scores.c.eval_period_end,
     unique=True,
 )
 sa.Index(
@@ -1562,6 +1583,11 @@ sa.Index(
     # `uq_skill_scores_natural_key` above.
     skill_diagrams.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
+    # Plan 228 fixer round (blocker): see `uq_skill_scores_natural_key`
+    # above — `eval_period_end` is the per-run identity that lets a later
+    # recomputation's diagrams supersede (for `fetch_latest_diagrams`)
+    # without deleting the earlier ones.
+    skill_diagrams.c.eval_period_end,
     unique=True,
 )
 

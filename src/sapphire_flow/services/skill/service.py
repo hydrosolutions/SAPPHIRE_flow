@@ -572,7 +572,32 @@ def compute_skill_for_station(
     *,
     parameter: str,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
-    if not hindcasts or not observations:
+    if not hindcasts:
+        # Plan 228 fixer round (major): distinguish "nothing to score
+        # because there is no hindcast history yet" from every other
+        # zero-rows-stored outcome below — a silent `return [], []` here
+        # looked identical to a clean, fully-scored run.
+        log.warning(
+            "skill.compute_skill_for_station.no_hindcasts",
+            station_id=str(station_id),
+            model_id=str(model_id),
+            parameter=parameter,
+        )
+        return [], []
+
+    if not observations:
+        # Plan 228 fixer round (major): distinguish "the observation fetch
+        # returned zero rows" (this branch) from "observations exist but no
+        # resampled bucket has elapsed yet" (`no_elapsed_observation_buckets`
+        # below) — both silently stored nothing before this split, and only
+        # one of them means "check the observation store/QC pipeline".
+        log.warning(
+            "skill.compute_skill_for_station.no_observations_fetched",
+            station_id=str(station_id),
+            model_id=str(model_id),
+            parameter=parameter,
+            hindcast_count=len(hindcasts),
+        )
         return [], []
 
     mismatched = [hc for hc in hindcasts if hc.ensemble.parameter != parameter]

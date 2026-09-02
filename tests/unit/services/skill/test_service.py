@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import polars as pl
 import pytest
+import structlog.testing
 
 from sapphire_flow.services.skill.service import (
     _COMPUTATION_VERSION,
@@ -562,24 +563,32 @@ class TestNoMatchingObservations:
             )
         ]
 
-        scores, diagrams = compute_skill_for_station(
-            station_id=station_id,
-            model_id=model_id,
-            artifact_id=artifact_id,
-            hindcasts=hindcasts,
-            observations=observations,
-            thresholds=[],
-            flow_regime_config=None,
-            seasons=seasons,
-            skill_source=SkillSource.HINDCAST_REANALYSIS,
-            forcing_type=None,
-            clock=clock,  # type: ignore[arg-type]
-            uuid_factory=uuid_factory,  # type: ignore[arg-type]
-            parameter="discharge",
-        )
+        with structlog.testing.capture_logs() as cap:
+            scores, diagrams = compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=hindcasts,
+                observations=observations,
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=None,
+                clock=clock,  # type: ignore[arg-type]
+                uuid_factory=uuid_factory,  # type: ignore[arg-type]
+                parameter="discharge",
+            )
 
         assert scores == []
         assert diagrams == []
+        # Plan 228 fixer round (major): a completely non-overlapping
+        # observation set must be diagnosable as "no matching strata", not
+        # look identical to any other zero-rows-stored outcome.
+        assert any(
+            e["event"] == "skill.compute_skill_for_station.no_matching_strata"
+            for e in cap
+        )
 
     def test_empty_hindcasts(
         self,
@@ -591,23 +600,75 @@ class TestNoMatchingObservations:
         seasons: list[SeasonDefinition],
     ) -> None:
         obs = [_make_observation(station_id=station_id, timestamp=_EPOCH, value=5.0)]
-        scores, diagrams = compute_skill_for_station(
-            station_id=station_id,
-            model_id=model_id,
-            artifact_id=artifact_id,
-            hindcasts=[],
-            observations=obs,
-            thresholds=[],
-            flow_regime_config=None,
-            seasons=seasons,
-            skill_source=SkillSource.HINDCAST_REANALYSIS,
-            forcing_type=None,
-            clock=clock,  # type: ignore[arg-type]
-            uuid_factory=uuid_factory,  # type: ignore[arg-type]
-            parameter="discharge",
-        )
+        with structlog.testing.capture_logs() as cap:
+            scores, diagrams = compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=[],
+                observations=obs,
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=None,
+                clock=clock,  # type: ignore[arg-type]
+                uuid_factory=uuid_factory,  # type: ignore[arg-type]
+                parameter="discharge",
+            )
         assert scores == []
         assert diagrams == []
+        # Plan 228 fixer round (major): "no hindcast history yet" must be
+        # distinguishable from every other zero-rows-stored outcome.
+        assert any(
+            e["event"] == "skill.compute_skill_for_station.no_hindcasts" for e in cap
+        )
+
+    def test_empty_observations_list(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        """Plan 228 fixer round (major): the observation FETCH returning zero
+        rows (not merely "no bucket has elapsed yet") is its own diagnosable
+        outcome — before this fix, `if not hindcasts or not observations:
+        return [], []` returned silently for BOTH cases with no log event at
+        all.
+        """
+        hindcasts = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=_utc(2025, 1, 1),
+            )
+        ]
+        with structlog.testing.capture_logs() as cap:
+            scores, diagrams = compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=hindcasts,
+                observations=[],
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=None,
+                clock=clock,  # type: ignore[arg-type]
+                uuid_factory=uuid_factory,  # type: ignore[arg-type]
+                parameter="discharge",
+            )
+        assert scores == []
+        assert diagrams == []
+        assert any(
+            e["event"] == "skill.compute_skill_for_station.no_observations_fetched"
+            for e in cap
+        )
 
 
 class TestSeasonStratification:
@@ -1775,6 +1836,66 @@ class TestIncompleteCurrentBucketExcludedFromScoring:
                 "bucket (mean 200.0 vs a forecast of 50.0) was silently "
                 "scored as a complete daily mean"
             )
+
+    def test_only_still_forming_bucket_logs_no_elapsed_observation_buckets(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        """Plan 228 fixer round (major): when EVERY resampled observation
+        bucket is still forming (none has elapsed as of `clock()`),
+        `obs_lookup` ends up empty — this is a diagnosably DIFFERENT
+        outcome from "the observation fetch returned zero rows" and from
+        "no matching strata", and must log its own event.
+        """
+        now = _utc(2025, 1, 15, hour=6)
+
+        # A single hindcast whose valid_time's bucket ends Jan 16 00:00 —
+        # well after `now` (Jan 15 06:00) — so it has not elapsed yet.
+        partial = _make_daily_hindcast(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 14),  # valid_time -> Jan 15 00:00
+            forecast_value=50.0,
+        )
+        partial_day_start = _utc(2025, 1, 15)
+        partial_observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(partial_day_start + timedelta(hours=h)),
+                value=200.0,
+            )
+            for h in range(6)
+        ]
+
+        with structlog.testing.capture_logs() as cap:
+            scores, diagrams = compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=[partial],
+                observations=partial_observations,
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=lambda: now,  # type: ignore[arg-type]
+                uuid_factory=uuid_factory,  # type: ignore[arg-type]
+                parameter="discharge",
+            )
+
+        assert scores == []
+        assert diagrams == []
+        assert any(
+            e["event"]
+            == "skill.compute_skill_for_station.no_elapsed_observation_buckets"
+            for e in cap
+        )
 
 
 class TestSingleHindcastSingleLeadStepStillScores:

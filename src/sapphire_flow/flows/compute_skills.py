@@ -22,6 +22,8 @@ from sapphire_flow.types.enums import ForcingType, ModelCombinationStrategy, Ski
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId  # noqa: TC001
 from sapphire_flow.types.skill import SkillDiagram, SkillScore  # noqa: TC001
 
+log = structlog.get_logger(__name__)
+
 
 def _fetch_hindcasts(
     hindcast_store: object,
@@ -141,11 +143,14 @@ def compute_skills_task(
     # degrades to "fewer cohorts scored this run", not "none, forever".
     all_scores: list[SkillScore] = []
     all_diagrams: list[SkillDiagram] = []
-    for partition in partition_by_time_step_and_phase(hindcasts).values():
+    cohorts = partition_by_time_step_and_phase(hindcasts)
+    observations_fetched = 0
+    for partition in cohorts.values():
         period_start, period_end = observation_fetch_bounds(partition)
         observations = _fetch_observations(
             obs_store, station_id, period_start, period_end, parameter=parameter
         )
+        observations_fetched += len(observations)
 
         scores, diagrams = compute_skill_for_station(
             station_id=station_id,
@@ -166,6 +171,18 @@ def compute_skills_task(
         all_diagrams.extend(diagrams)
 
     _store_skill_results(skill_store, all_scores, all_diagrams)
+
+    # Plan 228 fixer round (major): a task-level summary so a silent
+    # zero-rows-stored run is visible without cross-referencing per-cohort
+    # warnings from `compute_skill_for_station`.
+    log.info(
+        "skill.compute_skills_task.summary",
+        hindcasts_fetched=len(hindcasts),
+        cohorts=len(cohorts),
+        observations_fetched=observations_fetched,
+        scores_stored=len(all_scores),
+        diagrams_stored=len(all_diagrams),
+    )
 
     return all_scores, all_diagrams
 
@@ -249,15 +266,19 @@ def compute_combined_skills_task(
 
     all_scores: list[SkillScore] = []
     all_diagrams: list[SkillDiagram] = []
+    observations_fetched = 0
+    cohorts_combined = 0
     for per_model_hindcasts in partitioned_by_key.values():
         if len(per_model_hindcasts) < 2:
             continue
+        cohorts_combined += 1
 
         cohort_hindcasts = [hc for hcs in per_model_hindcasts.values() for hc in hcs]
         period_start, period_end = observation_fetch_bounds(cohort_hindcasts)
         observations = _fetch_observations(
             obs_store, station_id, period_start, period_end, parameter=parameter
         )
+        observations_fetched += len(observations)
 
         if strategy == ModelCombinationStrategy.BMA:
             scores, diagrams = compute_bma_skill_cross_validated(
@@ -293,6 +314,17 @@ def compute_combined_skills_task(
         all_diagrams.extend(diagrams)
 
     _store_skill_results(skill_store, all_scores, all_diagrams)
+
+    # Plan 228 fixer round (major): task-level summary — see
+    # `compute_skills_task.summary` above.
+    log.info(
+        "skill.compute_combined_skills_task.summary",
+        candidate_cohorts=len(partitioned_by_key),
+        cohorts_combined=cohorts_combined,
+        observations_fetched=observations_fetched,
+        scores_stored=len(all_scores),
+        diagrams_stored=len(all_diagrams),
+    )
 
     return all_scores, all_diagrams
 

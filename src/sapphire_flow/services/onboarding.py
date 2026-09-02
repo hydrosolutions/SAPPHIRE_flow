@@ -135,6 +135,7 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
     from sapphire_flow.services.skill.service import (
         compute_skill_for_station,
         observation_fetch_bounds,
+        partition_by_time_step_and_phase,
     )
     from sapphire_flow.types.enums import ForcingType
 
@@ -163,20 +164,6 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
         if not hindcasts:
             return
 
-        # Fetch observations covering the hindcasts' own valid times (Plan
-        # 228 ALSO FIX #2) — never the training period, which can end before
-        # a multi-step horizon's trailing valid_time.
-        from sapphire_flow.types.enums import QcStatus
-
-        obs_start, obs_end = observation_fetch_bounds(hindcasts)
-        observations = obs_store.fetch_observations(
-            station_id=station_id,
-            parameter="discharge",
-            start=obs_start,
-            end=obs_end,
-            qc_status=QcStatus.QC_PASSED,
-        )
-
         # Fetch thresholds and flow regime
         thresholds = []  # no thresholds in v0 onboarding
         flow_regime = flow_regime_store.fetch_latest(
@@ -184,27 +171,60 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
             parameter="discharge",
         )
 
-        from sapphire_flow.types.enums import SkillSource
+        from sapphire_flow.types.enums import QcStatus, SkillSource
 
-        scores, diagrams = compute_skill_for_station(
-            station_id=station_id,
-            model_id=model_id,
-            artifact_id=artifact_id,
-            hindcasts=hindcasts,
-            observations=observations,
-            thresholds=thresholds,
-            flow_regime_config=flow_regime,
-            seasons=[],
-            skill_source=SkillSource.HINDCAST_REANALYSIS,
-            forcing_type=ForcingType.REANALYSIS,
-            clock=lambda: ensure_utc(datetime.now(UTC)),
-            uuid_factory=uuid4,
-            parameter="discharge",
-        )
-        if scores:
-            skill_store.store_skill_scores(scores)
-        if diagrams:
-            skill_store.store_skill_diagrams(diagrams)
+        # Plan 228 fixer round (major): mirrors `compute_skills_task`
+        # (`flows/compute_skills.py`) — `hindcasts` above is this
+        # station/model's ENTIRE `training_period_start..end` window,
+        # unfiltered by `hindcast_run_id`. `store_hindcast` has no
+        # natural-key dedup (a re-run is additive, not idempotent — see
+        # `docs/touchpoint-maps.md`), so a training window that still
+        # contains an earlier onboarding's hindcasts at a different
+        # `time_step`/phase (a model config change, or a future
+        # per-cycle-anchoring change per Plan 226) would otherwise hit
+        # `validate_homogeneous_time_step_and_phase`'s hard-raise inside
+        # `observation_fetch_bounds` and fail the ENTIRE onboarding unit —
+        # the all-or-nothing outcome the two flow tasks were fixed to avoid.
+        # Partition into homogeneous cohorts first and score each
+        # separately, so a mismatch degrades to "fewer cohorts scored at
+        # onboarding" instead of `FAILED_SKILL` for the whole unit.
+        all_scores = []
+        all_diagrams = []
+        for cohort in partition_by_time_step_and_phase(hindcasts).values():
+            # Fetch observations covering the cohort's own valid times (Plan
+            # 228 ALSO FIX #2) — never the training period, which can end
+            # before a multi-step horizon's trailing valid_time.
+            obs_start, obs_end = observation_fetch_bounds(cohort)
+            observations = obs_store.fetch_observations(
+                station_id=station_id,
+                parameter="discharge",
+                start=obs_start,
+                end=obs_end,
+                qc_status=QcStatus.QC_PASSED,
+            )
+
+            scores, diagrams = compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=cohort,
+                observations=observations,
+                thresholds=thresholds,
+                flow_regime_config=flow_regime,
+                seasons=[],
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=lambda: ensure_utc(datetime.now(UTC)),
+                uuid_factory=uuid4,
+                parameter="discharge",
+            )
+            all_scores.extend(scores)
+            all_diagrams.extend(diagrams)
+
+        if all_scores:
+            skill_store.store_skill_scores(all_scores)
+        if all_diagrams:
+            skill_store.store_skill_diagrams(all_diagrams)
 
     return _compute_skill
 

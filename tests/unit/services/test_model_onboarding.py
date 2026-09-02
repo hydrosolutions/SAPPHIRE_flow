@@ -560,6 +560,8 @@ class TestEvaluateSkillGate:
 
         # No valid strata → metric_scores is empty, gate fails (no data for nse)
         assert len(result.metric_scores) == 0
+        assert not result.passed
+        assert "nse" in result.failing_metrics
 
     def test_stale_v1_score_never_overrides_current_v2(self) -> None:
         """Review fixer round (major): migrations 0051/0052 and

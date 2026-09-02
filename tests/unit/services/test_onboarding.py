@@ -1452,3 +1452,190 @@ class TestOnboardFromCamelschTenantIsolation:
         assert len(audit._entries) == 1  # type: ignore[attr-defined]
         assert audit._entries[0].event_type.value == "station_onboarded"  # type: ignore[attr-defined]
         assert audit._entries[0].detail["outcome"] == "rejected_tenant_mismatch"  # type: ignore[attr-defined]
+
+
+class TestMakeSkillFnMixedCadence:
+    """Plan 228 fixer round (major): `_make_skill_fn`'s `_compute_skill`
+    fetches a station/model's ENTIRE `training_period_start..end` window
+    unfiltered by `hindcast_run_id` — the identical shape of fetch the
+    review flagged as unsafe once `validate_homogeneous_time_step_and_phase`
+    hard-raises `ConfigurationError` on any mixed `time_step` (Plan 228 D4).
+    `store_hindcast` has no natural-key dedup, so a training window that
+    still contains an earlier onboarding's hindcasts at a different
+    `time_step` raises here and marks the ENTIRE unit `FAILED_SKILL` — the
+    all-or-nothing outcome the two `flows/compute_skills.py` tasks were
+    fixed to avoid via `partition_by_time_step_and_phase`. This test seeds
+    an HOURLY-cadence hindcast alongside a DAILY-cadence one for the same
+    station/model/window and requires the callback to score both cohorts
+    rather than raise.
+    """
+
+    def test_mixed_time_step_history_degrades_gracefully(self) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.onboarding import _make_skill_fn
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import (
+            ArtifactId,
+            HindcastForecastId,
+            ObservationId,
+        )
+        from sapphire_flow.types.observation import Observation
+        from sapphire_flow.types.training import TrainingUnit
+
+        sid = StationId(uuid4())
+        mid = ModelId("test_mixed_cadence_model")
+        aid = ArtifactId(uuid4())
+
+        hindcast_store = FakeHindcastStore()
+        obs_store = FakeObservationStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        # HOURLY-cadence hindcasts, three consecutive hours.
+        for i in range(3):
+            step = ensure_utc(datetime(2020, 1, 1, i, tzinfo=UTC))
+            vt = ensure_utc(step + timedelta(hours=1))
+            df = pl.DataFrame(
+                [
+                    {"valid_time": vt, "member_id": m, "value": 10.0 + m}
+                    for m in range(3)
+                ]
+            ).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+            ensemble = ForecastEnsemble.from_members(
+                station_id=sid,
+                issued_at=step,
+                parameter="discharge",
+                units="m³/s",
+                time_step=timedelta(hours=1),
+                values=df,
+            )
+            hc = HindcastForecast(
+                id=HindcastForecastId(uuid4()),
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                hindcast_step=step,
+                forcing_type=ForcingType.REANALYSIS,
+                representation=EnsembleRepresentation.MEMBERS,
+                hindcast_run_id=uuid4(),
+                ensemble=ensemble,
+                created_at=step,
+            )
+            hindcast_store.store_hindcast(hc)
+            obs_store.store_observations(
+                [
+                    Observation(
+                        id=ObservationId(uuid4()),
+                        station_id=sid,
+                        timestamp=vt,
+                        parameter="discharge",
+                        value=10.5,
+                        source=ObservationSource.MEASURED,
+                        rating_curve_id=None,
+                        rating_curve_correction_version=None,
+                        qc_status=QcStatus.QC_PASSED,
+                        qc_flags=[],
+                        qc_rule_version=None,
+                        created_at=step,
+                    )
+                ]
+            )
+
+        # A DAILY-cadence hindcast for the SAME station/model/window — a
+        # differently configured run coexisting in the training history
+        # (e.g. a model config change between two onboarding attempts).
+        daily_step = ensure_utc(datetime(2020, 2, 1, tzinfo=UTC))
+        daily_vt = ensure_utc(daily_step + timedelta(days=1))
+        daily_df = pl.DataFrame(
+            [
+                {"valid_time": daily_vt, "member_id": m, "value": 20.0 + m}
+                for m in range(3)
+            ]
+        ).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        daily_ensemble = ForecastEnsemble.from_members(
+            station_id=sid,
+            issued_at=daily_step,
+            parameter="discharge",
+            units="m³/s",
+            time_step=timedelta(days=1),
+            values=daily_df,
+        )
+        daily_hc = HindcastForecast(
+            id=HindcastForecastId(uuid4()),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            hindcast_step=daily_step,
+            forcing_type=ForcingType.REANALYSIS,
+            representation=EnsembleRepresentation.MEMBERS,
+            hindcast_run_id=uuid4(),
+            ensemble=daily_ensemble,
+            created_at=daily_step,
+        )
+        hindcast_store.store_hindcast(daily_hc)
+        obs_store.store_observations(
+            [
+                Observation(
+                    id=ObservationId(uuid4()),
+                    station_id=sid,
+                    timestamp=daily_vt,
+                    parameter="discharge",
+                    value=20.5,
+                    source=ObservationSource.MEASURED,
+                    rating_curve_id=None,
+                    rating_curve_correction_version=None,
+                    qc_status=QcStatus.QC_PASSED,
+                    qc_flags=[],
+                    qc_rule_version=None,
+                    created_at=daily_step,
+                )
+            ]
+        )
+
+        unit = TrainingUnit(
+            model_id=mid,
+            station_id=sid,
+            group_id=None,
+            station_ids=frozenset({sid}),
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2020, 3, 1, tzinfo=UTC)),
+            time_step=timedelta(hours=1),
+        )
+
+        compute_skill = _make_skill_fn()
+
+        # Buggy code: the unfiltered `fetch_hindcasts` call hands BOTH
+        # cadences straight to `observation_fetch_bounds`, which hard-raises
+        # `ConfigurationError("mixed time_step ...")` before either cohort
+        # is scored — the caller in `model_onboarding.py` catches this and
+        # marks the whole unit `FAILED_SKILL`.
+        compute_skill(
+            unit=unit,
+            model_id=mid,
+            artifact_id=aid,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            flow_regime_store=flow_regime_store,
+            config=None,
+        )
+
+        scores = skill_store.fetch_latest_scores(sid, mid)
+        assert len(scores) > 0, (
+            "mixed-cadence training history must degrade to fewer cohorts "
+            "scored, not raise and score nothing"
+        )
+        lead_time_hours = {s.lead_time_hours for s in scores}
+        # The hourly cohort scores a short lead; the daily cohort scores a
+        # 24h lead. Both must be present.
+        assert any(h <= 3 for h in lead_time_hours)
+        assert 24 in lead_time_hours

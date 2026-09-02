@@ -54,7 +54,9 @@ def upgrade() -> None:
     # Column order matches `db/metadata.py`'s `sa.Index` objects exactly —
     # those were never wrong about which columns belong, only the live
     # schema (since 0016) was missing `computation_version`.
-    op.drop_index("uq_skill_scores_natural_key", table_name="skill_scores")
+    op.drop_index(
+        "uq_skill_scores_natural_key", table_name="skill_scores", if_exists=True
+    )
     op.create_index(
         "uq_skill_scores_natural_key",
         "skill_scores",
@@ -71,9 +73,12 @@ def upgrade() -> None:
             "metric",
         ],
         unique=True,
+        if_not_exists=True,
     )
 
-    op.drop_index("uq_skill_diagrams_natural_key", table_name="skill_diagrams")
+    op.drop_index(
+        "uq_skill_diagrams_natural_key", table_name="skill_diagrams", if_exists=True
+    )
     op.create_index(
         "uq_skill_diagrams_natural_key",
         "skill_diagrams",
@@ -90,11 +95,14 @@ def upgrade() -> None:
             sa.text("COALESCE(threshold_level, '')"),
         ],
         unique=True,
+        if_not_exists=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("uq_skill_diagrams_natural_key", table_name="skill_diagrams")
+    op.drop_index(
+        "uq_skill_diagrams_natural_key", table_name="skill_diagrams", if_exists=True
+    )
     op.create_index(
         "uq_skill_diagrams_natural_key",
         "skill_diagrams",
@@ -110,9 +118,12 @@ def downgrade() -> None:
             sa.text("COALESCE(threshold_level, '')"),
         ],
         unique=True,
+        if_not_exists=True,
     )
 
-    op.drop_index("uq_skill_scores_natural_key", table_name="skill_scores")
+    op.drop_index(
+        "uq_skill_scores_natural_key", table_name="skill_scores", if_exists=True
+    )
     op.create_index(
         "uq_skill_scores_natural_key",
         "skill_scores",
@@ -128,4 +139,5 @@ def downgrade() -> None:
             sa.text("COALESCE(forcing_type, '')"),
         ],
         unique=True,
+        if_not_exists=True,
     )

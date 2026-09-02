@@ -627,7 +627,39 @@ class FakeSkillStore:
         if not matches:
             return []
         max_ver = max(s.computation_version for s in matches)
-        return [s for s in matches if s.computation_version == max_ver]
+        at_max_ver = [s for s in matches if s.computation_version == max_ver]
+
+        # See `PgSkillStore.fetch_latest_scores` (Plan 228 fixer round,
+        # blocker): `computation_version` alone cannot distinguish two
+        # computations at the same algorithm version, and "latest" is
+        # resolved PER STRATUM (every natural-key column except
+        # `eval_period_end`) so a cohort with a smaller eval window doesn't
+        # vanish just because another stratum's eval window is larger.
+        def _stratum_key(s: SkillScore) -> tuple:  # type: ignore[type-arg]
+            return (
+                s.model_artifact_id,
+                s.parameter,
+                s.skill_source,
+                s.forcing_type,
+                s.lead_time_hours,
+                s.season,
+                s.flow_regime,
+                s.metric,
+                s.time_step_seconds,
+                s.phase_offset_seconds,
+            )
+
+        max_eval_end_by_stratum: dict[tuple, UtcDatetime] = {}  # type: ignore[type-arg]
+        for s in at_max_ver:
+            key = _stratum_key(s)
+            current = max_eval_end_by_stratum.get(key)
+            if current is None or s.eval_period_end > current:
+                max_eval_end_by_stratum[key] = s.eval_period_end
+        return [
+            s
+            for s in at_max_ver
+            if s.eval_period_end == max_eval_end_by_stratum[_stratum_key(s)]
+        ]
 
     def fetch_latest_diagrams(
         self,
@@ -647,7 +679,33 @@ class FakeSkillStore:
         if not matches:
             return []
         max_ver = max(d.computation_version for d in matches)
-        return [d for d in matches if d.computation_version == max_ver]
+        at_max_ver = [d for d in matches if d.computation_version == max_ver]
+
+        def _diagram_stratum_key(d: SkillDiagram) -> tuple:  # type: ignore[type-arg]
+            return (
+                d.model_artifact_id,
+                d.parameter,
+                d.skill_source,
+                d.lead_time_hours,
+                d.season,
+                d.flow_regime,
+                d.diagram_type,
+                d.threshold_level,
+                d.time_step_seconds,
+                d.phase_offset_seconds,
+            )
+
+        max_eval_end_by_stratum: dict[tuple, UtcDatetime] = {}  # type: ignore[type-arg]
+        for d in at_max_ver:
+            key = _diagram_stratum_key(d)
+            current = max_eval_end_by_stratum.get(key)
+            if current is None or d.eval_period_end > current:
+                max_eval_end_by_stratum[key] = d.eval_period_end
+        return [
+            d
+            for d in at_max_ver
+            if d.eval_period_end == max_eval_end_by_stratum[_diagram_stratum_key(d)]
+        ]
 
     def fetch_scores_by_regime(
         self,

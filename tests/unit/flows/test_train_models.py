@@ -41,7 +41,13 @@ from tests.fakes.fake_stores import (
 )
 
 _RNG = random.Random(42)
-_EPOCH = ensure_utc(datetime(2025, 3, 1, tzinfo=UTC))
+# No module-level `_EPOCH` here — it is defined once, further down this file
+# (currently 2025-01-01). A SECOND `_EPOCH = ...` at this position used to
+# shadow that one silently for every earlier-appearing reference (Python
+# resolves a module global by its value at call time, not by textual
+# position) — the exact landmine `TestMultiParameterSkillComputation` was
+# fixed to avoid by using its own explicit inline `clock` instead of the
+# module-level name. Do not reintroduce a second `_EPOCH` assignment here.
 
 
 def _uuid() -> UUID:

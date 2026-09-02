@@ -5,7 +5,13 @@ from datetime import UTC, datetime
 
 import sqlalchemy as sa
 
-from sapphire_flow.db.metadata import model_artifacts, models, skill_diagrams, stations
+from sapphire_flow.db.metadata import (
+    model_artifacts,
+    models,
+    skill_diagrams,
+    skill_scores,
+    stations,
+)
 from sapphire_flow.store.skill_store import PgSkillStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
@@ -99,6 +105,7 @@ def _make_score(
     lead_time_hours: int = 24,
     metric: str = "crps",
     score: float = 0.5,
+    sample_size: int = 500,
     skill_source: SkillSource = SkillSource.HINDCAST_NWP_ARCHIVE,
     flow_regime: FlowRegime | None = None,
     forcing_type: ForcingType | None = None,
@@ -124,7 +131,7 @@ def _make_score(
         flow_regime_config_id=None,
         metric=metric,
         score=score,
-        sample_size=500,
+        sample_size=sample_size,
         freshness=freshness,
         eval_period_start=eval_period_start or _T0,  # type: ignore[arg-type]
         eval_period_end=eval_period_end or _T1,  # type: ignore[arg-type]
@@ -301,6 +308,76 @@ class TestPgSkillStore:
             f"expected the repeated pooled computation to collide under "
             f"ON CONFLICT DO NOTHING, got {len(results)} duplicate rows"
         )
+
+    def test_recomputation_with_changed_score_supersedes_without_losing_history(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 228 fixer round (blocker, third review): `computation_version`
+        is a static schema/algorithm marker
+        (`services/skill/service.py::_COMPUTATION_VERSION`), never a per-run
+        identity — so a LATER, legitimately different recomputation of the
+        SAME stratum at the SAME version (a changed score, sample size, and
+        a later `eval_period_end` — e.g. next week's scheduled
+        `compute_combined_skills_task` run, with more observations
+        available) shared an identical natural key with the FIRST
+        computation before `eval_period_end` joined the key, and the
+        second `INSERT ... ON CONFLICT DO NOTHING` silently discarded the
+        corrected score forever.
+
+        `eval_period_end` is now part of the natural key: the later
+        computation is a NEW row (not silently dropped), `fetch_latest_
+        scores` surfaces it as current, and the FIRST computation's row is
+        still present in the table — nothing is deleted, so history stays
+        auditable.
+        """
+        sid = _seed_station(db_connection)
+        # POOLED_MODEL_ID is pre-seeded into `models` by migration 0024.
+        mid = POOLED_MODEL_ID
+        store = PgSkillStore(db_connection)
+
+        first_run = _make_score(
+            sid,
+            mid,
+            None,
+            metric="crps",
+            lead_time_hours=24,
+            score=0.5,
+            sample_size=10,
+            eval_period_end=_T1,
+        )
+        # A LATER recomputation of the exact same stratum: more data
+        # accumulated by the time this ran, so the score, sample size, and
+        # evaluation window all differ from the first run.
+        second_run = _make_score(
+            sid,
+            mid,
+            None,
+            metric="crps",
+            lead_time_hours=24,
+            score=0.7,
+            sample_size=15,
+            eval_period_end=_T2,
+        )
+        store.store_skill_scores([first_run])
+        store.store_skill_scores([second_run])
+
+        # History is auditable: the earlier computation must not be deleted.
+        row_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(skill_scores)
+            .where(skill_scores.c.station_id == sid, skill_scores.c.model_id == mid)
+        ).scalar_one()
+        assert row_count == 2, (
+            "the earlier computation must still be present in the table "
+            f"for audit, found {row_count} row(s)"
+        )
+
+        # But callers see the LATER computation as current.
+        results = store.fetch_latest_scores(sid, mid)
+        assert len(results) == 1
+        assert results[0].score == 0.7
+        assert results[0].sample_size == 15
+        assert results[0].eval_period_end == _T2
 
     def test_pooled_and_bma_null_artifact_scores_do_not_collide(
         self, db_connection: sa.Connection
