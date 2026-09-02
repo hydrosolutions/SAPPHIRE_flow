@@ -1487,6 +1487,75 @@ class TestHindcastResamplesPastTargetsToDeclaredTimeStep:
         )
 
 
+class TestHindcastValidatesTheChronologicalTailNotThePhysicalOne:
+    """Plan 228 review fixer round (major): ``.tail(declared_lookback_steps)``
+    trims whatever rows happen to be LAST in ``obs_df``'s physical order — a
+    real risk given the observation store issues no ``ORDER BY`` and (before
+    this fixer round) ``resample_to_time_step``'s fast path could return
+    rows unsorted. Feeding a scrambled (but otherwise gap-free and complete)
+    10-day observation list must not corrupt the CHRONOLOGICAL last 7 days'
+    validation."""
+
+    def test_scrambled_input_order_does_not_suppress_a_clean_chronological_tail(
+        self,
+    ) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        declared_lookback_steps = 7
+        fetch_lookback_steps = 10
+        issue_time = ensure_utc(datetime(2022, 3, 1, tzinfo=UTC))
+
+        # 10 complete, consecutive calendar days ending the day before
+        # issue_time — chronologically gap-free, including its last 7 days.
+        data_start = ensure_utc(issue_time - timedelta(days=10))
+        by_day = {
+            day: make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(data_start + timedelta(days=day - 1)),
+                value=float(day),
+                rng=random.Random(day),
+            )
+            for day in range(1, 11)
+        }
+        # Scrambled PHYSICAL order (odds then evens): the LAST 7 elements in
+        # this list order are days {7,9,2,4,6,8,10} — a non-contiguous
+        # subset with real 2-day gaps between several of them, even though
+        # every day 1-10 is genuinely present. A validator that trusts
+        # PHYSICAL order (instead of sorting first) sees those manufactured
+        # gaps and wrongly raises; the true chronological tail (days 4-10)
+        # has none.
+        scrambled_order = [1, 3, 5, 7, 9, 2, 4, 6, 8, 10]
+        observations = [by_day[day] for day in scrambled_order]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=fetch_lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+            declared_lookback_steps=declared_lookback_steps,
+        )
+
+        assert inputs is not None, (
+            "a scrambled but chronologically gap-free observation list "
+            "wrongly suppressed the hindcast step — validation examined an "
+            "arbitrary PHYSICAL tail instead of the true chronological one"
+        )
+        # The chronological tail must be exactly days 4-10 (values 4.0-10.0),
+        # in order — not whatever the scrambled physical order left last.
+        tail = inputs.data.past_targets.tail(declared_lookback_steps)
+        assert tail["discharge"].to_list() == [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+
+
 class TestHindcastCadenceMismatchSkipsStepGracefully:
     """Plan 228 review fixer round (major): a real BAFU/SwissMetNet lookback
     window can legitimately contain an isolated missing bucket (a

@@ -24,10 +24,12 @@ from sapphire_flow.services.caravan_statics import (
 from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
     resample_to_time_step,
+    resolved_aggregation_methods,
     validate_time_step_cadence,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
+    AggregationMethod,
     EnsembleRepresentation,
     ForcingType,
     QcStatus,
@@ -158,6 +160,7 @@ def _assemble_hindcast_inputs(
     static_attributes: pl.DataFrame | None,
     parameter: str = "discharge",
     declared_lookback_steps: int | None = None,
+    aggregation_methods: dict[str, AggregationMethod] | None = None,
 ) -> StationModelInputs | None:
     lookback_start = ensure_utc(issue_time - lookback_steps * time_step)
     # +1 because the fetch end is exclusive
@@ -223,7 +226,9 @@ def _assemble_hindcast_inputs(
     # (D4) — the fetch bounds above already put `issue_time`'s own phase out
     # of the picture, so no `anchor` is passed (or exists) here.
     obs_df = _observations_to_dataframe(observations, parameter)
-    obs_df = resample_to_time_step(obs_df, time_step, aggregation_methods=None)
+    obs_df = resample_to_time_step(
+        obs_df, time_step, aggregation_methods=aggregation_methods
+    )
     # ALSO FIX #1 (Plan 228 per-run scope): validate only the window the
     # model actually CONSUMES (`declared_lookback_steps`, the model's own
     # `data_requirements.lookback_steps`), never the runner's much larger
@@ -232,6 +237,14 @@ def _assemble_hindcast_inputs(
     # 7-step model ever reads via `.tail(7)` — suppressed the hindcast step
     # entirely. `declared_lookback_steps=None` (no model context available)
     # falls back to validating the whole delivered frame, unchanged.
+    #
+    # Review fixer round (major): `.tail()` trims the CHRONOLOGICAL tail, so
+    # it must run against timestamp-sorted rows — `resample_to_time_step`
+    # now guarantees that on every return path, but this explicit `.sort()`
+    # keeps the invariant local rather than relying on a callee's contract
+    # (the observation store issues no `ORDER BY`, so an unsorted frame here
+    # would silently validate an arbitrary physical tail instead).
+    obs_df = obs_df.sort("timestamp")
     validation_window = (
         obs_df.tail(declared_lookback_steps)
         if declared_lookback_steps is not None
@@ -433,6 +446,9 @@ def run_station_hindcast(
                 static_attributes=static_df,
                 parameter=parameter,
                 declared_lookback_steps=model.data_requirements.lookback_steps,
+                aggregation_methods=resolved_aggregation_methods(
+                    model.data_requirements
+                ),
             )
             if inputs is None:
                 results.append(
@@ -649,6 +665,9 @@ def run_group_hindcast(
                     static_attributes=static_map.get(sid),
                     parameter=parameter_map.get(sid, "discharge"),
                     declared_lookback_steps=model.data_requirements.lookback_steps,
+                    aggregation_methods=resolved_aggregation_methods(
+                        model.data_requirements
+                    ),
                 )
                 if inputs is None:
                     skipped[sid] = "insufficient data"

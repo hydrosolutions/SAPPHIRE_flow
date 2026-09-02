@@ -7,6 +7,9 @@ from typing import TYPE_CHECKING, TypeVar, cast
 import polars as pl
 import structlog
 from forecast_interface import (
+    AggregationMethod as FIAggregationMethod,
+)
+from forecast_interface import (
     ArtifactScope as FIArtifactScope,
 )
 from forecast_interface import (
@@ -52,6 +55,7 @@ from sapphire_flow.exceptions import (
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
+    AggregationMethod,
     ArtifactScope,
     EnsembleMode,
     ForcingRoute,
@@ -164,6 +168,20 @@ def fi_unit_to_canonical(unit: Unit) -> str:
     except KeyError as exc:
         raise ConfigurationError(
             f"No SAP3 canonical unit mapping for ForecastInterface Unit.{unit.name}"
+        ) from exc
+
+
+def fi_aggregation_to_canonical(method: FIAggregationMethod) -> AggregationMethod:
+    """Map a ForecastInterface ``AggregationMethod`` to SAP3's own enum of
+    the same name (Plan 228 review fixer round, blocker) — the two are
+    separate classes so a declared aggregation must be translated, never
+    assumed interchangeable just because their VALUES happen to match."""
+    try:
+        return AggregationMethod(method.value)
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"No SAP3 AggregationMethod mapping for ForecastInterface "
+            f"AggregationMethod.{method.name}"
         ) from exc
 
 
@@ -580,6 +598,7 @@ class ForecastInterfaceAdapter:
         spatial_reps: set[FISpatialRepresentation] = set()
         future_dynamic_features: set[str] = set()
         past_variables: list[tuple[str, PastKnownVariable]] = []
+        future_variables: list[tuple[str, FutureKnownVariable]] = []
         forecast_horizon_steps: int | None = None
         any_ensemble_future = False
 
@@ -593,6 +612,7 @@ class ForecastInterfaceAdapter:
             for variables in spec.future_known.values():
                 for name, variable in variables.items():
                     future_dynamic_features.add(name)
+                    future_variables.append((name, variable))
                     if variable.ensemble_mode is FIEnsembleMode.ENSEMBLE:
                         any_ensemble_future = True
                     if forecast_horizon_steps is None:
@@ -641,6 +661,37 @@ class ForecastInterfaceAdapter:
                 continue
             past_dynamic_features.add(name)
 
+        # Plan 228 review fixer round (blocker): a model's DECLARED
+        # per-variable aggregation (`PastKnownVariable.aggregation` /
+        # `FutureKnownVariable.aggregation`) must survive projection into
+        # `ModelDataRequirements` — dropping it here is exactly what let
+        # input assembly fall back to matching purely on parameter NAME,
+        # silently downgrading a legally-declared MAX to MEAN. `None`
+        # (undeclared) is skipped, not recorded as a conflict-checkable
+        # value; the SAME name declared with two DIFFERENT non-None methods
+        # (across branches, or between a past- and future-known variable) is
+        # a genuine model-configuration fault and raises, exactly like the
+        # existing unit-conflict check below.
+        declared_aggregation: dict[str, AggregationMethod] = {}
+        for name, past_variable in past_variables:
+            if past_variable.aggregation is None:
+                continue
+            self._record_conflict_checked(
+                values=declared_aggregation,
+                name=name,
+                value=fi_aggregation_to_canonical(past_variable.aggregation),
+                label="aggregation",
+            )
+        for name, future_variable in future_variables:
+            if future_variable.aggregation is None:
+                continue
+            self._record_conflict_checked(
+                values=declared_aggregation,
+                name=name,
+                value=fi_aggregation_to_canonical(future_variable.aggregation),
+                label="aggregation",
+            )
+
         [spatial_rep] = spatial_reps
         return ModelDataRequirements(
             target_parameters=frozenset(req.targets),
@@ -661,6 +712,7 @@ class ForecastInterfaceAdapter:
             ensemble_mode=(
                 EnsembleMode.ENSEMBLE if any_ensemble_future else EnsembleMode.SINGLE
             ),
+            declared_aggregations=frozenset(declared_aggregation.items()),
         )
 
     def _declared_fi_units(self) -> dict[str, Unit]:

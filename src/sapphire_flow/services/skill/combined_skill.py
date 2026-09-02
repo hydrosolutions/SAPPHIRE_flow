@@ -9,7 +9,10 @@ from sapphire_flow.services.forecast_combination import (
     combine_ensembles_pooled,
 )
 from sapphire_flow.services.skill.bma_weights import compute_bma_weights
-from sapphire_flow.services.skill.service import compute_skill_for_station
+from sapphire_flow.services.skill.service import (
+    compute_skill_for_station,
+    observation_fetch_bounds,
+)
 from sapphire_flow.types.enums import ModelCombinationStrategy
 from sapphire_flow.types.ids import BMA_MODEL_ID, POOLED_MODEL_ID, ModelId
 
@@ -184,14 +187,21 @@ def compute_bma_skill_cross_validated(
             for mid, hcs in hcasts_by_model.items()
         }
 
-    def _obs_for_steps(
-        step_set: set[UtcDatetime],
+    def _obs_for_hindcasts(
+        hcs: list[HindcastForecast],
     ) -> list[Observation]:
-        if not step_set:
+        """Observations covering ``hcs``' OWN valid-time span (Plan 228
+        review fixer round, blocker) — never
+        ``[min(hindcast_step), max(hindcast_step)]``, which for a SINGLE
+        hindcast collapses to an empty (often zero-observation) range. Both
+        one-step folds used to silently score against no observations at
+        all; ``observation_fetch_bounds`` derives the bounds from the
+        ensembles' own ``valid_time`` and ``time_step`` instead, exactly as
+        ``compute_skills_task`` already does for the non-CV path."""
+        if not hcs:
             return observations
-        min_step = min(step_set)
-        max_step = max(step_set)
-        return [o for o in observations if min_step <= o.timestamp <= max_step]
+        start, end = observation_fetch_bounds(hcs)
+        return [o for o in observations if start <= o.timestamp < end]
 
     def _scores_for_fold(
         train_hindcasts: dict[ModelId, list[HindcastForecast]],
@@ -201,10 +211,7 @@ def compute_bma_skill_cross_validated(
         # Compute per-model skill on training fold to derive weights
         scores_by_model: dict[ModelId, list[SkillScore]] = {}
         for model_id, hcs in train_hindcasts.items():
-            train_obs_set: set[UtcDatetime] = set()
-            for hc in hcs:
-                train_obs_set.add(hc.hindcast_step)
-            train_obs = _obs_for_steps({hc.hindcast_step for hc in hcs})
+            train_obs = _obs_for_hindcasts(hcs)
             model_scores, _ = compute_skill_for_station(
                 station_id=station_id,
                 model_id=model_id,
@@ -247,18 +254,26 @@ def compute_bma_skill_cross_validated(
             weights=fold_weights,
         )
 
+    def _flatten(
+        hcasts_by_model: dict[ModelId, list[HindcastForecast]],
+    ) -> list[HindcastForecast]:
+        return [hc for hcs in hcasts_by_model.values() for hc in hcs]
+
+    eval_hindcasts_half_2 = _filter_hindcasts(hindcasts_by_model, half_2)
+    eval_hindcasts_half_1 = _filter_hindcasts(hindcasts_by_model, half_1)
+
     # Fold 1: train on half_1, evaluate on half_2
     fold1_scores, fold1_diagrams = _scores_for_fold(
         train_hindcasts=_filter_hindcasts(hindcasts_by_model, half_1),
-        eval_hindcasts=_filter_hindcasts(hindcasts_by_model, half_2),
-        eval_obs=_obs_for_steps(half_2),
+        eval_hindcasts=eval_hindcasts_half_2,
+        eval_obs=_obs_for_hindcasts(_flatten(eval_hindcasts_half_2)),
     )
 
     # Fold 2: train on half_2, evaluate on half_1
     fold2_scores, fold2_diagrams = _scores_for_fold(
         train_hindcasts=_filter_hindcasts(hindcasts_by_model, half_2),
-        eval_hindcasts=_filter_hindcasts(hindcasts_by_model, half_1),
-        eval_obs=_obs_for_steps(half_1),
+        eval_hindcasts=eval_hindcasts_half_1,
+        eval_obs=_obs_for_hindcasts(_flatten(eval_hindcasts_half_1)),
     )
 
     averaged_scores = _average_skill_scores(

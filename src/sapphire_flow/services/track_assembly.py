@@ -33,6 +33,7 @@ from sapphire_flow.services.operational_inputs import (
 from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
     resample_to_time_step,
+    resolved_aggregation_methods,
     validate_time_step_cadence,
 )
 from sapphire_flow.types.datetime import ensure_utc
@@ -278,7 +279,7 @@ def assemble_assignment_inputs(
         )
     past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
-        past_targets, time_step, aggregation_methods=None
+        past_targets, time_step, aggregation_methods=resolved_aggregation_methods(reqs)
     )
     # Plan 228 D1(C): backstop shared with the hindcast assembler — see
     # `validate_time_step_cadence` for why this is scoped to past_targets.

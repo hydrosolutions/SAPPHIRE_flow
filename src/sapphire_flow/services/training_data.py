@@ -29,7 +29,11 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
-    from sapphire_flow.types.model import GroupTrainingData, StationTrainingData
+    from sapphire_flow.types.model import (
+        GroupTrainingData,
+        ModelDataRequirements,
+        StationTrainingData,
+    )
     from sapphire_flow.types.station import StationGroup
 
 log = structlog.get_logger()
@@ -63,6 +67,26 @@ def aggregation_method_for(parameter: str) -> AggregationMethod:
     return _V0_AGGREGATION_FALLBACK.get(parameter, AggregationMethod.MEAN)
 
 
+def resolved_aggregation_methods(
+    data_requirements: ModelDataRequirements,
+) -> dict[str, AggregationMethod]:
+    """Per-column aggregation methods for :func:`resample_to_time_step`,
+    with a model's DECLARED per-variable aggregation
+    (``PastKnownVariable.aggregation`` / ``FutureKnownVariable.aggregation``,
+    captured into ``ModelDataRequirements.declared_aggregations`` by the FI
+    adapter) taking precedence over the v0 name-keyed fallback table.
+
+    Plan 228 review fixer round (blocker): every caller that previously
+    passed ``aggregation_methods=None`` to ``resample_to_time_step`` ignored
+    a model's declaration entirely and fell back to matching purely on
+    parameter NAME — a model legally declaring, say, ``discharge`` with
+    ``AggregationMethod.MAX`` would silently receive/train on the MEAN
+    fallback instead. Declared values win; any parameter the model did not
+    declare an aggregation for keeps the v0 fallback unchanged.
+    """
+    return {**_V0_AGGREGATION_FALLBACK, **dict(data_requirements.declared_aggregations)}
+
+
 _CADENCE_TOLERANCE_FRACTION = 0.01
 
 
@@ -84,6 +108,24 @@ def _detect_cadence_us(df: pl.DataFrame) -> float | None:
         return None
     # polars .median() is typed PythonLiteral; the cast column is Int64.
     return cast("float", median_diff_us)
+
+
+def _all_timestamps_calendar_aligned(df: pl.DataFrame, target_us: float) -> bool:
+    """True iff every ``timestamp`` row already sits on a whole multiple of
+    ``target_us`` since the Unix epoch (Plan 228 D4's calendar grid).
+
+    Plan 228 review fixer round (major): this is checked BEFORE (and
+    independently of) any cadence/height shortcut in
+    :func:`resample_to_time_step` — a frame at the right cadence but the
+    wrong PHASE (e.g. daily rows all stamped 06:00) must still fall through
+    to bucketing, not be waved through as "already correct".
+    """
+    if df.is_empty():
+        return True
+    if target_us <= 0:
+        return True
+    remainder = df["timestamp"].dt.epoch("us") % int(target_us)
+    return bool((remainder == 0).all())
 
 
 def validate_time_step_cadence(
@@ -188,7 +230,8 @@ def resample_to_time_step(
     """Resample a wide-format observations DataFrame to the target time_step.
 
     Expects columns: ``timestamp`` (datetime) + one column per parameter.
-    Returns as-is if the data cadence already matches ``time_step``.
+    Returns as-is ONLY when the data both matches ``time_step`` cadence AND
+    is already stamped on the UTC-calendar grid.
 
     Buckets are UTC-calendar-aligned (whole multiples of ``time_step`` since
     the Unix epoch) — Plan 228 D4: every path aggregates onto the SAME grid,
@@ -197,9 +240,25 @@ def resample_to_time_step(
     forecast's ``valid_time``) must fetch pre-aligned bounds themselves (see
     :func:`aligned_lookback_bounds`), not ask this function to shift the
     grid to meet them halfway.
+
+    Plan 228 review fixer round (major): the fast path used to trigger on
+    cadence match ALONE, so already-daily data stamped off the calendar grid
+    (e.g. every row at 06:00, from a non-midnight operational cycle) was
+    returned byte-for-byte unchanged — never rebucketed onto the calendar
+    grid, exactly the phase-aligned behavior D4 forbids. Calendar alignment
+    is now checked FIRST and independently of cadence/height, so a
+    misaligned frame (including a single misaligned row) always falls
+    through to the ``group_by_dynamic`` bucketing below, which re-labels it
+    onto the calendar grid.
+
+    Plan 228 review fixer round (major): sorted by ``timestamp`` on EVERY
+    return path, including the fast paths above — a caller (e.g. hindcast's
+    ``.tail(declared_lookback_steps)``) trims the CHRONOLOGICAL tail, and an
+    unordered store read (no ``ORDER BY``) must not silently defeat that.
     """
-    if df.is_empty() or df.height < 2:
+    if df.is_empty():
         return df
+    df = df.sort("timestamp")
 
     methods = (
         aggregation_methods
@@ -207,13 +266,16 @@ def resample_to_time_step(
         else _V0_AGGREGATION_FALLBACK
     )
 
-    # Detect current cadence via median gap between sorted timestamps.
-    median_diff_us = _detect_cadence_us(df)
     target_us = time_step.total_seconds() * 1_000_000
-    if median_diff_us is None:
-        return df
-    if abs(median_diff_us - target_us) < target_us * _CADENCE_TOLERANCE_FRACTION:
-        return df
+    if _all_timestamps_calendar_aligned(df, target_us):
+        if df.height < 2:
+            return df
+        # Detect current cadence via median gap between sorted timestamps.
+        median_diff_us = _detect_cadence_us(df)
+        if median_diff_us is None:
+            return df
+        if abs(median_diff_us - target_us) < target_us * _CADENCE_TOLERANCE_FRACTION:
+            return df
 
     # Build per-column aggregation expressions for wide-format DataFrame.
     parameter_cols = [c for c in df.columns if c != "timestamp"]
@@ -229,6 +291,8 @@ def resample_to_time_step(
             method = AggregationMethod.MEAN
         if method == AggregationMethod.SUM:
             agg_exprs.append(pl.col(col).sum())
+        elif method == AggregationMethod.MAX:
+            agg_exprs.append(pl.col(col).max())
         else:
             agg_exprs.append(pl.col(col).mean())
 
@@ -411,9 +475,10 @@ def assemble_station_training_data(
         )
         return None
 
+    aggregation_methods = resolved_aggregation_methods(model.data_requirements)
     past_targets_df = _observations_to_dataframe(observations, parameter)
     past_targets_df = resample_to_time_step(
-        past_targets_df, time_step, aggregation_methods=None
+        past_targets_df, time_step, aggregation_methods=aggregation_methods
     )
 
     # Past-known forcing features are delivered as history (past_dynamic); the
@@ -425,6 +490,7 @@ def assemble_station_training_data(
         future_features=future_features,
         past_targets=past_targets_df,
         time_step=time_step,
+        aggregation_methods=aggregation_methods,
     )
 
     return StationTrainingData(
@@ -450,6 +516,7 @@ def _future_dynamic_from_forcing(
     future_features: frozenset[str],
     past_targets: pl.DataFrame,
     time_step: timedelta,
+    aggregation_methods: dict[str, AggregationMethod] | None = None,
 ) -> pl.DataFrame:
     if not future_features:
         return forcing_df.select("timestamp").clear()
@@ -458,7 +525,7 @@ def _future_dynamic_from_forcing(
     future_forcing = resample_to_time_step(
         forcing_df.select(["timestamp", *future_cols]),
         time_step,
-        aggregation_methods=None,
+        aggregation_methods=aggregation_methods,
     ).with_columns(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
 
     return (

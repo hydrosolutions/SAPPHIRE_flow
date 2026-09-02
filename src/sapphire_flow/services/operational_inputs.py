@@ -12,10 +12,12 @@ from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
     resample_to_time_step,
+    resolved_aggregation_methods,
     validate_time_step_cadence,
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    AggregationMethod,
     EnsembleMode,
     ForcingRoute,
     QcStatus,
@@ -447,6 +449,27 @@ def raw_forcing_to_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
+def _merge_declared_aggregations(
+    requirements: list[ModelDataRequirements],
+) -> frozenset[tuple[str, AggregationMethod]]:
+    """Union every assigned model's declared per-parameter aggregation,
+    raising if two models declare CONFLICTING aggregations for the same
+    parameter name (Plan 228 review fixer round, blocker) — a superset
+    assembly cannot honour both at once, so this fails loudly rather than
+    silently picking one model's declaration over the other's."""
+    merged: dict[str, AggregationMethod] = {}
+    for req in requirements:
+        for name, method in req.declared_aggregations:
+            existing = merged.get(name)
+            if existing is not None and existing != method:
+                raise ConfigurationError(
+                    "Station assigns models with conflicting declared "
+                    f"aggregation for {name!r}: {existing!r} != {method!r}"
+                )
+            merged[name] = method
+    return frozenset(merged.items())
+
+
 def build_superset_requirements(
     requirements: list[ModelDataRequirements],
 ) -> ModelDataRequirements:
@@ -504,6 +527,7 @@ def build_superset_requirements(
         forecast_horizon_steps=max(r.forecast_horizon_steps for r in requirements),
         spatial_input_type=requirements[0].spatial_input_type,
         ensemble_mode=superset_ensemble_mode,
+        declared_aggregations=_merge_declared_aggregations(requirements),
     )
 
 
@@ -563,7 +587,7 @@ def assemble_station_operational_inputs(
 
     past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
-        past_targets, time_step, aggregation_methods=None
+        past_targets, time_step, aggregation_methods=resolved_aggregation_methods(reqs)
     )
     # Plan 228 D1(C): backstop shared with the hindcast assembler — see
     # `validate_time_step_cadence` for why this is scoped to past_targets.

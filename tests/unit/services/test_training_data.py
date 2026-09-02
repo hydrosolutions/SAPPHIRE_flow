@@ -1060,6 +1060,62 @@ class TestResampleToTimeStep:
             )
 
 
+class TestResampleAlreadyStepSizedDataStillCalendarAligns:
+    """Plan 228 review fixer round (major): the fast path used to trigger on
+    cadence match ALONE — already-daily rows stamped off the UTC-calendar
+    grid (e.g. every row at 06:00, from a non-midnight operational cycle)
+    were returned byte-for-byte unchanged, never rebucketed. Those rows then
+    pass ``validate_time_step_cadence`` (which only checks GAPS, not phase)
+    and can join 06:00 forecasts — exactly the phase-aligned behavior D4
+    forbids. The existing UTC-calendar test
+    (``test_buckets_are_utc_calendar_aligned_never_phase_aligned``) uses
+    finer 10-minute input, so it never enters this fast path at all.
+    """
+
+    def test_already_daily_cadence_at_0600_is_still_rebucketed_to_midnight(
+        self,
+    ) -> None:
+        start = ensure_utc(datetime(2024, 1, 1, 6, tzinfo=UTC))
+        n = 5
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(start.timestamp() + i * 86400, tz=UTC)
+                    )
+                    for i in range(n)
+                ],
+                "discharge": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+        result = resample_to_time_step(df, timedelta(days=1))
+
+        for ts in result["timestamp"]:
+            assert ts.hour == 0 and ts.minute == 0 and ts.second == 0, (
+                f"already-daily-cadence bucket at {ts} is still phase-aligned "
+                "to 06:00, not the UTC-calendar grid"
+            )
+
+    def test_single_misaligned_row_is_floored_to_the_calendar_grid(self) -> None:
+        df = pl.DataFrame(
+            {
+                "timestamp": [ensure_utc(datetime(2024, 1, 1, 6, tzinfo=UTC))],
+                "discharge": [42.0],
+            }
+        )
+
+        result = resample_to_time_step(df, timedelta(days=1))
+
+        assert result.height == 1
+        ts = result["timestamp"][0]
+        assert ts == ensure_utc(datetime(2024, 1, 1, tzinfo=UTC)), (
+            f"single-row frame at {ts} was returned unchanged instead of "
+            "floored onto the UTC-calendar grid"
+        )
+        assert abs(result["discharge"][0] - 42.0) < 1e-9
+
+
 class TestValidateTimeStepCadence:
     """Plan 228 review fixer round (major): direct unit coverage for
     ``validate_time_step_cadence``, wired as a hard `ConfigurationError`-
