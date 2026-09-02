@@ -405,3 +405,30 @@ and
 `::TestComputeCombinedSkillsTask::test_mixed_time_step_across_models_degrades_gracefully`,
 both proven RED against the pre-fix code (uncaught
 `ConfigurationError: ... mixed time_step ...`) and GREEN after.
+
+## Review disposition (2026-09-02) — review CUT here, findings folded
+
+The implement loop escalated after 2 rounds with 2 blockers + 3 majors + 1 minor. **The owner cut
+the review at this point** rather than run a fourth round: P1 and P2 — the defects this plan exists
+to fix — are fixed and locked, the full suite runs green (5063 passed, 0 failed), and the remaining
+findings are either narrower than they read or belong elsewhere. Every finding below was verified
+against the code before disposition.
+
+| Finding | Severity | Disposition |
+|---|---|---|
+| FI-declared aggregation bypassed/flattened on every path | blocker | **→ Plan 234.** Broad FI-conformance work, not this plan's subject. **Not an FI issue** — the FI docs already specify the method, the default and that SAP3 owes it |
+| Cohort partitioning writes scores whose natural key omits `time_step`/`phase`, so cohorts collide under `ON CONFLICT DO NOTHING` | blocker | **FIX HERE.** This branch introduced the partitioning, so it owns the data-loss path it created. Latent today (one step, one phase after D4), live the moment heterogeneity appears |
+| Declared lookback validated but not delivered (`validation_window` trims; `past_targets=obs_df` does not) | major | **→ Plan 234.** Today's models self-slice with `tail(N)`, so P1 is genuinely fixed; the invariant is simply not enforced where the contract places it |
+| Hindcasts attributed to the wrong artifact when the run id is omitted | major | **→ Plan 234** |
+| Phase validation reads only `vts[0]`, so an internally mixed-phase ensemble passes | major | **FIX HERE.** A hole in code this branch added |
+| Decision record contradicts the implemented behaviour (still describes the removed anchor) | minor | **FIX HERE.** The record must not describe a mechanism that was deleted |
+
+### What ships from this plan
+
+P1 and P2 fixed and locked by 8 acceptance tests, each proven red-first by stash-and-restore. D4's
+UTC-calendar bucketing with aligned-and-extended bounds. `PREFECT_HOME` scoped per checkout.
+
+**And one find worth more than its plan:** migration 0051. `computation_version` had been silently
+dropped from the live skill natural key at migration 0016 while `db/metadata.py` still declared it —
+so **D3's recompute would have silently discarded every corrected row** via `ON CONFLICT DO
+NOTHING`. Found and fixed here, proven by an integration test.
