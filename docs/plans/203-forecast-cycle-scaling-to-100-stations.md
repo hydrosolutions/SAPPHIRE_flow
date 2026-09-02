@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-27
 plan: 203
 title: Forecast-cycle scaling to the full BAFU set (~170 stations) — measure the two costs that actually grow
@@ -14,7 +14,7 @@ note: The filename keeps its original `-to-100-stations` slug so existing refere
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-09-02.
 
 ## ⛔ Proportionality — this plan MEASURES, it does not optimise
 
