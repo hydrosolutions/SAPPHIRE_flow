@@ -231,18 +231,25 @@ def _resample_observations_to_forecast_step(
     observations: list[Observation],
     parameter: str,
     time_step: timedelta,
+    now: UtcDatetime,
 ) -> dict[object, float]:
     """Aggregate raw observations to ``time_step`` (Plan 228 P2/D2), keyed by
     the resulting bucket ``timestamp`` for an exact-key lookup against a
-    forecast's ``valid_time`` — the SAME resampling ``_assemble_hindcast_inputs``
-    applies to the model's own lookback (P1/D1), so a step already at
-    ``time_step`` cadence (nothing to fix) passes through unchanged.
+    forecast's ``valid_time``. This uses the fallback-only
+    ``aggregation_method_for`` (a single-parameter join has no
+    ``ModelDataRequirements`` in scope here) — unlike
+    ``_assemble_hindcast_inputs``/the operational assemblers, which now call
+    ``resolved_aggregation_methods(reqs)`` and let a model's FI-declared
+    per-variable aggregation override the v0 name-keyed fallback
+    (`docs/touchpoint-maps.md`). A model that legally declares a non-default
+    aggregation for its target parameter is therefore scored against a mean
+    even if it trains against, say, a max — a narrower gap than P2 (still a
+    quantity mismatch, not a resampling omission) and out of this plan's
+    scope (assigned to Plan 234).
 
     A daily-mean forecast compared against a single instantaneous reading is
     a pure quantity mismatch present in every skill score regardless of
-    forecast quality (measured: median 6.4%, p95 48.6% error). This
-    aggregates with the SAME method the model trains against
-    (``aggregation_method_for``) rather than substituting a different one.
+    forecast quality (measured: median 6.4%, p95 48.6% error).
 
     Buckets are UTC-calendar-aligned (Plan 228 D4) — never phase-aligned to
     the forecast's own ``valid_time``. A forecast whose ``valid_time`` does
@@ -250,6 +257,14 @@ def _resample_observations_to_forecast_step(
     not exact-match any key here; that mismatch is Plan 226's to fix
     (anchoring ``valid_time`` to the calendar), not something this function
     papers over by shifting the grid to meet it.
+
+    Review fixer round (major): a bucket is only trusted once its END has
+    actually elapsed as of ``now``. Fetching observations through
+    ``valid_time + time_step`` (``observation_fetch_bounds``) does not
+    guarantee those future-relative-to-now rows exist — a still-forming
+    bucket (e.g. today's daily mean, built from whatever hours have
+    happened to land so far) would otherwise silently exact-match a
+    forecast's ``valid_time`` and score a partial mean as a complete one.
     """
     valued = [(o.timestamp, o.value) for o in observations if o.value is not None]
     if not valued:
@@ -265,13 +280,15 @@ def _resample_observations_to_forecast_step(
         time_step,
         aggregation_methods={parameter: aggregation_method_for(parameter)},
     )
-    return dict(
-        zip(
+    return {
+        ts: v
+        for ts, v in zip(
             resampled["timestamp"].to_list(),
             resampled[parameter].to_list(),
             strict=True,
         )
-    )
+        if ensure_utc(ts) + time_step <= now
+    }
 
 
 def _classify_flow_regime(
@@ -580,7 +597,7 @@ def compute_skill_for_station(
     phase_offset_seconds = None if phase_us is None else phase_us // 1_000_000
 
     obs_lookup = _resample_observations_to_forecast_step(
-        observations, parameter, time_step
+        observations, parameter, time_step, clock()
     )
 
     strata = _build_strata(hindcasts, obs_lookup, seasons, flow_regime_config)

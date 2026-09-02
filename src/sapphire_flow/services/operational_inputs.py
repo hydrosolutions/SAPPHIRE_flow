@@ -613,7 +613,29 @@ def assemble_station_operational_inputs(
         )
         return None
 
-    latest_obs_ts = max((o.timestamp for o in all_observations), default=None)
+    # Freshness must reflect the LATEST raw observation, not the aligned
+    # `past_targets` window (review fixer round, major): `past_targets_end`
+    # excludes the current UTC-calendar bucket entirely (D4), so at a
+    # 06/12/18Z cycle `all_observations` stops ~6-18h before `issue_time`
+    # even when a fresh reading landed minutes ago — manufacturing spurious
+    # staleness (measured: ~6.2h at 06Z, enough to cross the default
+    # warning threshold; worse at 12Z/18Z). Fetch the trailing gap
+    # `[past_targets_end, issue_time)` separately, UNRESAMPLED, for
+    # freshness only — it is never mixed into `past_targets`.
+    freshness_observations: list[Observation] = list(all_observations)
+    if past_targets_end < issue_time:
+        for parameter in target_parameters:
+            freshness_observations.extend(
+                obs_store.fetch_observations(
+                    station_id=station_id,
+                    parameter=parameter,
+                    start=past_targets_end,
+                    end=issue_time,
+                    qc_status=QcStatus.QC_PASSED,
+                )
+            )
+
+    latest_obs_ts = max((o.timestamp for o in freshness_observations), default=None)
     observation_staleness_hours: float | None = None
     if latest_obs_ts is not None:
         observation_staleness_hours = (now - latest_obs_ts).total_seconds() / 3600.0

@@ -16,10 +16,14 @@ key, internally-mixed-phase validation, this record's own staleness);
 detail), Plan 226 (blocked on this plan — anchoring `valid_time` is a separate,
 later fix)
 
-## ⚠️ Every skill score predating this fix is invalid; only two model families' hindcasts are
+## ⚠️ Every skill score at computation_version < 2 is invalid; only two model families' hindcasts are
 
-**Every row in `skill_scores` created before 2026-09-01 was computed on
-mismatched data and does not mean what it says.** Two independent defects (P1,
+**Every row in `skill_scores` at `computation_version < 2` was computed on
+mismatched data and does not mean what it says.** This is a version cutoff,
+not a calendar date: the in-flight mac-mini onboarding/hindcasting test run
+(D3) kept producing `computation_version = 1` scores through and past
+2026-09-01 while this fix sat unmerged, so "predates 2026-09-01" would
+wrongly trust real post-that-date rows. Two independent defects (P1,
 P2 below) both corrupted the comparison; P2 affects 100% of `skill_scores` rows
 (every score was computed by comparing a step-mean forecast to a raw
 instantaneous observation), P1 an additional subset built on
@@ -27,10 +31,13 @@ instantaneous observation), P1 an additional subset built on
 (weather-only, `_n_lags = 0`), `ClimatologyFallback` (does not read
 `past_targets`), and `PersistenceFallback` (a different, smaller error of the
 same family — see the plan's "What is wrong" § P1) are NOT P1-affected. Do not
-trust a pre-fix skill number for model promotion, ranking, or API display. Per
-D3 (below), these rows are pending being marked `superseded` and recomputed —
-this has **not yet happened** as of this record; check `skill_scores.freshness`
-/ a future superseded-marker column before relying on any row's age.
+trust a `computation_version < 2` skill number for model promotion, ranking,
+or API display — `evaluate_skill_gate` (review fixer round) now enforces this
+automatically by only ever considering the highest `computation_version`
+among CURRENT rows. Per D3 (below), pre-fix rows are pending being marked
+`superseded` and recomputed — this has **not yet happened** as of this
+record; check `skill_scores.freshness`/`computation_version` before relying
+on any row.
 
 ## The two defects
 
@@ -71,10 +78,20 @@ anchoring to `issue_time` or `valid_time`.**
   `resample_to_time_step` (`services/training_data.py`) the operational path
   already uses, before it reaches `StationInputData`. The fetch bounds feeding
   that resample are UTC-calendar-ALIGNED-AND-EXTENDED
-  (`aligned_lookback_bounds`, § D4) so every model receives exactly
-  `lookback_steps` COMPLETE calendar buckets — never a naive window with a
-  partial bucket at either end, and never phase-aligned to a forecast's own
-  `issue_time`.
+  (`aligned_lookback_bounds`, § D4) so the FETCH is exactly the runner's
+  `lookback_steps` (a fixed 720-bucket fetch window, unrelated to any one
+  model's own declared lookback) COMPLETE calendar buckets — never a naive
+  window with a partial bucket at either end, and never phase-aligned to a
+  forecast's own `issue_time`. **This is a fetch-side guarantee, not
+  exact-N delivery to the model**: `_assemble_hindcast_inputs` still sets
+  `past_targets=obs_df` — the model receives the WHOLE resampled frame
+  (up to 720 buckets), not the `declared_lookback_steps` it actually reads.
+  Only the CADENCE validation (`Enforcement`, below) is scoped to the
+  model's own tail slice; delivering exactly `declared_lookback_steps` at
+  the boundary is unimplemented and assigned to Plan 234. Today's models
+  self-slice via `.tail(N)` in their own code, so P1 (the wrong-cadence
+  bug) is genuinely fixed regardless — this caveat is about contract
+  precision, not a live defect.
 - **Enforcement** (`services/training_data.py::validate_time_step_cadence`, new):
   a hard backstop, called after every `past_targets` resample in
   `hindcast.py`, `operational_inputs.py`, AND `track_assembly.py` — raises

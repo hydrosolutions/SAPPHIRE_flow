@@ -15,7 +15,13 @@ from sapphire_flow.types.enums import (
     SkillFreshness,
     SkillSource,
 )
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    BMA_MODEL_ID,
+    POOLED_MODEL_ID,
+    ArtifactId,
+    ModelId,
+    StationId,
+)
 from sapphire_flow.types.skill import SkillDiagram, SkillScore
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
@@ -86,7 +92,7 @@ def _seed_artifact(
 def _make_score(
     station_id: StationId,
     model_id: ModelId,
-    artifact_id: ArtifactId,
+    artifact_id: ArtifactId | None,
     *,
     parameter: str = "discharge",
     computation_version: int = 1,
@@ -257,6 +263,75 @@ class TestPgSkillStore:
         assert len(results) == 2
         by_time_step = {r.time_step_seconds: r.score for r in results}
         assert by_time_step == {86400: 1.0, 3600: 2.0}
+
+    def test_repeated_pooled_computation_with_null_artifact_is_idempotent(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 228 fixer round (blocker): pooled/BMA combined scores always
+        carry `model_artifact_id=None` (`services/skill/combined_skill.py`
+        passes `artifact_id=None` to `compute_skill_for_station`). Before
+        this fix, `uq_skill_scores_natural_key` indexed `model_artifact_id`
+        raw (no `COALESCE`), and PostgreSQL treats every NULL as distinct
+        from every other NULL — so re-running pooled skill computation for
+        the identical stratum inserted a SECOND row instead of colliding
+        under `ON CONFLICT DO NOTHING`. A real recompute (e.g. the next
+        scheduled `compute_combined_skills_task` run) would therefore
+        accumulate duplicate pooled scores indefinitely. This can only be
+        observed against a real Postgres unique index.
+        """
+        sid = _seed_station(db_connection)
+        # POOLED_MODEL_ID is pre-seeded into `models` by migration 0024.
+        mid = POOLED_MODEL_ID
+        store = PgSkillStore(db_connection)
+
+        first_run = _make_score(
+            sid, mid, None, metric="crps", lead_time_hours=24, score=0.5
+        )
+        # A second computation of the SAME stratum (same natural key, same
+        # None artifact_id) — as a real repeated `compute_combined_skills_task`
+        # run would produce.
+        second_run = _make_score(
+            sid, mid, None, metric="crps", lead_time_hours=24, score=0.5
+        )
+        store.store_skill_scores([first_run])
+        store.store_skill_scores([second_run])
+
+        results = store.fetch_latest_scores(sid, mid)
+        assert len(results) == 1, (
+            f"expected the repeated pooled computation to collide under "
+            f"ON CONFLICT DO NOTHING, got {len(results)} duplicate rows"
+        )
+
+    def test_pooled_and_bma_null_artifact_scores_do_not_collide(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 228 fixer round (blocker): pooled and BMA combined scores
+        for the same station/stratum both carry `model_artifact_id=None`
+        but DIFFERENT `model_id` (`POOLED_MODEL_ID` vs `BMA_MODEL_ID`).
+        `model_id` was not part of the natural key at all before this fix,
+        so a NULL-safe `model_artifact_id` alone would have made these two
+        legitimately-distinct rows collide. Both must survive.
+        """
+        sid = _seed_station(db_connection)
+        # Both are pre-seeded into `models` by migration 0024.
+        pooled_mid = POOLED_MODEL_ID
+        bma_mid = BMA_MODEL_ID
+        store = PgSkillStore(db_connection)
+
+        pooled_score = _make_score(
+            sid, pooled_mid, None, metric="crps", lead_time_hours=24, score=0.5
+        )
+        bma_score = _make_score(
+            sid, bma_mid, None, metric="crps", lead_time_hours=24, score=0.7
+        )
+        store.store_skill_scores([pooled_score, bma_score])
+
+        pooled_results = store.fetch_latest_scores(sid, pooled_mid)
+        bma_results = store.fetch_latest_scores(sid, bma_mid)
+        assert len(pooled_results) == 1
+        assert len(bma_results) == 1
+        assert pooled_results[0].score == 0.5
+        assert bma_results[0].score == 0.7
 
     def test_recompute_after_mark_stale_supersedes_the_corrupted_score(
         self, db_connection: sa.Connection

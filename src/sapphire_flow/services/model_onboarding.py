@@ -28,6 +28,7 @@ from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ModelAssignmentStatus,
     OnboardingOutcome,
+    SkillFreshness,
     SpatialRepresentation,
     StationStatus,
 )
@@ -879,8 +880,24 @@ def evaluate_skill_gate(
     skill_store: SkillStore,
     config: DeploymentConfig,
 ) -> SkillGateResult:
+    """Promote/reject an artifact from its stored skill scores.
+
+    Review fixer round (major): migrations 0051/0052 and
+    `_COMPUTATION_VERSION = 2` deliberately let a stale (pre-Plan-228,
+    quantity-mismatched) score row and its corrected recompute coexist —
+    ``mark_stale`` flips ``freshness`` without deleting the old row, and a
+    version bump gives the recompute a natural key the stale row doesn't
+    occupy. ``fetch_skill_scores`` returns EVERY version, so without this
+    filter a re-evaluation could let a stale v1 value decide the worst
+    score and wrongly reject (or promote) an artifact whose CURRENT scores
+    say otherwise. Only ``freshness == CURRENT`` rows at the highest
+    ``computation_version`` present among them control the gate.
+    """
     scores = skill_store.fetch_skill_scores(model_id, model_artifact_id)
-    valid_scores = [s for s in scores if s.sample_size >= config.min_skill_samples]
+    current_scores = [s for s in scores if s.freshness == SkillFreshness.CURRENT]
+    max_version = max((s.computation_version for s in current_scores), default=None)
+    gate_scores = [s for s in current_scores if s.computation_version == max_version]
+    valid_scores = [s for s in gate_scores if s.sample_size >= config.min_skill_samples]
 
     metric_worst: dict[str, float] = {}
     for score in valid_scores:

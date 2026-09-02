@@ -1496,7 +1496,18 @@ skill_diagrams = sa.Table(
 sa.Index(
     "uq_skill_scores_natural_key",
     skill_scores.c.station_id,
-    skill_scores.c.model_artifact_id,
+    # Plan 228 fixer round (blocker): `model_id` is required alongside
+    # `model_artifact_id` because pooled/BMA combined scores always carry
+    # `model_artifact_id=NULL` (`services/skill/combined_skill.py`) — for
+    # those rows `model_id` (POOLED_MODEL_ID / BMA_MODEL_ID) is the ONLY
+    # column that distinguishes one combination strategy from another.
+    skill_scores.c.model_id,
+    # `model_artifact_id` is nullable for the same reason and needs the
+    # same NULL-safe treatment as season/regime below — PostgreSQL treats
+    # every NULL as distinct, so two NULL-artifact pooled/BMA computations
+    # for the same stratum would otherwise insert duplicate rows forever
+    # instead of colliding under `ON CONFLICT DO NOTHING`.
+    sa.text("COALESCE(model_artifact_id::text, '')"),
     skill_scores.c.parameter,
     skill_scores.c.skill_source,
     sa.text("COALESCE(forcing_type, '')"),
@@ -1534,7 +1545,11 @@ sa.Index(
 sa.Index(
     "uq_skill_diagrams_natural_key",
     skill_diagrams.c.station_id,
-    skill_diagrams.c.model_artifact_id,
+    # Plan 228 fixer round (blocker): see `uq_skill_scores_natural_key`
+    # above — `model_id` + a NULL-safe `model_artifact_id` are both
+    # required to keep repeated pooled/BMA diagram replays idempotent.
+    skill_diagrams.c.model_id,
+    sa.text("COALESCE(model_artifact_id::text, '')"),
     skill_diagrams.c.parameter,
     skill_diagrams.c.skill_source,
     skill_diagrams.c.computation_version,

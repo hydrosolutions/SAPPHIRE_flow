@@ -627,9 +627,14 @@ class TestSeasonStratification:
         hindcasts = []
         observations = []
 
-        # January hindcasts (winter)
+        # December hindcasts (winter) — both groups deliberately land
+        # BEFORE `clock` (_EPOCH = 2025-01-15): the fixer-round fix to
+        # `_resample_observations_to_forecast_step` excludes any bucket
+        # whose end has not elapsed as of `now`, so a stratification test
+        # with hindcast dates AFTER `clock()` would silently lose its
+        # observations to that (correct) filter rather than to a real bug.
         for i in range(3):
-            step = _utc(2025, 1, i + 1)
+            step = _utc(2024, 12, i + 1)
             hindcasts.append(
                 _make_hindcast(
                     station_id=station_id,
@@ -644,7 +649,7 @@ class TestSeasonStratification:
 
         # July hindcasts (summer)
         for i in range(3):
-            step = _utc(2025, 7, i + 1)
+            step = _utc(2024, 7, i + 1)
             hindcasts.append(
                 _make_hindcast(
                     station_id=station_id,
@@ -953,9 +958,11 @@ class TestFlowRegimeStratification:
                 _make_observation(station_id=station_id, timestamp=vt, value=80.0)
             )
 
-        # High-regime hindcasts: value = 200 m³/s (p50 < 200 < p90)
+        # High-regime hindcasts: value = 200 m³/s (p50 < 200 < p90) —
+        # kept before `clock` (_EPOCH = 2025-01-15, see the season-
+        # stratification comment above for why).
         for i in range(3):
-            step = _utc(2025, 2, i + 1)
+            step = _utc(2025, 1, i + 5)
             hindcasts.append(
                 _make_hindcast(
                     station_id=station_id,
@@ -971,9 +978,10 @@ class TestFlowRegimeStratification:
                 _make_observation(station_id=station_id, timestamp=vt, value=200.0)
             )
 
-        # Flood-regime hindcasts: value = 500 m³/s (> p90=350)
+        # Flood-regime hindcasts: value = 500 m³/s (> p90=350) — kept
+        # before `clock` (see the high-regime comment above).
         for i in range(3):
-            step = _utc(2025, 3, i + 1)
+            step = _utc(2025, 1, i + 9)
             hindcasts.append(
                 _make_hindcast(
                     station_id=station_id,
@@ -1678,6 +1686,94 @@ class TestDailyMeanComparedAgainstDailyMeanObservation:
             assert s.score < 1.0, (
                 "expected near-zero MAE comparing a daily-mean forecast to "
                 f"the daily-mean observation, got {s.score}"
+            )
+
+
+class TestIncompleteCurrentBucketExcludedFromScoring:
+    """Review fixer round (major): `_resample_observations_to_forecast_step`
+    aggregated every available row without checking whether the bucket's
+    END had elapsed. Fetching through `valid_time + time_step`
+    (`observation_fetch_bounds`) does not guarantee those observations
+    exist yet — for a daily valid_time at today's midnight, observations
+    from only [00:00, 06:00) produce a bucket exact-labeled midnight,
+    silently scoring a six-hour partial mean as a daily mean."""
+
+    def test_partial_bucket_excluded_completed_bucket_still_scores(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        now = _utc(2025, 1, 15, hour=6)
+
+        # Completed bucket: valid_time = Jan 14 00:00, bucket end Jan 15
+        # 00:00 <= now (06:00) — a full day of hourly observations, mean
+        # EXACTLY matching the forecast. Must score near-zero MAE.
+        completed = _make_daily_hindcast(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 13),  # valid_time -> Jan 14 00:00
+            forecast_value=50.0,
+        )
+        completed_day_start = _utc(2025, 1, 14)
+        completed_observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(completed_day_start + timedelta(hours=h)),
+                value=50.0,
+            )
+            for h in range(24)
+        ]
+
+        # Partial (still-forming) bucket: valid_time = Jan 15 00:00, bucket
+        # end Jan 16 00:00 > now (Jan 15 06:00) — only 6 hours of the day
+        # have happened. Its mean (200.0) is wildly off the forecast
+        # (50.0); if wrongly treated as a complete daily mean, it would
+        # drag the score far from zero.
+        partial = _make_daily_hindcast(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 14),  # valid_time -> Jan 15 00:00
+            forecast_value=50.0,
+        )
+        partial_day_start = _utc(2025, 1, 15)
+        partial_observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(partial_day_start + timedelta(hours=h)),
+                value=200.0,
+            )
+            for h in range(6)
+        ]
+
+        scores, _ = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=[completed, partial],
+            observations=completed_observations + partial_observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=lambda: now,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
+        )
+
+        mae_scores = [s for s in scores if s.metric == "mae" and s.season is None]
+        assert mae_scores
+        for s in mae_scores:
+            assert s.score < 1.0, (
+                "expected near-zero MAE from the completed bucket alone — "
+                f"got {s.score}, which means the still-forming partial "
+                "bucket (mean 200.0 vs a forecast of 50.0) was silently "
+                "scored as a complete daily mean"
             )
 
 

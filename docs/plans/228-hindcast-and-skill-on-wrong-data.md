@@ -420,3 +420,74 @@ Full suite: `uv run pytest tests/unit` and `uv run pytest tests/integration` bot
 `ruff check`/`ruff format --check` clean; pyright ratchet unchanged (400 <= baseline 400). Still
 outstanding, unchanged: D3's marking-superseded + recompute remain gated on the mac-mini's
 onboarding/hindcasting run finishing — nothing in this round touched that system.
+
+## Fixer round (independent Codex + design review of the committed diff, 2026-09-02) — 1 blocker + 3 majors closed
+
+An independent Codex pass plus a Claude design review over the committed diff found four
+correctness issues in the "PER-RUN SCOPE (second)" and "compute_skills_task partitioning" rounds
+above, plus two documentation gaps. All were fixed on top of the branch (kept, not rebuilt):
+
+1. **Nullable artifact IDs still defeated skill idempotency (BLOCKER).** Migration 0052's
+   `uq_skill_scores_natural_key`/`uq_skill_diagrams_natural_key` indexed `model_artifact_id` RAW
+   (no `COALESCE`) and never indexed `model_id` at all. `services/skill/combined_skill.py` always
+   computes pooled/BMA scores with `model_artifact_id=None` — PostgreSQL treats every `NULL` as
+   distinct, so a repeated pooled/BMA computation for the identical stratum inserted a duplicate
+   row on every re-run instead of colliding under `ON CONFLICT DO NOTHING`, and `model_id`
+   (`POOLED_MODEL_ID` vs `BMA_MODEL_ID`) is the only column that would have kept those two
+   combination strategies apart once `model_artifact_id` became NULL-safe. Fixed in migration 0052
+   directly (amended, not superseded — it had not shipped to any environment): both natural keys
+   now include `model_id` and `COALESCE(model_artifact_id::text, '')`; the migration also
+   defensively deduplicates existing rows (keeps the newest by `created_at`) under the new key
+   before creating the tightened indexes. Locked by two real-Postgres integration tests
+   (`tests/integration/store/test_skill_store.py`):
+   `test_repeated_pooled_computation_with_null_artifact_is_idempotent` and
+   `test_pooled_and_bma_null_artifact_scores_do_not_collide`, both proven RED against the pre-fix
+   schema (the second specifically against a COALESCE-but-no-`model_id` half-fix, to prove it is
+   not a vacuous assertion).
+2. **Aligned model-input bounds corrupted observation freshness (MAJOR).** `assemble_station_
+   operational_inputs`/`assemble_assignment_inputs` (`operational_inputs.py`/`track_assembly.py`)
+   both derive `observation_staleness_hours` from the SAME `all_observations` collection D4
+   deliberately truncates to complete UTC-calendar buckets — so at a 06Z cycle with a 10-minute-old
+   reading, freshness was measured from the prior midnight (~6.2h stale, crossing the default
+   warning threshold) and worse at 12Z/18Z. Fixed by fetching the trailing gap
+   `[past_targets_end, issue_time)` separately, unresampled, purely for freshness — never mixed
+   into `past_targets`. Locked by a 06Z test in each file, both proven RED (measured exactly
+   6.1667h, matching the D4 arithmetic).
+3. **Scoring accepted an incomplete current bucket as a full step mean (MAJOR).**
+   `_resample_observations_to_forecast_step` aggregated every available row without checking
+   whether the bucket's end had elapsed — `observation_fetch_bounds` fetching through
+   `valid_time + time_step` does not guarantee those rows exist yet, so a still-forming bucket
+   could exact-match a forecast's `valid_time` and silently score a partial mean as complete. Fixed
+   by taking an explicit `now` and excluding any bucket where `bucket_start + time_step > now`.
+   Locked by `TestIncompleteCurrentBucketExcludedFromScoring`, proven RED (score 75.0, the exact
+   average of a 0-error completed pair and a 150-error partial-bucket pair). Two pre-existing
+   stratification tests used hindcast dates AFTER the fixture clock (an unrealistic shape this
+   correct filter now catches); their dates were moved earlier rather than the filter weakened.
+4. **The promotion gate mixed stale v1 and corrected v2 scores (MAJOR).** Migration 0051 and
+   `_COMPUTATION_VERSION = 2` deliberately let both versions coexist (`mark_stale` never deletes),
+   but `evaluate_skill_gate` fetched every version/freshness combination and filtered only by
+   sample size — so a stale v1 value could still decide the worst score. Fixed: `evaluate_skill_
+   gate` now filters to `freshness == CURRENT`, then to `computation_version == max(...)` among
+   those, before the threshold logic runs. Locked by opposing stale-v1 (fails)/current-v2 (passes)
+   rows in the same stratum, proven RED, plus a guard test confirming a CURRENT v1 score still
+   controls the gate when no v2 recompute exists yet.
+5. **Minor — the documented invalid-row cutoff named a calendar date.** `docs/v0-scope.md` and the
+   decision record said every score "predating 2026-09-01" is invalid, but the in-flight mac-mini
+   process kept producing defective `computation_version = 1` scores past that date while the fix
+   sat unmerged. Both now define invalid rows as `computation_version < 2`.
+6. **Minor — a docstring overclaimed aggregation parity.** `_resample_observations_to_forecast_
+   step`'s docstring claimed the SAME aggregation `_assemble_hindcast_inputs` uses; the assemblers
+   now call `resolved_aggregation_methods(reqs)` (FI-declared aggregation wins), while skill scoring
+   still calls the simpler fallback-only `aggregation_method_for` (no `ModelDataRequirements` in
+   scope at a single-parameter join). Docstring corrected to state the gap and defer it to Plan 234,
+   matching `docs/touchpoint-maps.md`'s existing caveat.
+
+Test soundness: every locking test above for a correctness/bug fix (1-4) was proven to fail against
+the pre-fix code before the fix was restored — see the session's `lockingTestProofs`.
+
+`uv run ruff check`/`ruff format --check` clean on every touched file. Pyright ratchet: 394 <= 400
+(one new `list[Observation]` annotation on `operational_inputs.py`'s new `freshness_observations`
+variable actually IMPROVED the count from the 403 an unannotated version produced). Full suite:
+`uv run pytest tests/unit` and `uv run pytest tests/integration/store/test_skill_store.py` both
+zero failures. Still outstanding, unchanged: D3's marking-superseded + recompute remain gated on
+the mac-mini's onboarding/hindcasting run finishing.

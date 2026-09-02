@@ -549,3 +549,71 @@ def test_partial_trailing_day_excluded_at_a_non_midnight_cycle() -> None:
         f"buckets, got {past_targets.height} — the partial day-of-cycle "
         "window leaked through as an extra bucket"
     )
+
+
+def test_freshness_reflects_the_partial_bucket_not_the_aligned_window() -> None:
+    """Review fixer round (major): see the identical
+    `test_operational_inputs.py` fix — D4 aligns/truncates `past_targets` to
+    exclude the current, still-forming UTC-calendar bucket (correct for the
+    model), but `observation_staleness_hours` was computed from that same
+    truncated collection. At a non-midnight cycle with a fresh reading
+    minutes old, staleness was measured from the prior midnight instead.
+    """
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=7,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    model = _FakeModel(requirements)
+    projection = NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL)))
+
+    issue_time = ensure_utc(_ISSUE + timedelta(hours=6))  # never a midnight boundary
+
+    data_start = ensure_utc(issue_time - timedelta(days=9))
+    background = make_observations(
+        n=9 * 24 * 6,
+        station_id=_STATION,
+        parameter="discharge",
+        start=data_start,
+        interval=timedelta(minutes=10),
+    )
+    # A fresh reading 10 minutes before issue_time — inside the partial,
+    # not-yet-complete UTC-calendar bucket that `past_targets` correctly
+    # excludes.
+    fresh_obs = make_observation(
+        station_id=_STATION,
+        parameter="discharge",
+        timestamp=ensure_utc(issue_time - timedelta(minutes=10)),
+        value=42.0,
+    )
+    obs_store.store_observations(background + [fresh_obs])
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=model,  # type: ignore[arg-type]
+        projection=projection,
+        track_outcome=None,
+        issue_time=issue_time,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        clock=lambda: issue_time,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    assert result.observation_staleness_hours is not None
+    assert result.observation_staleness_hours < 1.0, (
+        "expected freshness to reflect the 10-minute-old raw reading, got "
+        f"{result.observation_staleness_hours}h — freshness was computed "
+        "from the aligned/truncated past_targets window instead of the "
+        "latest raw observation"
+    )

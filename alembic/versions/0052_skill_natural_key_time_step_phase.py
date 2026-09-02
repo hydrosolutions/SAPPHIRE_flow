@@ -34,6 +34,30 @@ unique index. Adding columns to a unique index only SHRINKS the set of rows
 considered duplicates, so no pre-existing row (uniformly backfilled to the
 same `(86400, NULL)` pair) can violate the new, less restrictive constraint.
 
+BLOCKER found on a second, independent review of this same migration:
+`model_artifact_id` was still indexed RAW (nullable, no `COALESCE`) and
+`model_id` was not indexed at all. `services/skill/combined_skill.py`
+computes pooled/BMA scores with `model_artifact_id=None` always — for those
+rows `model_id` (`POOLED_MODEL_ID` / `BMA_MODEL_ID`) is the ONLY column that
+tells the two combination strategies apart, and PostgreSQL treats every
+`NULL` as distinct from every other `NULL`, so two NULL-artifact rows never
+collided under `ON CONFLICT DO NOTHING` — every repeated pooled/BMA
+computation for the same stratum inserted a brand-new duplicate row instead
+of being deduplicated. Fixed here (not a new migration) since 0052 has not
+shipped to any environment yet: `model_id` is now part of both natural
+keys, and `model_artifact_id` is compared via
+`COALESCE(model_artifact_id::text, '')` — the same NULL-safe pattern already
+used for `season`/`flow_regime`/`forcing_type`/`phase_offset_seconds`.
+
+Unlike the additive columns above, tightening `model_artifact_id` from a
+raw nullable compare to a `COALESCE`d one is a case where an index that
+previously treated two NULL rows as distinct now treats them as equal —
+so, defensively, both `upgrade()` blocks now deduplicate existing rows
+(keep the newest by `created_at`) under the NEW key before creating the
+new unique indexes, in case this migration is ever run against a database
+that already accumulated duplicate NULL-artifact rows under an
+intermediate schema state.
+
 Downgrade drops both columns and reverts both indexes to their 0051 shape.
 """
 
@@ -80,12 +104,53 @@ def upgrade() -> None:
     )
 
     op.drop_index("uq_skill_scores_natural_key", table_name="skill_scores")
+    # Defensive: COALESCE-ing `model_artifact_id` makes previously-distinct
+    # NULL-artifact rows compare equal. Keep only the newest row per new key
+    # before the stricter-in-this-one-way index can be created.
+    op.execute(
+        sa.text(
+            """
+            DELETE FROM skill_scores s
+            USING (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY
+                               station_id,
+                               model_id,
+                               COALESCE(model_artifact_id::text, ''),
+                               parameter,
+                               skill_source,
+                               COALESCE(forcing_type, ''),
+                               computation_version,
+                               lead_time_hours,
+                               COALESCE(season, ''),
+                               COALESCE(flow_regime, ''),
+                               metric,
+                               time_step_seconds,
+                               COALESCE(phase_offset_seconds, -1)
+                           ORDER BY created_at DESC, id DESC
+                       ) AS rn
+                FROM skill_scores
+            ) ranked
+            WHERE s.id = ranked.id AND ranked.rn > 1
+            """
+        )
+    )
     op.create_index(
         "uq_skill_scores_natural_key",
         "skill_scores",
         [
             "station_id",
-            "model_artifact_id",
+            # Blocker found reviewing this migration: pooled/BMA combined
+            # scores always carry `model_artifact_id=NULL`
+            # (`services/skill/combined_skill.py`), and PostgreSQL treats
+            # every NULL as distinct — so without `model_id` here (the only
+            # column distinguishing POOLED_MODEL_ID from BMA_MODEL_ID rows)
+            # and without a NULL-safe cast on `model_artifact_id`, repeated
+            # pooled/BMA computations insert duplicate rows forever instead
+            # of colliding under `ON CONFLICT DO NOTHING`.
+            "model_id",
+            sa.text("COALESCE(model_artifact_id::text, '')"),
             "parameter",
             "skill_source",
             sa.text("COALESCE(forcing_type, '')"),
@@ -101,12 +166,43 @@ def upgrade() -> None:
     )
 
     op.drop_index("uq_skill_diagrams_natural_key", table_name="skill_diagrams")
+    op.execute(
+        sa.text(
+            """
+            DELETE FROM skill_diagrams s
+            USING (
+                SELECT id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY
+                               station_id,
+                               model_id,
+                               COALESCE(model_artifact_id::text, ''),
+                               parameter,
+                               skill_source,
+                               computation_version,
+                               lead_time_hours,
+                               COALESCE(season, ''),
+                               COALESCE(flow_regime, ''),
+                               diagram_type,
+                               COALESCE(threshold_level, ''),
+                               time_step_seconds,
+                               COALESCE(phase_offset_seconds, -1)
+                           ORDER BY created_at DESC, id DESC
+                       ) AS rn
+                FROM skill_diagrams
+            ) ranked
+            WHERE s.id = ranked.id AND ranked.rn > 1
+            """
+        )
+    )
     op.create_index(
         "uq_skill_diagrams_natural_key",
         "skill_diagrams",
         [
             "station_id",
-            "model_artifact_id",
+            # See `uq_skill_scores_natural_key` above.
+            "model_id",
+            sa.text("COALESCE(model_artifact_id::text, '')"),
             "parameter",
             "skill_source",
             "computation_version",
