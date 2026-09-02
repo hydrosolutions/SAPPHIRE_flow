@@ -3098,7 +3098,14 @@ def run_forecast_cycle_flow(
                     config.forecast_combination_strategy
                     == ModelCombinationStrategy.PRIMARY
                 ):
-                    # Existing behaviour: single model with fallback chain
+                    # PRIMARY: the fallback chain SELECTS, it does not short-circuit.
+                    # run_station_forecast delegates to run_all_station_forecasts,
+                    # which executes EVERY assignment (no break on success) and returns
+                    # the first successful one in priority order. Model execution
+                    # therefore costs the same here as in the combination modes below;
+                    # only what gets persisted differs. Do not read this branch as
+                    # "one model runs" — that misreading produced a wrong scaling
+                    # measurement (Plan 203).
                     fc_result = run_station_forecast(
                         station_id=sid,
                         inputs=inputs,
