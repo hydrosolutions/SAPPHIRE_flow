@@ -58,8 +58,10 @@ suggestion is additive, the correct output is "no blockers, no majors".
 
 ## What is already measured (mac mini, 2026-08-27T13:29Z, 2 stations)
 
-A cycle is **~95 % NWP download, and that cost is FIXED per cycle** — it does not grow with
-stations or models.
+In the observed **2-station** cycle, the fixed NWP phase was ~95 % of wall clock (441.2 s of
+465.5 s) and **that cost does not grow with station count** — it is the same grid every cycle.
+Note this is a share of a 2-station cycle: the per-station terms are tiny at n=2 by construction,
+so 95 % is not a claim about the cycle at n=170.
 
 | phase | duration | scales with | evidence |
 |---|---|---|---|
