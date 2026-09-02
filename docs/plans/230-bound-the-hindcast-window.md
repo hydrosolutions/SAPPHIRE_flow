@@ -21,7 +21,8 @@ This narrows a date range. It changes **no** hindcast arithmetic, no model, no s
 2. **A finding must name a CONCRETE FAILURE** with `file:line` and a consequence.
 3. **Do not propose new apparatus** — no scheduler, no parallel executor, no caching layer, no
    progress service. Parallelising stations is a **separate** known gap and is out of scope here.
-4. **Do not propose changing what a hindcast computes.** A separate defect in daily aggregation is
+4. **Do not propose changing what a hindcast computes** — that is Plan 228, already READY and in
+   implementation (see § Sequencing). A separate defect in daily aggregation is
    being fixed elsewhere; this plan must not touch it or it becomes impossible to tell which change
    fixed what.
 5. **Adding length is a cost.** A previous plan in this repo was grown 148 -> 441 lines by a review
