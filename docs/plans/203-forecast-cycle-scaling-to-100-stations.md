@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-27
 plan: 203
 title: Forecast-cycle scaling to the full BAFU set (~170 stations) — measure the two costs that actually grow
-scope: One measurement of how NWP extraction and model execution scale with station count, and a decision on whether the 441 s download needs parallelising. No optimisation is authorised by this plan — it exists to make the next plan grounded.
+scope: One measurement of how basin extraction and model execution scale with station count, and an owner decision on whether any follow-up work is warranted. No optimisation is authorised by this plan — it exists to make the next plan grounded. Explicitly NOT in scope: any decision about parallelising the 441.2 s NWP phase — the body establishes that figure is composite (STAC walk + transfer + parse) and cannot support such a decision.
 depends_on: []
 blocks: []
 source: Measured on the mac mini 2026-08-27 while trialling `forecast_combination_strategy = pooled` (PR #214)
@@ -118,8 +118,10 @@ see the section above.)
 Two costs grow, and only one is measured at n=2:
 
 1. **Extraction — 6.48 s/station at n=2.** If that is linear, 170 stations ≈ **1101 s**, which
-   would overtake the download and become the dominant cost. If most of it is per-cycle overhead
-   (opening the zarr, loading the grid) with a cheap per-basin mask, 170 stations might cost far
+   would overtake the fixed NWP phase and become the dominant cost. If most of it is instead
+   per-*call* overhead that does not repeat per basin — `extract()` is handed an already-open
+   dataset and begins by materialising its coordinates (`mesh_basin_extractor.py:51`, `:101`), it
+   does **not** open the zarr — with a cheap per-basin mask on top, then 170 stations might cost far
    less. **n=2 cannot distinguish these**, and the difference decides whether any work is needed.
    The per-station term is not a cheap mask by construction: `_assign_cells()`
    (`src/sapphire_flow/preprocessing/mesh_basin_extractor.py:190`) runs a point-in-polygon
@@ -154,10 +156,12 @@ question is live.
 That is what changed from the earlier n=100 draft. There, the same arithmetic gave ~24 min against
 a 30-min bar and made T1 look like a formality. At the real deployment size, **one plausible
 scenario already lands within ~4 minutes of the bar before a single unmeasured term is counted** —
-so the measurement can genuinely go either way. If extraction proves sub-linear — which the
-per-cycle work inside `extract()` that does not repeat per basin (materialising `cell_points` from
-the already-open dataset, `mesh_basin_extractor.py:101`) makes plausible — headroom reappears; if
-it is linear or worse, the bar is in doubt before models are even added.
+so the measurement can genuinely go either way. Sub-linear extraction — made plausible by the work
+inside `extract()` that does **not** repeat per basin (materialising `cell_points` from the
+already-open dataset it is handed, `mesh_basin_extractor.py:101`) — would lower *this* term, but it
+does **not** imply the true total falls below 26 min: the unmeasured per-station work can only add,
+and its size is unknown. Conversely, if extraction is linear or worse the bar is in doubt before
+models are even counted. Neither direction settles the cycle; that is the point of measuring.
 
 **Where the 30-minute bar comes from:** it is ~8 % of the 6-hour cadence, i.e. the point at which a
 cycle still finishes with >5× headroom before the next one starts. It is a judgement call, not a
@@ -217,19 +221,27 @@ T1 **may not** conclude "the 170-station cycle is under 30 min". It does not mea
 cycle to say that, and an earlier version of this exit criterion wrongly claimed it could. The two
 honest verdicts are:
 
-- **Decisive:** the two curves *alone* already exceed the 30-min bar at n=170 → the target is
-  missed regardless of the unmeasured terms, and T2 proceeds to a follow-up. No further measurement
-  needed.
-- **Inconclusive:** the two curves come in under the bar → **this does not establish that the cycle
-  fits.** The unmeasured per-station work above could still close the gap. T2 must then decide
-  whether to accept the risk or commission a second measurement covering the rest of the per-station
-  path — `run_station_forecast()` through to the flow's persistence and combination step, which sits
-  outside that function (`run_forecast_cycle.py:3143`), so a second measurement would have to span
-  both.
+**The comparison is against the KNOWN SUBTOTAL, not the curves alone.** The fixed phases already
+cost **448.9 s** (441.2 s NWP + 7.7 s archive), which is ~7.5 min of the 30-min bar before any
+per-station work. So the quantity to compare is `448.9 s + extraction(170) + predict(170)`. An
+earlier version of this rule compared the two curves in isolation, which would wrongly return
+INCONCLUSIVE whenever the curves fit inside 30 min but the subtotal does not.
 
-Record which of the two it is in the write-up, using **exactly one** of the literal strings
-`T1 VERDICT: DECISIVE` or `T1 VERDICT: INCONCLUSIVE` — T2's verification command checks for
-precisely one of these, so the wording is load-bearing, not cosmetic.
+- **DECISIVE:** `448.9 s + extraction(170) + predict(170)` **already exceeds** the 30-min bar → the
+  target is missed regardless of the unmeasured terms, since those can only add. T2 proceeds to a
+  follow-up; no further measurement needed.
+- **INCONCLUSIVE:** that subtotal comes in **under** the bar → **this does not establish that the
+  cycle fits.** The unmeasured per-station work could still close the remaining gap. T2 must then
+  decide whether to accept the unquantified remainder or commission a second measurement covering
+  the rest of the per-station path — `run_station_forecast()` through to the flow's persistence and
+  combination step, which sits outside that function (`run_forecast_cycle.py:3143`), so a second
+  measurement would have to span both. Report the remaining headroom in seconds, so T2 can judge how
+  much unmeasured work would have to exist to consume it.
+
+Record the outcome in the write-up as **a line of its own, at the start of the line**, reading
+exactly `T1 VERDICT: DECISIVE` or `T1 VERDICT: INCONCLUSIVE` — nothing else on that line. T2's
+verification command matches line-anchored, so the placement is load-bearing, not cosmetic (these
+same strings appear in this paragraph as prose and must not count).
 
 *Verification:* `uv run python -c "import geopandas, xarray; print('T1 deps ok')"` — T1 itself is a
 heredoc analysis run by hand on the mini, not a committed script or test, so there is no suite to
@@ -248,10 +260,14 @@ return — it must **not** ask T1 whether "the target is met", because T1 cannot
 Either way the decision is the owner's and is recorded here. Note the ~26 min scenario above sits
 within ~4 min of the bar before any unmeasured term is counted, so neither branch is hypothetical —
 T2 must wait for T1 rather than pre-judging.
-*Exit:* an owner decision recorded here, naming which verdict T1 returned.
-*Verification:* `uv run python -c "import pathlib,sys; t=pathlib.Path('docs/plans/203-forecast-cycle-scaling-to-100-stations.md').read_text(); sys.exit(0 if ('T1 VERDICT: DECISIVE' in t) ^ ('T1 VERDICT: INCONCLUSIVE' in t) else 1)"`
-— passes only once T1's write-up has recorded exactly one of the two permitted verdicts in this
-doc, which is the precondition for T2's decision being meaningful.
+*Exit:* an owner decision recorded here as a line of its own beginning `T2 DECISION:`, naming which
+verdict T1 returned and what the owner chose.
+*Verification:* `uv run python -c "import pathlib,re,sys; t=pathlib.Path('docs/plans/203-forecast-cycle-scaling-to-100-stations.md').read_text(); v=re.findall(r'(?m)^T1 VERDICT: (?:DECISIVE|INCONCLUSIVE)$', t); d=re.findall(r'(?m)^T2 DECISION: \S', t); sys.exit(0 if len(v)==1 and len(d)==1 else 1)"`
+— matches **line-anchored**, so the same strings appearing in prose above do not count. Passes only
+once T1 has recorded exactly one verdict line **and** T2 has recorded exactly one decision line,
+which together are T2's exit. (An earlier version tested substring presence anywhere in the file;
+because both verdict strings occur in this doc's own prose it could never pass — it was
+unsatisfiable, not merely pending.)
 
 ## Dependency graph
 
