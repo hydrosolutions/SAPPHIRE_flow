@@ -38,6 +38,15 @@ class SkillScore:
     eval_period_start: UtcDatetime
     eval_period_end: UtcDatetime
     created_at: UtcDatetime
+    # Plan 228 per-run scope (blocker): part of the natural key so two
+    # (time_step, phase) cohorts producing the same (station, model, lead,
+    # ...) never collide under `ON CONFLICT DO NOTHING` — see
+    # `db.metadata.uq_skill_scores_natural_key`. Defaults to today's only
+    # cadence (1 day, no phase offset) so call sites that don't care about
+    # cohort distinctness need no changes; the real value is threaded
+    # through by `services.skill.service.compute_skill_for_station`.
+    time_step_seconds: int = 86400
+    phase_offset_seconds: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -59,6 +68,9 @@ class SkillDiagram:
     eval_period_start: UtcDatetime
     eval_period_end: UtcDatetime
     created_at: UtcDatetime
+    # Plan 228 per-run scope (blocker): see `SkillScore.time_step_seconds`.
+    time_step_seconds: int = 86400
+    phase_offset_seconds: int | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

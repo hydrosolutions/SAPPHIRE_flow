@@ -72,26 +72,46 @@ def _ensemble_matrix(hindcast: HindcastForecast, valid_time: object) -> np.ndarr
 
 
 def _valid_time_phase_us(hc: HindcastForecast, time_step: timedelta) -> int | None:
-    """The offset (microseconds) of ``hc``'s first ``valid_time`` from the
-    nearest UTC-calendar ``time_step`` boundary at or before it — ``None``
-    when the ensemble carries no ``valid_time`` at all (empty). Used to
-    detect a forecast whose cadence disagrees with the calendar grid every
-    assembly path now aggregates onto (Plan 228 D4)."""
+    """The offset (microseconds) of ``hc``'s ``valid_time``s from the nearest
+    UTC-calendar ``time_step`` boundary at or before them — ``None`` when the
+    ensemble carries no ``valid_time`` at all (empty). Used to detect a
+    forecast whose cadence disagrees with the calendar grid every assembly
+    path now aggregates onto (Plan 228 D4).
+
+    Plan 228 per-run scope (major): a previous version of this function
+    classified the WHOLE ensemble's phase from ``vts[0]`` alone — a
+    multi-step hindcast whose own ``valid_time``s mix phases (e.g. daily
+    steps at both midnight and 06:00, a differently-configured lead sitting
+    inside one hindcast) was silently misclassified by whichever phase
+    happened to be first, passed homogeneity validation, and then had the
+    off-phase leads silently drop out of ``_resample_observations_to_
+    forecast_step``'s exact-key lookup (they never fall on a calendar
+    boundary, so they never match a bucket). Every distinct ``valid_time``
+    is now checked; an internally inconsistent ensemble raises loudly
+    instead of quietly losing leads.
+    """
     vts = hc.ensemble.values["valid_time"].to_list()
     if not vts:
         return None
     step_us = int(time_step.total_seconds() * 1_000_000)
     if step_us <= 0:
         return None
-    ts_us = int(vts[0].timestamp() * 1_000_000)
-    return ts_us % step_us
+    phases = {int(vt.timestamp() * 1_000_000) % step_us for vt in vts}
+    if len(phases) > 1:
+        raise ConfigurationError(
+            f"hindcast {hc.id} has internally mixed valid_time phase within "
+            f"time_step {time_step}: offsets {sorted(phases)} µs — a single "
+            "ensemble's valid_times must share one UTC-calendar-grid phase "
+            "(Plan 228 D4)."
+        )
+    return next(iter(phases))
 
 
 def validate_homogeneous_time_step_and_phase(
     hindcasts: list[HindcastForecast],
-) -> timedelta:
-    """The ONE ``time_step`` a skill computation covers (Plan 228 D2, ALSO
-    FIX #3).
+) -> tuple[timedelta, int | None]:
+    """The ONE ``(time_step, phase)`` a skill computation covers (Plan 228
+    D2, ALSO FIX #3), as ``(time_step, phase_offset_us)``.
 
     Every model sets ``ForecastEnsemble.time_step`` directly from its OWN
     declared ``time_step`` at construction (e.g.
@@ -105,7 +125,15 @@ def validate_homogeneous_time_step_and_phase(
     anything was wrong. This raises instead: a single skill computation must
     cover one ``(time_step, phase)``; partition callers upstream (by model,
     by cycle) before calling. ``hindcasts`` is guaranteed non-empty by the
-    caller's early ``if not hindcasts: return [], []``.
+    caller's early ``if not hindcasts: return [], []``. Also raises (via
+    ``_valid_time_phase_us``) when a SINGLE hindcast's own ``valid_time``s
+    internally mix phase.
+
+    The returned phase is persisted (``SkillScore``/``SkillDiagram``'s
+    ``time_step_seconds``/``phase_offset_seconds``, migration 0052) so two
+    genuinely distinct cohorts sharing every other natural-key column never
+    collide under ``ON CONFLICT DO NOTHING`` (Plan 228 per-run scope,
+    blocker).
     """
     time_steps = {hc.ensemble.time_step for hc in hindcasts}
     if len(time_steps) > 1:
@@ -127,7 +155,7 @@ def validate_homogeneous_time_step_and_phase(
             f"phase within time_step {time_step} — partition by "
             "(time_step, phase) before computing skill (Plan 228 D4)."
         )
-    return time_step
+    return time_step, (next(iter(phases)) if phases else None)
 
 
 def partition_by_time_step_and_phase(
@@ -149,13 +177,30 @@ def partition_by_time_step_and_phase(
     same mixed history and raises again. Callers partition upstream with
     this function instead and compute skill once per cohort, so a mismatch
     degrades to "fewer cohorts scored this run" rather than "none, forever".
+
+    Plan 228 per-run scope (major, alongside the ``_valid_time_phase_us``
+    fix): a hindcast whose OWN ``valid_time``s internally mix phase now
+    makes ``_valid_time_phase_us`` raise rather than silently classify by
+    ``vts[0]``. The same graceful-degradation principle applies here — one
+    malformed hindcast is excluded and logged, not allowed to take down
+    partitioning (and therefore scoring) for every other hindcast in the
+    same fetch.
     """
     groups: dict[tuple[timedelta, int | None], list[HindcastForecast]] = defaultdict(
         list
     )
     for hc in hindcasts:
         time_step = hc.ensemble.time_step
-        phase = _valid_time_phase_us(hc, time_step)
+        try:
+            phase = _valid_time_phase_us(hc, time_step)
+        except ConfigurationError:
+            log.warning(
+                "skill.partition.internally_mixed_phase_hindcast_skipped",
+                hindcast_id=str(hc.id),
+                station_id=str(hc.station_id),
+                model_id=str(hc.model_id),
+            )
+            continue
         groups[(time_step, phase)].append(hc)
     return dict(groups)
 
@@ -171,7 +216,7 @@ def observation_fetch_bounds(
     a SINGLE hindcast ``min(hindcast_step) == max(hindcast_step)`` collapses
     to an empty range that fetches nothing at all.
     """
-    time_step = validate_homogeneous_time_step_and_phase(hindcasts)
+    time_step, _phase = validate_homogeneous_time_step_and_phase(hindcasts)
     all_valid_times = [
         vt for hc in hindcasts for vt in hc.ensemble.values["valid_time"].to_list()
     ]
@@ -331,6 +376,8 @@ def _compute_scores(
     eval_end: UtcDatetime,
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
+    time_step_seconds: int,
+    phase_offset_seconds: int | None,
 ) -> list[SkillScore]:
     from sapphire_flow.types.skill import SkillScore
 
@@ -363,6 +410,8 @@ def _compute_scores(
                 eval_period_start=eval_start,
                 eval_period_end=eval_end,
                 created_at=now,
+                time_step_seconds=time_step_seconds,
+                phase_offset_seconds=phase_offset_seconds,
             )
         )
 
@@ -426,6 +475,8 @@ def _compute_diagrams(
     eval_end: UtcDatetime,
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
+    time_step_seconds: int,
+    phase_offset_seconds: int | None,
 ) -> list[SkillDiagram]:
     from sapphire_flow.types.skill import SkillDiagram
 
@@ -464,6 +515,8 @@ def _compute_diagrams(
                 eval_period_start=eval_start,
                 eval_period_end=eval_end,
                 created_at=now,
+                time_step_seconds=time_step_seconds,
+                phase_offset_seconds=phase_offset_seconds,
             )
         )
 
@@ -519,7 +572,12 @@ def compute_skill_for_station(
     # above), so `validate_homogeneous_time_step_and_phase` always resolves a
     # real value — it reads `hc.ensemble.time_step`, a mandatory field every
     # model sets — and raises rather than silently mixing (ALSO FIX #3).
-    time_step = validate_homogeneous_time_step_and_phase(hindcasts)
+    time_step, phase_us = validate_homogeneous_time_step_and_phase(hindcasts)
+    time_step_seconds = int(time_step.total_seconds())
+    # Plan 228 per-run scope (blocker): persisted so two distinct
+    # (time_step, phase) cohorts never collide in the natural key
+    # (migration 0052) — see `SkillScore.time_step_seconds`.
+    phase_offset_seconds = None if phase_us is None else phase_us // 1_000_000
 
     obs_lookup = _resample_observations_to_forecast_step(
         observations, parameter, time_step
@@ -563,6 +621,8 @@ def compute_skill_for_station(
                 eval_end=eval_end,
                 clock=clock,
                 uuid_factory=uuid_factory,
+                time_step_seconds=time_step_seconds,
+                phase_offset_seconds=phase_offset_seconds,
             )
         )
         all_diagrams.extend(
@@ -583,6 +643,8 @@ def compute_skill_for_station(
                 eval_end=eval_end,
                 clock=clock,
                 uuid_factory=uuid_factory,
+                time_step_seconds=time_step_seconds,
+                phase_offset_seconds=phase_offset_seconds,
             )
         )
 

@@ -382,3 +382,41 @@ UTC-calendar bucketing with aligned-and-extended bounds. `PREFECT_HOME` scoped p
 dropped from the live skill natural key at migration 0016 while `db/metadata.py` still declared it —
 so **D3's recompute would have silently discarded every corrected row** via `ON CONFLICT DO
 NOTHING`. Found and fixed here, proven by an integration test.
+
+## Implementation status (2026-09-02, third round) — the three "FIX HERE" findings closed
+
+Executed the "⛔ PER-RUN SCOPE (second)" section in full — the three findings the review disposition
+table marked "FIX HERE" (as opposed to "→ Plan 234") were still genuinely open at that point, despite
+an earlier status note in this document claiming otherwise:
+
+1. **Cohort collision (blocker).** `uq_skill_scores_natural_key`/`uq_skill_diagrams_natural_key`
+   still omitted `time_step`/`phase` — `partition_by_time_step_and_phase` computes and stores skill
+   once PER cohort (deliberately: `test_mixed_time_step_history_degrades_gracefully` requires BOTH
+   cohorts to survive), so two cohorts sharing every other natural-key column collided under
+   `ON CONFLICT DO NOTHING` and one was silently dropped. Migration 0052 adds `time_step_seconds`
+   (`NOT NULL`, backfilled `86400`) and `phase_offset_seconds` (nullable) to both tables and widens
+   both natural keys to include them, NULL-safe via the same `COALESCE` pattern migration 0051 uses.
+   `SkillScore`/`SkillDiagram` gained matching fields (defaulted, so unrelated call sites are
+   untouched); `compute_skill_for_station` threads the real resolved value through. Locked by
+   `tests/integration/store/test_skill_store.py::TestPgSkillStore::
+   test_natural_key_disambiguates_cohorts_by_time_step_and_phase` — a real-Postgres test, since
+   `ON CONFLICT` cannot be exercised against the in-memory fake store — proven RED (`assert 1 == 2`)
+   against the pre-0052 schema and GREEN after.
+2. **Phase validation reading only `vts[0]` (major).** `_valid_time_phase_us` now checks every
+   distinct `valid_time` in an ensemble and raises `ConfigurationError` on internal disagreement,
+   instead of classifying the whole hindcast by its first `valid_time` alone.
+   `partition_by_time_step_and_phase` catches that raise per-hindcast and excludes (logged) just the
+   offending hindcast, so one internally-malformed ensemble degrades scoring by one hindcast rather
+   than crashing the whole partitioning pass. Locked by
+   `tests/unit/services/skill/test_service.py::TestInternallyMixedPhaseWithinOneHindcastRaises`,
+   proven RED (`DID NOT RAISE`) against the `vts[0]`-only code and GREEN after.
+3. **Stale decision record (minor).** `docs/decisions/plan-228-hindcast-skill-resampling.md`'s
+   heading and "## Fix" section described the retracted `anchor`/`min(time_step)` mechanisms as
+   current; rewritten to describe UTC-calendar bucketing and homogeneous validation, with the
+   heading correctly scoping P1 to `linear_regression_daily`/`nwp_regression` rather than "every
+   hindcast forecast".
+
+Full suite: `uv run pytest tests/unit` and `uv run pytest tests/integration` both zero failures.
+`ruff check`/`ruff format --check` clean; pyright ratchet unchanged (400 <= baseline 400). Still
+outstanding, unchanged: D3's marking-superseded + recompute remain gated on the mac-mini's
+onboarding/hindcasting run finishing — nothing in this round touched that system.

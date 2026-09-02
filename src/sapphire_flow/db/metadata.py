@@ -1426,6 +1426,17 @@ skill_scores = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    # Plan 228 per-run scope (blocker, migration 0052): part of the natural
+    # key so two (time_step, phase) cohorts producing a score at the same
+    # (station, model, lead, ...) never collide under `ON CONFLICT DO
+    # NOTHING` — see `uq_skill_scores_natural_key` below.
+    sa.Column(
+        "time_step_seconds",
+        sa.Integer,
+        nullable=False,
+        server_default="86400",
+    ),
+    sa.Column("phase_offset_seconds", sa.Integer, nullable=True),
 )
 
 skill_diagrams = sa.Table(
@@ -1470,6 +1481,15 @@ skill_diagrams = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    # Plan 228 per-run scope (blocker, migration 0052): see
+    # `skill_scores.time_step_seconds`/`.phase_offset_seconds` above.
+    sa.Column(
+        "time_step_seconds",
+        sa.Integer,
+        nullable=False,
+        server_default="86400",
+    ),
+    sa.Column("phase_offset_seconds", sa.Integer, nullable=True),
 )
 
 # Indexes on skill_scores
@@ -1485,6 +1505,14 @@ sa.Index(
     sa.text("COALESCE(season, '')"),
     sa.text("COALESCE(flow_regime, '')"),
     skill_scores.c.metric,
+    # Plan 228 per-run scope (blocker, migration 0052): without these, two
+    # (time_step, phase) cohorts sharing every other column above collide
+    # under `ON CONFLICT DO NOTHING` and one is silently dropped.
+    # `phase_offset_seconds` is nullable (an ensemble with no valid_time),
+    # so it needs the same NULL-safe COALESCE treatment as season/regime
+    # above — NULL never equals NULL in a unique index.
+    skill_scores.c.time_step_seconds,
+    sa.text("COALESCE(phase_offset_seconds, -1)"),
     unique=True,
 )
 sa.Index(
@@ -1515,6 +1543,10 @@ sa.Index(
     sa.text("COALESCE(flow_regime, '')"),
     skill_diagrams.c.diagram_type,
     sa.text("COALESCE(threshold_level, '')"),
+    # Plan 228 per-run scope (blocker, migration 0052): see
+    # `uq_skill_scores_natural_key` above.
+    skill_diagrams.c.time_step_seconds,
+    sa.text("COALESCE(phase_offset_seconds, -1)"),
     unique=True,
 )
 

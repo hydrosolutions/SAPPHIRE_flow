@@ -10,6 +10,7 @@ import pytest
 from sapphire_flow.services.skill.service import (
     _COMPUTATION_VERSION,
     compute_skill_for_station,
+    validate_homogeneous_time_step_and_phase,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import SeasonDefinition, StationThreshold
@@ -128,6 +129,56 @@ def _make_daily_hindcast(
         parameter=parameter,
         units="m³/s",
         time_step=day,
+        values=df,
+    )
+    return HindcastForecast(
+        id=HindcastForecastId(_uuid()),
+        station_id=station_id,
+        model_id=model_id,
+        model_artifact_id=artifact_id,
+        hindcast_step=hindcast_step,
+        forcing_type=ForcingType.REANALYSIS,
+        representation=EnsembleRepresentation.MEMBERS,
+        hindcast_run_id=_uuid(),
+        ensemble=ensemble,
+        created_at=_EPOCH,
+    )
+
+
+def _make_hindcast_with_valid_times(
+    *,
+    station_id: StationId,
+    model_id: ModelId,
+    artifact_id: ArtifactId,
+    hindcast_step: UtcDatetime,
+    valid_times: list[UtcDatetime],
+    time_step: timedelta,
+    n_members: int = 5,
+    parameter: str = "discharge",
+) -> object:
+    """A single hindcast (one ensemble, one ``HindcastForecast``) whose
+    ``valid_time``s are given explicitly — used to build a multi-step
+    ensemble whose own leads land at DIFFERENT phases of ``time_step``
+    (Plan 228 per-run scope: ``_valid_time_phase_us`` must check every
+    distinct ``valid_time``, not just the first)."""
+    from sapphire_flow.types.ensemble import ForecastEnsemble
+    from sapphire_flow.types.forecast import HindcastForecast
+
+    rows = [
+        {"valid_time": vt, "member_id": m, "value": 10.0 + m}
+        for vt in valid_times
+        for m in range(n_members)
+    ]
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+        pl.col("member_id").cast(pl.Int32),
+    )
+    ensemble = ForecastEnsemble.from_members(
+        station_id=station_id,
+        issued_at=hindcast_step,
+        parameter=parameter,
+        units="m³/s",
+        time_step=time_step,
         values=df,
     )
     return HindcastForecast(
@@ -1783,3 +1834,42 @@ class TestMixedTimeStepOrPhaseRaises:
                 uuid_factory=uuid_factory,  # type: ignore[arg-type]
                 parameter="discharge",
             )
+
+
+class TestInternallyMixedPhaseWithinOneHindcastRaises:
+    """Plan 228 per-run scope (major): a previous version of
+    ``_valid_time_phase_us`` classified a hindcast's phase from ``vts[0]``
+    alone. A SINGLE multi-step hindcast whose own ``valid_time``s mix phase
+    (e.g. daily steps at both midnight and 06:00 within one ensemble) was
+    silently misclassified by whichever phase happened to be first, passed
+    ``validate_homogeneous_time_step_and_phase``'s homogeneity check
+    (which only ever saw ONE phase value per hindcast), and then had its
+    off-phase leads silently vanish downstream — they never land on a
+    UTC-calendar bucket, so ``_resample_observations_to_forecast_step``'s
+    exact-key lookup never matches them. Every distinct ``valid_time``
+    within an ensemble must now be checked, not just the first."""
+
+    def test_multi_step_ensemble_with_internally_mixed_phase_raises(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+    ) -> None:
+        from sapphire_flow.exceptions import ConfigurationError
+
+        # ONE hindcast, ONE ensemble, daily time_step — but its two leads
+        # land at DIFFERENT phases of that time_step: the first valid_time
+        # is calendar-midnight-aligned, the second is offset by 6 hours.
+        # A previous version of `_valid_time_phase_us` read only vts[0]
+        # (midnight, phase 0) and never noticed the second lead disagreed.
+        mixed = _make_hindcast_with_valid_times(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 1),
+            valid_times=[_utc(2025, 1, 2), _utc(2025, 1, 3, hour=6)],
+            time_step=timedelta(days=1),
+        )
+
+        with pytest.raises(ConfigurationError, match="internally mixed"):
+            validate_homogeneous_time_step_and_phase([mixed])

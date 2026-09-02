@@ -162,6 +162,8 @@ def _score_to_row(s: SkillScore) -> dict:  # type: ignore[type-arg]
         "eval_period_start": s.eval_period_start,
         "eval_period_end": s.eval_period_end,
         "created_at": s.created_at,
+        "time_step_seconds": s.time_step_seconds,
+        "phase_offset_seconds": s.phase_offset_seconds,
     }
 
 
@@ -184,6 +186,8 @@ def _diagram_to_row(d: SkillDiagram) -> dict:  # type: ignore[type-arg]
         "eval_period_start": d.eval_period_start,
         "eval_period_end": d.eval_period_end,
         "created_at": d.created_at,
+        "time_step_seconds": d.time_step_seconds,
+        "phase_offset_seconds": d.phase_offset_seconds,
     }
 
 
@@ -217,6 +221,8 @@ def _row_to_score(row: sa.engine.row.RowMapping) -> SkillScore:
         eval_period_start=utc_from_row(row["eval_period_start"]),
         eval_period_end=utc_from_row(row["eval_period_end"]),
         created_at=utc_from_row(row["created_at"]),
+        time_step_seconds=row["time_step_seconds"],
+        phase_offset_seconds=row["phase_offset_seconds"],
     )
 
 
@@ -246,4 +252,6 @@ def _row_to_diagram(row: sa.engine.row.RowMapping) -> SkillDiagram:
         eval_period_start=utc_from_row(row["eval_period_start"]),
         eval_period_end=utc_from_row(row["eval_period_end"]),
         created_at=utc_from_row(row["created_at"]),
+        time_step_seconds=row["time_step_seconds"],
+        phase_offset_seconds=row["phase_offset_seconds"],
     )

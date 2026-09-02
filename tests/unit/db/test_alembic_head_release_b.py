@@ -59,8 +59,12 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # time_step_seconds column) -> 0051 (restore computation_version to the
 # skill_scores/skill_diagrams natural-key indexes — dropped, without a
 # metadata.py update to match, by migration 0016) onto 0049 — advancing the
-# pinned head to 0051.
-_RELEASE_B_HEAD = "0051"
+# pinned head to 0051. Plan 228's per-run scope round then chained 0052
+# (time_step_seconds/phase_offset_seconds on skill_scores/skill_diagrams,
+# widening both natural-key indexes so two (time_step, phase) cohorts never
+# collide under ON CONFLICT DO NOTHING) onto 0051 — advancing the pinned
+# head to 0052.
+_RELEASE_B_HEAD = "0052"
 
 
 def _down_revisions() -> dict[str, str | None]:

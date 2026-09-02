@@ -1920,6 +1920,13 @@ class SkillScore:
     eval_period_start: UtcDatetime
     eval_period_end: UtcDatetime
     created_at: UtcDatetime
+    # Plan 228 per-run scope: part of the natural key (migration 0052) so two
+    # (time_step, phase) cohorts never collide under `ON CONFLICT DO NOTHING`.
+    # Defaulted (86400 / None) so call sites indifferent to cohort
+    # distinctness need no changes; `compute_skill_for_station` sets the real
+    # resolved value from `validate_homogeneous_time_step_and_phase`.
+    time_step_seconds: int = 86400
+    phase_offset_seconds: int | None = None  # UTC-calendar-grid phase offset (µs÷1e6); NULL = no valid_time
 ```
 
 ### SkillDiagram
@@ -1944,6 +1951,9 @@ class SkillDiagram:
     eval_period_start: UtcDatetime
     eval_period_end: UtcDatetime
     created_at: UtcDatetime
+    # Plan 228 per-run scope: see `SkillScore.time_step_seconds` above.
+    time_step_seconds: int = 86400
+    phase_offset_seconds: int | None = None
 ```
 
 Module: `types/skill.py`

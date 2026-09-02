@@ -1,11 +1,14 @@
 # Decision Record — hindcast and skill scoring ran on the wrong data (Plan 228)
 
-**Date**: 2026-09-01 (updated 2026-09-02 — see § D4)
+**Date**: 2026-09-01 (updated 2026-09-02 — see § D4 and "Per-run scope round (third)")
 **Status**: Fix implemented and committed on `feat/plan-228-hindcast-skill-resampling`,
 **held at PR — not yet merged to `main`**; two independent-review fixer rounds
 complete, PLUS a per-run scope correction (§ D4 below) that removed a wrong
 `anchor`-based fix from fixer round 1 and replaced it with aligned/extended
-fetch bounds; **existing scores not yet marked/recomputed**
+fetch bounds, PLUS a third per-run-scope round (bottom of this record) closing
+the three findings a subsequent review left open (cohort-collision natural
+key, internally-mixed-phase validation, this record's own staleness);
+**existing scores not yet marked/recomputed**
 (gated on the mac-mini's in-flight onboarding/hindcasting test run — see D3 below)
 **Owners**: Bea (orchestrator)
 **Cross-reference**: `docs/plans/228-hindcast-and-skill-on-wrong-data.md` (source plan),
@@ -13,17 +16,21 @@ fetch bounds; **existing scores not yet marked/recomputed**
 detail), Plan 226 (blocked on this plan — anchoring `valid_time` is a separate,
 later fix)
 
-## ⚠️ Every skill score and hindcast forecast predating this fix is invalid
+## ⚠️ Every skill score predating this fix is invalid; only two model families' hindcasts are
 
 **Every row in `skill_scores` created before 2026-09-01 was computed on
 mismatched data and does not mean what it says.** Two independent defects (P1,
-P2 below) both corrupted the comparison; P2 affects 100% of rows, P1 an
-additional subset built on `linear_regression_daily` / `nwp_regression`
-hindcasts. Do not trust a pre-fix skill number for model promotion, ranking, or
-API display. Per D3 (below), these rows are pending being marked
-`superseded` and recomputed — this has **not yet happened** as of this
-record; check `skill_scores.freshness` / a future superseded-marker column
-before relying on any row's age.
+P2 below) both corrupted the comparison; P2 affects 100% of `skill_scores` rows
+(every score was computed by comparing a step-mean forecast to a raw
+instantaneous observation), P1 an additional subset built on
+`linear_regression_daily` / `nwp_regression` hindcasts — `NwpRainfallRunoff`
+(weather-only, `_n_lags = 0`), `ClimatologyFallback` (does not read
+`past_targets`), and `PersistenceFallback` (a different, smaller error of the
+same family — see the plan's "What is wrong" § P1) are NOT P1-affected. Do not
+trust a pre-fix skill number for model promotion, ranking, or API display. Per
+D3 (below), these rows are pending being marked `superseded` and recomputed —
+this has **not yet happened** as of this record; check `skill_scores.freshness`
+/ a future superseded-marker column before relying on any row's age.
 
 ## The two defects
 
@@ -53,12 +60,21 @@ present in every skill score regardless of forecast quality.
 
 ## Fix
 
+**This section describes the FINAL, currently-implemented mechanism. Two
+earlier fixer rounds (below, "Fixer round" / "Fixer round 2") built a
+phase-aligned `anchor` mechanism first; § D4 explains why that was wrong and
+replaces it with what is described here — UTC-calendar bucketing, never
+anchoring to `issue_time` or `valid_time`.**
+
 - **P1** (`services/hindcast.py::_assemble_hindcast_inputs`): `past_targets` is
   now resampled to the model's declared `time_step` via the SAME
   `resample_to_time_step` (`services/training_data.py`) the operational path
-  already uses, before it reaches `StationInputData` — anchored to `issue_time`
-  (review fixer round, below) so a non-midnight `issue_time` still gets a full
-  `[issue_time - time_step, issue_time)` window, not a partial boundary bucket.
+  already uses, before it reaches `StationInputData`. The fetch bounds feeding
+  that resample are UTC-calendar-ALIGNED-AND-EXTENDED
+  (`aligned_lookback_bounds`, § D4) so every model receives exactly
+  `lookback_steps` COMPLETE calendar buckets — never a naive window with a
+  partial bucket at either end, and never phase-aligned to a forecast's own
+  `issue_time`.
 - **Enforcement** (`services/training_data.py::validate_time_step_cadence`, new):
   a hard backstop, called after every `past_targets` resample in
   `hindcast.py`, `operational_inputs.py`, AND `track_assembly.py` — raises
@@ -74,13 +90,23 @@ present in every skill score regardless of forecast quality.
   forecast's own `time_step` before the join
   (`_resample_observations_to_forecast_step`), using the SAME aggregation
   method the model trains against (`training_data.py::aggregation_method_for`
-  — MEAN for discharge/water_level, SUM for precipitation, etc.), anchored to
-  a `valid_time` drawn from the hindcasts (review fixer round, below). The
-  `time_step` itself is read directly off the hindcasts'
-  `ForecastEnsemble.time_step` (`_infer_forecast_time_step`, now
-  `min(hc.ensemble.time_step for hc in hindcasts)`) — see the round-2 fixer
-  notes below for why the earlier gap-inference approach (and its
-  single-hindcast `None` fallback) was replaced rather than merely patched.
+  — MEAN for discharge/water_level, SUM for precipitation, etc.), bucketed
+  onto the same UTC-calendar grid every assembly path now uses — never
+  anchored to a `valid_time` drawn from the hindcasts. A forecast whose
+  `valid_time` does not itself fall on a calendar boundary (a non-midnight
+  daily cycle) legitimately produces NO score until `valid_time` itself is
+  fixed (Plan 226's territory), rather than this function shifting the grid
+  to meet it. The `(time_step, phase)` a skill computation covers is
+  validated homogeneous across every hindcast — and, per-hindcast, across
+  every one of that hindcast's OWN `valid_time`s — by
+  `validate_homogeneous_time_step_and_phase`, which RAISES on any mismatch
+  rather than silently coercing to `min(time_step)` plus one arbitrarily
+  chosen phase (the earlier `_infer_forecast_time_step` behavior this
+  replaced). The resolved `(time_step, phase)` is persisted on every
+  `SkillScore`/`SkillDiagram` (`time_step_seconds`/`phase_offset_seconds`,
+  migration 0052) and is part of both tables' natural keys, so two distinct
+  cohorts that would otherwise collide on every other natural-key column
+  never collide under `ON CONFLICT DO NOTHING`.
 
 No model math, coefficients, or artifacts changed. Training was investigated
 and found clean: `build_station_training_data` already resamples
@@ -432,3 +458,67 @@ and `TestComputeCombinedSkillsTask::test_mixed_time_step_across_models_
 degrades_gracefully` (test_compute_skills.py), both proven RED against the
 pre-fix code (uncaught `ConfigurationError: ... mixed time_step ...`) and
 GREEN after.
+
+## Per-run scope round (2026-09-02, third) — the three findings the review cut left open
+
+An independent review of the branch escalated after two rounds (2 blockers, 3
+majors, 1 minor); the owner cut the review rather than run a fourth round,
+folding the findings into three dispositions: three items assigned to Plan
+234 (broader FI-conformance work), and three that stayed in this plan because
+this branch created the defect. This round closes those three.
+
+1. **Cohort collision silently discarded skill scores (blocker).**
+   `partition_by_time_step_and_phase` (the fixer round immediately above)
+   computes and stores skill once PER `(time_step, phase)` cohort, on
+   purpose — `test_mixed_time_step_history_degrades_gracefully` requires
+   BOTH cohorts' scores to survive. But `uq_skill_scores_natural_key`/
+   `uq_skill_diagrams_natural_key` (migration 0051) contained neither
+   `time_step` nor `phase`. Two cohorts producing a score identical on
+   every OTHER natural-key column (e.g. a daily cohort's 24h lead and an
+   hourly cohort's 24h lead) collided under `ON CONFLICT DO NOTHING`, and
+   one was silently dropped — latent under today's single-cadence config,
+   live the moment heterogeneity appears. **Fix:** migration 0052 adds
+   `time_step_seconds` (`NOT NULL`, backfilled to 86400) and
+   `phase_offset_seconds` (nullable) to both tables and widens both natural
+   keys to include them, NULL-safe via the same `COALESCE` pattern
+   migration 0051 already uses for `season`/`flow_regime`/`forcing_type`.
+   `SkillScore`/`SkillDiagram` (`types/skill.py`) gained the same two
+   fields (defaulted to `86400`/`None` so unrelated call sites need no
+   changes); `compute_skill_for_station` now threads the REAL
+   `(time_step, phase)` `validate_homogeneous_time_step_and_phase` already
+   resolves down into every constructed score/diagram. Locked by
+   `tests/integration/store/test_skill_store.py::TestPgSkillStore::
+   test_natural_key_disambiguates_cohorts_by_time_step_and_phase` — a real
+   Postgres test, since `ON CONFLICT` cannot be exercised against an
+   in-memory fake store — proven RED against the pre-0052 schema
+   (`assert 1 == 2`, the second cohort's row silently missing) and GREEN
+   after.
+2. **Phase validation read only the first `valid_time` (major).**
+   `_valid_time_phase_us` classified an ENTIRE hindcast's phase from
+   `vts[0]` alone. A single multi-step hindcast whose own `valid_time`s
+   mix phase (e.g. daily leads at both midnight and 06:00 within one
+   ensemble) was silently misclassified by whichever phase happened to be
+   first, passed `validate_homogeneous_time_step_and_phase`'s homogeneity
+   check (which only ever saw the one phase value that function returned
+   per hindcast), and then had its off-phase leads silently vanish
+   downstream — they never land on a UTC-calendar bucket, so
+   `_resample_observations_to_forecast_step`'s exact-key lookup never
+   matches them. **Fix:** `_valid_time_phase_us` now computes the phase of
+   EVERY distinct `valid_time` in the ensemble and raises
+   `ConfigurationError` on internal disagreement, rather than reading only
+   the first. `partition_by_time_step_and_phase` catches that raise
+   per-hindcast and excludes (with a `structlog` warning) just the
+   offending hindcast, so one internally-malformed ensemble degrades
+   scoring by one hindcast rather than taking down the whole partitioning
+   pass — the same graceful-degradation principle as the fixer round
+   above. Locked by `tests/unit/services/skill/test_service.py::
+   TestInternallyMixedPhaseWithinOneHindcastRaises`, proven RED (`DID NOT
+   RAISE`) against the `vts[0]`-only code and GREEN after.
+3. **This decision record described a mechanism that no longer exists
+   (minor).** The "## Fix" section above previously described `past_targets`
+   and observation resampling as anchored to `issue_time`/`valid_time` — the
+   fixer-round-1/2 mechanism § D4 explains was wrong and removed. It now
+   describes the actual, final UTC-calendar-bucketing behavior and links to
+   § D4 for the rationale, and the "every hindcast forecast" heading above
+   now correctly scopes P1 to the two affected model families rather than
+   implying every hindcast is invalid.

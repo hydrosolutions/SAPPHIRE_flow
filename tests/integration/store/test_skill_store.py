@@ -99,6 +99,8 @@ def _make_score(
     freshness: SkillFreshness = SkillFreshness.CURRENT,
     eval_period_start: object = None,
     eval_period_end: object = None,
+    time_step_seconds: int = 86400,
+    phase_offset_seconds: int | None = None,
 ) -> SkillScore:
     return SkillScore(
         id=uuid.uuid4(),
@@ -121,6 +123,8 @@ def _make_score(
         eval_period_start=eval_period_start or _T0,  # type: ignore[arg-type]
         eval_period_end=eval_period_end or _T1,  # type: ignore[arg-type]
         created_at=_NOW,
+        time_step_seconds=time_step_seconds,
+        phase_offset_seconds=phase_offset_seconds,
     )
 
 
@@ -202,6 +206,57 @@ class TestPgSkillStore:
         assert len(results) == 1
         assert results[0].computation_version == 2
         assert results[0].metric == "nse"
+
+    def test_natural_key_disambiguates_cohorts_by_time_step_and_phase(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 228 per-run scope (blocker): `flows/compute_skills.py`
+        partitions a station/model's hindcast history into homogeneous
+        `(time_step, phase)` cohorts and computes + stores skill once PER
+        COHORT — deliberately, so a heterogeneous history degrades to
+        "fewer cohorts scored" rather than raising and scoring nothing
+        (`tests/unit/flows/test_compute_skills.py::
+        test_mixed_time_step_history_degrades_gracefully` requires BOTH
+        cohorts' scores to survive). Before migration 0052,
+        `uq_skill_scores_natural_key` contained neither `time_step` nor
+        `phase` — a daily cohort's 24h-lead score and an hourly cohort's
+        24h-lead score are identical on every OTHER natural-key column, so
+        the second cohort's `INSERT ... ON CONFLICT DO NOTHING` collided
+        with the first and was silently dropped. This can only be observed
+        against a real Postgres unique index — a fake/in-memory store has
+        no `ON CONFLICT` to exercise.
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        daily_cohort = _make_score(
+            sid,
+            mid,
+            aid,
+            lead_time_hours=24,
+            metric="mae",
+            score=1.0,
+            time_step_seconds=86400,
+            phase_offset_seconds=0,
+        )
+        hourly_cohort = _make_score(
+            sid,
+            mid,
+            aid,
+            lead_time_hours=24,
+            metric="mae",
+            score=2.0,
+            time_step_seconds=3600,
+            phase_offset_seconds=0,
+        )
+        store.store_skill_scores([daily_cohort, hourly_cohort])
+
+        results = store.fetch_latest_scores(sid, mid)
+        assert len(results) == 2
+        by_time_step = {r.time_step_seconds: r.score for r in results}
+        assert by_time_step == {86400: 1.0, 3600: 2.0}
 
     def test_recompute_after_mark_stale_supersedes_the_corrupted_score(
         self, db_connection: sa.Connection
