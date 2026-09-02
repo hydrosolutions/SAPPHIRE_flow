@@ -10,8 +10,10 @@ from structlog.testing import capture_logs
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.training_data import (
+    aligned_lookback_bounds,
     assemble_group_training_data,
     assemble_station_training_data,
+    floor_to_time_step,
     resample_to_time_step,
     validate_time_step_cadence,
 )
@@ -1029,10 +1031,12 @@ class TestResampleToTimeStep:
         assert result.height == 1
         assert abs(result["discharge"][0] - 96.0) < 1e-9  # 24 * 4.0
 
-    def test_anchor_aligns_buckets_to_a_non_midnight_phase(self) -> None:
-        # 3 days of 10-minute discharge starting at 06:00 UTC (never a
-        # midnight boundary) — the exact shape a hindcast/skill lookback
-        # feeds in (Plan 228 review fixer round).
+    def test_buckets_are_utc_calendar_aligned_never_phase_aligned(self) -> None:
+        """Plan 228 D4: a previous fixer round's ``anchor`` parameter
+        phase-aligned buckets to a caller's own timestamp; D4 retracts
+        that — every path aggregates onto UTC-calendar buckets, full stop.
+        3 days of 10-minute discharge starting at 06:00 UTC (never a
+        midnight boundary) must still bucket to UTC midnight."""
         start = ensure_utc(datetime(2024, 1, 1, 6, tzinfo=UTC))
         n = 3 * 24 * 6
         df = pl.DataFrame(
@@ -1046,14 +1050,13 @@ class TestResampleToTimeStep:
                 "discharge": [5.0] * n,
             }
         )
-        anchor = ensure_utc(datetime(2024, 1, 5, 6, tzinfo=UTC))  # any 06:00 instant
 
-        result = resample_to_time_step(df, timedelta(days=1), anchor=anchor)
+        result = resample_to_time_step(df, timedelta(days=1))
 
-        # Every bucket boundary must fall at 06:00 UTC, never at midnight.
+        # Every bucket boundary must fall at UTC midnight, never at 06:00.
         for ts in result["timestamp"]:
-            assert ts.hour == 6 and ts.minute == 0 and ts.second == 0, (
-                f"bucket at {ts} is not anchored to the 06:00 UTC phase"
+            assert ts.hour == 0 and ts.minute == 0 and ts.second == 0, (
+                f"bucket at {ts} is not UTC-calendar aligned"
             )
 
 
@@ -1232,3 +1235,49 @@ class TestSnowReachesPastDynamicViaHybridSource:
         assert "swe" in result.past_dynamic.columns
         values = result.past_dynamic.sort("timestamp")["swe"].to_list()
         assert values == [100.0, 101.0, 102.0, 103.0, 104.0]
+
+
+class TestFloorToTimeStep:
+    """Plan 228 D4: the UTC-calendar bucket boundary at or before an
+    instant — never phase-aligned to the instant itself."""
+
+    def test_midnight_instant_is_its_own_floor(self) -> None:
+        midnight = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        assert floor_to_time_step(midnight, timedelta(days=1)) == midnight
+
+    def test_non_midnight_instant_floors_to_the_preceding_midnight(self) -> None:
+        six_am = ensure_utc(datetime(2026, 1, 10, 6, tzinfo=UTC))
+        expected = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        assert floor_to_time_step(six_am, timedelta(days=1)) == expected
+
+    def test_hourly_step_floors_to_the_hour(self) -> None:
+        instant = ensure_utc(datetime(2026, 1, 10, 6, 45, 30, tzinfo=UTC))
+        expected = ensure_utc(datetime(2026, 1, 10, 6, tzinfo=UTC))
+        assert floor_to_time_step(instant, timedelta(hours=1)) == expected
+
+
+class TestAlignedLookbackBounds:
+    """Plan 228 D4: fetch bounds covering exactly ``lookback_steps``
+    COMPLETE UTC-calendar buckets, ending at the boundary at or before the
+    given instant — never a naive ``instant - lookback_steps * time_step``,
+    which has a partial bucket at both ends whenever ``instant`` is not
+    itself a boundary."""
+
+    def test_end_is_the_boundary_at_or_before_instant(self) -> None:
+        issue_time = ensure_utc(datetime(2026, 1, 15, 6, tzinfo=UTC))
+        _, end = aligned_lookback_bounds(issue_time, 7, timedelta(days=1))
+        assert end == ensure_utc(datetime(2026, 1, 15, tzinfo=UTC))
+        assert end <= issue_time  # NO-FUTURE-LEAKAGE
+
+    def test_start_is_exactly_lookback_steps_before_the_aligned_end(self) -> None:
+        issue_time = ensure_utc(datetime(2026, 1, 15, 6, tzinfo=UTC))
+        start, end = aligned_lookback_bounds(issue_time, 7, timedelta(days=1))
+        assert end - start == 7 * timedelta(days=1)
+
+    def test_a_midnight_instant_reproduces_the_naive_window(self) -> None:
+        # When `instant` IS already a boundary, alignment is a no-op — the
+        # aligned window equals the naive `instant - lookback * step` one.
+        issue_time = ensure_utc(datetime(2026, 1, 15, tzinfo=UTC))
+        start, end = aligned_lookback_bounds(issue_time, 7, timedelta(days=1))
+        assert end == issue_time
+        assert start == ensure_utc(issue_time - 7 * timedelta(days=1))

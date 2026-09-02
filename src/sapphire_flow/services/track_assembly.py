@@ -31,6 +31,7 @@ from sapphire_flow.services.operational_inputs import (
     raw_forcing_to_dataframe,
 )
 from sapphire_flow.services.training_data import (
+    aligned_lookback_bounds,
     resample_to_time_step,
     validate_time_step_cadence,
 )
@@ -256,6 +257,12 @@ def assemble_assignment_inputs(
             )
 
     lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
+    # Plan 228 D4: see `operational_inputs.py` — past_targets bounds are
+    # ALIGNED and EXTENDED to complete UTC-calendar buckets, never `past_
+    # dynamic`'s unresampled `lookback_start`/`issue_time` window (below).
+    past_targets_start, past_targets_end = aligned_lookback_bounds(
+        issue_time, reqs.lookback_steps, time_step
+    )
 
     target_parameters = list(reqs.target_parameters)
     all_observations: list[Observation] = []
@@ -264,8 +271,8 @@ def assemble_assignment_inputs(
             obs_store.fetch_observations(
                 station_id=station_id,
                 parameter=parameter,
-                start=lookback_start,
-                end=issue_time,
+                start=past_targets_start,
+                end=past_targets_end,
                 qc_status=QcStatus.QC_PASSED,
             )
         )

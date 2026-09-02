@@ -35,7 +35,7 @@ from sapphire_flow.types.forcing_track import (
 from sapphire_flow.types.ids import ModelId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.weather import WeatherForecastRecord
-from tests.conftest import make_observation, make_station_config
+from tests.conftest import make_observation, make_observations, make_station_config
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_stores import (
     FakeBasinStore,
@@ -476,3 +476,70 @@ def test_isolated_missing_daily_bucket_yields_incomplete_at_cycle_not_raise() ->
         e for e in logs if e.get("event") == "track_assembly.cadence_mismatch_skip"
     ]
     assert skip_events
+
+
+def test_partial_trailing_day_excluded_at_a_non_midnight_cycle() -> None:
+    """Plan 228 D4 (Non-goals RETRACTED — this was live, not a non-goal): at
+    a non-midnight cycle, the most recent ``past_targets`` bucket must never
+    be a partial day presented as a full one."""
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=7,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    model = _FakeModel(requirements)
+    projection = NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL)))
+
+    issue_time = ensure_utc(_ISSUE + timedelta(hours=6))  # never a midnight boundary
+    day_midnight = _ISSUE
+
+    data_start = ensure_utc(issue_time - timedelta(days=9))
+    background = make_observations(
+        n=9 * 24 * 6,
+        station_id=_STATION,
+        parameter="discharge",
+        start=data_start,
+        interval=timedelta(minutes=10),
+    )
+    partial_day = [
+        make_observation(
+            station_id=_STATION,
+            parameter="discharge",
+            timestamp=ensure_utc(day_midnight + timedelta(hours=h)),
+            value=999.0,
+            rng=random.Random(3000 + h),
+        )
+        for h in range(6)
+    ]
+    obs_store.store_observations(background + partial_day)
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=model,  # type: ignore[arg-type]
+        projection=projection,
+        track_outcome=None,
+        issue_time=issue_time,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        clock=lambda: issue_time,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    past_targets = result.inputs.data.past_targets.sort("timestamp")
+    assert 999.0 not in past_targets["discharge"].to_list(), (
+        "past_targets contains a value built from the partial "
+        "[00:00, 06:00) day-of-cycle window"
+    )
+    for ts in past_targets["timestamp"]:
+        assert ts.hour == 0 and ts.minute == 0 and ts.second == 0
+        assert ts < issue_time

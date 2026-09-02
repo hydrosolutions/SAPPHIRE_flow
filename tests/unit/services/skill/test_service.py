@@ -970,8 +970,9 @@ class TestFlowRegimeStratification:
     ) -> None:
         regime_config = _make_flow_regime_config(station_id, p50=150.0, p90=350.0)
         # Two issue times, one hour apart: exercises `_build_strata` across
-        # multiple hindcasts (`_infer_forecast_time_step` itself reads
-        # `hc.ensemble.time_step` directly and needs only one hindcast).
+        # multiple hindcasts (`validate_homogeneous_time_step_and_phase`
+        # itself reads `hc.ensemble.time_step` directly and needs only one
+        # hindcast).
         step = _utc(2025, 1, 1)
         step2 = ensure_utc(step + timedelta(hours=1))
         vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
@@ -1629,97 +1630,6 @@ class TestDailyMeanComparedAgainstDailyMeanObservation:
             )
 
 
-class TestObservationBucketsAlignToForecastValidTimePhase:
-    """Plan 228 review fixer round (major): resampling observations to a
-    daily bucket without an anchor truncates to UTC-midnight boundaries
-    regardless of the forecast's own ``valid_time``. A forecast valid at a
-    non-midnight hour then never exact-matches any bucket key, and
-    ``_build_strata`` silently drops every pair — producing NO scores at
-    all, not merely a wrong score. ``_resample_observations_to_forecast_step``
-    must anchor buckets to the forecast's own valid-time phase instead."""
-
-    def test_score_produced_for_a_non_midnight_daily_forecast(
-        self,
-        station_id: StationId,
-        model_id: ModelId,
-        artifact_id: ArtifactId,
-        clock: object,
-        uuid_factory: object,
-        seasons: list[SeasonDefinition],
-    ) -> None:
-        day = timedelta(days=1)
-        hindcasts = []
-        observations = []
-
-        for i in range(3):
-            # Issue + valid_time both at 06:00 UTC — never a midnight
-            # boundary, unlike every other test in this module.
-            issue = _utc(2025, 1, i + 1, hour=6)
-            forecast_day_start = ensure_utc(issue + day)
-            daily_mean = 40.0 + 10.0 * i
-
-            hindcasts.append(
-                _make_daily_hindcast(
-                    station_id=station_id,
-                    model_id=model_id,
-                    artifact_id=artifact_id,
-                    hindcast_step=issue,
-                    forecast_value=daily_mean,
-                )
-            )
-
-            # Two readings spanning the [06:00, 06:00+1d) window whose mean
-            # is `daily_mean`, matching `TestDailyMeanComparedAgainst...`
-            # but phase-shifted 6 hours off midnight.
-            boundary_value = daily_mean - 40.0
-            midday_value = 2 * daily_mean - boundary_value
-            observations.append(
-                _make_observation(
-                    station_id=station_id,
-                    timestamp=forecast_day_start,
-                    value=boundary_value,
-                )
-            )
-            observations.append(
-                _make_observation(
-                    station_id=station_id,
-                    timestamp=ensure_utc(forecast_day_start + timedelta(hours=12)),
-                    value=midday_value,
-                )
-            )
-
-        scores, _ = compute_skill_for_station(
-            station_id=station_id,
-            model_id=model_id,
-            artifact_id=artifact_id,
-            hindcasts=hindcasts,
-            observations=observations,
-            thresholds=[],
-            flow_regime_config=None,
-            seasons=seasons,
-            skill_source=SkillSource.HINDCAST_REANALYSIS,
-            forcing_type=ForcingType.REANALYSIS,
-            clock=clock,  # type: ignore[arg-type]
-            uuid_factory=uuid_factory,  # type: ignore[arg-type]
-            parameter="discharge",
-        )
-
-        mae_scores = [s for s in scores if s.metric == "mae"]
-        # Unanchored resampling buckets at UTC midnight; `valid_time` (06:00)
-        # then never exact-matches any bucket key and `_build_strata` finds
-        # nothing at all for any of the 3 forecasts — mae_scores is empty.
-        assert mae_scores, (
-            "expected scores for a non-midnight daily forecast; got none — "
-            "observation buckets are not aligned to the forecast's own "
-            "valid_time phase"
-        )
-        for s in mae_scores:
-            assert s.score < 1.0, (
-                "expected near-zero MAE comparing a daily-mean forecast to "
-                f"the daily-mean observation, got {s.score}"
-            )
-
-
 class TestSingleHindcastSingleLeadStepStillScores:
     """Plan 228 review fixer round (major): a single hindcast with a single
     lead step has no ``valid_time`` gap AND no second hindcast issue time to
@@ -1774,3 +1684,102 @@ class TestSingleHindcastSingleLeadStepStillScores:
         )
         mae_scores = [s for s in scores if s.metric == "mae"]
         assert mae_scores
+
+
+class TestMixedTimeStepOrPhaseRaises:
+    """Plan 228 ALSO FIX #3: a skill computation must cover exactly ONE
+    ``(time_step, phase)`` — a previous version silently coerced a mixed
+    set to ``min(time_step)`` plus the first forecast's phase, corrupting
+    the comparison with no signal that anything was wrong."""
+
+    def test_mixed_time_step_raises_configuration_error(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        from sapphire_flow.exceptions import ConfigurationError
+
+        daily = _make_daily_hindcast(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 1),
+            forecast_value=50.0,
+        )
+        hourly = _make_hindcast(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 2),
+            n_steps=1,
+        )
+        observations = [
+            _make_observation(station_id=station_id, timestamp=_utc(2025, 1, 2))
+        ]
+
+        with pytest.raises(ConfigurationError, match="mixed time_step"):
+            compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=[daily, hourly],
+                observations=observations,
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=clock,  # type: ignore[arg-type]
+                uuid_factory=uuid_factory,  # type: ignore[arg-type]
+                parameter="discharge",
+            )
+
+    def test_mixed_phase_within_same_time_step_raises_configuration_error(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        from sapphire_flow.exceptions import ConfigurationError
+
+        midnight_issue = _make_daily_hindcast(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 1),  # valid_time lands at midnight
+            forecast_value=50.0,
+        )
+        six_am_issue = _make_daily_hindcast(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcast_step=_utc(2025, 1, 1, hour=6),  # valid_time lands at 06:00
+            forecast_value=50.0,
+        )
+        observations = [
+            _make_observation(station_id=station_id, timestamp=_utc(2025, 1, 2))
+        ]
+
+        with pytest.raises(ConfigurationError, match="mixed valid_time phase"):
+            compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=[midnight_issue, six_am_issue],
+                observations=observations,
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=clock,  # type: ignore[arg-type]
+                uuid_factory=uuid_factory,  # type: ignore[arg-type]
+                parameter="discharge",
+            )

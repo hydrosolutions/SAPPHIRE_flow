@@ -10,6 +10,7 @@ import structlog
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.training_data import (
+    aligned_lookback_bounds,
     resample_to_time_step,
     validate_time_step_cadence,
 )
@@ -536,6 +537,16 @@ def assemble_station_operational_inputs(
         else model.data_requirements
     )
     lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
+    # Plan 228 D4: past_targets bounds are ALIGNED to UTC-calendar bucket
+    # boundaries and EXTENDED so `reqs.lookback_steps` buckets are all
+    # complete — a non-midnight `issue_time` (a 06/12/18Z cycle) otherwise
+    # presents the most recent bucket as a full day when it is really a
+    # partial one (measured: 37 rows where a full day is 144). Scoped to
+    # `past_targets` only: `past_dynamic` (below) legitimately carries a
+    # different, unresampled cadence.
+    past_targets_start, past_targets_end = aligned_lookback_bounds(
+        issue_time, reqs.lookback_steps, time_step
+    )
 
     # --- past_targets ---
     target_parameters = list(reqs.target_parameters)
@@ -544,8 +555,8 @@ def assemble_station_operational_inputs(
         obs = obs_store.fetch_observations(
             station_id=station_id,
             parameter=parameter,
-            start=lookback_start,
-            end=issue_time,
+            start=past_targets_start,
+            end=past_targets_end,
             qc_status=QcStatus.QC_PASSED,
         )
         all_observations.extend(obs)

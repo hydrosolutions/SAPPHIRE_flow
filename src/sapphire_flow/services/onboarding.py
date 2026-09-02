@@ -132,7 +132,10 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
     """Build the skill computation callback for onboard_model()."""
     from uuid import uuid4
 
-    from sapphire_flow.services.skill.service import compute_skill_for_station
+    from sapphire_flow.services.skill.service import (
+        compute_skill_for_station,
+        observation_fetch_bounds,
+    )
     from sapphire_flow.types.enums import ForcingType
 
     def _compute_skill(
@@ -160,14 +163,17 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
         if not hindcasts:
             return
 
-        # Fetch observations for the training period
+        # Fetch observations covering the hindcasts' own valid times (Plan
+        # 228 ALSO FIX #2) — never the training period, which can end before
+        # a multi-step horizon's trailing valid_time.
         from sapphire_flow.types.enums import QcStatus
 
+        obs_start, obs_end = observation_fetch_bounds(hindcasts)
         observations = obs_store.fetch_observations(
             station_id=station_id,
             parameter="discharge",
-            start=unit.training_period_start,
-            end=unit.training_period_end,
+            start=obs_start,
+            end=obs_end,
             qc_status=QcStatus.QC_PASSED,
         )
 

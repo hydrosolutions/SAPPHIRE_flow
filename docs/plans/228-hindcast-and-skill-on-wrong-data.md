@@ -324,3 +324,41 @@ its pre-fix value" gate was satisfied via the T3 locking test's
 stash-and-restore proof (a controlled, reproducible before/after comparison)
 rather than a live mac-mini recompute, for the same D3 reason. `uv run pytest
 tests/unit` — see the implementer's own report for the exact run and result.
+
+## Implementation status (2026-09-02) — PER-RUN SCOPE round COMPLETE
+
+Executed the "⛔ PER-RUN SCOPE" section above in full, on top of the branch's
+existing T1-T4 work (kept, not rebuilt):
+
+- **REMOVED** the `anchor` mechanism: `resample_to_time_step` no longer takes
+  an `anchor` parameter; `_anchor_phase_shift` (training_data.py),
+  `_forecast_valid_time_anchor` (skill/service.py), and the two tests that
+  locked the retracted phase-aligned behavior
+  (`TestHindcastPastTargetsBucketsAlignToIssueTime`,
+  `TestObservationBucketsAlignToForecastValidTimePhase`) are gone.
+- **IMPLEMENTED D4**: `aligned_lookback_bounds` + `floor_to_time_step` (new,
+  `services/training_data.py`) give every `past_targets` fetch (`hindcast.py`,
+  `operational_inputs.py`, `track_assembly.py`) aligned-and-extended bounds —
+  exactly `lookback_steps` COMPLETE UTC-calendar buckets, never a naive
+  window with a partial bucket at either end. Skill scoring's observation
+  resample lost its `anchor` too — UTC-calendar buckets only, everywhere.
+- **ALSO FIXED** all three findings: (1) hindcast cadence validation now
+  scopes to the model's own `declared_lookback_steps`, trimmed from the tail,
+  not the runner's much larger fetch window; (2) `observation_fetch_bounds`
+  (new) derives observation-fetch bounds from the ensembles' own
+  `valid_time`s for `compute_skills_task`, `compute_combined_skills_task`,
+  AND onboarding's skill callback — a single hindcast no longer collapses to
+  an empty fetch range; (3) `validate_homogeneous_time_step_and_phase`
+  replaces the silent `min()`-coercion with a hard raise on mixed
+  `time_step` or phase.
+- **T5 ADDED**: `train_models_flow`'s default `period_end` (when omitted)
+  now snaps to `floor_to_time_step(clock(), time_step)` instead of a raw
+  `clock()` instant.
+- **KEPT** everything the scope said to keep: the hindcast `resample_to_
+  time_step` call, `validate_time_step_cadence`, migrations 0050/0051, and
+  T3's scoring work apart from its anchoring.
+- Full detail, rationale, and locking tests: `docs/decisions/plan-228-hindcast-skill-resampling.md`
+  § D4.
+- **Still forbidden and still not done**: the mac-mini was not touched; D3's
+  marking-superseded + recompute remain gated on its onboarding/hindcasting
+  run finishing.

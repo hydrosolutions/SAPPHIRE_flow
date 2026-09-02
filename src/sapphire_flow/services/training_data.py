@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta  # noqa: TCH003
+from datetime import UTC, datetime, timedelta  # noqa: TCH003
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
@@ -13,6 +13,7 @@ from sapphire_flow.services.caravan_statics import (
     project_declared_static_attributes,
 )
 from sapphire_flow.types.basin import non_null_static_keys
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AggregationMethod, QcStatus, StaticNaming
 
 if TYPE_CHECKING:
@@ -137,45 +138,65 @@ def validate_time_step_cadence(
         )
 
 
-def _anchor_phase_shift(anchor: UtcDatetime, time_step: timedelta) -> timedelta:
-    """The portion of ``anchor`` that is not a whole multiple of ``time_step``
-    since the Unix epoch — e.g. an anchor at 06:00 UTC with a daily
-    ``time_step`` gives a 6-hour phase shift. Subtracting this from every
-    timestamp before grouping (then adding it back after) pins bucket
-    boundaries to ``anchor``'s time-of-day instead of UTC midnight, because
-    ``group_by_dynamic``'s calendar truncation (``"1d"`` etc.) is itself
-    epoch/midnight-aligned for a UTC column.
+def floor_to_time_step(instant: UtcDatetime, time_step: timedelta) -> UtcDatetime:
+    """The UTC-calendar bucket boundary at or before ``instant`` (Plan 228
+    D4): buckets are whole multiples of ``time_step`` since the Unix epoch
+    (UTC midnight, for a daily step) — never phase-aligned to ``instant``
+    itself. A previous fixer round did the opposite (an ``anchor`` parameter
+    that phase-aligned buckets to a forecast's own timestamp); D4 retracts
+    that: it made hindcast consume rolling windows while training consumes
+    UTC calendar days, and it aligned to ``valid_time`` — precisely the value
+    Plan 226 exists to correct.
     """
     step_seconds = time_step.total_seconds()
     if step_seconds <= 0:
-        return timedelta(0)
-    phase_seconds = anchor.timestamp() % step_seconds
-    return timedelta(seconds=phase_seconds)
+        return instant
+    floored_seconds = (instant.timestamp() // step_seconds) * step_seconds
+    return ensure_utc(datetime.fromtimestamp(floored_seconds, tz=UTC))
+
+
+def aligned_lookback_bounds(
+    instant: UtcDatetime,
+    lookback_steps: int,
+    time_step: timedelta,
+) -> tuple[UtcDatetime, UtcDatetime]:
+    """The ``[start, end)`` fetch bounds covering exactly ``lookback_steps``
+    COMPLETE UTC-calendar buckets of ``time_step``, ending at the last bucket
+    boundary at or before ``instant`` (Plan 228 D4).
+
+    Filtering after the fact is not sufficient: a naive
+    ``[instant - lookback_steps * time_step, instant)`` window has a partial
+    bucket at BOTH ends whenever ``instant`` is not itself a bucket boundary
+    (e.g. a 06:00 UTC cycle for a daily model) — dropping only the trailing
+    one leaves a corrupt leading day, and dropping both starves a 7-day model
+    to 6 days. Aligning ``end`` to the boundary at or before ``instant``
+    (dropping the partial trailing bucket) and deriving ``start`` from THAT
+    aligned ``end`` (extending earlier than the naive start whenever
+    ``instant`` itself isn't aligned) is what keeps every one of the
+    ``lookback_steps`` buckets whole.
+    """
+    end = floor_to_time_step(instant, time_step)
+    start = ensure_utc(end - lookback_steps * time_step)
+    return start, end
 
 
 def resample_to_time_step(
     df: pl.DataFrame,
     time_step: timedelta,
     aggregation_methods: dict[str, AggregationMethod] | None = None,
-    anchor: UtcDatetime | None = None,
 ) -> pl.DataFrame:
     """Resample a wide-format observations DataFrame to the target time_step.
 
     Expects columns: ``timestamp`` (datetime) + one column per parameter.
     Returns as-is if the data cadence already matches ``time_step``.
 
-    ``anchor`` (Plan 228 review fixer round — aggregation-window alignment):
-    pins bucket boundaries to ``anchor``'s phase within ``time_step``. Without
-    it, ``group_by_dynamic`` truncates to UTC-midnight-aligned boundaries
-    regardless of what instant the caller actually cares about — a daily
-    forecast valid at 06:00 UTC then gets bucketed into a [00:00, 24:00)
-    window whose label never equals its own ``valid_time``, and a lookback
-    ending at a non-midnight ``issue_time`` gets a spurious partial bucket at
-    the boundary instead of the intended `[issue_time - time_step,
-    issue_time)`. Pass the instant whose phase the buckets must match — the
-    forecast's own ``valid_time``/``issue_time`` — whenever bucket labels are
-    compared against or must end at a specific instant; omit it only when the
-    caller has no such instant to align to.
+    Buckets are UTC-calendar-aligned (whole multiples of ``time_step`` since
+    the Unix epoch) — Plan 228 D4: every path aggregates onto the SAME grid,
+    never phase-aligned to a caller's own timestamp. Callers that need the
+    result to line up with a specific instant (an ``issue_time``, a
+    forecast's ``valid_time``) must fetch pre-aligned bounds themselves (see
+    :func:`aligned_lookback_bounds`), not ask this function to shift the
+    grid to meet them halfway.
     """
     if df.is_empty() or df.height < 2:
         return df
@@ -212,24 +233,11 @@ def resample_to_time_step(
             agg_exprs.append(pl.col(col).mean())
 
     working = df.sort("timestamp")
-    phase_shift: timedelta | None = None
-    if anchor is not None:
-        phase_shift = _anchor_phase_shift(anchor, time_step)
-        working = working.with_columns(
-            (pl.col("timestamp") - phase_shift).alias("timestamp")
-        )
-
     resampled = (
         working.group_by_dynamic("timestamp", every=_timedelta_to_polars(time_step))
         .agg(agg_exprs)
         .sort("timestamp")
     )
-
-    if phase_shift is not None:
-        resampled = resampled.with_columns(
-            (pl.col("timestamp") + phase_shift).alias("timestamp")
-        )
-
     return resampled
 
 

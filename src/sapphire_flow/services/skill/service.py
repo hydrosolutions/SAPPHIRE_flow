@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.skill.diagrams import (
     compute_rank_histogram,
     compute_reliability_diagram,
@@ -32,6 +33,7 @@ from sapphire_flow.services.training_data import (
     aggregation_method_for,
     resample_to_time_step,
 )
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, FlowRegime, SkillFreshness
 
 if TYPE_CHECKING:
@@ -69,48 +71,91 @@ def _ensemble_matrix(hindcast: HindcastForecast, valid_time: object) -> np.ndarr
     return filtered["value"].to_numpy()
 
 
-def _infer_forecast_time_step(hindcasts: list[HindcastForecast]) -> timedelta:
-    """The forecast's own time_step (Plan 228 D2).
-
-    Review fixer round (major): every model sets ``ForecastEnsemble.time_step``
-    directly from its OWN declared ``time_step`` at construction (e.g.
-    ``models/linear_regression_daily.py``, ``models/persistence_fallback.py``)
-    — it is a mandatory field, never inferred — and migration 0050 /
-    ``hindcast_store.py``'s ``_reconstruct_ensemble`` persists it losslessly
-    through the DB round-trip specifically so callers read it back here
-    instead of re-deriving it from ``valid_time`` gaps. The old gap-inference
-    (within a hindcast, falling back to the gap between hindcast issue times)
-    produced NO time_step at all for a horizon-1 model's first hindcast
-    (single lead step, single issue time — no gap either way), silently
-    dropping all scores for a station/model right after onboarding even
-    though the correct value was sitting on ``hc.ensemble.time_step`` the
-    whole time. ``hindcasts`` is guaranteed non-empty by the caller's early
-    ``if not hindcasts: return [], []``.
-    """
-    return min(hc.ensemble.time_step for hc in hindcasts)
+def _valid_time_phase_us(hc: HindcastForecast, time_step: timedelta) -> int | None:
+    """The offset (microseconds) of ``hc``'s first ``valid_time`` from the
+    nearest UTC-calendar ``time_step`` boundary at or before it — ``None``
+    when the ensemble carries no ``valid_time`` at all (empty). Used to
+    detect a forecast whose cadence disagrees with the calendar grid every
+    assembly path now aggregates onto (Plan 228 D4)."""
+    vts = hc.ensemble.values["valid_time"].to_list()
+    if not vts:
+        return None
+    step_us = int(time_step.total_seconds() * 1_000_000)
+    if step_us <= 0:
+        return None
+    ts_us = int(vts[0].timestamp() * 1_000_000)
+    return ts_us % step_us
 
 
-def _forecast_valid_time_anchor(
+def validate_homogeneous_time_step_and_phase(
     hindcasts: list[HindcastForecast],
-) -> UtcDatetime | None:
-    """The phase every forecast ``valid_time`` shares (Plan 228 review fixer
-    round): any single ``valid_time`` works as the anchor, since a model
-    issues on a fixed cadence and every ``valid_time`` therefore falls at the
-    same time-of-day modulo its ``time_step``. Returns ``None`` only when no
-    hindcast carries any ``valid_time`` at all (empty ensembles).
+) -> timedelta:
+    """The ONE ``time_step`` a skill computation covers (Plan 228 D2, ALSO
+    FIX #3).
+
+    Every model sets ``ForecastEnsemble.time_step`` directly from its OWN
+    declared ``time_step`` at construction (e.g.
+    ``models/linear_regression_daily.py``) — it is a mandatory field, never
+    inferred — and migration 0050 persists it losslessly through the DB
+    round-trip specifically so callers read it back here.
+
+    A previous version of this function silently coerced a MIXED set of
+    ``hindcasts`` to ``min(time_step)`` plus the first forecast's phase —
+    corrupting a cross-model or cross-cycle comparison with no signal that
+    anything was wrong. This raises instead: a single skill computation must
+    cover one ``(time_step, phase)``; partition callers upstream (by model,
+    by cycle) before calling. ``hindcasts`` is guaranteed non-empty by the
+    caller's early ``if not hindcasts: return [], []``.
     """
-    for hc in hindcasts:
-        vts = hc.ensemble.values["valid_time"].to_list()
-        if vts:
-            return vts[0]
-    return None
+    time_steps = {hc.ensemble.time_step for hc in hindcasts}
+    if len(time_steps) > 1:
+        raise ConfigurationError(
+            "skill computation received hindcasts with mixed time_step "
+            f"{sorted(str(s) for s in time_steps)} — partition by time_step "
+            "before computing skill (Plan 228 D4)."
+        )
+    time_step = next(iter(time_steps))
+
+    phases = {
+        phase
+        for hc in hindcasts
+        if (phase := _valid_time_phase_us(hc, time_step)) is not None
+    }
+    if len(phases) > 1:
+        raise ConfigurationError(
+            f"skill computation received hindcasts with mixed valid_time "
+            f"phase within time_step {time_step} — partition by "
+            "(time_step, phase) before computing skill (Plan 228 D4)."
+        )
+    return time_step
+
+
+def observation_fetch_bounds(
+    hindcasts: list[HindcastForecast],
+) -> tuple[UtcDatetime, UtcDatetime]:
+    """The ``[start, end)`` window of observations a skill computation needs
+    (Plan 228 ALSO FIX #2), derived from the ensemble's own ``valid_time``s
+    and ``time_step`` — never from ``hindcast_step`` (the ISSUE time): a
+    forecast's skill-relevant observation is at ``valid_time``, which for a
+    multi-step horizon extends well past its own ``hindcast_step``, and for
+    a SINGLE hindcast ``min(hindcast_step) == max(hindcast_step)`` collapses
+    to an empty range that fetches nothing at all.
+    """
+    time_step = validate_homogeneous_time_step_and_phase(hindcasts)
+    all_valid_times = [
+        vt for hc in hindcasts for vt in hc.ensemble.values["valid_time"].to_list()
+    ]
+    if not all_valid_times:
+        raise ValueError("observation_fetch_bounds: hindcasts carry no valid_time")
+    start = ensure_utc(min(all_valid_times))
+    end = ensure_utc(max(all_valid_times) + time_step)
+    return start, end
 
 
 def _resample_observations_to_forecast_step(
     observations: list[Observation],
     parameter: str,
     time_step: timedelta,
-    anchor: UtcDatetime | None,
 ) -> dict[object, float]:
     """Aggregate raw observations to ``time_step`` (Plan 228 P2/D2), keyed by
     the resulting bucket ``timestamp`` for an exact-key lookup against a
@@ -124,11 +169,12 @@ def _resample_observations_to_forecast_step(
     aggregates with the SAME method the model trains against
     (``aggregation_method_for``) rather than substituting a different one.
 
-    ``anchor`` (review fixer round) pins the resulting bucket labels to the
-    forecast's own ``valid_time`` phase — without it, buckets fall on
-    UTC-midnight boundaries regardless of what hour the forecast is valid at,
-    so a non-midnight ``valid_time`` never exact-matches any key here and
-    ``_build_strata`` silently finds no observation for it at all.
+    Buckets are UTC-calendar-aligned (Plan 228 D4) — never phase-aligned to
+    the forecast's own ``valid_time``. A forecast whose ``valid_time`` does
+    not itself fall on a calendar boundary (a non-midnight daily cycle) will
+    not exact-match any key here; that mismatch is Plan 226's to fix
+    (anchoring ``valid_time`` to the calendar), not something this function
+    papers over by shifting the grid to meet it.
     """
     valued = [(o.timestamp, o.value) for o in observations if o.value is not None]
     if not valued:
@@ -143,7 +189,6 @@ def _resample_observations_to_forecast_step(
         df,
         time_step,
         aggregation_methods={parameter: aggregation_method_for(parameter)},
-        anchor=anchor,
     )
     return dict(
         zip(
@@ -441,13 +486,13 @@ def compute_skill_for_station(
     # Plan 228 P2/D2: the forecast is a step-mean; the observation must be
     # aggregated to the SAME step before comparison, never joined against a
     # raw instantaneous reading. `hindcasts` is non-empty here (guarded
-    # above), so `_infer_forecast_time_step` always resolves a real value —
-    # it reads `hc.ensemble.time_step`, a mandatory field every model sets.
-    time_step = _infer_forecast_time_step(hindcasts)
+    # above), so `validate_homogeneous_time_step_and_phase` always resolves a
+    # real value — it reads `hc.ensemble.time_step`, a mandatory field every
+    # model sets — and raises rather than silently mixing (ALSO FIX #3).
+    time_step = validate_homogeneous_time_step_and_phase(hindcasts)
 
-    anchor = _forecast_valid_time_anchor(hindcasts)
     obs_lookup = _resample_observations_to_forecast_step(
-        observations, parameter, time_step, anchor
+        observations, parameter, time_step
     )
 
     strata = _build_strata(hindcasts, obs_lookup, seasons, flow_regime_config)

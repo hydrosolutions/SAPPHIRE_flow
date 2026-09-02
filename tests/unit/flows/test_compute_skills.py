@@ -145,6 +145,96 @@ class TestComputeSkillsTask:
         assert len(diagrams) > 0
         assert all(d.parameter == "water_level" for d in diagrams)
 
+    def test_single_hindcast_still_fetches_observations_and_scores(self) -> None:
+        """Plan 228 ALSO FIX #2: bounds derived from `hindcast_step` collapse
+        to an empty `[min, max)` range for a single hindcast (min == max) —
+        a production single-hindcast caller then fetched no observations at
+        all and silently produced zero scores. Bounds must derive from the
+        ensemble's own valid_time instead."""
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import (
+            EnsembleRepresentation,
+            ForcingType,
+            ObservationSource,
+            QcStatus,
+        )
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import HindcastForecastId, ObservationId
+        from sapphire_flow.types.observation import Observation
+
+        sid = StationId(_uuid())
+        mid = ModelId("test")
+        aid = ArtifactId(_uuid())
+        clock = lambda: _EPOCH  # noqa: E731
+
+        hindcast_store = FakeHindcastStore()
+        obs_store = FakeObservationStore()
+        skill_store = FakeSkillStore()
+        station_store = FakeStationStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        step = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+        vt = ensure_utc(datetime(2025, 1, 1, 1, 0, tzinfo=UTC))
+        time_step = timedelta(hours=1)
+        df = pl.DataFrame(
+            [{"valid_time": vt, "member_id": m, "value": 10.0 + m} for m in range(3)]
+        ).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        ensemble = ForecastEnsemble.from_members(
+            station_id=sid,
+            issued_at=step,
+            parameter="discharge",
+            units="m³/s",
+            time_step=time_step,
+            values=df,
+        )
+        hc = HindcastForecast(
+            id=HindcastForecastId(_uuid()),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            hindcast_step=step,
+            forcing_type=ForcingType.REANALYSIS,
+            representation=EnsembleRepresentation.MEMBERS,
+            hindcast_run_id=_uuid(),
+            ensemble=ensemble,
+            created_at=step,
+        )
+        hindcast_store.store_hindcast(hc)
+
+        obs = Observation(
+            id=ObservationId(_uuid()),
+            station_id=sid,
+            timestamp=vt,
+            parameter="discharge",
+            value=10.5,
+            source=ObservationSource.MEASURED,
+            rating_curve_id=None,
+            rating_curve_correction_version=None,
+            qc_status=QcStatus.QC_PASSED,
+            qc_flags=[],
+            qc_rule_version=None,
+            created_at=step,
+        )
+        obs_store.store_observations([obs])
+
+        scores, _diagrams = compute_skills_task.fn(
+            station_id=sid,
+            model_id=mid,
+            artifact_id=aid,
+            parameter="discharge",
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            station_store=station_store,
+            flow_regime_store=flow_regime_store,
+            clock=clock,
+        )
+
+        assert len(scores) > 0
+
     def test_flow_wrapper_delegates_to_task(self) -> None:
         sid = StationId(_uuid())
         mid = ModelId("test")

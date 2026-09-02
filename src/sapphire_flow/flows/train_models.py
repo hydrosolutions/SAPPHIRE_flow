@@ -397,6 +397,8 @@ def train_models_flow(
     if rng is None:
         rng = random.Random()
 
+    time_step = timedelta(hours=time_step_hours)
+
     # Parse period
     if period_start is not None:
         parsed_start: UtcDatetime = ensure_utc(datetime.fromisoformat(period_start))
@@ -409,9 +411,14 @@ def train_models_flow(
     if period_end is not None:
         parsed_end: UtcDatetime = ensure_utc(datetime.fromisoformat(period_end))
     else:
-        parsed_end = clock()
+        # Plan 228 T5: snap the default end to the last COMPLETE bucket
+        # boundary at or before now — a raw `clock()` instant produces the
+        # same partial trailing bucket D4 forbids everywhere else. An
+        # explicitly supplied `period_end` (above) is the caller's business
+        # and passes through unchanged.
+        from sapphire_flow.services.training_data import floor_to_time_step
 
-    time_step = timedelta(hours=time_step_hours)
+        parsed_end = floor_to_time_step(clock(), time_step)
 
     typed_model_ids: list[ModelId] | None = (
         [ModelId(m) for m in model_ids] if model_ids is not None else None

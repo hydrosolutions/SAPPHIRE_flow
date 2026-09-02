@@ -12,7 +12,10 @@ from sapphire_flow.services.skill.combined_skill import (
     compute_bma_skill_cross_validated,
     compute_combined_skill,
 )
-from sapphire_flow.services.skill.service import compute_skill_for_station
+from sapphire_flow.services.skill.service import (
+    compute_skill_for_station,
+    observation_fetch_bounds,
+)
 from sapphire_flow.types.enums import ForcingType, ModelCombinationStrategy, SkillSource
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId  # noqa: TC001
 from sapphire_flow.types.skill import SkillDiagram, SkillScore  # noqa: TC001
@@ -112,9 +115,12 @@ def compute_skills_task(
     if not hindcasts:
         return [], []
 
-    hindcast_steps = [hc.hindcast_step for hc in hindcasts]
-    period_start = min(hindcast_steps)
-    period_end = max(hindcast_steps)
+    # Plan 228 ALSO FIX #2: derived from the ensemble's own valid times, not
+    # `hindcast_step` (the ISSUE time) — a single hindcast's
+    # min(hindcast_step) == max(hindcast_step) used to fetch an EMPTY
+    # observation range, so a production single-hindcast caller fetched no
+    # observations at all.
+    period_start, period_end = observation_fetch_bounds(hindcasts)
 
     observations = _fetch_observations(
         obs_store, station_id, period_start, period_end, parameter=parameter
@@ -201,11 +207,11 @@ def compute_combined_skills_task(
     if len(hindcasts_by_model) < 2:
         return [], []
 
-    all_steps = sorted(
-        {hc.hindcast_step for hcs in hindcasts_by_model.values() for hc in hcs}
-    )
-    period_start = min(all_steps)
-    period_end = max(all_steps)
+    # Plan 228 ALSO FIX #2: see `compute_skills_task` — derived from the
+    # ensembles' own valid times across every combined model, not
+    # `hindcast_step`.
+    all_hindcasts = [hc for hcs in hindcasts_by_model.values() for hc in hcs]
+    period_start, period_end = observation_fetch_bounds(all_hindcasts)
 
     observations = _fetch_observations(
         obs_store, station_id, period_start, period_end, parameter=parameter

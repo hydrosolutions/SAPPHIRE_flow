@@ -1,9 +1,11 @@
 # Decision Record — hindcast and skill scoring ran on the wrong data (Plan 228)
 
-**Date**: 2026-09-01
+**Date**: 2026-09-01 (updated 2026-09-02 — see § D4)
 **Status**: Fix implemented and committed on `feat/plan-228-hindcast-skill-resampling`,
 **held at PR — not yet merged to `main`**; two independent-review fixer rounds
-complete (see below); **existing scores not yet marked/recomputed**
+complete, PLUS a per-run scope correction (§ D4 below) that removed a wrong
+`anchor`-based fix from fixer round 1 and replaced it with aligned/extended
+fetch bounds; **existing scores not yet marked/recomputed**
 (gated on the mac-mini's in-flight onboarding/hindcasting test run — see D3 below)
 **Owners**: Bea (orchestrator)
 **Cross-reference**: `docs/plans/228-hindcast-and-skill-on-wrong-data.md` (source plan),
@@ -281,3 +283,119 @@ graceful-degradation mechanics are in place either way, so reversing the
 *policy* later (tolerate one gap, e.g. by relaxing to "reject only when a gap
 exceeds N × time_step") would not require re-touching the call sites, only
 `validate_time_step_cadence` itself.
+
+## D4 — the authoritative grid, and the per-run scope correction (2026-09-02)
+
+**Fixer round 2's `anchor` mechanism was itself wrong and has been removed.**
+It phase-aligned `resample_to_time_step`'s buckets to a caller-supplied
+instant (`issue_time` in hindcast, a `valid_time` drawn from the hindcasts in
+skill scoring). That made hindcast consume rolling `[issue_time - N *
+time_step, issue_time)` windows while training consumes UTC calendar days —
+a NEW quantity mismatch replacing the one this plan exists to fix — and it
+anchored skill scoring's observation buckets to `valid_time`, which is
+precisely the value **Plan 226** exists to correct (anchoring a daily model's
+`valid_time` to the calendar is out of THIS plan's scope by design).
+
+**D4 replaces it**: every assembly path aggregates onto UTC-calendar buckets
+(whole multiples of `time_step` since the Unix epoch) — `resample_to_
+time_step` no longer takes an `anchor` parameter at all, full stop. What
+changed instead is the FETCH BOUNDS feeding it: `aligned_lookback_bounds`
+(`services/training_data.py`, new) computes `[start, end)` such that `end` is
+the UTC-calendar `time_step` boundary at or before the given instant (never
+after — this is what preserves NO-FUTURE-LEAKAGE) and `start` is exactly
+`lookback_steps` buckets earlier. This is not equivalent to "fetch the naive
+window, then drop the incomplete trailing bucket" — an independent review
+falsified that simpler rule (2026-09-02): the naive window has a partial
+bucket at BOTH ends whenever the instant isn't itself a boundary, so dropping
+only the trailing one leaves a corrupt LEADING day, and dropping both starves
+an N-day model to N-1 days. `aligned_lookback_bounds` avoids both failure
+modes by aligning `end` first and deriving `start` from that aligned `end`.
+
+Applied to every `past_targets` fetch: `hindcast.py::_assemble_hindcast_
+inputs` (+ the runner-level prefetch bounds in `run_station_hindcast`/
+`run_group_hindcast`), `operational_inputs.py::assemble_station_operational_
+inputs`, and `track_assembly.py::assemble_assignment_inputs`. Locked by
+`TestHindcastPastTargetsAreCompleteUtcCalendarBuckets` (test_hindcast.py),
+`TestOperationalInputsPastTargetsAreCompleteUtcCalendarBuckets`
+(test_operational_inputs.py), and
+`test_partial_trailing_day_excluded_at_a_non_midnight_cycle`
+(test_track_assembly.py) — each seeds a distinct sentinel value into the
+partial trailing window at a non-midnight cycle/issue_time and asserts it
+never reaches `past_targets`. This also resolves the item this plan's
+Non-goals section had RETRACTED (2026-09-02) as a false claim: the
+operational path's `past_targets` resample did not previously align or
+extend its fetch bounds, so a 06/12/18Z cycle presented a partial day
+(measured: 37 rows where a full day is 144) as if it were complete.
+
+Skill scoring's observation resample (`_resample_observations_to_forecast_
+step`) also lost its `anchor` parameter — it buckets onto the same
+UTC-calendar grid unconditionally. A forecast whose `valid_time` is not
+itself calendar-aligned (a non-midnight daily cycle, Plan 226's territory)
+will legitimately produce NO score until `valid_time` itself is fixed, rather
+than this function silently shifting the grid to paper over the mismatch.
+`TestObservationBucketsAlignToForecastValidTimePhase` (which locked the
+retracted anchor behavior) was removed along with the mechanism it tested.
+
+### ALSO FIX — three findings D4 does not cover, folded into the same round
+
+1. **Hindcast validation examined the whole delivered frame, not what the
+   model consumes.** Hindcast runners default to `lookback_steps=720` (a
+   generous prefetch buffer), but `_assemble_hindcast_inputs` validated
+   cadence over that entire 720-bucket window even though a model reads only
+   its own declared `lookback_steps` (e.g. 7) via `.tail(n)`. A single stale
+   bucket anywhere in the other 713 buckets suppressed the step regardless.
+   `_assemble_hindcast_inputs` now accepts `declared_lookback_steps` (the
+   model's `data_requirements.lookback_steps`, threaded from both
+   `run_station_hindcast` and `run_group_hindcast`) and validates only
+   `obs_df.tail(declared_lookback_steps)`. Locked by
+   `TestHindcastValidatesOnlyTheDeclaredLookbackWindow`
+   (test_hindcast.py) — a gap 20 days back with a 30-day fetch window and a
+   7-day declared lookback no longer suppresses the step.
+2. **`compute_skills_task` derived observation-fetch bounds from
+   `hindcast_step` (the issue time), not `valid_time`.** For a SINGLE
+   hindcast, `min(hindcast_step) == max(hindcast_step)` — an empty
+   `[start, end)` range that fetched no observations at all, silently
+   producing zero scores for exactly the freshly-onboarded-station case this
+   plan's own P2 fix was supposed to repair. `observation_fetch_bounds`
+   (`services/skill/service.py`, new) derives `[min(valid_time),
+   max(valid_time) + time_step)` from the ensembles themselves instead, and
+   is now used by `compute_skills_task`, `compute_combined_skills_task`
+   (flattened across every combined model), and onboarding's
+   `_make_skill_fn`/`_compute_skill` callback (`services/onboarding.py`,
+   which previously used the training period's own bounds — narrower than a
+   multi-step horizon's trailing `valid_time` in the same way). Locked by
+   `TestComputeSkillsTask::test_single_hindcast_still_fetches_observations_
+   and_scores` (test_compute_skills.py).
+3. **Mixed `time_step`/phase across hindcasts was silently coerced.**
+   `_infer_forecast_time_step`'s `min(hc.ensemble.time_step for hc in
+   hindcasts)` picked the smallest step across a MIXED set with no signal
+   that anything was wrong, and nothing checked that every hindcast's
+   `valid_time` shared the same phase within that step. Replaced with
+   `validate_homogeneous_time_step_and_phase` (`services/skill/service.py`)
+   — raises `ConfigurationError` on either mismatch; a caller with
+   genuinely mixed models/cycles must partition upstream. Locked by
+   `TestMixedTimeStepOrPhaseRaises` (test_service.py, two tests: mixed
+   `time_step`, and mixed phase within one `time_step`).
+
+### T5 — training's default `period_end` snapped to a partial bucket
+
+`train_models_flow`'s `period_end` already accepted an explicit override; the
+DEFAULT (used only when the caller omits it) fell back to a raw `clock()`
+instant while `period_start`'s default fell back to an aligned midnight — the
+same partial-trailing-bucket defect D4 forbids everywhere else, just in the
+training window rather than a lookback. Fixed by snapping the default to
+`floor_to_time_step(clock(), time_step)`. Does NOT invalidate existing
+artifacts (a partial final row in a multi-year training set is a minor,
+one-row edge — not the systematic corruption P1 was). Locked by
+`TestTrainModelsDefaultPeriodEnd` (test_train_models.py), which spies on
+`determine_training_scope`'s `period_end` kwarg with a 06:30 UTC clock and
+asserts it resolves to that day's midnight.
+
+### Status update
+
+All of the above landed in the SAME per-run scope round that removed the
+`anchor` mechanism (2026-09-02). `uv run pytest tests/unit` — zero failures
+(see the implementer's own report for the exact count). Still outstanding,
+unchanged from before this round: **D3's marking of pre-fix scores as
+superseded, and the live recompute, remain gated on the mac-mini's onboarding
+run finishing** — nothing in this round touched that system.
