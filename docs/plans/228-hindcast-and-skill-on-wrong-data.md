@@ -118,6 +118,35 @@ what was delivered matches what was declared.
 explicitly **rejected**: under the FI contract, aggregation is the provider's responsibility, so
 pushing it into models would move us *further* from conformance, not closer.
 
+### D4 — THE AUTHORITATIVE GRID (added 2026-09-02, after the first implementation went wrong)
+
+**Every path aggregates onto UTC calendar buckets, and every model receives exactly N COMPLETE
+buckets.** Nothing aligns to a forecast's own timestamp.
+
+This decision exists because the first implementation did the opposite. It added an `anchor`
+parameter to `resample_to_time_step` and phase-aligned buckets to `issue_time` / `valid_time`
+(37 lines), so a 06:00 hindcast consumed rolling 06:00-06:00 means while training consumed UTC
+calendar days — replacing one quantity mismatch with another. It aligned to `valid_time`, which is
+precisely the value Plan 226 exists to correct.
+
+**The repo already commits to calendar days**, which is why this is parity rather than a new
+convention: NWP aggregation uses UTC calendar days (`services/operational_inputs.py:141`), the NWP
+model deliberately validates the same previous calendar days at every 06/12/18Z cycle
+(`models/nwp_regression.py:638`), and training buckets to midnight. The artifacts were trained on
+calendar days; anchoring to "now" would only be right for artifacts trained on a rolling quantity,
+and these were not.
+
+**"Drop the incomplete trailing bucket" is NOT sufficient** *(independent review, 2026-09-02, which
+falsified the first version of this rule)*. Operational assembly fetches exactly
+`lookback_steps × time_step` ending at a non-midnight `issue_time`
+(`services/operational_inputs.py:538`), so the window has a partial bucket at **both** ends.
+Dropping only the trailing one leaves a corrupt leading day; dropping both leaves **six** complete
+days for a seven-day model.
+
+**The invariant is therefore: exactly N complete UTC-calendar buckets, which requires ALIGNING AND
+EXTENDING the fetch bounds** — not filtering after the fact. It applies to every assembly path:
+hindcast, both operational assemblers, and scoring.
+
 ### D2 — how is the scoring comparison fixed? (owner-settled: **B**)
 
 | | Option |
@@ -161,13 +190,34 @@ cadence and assert that what the model receives spans the declared lookback wind
 
 ### T4 — execute D3, and state in `docs/` that every score predating this plan is invalid.
 
+### T5 — snap the training window's default end to a complete bucket
+
+Training **already accepts** `period_start` and `period_end` (`flows/train_models.py:400-412`); no
+new parameter is needed. The defect is the default: `period_start` falls back to five years ago at
+**midnight** (aligned, correct), while `period_end` falls back to `clock()` — a raw instant, which
+produces the same partial trailing bucket D4 forbids everywhere else.
+
+Snap the default end to the last complete bucket boundary at or before now. An explicitly supplied
+`period_end` is the caller's business and passes through unchanged.
+
+**This does not invalidate existing artifacts.** A partial final bucket is one imperfect row at the
+end of a multi-year training set, not a systematic mismatch — unlike P1, which corrupted every
+hindcast. No retraining is required by this plan.
+
 ## Non-goals
 
 - Anchoring the daily models' `valid_time` — **Plan 226**, which this plan blocks.
 - Any change to model maths, coefficients, or artifacts.
-- Any change to the operational forecast path, which is correct today: **both** operational
-  assemblers resample before delivery (`services/operational_inputs.py:550-553`,
-  `services/track_assembly.py:268-271`).
+- ~~Any change to the operational forecast path, which is correct today.~~ **RETRACTED
+  2026-09-02 — this was false, and is now in scope (D4).** Both operational assemblers do resample,
+  but neither aligns bounds nor checks completeness, so at a 06/12/18Z cycle the most recent bucket
+  is a **partial day** presented as a full one. Measured: **37 rows where a full day is 144** at
+  10-minute cadence. Nothing stops it reaching the model — the cadence validator compares bucket
+  *labels* not sample counts (`services/training_data.py:119`), the short-lookback check only warns
+  (`services/operational_inputs.py:592`), and FI's `max_nan` counts nulls rather than source samples
+  (`adapters/forecast_interface.py:909`). The partial mean is finite, so `tail(7)` reads it as the
+  latest full day on **3 of 4 daily production cycles**. Same defect class as P1, smaller magnitude,
+  live.
 - Retraining. **Investigated at the owner's request (2026-09-01): the training path is CLEAN.**
   `build_station_training_data` resamples before use — `past_targets_df = resample_to_time_step(...)`
   (`services/training_data.py:285-287`) — exactly as the operational path does. **Model artifacts are
@@ -180,3 +230,45 @@ cadence and assert that what the model receives spans the declared lookback wind
 - `uv run pytest tests/unit` — zero failures.
 - A recomputed skill score for one station, compared against its pre-fix value, with the difference
   recorded. If the difference is negligible the premise is wrong and this plan should stop.
+
+## Implementation status (2026-09-01) — T1-T3 COMPLETE + committed; T4 PARTIAL
+
+**T1/T2 (P1)**: `services/hindcast.py::_assemble_hindcast_inputs` now resamples
+`past_targets` to the model's declared `time_step` via the SAME
+`resample_to_time_step` (`services/training_data.py`) the operational path
+already used (D1 = A). Enforcement (D1 = C) added as
+`validate_time_step_cadence` (new, `services/training_data.py`), a hard
+backstop called after every `past_targets` resample in `hindcast.py`,
+`operational_inputs.py`, AND `track_assembly.py` — scoped to `past_targets`
+only, since `past_dynamic` legitimately carries a different cadence than
+`time_step` in the operational path. Locking test
+(`tests/unit/services/test_hindcast.py::TestHindcastResamplesPastTargetsToDeclaredTimeStep`)
+proven RED against the stashed pre-fix code (span 1:00:00 vs. declared 7
+days), GREEN after.
+
+**T3 (P2)**: `services/skill/service.py::compute_skill_for_station` now
+infers the forecast's own `time_step` from the hindcast data
+(`_infer_forecast_time_step`) and resamples observations to it before the
+`_build_strata` join (`_resample_observations_to_forecast_step`, reusing
+`resample_to_time_step` + a new `aggregation_method_for` helper so the
+aggregation matches what the model trains against — D2 = B). Locking test
+(`tests/unit/services/skill/test_service.py::TestDailyMeanComparedAgainstDailyMeanObservation`)
+proven RED against the stashed pre-fix code (MAE 40.0 vs. the deliberately
+offset boundary reading), GREEN after (MAE < 1.0).
+
+**T4**: the docs half is done — `docs/decisions/plan-228-hindcast-skill-resampling.md`
+(new), `docs/v0-scope.md`, and `docs/touchpoint-maps.md` all now state that
+every `skill_scores`/`hindcast_forecasts` row predating 2026-09-01 is invalid.
+**The live half (mark pre-fix scores superseded + recompute) was
+DELIBERATELY NOT executed**, per this plan's own "⛔ Do not implement against
+the mac-mini until its onboarding and hindcasting test finishes" — that
+system was not confirmed to have reached that state during this
+implementation session, and it is an operational action outside a code PR
+regardless. This remains an open follow-on for whoever confirms the mini's
+run has finished.
+
+**Exit gates**: the "recomputed skill score for one station, compared against
+its pre-fix value" gate was satisfied via the T3 locking test's
+stash-and-restore proof (a controlled, reproducible before/after comparison)
+rather than a live mac-mini recompute, for the same D3 reason. `uv run pytest
+tests/unit` — see the implementer's own report for the exact run and result.
