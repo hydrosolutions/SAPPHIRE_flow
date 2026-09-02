@@ -2,15 +2,15 @@
 status: READY
 created: 2026-08-27
 plan: 203
-title: Forecast-cycle scaling to the full BAFU set (~170 stations) — measure the two costs that actually grow
+title: Forecast-cycle scaling to the full BAFU set (148 stations) — measure the two costs that actually grow
 scope: One measurement of how basin extraction and model execution scale with station count, and an owner decision on whether any follow-up work is warranted. No optimisation is authorised by this plan — it exists to make the next plan grounded. Explicitly NOT in scope: any decision about parallelising the 441.2 s NWP phase — the body establishes that figure is composite (STAC walk + transfer + parse) and cannot support such a decision.
 depends_on: []
 blocks: []
 source: Measured on the mac mini 2026-08-27 while trialling `forecast_combination_strategy = pooled` (PR #214)
-note: The filename keeps its original `-to-100-stations` slug so existing references stay valid; the target n is ~170 (`docs/v0-scope.md:9`).
+note: The filename keeps its original `-to-100-stations` slug so existing references stay valid; the target n is 148 — what is actually onboarded on the mini (measured 2026-09-02); the v0 ceiling is ~170 (`docs/v0-scope.md:9`).
 ---
 
-# Plan 203 — forecast-cycle scaling to the full BAFU set (~170 stations)
+# Plan 203 — forecast-cycle scaling to the onboarded BAFU set (148 stations)
 
 ## Status
 
@@ -18,10 +18,12 @@ note: The filename keeps its original `-to-100-stations` slug so existing refere
 
 ## ⛔ Proportionality — this plan MEASURES, it does not optimise
 
-The owner's target: **the full BAFU station set, 4×/day, comfortably.** That set is **~170
-stations** — `docs/v0-scope.md:9` and `docs/architecture-context.md:10` both put v0 at "up to ~170
-stations (LINDAS-available BAFU gauges)", so **~170, not a round 100, is the n this plan sizes
-for** (an earlier draft used 100, missing 70 of the ~170 gauges — 40 % of the real set). The instinct after
+The owner's target: **the full BAFU station set, 4×/day, comfortably.** Measured on the mini
+2026-09-02, that set is **148 stations** — 148 basins, 148 stations, all 148 carrying model
+assignments. The documented v0 ceiling is ~170 (`docs/v0-scope.md:9`,
+`docs/architecture-context.md:10`), but 148 is what is actually onboarded, so **148 is the n this
+plan sizes for** and every sample point is real — no synthetic or duplicated geometry is needed.
+(An earlier draft used a round 100, well short of the real set.) The instinct after
 seeing a 7.5-minute cycle is to parallelise. **Do not.** The profile below shows the obvious target
 is the wrong one, and the real one is not yet measured. This plan produces two numbers and a
 decision.
@@ -60,7 +62,7 @@ suggestion is additive, the correct output is "no blockers, no majors".
 
 In the observed **2-station** cycle the fixed NWP phase dominated wall clock, and **that cost does
 not grow with station count** — it is the same grid every cycle. The per-station terms are tiny at
-n=2 by construction, so its share here says nothing about the cycle at n=170.
+n=2 by construction, so its share here says nothing about the cycle at n=148.
 
 | phase | duration | scales with | evidence |
 |---|---|---|---|
@@ -117,11 +119,11 @@ see the section above.)
 
 Two costs grow, and only one is measured at n=2:
 
-1. **Extraction — 6.48 s/station at n=2.** If that is linear, 170 stations ≈ **1101 s**, which
+1. **Extraction — 6.48 s/station at n=2.** If that is linear, 148 stations ≈ **959 s**, which
    would overtake the fixed NWP phase and become the dominant cost. If most of it is instead
    per-*call* overhead that does not repeat per basin — `extract()` is handed an already-open
    dataset and begins by materialising its coordinates (`mesh_basin_extractor.py:51`, `:101`), it
-   does **not** open the zarr — with a cheap per-basin mask on top, then 170 stations might cost far
+   does **not** open the zarr — with a cheap per-basin mask on top, then 148 stations might cost far
    less. **n=2 cannot distinguish these**, and the difference decides whether any work is needed.
    The per-station term is not a cheap mask by construction: `_assign_cells()`
    (`src/sapphire_flow/preprocessing/mesh_basin_extractor.py:190`) runs a point-in-polygon
@@ -140,9 +142,9 @@ does not yet accept — then:
 ```
  441 s  STAC walk + transfer + parse   (fixed)
    8 s  archive                        (fixed)
-1101 s  extraction                     (170 × 6.48 s — ASSUMES linearity)
+ 959 s  extraction                     (148 × 6.48 s — ASSUMES linearity)
 -----
-≈ 1550 s ≈ 26 min per cycle   ← this scenario only; excludes everything below
+≈ 1408 s ≈ 23.5 min per cycle   ← this scenario only; excludes everything below
      ?    model execution                (unmeasured)
      ?    assembly, artifact load, FI adapter, ensemble fan-out, QC, persistence (unmeasured)
 ```
@@ -160,7 +162,7 @@ scenario already lands within ~4 minutes of the bar before a single unmeasured t
 so the measurement can genuinely go either way. Sub-linear extraction — made plausible by the work
 inside `extract()` that does **not** repeat per basin (materialising `cell_points` from the
 already-open dataset it is handed, `mesh_basin_extractor.py:101`) — would lower *this* term, but it
-does **not** imply the true total falls below 26 min: the unmeasured per-station work can only add,
+does **not** imply the true total falls below 23.5 min: the unmeasured per-station work can only add,
 and its size is unknown. Conversely, if extraction is linear or worse the bar is in doubt before
 models are even counted. Neither direction settles the cycle; that is the point of measuring.
 
@@ -173,7 +175,7 @@ number.
 
 **T1 — Measure the two scaling curves.** *(No production change.)*
 *Scope (in):* run basin extraction against the ALREADY-ARCHIVED zarr
-(`/data/nwp_grids/icon_ch2_eps/*.zarr`, no re-download) for **n = 2, 10, 25, 50, 100, 170**, timing
+(`/data/nwp_grids/icon_ch2_eps/*.zarr`, no re-download) for **n = 2, 10, 25, 50, 100, 148**, timing
 each; separately time `predict` for one model across the same n. Report both curves and the fitted
 per-station marginal cost. Per `CLAUDE.md` § Ad-hoc Analyses this is a **heredoc**, not a committed
 script.
@@ -184,19 +186,21 @@ would understate it and the fitted 6.48 s/station would be an artefact of the te
 polygons from the production basin store instead — `BasinStore.fetch_all_basins()`
 (`src/sapphire_flow/store/basin_store.py:58`) returns the same `Basin` objects
 (`src/sapphire_flow/types/basin.py:17`, a shapely MultiPolygon from the delineation package) that
-`run_forecast_cycle.py:2504-2509` feeds into `extract()`. If the mini's DB holds fewer than 170
-basins, take every distinct real basin first and **top up by duplicating real polygons under
-synthetic `StationId`s** — never by generating a shape.
-*Known trade-off of that top-up (state it in the T1 write-up):* duplicated polygons preserve the
-real vertex-count distribution (the thing that drives cost) but repeat the same footprint, so the
-spatial index sees more locality than a genuinely distinct 170-basin set would. Record how many of
-the n were distinct, so the verdict can be read with that caveat.
+`run_forecast_cycle.py:2504-2509` feeds into `extract()`. The mini holds **148 real basins**
+(measured 2026-09-02), which is exactly the target n, so **every sample point uses real geometry**
+and no duplication or synthesis is required. If a future run finds fewer, top up by duplicating
+real polygons under synthetic `StationId`s — never by generating a shape — and record how many of
+the n were distinct.
 
-*Why 100 and 170 are measured, not extrapolated:* the largest previously planned sample was n=50,
-and a curve that looks linear from 2→50 can still bend before 170 (e.g. RAM pressure from holding
-many basin geometries and grid slices at once). Since the polygons are drawn/duplicated in bulk in
-the same loop, measuring the target n directly costs almost nothing and removes the extrapolation
-risk from the one number T2's decision hinges on.
+*Why 148 is measured, not extrapolated:* the largest previously planned sample was n=50, and a
+curve that looks linear from 2→50 can still bend by 148 (e.g. RAM pressure from holding many basin
+geometries and grid slices at once). Measuring the target n directly costs almost nothing and
+removes the extrapolation risk from the one number T2's decision hinges on.
+
+*Model for the predict curve:* use **`linear_regression_daily`** — 143 of the 148 stations have a
+trained station-scoped artifact (measured 2026-09-02; `climatology_fallback` also has 143,
+`nwp_rainfall_runoff` 142). For the 5 stations without one, reuse another station's artifact and
+say so in the write-up; that is a 3 % effect on the curve.
 
 *Scope (out):* changing extraction, the cycle, or any config; onboarding real stations (T1 READS
 existing basins, it does not create any). **Also out — every other per-station operation:** input
@@ -214,21 +218,21 @@ claim to have isolated "pure" model runtime. Name the exact model measured, and 
 came through the FI adapter, so the curve can be read correctly.
 
 *⛔ Exit — what T1 may and may NOT conclude.* T1 produces **two curves** (extraction vs n, and
-`predict` vs n, for n = 2, 10, 25, 50, 100, 170), the fitted per-station marginal cost of each, and
+`predict` vs n, for n = 2, 10, 25, 50, 100, 148), the fitted per-station marginal cost of each, and
 a one-paragraph verdict answering exactly one question: **do these two costs grow linearly, and
-what do they contribute at n=170?**
+what do they contribute at n=148?**
 
-T1 **may not** conclude "the 170-station cycle is under 30 min". It does not measure enough of the
+T1 **may not** conclude "the 148-station cycle is under 30 min". It does not measure enough of the
 cycle to say that, and an earlier version of this exit criterion wrongly claimed it could. The two
 honest verdicts are:
 
 **The comparison is against the KNOWN SUBTOTAL, not the curves alone.** The fixed phases already
 cost **448.9 s** (441.2 s NWP + 7.7 s archive), which is ~7.5 min of the 30-min bar before any
-per-station work. So the quantity to compare is `448.9 s + extraction(170) + predict(170)`. An
+per-station work. So the quantity to compare is `448.9 s + extraction(148) + predict(148)`. An
 earlier version of this rule compared the two curves in isolation, which would wrongly return
 INCONCLUSIVE whenever the curves fit inside 30 min but the subtotal does not.
 
-- **DECISIVE:** `448.9 s + extraction(170) + predict(170)` **already exceeds** the 30-min bar → the
+- **DECISIVE:** `448.9 s + extraction(148) + predict(148)` **already exceeds** the 30-min bar → the
   target is missed regardless of the unmeasured terms, since those can only add. T2 proceeds to a
   follow-up; no further measurement needed.
 - **INCONCLUSIVE:** that subtotal comes in **under** the bar → **this does not establish that the
@@ -251,7 +255,7 @@ green. This command only confirms the analysis environment resolves before the r
 **T2 — Decide, and only then draft.** T2 consumes exactly the two verdicts T1 is permitted to
 return — it must **not** ask T1 whether "the target is met", because T1 cannot establish that:
 
-- **T1 returned DECISIVE** (`448.9 s + extraction(170) + predict(170)` **exceeds** the bar) → the
+- **T1 returned DECISIVE** (`448.9 s + extraction(148) + predict(148)` **exceeds** the bar) → the
   target is missed regardless of the unmeasured terms, which can only add. Draft a follow-up naming
   the specific phase to fix, with T1's curves as its baseline.
 - **T1 returned INCONCLUSIVE** (that same subtotal comes in **under** the bar) → this does **not**
@@ -259,7 +263,7 @@ return — it must **not** ask T1 whether "the target is met", because T1 cannot
   commission the second measurement of the rest of the per-station path described in T1's exit.
   T1's reported headroom in seconds is the input to that judgement.
 
-Either way the decision is the owner's and is recorded here. Note the ~26 min scenario above sits
+Either way the decision is the owner's and is recorded here. Note the ~23.5 min scenario above sits
 within ~4 min of the bar before any unmeasured term is counted, so neither branch is hypothetical —
 T2 must wait for T1 rather than pre-judging.
 *Exit:* an owner decision recorded here as a line of its own beginning `T2 DECISION:`, naming which
@@ -295,9 +299,9 @@ per-station work. It does **not** establish how large model execution is — tha
 the 2026-09-02 correction above), and the earlier "~9 % of the cycle" figure has been withdrawn.
 
 **Deployment context:** the owner intends to onboard the full BAFU station set with a first ML
-model on this mac mini. That set is **~170 LINDAS-available BAFU gauges** (`docs/v0-scope.md:9`,
-`docs/architecture-context.md:10`), and ~170 is the n this plan sizes for. If the owner's actual
-first onboarding is deliberately smaller than the documented v0 ceiling, say so here and T1's n=170
+model on this mac mini. As measured 2026-09-02 that set is **148 onboarded stations**, against a
+documented v0 ceiling of ~170 (`docs/v0-scope.md:9`, `docs/architecture-context.md:10`). The plan
+sizes for the real 148. If the deployment later grows toward the ceiling, T1's n=148
 point becomes headroom evidence rather than the bar — but the plan does not assume that.
 
 ## Dependency graph
