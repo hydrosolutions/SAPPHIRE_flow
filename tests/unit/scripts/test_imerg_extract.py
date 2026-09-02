@@ -1401,10 +1401,39 @@ class TestMainCatchesMidExtractionD1Violation:
             expected_stations=frozenset({Station("A")}),
         )
 
-        assert exit_code not in (0, None)
+        # 🔴 TIGHTENED (2026-09-02, Codex review) — "not 0" was true before
+        # and after the acquisition CLI grew a permanent/transient exit split,
+        # so it could not notice that this CLI still reported a PERMANENT
+        # contract violation as the retryable 3. A mid-extraction D1 violation
+        # reads the same banked bytes to the same conclusion for ever.
+        assert exit_code == 6  # noqa: PLR2004
         captured = capsys.readouterr()
         assert "imerg_extract.cli.failed" in captured.err
         assert "ImergReadContractError" in captured.err
+
+    def test_the_extract_cli_mirrors_the_acquire_clis_exit_codes(self) -> None:
+        """⛔ The extract table's own comment promises "the IMERG leaves carry
+        T1's exit codes". Before this it mapped EVERY `ImergAcquisitionError`
+        to 3, so the promise held only for the leaves that happened to be 3.
+        ⇒ Assert the two CLIs agree leaf by leaf, so they cannot drift apart
+        silently again."""
+        from scripts.dhm_precip import imerg_acquire as ia
+
+        for error in (
+            ia.ImergCredentialsError("x"),
+            ia.ImergStorageError("x"),
+            ia.ImergMalformedArtifactError("x"),
+            ia.ImergReadContractError("x"),
+            ia.ImergSubsetCoordinateMismatchError("x"),
+            ia.ImergPermanentRequestError("x"),
+            ia.ImergInvalidRequestError("x"),
+            ia.ImergRetriesExhaustedError("x"),
+            ia.ImergGranuleMissingError("x"),
+            ia.ImergTransientError("x"),
+        ):
+            assert ie._exit_code_for(error) == ia._exit_code_for(error), type(
+                error
+            ).__name__
 
 
 # --- D9 (BLOCKER) — T2 DERIVES completeness; it never trusts the label ---
