@@ -661,8 +661,12 @@ by **repairability, not by class family**, and runs in both directions:
      the split exists to stop.
    - `ImergPermanentRequestError` (new) → **6**: a 4xx that no retry can fix, such as the HTTP 400 a
      malformed OPeNDAP `dap4.ce` constraint returns (Plan 225 D4 measured exactly that 400). 🔴 Raised
-     for an **enumerated** set (`_PERMANENT_CLIENT_STATUSES` = 400, 405, 410, 414, 422, 431), with every
-     other 4xx falling through to **retryable**. The first cut had it the other way round — "all 4xx
+     for an **enumerated** set (`_PERMANENT_CLIENT_STATUSES` = 400, 405, 410, 411, 414, 415, 417, 422,
+     426, 428, 431), with every other 4xx falling through to **retryable**. The membership rule is
+     stated on the set itself so a new status can be classified without guessing: **a status belongs
+     iff the request cannot succeed unless the request itself changes** — an unchanged retry cannot add
+     a `Content-Length` (411), change media type (415), drop an `Expect` (417), switch protocol (426)
+     or add a precondition (428). The first cut had it the other way round — "all 4xx
      except a listed few" — which **fails unsafely**: 409 Conflict and 423 Locked clear without the
      request changing, and calling them permanent stops a 30-hour run. Failing toward retry only wastes
      time. (401/403/404/429 keep their own codes, classified above the branch.)

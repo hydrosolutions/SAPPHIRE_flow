@@ -1433,13 +1433,37 @@ class TestMainCatchesMidExtractionD1Violation:
         # ⛔ `__module__`-filtered: `__subclasses__` also sees a subclass any
         # OTHER test module defined earlier in the same session, which would
         # make this assertion depend on collection order.
+        # 🔴 The foreign subclass that makes the fragility REAL rather than
+        # hypothetical, and makes this test order-INDEPENDENT: without it the
+        # guard passes either way and locks nothing. Under raw
+        # `__subclasses__()` this test-local class stops
+        # `ImergRateLimitedError` — a PRODUCTION leaf — from counting as one,
+        # silently shrinking the floor below. It lives inside the function, so
+        # it is unreachable to every other test.
+        class _TestLocalRateLimitedError(ia.ImergRateLimitedError):
+            pass
+
+        assert _TestLocalRateLimitedError in ia.ImergRateLimitedError.__subclasses__()
+
+        production = ia.ImergAcquisitionError.__module__
         family = {
             c
             for c in {ia.ImergAcquisitionError} | descendants(ia.ImergAcquisitionError)
-            if c.__module__ == ia.ImergAcquisitionError.__module__
+            if c.__module__ == production
         }
+        # 🔴 The SAME filter on leaf detection (2026-09-02, final Codex round).
+        # The family was filtered and the leaf test was not, so a subclass
+        # defined in another test module — this suite defines several, to lock
+        # the comparators' subclass strictness — stopped its PRODUCTION parent
+        # from counting as a leaf and quietly dropped it from the floor below.
+        # The floor then depended on collection state.
         leaves = sorted(
-            (c for c in family if not c.__subclasses__()), key=lambda c: c.__name__
+            (
+                c
+                for c in family
+                if not any(s.__module__ == production for s in c.__subclasses__())
+            ),
+            key=lambda c: c.__name__,
         )
         # a guard against the discovery itself silently finding nothing
         assert {c.__name__ for c in leaves} >= {

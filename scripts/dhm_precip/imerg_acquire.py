@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Final, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -606,9 +606,29 @@ _SUBSET_CONTRACT_TOLERATED_FIELDS: dict[str, Callable[[str], str]] = {
 _CONTRACT_VALUE_PREVIEW = 4
 
 
+class _AbsentField:
+    """A field one contract carries and the other does not. 🔴 The FORMATTER
+    must SURVIVE that (2026-09-02, final Codex round): it runs only to explain
+    a verdict already reached, so a subclass that adds a field must still
+    produce the typed `ImergReadContractError` a caller catches — never a bare
+    `AttributeError` from reading the subclass's extra field off the base
+    object. Asymmetry is itself a difference, and is reported as one.
+
+    ⛔ Its own CLASS, not a bare `object()`: `isinstance` then NARROWS the
+    `getattr` default away, so a per-field toleration still typechecks against
+    `str` instead of the sentinel's widened `object`."""
+
+    __slots__ = ()
+
+
+_ABSENT_FIELD: Final = _AbsentField()
+
+
 def _render_contract_value(value: object) -> str:
     """A contract field rendered for an error message, long coordinate vectors
     truncated head-and-tail with the elided count stated."""
+    if value is _ABSENT_FIELD:
+        return "<no such field on this contract>"
     if isinstance(value, tuple) and len(value) > 2 * _CONTRACT_VALUE_PREVIEW:
         head = ", ".join(repr(v) for v in value[:_CONTRACT_VALUE_PREVIEW])
         tail = ", ".join(repr(v) for v in value[-_CONTRACT_VALUE_PREVIEW:])
@@ -647,14 +667,26 @@ def contract_field_differences(
     replaced; only the MESSAGE improved."""
     tolerations: Mapping[str, Callable[[str], str]] = tolerated or {}
     differences: list[str] = []
-    for field_def in fields(observed):
-        name = field_def.name
+    # ⛔ The UNION of both field lists, observed order first: iterating only
+    # `fields(observed)` assumed the two shapes were symmetric, and a subclass
+    # adding a field then read that field off the BASE object and raised a bare
+    # `AttributeError` out of a function whose whole job is to explain a
+    # failure. A field missing on either side is reported, not raised on.
+    observed_names = [f.name for f in fields(observed)]
+    field_names = observed_names + [
+        f.name for f in fields(frozen) if f.name not in set(observed_names)
+    ]
+    for name in field_names:
         if name in ignore:
             continue
-        observed_value = getattr(observed, name)
-        frozen_value = getattr(frozen, name)
+        observed_value = getattr(observed, name, _ABSENT_FIELD)
+        frozen_value = getattr(frozen, name, _ABSENT_FIELD)
         tolerate = tolerations.get(name)
-        if tolerate is not None:
+        if isinstance(observed_value, _AbsentField) or isinstance(
+            frozen_value, _AbsentField
+        ):
+            pass  # present on one side only — a difference no toleration spans
+        elif tolerate is not None:
             if tolerate(observed_value) == tolerate(frozen_value):
                 continue
         elif observed_value == frozen_value:
@@ -694,6 +726,17 @@ def assert_contract_consistent(
     subclass is valid at the annotated interface, so that is a real widening,
     not a hypothetical one — and D1's rule is to refuse to blend anything that
     is not exactly the frozen shape."""
+    # 🔴 VERDICT FIRST, MESSAGE SECOND (2026-09-02, final Codex round). Both
+    # acceptance expressions are evaluated and the clean case returns BEFORE
+    # any formatting runs, so the message builder can never turn an accepted
+    # contract into a crash — and on the failing path a formatter fault would
+    # at worst mis-word an error that was already correctly refused.
+    revision_differs = observed.granule_revision != frozen.granule_revision
+    contract_differs = observed != replace(
+        frozen, granule_revision=observed.granule_revision
+    )
+    if not revision_differs and not contract_differs:
+        return
     # ⛔ NO `tolerated=`: every non-revision field is compared by EQUALITY,
     # exactly as strictly as the whole-dataclass `!=`. Plan 225's hazard
     # section is explicit — "Do NOT relax, parameterise or share the existing
@@ -703,14 +746,14 @@ def assert_contract_consistent(
     differences = contract_field_differences(
         observed, frozen, ignore=("granule_revision",)
     )
-    if observed.granule_revision != frozen.granule_revision:
+    if revision_differs:
         raise ImergReadContractError(
             f"granule revision {observed.granule_revision!r} != frozen "
             f"{frozen.granule_revision!r} — stop and report rather than "
             "blending mixed revisions into one bundle (D1)"
             + _also_differs_suffix(differences)
         )
-    if observed != replace(frozen, granule_revision=observed.granule_revision):
+    if contract_differs:
         raise ImergReadContractError(
             "observed read contract differs from the frozen one on a field "
             "other than revision (D1) — refusing to blend: "
@@ -1397,16 +1440,26 @@ def parse_retry_after(raw: str | None) -> float | None:
     return max(seconds, 0.0)
 
 
-#: 🔴 The ENUMERATED permanent 4xx statuses (2026-09-02, Codex review). Each
-#: one describes a request that CANNOT succeed unchanged, so re-issuing the
-#: identical bytes can only reproduce it:
-#:   400 Bad Request        — malformed syntax (Plan 225 D4 MEASURED exactly
-#:                            this for a `/Grid/precipitation` constraint)
-#:   405 Method Not Allowed — the method is wrong for the resource
-#:   410 Gone               — the resource is permanently absent
-#:   414 URI Too Long       — the URI itself is over the server's limit
-#:   422 Unprocessable      — well-formed but semantically rejected
-#:   431 Headers Too Large  — the request headers are over the limit
+#: 🔴 The ENUMERATED permanent 4xx statuses (2026-09-02, Codex review).
+#:
+#: ⭐ THE RULE, so a future reader can classify a NEW status without guessing:
+#: a status belongs here iff the request CANNOT SUCCEED UNLESS THE REQUEST
+#: ITSELF CHANGES. Re-issuing identical bytes can only reproduce it — no
+#: amount of waiting helps. If waiting, or a server-side change, could clear
+#: it, it does NOT belong here.
+#:   400 Bad Request         — malformed syntax (Plan 225 D4 MEASURED exactly
+#:                             this for a `/Grid/precipitation` constraint)
+#:   405 Method Not Allowed  — the method is wrong for the resource
+#:   410 Gone                — the resource is permanently absent
+#:   411 Length Required     — an unchanged retry cannot add `Content-Length`
+#:   414 URI Too Long        — the URI itself is over the server's limit
+#:   415 Unsupported Media   — an unchanged retry cannot change media type
+#:   417 Expectation Failed  — an unchanged retry cannot drop its `Expect`
+#:   422 Unprocessable       — well-formed but semantically rejected
+#:   426 Upgrade Required    — an unchanged retry cannot switch protocol
+#:   428 Precondition Req'd  — an unchanged retry cannot add a precondition
+#:   431 Headers Too Large   — the request headers are over the limit
+#: (RFC 9110 §15.5.x; 428 and 431 are RFC 6585 §§3-5.)
 #:
 #: ⛔ NOT "all 4xx except a listed few". That shape FAILS UNSAFELY: any status
 #: nobody thought of — 409 Conflict and 423 Locked both resolve without the
@@ -1414,7 +1467,9 @@ def parse_retry_after(raw: str | None) -> float | None:
 #: default therefore falls through to RETRYABLE. Failing toward "retry" wastes
 #: time; failing toward "permanent" throws away the job.
 #: (401/403/404/429 never reach this set — they are classified above it.)
-_PERMANENT_CLIENT_STATUSES: frozenset[int] = frozenset({400, 405, 410, 414, 422, 431})
+_PERMANENT_CLIENT_STATUSES: frozenset[int] = frozenset(
+    {400, 405, 410, 411, 414, 415, 417, 422, 426, 428, 431}
+)
 _CLIENT_ERROR_FLOOR = 400
 _SERVER_ERROR_FLOOR = 500
 

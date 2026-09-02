@@ -1929,6 +1929,57 @@ class TestProductVersionComparisonTolerance:
         with pytest.raises(ia.ImergReadContractError, match="_WidenedSubsetContract"):
             ia.assert_subset_contract_consistent(subset_twin, frozen=subset_frozen)
 
+    def test_a_subclass_that_adds_a_field_still_raises_the_typed_error(
+        self,
+    ) -> None:
+        """🔴 THE REGRESSION THIS ROUND INTRODUCED, locked (2026-09-02, final
+        Codex round). Making the whole-dataclass expression the verdict was
+        right; building the MESSAGE first was not. The field loop walked
+        `fields(observed)`, so a subclass carrying an EXTRA field read that
+        field off the BASE frozen object and raised a bare `AttributeError`
+        out of the formatter — replacing the typed `ImergReadContractError`
+        the exit table (code 6) and every caller are written against.
+
+        ⛔ Acceptance was never loosened by that bug; the FAILURE CONTRACT
+        was, which is exactly the kind of regression a green strictness test
+        cannot see. Both the comparator and the formatter are locked here."""
+
+        @dataclass(frozen=True, kw_only=True, slots=True)
+        class _ExtraFieldArchiveContract(ia.ImergReadContract):
+            extra_field: str = "a field the frozen contract has never had"
+
+        @dataclass(frozen=True, kw_only=True, slots=True)
+        class _ExtraFieldSubsetContract(ia.ImergSubsetReadContract):
+            extra_field: str = "a field the frozen contract has never had"
+
+        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        observed = _ExtraFieldArchiveContract(
+            granule_revision="V07B", **_contract_kwargs()
+        )
+        with pytest.raises(ia.ImergReadContractError) as excinfo:
+            ia.assert_contract_consistent(observed, frozen=frozen)
+        # the asymmetric field is NAMED, not crashed on
+        assert "extra_field" in str(excinfo.value)
+
+        # ⛔ The formatter alone is asymmetry-safe in BOTH directions: the
+        # extra field may sit on either operand, and neither may raise.
+        assert ia.contract_field_differences(observed, frozen) != ()
+        assert ia.contract_field_differences(frozen, observed) != ()
+
+        # The subset comparator NEVER shared the hazard — its explicit
+        # `type(...) is not type(...)` guard returns the typed error before the
+        # formatter is reached — and that ordering is locked here too.
+        subset_frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        subset_observed = _ExtraFieldSubsetContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        with pytest.raises(
+            ia.ImergReadContractError, match="_ExtraFieldSubsetContract"
+        ):
+            ia.assert_subset_contract_consistent(subset_observed, frozen=subset_frozen)
+
     def test_the_tolerance_table_names_the_subset_route_only(self) -> None:
         """⛔ The table is the single place the tolerated field is named, and
         it is reachable ONLY from the subset comparator."""
@@ -2228,11 +2279,33 @@ class TestExitCodeSeparatesPermanentFromTransient:
         Permanence is now ENUMERATED and everything unlisted falls through to
         retryable.
 
-        ⛔ Swept across the WHOLE 4xx block, so a status nobody thought of
-        cannot become permanent by omission — the shape of the old bug."""
-        classified_above_this_branch = {401, 403, 404, 429}
+        ⛔ Swept across the WHOLE 4xx block with NO UNASSERTED GAPS
+        (2026-09-02, final Codex round). The sweep used to `continue` past
+        401/403/404/429 and assert them afterwards by TYPE only — 403 not at
+        all — so the four statuses with the most consequential codes (2 =
+        credentials, halt and fix the login) were the four the exit-code
+        assertion never covered. Every status in 400-499 now asserts both the
+        type and the exit code."""
+        # status -> (type it must raise, exit code that type must map to)
+        classified_above_this_branch: dict[int, tuple[type[Exception], int]] = {
+            401: (ia.ImergCredentialsError, 2),
+            403: (ia.ImergCredentialsError, 2),
+            404: (ia.ImergGranuleMissingError, 3),
+            429: (ia.ImergRateLimitedError, 3),
+        }
         for status in range(400, 500):
-            if status in classified_above_this_branch:
+            special = classified_above_this_branch.get(status)
+            if special is not None:
+                expected_type, expected_exit = special
+                with pytest.raises(expected_type) as above:
+                    ia._raise_for_http_status(status, url="https://gpm1/x")
+                # ⛔ never permanent: each of these can clear without the
+                # request changing (fixed credentials, a published granule, a
+                # lifted throttle), so none may reach the halt-the-run 6.
+                assert not isinstance(above.value, ia.ImergPermanentRequestError), (
+                    status
+                )
+                assert ia._exit_code_for(above.value) == expected_exit, status
                 continue
             with pytest.raises(ia.ImergRequestFailedError) as excinfo:
                 ia._raise_for_http_status(status, url="https://gpm1/x")
@@ -2240,16 +2313,15 @@ class TestExitCodeSeparatesPermanentFromTransient:
             assert permanent is (status in ia._PERMANENT_CLIENT_STATUSES), status
             # the classification IS the supervisor contract, so assert the code
             assert ia._exit_code_for(excinfo.value) == (6 if permanent else 3), status
-        # Named on both sides too, so the sweep cannot pass vacuously.
-        assert {400, 422} <= ia._PERMANENT_CLIENT_STATUSES
-        assert ia._PERMANENT_CLIENT_STATUSES.isdisjoint({408, 409, 423, 425})
-        # ⛔ the statuses classified ABOVE this branch keep their own types.
-        with pytest.raises(ia.ImergGranuleMissingError):
-            ia._raise_for_http_status(404, url="https://gpm1/x")
-        with pytest.raises(ia.ImergCredentialsError):
-            ia._raise_for_http_status(401, url="https://gpm1/x")
-        with pytest.raises(ia.ImergRateLimitedError):
-            ia._raise_for_http_status(429, url="https://gpm1/x")
+        # Named on both sides too, so the sweep cannot pass vacuously. Each
+        # listed status CANNOT succeed unless the request itself changes;
+        # each excluded one can clear with the identical bytes re-sent.
+        assert {400, 405, 410, 411, 414, 415, 417, 422, 426, 428, 431} == set(
+            ia._PERMANENT_CLIENT_STATUSES
+        )
+        assert ia._PERMANENT_CLIENT_STATUSES.isdisjoint(
+            {401, 403, 404, 408, 409, 423, 425, 429}
+        )
         with pytest.raises(ia.ImergTransientError):
             ia._raise_for_http_status(503, url="https://gpm1/x")
 
