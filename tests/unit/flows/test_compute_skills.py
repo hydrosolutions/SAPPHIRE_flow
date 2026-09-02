@@ -296,8 +296,14 @@ class TestComputeSkillsTask:
         )
 
         # A DAILY-cadence hindcast for the SAME station/model — a
-        # differently configured run coexisting in history.
-        daily_step = ensure_utc(datetime(2025, 2, 1, tzinfo=UTC))
+        # differently configured run coexisting in history. Dated before
+        # `_EPOCH` (2025-01-15, this test's `clock()`) so its resampled
+        # bucket has actually elapsed by `now` — Plan 228's completed-bucket
+        # filter (`_resample_observations_to_forecast_step`) correctly
+        # excludes any bucket whose end has not yet elapsed, and a
+        # future-dated fixture would be excluded for that reason rather
+        # than exercising the cohort-partitioning behavior under test.
+        daily_step = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
         daily_vt = ensure_utc(daily_step + timedelta(days=1))
         df = pl.DataFrame(
             [

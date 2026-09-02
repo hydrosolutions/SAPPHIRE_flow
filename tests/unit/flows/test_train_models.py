@@ -931,7 +931,16 @@ class TestMultiParameterSkillComputation:
         model_id = ModelId("multi-param-model")
         artifact_id = ArtifactId(_uuid())
         hindcast_run_id = _uuid()
-        clock = lambda: _EPOCH  # noqa: E731
+        # NOT the module-level `_EPOCH` — it is redefined further down this
+        # file to 2025-01-01, which predates `_seed_hindcasts_and_obs`'s
+        # Feb-2025 fixture hindcasts. Against that earlier value, every
+        # resampled observation bucket is still "in the future" as of
+        # `clock()`, so Plan 228's completed-bucket filter
+        # (`_resample_observations_to_forecast_step`) correctly excludes
+        # all of them and no strata are ever built — a fixture bug, not a
+        # defect in the filter. Use an explicit clock strictly after the
+        # seeded hindcasts' valid times instead.
+        clock = lambda: ensure_utc(datetime(2025, 3, 1, tzinfo=UTC))  # noqa: E731
 
         hindcast_store = FakeHindcastStore()
         obs_store = FakeObservationStore()

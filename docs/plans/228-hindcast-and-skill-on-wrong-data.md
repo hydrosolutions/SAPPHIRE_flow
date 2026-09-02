@@ -536,3 +536,39 @@ it was piped through. A `tail`-truncated run reported success over these very tw
 ### ⛔ Still forbidden
 
 Do not touch the mac-mini.
+
+## Implementation status (2026-09-02, fourth round) — both failing tests closed, both were fixture bugs
+
+Diagnosed before fixing, per this run's scope:
+
+1. **`test_computes_skills_for_all_target_parameters`.** `tests/unit/flows/test_train_models.py`
+   declares module-level `_EPOCH` twice — 2025-03-01 (line 44, immediately shadowed, otherwise
+   unused) and 2025-01-01 (line 122, the value every other test in the file reads). This test's
+   `clock = lambda: _EPOCH` resolved to the second, later-defined value (2025-01-01), which
+   **predates** the Feb-2025 hindcasts `_seed_hindcasts_and_obs` seeds. Against that clock, the
+   review fixer round's completed-bucket filter in `_resample_observations_to_forecast_step`
+   correctly excluded every observation bucket as not-yet-elapsed, so nothing was scored. **Test
+   fixture bug, not a defect in the filter** — the filter did exactly what a `now` chronologically
+   before its data should make it do. Fixed by giving the test an explicit clock (2025-03-01) after
+   every seeded valid time, instead of the shared, since-shadowed `_EPOCH`.
+2. **`test_mixed_time_step_history_degrades_gracefully`.** The injected daily-cadence hindcast was
+   dated 2025-02-01 (valid time 2025-02-02) — **after** the test's `clock()` (`_EPOCH` = 2025-01-15).
+   The same completed-bucket filter correctly excluded that bucket; `partition_by_time_step_and_
+   phase` produced both cohorts correctly, but the daily cohort's one observation had not "happened"
+   yet relative to the clock exercising it. **Test fixture bug**, not a cohort-selection defect —
+   `compute_skills_task` does not silently drop one cohort in favor of another. Fixed by dating the
+   fixture 2025-01-01 (valid time 2025-01-02), well before `_EPOCH`.
+
+Neither fix touched `partition_by_time_step_and_phase`, `observation_fetch_bounds`, or the
+completed-bucket rule. Per this run's explicit diagnostic requirement, `compute_skill_for_station`
+now logs a `structlog` WARNING distinguishing "observations exist but no bucket has elapsed yet"
+(`skill.compute_skill_for_station.no_elapsed_observation_buckets`) from "resampled buckets exist but
+none matched a forecast `valid_time`" (`skill.compute_skill_for_station.no_matching_strata`) — so a
+real recompute that silently stores zero rows is diagnosable from logs, not indistinguishable from a
+clean run with nothing to score.
+
+`uv run pytest tests/unit` — pytest's own exit status checked directly (not through a pipe) — green.
+`ruff check`/`ruff format --check` clean; pyright ratchet 394 <= 400 (unchanged). Full detail:
+`docs/decisions/plan-228-hindcast-skill-resampling.md` § "Per-run scope round (2026-09-02, fourth)".
+Still outstanding, unchanged: D3's marking-superseded + recompute remain gated on the mac-mini's
+onboarding/hindcasting run finishing — nothing in this round touched that system.

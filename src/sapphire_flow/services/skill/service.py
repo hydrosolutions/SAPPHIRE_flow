@@ -600,9 +600,32 @@ def compute_skill_for_station(
         observations, parameter, time_step, clock()
     )
 
+    if not obs_lookup:
+        # Plan 228 per-run scope: distinguish "no observations available"
+        # (this branch — `observations` is non-empty, but every resampled
+        # bucket is still incomplete as of `clock()`) from "scored nothing"
+        # for an unrelated reason, so a recompute that silently stores zero
+        # rows is diagnosable rather than looking identical to a clean run.
+        log.warning(
+            "skill.compute_skill_for_station.no_elapsed_observation_buckets",
+            station_id=str(station_id),
+            model_id=str(model_id),
+            parameter=parameter,
+            observation_count=len(observations),
+            time_step_seconds=time_step_seconds,
+        )
+        return [], []
+
     strata = _build_strata(hindcasts, obs_lookup, seasons, flow_regime_config)
 
     if not strata:
+        log.warning(
+            "skill.compute_skill_for_station.no_matching_strata",
+            station_id=str(station_id),
+            model_id=str(model_id),
+            parameter=parameter,
+            observation_bucket_count=len(obs_lookup),
+        )
         return [], []
 
     # Determine eval period from hindcast steps

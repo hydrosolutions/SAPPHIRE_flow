@@ -539,3 +539,49 @@ this branch created the defect. This round closes those three.
    § D4 for the rationale, and the "every hindcast forecast" heading above
    now correctly scopes P1 to the two affected model families rather than
    implying every hindcast is invalid.
+
+## Per-run scope round (2026-09-02, fourth) — two failing tests, both fixture bugs
+
+The full unit suite went red after the previous round's fixer work was recovered from a
+mid-sleep working tree (`2 failed, 5069 passed`), never independently re-verified before
+that commit. Both failures reproduced in isolation and were diagnosed, per the per-run
+scope instructions, **before** any code was touched:
+
+1. **`TestMultiParameterSkillComputation::test_computes_skills_for_all_target_parameters`
+   stored nothing.** `tests/unit/flows/test_train_models.py` declares `_EPOCH` twice at
+   module scope — once at line 44 (2025-03-01, immediately shadowed and otherwise unused)
+   and again at line 122 (2025-01-01, the value every other test in the file actually
+   reads). This test's `clock = lambda: _EPOCH` resolved to the *second* definition
+   (2025-01-01), which **predates** the Feb-2025 hindcast valid times
+   `_seed_hindcasts_and_obs` seeds. Against that clock, the review fixer round's
+   completed-bucket filter in `_resample_observations_to_forecast_step` (a bucket is
+   trusted only once its end has elapsed as of `now` — see the fixer-round entry above)
+   correctly excluded every observation bucket as "not yet elapsed", so `obs_lookup` was
+   empty, no strata were built, and nothing was stored. **This is a test fixture bug, not
+   a defect in the filter**: the filter is doing exactly what it is supposed to do given a
+   `now` that is chronologically before the data it is asked to judge. Fixed by giving the
+   test its own explicit clock (2025-03-01, after every seeded valid time) instead of the
+   shared, since-shadowed `_EPOCH`.
+2. **`TestComputeSkillsTask::test_mixed_time_step_history_degrades_gracefully` dropped
+   its daily cohort.** The test's injected daily-cadence hindcast was dated 2025-02-01
+   (valid time 2025-02-02), which is **after** the test's `clock()` (`_EPOCH` =
+   2025-01-15). The same completed-bucket filter correctly excluded that bucket as not
+   yet elapsed, so the daily cohort's `compute_skill_for_station` call returned no
+   scores — not because cohort partitioning dropped it (`partition_by_time_step_and_
+   phase` produced both cohorts correctly), but because its one observation was
+   future-dated relative to the clock exercising it. Fixed by dating the fixture
+   2025-01-01 (valid time 2025-01-02), well before `_EPOCH`.
+
+Neither fix touches `partition_by_time_step_and_phase`, `observation_fetch_bounds`, or
+the completed-bucket rule itself — both were fixture-only. Per the run's explicit
+diagnostic requirement ("the fix must make 'no observations available' distinguishable
+from 'scored nothing'"), `compute_skill_for_station` (`services/skill/service.py`) now
+logs a `structlog` warning
+(`skill.compute_skill_for_station.no_elapsed_observation_buckets`) when observations
+exist but every resampled bucket is still incomplete as of `clock()`, and a second
+(`skill.compute_skill_for_station.no_matching_strata`) when resampled buckets exist but
+none match a forecast `valid_time` — so a real recompute that silently stores zero rows
+for either reason is now diagnosable from logs rather than looking identical to a clean
+run with nothing to score. `uv run pytest tests/unit` and `tests/integration` both zero
+failures after the fix (pytest's own exit status checked directly, not through a
+pipeline).
