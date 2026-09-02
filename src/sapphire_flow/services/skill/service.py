@@ -130,6 +130,36 @@ def validate_homogeneous_time_step_and_phase(
     return time_step
 
 
+def partition_by_time_step_and_phase(
+    hindcasts: list[HindcastForecast],
+) -> dict[tuple[timedelta, int | None], list[HindcastForecast]]:
+    """Split ``hindcasts`` into the homogeneous ``(time_step, phase)``
+    cohorts ``validate_homogeneous_time_step_and_phase`` requires (Plan 228
+    review fixer round, major).
+
+    ``compute_skills_task``/``compute_combined_skills_task`` fetch a
+    station/model's ENTIRE unpartitioned hindcast history (no
+    ``hindcast_run_id`` filter, a 1970-2100 window) and used to hand it
+    straight to ``observation_fetch_bounds``/``compute_skill_for_station``,
+    both of which now hard-raise (Plan 228 D4) on any mixed ``time_step`` or
+    ``valid_time`` phase within that history. A single differently
+    configured hindcast run — a retraining, a future per-cycle anchoring
+    change — would then turn into a permanent, uncaught outage for that
+    station/model's skill scoring, since every subsequent run refetches the
+    same mixed history and raises again. Callers partition upstream with
+    this function instead and compute skill once per cohort, so a mismatch
+    degrades to "fewer cohorts scored this run" rather than "none, forever".
+    """
+    groups: dict[tuple[timedelta, int | None], list[HindcastForecast]] = defaultdict(
+        list
+    )
+    for hc in hindcasts:
+        time_step = hc.ensemble.time_step
+        phase = _valid_time_phase_us(hc, time_step)
+        groups[(time_step, phase)].append(hc)
+    return dict(groups)
+
+
 def observation_fetch_bounds(
     hindcasts: list[HindcastForecast],
 ) -> tuple[UtcDatetime, UtcDatetime]:

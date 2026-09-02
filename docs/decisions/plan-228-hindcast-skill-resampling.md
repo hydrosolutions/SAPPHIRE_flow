@@ -399,3 +399,36 @@ All of the above landed in the SAME per-run scope round that removed the
 unchanged from before this round: **D3's marking of pre-fix scores as
 superseded, and the live recompute, remain gated on the mac-mini's onboarding
 run finishing** — nothing in this round touched that system.
+
+### Fixer round (independent Codex review, 2026-09-02) — ALSO-FIX-#3's own callers didn't partition
+
+ALSO FIX #3 above says "a caller with genuinely mixed models/cycles must
+partition upstream", but `compute_skills_task` and `compute_combined_skills_
+task` (`flows/compute_skills.py`) — the ONLY two production callers of
+`observation_fetch_bounds` at the top of the flow — never did that
+partitioning themselves. Both fetch a station/model's entire unpartitioned
+hindcast history (no `hindcast_run_id` filter, 1970-2100 bounds) and handed
+it straight to `observation_fetch_bounds` / `compute_skill_for_station`,
+either of which now hard-raises `ConfigurationError` on the very mismatch
+this section introduced enforcement for. Unlike `hindcast.py`/
+`operational_inputs.py`/`track_assembly.py`, which catch this exact
+exception and degrade one step/cycle gracefully, these two flow-level tasks
+had no try/except and no upstream partitioning — a single differently
+configured hindcast run (a retraining, or Plan 226's planned per-cycle
+anchoring, which this plan blocks) would raise uncaught on every subsequent
+run and permanently halt skill scoring for that station/model.
+
+**Fix:** `partition_by_time_step_and_phase` (new, `services/skill/
+service.py`) splits a hindcast list into its homogeneous `(time_step,
+phase)` cohorts. Both tasks now partition BEFORE calling
+`observation_fetch_bounds`/the compute helpers and compute+store skill once
+per cohort. `compute_combined_skills_task` partitions each model's
+hindcasts independently, then only combines cohorts where >= 2 models are
+present — the sharper case, since it used to union across every combined
+model before validating. A mismatch now degrades to "fewer cohorts scored
+this run" rather than "none, forever, uncaught". Locked by
+`TestComputeSkillsTask::test_mixed_time_step_history_degrades_gracefully`
+and `TestComputeCombinedSkillsTask::test_mixed_time_step_across_models_
+degrades_gracefully` (test_compute_skills.py), both proven RED against the
+pre-fix code (uncaught `ConfigurationError: ... mixed time_step ...`) and
+GREEN after.

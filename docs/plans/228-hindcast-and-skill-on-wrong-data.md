@@ -362,3 +362,46 @@ existing T1-T4 work (kept, not rebuilt):
 - **Still forbidden and still not done**: the mac-mini was not touched; D3's
   marking-superseded + recompute remain gated on its onboarding/hindcasting
   run finishing.
+
+**Scope note (review, minor):** commit `95cb5116` (`tests/conftest.py`
+per-checkout `PREFECT_HOME`) is outside this plan's stated scope of "two
+hindcast/skill-scoring defects". It is included deliberately, not
+incidentally: this round's own test runs against a shared `~/.prefect`
+SQLite database were measured hanging (17 GB DB, 23 live Prefect
+processes, `/implement` runs dying as "agent stalled" — see the comment in
+`tests/conftest.py`), and the fix was needed to get this plan's own gates
+to run reliably. Recorded here per the project's task-jag discipline rather
+than split into a separate PR, since the branch is already committed and
+hold-at-PR.
+
+## Fixer round (review) — compute_skills_task / compute_combined_skills_task partitioning
+
+An independent Codex pass over the diff found a major gap the D4/ALSO-FIX-#3
+work above did not close: `compute_skills_task` and `compute_combined_skills_task`
+(`flows/compute_skills.py`) fetch a station/model's ENTIRE unpartitioned
+hindcast history (no `hindcast_run_id` filter, 1970-2100 bounds) and handed
+it straight to `observation_fetch_bounds` / `compute_skill_for_station`,
+both of which hard-raise `ConfigurationError` on any mixed `time_step` or
+`valid_time` phase within that history (exactly the enforcement ALSO-FIX-#3
+added). Unlike `hindcast.py`/`operational_inputs.py`/`track_assembly.py`,
+which catch this exact exception and degrade one step/cycle gracefully,
+these two flow-level tasks had no try/except and no upstream partitioning —
+a single differently configured hindcast run (a retraining, or Plan 226's
+planned per-cycle anchoring) would raise uncaught and halt skill scoring
+for that station/model on every subsequent run, since the run always
+refetches the same mixed history.
+
+**Fix:** added `partition_by_time_step_and_phase` (new,
+`services/skill/service.py`) and used it in both tasks to split the fetched
+hindcasts into homogeneous `(time_step, phase)` cohorts BEFORE calling
+`observation_fetch_bounds`/the compute helpers, computing and storing skill
+once per cohort. `compute_combined_skills_task` partitions each model's
+hindcasts independently, then only combines cohorts where >= 2 models are
+present — the sharper case the review flagged, since it unions across
+models before validating. A mismatch now degrades to "fewer cohorts scored
+this run" instead of "none, forever, uncaught". Locking tests:
+`tests/unit/flows/test_compute_skills.py::TestComputeSkillsTask::test_mixed_time_step_history_degrades_gracefully`
+and
+`::TestComputeCombinedSkillsTask::test_mixed_time_step_across_models_degrades_gracefully`,
+both proven RED against the pre-fix code (uncaught
+`ConfigurationError: ... mixed time_step ...`) and GREEN after.
