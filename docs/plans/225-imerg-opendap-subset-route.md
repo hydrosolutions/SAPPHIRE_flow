@@ -102,8 +102,14 @@ strictly, is the whole point.
   contract field and the filename-derived `granule_revision` unchanged across that boundary. The SUBSET
   comparator now removes exactly one leading `V` before comparing that ONE field, at comparison time
   only (the observed spelling is still stored and digested unmodified). ⛔ D1's prohibition **holds**:
-  `assert_contract_consistent` — the ARCHIVE comparator — was **not** touched, and an equivalence test
-  perturbs all twelve of its fields and fails if anyone widens it. ⚠️ The archive route therefore still
+  `assert_contract_consistent` — the ARCHIVE comparator — had its **acceptance predicate** left
+  unchanged. (⚠️ Corrected 2026-09-02, confirming Codex round: the earlier wording here, "was **not**
+  touched", was literally inaccurate — the function *was* edited, to name the differing field in its
+  message. The predicate is now the same whole-dataclass `observed != replace(frozen, granule_revision=…)`
+  it always was, with the field-by-field difference list used only to BUILD that message, so the scope
+  lock is true **by construction** rather than by test.) An equivalence test still perturbs all twelve
+  fields, against both spellings of the frozen product version, and fails if anyone reintroduces a second
+  acceptance predicate. ⚠️ The archive route therefore still
   carries the same exposure and would abort at the same 2024-06 boundary on a multi-granule run; it is
   recorded as a **known gap** (with what would substantiate a fix) under M-A5d in
   `docs/design/dhm-precipitation-milestones.md`, not fixed here — only one archive granule is banked, so

@@ -660,8 +660,25 @@ by **repairability, not by class family**, and runs in both directions:
      would abort a 30-hour run outright on a single transient truncation — worse than the retry waste
      the split exists to stop.
    - `ImergPermanentRequestError` (new) → **6**: a 4xx that no retry can fix, such as the HTTP 400 a
-     malformed OPeNDAP `dap4.ce` constraint returns (Plan 225 D4 measured exactly that 400). ⛔ NOT the
-     whole 4xx block: 408/425 are timing faults and keep 3; 401/403/404/429 keep their own codes.
+     malformed OPeNDAP `dap4.ce` constraint returns (Plan 225 D4 measured exactly that 400). 🔴 Raised
+     for an **enumerated** set (`_PERMANENT_CLIENT_STATUSES` = 400, 405, 410, 414, 422, 431), with every
+     other 4xx falling through to **retryable**. The first cut had it the other way round — "all 4xx
+     except a listed few" — which **fails unsafely**: 409 Conflict and 423 Locked clear without the
+     request changing, and calling them permanent stops a 30-hour run. Failing toward retry only wastes
+     time. (401/403/404/429 keep their own codes, classified above the branch.)
+   - **A stable schema violation is PERMANENT even though it reaches the artifact validator.** A granule
+     that opens cleanly but carries, say, a non-numeric `scale_factor` used to be swept into
+     `ImergMalformedArtifactError` (3) by a blanket `except (KeyError, ValueError)` and would have been
+     re-downloaded for ever. The distinction is drawn at the **raising sites** —
+     `_optional_numeric_attr`, `_attr_scalar_float`, `subset_global_bounds` all raise the permanent
+     `ImergReadContractError` — and `_validate_subset_artifact`'s residual `ValueError` branch inherits
+     the same verdict, while `OSError`/`KeyError` (bytes that are unreadable or incomplete) stay
+     retryable.
+   - ⚠️ **Two senses of "retryable".** `RequestPacer.run` retries `ImergTransientError` only, so an
+     unlisted 4xx or a malformed artifact aborts the current run after one attempt. Exit 3 is still
+     correct for them because it addresses the **external supervisor**, which re-runs the window and
+     resumes from the banked granules. Recorded in `RequestPacer.run`'s docstring and beside the exit
+     table so the word cannot be read as the in-run loop.
    - `ImergInvalidRequestError` (caller-argument faults: out-of-window or misordered bounds, `workers <
      1`) → **6**. Measured motivation: one 308-attempt run burned 307 attempts at 60 s each on
      permanent failures while also containing one genuinely transient `ImergRetriesExhaustedError`
@@ -680,8 +697,13 @@ standard the subset-side change was held to. The archive parser and contract rem
 measuring `FileHeader.ProductVersion` on them directly, as was done for the subset route. Until then
 the archive comparator stays byte-exact, and an equivalence test
 (`test_the_archive_comparator_accepts_exactly_what_it_used_to`) perturbs every one of its twelve fields
-and fails if anyone widens it. **No multi-granule archive-route run should be started across the
-2024-06 boundary without closing this first.**
+and fails if anyone widens it, against both spellings of the frozen product version. The comparator's
+**verdict** is the whole-dataclass `observed != replace(frozen, granule_revision=…)` it has always been
+— the field-by-field difference list only builds the message — so the scope lock holds **by
+construction**, and a subclass instance whose every field matches is refused on both routes (the subset
+comparator, which cannot use `==` because its tolerance needs a per-field seam, makes that check
+explicit). **No multi-granule archive-route run should be started across the 2024-06 boundary without
+closing this first.**
 
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC

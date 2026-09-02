@@ -1416,24 +1416,47 @@ class TestMainCatchesMidExtractionD1Violation:
         T1's exit codes". Before this it mapped EVERY `ImergAcquisitionError`
         to 3, so the promise held only for the leaves that happened to be 3.
         ⇒ Assert the two CLIs agree leaf by leaf, so they cannot drift apart
-        silently again."""
+        silently again.
+
+        🔴 The leaves are now DISCOVERED, not hand-listed (2026-09-02,
+        confirming Codex round). The hand-written tuple claimed to walk the
+        hierarchy "leaf by leaf" and did not: it omitted
+        `ImergRateLimitedError` outright and spent four of its ten entries on
+        non-leaf parents. A new leaf added to `imerg_acquire` now joins this
+        assertion automatically."""
         from scripts.dhm_precip import imerg_acquire as ia
 
-        for error in (
-            ia.ImergCredentialsError("x"),
-            ia.ImergStorageError("x"),
-            ia.ImergMalformedArtifactError("x"),
-            ia.ImergReadContractError("x"),
-            ia.ImergSubsetCoordinateMismatchError("x"),
-            ia.ImergPermanentRequestError("x"),
-            ia.ImergInvalidRequestError("x"),
-            ia.ImergRetriesExhaustedError("x"),
-            ia.ImergGranuleMissingError("x"),
-            ia.ImergTransientError("x"),
-        ):
-            assert ie._exit_code_for(error) == ia._exit_code_for(error), type(
-                error
-            ).__name__
+        def descendants(cls: type) -> set[type]:
+            subs = set(cls.__subclasses__())
+            return subs.union(*(descendants(s) for s in subs)) if subs else set()
+
+        # ⛔ `__module__`-filtered: `__subclasses__` also sees a subclass any
+        # OTHER test module defined earlier in the same session, which would
+        # make this assertion depend on collection order.
+        family = {
+            c
+            for c in {ia.ImergAcquisitionError} | descendants(ia.ImergAcquisitionError)
+            if c.__module__ == ia.ImergAcquisitionError.__module__
+        }
+        leaves = sorted(
+            (c for c in family if not c.__subclasses__()), key=lambda c: c.__name__
+        )
+        # a guard against the discovery itself silently finding nothing
+        assert {c.__name__ for c in leaves} >= {
+            "ImergCredentialsError",
+            "ImergGranuleMissingError",
+            "ImergInvalidRequestError",
+            "ImergMalformedArtifactError",
+            "ImergRateLimitedError",
+            "ImergRetriesExhaustedError",
+            "ImergStorageError",
+            "ImergSubsetCoordinateMismatchError",
+        }
+        # ⛔ EVERY class in the family, leaf or not: a parent that disagreed
+        # would still mis-report any error raised as the parent itself.
+        for cls in sorted(family, key=lambda c: c.__name__):
+            error = cls("x")
+            assert ie._exit_code_for(error) == ia._exit_code_for(error), cls.__name__
 
 
 # --- D9 (BLOCKER) — T2 DERIVES completeness; it never trusts the label ---

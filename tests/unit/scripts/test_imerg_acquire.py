@@ -122,6 +122,15 @@ def _contract_kwargs() -> dict[str, Any]:
     }
 
 
+#: MEASURED, not guessed: of the 27 (field, value) perturbations the archive
+#: equivalence sweep builds, `ImergReadContract.__post_init__` refuses 7 (a
+#: wrong variable path, dimension order, registration, units, fill value, grid
+#: shape, or a short lon vector) before any comparator sees them. The remaining
+#: 20 are the cases that actually exercise the verdict — asserted EXACTLY, so a
+#: case that stops reaching the comparator cannot hide behind a `>=`.
+_ARCHIVE_PERTURBATIONS_THAT_REACH_THE_COMPARATOR = 20
+
+
 def _kwargs_with(**overrides: Any) -> dict[str, Any]:
     """`_contract_kwargs()` with exactly the given fields replaced — the
     archive-route mirror of `_subset_kwargs_with`, and for the same reason:
@@ -1799,7 +1808,10 @@ class TestProductVersionComparisonTolerance:
         ):
             ia.assert_contract_consistent(observed, frozen=frozen)
 
-    def test_the_archive_comparator_accepts_exactly_what_it_used_to(self) -> None:
+    @pytest.mark.parametrize("frozen_product_version", ["07B", "V07B"])
+    def test_the_archive_comparator_accepts_exactly_what_it_used_to(
+        self, frozen_product_version: str
+    ) -> None:
         """🔴 The SCOPE LOCK stated as an equivalence, not as one example.
 
         Perturb EVERY field of `ImergReadContract` (both ways where the field
@@ -1807,9 +1819,20 @@ class TestProductVersionComparisonTolerance:
         the whole-dataclass `observed != replace(frozen, granule_revision=...)`
         it replaced — the exact expression at `b7ae5543^`. ⛔ If anyone widens
         the archive route by ANY field, this diverges. Cases the contract's own
-        `__post_init__` refuses are skipped: they can never reach a
-        comparator."""
-        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        `__post_init__` refuses are skipped: they can never reach a comparator.
+
+        ⚠️ Run against BOTH spellings of the FROZEN side's product version
+        (2026-09-02, confirming Codex round): with the frozen side pinned to
+        one spelling the sweep only ever asked "does the observed V-prefix
+        differ from a bare frozen one", never the mirror image.
+
+        (Since this round the production verdict IS that expression, so the
+        equivalence is true by construction — this sweep is the guard against
+        anyone reintroducing a second predicate.)"""
+        frozen = ia.ImergReadContract(
+            granule_revision="V07B",
+            **_kwargs_with(file_header_product_version=frozen_product_version),
+        )
         lat: tuple[float, ...] = _contract_kwargs()["lat_vector"]
         lon: tuple[float, ...] = _contract_kwargs()["lon_vector"]
         perturbations: dict[str, list[Any]] = {
@@ -1847,11 +1870,12 @@ class TestProductVersionComparisonTolerance:
             return True
 
         reached = 0
+        reached_fields: set[str] = set()
         for name, values in perturbations.items():
             for value in values:
                 revision = value if name == "granule_revision" else "V07B"
                 kwargs = (
-                    _contract_kwargs()
+                    _kwargs_with(file_header_product_version=frozen_product_version)
                     if name == "granule_revision"
                     else _kwargs_with(**{name: value})
                 )
@@ -1860,10 +1884,50 @@ class TestProductVersionComparisonTolerance:
                 except ia.ImergReadContractError:
                     continue  # __post_init__ refuses it: no comparator involved
                 reached += 1
+                reached_fields.add(name)
                 assert new_accepts(observed) == old_accepts(observed), (
                     f"{name}={value!r} changed the archive comparator's verdict"
                 )
-        assert reached >= 20  # noqa: PLR2004 - every field reached the comparator
+        # ⛔ EXACT, not `>=` (2026-09-02, confirming Codex round): `>= 20` was
+        # satisfied by 20 of 26 cases, so six could silently stop reaching the
+        # comparator without the sweep noticing.
+        assert reached_fields == set(perturbations)
+        assert reached == _ARCHIVE_PERTURBATIONS_THAT_REACH_THE_COMPARATOR
+
+    def test_a_subclass_instance_is_refused_by_both_comparators(self) -> None:
+        """🔴 THE reason the archive verdict is the whole-dataclass expression
+        and not the field loop (2026-09-02, confirming Codex round).
+
+        A dataclass `==` also requires the SAME concrete class, so the old
+        expression rejects a subclass whose every field matches; a field-by-
+        field loop accepts it. A subclass IS valid at the annotated interface,
+        so that was a real widening. Both routes must refuse it — the archive
+        by construction, the subset by an explicit type check (it cannot use
+        `==`, because its tolerance needs a per-field seam)."""
+
+        class _WidenedArchiveContract(ia.ImergReadContract):
+            pass
+
+        class _WidenedSubsetContract(ia.ImergSubsetReadContract):
+            pass
+
+        frozen = ia.ImergReadContract(granule_revision="V07B", **_contract_kwargs())
+        twin = _WidenedArchiveContract(granule_revision="V07B", **_contract_kwargs())
+        # every field agrees ...
+        assert ia.contract_field_differences(twin, frozen) == ()
+        # ... and it is refused anyway, naming the two concrete types.
+        with pytest.raises(ia.ImergReadContractError, match="_WidenedArchiveContract"):
+            ia.assert_contract_consistent(twin, frozen=frozen)
+
+        subset_frozen = ia.ImergSubsetReadContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        subset_twin = _WidenedSubsetContract(
+            granule_revision="V07B", **_subset_contract_kwargs()
+        )
+        assert ia.contract_field_differences(subset_twin, subset_frozen) == ()
+        with pytest.raises(ia.ImergReadContractError, match="_WidenedSubsetContract"):
+            ia.assert_subset_contract_consistent(subset_twin, frozen=subset_frozen)
 
     def test_the_tolerance_table_names_the_subset_route_only(self) -> None:
         """⛔ The table is the single place the tolerated field is named, and
@@ -2154,17 +2218,31 @@ class TestExitCodeSeparatesPermanentFromTransient:
         )
         assert exit_code == 6  # noqa: PLR2004
 
-    def test_the_status_ladder_calls_only_stable_4xx_permanent(self) -> None:
-        """⛔ NOT the whole 4xx block. 408/425 are timing faults a later
-        attempt can genuinely satisfy, so they must NOT be called permanent."""
-        with pytest.raises(ia.ImergPermanentRequestError):
-            ia._raise_for_http_status(400, url="https://gpm1/x")
-        with pytest.raises(ia.ImergPermanentRequestError):
-            ia._raise_for_http_status(422, url="https://gpm1/x")
-        for transient_status in (408, 425):
+    def test_the_status_ladder_enumerates_permanent_4xx_and_retries_the_rest(
+        self,
+    ) -> None:
+        """🔴 INVERTED (2026-09-02, confirming Codex round). The branch used to
+        read "every 4xx EXCEPT a listed few is permanent", which fails
+        UNSAFELY: 409 Conflict and 423 Locked both clear without the request
+        changing, yet exit 6 tells a supervisor to STOP a 30-hour run. ⇒
+        Permanence is now ENUMERATED and everything unlisted falls through to
+        retryable.
+
+        ⛔ Swept across the WHOLE 4xx block, so a status nobody thought of
+        cannot become permanent by omission — the shape of the old bug."""
+        classified_above_this_branch = {401, 403, 404, 429}
+        for status in range(400, 500):
+            if status in classified_above_this_branch:
+                continue
             with pytest.raises(ia.ImergRequestFailedError) as excinfo:
-                ia._raise_for_http_status(transient_status, url="https://gpm1/x")
-            assert not isinstance(excinfo.value, ia.ImergPermanentRequestError)
+                ia._raise_for_http_status(status, url="https://gpm1/x")
+            permanent = isinstance(excinfo.value, ia.ImergPermanentRequestError)
+            assert permanent is (status in ia._PERMANENT_CLIENT_STATUSES), status
+            # the classification IS the supervisor contract, so assert the code
+            assert ia._exit_code_for(excinfo.value) == (6 if permanent else 3), status
+        # Named on both sides too, so the sweep cannot pass vacuously.
+        assert {400, 422} <= ia._PERMANENT_CLIENT_STATUSES
+        assert ia._PERMANENT_CLIENT_STATUSES.isdisjoint({408, 409, 423, 425})
         # ⛔ the statuses classified ABOVE this branch keep their own types.
         with pytest.raises(ia.ImergGranuleMissingError):
             ia._raise_for_http_status(404, url="https://gpm1/x")
@@ -2789,6 +2867,11 @@ def _strip_precipitation_attribute(path: Path, attribute: str) -> None:
         del f["precipitation"].attrs[attribute]
 
 
+def _set_precipitation_attribute(path: Path, attribute: str, value: object) -> None:
+    with h5py.File(path, "r+") as f:
+        f["precipitation"].attrs[attribute] = value
+
+
 class TestMalformedButOpenableSubsetArtifact:
     @pytest.mark.parametrize("attribute", ["units", "DimensionNames", "_FillValue"])
     def test_a_missing_attribute_is_a_typed_contract_error(
@@ -2803,6 +2886,48 @@ class TestMalformedButOpenableSubsetArtifact:
         _strip_precipitation_attribute(path, attribute)
         with pytest.raises(ia.ImergReadContractError, match=attribute):
             ia.observe_subset_read_contract(path, archive_filename=_ARCHIVE_FILENAME)
+
+    @pytest.mark.parametrize("attribute", ["scale_factor", "add_offset", "_FillValue"])
+    def test_a_non_numeric_attribute_is_permanent_not_repairable(
+        self, tmp_path: Path, attribute: str
+    ) -> None:
+        """🔴 THE OTHER DIRECTION (2026-09-02, confirming Codex round). A
+        cleanly-openable granule whose `scale_factor` is not a number reached
+        `_validate_subset_artifact`'s `ValueError` catch through the parser's
+        own `float(...)` and was reported as REPAIRABLE (exit 3) — so a
+        supervisor would re-download identical bytes for ever on a schema
+        violation no transfer can fix. It must be permanent (exit 6).
+
+        ⛔ The type is the assertion, not the message: an
+        `ImergMalformedArtifactError` fails this test even though it satisfies
+        `pytest.raises(ImergReadContractError)`."""
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(path, archive_filename=_ARCHIVE_FILENAME)
+        _set_precipitation_attribute(path, attribute, b"not-a-number")
+        # both the parser and the artifact validator behind it: the validator
+        # must not DOWNGRADE a permanent parser verdict to the repairable one.
+        for observe in (
+            lambda: ia.observe_subset_read_contract(
+                path, archive_filename=_ARCHIVE_FILENAME
+            ),
+            lambda: ia._validate_subset_artifact(
+                path, archive_filename=_ARCHIVE_FILENAME
+            ),
+        ):
+            with pytest.raises(ia.ImergReadContractError) as excinfo:
+                observe()
+            assert not isinstance(excinfo.value, ia.ImergMalformedArtifactError)
+            assert ia._exit_code_for(excinfo.value) == 6  # noqa: PLR2004
+
+    def test_unreadable_bytes_stay_repairable(self, tmp_path: Path) -> None:
+        """The paired half of the split, so neither side can drift alone:
+        bytes that are not a granule AT ALL are one transfer's accident and a
+        re-download replaces them — retryable, exit 3."""
+        path = tmp_path / "subset.dap.nc4"
+        path.write_bytes(b"<html>login required</html>")
+        with pytest.raises(ia.ImergMalformedArtifactError) as excinfo:
+            ia._validate_subset_artifact(path, archive_filename=_ARCHIVE_FILENAME)
+        assert ia._exit_code_for(excinfo.value) == 3  # noqa: PLR2004
 
     def test_a_malformed_but_openable_cache_is_refetched(self, tmp_path: Path) -> None:
         """The consequence that matters: validate-and-reuse catches only the
