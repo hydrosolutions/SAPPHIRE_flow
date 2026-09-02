@@ -491,3 +491,48 @@ variable actually IMPROVED the count from the 403 an unannotated version produce
 `uv run pytest tests/unit` and `uv run pytest tests/integration/store/test_skill_store.py` both
 zero failures. Still outstanding, unchanged: D3's marking-superseded + recompute remain gated on
 the mac-mini's onboarding/hindcasting run finishing.
+
+## ⛔ PER-RUN SCOPE (2026-09-02, third) — TWO failing tests. Nothing else.
+
+The full unit suite is **RED**: `2 failed, 5069 passed`. Both reproduce in isolation, so they are
+regressions, not flakes. They come from the previous fixer round — the work recovered from the
+working tree after the machine slept mid-run, which therefore never went through independent
+verification.
+
+**This run fixes exactly these two and stops.** Do not re-open any closed finding, do not touch
+anything assigned to Plan 234, do not refactor beyond what these two require. If a reviewer raises
+anything else, the answer is "out of scope for this run".
+
+### 1. 🔴 `test_computes_skills_for_all_target_parameters` — NOTHING is stored
+
+`tests/unit/flows/test_train_models.py:975`: expected `{discharge, water_level}`, got `set()`.
+
+The probable cause is the previous round's new rule excluding observation buckets that have not
+fully elapsed as of `clock()` (`services/skill/service.py:262,600`). Under this test's injected
+clock it appears to exclude **every** bucket, so there are no observations and no scores.
+
+**Diagnose before fixing.** If the rule is over-strict, that matters far beyond this test: a
+condition that silently yields zero scores would make D3's recompute *look* successful while storing
+nothing — the same class of silent no-op that migration 0051 exists to prevent. The fix must make
+"no observations available" distinguishable from "scored nothing", not merely make the test pass.
+
+### 2. `test_mixed_time_step_history_degrades_gracefully` — one cohort silently dropped
+
+`tests/unit/flows/test_compute_skills.py:372`: expected `24 in lead_time_hours`, got `{1}`.
+
+Cohort partitioning now selects one cohort and discards the other, where the test expects mixed
+history to degrade gracefully across both.
+
+**This is a semantic question, not automatically a test bug.** Decide explicitly: either scoring
+mixed history should cover every cohort (fix the code), or selecting one authoritative cohort is
+correct (fix the test, and state in the test's docstring *why* dropping the other is right and
+where the dropped cohort's scores are supposed to come from). Do not simply relax the assertion.
+
+### Exit gate for this run
+
+`uv run pytest tests/unit` green, and **report pytest's own exit status** — not that of a pipeline
+it was piped through. A `tail`-truncated run reported success over these very two failures.
+
+### ⛔ Still forbidden
+
+Do not touch the mac-mini.
