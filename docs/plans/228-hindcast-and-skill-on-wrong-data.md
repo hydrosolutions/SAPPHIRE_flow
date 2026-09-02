@@ -231,99 +231,49 @@ hindcast. No retraining is required by this plan.
 - A recomputed skill score for one station, compared against its pre-fix value, with the difference
   recorded. If the difference is negligible the premise is wrong and this plan should stop.
 
-## ⛔ PER-RUN SCOPE (2026-09-02) — this run REVERSES a wrong turn. Read before implementing.
+## ⛔ PER-RUN SCOPE (2026-09-02, second) — THREE fixes only. Nothing else.
 
-The branch already holds three commits. **Most of that work is correct and must be kept. One part
-is wrong and must be removed.** Do not rebuild from scratch; do not revert the branch.
+The previous per-run scope is COMPLETE (see the implementation status below). The review has been
+**CUT** by owner decision — see "Review disposition" at the foot. This run closes the three findings
+that stayed in this plan, and **nothing else**.
 
-### REMOVE — the `anchor` mechanism (~37 lines) and the tests that lock it
+**Do not** re-open D1-D4, re-review the shipped P1/P2 fix, or touch anything assigned to Plan 234
+(FI aggregation threading, exactly-N delivery at the model boundary, artifact attribution). If a
+reviewer raises those, the correct response is "assigned to Plan 234" — not a fix.
 
-A previous fixer round added an `anchor` parameter to `resample_to_time_step` and passed
-`anchor=issue_time` / the forecast's `valid_time`, phase-aligning buckets to the forecast timestamp.
-**D4 forbids this.** It made hindcast consume rolling 06:00-06:00 means while training consumes UTC
-calendar days, and it aligned to `valid_time` — the value Plan 226 exists to correct. Its
-acceptance tests lock the wrong semantics and must go with it. Delete the parameter, its call sites
-and those tests.
+### 1. 🔴 Cohort collision silently discards skill scores
 
-### IMPLEMENT — D4, on every assembly path
+Round 2 partitioned scoring cohorts by `(time_step, phase)`
+(`flows/compute_skills.py:144`), but the skill natural key contains neither
+(`alembic/versions/0051_...py:58`, `store/skill_store.py:35`). Two cohorts producing the same
+`(station, model, lead, …)` therefore collide and one is **silently dropped** by
+`ON CONFLICT DO NOTHING`.
 
-Exactly **N complete UTC-calendar buckets**, with **aligned and extended fetch bounds**. Filtering
-after the fact is not sufficient: the current window has a partial bucket at BOTH ends, so dropping
-the trailing one leaves a corrupt leading day and dropping both starves a 7-day model to 6 days.
-Applies to `services/hindcast.py`, `services/operational_inputs.py`, `services/track_assembly.py`
-and the scoring path in `services/skill/service.py`.
+This branch created the partitioning, so it owns the data-loss path. Latent under today's config
+(one step, one phase after D4) and live the moment heterogeneity appears. Either select one
+authoritative cohort, or add `time_step_seconds` and `phase` to the score/diagram types, tables,
+natural keys and read APIs — and make nullable-artifact uniqueness NULL-safe. **Locking test must be
+a PostgreSQL integration test** with overlapping 24-hour leads across two cohorts; a unit test
+cannot exercise `ON CONFLICT`.
 
-### ALSO FIX — three findings from the last round that D4 does not cover
+### 2. Phase validation reads only the first valid time
 
-1. Hindcast validation examines the whole delivered frame while runners default to
-   `lookback_steps=720`, so one old gap can suppress hindcasts for up to 720 days. Derive the
-   lookback from the model's declared `lookback_steps` and trim to the consumed window before
-   validating.
-2. `compute_skills_task` fetches observations over `[min(hindcast_step), max(hindcast_step))`, which
-   for a single hindcast is an empty range — so production callers fetch no observations at all.
-   Derive the bounds from the ensemble valid times and their step; fix the single, combined and
-   onboarding callers.
-3. Mixed time steps or phases across hindcasts are silently coerced to `min(step)` plus the first
-   forecast's phase. Require and validate one `(time_step, phase)` per computation, or partition by
-   it.
+`services/skill/service.py:74,90` classifies an ensemble's phase from `vts[0]`, so an ensemble whose
+own valid times mix phases (daily steps at both midnight and 06:00) is misclassified, passes
+homogeneity validation, and silently drops leads. Validate every distinct valid time within each
+ensemble. Locking test: a multi-step ensemble with internally mixed phases.
 
-### KEEP — do not undo
+### 3. The decision record describes a mechanism that no longer exists
 
-The `resample_to_time_step` call in the hindcast path; `validate_time_step_cadence`; migrations 0050
-(hindcast `time_step` persistence) and 0051 (skill natural key + `computation_version`); the T3
-scoring work apart from its anchoring; and all of T4's documentation.
+`docs/decisions/plan-228-hindcast-skill-resampling.md:16,56-83` still describes the removed
+`issue_time`/`valid_time` anchor and the removed `min(time_step)` inference, and its heading claims
+every pre-fix hindcast is invalid while its body correctly limits P1 to two model families. Rewrite
+to state UTC-calendar bucketing, homogeneous validation, and the correct affected subset.
 
-### ADD — T5
+### ⛔ Still forbidden
 
-Snap training's default `period_end` to the last complete bucket boundary
-(`flows/train_models.py:400-412`). The parameter already exists; only the default is wrong.
-
-### ⛔ STILL FORBIDDEN
-
-Do not touch the mac-mini. D3's marking and the recompute wait for its onboarding and hindcasting
-test to finish. Build the code; do not run it against that system.
-
-## Implementation status (2026-09-01) — T1-T3 COMPLETE + committed; T4 PARTIAL
-
-**T1/T2 (P1)**: `services/hindcast.py::_assemble_hindcast_inputs` now resamples
-`past_targets` to the model's declared `time_step` via the SAME
-`resample_to_time_step` (`services/training_data.py`) the operational path
-already used (D1 = A). Enforcement (D1 = C) added as
-`validate_time_step_cadence` (new, `services/training_data.py`), a hard
-backstop called after every `past_targets` resample in `hindcast.py`,
-`operational_inputs.py`, AND `track_assembly.py` — scoped to `past_targets`
-only, since `past_dynamic` legitimately carries a different cadence than
-`time_step` in the operational path. Locking test
-(`tests/unit/services/test_hindcast.py::TestHindcastResamplesPastTargetsToDeclaredTimeStep`)
-proven RED against the stashed pre-fix code (span 1:00:00 vs. declared 7
-days), GREEN after.
-
-**T3 (P2)**: `services/skill/service.py::compute_skill_for_station` now
-infers the forecast's own `time_step` from the hindcast data
-(`_infer_forecast_time_step`) and resamples observations to it before the
-`_build_strata` join (`_resample_observations_to_forecast_step`, reusing
-`resample_to_time_step` + a new `aggregation_method_for` helper so the
-aggregation matches what the model trains against — D2 = B). Locking test
-(`tests/unit/services/skill/test_service.py::TestDailyMeanComparedAgainstDailyMeanObservation`)
-proven RED against the stashed pre-fix code (MAE 40.0 vs. the deliberately
-offset boundary reading), GREEN after (MAE < 1.0).
-
-**T4**: the docs half is done — `docs/decisions/plan-228-hindcast-skill-resampling.md`
-(new), `docs/v0-scope.md`, and `docs/touchpoint-maps.md` all now state that
-every `skill_scores`/`hindcast_forecasts` row predating 2026-09-01 is invalid.
-**The live half (mark pre-fix scores superseded + recompute) was
-DELIBERATELY NOT executed**, per this plan's own "⛔ Do not implement against
-the mac-mini until its onboarding and hindcasting test finishes" — that
-system was not confirmed to have reached that state during this
-implementation session, and it is an operational action outside a code PR
-regardless. This remains an open follow-on for whoever confirms the mini's
-run has finished.
-
-**Exit gates**: the "recomputed skill score for one station, compared against
-its pre-fix value" gate was satisfied via the T3 locking test's
-stash-and-restore proof (a controlled, reproducible before/after comparison)
-rather than a live mac-mini recompute, for the same D3 reason. `uv run pytest
-tests/unit` — see the implementer's own report for the exact run and result.
+Do not touch the mac-mini. D3's marking and recompute wait for a decision on its crashed onboarding
+run.
 
 ## Implementation status (2026-09-02) — PER-RUN SCOPE round COMPLETE
 
