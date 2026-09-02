@@ -23,10 +23,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -84,6 +84,13 @@ class ImergRequestFailedError(ImergAcquisitionError):
     failed post-acquisition validation."""
 
 
+class ImergInvalidRequestError(ImergRequestFailedError):
+    """The CALLER's own arguments are invalid — an out-of-window or misordered
+    bound, a worker count below one. ⛔ PERMANENT by construction: the same
+    arguments produce the same failure for ever, so a supervisor must report
+    and stop rather than retry. CLI exit code 6."""
+
+
 class ImergGranuleMissingError(ImergRequestFailedError):
     """404 / absent from the listing: counted for a window (D4), fatal for a
     probe."""
@@ -101,7 +108,9 @@ class ImergRetriesExhaustedError(ImergRequestFailedError):
 
 class ImergReadContractError(ImergRequestFailedError):
     """D1 — an observed granule's structure, revision included, fails the
-    frozen read contract. ⛔ Stop and report rather than blending."""
+    frozen read contract. ⛔ Stop and report rather than blending.
+    PERMANENT — the same bytes fail the same way for ever: CLI exit code 6,
+    so a supervising loop reports and stops instead of retrying."""
 
 
 class ImergSubsetCoordinateMismatchError(ImergReadContractError):
@@ -512,6 +521,99 @@ def assert_identity_matches_plan_and_header(
         )
 
 
+#: (2026-09-02) — MEASURED across every banked granule of the pinned D5 window:
+#: NASA writes the `FileHeader` `ProductVersion` as `V07B` for 2020-01..2024-05
+#: and as `07B` from 2024-06 onward. All FIFTEEN other contract fields — grid
+#: shape, both coordinate vectors, units, fill value, dtype, registration,
+#: global bounds, longitude convention, dimension names, variable path — are
+#: identical across that boundary, and the AUTHORITATIVE revision
+#: (`granule_revision`, parsed from the FILENAME) reads `V07B` on BOTH sides.
+#: The leading `V` is therefore COSMETIC: NASA stopped writing the prefix
+#: inside the header partway through the archive, and a full-window run that
+#: froze its contract on a 2020 granule aborted at 2024-06-02 on it.
+#:
+#: ⇒ A DELIBERATE, DOCUMENTED tolerance: exactly ONE leading `V` is removed
+#: before comparing, and nothing else. `07B` vs `07C` — and `V07B` vs `V07C` —
+#: still differ, so a REAL version change still trips the gate (Plan 211's own
+#: probe saw a live `V07C` drift, so that is not hypothetical).
+#:
+#: ⛔ The tolerance lives HERE, at COMPARISON time only. The observed string is
+#: stored VERBATIM on the contract: it is identity-bearing (it enters the
+#: acquisition manifest and therefore the digest) and it is the evidence that
+#: NASA changed the string. We record what we saw and compare with a stated
+#: tolerance — we never normalise what we observed.
+def product_version_for_comparison(value: str) -> str:
+    """The `file_header_product_version` spelling two contracts are compared
+    on: the value trimmed, with one leading `V` removed if present."""
+    stripped = value.strip()
+    return stripped[1:] if stripped.startswith("V") else stripped
+
+
+#: The one field compared through `product_version_for_comparison` rather than
+#: by equality. A dict, not an `if`, so the tolerated field is named once.
+_CONTRACT_TOLERATED_FIELDS: dict[str, Callable[[str], str]] = {
+    "file_header_product_version": product_version_for_comparison,
+}
+
+#: Values at each end of a truncated coordinate vector. The lat/lon vectors run
+#: to 1800/3600 (archive) and 50/90 (subset) floats: dumping them buries the
+#: field that actually differs.
+_CONTRACT_VALUE_PREVIEW = 4
+
+
+def _render_contract_value(value: object) -> str:
+    """A contract field rendered for an error message, long coordinate vectors
+    truncated head-and-tail with the elided count stated."""
+    if isinstance(value, tuple) and len(value) > 2 * _CONTRACT_VALUE_PREVIEW:
+        head = ", ".join(repr(v) for v in value[:_CONTRACT_VALUE_PREVIEW])
+        tail = ", ".join(repr(v) for v in value[-_CONTRACT_VALUE_PREVIEW:])
+        elided = len(value) - 2 * _CONTRACT_VALUE_PREVIEW
+        return f"({head}, ...{elided} more..., {tail})"
+    return repr(value)
+
+
+#: Either frozen read contract. ⛔ A UNION for one FORMATTER, never a shared
+#: contract: each route keeps its own type, its own frozen instance and its own
+#: assertion (D1). `ImergSubsetReadContract` is defined further down, so the
+#: alias is a string — `from __future__ import annotations` does not defer a
+#: bare assignment.
+AnyImergReadContract: TypeAlias = "ImergReadContract | ImergSubsetReadContract"
+
+
+def contract_field_differences(
+    observed: AnyImergReadContract,
+    frozen: AnyImergReadContract,
+    *,
+    ignore: Sequence[str] = (),
+) -> tuple[str, ...]:
+    """Every field on which two read contracts of the SAME type disagree,
+    rendered `name: observed=<...> frozen=<...>`.
+
+    ⛔ Field by field, not a whole-dataclass `!=`: the whole-dataclass form
+    reported only THAT something differed, which cost hours of bisecting
+    granules to find a one-field, cosmetic difference. Shared by both routes
+    because it is a FORMATTER — each route still owns its own contract type,
+    its own frozen instance and its own assertion (D1)."""
+    differences: list[str] = []
+    for field_def in fields(observed):
+        name = field_def.name
+        if name in ignore:
+            continue
+        observed_value = getattr(observed, name)
+        frozen_value = getattr(frozen, name)
+        tolerate = _CONTRACT_TOLERATED_FIELDS.get(name)
+        if tolerate is not None:
+            if tolerate(observed_value) == tolerate(frozen_value):
+                continue
+        elif observed_value == frozen_value:
+            continue
+        differences.append(
+            f"{name}: observed={_render_contract_value(observed_value)} "
+            f"frozen={_render_contract_value(frozen_value)}"
+        )
+    return tuple(differences)
+
+
 def assert_contract_consistent(
     observed: ImergReadContract, *, frozen: ImergReadContract
 ) -> None:
@@ -522,10 +624,13 @@ def assert_contract_consistent(
             f"{frozen.granule_revision!r} — stop and report rather than "
             "blending mixed revisions into one bundle (D1)"
         )
-    if observed != replace(frozen, granule_revision=observed.granule_revision):
+    differences = contract_field_differences(
+        observed, frozen, ignore=("granule_revision",)
+    )
+    if differences:
         raise ImergReadContractError(
             "observed read contract differs from the frozen one on a field "
-            "other than revision (D1) — refusing to blend"
+            "other than revision (D1) — refusing to blend: " + "; ".join(differences)
         )
 
 
@@ -1047,10 +1152,14 @@ def assert_subset_contract_consistent(
             f"{frozen.granule_revision!r} — stop and report rather than "
             "blending mixed revisions into one bundle (D1)"
         )
-    if observed != replace(frozen, granule_revision=observed.granule_revision):
+    differences = contract_field_differences(
+        observed, frozen, ignore=("granule_revision",)
+    )
+    if differences:
         raise ImergReadContractError(
             "observed subset read contract differs from the frozen one on a "
-            "field other than revision (D1) — refusing to blend"
+            "field other than revision (D1) — refusing to blend: "
+            + "; ".join(differences)
         )
 
 
@@ -2514,13 +2623,13 @@ def granule_starts_between(start: datetime, end: datetime) -> list[datetime]:
     exactly what its caller stated, so a trial day can never quietly become a
     window."""
     if not granule_start_in_window(start) or not granule_start_in_window(end):
-        raise ImergRequestFailedError(
+        raise ImergInvalidRequestError(
             f"[{start.isoformat()}, {end.isoformat()}] is not a half-hour "
             f"aligned UTC range inside the pinned D5 window "
             f"[{FIRST_GRANULE_START.isoformat()}, {LAST_GRANULE_START.isoformat()}]"
         )
     if start > end:
-        raise ImergRequestFailedError(
+        raise ImergInvalidRequestError(
             f"granule window start {start.isoformat()} is after its end "
             f"{end.isoformat()}"
         )
@@ -2716,7 +2825,7 @@ def retrieve_subset_window(
     exception leaves the pool: the abort is bounded by a day, not by a
     granule. Everything after that day is never attempted."""
     if workers < 1:
-        raise ImergRequestFailedError(
+        raise ImergInvalidRequestError(
             f"workers must be at least 1, got {workers} — a run with no worker "
             "would issue no request at all"
         )
@@ -3009,9 +3118,21 @@ def _nearest_existing_ancestor(path: Path) -> Path:
 #: Ordered subclass-first, mirroring `imerg_extract._EXIT_BY_ERROR`: the
 #: per-subclass exit codes the error docstrings promise are HONORED, not
 #: merely documented. A raw `OSError` never reaches the typed hierarchy.
+#:
+#: ⚠️ (2026-09-02) — exit **6 means PERMANENT: do not retry**. A supervising
+#: loop cannot read exit 3 that way, because 3 is the WHOLE
+#: `ImergAcquisitionError` family and MEASURED over one 308-attempt run it
+#: covered a frozen-contract violation (permanent), an out-of-window bound
+#: (permanent) AND an `ImergRetriesExhaustedError` (genuinely transient — a
+#: re-run of that same day succeeded). A retry loop that treated 3 as fatal
+#: would stop on a recoverable failure; one that treated it as transient burned
+#: 200 attempts x 60 s on a contract violation. ⇒ The two PERMANENT classes get
+#: their own code and 3 keeps its meaning unchanged for everything else.
 _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (ImergCredentialsError, 2),
     (ImergStorageError, 5),
+    (ImergReadContractError, 6),
+    (ImergInvalidRequestError, 6),
     (ImergAcquisitionError, 3),
     (OSError, 5),
 )
