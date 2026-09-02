@@ -148,8 +148,9 @@ does not yet accept — then:
 ```
 
 **This is neither a lower nor an upper bound.** It is not a floor: if extraction is *sub*-linear —
-which this plan holds open as plausible — the true total is **below** 26 min. It is not an estimate
-either: it omits every other per-station operation, so it could equally land far above. It is one
+which this plan holds open as plausible — **this term** is smaller than shown (though the total need
+not be, since the omitted work only adds). It is not an estimate either: it omits every other
+per-station operation, so it could equally land far above. It is one
 point in a range whose width is currently unknown, and it is shown only to demonstrate that the
 question is live.
 
@@ -250,12 +251,13 @@ green. This command only confirms the analysis environment resolves before the r
 **T2 — Decide, and only then draft.** T2 consumes exactly the two verdicts T1 is permitted to
 return — it must **not** ask T1 whether "the target is met", because T1 cannot establish that:
 
-- **T1 returned DECISIVE** (the two measured curves alone exceed the bar at n=170) → the target is
-  missed regardless of the unmeasured terms. Draft a follow-up naming the specific phase to fix,
-  with T1's curves as its baseline.
-- **T1 returned INCONCLUSIVE** (the two curves come in under the bar) → this does **not** mean the
-  cycle fits. The owner chooses: accept the unquantified remainder and close the plan, or commission
-  the second measurement of the rest of the per-station path described in T1's exit.
+- **T1 returned DECISIVE** (`448.9 s + extraction(170) + predict(170)` **exceeds** the bar) → the
+  target is missed regardless of the unmeasured terms, which can only add. Draft a follow-up naming
+  the specific phase to fix, with T1's curves as its baseline.
+- **T1 returned INCONCLUSIVE** (that same subtotal comes in **under** the bar) → this does **not**
+  mean the cycle fits. The owner chooses: accept the unquantified remainder and close the plan, or
+  commission the second measurement of the rest of the per-station path described in T1's exit.
+  T1's reported headroom in seconds is the input to that judgement.
 
 Either way the decision is the owner's and is recorded here. Note the ~26 min scenario above sits
 within ~4 min of the bar before any unmeasured term is counted, so neither branch is hypothetical —
@@ -269,17 +271,6 @@ which together are T2's exit. (An earlier version tested substring presence anyw
 because both verdict strings occur in this doc's own prose it could never pass — it was
 unsatisfiable, not merely pending.)
 
-## Dependency graph
-
-```json
-{
-  "plan": 203,
-  "tasks": [
-    {"id": "T1", "depends_on": [], "parallel": false},
-    {"id": "T2", "depends_on": ["T1"], "parallel": false}
-  ]
-}
-```
 
 ## Separately worth knowing (not in scope, do not fix here)
 
@@ -308,3 +299,15 @@ model on this mac mini. That set is **~170 LINDAS-available BAFU gauges** (`docs
 `docs/architecture-context.md:10`), and ~170 is the n this plan sizes for. If the owner's actual
 first onboarding is deliberately smaller than the documented v0 ceiling, say so here and T1's n=170
 point becomes headroom evidence rather than the bar — but the plan does not assume that.
+
+## Dependency graph
+
+```json
+{
+  "plan": 203,
+  "tasks": [
+    {"id": "T1", "depends_on": [], "parallel": false},
+    {"id": "T2", "depends_on": ["T1"], "parallel": false}
+  ]
+}
+```
