@@ -536,10 +536,16 @@ def test_partial_trailing_day_excluded_at_a_non_midnight_cycle() -> None:
 
     assert isinstance(result, ReadyContext)
     past_targets = result.inputs.data.past_targets.sort("timestamp")
-    assert 999.0 not in past_targets["discharge"].to_list(), (
-        "past_targets contains a value built from the partial "
-        "[00:00, 06:00) day-of-cycle window"
-    )
     for ts in past_targets["timestamp"]:
         assert ts.hour == 0 and ts.minute == 0 and ts.second == 0
         assert ts < issue_time
+    # The partial [00:00, 06:00) day-of-cycle window must not surface as its
+    # OWN bucket at all — not merely dodge an exact-999.0 membership check
+    # (a diluted mean of 30 background + 6 sentinel readings would pass that
+    # check while still being a genuine leaked partial bucket). Exactly
+    # `lookback_steps` COMPLETE days is the real invariant.
+    assert past_targets.height == requirements.lookback_steps, (
+        f"expected exactly {requirements.lookback_steps} complete daily "
+        f"buckets, got {past_targets.height} — the partial day-of-cycle "
+        "window leaked through as an extra bucket"
+    )
