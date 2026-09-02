@@ -56,3 +56,6 @@ htmlcov/
 
 # Host-runtime marker written by start-sapphire.sh (Plan 194 D3) on every
 # unverified-backup boot — never a checked-in artifact.
+
+# Per-checkout Prefect home (tests/conftest.py) — never shared, never committed
+.prefect/
