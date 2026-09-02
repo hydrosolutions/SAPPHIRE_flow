@@ -4,7 +4,7 @@ created: 2026-09-02
 plan: 230
 title: Stop hindcasting years that cannot produce a forecast
 scope: Bound the hindcast issue-time window to where observations and forcing actually overlap. No change to what a hindcast computes, only to which dates are attempted.
-depends_on: []
+depends_on: [228]
 blocks: []
 source: 2026-09-02 — the 148-station onboarding ran for four days stepping through 1980-2030, logging ~12,900 no-observation skips per 20 minutes
 ---
@@ -22,7 +22,7 @@ This narrows a date range. It changes **no** hindcast arithmetic, no model, no s
 3. **Do not propose new apparatus** — no scheduler, no parallel executor, no caching layer, no
    progress service. Parallelising stations is a **separate** known gap and is out of scope here.
 4. **Do not propose changing what a hindcast computes** — that is Plan 228, already READY and in
-   implementation (see § Sequencing). A separate defect in daily aggregation is
+   implementation (see § Sequencing above). A separate defect in daily aggregation is
    being fixed elsewhere; this plan must not touch it or it becomes impossible to tell which change
    fixed what.
 5. **Adding length is a cost.** A previous plan in this repo was grown 148 -> 441 lines by a review
@@ -44,14 +44,33 @@ Observed effect: **~12,900 `hindcast.skip.no_observations` in 20 minutes**, at ~
 each one a date the code could have known was hopeless before starting. The 148-station onboarding
 ran **four days** and was still going when it was cancelled for an unrelated reason.
 
-**Nothing is incorrect** — the guard catches every one of these and skips. It is purely wasted time,
-and it scales with fleet size, so Nepal will feel it more than Switzerland.
+**This is NOT purely wasted time — an earlier draft of this plan said so and was wrong.** The
+no-observations guard does not catch every impossible date. Observations only need to be non-empty
+*somewhere* inside the runner's 720-step lookback (`services/hindcast.py:170`, `:298`); a
+forcing-free model then consumes the last available values and emits a forecast **dated at the
+future issue time** (`models/linear_regression_daily.py:133,164`).
+
+**Measured in the quarantined output of the aborted run: 2,704 stored hindcast records carry a
+future `hindcast_step`, the latest dated 2028-07-09.** Small against 8,983,489 rows, but they are
+forecasts for dates that have not happened, and they feed skill scores.
+
+**So this plan is a correctness fix as well as a performance one.** It changes no arithmetic — it
+stops the system attempting, and occasionally storing, dates that cannot be hindcast. The waste also
+scales with fleet size, so Nepal will feel it more than Switzerland.
 
 ## Decisions
 
-- **D1 — Bound the window by DATA, not by a constant.** The useful range is where observations and
-  forcing actually overlap for that station. Replacing 1980-2030 with a different hard-coded pair
-  would just be a better guess; the next fleet would need another one.
+- **D1 — Bound the window by DATA, not by a constant — and forcing bounds apply ONLY to models that
+  require forcing.** The useful range is where the data a given model actually needs exists.
+  Replacing 1980-2030 with a different hard-coded pair would just be a better guess, and the next
+  fleet would need another one.
+
+  **The forcing-free case is not hypothetical and must not be suppressed.** The runner deliberately
+  fetches no forcing when `required_features` is empty (`services/hindcast.py:335`), and
+  `LinearRegressionDaily` requires none (`models/linear_regression_daily.py:54`) — as do persistence
+  and climatology. A naive "observations AND forcing overlap" rule would compute an empty window for
+  every one of them and silently stop hindcasting three working models. **For a forcing-free model
+  the window is bounded by observations alone.**
 
 - **D2 — Never silently widen. Narrowing only.** If the derived range is empty or unexpectedly
   short, the hindcast must say so and skip loudly, not fall back to the old wide window. A silent
