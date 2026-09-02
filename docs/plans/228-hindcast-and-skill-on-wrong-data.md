@@ -231,6 +231,58 @@ hindcast. No retraining is required by this plan.
 - A recomputed skill score for one station, compared against its pre-fix value, with the difference
   recorded. If the difference is negligible the premise is wrong and this plan should stop.
 
+## ⛔ PER-RUN SCOPE (2026-09-02) — this run REVERSES a wrong turn. Read before implementing.
+
+The branch already holds three commits. **Most of that work is correct and must be kept. One part
+is wrong and must be removed.** Do not rebuild from scratch; do not revert the branch.
+
+### REMOVE — the `anchor` mechanism (~37 lines) and the tests that lock it
+
+A previous fixer round added an `anchor` parameter to `resample_to_time_step` and passed
+`anchor=issue_time` / the forecast's `valid_time`, phase-aligning buckets to the forecast timestamp.
+**D4 forbids this.** It made hindcast consume rolling 06:00-06:00 means while training consumes UTC
+calendar days, and it aligned to `valid_time` — the value Plan 226 exists to correct. Its
+acceptance tests lock the wrong semantics and must go with it. Delete the parameter, its call sites
+and those tests.
+
+### IMPLEMENT — D4, on every assembly path
+
+Exactly **N complete UTC-calendar buckets**, with **aligned and extended fetch bounds**. Filtering
+after the fact is not sufficient: the current window has a partial bucket at BOTH ends, so dropping
+the trailing one leaves a corrupt leading day and dropping both starves a 7-day model to 6 days.
+Applies to `services/hindcast.py`, `services/operational_inputs.py`, `services/track_assembly.py`
+and the scoring path in `services/skill/service.py`.
+
+### ALSO FIX — three findings from the last round that D4 does not cover
+
+1. Hindcast validation examines the whole delivered frame while runners default to
+   `lookback_steps=720`, so one old gap can suppress hindcasts for up to 720 days. Derive the
+   lookback from the model's declared `lookback_steps` and trim to the consumed window before
+   validating.
+2. `compute_skills_task` fetches observations over `[min(hindcast_step), max(hindcast_step))`, which
+   for a single hindcast is an empty range — so production callers fetch no observations at all.
+   Derive the bounds from the ensemble valid times and their step; fix the single, combined and
+   onboarding callers.
+3. Mixed time steps or phases across hindcasts are silently coerced to `min(step)` plus the first
+   forecast's phase. Require and validate one `(time_step, phase)` per computation, or partition by
+   it.
+
+### KEEP — do not undo
+
+The `resample_to_time_step` call in the hindcast path; `validate_time_step_cadence`; migrations 0050
+(hindcast `time_step` persistence) and 0051 (skill natural key + `computation_version`); the T3
+scoring work apart from its anchoring; and all of T4's documentation.
+
+### ADD — T5
+
+Snap training's default `period_end` to the last complete bucket boundary
+(`flows/train_models.py:400-412`). The parameter already exists; only the default is wrong.
+
+### ⛔ STILL FORBIDDEN
+
+Do not touch the mac-mini. D3's marking and the recompute wait for its onboarding and hindcasting
+test to finish. Build the code; do not run it against that system.
+
 ## Implementation status (2026-09-01) — T1-T3 COMPLETE + committed; T4 PARTIAL
 
 **T1/T2 (P1)**: `services/hindcast.py::_assemble_hindcast_inputs` now resamples
