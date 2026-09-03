@@ -19,7 +19,7 @@ supersedes: []
 | **T1** operator CLI | ✅ **MERGED** | PR #217, `a8b83bb` — `scripts/import_caravan_attributes.py` |
 | **T2** provenance placeholder rename | ✅ **MERGED** | same PR |
 | **T3** `replace_namespaced_attributes` | ✅ **MERGED** | same PR — `store/basin_store.py` |
-| **T4** run the import on the mini | 🟢 **UNBLOCKED, NOT YET RUN** | precondition met 2026-08-31 (148 stations); preconditions re-verified 2026-09-03, runbook below |
+| **T4** run the import on the mini | ✅ **DONE 2026-09-03T15:05Z** | 148/148 basins carry `caravan:` keys; 216 keys written; 300 bare keys unchanged. Evidence below. |
 
 ### ✅ RESOLVED 2026-08-31 — the fleet is now onboarded (148 stations)
 
@@ -303,14 +303,21 @@ docker build --build-arg WITH_AQUACAST=1 \
 
 `docker-compose.yml` pins `image: sapphire-flow:${VERSION}`. If the tag is not overridden here,
 Compose silently runs the ordinary image **without aquacast**, D2 fails, and it reads like a
-model-registration bug. `/entrypoint.sh` is preserved because `DATABASE_URL` is assembled there
-and nowhere else.
+model-registration bug.
+
+🪤 **Do NOT prefix the command with `/entrypoint.sh` here.** An earlier version of this runbook did,
+and the run died with `error: failed switching to "app": operation not permitted`. The image's
+`ENTRYPOINT` already **is** `/entrypoint.sh`; `docker compose run` applies it, so naming it again
+runs it twice — the outer copy correctly `gosu`s to the non-root `app` user, and the inner copy,
+now running as `app`, cannot `gosu` again. The `/entrypoint.sh` prefix IS required for
+`docker exec`, which bypasses `ENTRYPOINT` (the Plan 198 trap) — that rule does not transfer to
+`compose run`. `DATABASE_URL` is still assembled by the entrypoint either way.
 
 ```bash
 VERSION=aquacast-oneoff docker compose run --rm --no-deps \
   -v ~/SAPPHIRE_flow/scripts:/app/scripts:ro \
   -v ~/SAPPHIRE_flow/data/caravan:/data/caravan:ro \
-  prefect-worker /entrypoint.sh python /app/scripts/import_caravan_attributes.py \
+  prefect-worker python /app/scripts/import_caravan_attributes.py \
     --parquet /data/caravan/bafu_static_attributes.parquet --dry-run
 ```
 
@@ -335,16 +342,69 @@ select count(*) from (select distinct jsonb_object_keys(attributes) k from basin
  where k like 'caravan:%';                                              -- expect ~50+
 ```
 
-### ⚠️ Scope note for `cmal_small` (added 2026-09-03)
+### ✅ T4 EVIDENCE — run 2026-09-03T15:05Z
 
-D2 reads the required static names from the discovered **`cmal_pool_pt`** adapter
-(`AQUACAST_CMAL_POOL_PT_MODEL_ID`, `scripts/import_caravan_attributes.py:291`) — a hard-coded
-default. `cmal_pool_pt` declares ~50 statics; the newer **`cmal_small`** artifact declares **78**
-(measured from its `config.yaml`). **This import therefore does not by itself guarantee
-`cmal_small` coverage.** Whether the delivered parquet (216 columns) carries the extra names, and
-whether `resolve_required_static_names` should take `cmal_small` instead, is a question for the
-`cmal_small` onboarding slice — not a reason to delay T4, which unblocks `cmal_pool_pt` and
-Plan 183 T3 as designed.
+One-off image `sapphire-flow:aquacast-oneoff` built `WITH_AQUACAST=1` with both secrets. Verified
+before use: `aquacast` imports and `discover_models()` returns `cmal_pool_pt` — the D2 preflight
+that the deployed `WITH_AQUACAST=0` image cannot pass.
+
+**Dry-run first** (D3: full gate, real gated write, rolled back) — passed, and the rollback was
+verified by re-querying: still 0 `caravan:` keys afterwards.
+
+**Real run**, exit 0:
+
+```
+Matched:                148
+Unmatched (parquet):    148     <- delivery has 296 rows; the surplus are basins we have no station for
+Stations without basin:   0
+Missing from manifest:    0
+```
+
+**Acceptance — all three criteria met:**
+
+| criterion | result |
+|---|---|
+| basins carrying `caravan:` keys | **148** (all) |
+| distinct `caravan:` keys written | **216** |
+| bare CAMELS-CH keys still present | **300 — unchanged from before the import** |
+
+The third row is the one that matters: the namespace guard's claim (additive, disjoint keyspace,
+never shadowing a bare attribute) is now confirmed **against real data** rather than a fixture,
+which is what this plan asked for.
+
+**216 keys landed, not ~50.** D2 *gates* on `cmal_pool_pt`'s declared statics, but the import writes
+every column the delivery carries. That is why the `cmal_small` note below could be answered
+immediately.
+
+**Unblocked by this:** `cmal_pool_pt` (its ~50 statics resolved none before), and Plan 183's T3
+parity check, which compares against `caravan:` climate indices that did not exist until now.
+
+### ✅ `cmal_small` coverage — MEASURED 2026-09-03, 76/78
+
+D2 keys off `cmal_pool_pt` (~50 statics) by hard-coded default
+(`scripts/import_caravan_attributes.py:291`), so this import was never scoped to `cmal_small`, which
+declares **78** statics (from its `config.yaml` in the owner's Dropbox model tree). Since 216 keys
+landed, the question was worth checking rather than assuming.
+
+Resolved each declared name through `CARAVAN_ALIAS` exactly as `caravan_statics.py` does
+(`caravan:` + alias-or-name): **76 of 78 resolve.** The two that do not:
+
+| declared | looked for | actually delivered as |
+|---|---|---|
+| `forest_fraction` | `caravan:forest_fraction` | **`caravan:for_pc_sse`** |
+| `permafrost_fraction` | `caravan:permafrost_fraction` | **`caravan:prm_pc_sse`** |
+
+**Both values ARE present** — they are simply absent from `CARAVAN_ALIAS`, which has 21 entries
+sized for `cmal_pool_pt`'s needs. So `cmal_small` coverage is a **two-line alias addition**, not a
+data gap and not another import:
+
+```python
+"forest_fraction": "for_pc_sse",
+"permafrost_fraction": "prm_pc_sse",
+```
+
+That is a code change (PR + bump) and belongs to the `cmal_small` onboarding slice, not to T4.
+Recorded here because the measurement was cheap and the answer would otherwise be re-derived.
 
 ## Follow-on, explicitly not here
 Plan 183's T3 parity check becomes runnable once T4 lands. That is the payoff, and it is that plan's
