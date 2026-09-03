@@ -1462,27 +1462,30 @@ physical magnitudes. The low band, read as "near zero" off 2025 alone, crosses t
 2023. Pooled figures track the higher-coverage years, not a naive average of the six per-year values.
 Full table + reading: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11b addendum.
 
-### M-A11c · IFS per-EVENT timing skill (2026-09-03, unplanned measurement)
+### M-A11c · IFS per-EVENT timing skill (2026-09-03, CORRECTED after review)
 
-🔴 **The climatological diurnal phase error above is NOT the event-timing error.** M-A11/M-A11b measure a
-season-long average over all hours; **runoff responds to storms, not average days**. Measured separately,
-against a no-skill null (IFS circularly shifted by whole days, preserving its own diurnal climatology):
+🔴 **The climatological diurnal phase error is NOT the event-timing error.** M-A11/M-A11b measure a
+season-long average over all hours; **runoff responds to storms.** ⚠️ First published with wrong rates;
+an independent Codex review found **four defects** (gauge window off-by-one, a phase sign bug, the wrong
+lead band, and "within ±6 h" being read as "the correct window"). Qualitative conclusion survived, **every
+absolute rate changed.** Corrected, against a whole-day-shift null:
 
-- **within ±6 h of a gauge storm peak: 0.445 vs 0.330 null** — skill increment **+0.109 to +0.126**,
-  stable across ±12/24/36/48 h search windows.
-- **events missed: 0.311 vs 0.488 null** — real detection skill.
-- **median offset: 0.000 — INSIDE the null (0.000). ⛔ Carries no information.**
-- ⛔ **Do not quote an event-timing IQR**: it tracks the search window (12→12, 24→18, 36→30, 48→42 h).
-- event magnitude 0.45–0.92 of observed — systematic under-prediction.
+- **exact same 6-h window: 0.175 vs 0.095 null** (the honest "right window" number)
+- within ±6 h — previous, same OR next window — 0.434 vs 0.314 null
+- events missed 0.209 vs 0.350 null ⚠️ not a window-independent detection probability
+- **skill increment +0.110…+0.127**, stable across ±12/24/36/48 h — the one robust quantity
+- ⛔ signed median (0) carries no information; ⛔ do not quote an event-timing IQR (it tracks the window)
 
-⇒ **Usable for daily volume; not adequate alone for sub-daily PEAK timing in a fast-responding catchment.**
-⛔ "IFS is unsuitable" overstates it — the skill is real. Suitability is a relation between this spread and
-the **catchment concentration time**, not a property of IFS.
+⇒ **Modest day-to-day event association; not adequate alone for sub-daily PEAK timing in a fast-responding
+catchment.** ⛔ "IFS is unsuitable" overstates it — suitability is a relation to **catchment concentration
+time**, not a property of IFS.
 
-⚠️ Limits: point-vs-areal (the gateway serves **basin averages**, so this is probably a LOWER bound);
-6-hourly archive vs the 3-hourly operational feed, with no point-level gateway access; control only.
-🔴 **UNREVIEWED by an independent model** — Codex unavailable (404 ×2), fallback failed (529).
-Two author errors are recorded in the report so they are not repeated.
+🔴 **Two limits this review also placed on M-A11b's own signed readings:** the `[−18,+6)` branch is not
+rotation-equivariant (uniform-null median −6 h, so **"IFS is earlier" is not defensible from those medians
+alone**), and the ±3 h bound is a **sampling interval, not an uncertainty bound** — no cell is "resolved
+from zero" without a bootstrap. ⇒ **Magnitudes are the result; signs are undetermined.**
+⛔ The "frequent small amounts drive the climatology" reconciliation is **REFUTED** (LARGE does not
+approach zero under any matched estimator) and its exact figures must not be reported.
 
 Full method, null table and caveats: `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11c.
 

@@ -430,6 +430,15 @@ equally, this still cannot be called *pure* IFS-cycle variability.
 
 ### What this does and does not settle
 
+🔴 **Two limits on the SIGNED readings above, established by independent review 2026-09-03 (see M-A11c).**
+(a) The preregistered `[−18,+6)` branch is **not rotation-equivariant**, and under a uniform circular null
+its arithmetic **median is −6 h, not zero** — so a negative branch median is not by itself evidence of a
+negative offset, and ⛔ **"IFS is earlier" is not defensible from these medians alone.** The direction
+remains an argument from known model behaviour, not from this statistic.
+(b) The **±3 h bound is a sampling interval, NOT a statistical uncertainty bound.** ⛔ It cannot be used
+to declare a cell "resolved from zero"; that needs a block/bootstrap analysis, which has not been run.
+⇒ Treat the magnitudes as the result and the signs as undetermined.
+
 **Answered, on the preregistered branch:** the M-A9/M-A11 question "is IFS's mid/high-band diurnal
 timing error a single, stable number close to a third-to-half of ERA5-Land's" is answered **no** — it is a number that moves by
 several hours between seasons on the preregistered branch, including one year whose point estimate is
@@ -467,90 +476,94 @@ plus its attribution sidecar. Single-season `--year 2025` alone still reproduces
 
 ---
 
-## 🔴 M-A11c — the climatological phase error is NOT the event-timing error (2026-09-03)
+## 🔴 M-A11c — event timing vs climatological phase (2026-09-03, CORRECTED 2026-09-03 after review)
 
 ⚠️ **Read this before quoting any number above in a runoff-forecasting context.** Everything earlier in
 this document measures the **climatological mean diurnal-cycle phase** — a season-long average over
-*all* hours. **Runoff responds to individual storms, not to average days**, and the two quantities are
-different. This section measures the second one for the first time.
+*all* hours. **Runoff responds to individual storms, not average days.**
 
-**Method.** IFS control `tp` from the **00Z init at ending leads 6/12/18/24 h** — four *consecutive*
-6-hourly windows per day, so the stitched series is continuous at a defined D+1 lead. Gauge summed to
-the same period-ending 6-hourly windows (all 6 hours required). An **event** is a gauge 6-h total
-≥ q0.90 of that station's wet 6-h totals, declustered to ≥24 h. For each event, the offset is
-`argmax(IFS in ±24 h) − t0`; if the IFS maximum is `< 0.5 ×` the event threshold it is counted
-**missed**. JJAS 2020–2025, 26 stations, **1,189 matched events**.
+🔴 **This section was published with wrong rates and has been corrected.** An independent Codex review
+(2026-09-03) found **four defects** in the first version. The **qualitative** conclusion survived; **every
+absolute rate changed**. The figures below are the reviewer's recomputation with all four fixed.
 
-🔴 **Scored against a NO-SKILL NULL**, without which none of it is interpretable: the IFS series is
-circularly shifted by whole days, which **preserves IFS's own diurnal climatology exactly** and destroys
-only the day-to-day correspondence. That is precisely "right climatology, zero event skill".
+### The four defects (first version, now corrected)
 
-| statistic | null (10 shifts) | observed | verdict |
+1. **Gauge window off-by-one** — both scratch scripts assigned an observation stamped 06Z to the window
+   ending 12Z. The convention is `(h−6, h]`; `tigge_gauge_timing.py:136` implements it correctly, so
+   this was introduced, not inherited.
+2. **Sign bug** — the reconciliation's phase used a negative exponential without negating the angle,
+   inverting the sign against the tracked `diurnal_phase.py:31` / `tigge_gauge_timing.py:347`.
+3. **Wrong lead band** — leads 6/12/18/24 from the 00Z run were called "D+1"; the published D+1 is
+   **24/30/36/42 with most-recent-initialisation deduplication** (`tigge_ifs.py:574`).
+4. 🔴 **"Within ±6 h" spans the PREVIOUS, SAME and NEXT window** — so the first version's "44.5 % in the
+   correct 6-hour window" was **simply wrong**. Exact-window agreement is `offset == 0`.
+
+Also confirmed: the reconciliation used raw sums per clock position where the tracked M-A6 estimator
+divides each clock hour by **its own observation count** (median effect 0.10 h, max 2.59 h — small, but
+one high-band signed median moved ~5 h by crossing a circular branch).
+
+### Corrected results — scored against a no-skill null
+
+The null circularly shifts IFS by whole days **within season**, preserving its own diurnal climatology
+and destroying only day-to-day correspondence.
+
+| statistic | observed | null | |
 |---|---|---|---|
-| median offset | **0.000** (range 0, 0) | **0.000** | **INSIDE the null — carries NO information** |
-| within ±6 h | 0.330 (0.311–0.352) | **0.445** | above null |
-| within ±12 h | 0.547 | 0.603 | above null |
-| events **missed** | 0.488 | **0.311** | above null |
-| IQR | 24.6 h | 18.0 h | above null, but ⛔ see below |
+| **exact same 6-h window** | **0.175** | **0.095** | the honest "right window" number |
+| within ±6 h (prev/same/next) | 0.434 | 0.314 (0.299–0.327) | |
+| events **missed** | 0.209 | 0.350 (0.317–0.381) | |
+| signed median offset | 0 | 0 | ⛔ **carries no information** |
+| **skill increment** (within ±6 h) | **+0.110, +0.120, +0.127, +0.119** at ±12/24/36/48 h | | **window-independent** |
 
-**Window sweep** (±12/24/36/48 h): the IQR simply **tracks the search window** — 12→12, 24→18, 36→30,
-48→42 h. ⛔ **Do not quote an event-timing IQR as a property of IFS**; it describes the window. The
-*increment over the null* is what is window-independent: **+0.109 to +0.126** at every width tested.
+⛔ **Do not quote an event-timing IQR** — it tracks the search window (12→12, 24→18, 36→30, 48→42 h).
+⚠️ The **missed** rate depends on search width and on an arbitrary gauge-scale threshold applied to
+IFS; it is **not** a window-independent detection probability.
 
-### What this establishes
+### What this supports
 
-**IFS carries real but modest sub-daily event-timing skill.** Given a significant gauge storm it places
-its own peak in the correct 6-hour window **44.5 %** of the time against a **33.0 %** climatological
-baseline, and detects **68.9 %** of events against a **51.2 %** baseline. Median IFS/gauge event
-magnitude is **0.45–0.92** — systematic under-prediction of storm size.
+**IFS carries modest day-to-day event association above a whole-day-shift baseline** — the skill
+increment is the one quantity stable across every window tested. ⛔ It is **not** adequate on its own for
+sub-daily **peak** timing in a fast-responding catchment, and ⛔ "IFS is unsuitable" **overstates** it.
+Suitability is a relation between this spread and the **catchment concentration time**, not a property of
+IFS.
 
-Turned around: **>6 h out more than half the time**, ~a third of significant events missed entirely.
-⇒ **Usable for daily volume. Not adequate on its own for sub-daily PEAK timing in a fast-responding
-catchment** — but ⛔ "IFS is unsuitable" **overstates it**: the skill is real, and a routing model with
-damping may still extract value. Suitability is a relation between this spread and the **catchment
-concentration time**, not a property of IFS.
+### 🔴 What this does NOT support — and two problems in M-A11/M-A11b above
 
-### Reconciliation with the climatological result — plausible, NOT yet tested
+- 🔴 **The event design cannot test clock preference at all.** The whole-day-shift null *deliberately*
+  removes it, so observed−null measures day-to-day correspondence **conditional on** IFS's climatology.
+  (The author's earlier "±24 h symmetry forces a zero median" reasoning was wrong — symmetry does not
+  force it; the null construction is what removes the effect.) ⇒ To detect clock preference on 6-hourly
+  data: a half-open `[−12,+12)` window, offsets reduced mod 24, and a **circular** statistic — not a
+  linear median. Available offsets are only −12/−6/0/+6 h, with the sign at 12 h intrinsically ambiguous.
+- 🔴 **The `[−18,+6)` branch used above is NOT rotation-equivariant**, and under a uniform circular null
+  its arithmetic **median is −6 h, not zero**. ⇒ **"IFS is earlier" is NOT defensible from those negative
+  branch medians alone.** Per-station principal-arc signs away from ±12 h can be described; a general
+  physical sign cannot.
+- 🔴 **The "±3 h resolution bound" is not a statistical uncertainty bound.** A harmonic fit returns
+  sub-bin phase; noise and aliasing can move it by more or less than 3 h. ⛔ It cannot be used to declare
+  an estimate "resolved from zero" without a block/bootstrap analysis — which has not been run.
+- **Four samples/day CAN identify harmonic 1** (harmonic 2 is Nyquist and orthogonal, so the gauge
+  bimodality does not alias into it). But higher **odd** harmonics do alias, and with no hourly IFS that
+  is unmeasurable ⇒ the **underlying hourly physical phase is not identifiable from this data.** The
+  ~+2.5 h offset between 6-hourly-window and hourly gauge phase is the **group delay of a box sum** and
+  cancels when both products are treated identically.
+- 🔴 **The "frequent small amounts drive the climatology" reconciliation is REFUTED.** Splitting each
+  product at q0.90 of its own wet 6-h totals, the LARGE subset does **not** approach zero under any
+  matched-estimator variant (|offset| LARGE 3.83–5.43 h depending on estimator). ⚠️ That split also does
+  **not compare the same storms** — gauge-LARGE and IFS-LARGE can select wholly different dates — so it
+  could not have established the claim either way. ⛔ Do not report the exact reconciliation figures.
 
-The large climatological phase error and the absence of a systematic *event* shift can coexist: the
-climatological cycle averages over all hours and is driven by how often and how much it rains through
-the day, including frequent small amounts near local noon (the parameterised-convection signature),
-whereas the event statistic uses only the top decile of wet windows. A model can be badly displaced on
-the average day while placing the largest storms without systematic bias.
-🔴 **This reconciliation is untested.** The falsifiable prediction is that restricting the phase
-calculation to *event* windows should shrink the offset, and restricting the event statistic to *small*
-events should reveal it. Until that is run, treat it as a hypothesis.
+### Smallest defensible claims from this data
 
-### 🪤 Two of the author's own errors, recorded so they are not repeated
+1. The marginal four-clock 6-hourly IFS and gauge climatologies in the **mid/high bands differ by an
+   UNSIGNED displacement of order several hours**.
+2. That value is **not stable season to season** and is **not a usable correction magnitude**.
+3. **No general physical sign is established.**
+4. There is **modest day-to-day event association above a whole-day-shift baseline**; the absolute
+   success and detection rates require the corrections above and an uncertainty analysis.
 
-1. **A median offset of 0 was reported as "no systematic bias".** It is the **null expectation** — a
-   uniform no-skill distribution in a symmetric window also has median 0. The null measured exactly
-   0.000. ⛔ The median discriminates nothing.
-2. **The first version filtered `ending_lead_hours == 24`**, giving only 2 windows/day (00Z, 12Z, 12 h
-   apart) rather than a continuous 6-hourly series — half the events then *structurally* could not have
-   a zero offset, manufacturing a spurious "IQR 24 h / 32 % within ±6 h". ⇒ **Always verify a
-   constructed forecast series is gap-free before measuring timing on it.**
+### Provenance
 
-### Limits
-
-⚠️ **Point-versus-areal**: this compares a point gauge to an IFS cell for patchy convective rain, while
-the gateway serves **basin averages** (`docs/architecture-context.md:617`). ⇒ Probably a **LOWER bound**
-on basin-average timing skill — unquantified. The station pairs sharing a cell (Kirtipur/Khumaltar share
-an IMERG cell; Ilam/Kanyam share an IFS cell) could bound the representativeness floor; not yet done.
-⚠️ **6-hourly archive, 3-hourly operational feed** — the gateway serves 3-hourly and offers **no
-point-level access** (`dhm-precipitation-vision.md:440`), so a finer point-scale measurement is not
-currently possible; a decisive version needs basin-average verification from the gateway itself.
-⚠️ **Control forecast only**, not the 51-member ensemble.
-🔴 **UNREVIEWED by an independent model.** Codex was unavailable (HTTP 404, two attempts, `codex-review.sh`
-correctly reported "NO usable verdict") and the fallback reviewer failed on a 529. The null and the
-window sweep were computed by the same author who made the two errors above.
-
-### Regenerate
-
-```
-DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
-  uv run python <scratch>/event_timing.py   # per-station offsets
-DHM_PRECIP_XLSX=... uv run python <scratch>/null_test.py   # the null + window sweep
-```
-⚠️ Both scripts are scratch, **not tracked**. Promote them to `scripts/dhm_precip/` before this section
-is relied on for a decision.
+Reviewed by Codex 2026-09-03 (verdict NEEDS-CHANGES; four defects, all folded here). ⚠️ The measurement
+scripts are still **scratch and untracked** — promote them to `scripts/dhm_precip/` before this section is
+relied on for a decision. ⛔ Until then the Regenerate commands cannot be run from a clean checkout.
