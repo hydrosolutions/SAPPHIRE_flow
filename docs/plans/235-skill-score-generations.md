@@ -145,6 +145,36 @@ deferred — each changes observable behaviour.)*
    inputs differ" cannot both hold on their own. Define either an input snapshot/fingerprint or an
    ingestion-quiescence rule. The table-vs-column choice stays open; this does not.
 
+### D2c — 🔴 `mark_stale` CANNOT RUN IN PRODUCTION (second review, verified)
+
+`mark_stale` is `sa.update(ss).values(freshness=...)` (`store/skill_store.py:138`) — a real UPDATE.
+`sapphire_worker` holds **`GRANT INSERT ON skill_scores`** and nothing more
+(`docker/bootstrap-roles.sql:180-181`); no UPDATE grant exists anywhere in the repo. It has **zero
+production callers today**, and its only tests run as the testcontainer superuser, so the gap has
+never been exercised.
+
+**Plan 228's D3 would be the first real call, and it would fail with a permission error.**
+
+**Decision: do NOT add an UPDATE grant.** T4 is already building an append-only tombstone
+publication for successfully-empty scopes; marking stale uses that **same** INSERT-path mechanism.
+That removes the second, privilege-incompatible supersession path rather than carving out an
+exception for it, and keeps the INSERT-only boundary intact.
+
+**The locking test must run as `sapphire_worker`, not the superuser** — the privilege boundary is
+the thing under test, and today's fixtures would pass either way.
+
+### D2d — name the concurrency primitive (second review)
+
+D2b commits to compare-and-set publication but names no enforcement mechanism, and the plan's own
+constraints rule out the usual ones: `SELECT … FOR UPDATE` needs the UPDATE privilege D2c declines,
+and distributed locking is a Non-goal. Under READ COMMITTED two writers can both pass the check and
+both insert.
+
+**Pick one and say which**: a SERIALIZABLE transaction with retry-on-`40001` (compatible with
+INSERT-only), or state plainly that the write-time reject is advisory and read-time "newest
+generation wins" is the sole correctness guarantee — then word the exit gate to match. Do not
+assert a rejection the code does not enforce.
+
 ### D3 — supersession is atomic, and covers diagrams
 
 There is no "store the complete new generation, then supersede the previous one" operation.
@@ -254,10 +284,17 @@ as **algorithm** version — do not overload it).
 Per D2's table. Readers 6–8 are raw reflected-table SQL in the API and need their own fix; a
 store-only change leaves them broken.
 
-### T3 — run scoping on all three handoffs
+### T3 — run scoping on the handoffs D3 actually uses
 
-Per the trap section: `compute_skills.py` (make the id required rather than optional), combined
-scoring, and station onboarding.
+`compute_skills.py` (make the id required rather than optional) and combined scoring. **Both sit on
+Plan 228 D3's path.**
+
+⚠️ **Station onboarding is explicitly NOT on the blocking gate** *(second review)*. D3's recompute
+runs through the `run-hindcast` → `compute-skills` / `compute-combined-skills` deployments;
+`onboard-stations` and `onboard-model` are separate deployments
+(`cli/register_deployments.py:126-146`) that a recompute of existing scores never invokes. Fix it
+opportunistically in the same PR, but **it must not gate a data-correctness emergency** — the same
+carve-out §2 already gives 229 and 230.
 
 ### T4 — completeness gate and atomic publication
 
