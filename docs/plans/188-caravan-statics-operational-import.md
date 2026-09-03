@@ -19,7 +19,7 @@ supersedes: []
 | **T1** operator CLI | ✅ **MERGED** | PR #217, `a8b83bb` — `scripts/import_caravan_attributes.py` |
 | **T2** provenance placeholder rename | ✅ **MERGED** | same PR |
 | **T3** `replace_namespaced_attributes` | ✅ **MERGED** | same PR — `store/basin_store.py` |
-| **T4** run the import on the mini | ⛔ **BLOCKED — cannot run** | its stated precondition is false; see below |
+| **T4** run the import on the mini | 🟢 **UNBLOCKED, NOT YET RUN** | precondition met 2026-08-31 (148 stations); preconditions re-verified 2026-09-03, runbook below |
 
 ### ✅ RESOLVED 2026-08-31 — the fleet is now onboarded (148 stations)
 
@@ -263,6 +263,88 @@ Stage the parquet, dry-run, read the printed diff, then run for real.
 spot-checked basin shows `caravan:` keys alongside its existing CAMELS-CH attributes with the
 **bare-named attributes unchanged** — the namespace guard makes the merge structurally incapable of
 touching them, and this is where that is confirmed against real data rather than a fixture.
+
+## T4 RUNBOOK — verified against the mini 2026-09-03
+
+Every precondition below was checked on the box on 2026-09-03, not assumed.
+
+| precondition | state |
+|---|---|
+| 148 river stations, set-identical to the pinned manifest | ✅ `station_status='operational'` = 148 |
+| Baseline is clean | ✅ **0** basins carry a `caravan:` key; `basin_static_packages` **0** rows |
+| Delivered parquet on the host | ✅ `~/SAPPHIRE_flow/data/caravan/bafu_static_attributes.parquet` (340 403 B) |
+| Operator CLI on the host | ✅ `~/SAPPHIRE_flow/scripts/import_caravan_attributes.py` |
+| **Both** private-repo build secrets | ✅ `secrets/aquacast_token` **and** `secrets/recap_dg_client_token` |
+| Host checkout | 0.1.833 |
+
+**Still missing, and why each step below exists:**
+
+- the running worker image has **no `/app/scripts/`** (the Dockerfile does not copy it) -> bind-mount the CLI;
+- the running worker has **no `/data/caravan/`** -> bind-mount the parquet;
+- the running image is built `WITH_AQUACAST=0`, so `discover_models()` cannot see `cmal_pool_pt` and the **D2 preflight fails** -> one-off `WITH_AQUACAST=1` image.
+
+### Step 1 — build the one-off image (needs BOTH secrets)
+
+```bash
+ssh sapphire@192.168.1.136
+cd ~/SAPPHIRE_flow
+export PATH=/usr/local/bin:$PATH
+export DOCKER_HOST=unix:///var/run/docker.sock
+export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
+export AQUACAST_TOKEN=$(cat secrets/aquacast_token)
+
+docker build --build-arg WITH_AQUACAST=1 \
+  --secret id=aquacast_token,env=AQUACAST_TOKEN \
+  --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN \
+  -t sapphire-flow:aquacast-oneoff .
+```
+
+### Step 2 — dry-run inside the worker's network, with the tag resolved EXPLICITLY
+
+`docker-compose.yml` pins `image: sapphire-flow:${VERSION}`. If the tag is not overridden here,
+Compose silently runs the ordinary image **without aquacast**, D2 fails, and it reads like a
+model-registration bug. `/entrypoint.sh` is preserved because `DATABASE_URL` is assembled there
+and nowhere else.
+
+```bash
+VERSION=aquacast-oneoff docker compose run --rm --no-deps \
+  -v ~/SAPPHIRE_flow/scripts:/app/scripts:ro \
+  -v ~/SAPPHIRE_flow/data/caravan:/data/caravan:ro \
+  prefect-worker /entrypoint.sh python /app/scripts/import_caravan_attributes.py \
+    --parquet /data/caravan/bafu_static_attributes.parquet --dry-run
+```
+
+`--dry-run` runs the FULL gate — a real, gated write inside the same transaction — then rolls back
+(D3). **Read the printed diff before step 3.** Expect: D1 manifest set-identity 148/148, D2
+resolving every declared static of `cmal_pool_pt`, and a per-basin key count.
+
+### Step 3 — the real run
+
+Take a backup first (there is one nightly; confirm it is current). Then the same command **without**
+`--dry-run`.
+
+### Acceptance (from this plan, unchanged)
+
+All 148 manifest stations resolve every declared static to a finite value, and a spot-checked basin
+shows `caravan:` keys **alongside** its existing CAMELS-CH attributes with the **bare-named
+attributes unchanged**. Verify:
+
+```sql
+select count(*) from basins where attributes::text like '%caravan:%';   -- expect 148
+select count(*) from (select distinct jsonb_object_keys(attributes) k from basins) t
+ where k like 'caravan:%';                                              -- expect ~50+
+```
+
+### ⚠️ Scope note for `cmal_small` (added 2026-09-03)
+
+D2 reads the required static names from the discovered **`cmal_pool_pt`** adapter
+(`AQUACAST_CMAL_POOL_PT_MODEL_ID`, `scripts/import_caravan_attributes.py:291`) — a hard-coded
+default. `cmal_pool_pt` declares ~50 statics; the newer **`cmal_small`** artifact declares **78**
+(measured from its `config.yaml`). **This import therefore does not by itself guarantee
+`cmal_small` coverage.** Whether the delivered parquet (216 columns) carries the extra names, and
+whether `resolve_required_static_names` should take `cmal_small` instead, is a question for the
+`cmal_small` onboarding slice — not a reason to delay T4, which unblocks `cmal_pool_pt` and
+Plan 183 T3 as designed.
 
 ## Follow-on, explicitly not here
 Plan 183's T3 parity check becomes runnable once T4 lands. That is the payoff, and it is that plan's
