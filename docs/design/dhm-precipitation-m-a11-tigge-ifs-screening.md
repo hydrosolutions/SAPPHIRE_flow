@@ -519,6 +519,28 @@ and destroying only day-to-day correspondence.
 ⚠️ The **missed** rate depends on search width and on an arbitrary gauge-scale threshold applied to
 IFS; it is **not** a window-independent detection probability.
 
+🔴 **Partial reproduction by the tracked module (2026-09-03).** The scratch scripts were promoted to
+`scripts/dhm_precip/ifs_event_timing.py` with all four defects fixed by *reusing* the tracked
+implementations. Running it (26 stations, 139 station-seasons, 2,110 events) reproduces the first two
+rows and the null's exact-window rate, and does **not** reproduce the third:
+
+| statistic | reviewer's recomputation | tracked module | |
+|---|---|---|---|
+| exact same 6-h window | 0.175 / null 0.095 | **0.179 / null 0.095 (0.081–0.105)** | ✅ reproduced |
+| within ±6 h | 0.434 / null 0.314 (0.299–0.327) | **0.442 / null 0.309 (0.295–0.321)** | ✅ reproduced |
+| events **missed** | 0.209 / null 0.350 (0.317–0.381) | **0.248 / null 0.400 (0.363–0.429)** | ⛔ **not reproduced** |
+| skill increment (within ±6 h) | +0.110, +0.120, +0.127, +0.119 | **+0.130, +0.133, +0.134, +0.118** | ⚠️ agrees only at ±48 h |
+
+⛔ **Which is right is not settled**, and the difference is not a defect that has been located. Two
+things are known. (a) The **missed** row is the one row the section already declares
+convention-dependent; at `--miss-fraction 0.45` rather than the scratch scripts' `0.5` the tracked
+module returns 0.216 / null 0.361 (0.325–0.389), i.e. both figures land on the reviewer's — so five
+hundredths of an arbitrary threshold account for the whole gap, which is the point, not an excuse. (b) The **skill increment** gap closes as the search window widens and is
+sensitive to the null's shift set (a short shift leaves storm persistence in the null, raising it and
+lowering the increment most at ±12 h). ⇒ Read **only** the qualitative claim below — a modest,
+roughly window-independent increment of order **+0.12** — and ⛔ do not quote the absolute missed rate
+or a single-window skill figure to three decimals until an uncertainty analysis exists.
+
 ### What this supports
 
 **IFS carries modest day-to-day event association above a whole-day-shift baseline** — the skill
@@ -562,8 +584,31 @@ IFS.
 4. There is **modest day-to-day event association above a whole-day-shift baseline**; the absolute
    success and detection rates require the corrections above and an uncertainty analysis.
 
+### Regenerate
+
+```
+$ cd /Users/bea/Documents/GitHub/sapphire-ma6   # or SAPPHIRE_flow — data/dhm_precip is shared
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
+  uv run python -m scripts.dhm_precip.ifs_event_timing
+```
+
+Prints the observed/null table above for each of ±12/24/36/48 h plus the climatological phase
+displacement on the same pairing. Read-only; writes nothing. Needs
+`data/dhm_precip/tigge/points/tigge_station_series_jjas<year>.parquet` for every season
+(`tigge_ifs --year <y>`). Every knob is a flag — `--search-window-h`, `--event-quantile`,
+`--decluster-h`, `--miss-fraction`, `--leads`, `--init-hour`, `--null-shift-days`, `--min-amplitude`,
+`--seasons` — with the published values as defaults.
+
+⛔ `--leads` defaults to `6 12 18 24` from the 00Z run: the **first 24 h of one initialisation**, which
+is **not** the published D+1 (`24 30 36 42`, most-recent-init deduplicated). Never quote a number from
+this module as a D+1 figure.
+
 ### Provenance
 
-Reviewed by Codex 2026-09-03 (verdict NEEDS-CHANGES; four defects, all folded here). ⚠️ The measurement
-scripts are still **scratch and untracked** — promote them to `scripts/dhm_precip/` before this section is
-relied on for a decision. ⛔ Until then the Regenerate commands cannot be run from a clean checkout.
+Reviewed by Codex 2026-09-03 (verdict NEEDS-CHANGES; four defects, all folded here). The measurement is
+now tracked as `scripts/dhm_precip/ifs_event_timing.py`, with each defect fixed by reusing the tracked
+implementation — `tigge_gauge_timing._gauge_window_lookup` for the `(h−6, h]` windows,
+`tigge_gauge_timing.estimate_station_phase` (hence `diurnal_phase.harmonic_phase_h`, M-A6's own
+normalisation and the R ≥ 0.05 gate) for phase — and covered by
+`tests/unit/scripts/test_ifs_event_timing.py`. ⚠️ Its rerun reproduces two of the three rate rows; see
+the partial-reproduction table above before quoting any absolute rate.
