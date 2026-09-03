@@ -99,8 +99,11 @@ latest-generation selection.
 
 ### D2 — every consumer reads the newest generation
 
-**There are EIGHT readers across THREE independent paths** *(enumerated and verified at first
-review — fixing the store alone would miss five of them)*:
+**There are NINE in-scope readers, and the codebase already has THREE mutually inconsistent rules
+for "what is current"** *(corrected 2026-09-03 — an earlier count of eight was wrong; reader 9 was
+missed by an audit that grepped the store's call sites instead of every reflected-table access.
+Re-run the audit as `reflected.tables.get("skill_scores"|"skill_diagrams")` plus direct
+`skill_scores.c`/`skill_diagrams.c` access before treating any list as exhaustive.)*:
 
 | # | Reader | Path | Filters by version today? |
 |---|---|---|---|
@@ -112,8 +115,17 @@ review — fixing the store alone would miss five of them)*:
 | 6 | `api/routes/models.py:126` scores | **reflected table, raw SQL** | ❌ no |
 | 7 | `api/routes/models.py:141` diagrams | **reflected table, raw SQL** | ❌ no |
 | 8 | `api/routes/stations.py:363` station summary | **reflected table, raw SQL** | ❌ no |
+| 9 | `api/routes/models.py:177` **skill-chart endpoint** (`model_skill_chart_json`) | **reflected table, raw SQL** | ⚠️ **`freshness == "current"` (`:213`)** — a THIRD mechanism |
 
-⚠️ **Readers 6–8 bypass the store entirely**, reading reflected tables with raw SQL. Any fix applied
+**Three incompatible definitions of "current" ship today**: `max(computation_version)` (readers 1–2),
+no filter at all (3, 4, 6, 7, 8), and `freshness == "current"` (9). Unifying them is this plan's
+work; a generation identity layered on top of three disagreeing rules would produce a fourth.
+
+**Deliberately OUT of scope**: `api/routes/dashboard.py:209` also reads `skill_scores` through a
+reflected table, but it is the administrative retention/freshness breakdown the Non-goals keep
+historical. Named here so the exclusion is a decision rather than another oversight.
+
+⚠️ **Readers 6–9 bypass the store entirely**, reading reflected tables with raw SQL. Any fix applied
 only at the store leaves the whole API serving mixed generations.
 
 ### D2b — the publication contract, decided HERE not at implementation time
@@ -137,7 +149,7 @@ deferred — each changes observable behaviour.)*
 
 There is no "store the complete new generation, then supersede the previous one" operation.
 `mark_stale` updates only overlapping score rows and **cannot mark diagrams at all**
-(`store/skill_store.py:185-203`). A half-superseded generation is worse than none.
+(`store/skill_store.py:122-140`). A half-superseded generation is worse than none.
 
 **🔴 The missing piece the first review found — a generation-level COMPLETENESS GATE followed by ONE
 atomic publication.** Every expected score/diagram partition must finish successfully *before* the
@@ -200,7 +212,7 @@ symptoms and must be fixed once, here.
 wording gated the recompute alone)*. Plan 228's D3 says mark first, then recompute; but marking
 before 235 lands would strip every current, trustworthy result **without publishing a replacement**,
 because supersession is not yet atomic and cannot touch diagrams at all
-(`store/skill_store.py:185-203`). Mark and replace must happen as one operation, and that operation
+(`store/skill_store.py:122-140`). Mark and replace must happen as one operation, and that operation
 is this plan's.
 
 226 and 234 may be **developed and held at PR** before 235, but must not land or deploy while live
