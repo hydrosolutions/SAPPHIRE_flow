@@ -174,6 +174,69 @@ def _era5_latency_edge(run_ts: str, client: RecapClient, today: date) -> None:
             _emit(record)
 
 
+def _era5_daily_coverage(
+    run_ts: str,
+    client: RecapClient,
+    variable: str,
+    start: date,
+    end: date,
+) -> None:
+    """Per-day sweep emitting ONE summary record that NAMES the missing days.
+
+    A multi-day range request hard-errors on the first absent day rather than
+    truncating, so a single window probe collapses "one day of five is missing"
+    and "the endpoint is down" into the same red — and stays red forever for any
+    window straddling a hole. Measured 2026-09-03: `total_precipitation` is
+    missing 08-23 and `2m_temperature` 08-24, each an isolated day inside
+    otherwise-good data, so this is the normal case here, not an edge case.
+
+    `ok` therefore means THE SERVICE ANSWERED (at least one day returned data);
+    `complete` means no day in the window was missing. Keeping those separate is
+    the whole point — an archive hole must not read as an outage.
+    """
+    days_ok: list[str] = []
+    days_missing: list[str] = []
+    causes: dict[str, str] = {}
+    day = start
+    while day <= end:
+        iso = day.isoformat()
+        try:
+            df = client.ecmwf.era5_land_reanalysis(
+                variable=variable,
+                start_date=day,
+                end_date=day,
+                hru_code=_HRU,
+                include_provenance=True,
+            )
+            if len(df):
+                days_ok.append(iso)
+            else:
+                days_missing.append(iso)
+                causes[iso] = "empty_frame"
+        except Exception as exc:  # noqa: BLE001 - probe records every failure mode
+            days_missing.append(iso)
+            causes[iso] = str(getattr(exc, "code", None) or type(exc).__name__)
+        day += timedelta(days=1)
+
+    _emit(
+        {
+            "run_ts": run_ts,
+            "endpoint": f"era5_daily_coverage_{variable}",
+            "params": {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "variable": variable,
+            },
+            "ok": bool(days_ok),
+            "complete": not days_missing,
+            "days_requested": len(days_ok) + len(days_missing),
+            "days_ok": len(days_ok),
+            "days_missing": days_missing,
+            "missing_causes": causes,
+        }
+    )
+
+
 def main() -> int:
     client = RecapClient(ApiClientConfig(base_url=_BASE_URL, api_key=_load_key()))
     now = datetime.now(UTC)
@@ -276,29 +339,17 @@ def main() -> int:
                 ),
             )
 
-    # 7) ERA5 radiation, probed BEHIND the lag edge (t-12..t-8) so it normally
-    #    SUCCEEDS. (2)'s to-today window is EXPECTED to fail past the edge and
-    #    would say nothing about radiation stability. `_ERA5_VAR` is probed over
-    #    the identical window as the control.
+    # 7) ERA5 per-day coverage BEHIND the lag edge (t-12..t-8), one summary
+    #    record per variable naming exactly which days are absent. A window
+    #    request would hard-error on the first missing day and report the whole
+    #    variable red — see `_era5_daily_coverage` for why that distinction
+    #    matters here specifically. (2)'s to-today window stays as-is: it is a
+    #    DIFFERENT question (does the endpoint truncate or hard-fail past the
+    #    edge?) and its records must remain comparable.
     era5_start = today - timedelta(days=12)
     era5_end = today - timedelta(days=8)
     for era5_var in (_ERA5_VAR, _ERA5_TEMP_VAR, *_ERA5_RADIATION_VARS):
-        _probe(
-            run_ts,
-            f"era5_behind_edge_{era5_var}",
-            {
-                "start": era5_start.isoformat(),
-                "end": era5_end.isoformat(),
-                "variable": era5_var,
-            },
-            lambda v=era5_var: client.ecmwf.era5_land_reanalysis(
-                variable=v,
-                start_date=era5_start,
-                end_date=era5_end,
-                hru_code=_HRU,
-                include_provenance=True,
-            ),
-        )
+        _era5_daily_coverage(run_ts, client, era5_var, era5_start, era5_end)
 
     # 8) Ensemble spot-check: the feed needs 51 members, the probe otherwise only
     #    ever sees `fc`. One call per member (the API serves one at a time), so
