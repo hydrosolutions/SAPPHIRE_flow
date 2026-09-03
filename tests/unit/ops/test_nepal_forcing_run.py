@@ -51,6 +51,59 @@ class TestResolveCycle:
         assert got == datetime(2026, 8, 19, 0, 0, tzinfo=UTC)
 
 
+class TestFetchFailure:
+    """`fetch_failure` is the guard against a same-cycle re-run reporting the
+    PREVIOUS run's rows as a fresh success. `summarize_stored` queries the
+    cycle's existing rows, so without this the dead-man stays green through a
+    real Gateway outage — the 2026-08-29/30 failure mode exactly."""
+
+    class _Outcome:
+        """Stand-in for `_NwpFetchOutcome`. Only the fields the guard reads."""
+
+        def __init__(
+            self,
+            *,
+            nwp_unavailable: bool = False,
+            fetch_failure_reason: str | None = None,
+        ) -> None:
+            self.nwp_unavailable = nwp_unavailable
+            self.fetch_failure_reason = fetch_failure_reason
+
+    def test_healthy_outcome_is_not_a_failure(self) -> None:
+        assert nfr.fetch_failure(self._Outcome()) is None
+
+    def test_none_outcome_is_a_failure(self) -> None:
+        assert nfr.fetch_failure(None) == "outcome_none"
+
+    def test_generic_failure_reason_is_reported(self) -> None:
+        got = nfr.fetch_failure(self._Outcome(fetch_failure_reason="transport_error"))
+        assert got == "transport_error"
+
+    def test_nwp_unavailable_is_a_failure(self) -> None:
+        """THE regression case. `source_data_missing` sets `nwp_unavailable`
+        and leaves `fetch_failure_reason` None, so the Plan 223 check alone
+        passed it through as success."""
+        got = nfr.fetch_failure(self._Outcome(nwp_unavailable=True))
+        assert got == "nwp_unavailable"
+
+    def test_generic_reason_takes_precedence_over_unavailable(self) -> None:
+        """Both set: report the specific cause, not the generic flag."""
+        got = nfr.fetch_failure(
+            self._Outcome(nwp_unavailable=True, fetch_failure_reason="boom")
+        )
+        assert got == "boom"
+
+    def test_outcome_lacking_the_newer_field_still_reports_unavailable(self) -> None:
+        """Host script and container image have repeatedly been at different
+        versions here. An outcome with no `fetch_failure_reason` attribute must
+        degrade to the older signal, not raise AttributeError mid-run."""
+
+        class _OldOutcome:
+            nwp_unavailable = True
+
+        assert nfr.fetch_failure(_OldOutcome()) == "nwp_unavailable"
+
+
 class TestClassify:
     def test_full_horizon_run_is_ok(self) -> None:
         assert nfr.classify({"rows": 8568, "horizon_days": 14.75}) == (True, None)
