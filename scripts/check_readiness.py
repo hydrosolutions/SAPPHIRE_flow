@@ -1,234 +1,235 @@
 #!/usr/bin/env python3
-"""Check whether a plan or design doc is ready for implementation.
-
-Verifies frontmatter status, review round count, and latest round results.
+"""Check whether a plan is ready for implementation.
 
 Exit codes:
-    0: Document has status: READY and passes all checks.
-    1: Document is not ready (reason printed to stderr).
+    0: The document has YAML frontmatter with status exactly READY.
+    1: The document is not ready (reason printed to stderr).
 """
 
+import json
 import re
 import sys
 from pathlib import Path
 
-
-def _parse_yaml_frontmatter(text: str) -> dict[str, str]:
-    """Extract fields from YAML frontmatter (--- delimited block)."""
-    match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
-    if not match:
-        return {}
-    fields: dict[str, str] = {}
-    for line in match.group(1).splitlines():
-        kv = line.split(":", 1)
-        if len(kv) == 2:
-            fields[kv[0].strip()] = kv[1].strip()
-    return fields
-
-
-def _parse_markdown_body_frontmatter(text: str) -> dict[str, str]:
-    """Extract **Key**: value pairs from the first ~30 non-empty lines."""
-    pattern = re.compile(r"^\*\*(?P<key>[^*]+)\*\*:\s*(?P<value>.+?)$")
-    fields: dict[str, str] = {}
-    non_empty = 0
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        non_empty += 1
-        if non_empty > 30:
-            break
-        m = pattern.match(line.strip())
-        if m:
-            fields[m.group("key").strip().lower()] = m.group("value").strip()
-    return fields
+MANIFEST_MAX_BYTES = 8192
+_DIAGNOSTIC_LIMIT = 5
+_DIAGNOSTIC_MAX_CHARS = 240
+_CANONICAL_STATUSES = {
+    "DRAFT",
+    "READY",
+    "BLOCKED",
+    "DEFERRED",
+    "PARTIAL",
+    "SUPERSEDED",
+    "COMPLETE",
+}
+_TASK_HEADING = re.compile(
+    r"^###\s+([A-Za-z0-9][A-Za-z0-9._-]*)\s+(?:—|-)\s+.+$", re.MULTILINE
+)
+_FIELD_HEADING = re.compile(r"^\*\*([^*\n]+):\*\*\s*", re.MULTILINE)
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:
-    """Extract frontmatter fields from text.
-
-    YAML frontmatter (--- delimited) takes priority. For any key not present
-    in YAML, falls back to **Key**: value pairs in the first ~30 non-empty
-    lines of the markdown body.
-    """
-    yaml_fields = _parse_yaml_frontmatter(text)
-    if yaml_fields.get("status"):
-        return yaml_fields
-    md_fields = _parse_markdown_body_frontmatter(text)
-    # Merge: YAML wins for any key present in both
-    return {**md_fields, **yaml_fields}
-
-
-def find_review_history_section(text: str) -> str | None:
-    """Return the content of the ## Review History section, or None."""
-    pattern = re.compile(
-        r"^## Review History\s*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
-    )
-    match = pattern.search(text)
+    """Extract fields from a leading YAML frontmatter block."""
+    match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
     if not match:
-        return None
-    return match.group(1)
+        return {}
+
+    fields: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        if not line or line[0].isspace():
+            continue
+        key_value = line.split(":", 1)
+        if len(key_value) == 2:
+            key = key_value[0]
+            if key in fields:
+                fields[key] = "__INVALID_DUPLICATE__"
+            else:
+                fields[key] = key_value[1].strip()
+    return fields
 
 
-def parse_review_table(section: str) -> list[dict[str, str]]:
-    """Parse a markdown table from the Review History section.
+def check_readiness(path: Path) -> tuple[bool, str, str]:
+    """Return readiness, reason, and parsed status for a plan document."""
+    if not path.is_file():
+        return False, f"File not found: {path}", "N/A"
 
-    Expects a header row, a separator row, then data rows.
-    Returns a list of dicts keyed by lowercase, stripped header names.
-    """
-    lines = [
-        line.strip() for line in section.splitlines() if line.strip().startswith("|")
-    ]
-    if len(lines) < 3:
+    frontmatter = parse_frontmatter(path.read_text(encoding="utf-8"))
+    status = frontmatter.get("status", "")
+    if not status:
+        return False, "No 'status' field in YAML frontmatter", "MISSING"
+    if status != "READY":
+        return False, f"Frontmatter status is '{status}', expected 'READY'", status
+    return True, "YAML frontmatter status is READY", status
+
+
+def fingerprint(text: str) -> str:
+    """Return the shared FNV-1a fingerprint over UTF-8 bytes."""
+    value = 0x811C9DC5
+    for byte in text.encode("utf-8"):
+        value ^= byte
+        value = (value * 0x01000193) & 0xFFFFFFFF
+    return f"{value:08x}"
+
+
+def _bounded_diagnostics(items: list[str]) -> list[str]:
+    return [item[:_DIAGNOSTIC_MAX_CHARS] for item in items[:_DIAGNOSTIC_LIMIT]]
+
+
+def _section(text: str, heading: str, diagnostics: list[str]) -> str:
+    matches = list(re.finditer(rf"^## {re.escape(heading)}\s*$", text, re.MULTILINE))
+    if len(matches) != 1:
+        diagnostics.append(f"expected exactly one '## {heading}' section")
+        return ""
+    tail = text[matches[0].end() :]
+    next_heading = re.search(r"^##\s+", tail, re.MULTILINE)
+    return tail[: next_heading.start()] if next_heading else tail
+
+
+def _fields(block: str) -> tuple[dict[str, str], set[str]]:
+    matches = list(_FIELD_HEADING.finditer(block))
+    fields: dict[str, str] = {}
+    duplicates: set[str] = set()
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(block)
+        name = match.group(1)
+        if name in fields:
+            duplicates.add(name)
+        fields[name] = block[match.end() : end].strip()
+    return fields, duplicates
+
+
+def _task_manifest(section: str, diagnostics: list[str]) -> list[dict[str, str]]:
+    headings = list(_TASK_HEADING.finditer(section))
+    if not headings:
+        diagnostics.append("Tasks section contains no canonical task headings")
         return []
 
-    header_line = lines[0]
-    # lines[1] is the separator (e.g. |---|---|)
-    data_lines = lines[2:]
-
-    headers = [h.strip().lower() for h in header_line.strip("|").split("|")]
-
-    rows: list[dict[str, str]] = []
-    for line in data_lines:
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) != len(headers):
-            continue
-        rows.append(dict(zip(headers, cells, strict=True)))
-    return rows
-
-
-def extract_blocking_count(value: str) -> int | None:
-    """Extract an integer from a blocking column value.
-
-    Handles plain integers and strings like '0 blocking' or '2'.
-    """
-    match = re.search(r"\d+", value)
-    if match:
-        return int(match.group())
-    return None
-
-
-def check_readiness(path: Path) -> tuple[bool, str, dict[str, str]]:
-    """Run all readiness checks on the document at path.
-
-    Returns (is_ready, reason, report_fields).
-    report_fields keys: status, rounds, blocking, latest_status, verdict, reason.
-    """
-    if not path.is_file():
-        return (
-            False,
-            f"File not found: {path}",
+    tasks: list[dict[str, str]] = []
+    task_ids: set[str] = set()
+    for index, heading in enumerate(headings):
+        task_id = heading.group(1)
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(section)
+        fields, duplicates = _fields(section[heading.end() : end])
+        required = ("Outcome", "In", "Out", "Pre-change", "Verification")
+        missing = [name for name in required if not fields.get(name, "").strip()]
+        duplicate_required = sorted(duplicates.intersection(required))
+        if task_id in task_ids:
+            diagnostics.append(f"duplicate task ID: {task_id}")
+        if missing:
+            diagnostics.append(f"task {task_id} missing: {', '.join(missing)}")
+        if duplicate_required:
+            diagnostics.append(
+                f"task {task_id} duplicate fields: {', '.join(duplicate_required)}"
+            )
+        task_ids.add(task_id)
+        pre_change = fields.get("Pre-change", "").strip()
+        verification = fields.get("Verification", "").strip()
+        tasks.append(
             {
-                "status": "N/A",
-                "rounds": "N/A",
-                "blocking": "N/A",
-                "latest_status": "N/A",
-            },
+                "id": task_id,
+                "preChangeMode": "N/A"
+                if re.match(r"^N/A\b", pre_change, re.IGNORECASE)
+                else "executable",
+                "preChangeFingerprint": fingerprint(pre_change),
+                "verificationFingerprint": fingerprint(verification),
+            }
         )
+    return tasks
 
-    text = path.read_text(encoding="utf-8")
 
-    # --- Frontmatter status ---
-    frontmatter = parse_frontmatter(text)
-    fm_status = frontmatter.get("status", "")
-    if not fm_status:
-        return (
-            False,
-            "No 'status' field in YAML frontmatter",
-            {
-                "status": "MISSING",
-                "rounds": "N/A",
-                "blocking": "N/A",
-                "latest_status": "N/A",
-            },
-        )
+def _gate_manifest(section: str, diagnostics: list[str]) -> list[dict[str, str]]:
+    fences = list(re.finditer(r"```(?:bash|sh)\s*\n(.*?)```", section, re.DOTALL))
+    if len(fences) != 1:
+        diagnostics.append("Exit gates must contain exactly one bash/sh command fence")
+        return []
+    fence = fences[0]
+    commands = [
+        line.strip()
+        for line in fence.group(1).splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not commands or any(command.endswith("\\") for command in commands):
+        diagnostics.append("Exit gates must contain complete one-line commands")
+        return []
+    return [
+        {"id": f"G{index}", "fingerprint": fingerprint(command)}
+        for index, command in enumerate(commands, start=1)
+    ]
 
-    report: dict[str, str] = {"status": fm_status}
 
-    # --- Review History section ---
-    section = find_review_history_section(text)
-    if section is None:
-        report.update({"rounds": "0", "blocking": "N/A", "latest_status": "N/A"})
-        return False, "No '## Review History' section found", report
-
-    rows = parse_review_table(section)
-    num_rounds = len(rows)
-    report["rounds"] = str(num_rounds)
-
-    if num_rounds == 0:
-        report.update({"blocking": "N/A", "latest_status": "N/A"})
-        return False, "Review History table has no data rows", report
-
-    latest = rows[-1]
-
-    # --- Blocking count ---
-    blocking_col = latest.get("blocking", latest.get("blocking findings", ""))
-    if not blocking_col:
-        # Try to find any column with "block" in the name
-        for key, val in latest.items():
-            if "block" in key:
-                blocking_col = val
-                break
-
-    blocking_count = extract_blocking_count(blocking_col) if blocking_col else None
-    report["blocking"] = (
-        str(blocking_count) if blocking_count is not None else "PARSE_ERROR"
+def serialize_manifest(manifest: dict[str, object]) -> str:
+    """Serialize a manifest deterministically without presentation whitespace."""
+    return json.dumps(
+        manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
 
-    # --- Latest status ---
-    status_col = latest.get("status", latest.get("outcome", ""))
-    if not status_col:
-        for key, val in latest.items():
-            if "status" in key or "outcome" in key:
-                status_col = val
-                break
-    report["latest_status"] = status_col if status_col else "MISSING"
 
-    # --- Evaluate ---
-    if fm_status != "READY":
-        return False, f"Frontmatter status is '{fm_status}', expected 'READY'", report
+def inspect_plan(path: Path) -> tuple[bool, dict[str, object]]:
+    """Return structural validity and a bounded identity-only plan manifest."""
+    if not path.is_file():
+        return False, {
+            "status": "N/A",
+            "documentFingerprint": fingerprint(""),
+            "tasks": [],
+            "exitGates": [],
+            "valid": False,
+            "diagnostics": [f"File not found: {path}"[:_DIAGNOSTIC_MAX_CHARS]],
+        }
 
-    if num_rounds < 2:
-        return (
-            False,
-            f"Only {num_rounds} review round(s) completed, minimum 2 required",
-            report,
-        )
-
-    if blocking_count is None:
-        return False, "Could not parse blocking count from latest review round", report
-
-    if blocking_count > 0:
-        return (
-            False,
-            f"{blocking_count} blocking finding(s) remain in latest round",
-            report,
-        )
-
-    if status_col != "user-confirmed":
-        return (
-            False,
-            f"Latest round status is '{status_col}', expected 'user-confirmed'",
-            report,
-        )
-
-    return True, "All checks pass", report
+    text = path.read_text(encoding="utf-8")
+    diagnostics: list[str] = []
+    parsed_status = parse_frontmatter(text).get("status", "MISSING")
+    status = parsed_status if len(parsed_status) <= 64 else "__INVALID__"
+    if parsed_status not in _CANONICAL_STATUSES:
+        diagnostics.append(f"invalid or missing canonical status: {parsed_status}")
+    tasks = _task_manifest(_section(text, "Tasks", diagnostics), diagnostics)
+    gates = _gate_manifest(_section(text, "Exit gates", diagnostics), diagnostics)
+    manifest: dict[str, object] = {
+        "status": status,
+        "documentFingerprint": fingerprint(text),
+        "tasks": tasks,
+        "exitGates": gates,
+        "valid": not diagnostics,
+        "diagnostics": _bounded_diagnostics(diagnostics),
+    }
+    size = len(serialize_manifest(manifest).encode("utf-8"))
+    if size > MANIFEST_MAX_BYTES:
+        manifest = {
+            "status": status,
+            "documentFingerprint": fingerprint(text),
+            "tasks": [],
+            "exitGates": [],
+            "valid": False,
+            "diagnostics": [
+                f"manifest exceeds {MANIFEST_MAX_BYTES} bytes ({size} bytes)"
+            ],
+        }
+    return manifest["valid"] is True, manifest
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        print("Usage: check_readiness.py <path-to-document>", file=sys.stderr)
+    inspect_json = len(sys.argv) == 3 and sys.argv[1] == "--inspect-json"
+    if not inspect_json and len(sys.argv) != 2:
+        print(
+            "Usage: check_readiness.py [--inspect-json] <path-to-document>",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    path = Path(sys.argv[1]).resolve()
-    is_ready, reason, report = check_readiness(path)
+    path = Path(sys.argv[2] if inspect_json else sys.argv[1]).resolve()
+    if inspect_json:
+        is_valid, manifest = inspect_plan(path)
+        print(serialize_manifest(manifest))
+        if not is_valid:
+            sys.exit(1)
+        return
 
+    is_ready, reason, status = check_readiness(path)
     verdict = "READY" if is_ready else f"NOT READY — {reason}"
 
     print(f"Readiness check: {path}")
-    print(f"  Frontmatter status: {report.get('status', 'N/A')}")
-    print(f"  Review rounds: {report.get('rounds', 'N/A')} (minimum 2)")
-    print(f"  Latest blocking: {report.get('blocking', 'N/A')}")
-    print(f"  Latest status: {report.get('latest_status', 'N/A')}")
+    print(f"  Frontmatter status: {status}")
     print(f"  Verdict: {verdict}")
 
     if not is_ready:

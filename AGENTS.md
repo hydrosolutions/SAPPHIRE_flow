@@ -25,9 +25,9 @@ See `docs/workflow.md` for the full conventions. Key points:
 - **Orchestrator (Opus) never writes code** — delegates to Sonnet 4.6 subagents
 - **Plans are phase-based** with JSON dependency graphs for parallel/sequential execution
 - **Every code change updates affected docs** — no exceptions
-- **No subagent runs from a DRAFT plan** — user must confirm first
+- **Planning and independent-review agents may read a DRAFT plan, but implementation agents may not execute it.** Only the owner may set its YAML `status: READY`. This happens after the required confirming review.
 - **Multi-model review is mandatory for all non-trivial plans and patches** (trivial-only exemption: typos, comments, single-line log text, mechanical no-behavior edits). Orchestrator builds a context packet first; Claude design + Codex repo-grounded (`file:line`) perspectives are the floor, not the ceiling; no model approves its own output; confirming review before READY and post-implementation review before PR; human owns READY and merge. See `docs/workflow.md` § Multi-Model Review.
-- **Run that review with the repo workflows — the default, not an afterthought:** for a non-trivial **plan**, run the **`plan`** workflow (a real independent Codex pass is a required reviewer every round); to build a **READY** plan, run the **`implement`** workflow (red-first acceptance tests → independent verify → Codex diff-review loop with re-verified fixer rounds, hold-at-PR). `plan-review` is the older Sonnet-only plan variant, kept as a fallback (no Codex). `plan` and `implement` shell out to Codex, so they need `codex exec --sandbox read-only` permitted in the local allowlist. See `docs/workflow.md` § Tooling.
+- **Run that review with the repo workflows:** explicitly classify `riskClass` as `ordinary` or `high`. For a non-trivial plan, run `plan` in read-only `review` mode (one Claude + real Codex pair), record owner dispositions, then run at most one delta-scoped `confirm`. Only the owner sets READY. For a READY plan, `implement` uses one implementer, independently verifies every task and the full gates once per candidate, pauses for owner dispositions, and permits at most one confirmation repair/delta review. Reviewer failure is incomplete, never clean. Both workflows invoke Codex through `scripts/codex-review.sh` and hold at PR. See `docs/workflow.md` § Tooling.
 
 ### Avoid Task Jags
 
@@ -36,9 +36,9 @@ Stay focused on the current task until completion. Do not change direction mid-s
 
 ### Plan Readiness
 
-Plans start as `status: DRAFT`. Opus self-reviews before presenting to user.
-User confirms, then Opus sets `status: READY`. Do not begin implementation from
-a DRAFT plan.
+Plans start as `status: DRAFT`. Planning and independent review may refine the
+DRAFT, but implementation may not begin. The required confirming review runs
+after owner decisions are folded in. Only the owner may set its YAML `status: READY`.
 
 ## Ask Questions
 
@@ -247,32 +247,22 @@ value: str | None = None
 
 ### Version Bumping (mandatory)
 
-**Every CODE commit MUST include a patch version bump.** The one exception:
-plan-doc-only commits made directly to `main` do **not** bump — the version
-tracks code releases. Code changes always go through a PR (hold-at-PR) and
-always bump.
+Every code commit includes a patch version bump. Never create a tag on a feature branch.
+On pushes to `main`, `.github/workflows/tag-main.yml` creates the version tag when absent.
+The one exception is plan-doc-only commits made directly to `main`; those do
+not bump because the version tracks code releases. Code changes always go
+through a PR (hold-at-PR) and always bump.
 
 Before committing code, follow this exact sequence:
 
 1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/sapphire_flow/__init__.py`
 2. Stage version files alongside code changes
 3. Commit with a conventional commit message
-4. **Do NOT tag on a feature branch** — tagging happens once, on `main`, after the PR merges (see below).
 
 **Rules:**
 - **Patch bumps**: Automatic with every commit. Codex MUST do this.
 - **Minor/major bumps**: Only when the user explicitly requests. Use `uv run bump-my-version bump minor` or `major`.
 - **Never let bump-my-version create its own commit** — config has `commit = false`. Fold version changes into the real commit.
-- **Tag on `main` after merge — NEVER on a feature branch.** *(Changed
-  2026-08-13, synced here 2026-08-17 — Plan 175 T7; see `CLAUDE.md` §
-  Version Bumping for the full collision history this rule fixes.)*
-  Patch versions are a **global sequence**, but every worktree shares one
-  `.git` and therefore one tag namespace, while each branch's
-  `bump-my-version` computes the next patch from its **own**
-  `pyproject.toml` — which cannot see what other branches have already
-  tagged. The version bump still happens in the commit (so every diff
-  carries its version); only `git tag` moves to post-merge on `main`, where
-  the sequence is authoritative.
 
 ---
 

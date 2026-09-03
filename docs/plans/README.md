@@ -5,24 +5,39 @@ or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate
 
 ## Status convention (added 2026-08-28 after a stale-status audit)
 
-**A plan's status lives in ONE place: a `status:` key in the YAML frontmatter.** Values:
-`DRAFT` · `READY` · `PARTIAL` · `COMPLETE` · `DEFERRED` · `SUPERSEDED`. When a plan reaches
-COMPLETE, `git mv` it into [archive/](archive/) **and** grep for references first — a plan
-path is cited from other plans and, in at least one case, from a workflow comment; archiving
-Plan 174 once broke a test that read the doc from disk.
+YAML `status:` frontmatter is the only machine-readable status source for active
+plans in `docs/plans/`. The canonical active statuses are `DRAFT`, `READY`,
+`BLOCKED`, `DEFERRED`, `PARTIAL`, `SUPERSEDED`, and `COMPLETE`. Only `READY` is
+implementable. A missing active YAML status is reported as `NONE`, never inferred
+from body prose. Do not use `IN_PROGRESS` or `DONE` as active-plan statuses;
+execution progress belongs to the branch, run, or PR.
+
+When a plan reaches `COMPLETE`, `git mv` it into [archive/](archive/) **and** grep
+for references first — a plan path is cited from other plans and, in at least one
+case, from a workflow comment; archiving Plan 174 once broke a test that read the
+doc from disk. `ARCHIVED` is a location, not an active status. Historical files
+already in `archive/` retain their legacy labels.
 
 **Why this is written down.** An audit on 2026-08-28 scanned for stale statuses and found the
 scan itself could not work: statuses were recorded in three different ways — frontmatter
 `status:`, a legacy `**Status**:` line (27 plans), and 11 plans with no status marker at all.
-A scan keyed on frontmatter silently skips the other 38, which is how Plan 064 sat reading
-`READY` while ~90% shipped. **Do not add a second status marker to a plan that already has
-one**, and do not rely on a status scan that only checks one format.
+A scan keyed on frontmatter silently skipped the other 38, which is how Plan 064 sat reading
+`READY` while ~90% shipped. Active plans now require YAML frontmatter; legacy body markers
+remain historical diagnostics for archived plans only.
 
 **Context:** v0 is complete (the mac-mini runs NWP-on operational runoff
 forecasting). We are marching to **v1 = Nepal DHM deployment** (ECMWF IFS via the
 recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tags:
 **A** = v0 operational hardening / reliability (land before any v1 prod deploy) ·
 **B** = v1 Nepal feature · **C** = dev-experience / dashboard / deferrable.
+
+## Writing new plans
+
+Plan tasks are the single completion ledger. Every non-trivial task states an
+observable **Outcome**, bounded **In / Out**, exact **Verification**, and—when
+behavior changes—the **Pre-change** failure that the same evidence exposes. Use
+`N/A` only for documentation, mechanical, or integration/gate tasks and say why.
+Do not add a separate acceptance-map table or persistent run-state file.
 
 
 ## Archived by the 2026-08-28 stale-status audit
@@ -352,6 +367,19 @@ exit criteria — Plan 212 owns that deeper screening.
 - **068** — `onboard-stations` parallelization + async backfill — `DRAFT` — depends
   on 038 + 040.
 - **057** — API route-module tests — `DRAFT (stub)`.
+
+## Active — developer workflow (C)
+
+- **231** — Workflow policy coherence — `READY` — make DRAFT/READY authority, plan-status vocabulary,
+  YAML-only readiness, archived status diagnostics, and tagging policy agree. Deliberately leaves
+  workflow JavaScript to 232/233 instead of testing behavior that those plans immediately replace.
+- **232** — Lean plan review — `READY` — replace the autonomous five-round planner/reviewer loop with
+  one read-only Claude+Codex default review, explicit owner dispositions, and one delta confirmation.
+  Uses existing task IDs as the evidence ledger and removes the Sonnet-only duplicate. Depends on 231;
+  blocks 233.
+- **233** — Task-evidenced implementation — `READY` — implement bounded manifest transport,
+  per-task evidence, one Claude+Codex review pair, explicit owner dispositions, and at most one
+  confirmed repair. Depends on 232.
 
 ## Deferred
 
