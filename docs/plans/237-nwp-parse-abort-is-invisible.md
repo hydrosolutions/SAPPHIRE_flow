@@ -3,11 +3,11 @@ status: DRAFT
 created: 2026-09-03
 revised: 2026-09-03
 plan: 237
-title: One duplicated STAC asset aborts a whole forecast cycle — and the flow still reports COMPLETED
-scope: Fix the identified cause (a duplicate STAC asset is appended twice to the GRIB file list, so the parse sees the same ensemble members twice and skips every parameter group) and stop a zero-forecast cycle reporting COMPLETED while the watchdog calls it critical. Two tasks. No retry logic, no completeness probe, no alert-channel work.
+title: Duplicated STAC assets abort forecast cycles, and the flow reports COMPLETED anyway
+scope: De-duplicate the fetched GRIB asset list on a collision-safe identity so a repeated STAC item cannot make the parse see the same ensemble members twice, and make the NWP-fetch abort path reach a non-successful terminal state. Two tasks. No retry logic, no completeness probe, no alert-channel work, and NO handling of the separate incomplete-cycle fault recorded below.
 depends_on: []
 blocks: []
-source: Measured on the mac mini 2026-09-03 after 15 Slack alerts in one day; diagnosed to a duplicated STAC item, not a MeteoSwiss outage
+source: Measured on the mac mini 2026-09-03 after 15 Slack alerts in one day. Two distinct faults found: 2026-09-03T12 was a complete cycle plus duplicate assets (our bug, in scope); 2026-09-02T18 was an incomplete cycle plus duplicates (partly upstream, out of scope).
 ---
 
 # Plan 237 — a duplicated STAC asset aborts the cycle
@@ -23,36 +23,41 @@ only**. That is superseded: the cause is now measured (below), so T1 is a real f
 
 **Do not add:** retry-on-parse-failure, a re-fetch path, a completeness probe (that is Plan 213 D3c
 for a *different* failure mode), STAC pagination rework, new alert channels, or a third task.
-Reviewers: the temptation here is to harden the whole NWP fetch path. Don't. One duplicated list
-entry is the bug.
+Reviewers: the temptation here is to harden the whole NWP fetch path. Don't. Duplicated list
+entries are the bug in scope; the separate incomplete-cycle fault is recorded and deferred, not
+solved here.
 
-## What is measured — this is NOT a MeteoSwiss outage
+## What is measured — TWO different faults, not one
 
 **The complete asset set for one ICON-CH2-EPS cycle is 484 files**: 121 hourly steps (0…120) x 2
-allowlisted variables (`tot_prec`, `t_2m`) x 2 files each (`ctrl`, `perturb`).
+allowlisted variables (`tot_prec`, `t_2m`) x 2 files each (`ctrl`, `perturb`). Consistent with
+`PARAM_GROUPS` (`meteoswiss_nwp.py:56-62`) and the inclusive cycle→+120 h window the walk uses
+(`:704-709`).
 
-| cycle (UTC) | files downloaded | distinct filenames | outcome |
-|---|---|---|---|
-| 2026-09-02T12 | 484 | 484 | ok |
-| 2026-09-02T18 | **501** | — | **aborted** (17 surplus) |
-| 2026-09-03T00 | 484 | 484 | ok |
-| 2026-09-03T06 | 484 | 484 | ok |
-| 2026-09-03T12 | **488** | **484** | **aborted** (4 surplus) |
+| cycle (UTC) | downloads | **distinct** | reading | outcome |
+|---|---|---|---|---|
+| 2026-09-02T12 | 484 | 484 | complete, no duplicates | ok |
+| **2026-09-02T18** | **501** | **473** | **INCOMPLETE (11 short) + 28 duplicates** | **aborted** |
+| 2026-09-03T00 | 484 | 484 | complete, no duplicates | ok |
+| 2026-09-03T06 | 484 | 484 | complete, no duplicates | ok |
+| **2026-09-03T12** | **488** | **484** | complete + 4 duplicates | **aborted** |
 
-The failing cycles downloaded **more** files than the successful ones, and the surplus is
-**duplicates, not extra data**. For 2026-09-03T12 the duplicate is step **35**, returned twice for
-all four file types:
+**These are not the same failure, and an earlier revision of this plan wrongly treated them as
+one.** An independent review flagged that the 501 case had no distinct count behind it; measuring it
+showed the generalisation was false.
 
-```
-2 icon-ch2-eps-202609030600-35-tot_prec-perturb.grib2
-2 icon-ch2-eps-202609030600-35-tot_prec-ctrl.grib2
-2 icon-ch2-eps-202609030600-35-t_2m-perturb.grib2
-2 icon-ch2-eps-202609030600-35-t_2m-ctrl.grib2
-   (every other step: 1)
-```
+- **2026-09-03T12 — surplus only.** 484 distinct: the cycle is **complete**. Step **35** was served
+  twice for all four file types (`t_2m`/`tot_prec` x `ctrl`/`perturb`). Nothing is missing; we were
+  handed items twice. **T1 fixes this.**
+- **2026-09-02T18 — incomplete AND duplicated.** Only **473** distinct, i.e. **11 files short of a
+  complete cycle**, plus 28 duplicate downloads (all `-perturb`, e.g. steps 68/71/78). So for that
+  cycle MeteoSwiss data really was missing. **T1 does not fix this** — de-duplication would leave
+  473 genuine files, and whether an 11-file-short cycle parses, yields a truncated forecast, or
+  fails another way is **unmeasured**.
 
-488 downloads, 484 distinct files on disk. **Nothing from MeteoSwiss is missing.** The cycle's data
-is complete; we were served one item twice.
+So the honest answer to "outage or our bug?" is **both, separately**: 09-03T12 is entirely our bug;
+09-02T18 involves real upstream incompleteness that our duplicate handling then compounds. Only the
+first is in scope here.
 
 ### The mechanism, end to end
 
@@ -73,8 +78,12 @@ is complete; we were served one item twice.
    GRIB2 files'` -> `forecast_cycle.nwp_fetch_failed_aborting`. **Zero forecasts from 484 good
    files.**
 
-**One duplicated list entry discards a complete cycle.** The blast radius is grossly out of
-proportion to the fault.
+**How many duplicates it takes.** A single duplicated item does **not** abort the cycle: each STAC
+item carries one variable, and `_parse_grib_files` isolates parameter groups, so one duplicate skips
+only its own variable and the other still parses. Zero output requires duplicates spanning **both**
+`PARAM_GROUPS` — which is exactly what 2026-09-03T12 had (step 35 duplicated for `t_2m` *and*
+`tot_prec`). An earlier revision claimed one entry was enough; that was wrong, and it matters
+because it dictates what T1's RED test must reproduce.
 
 ### Frequency
 
@@ -131,17 +140,28 @@ between two listings of the *same* asset.
 `_combine_cfgrib_datasets`' member contract.
 *Exit:* a fetch handed a duplicated asset returns 484 paths, not 488, and the cycle parses.
 *Verification:* `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py -q` — with a test whose
-faked STAC listing repeats one item across two pages, asserting (a) the returned list has no
-duplicate paths, (b) the WARNING names the dropped asset, and (c) the parse succeeds. **RED first**
-against today's code, which must fail with the duplicate-`number` alignment error — proving the test
-reproduces the real fault rather than merely passing.
+faked STAC listing repeats items **spanning BOTH `PARAM_GROUPS`** (as 2026-09-03T12 did), asserting
+(a) the returned list has no duplicate paths, (b) the WARNING names the dropped assets, and (c) the
+parse succeeds. A test duplicating a single item would **not** reproduce the whole-cycle abort — the
+other variable survives and the cycle does not fail — so it must not be used as the RED case. A
+second test must assert the collision guard raises when two different URL paths share a basename.
+**RED first** against today's code, which must fail with the duplicate-`number` alignment error.
 
-**T2 — A cycle that stores zero forecasts must not report COMPLETED.**
+**T2 — The NWP-fetch abort path must not report COMPLETED.**
 *Scope (in):* when the NWP fetch fails and the cycle aborts without writing any forecast, the flow
-run must reach a non-successful terminal state, so Prefect agrees with the watchdog. Follow whatever
-this repo already does elsewhere to signal an unproductive run rather than inventing a mechanism,
-and check the pipeline-health path so the change does not double-report an event the watchdog
-already covers.
+run must reach a non-successful terminal state, so Prefect agrees with the watchdog. Today
+`_fetch_nwp_task` converts the adapter exception into a returned failure outcome
+(`run_forecast_cycle.py:1340-1349`) and the flow returns `ForecastCycleResult(health=FAILED)`
+*normally* (`:2667-2691`) — a domain-level FAILED inside a Prefect COMPLETED.
+**Use the idiom this repo already has** — "emit CRITICAL exactly once, then re-raise"
+(`run_forecast_cycle.py:1742-1771`, `:3512-3521`) — rather than inventing a mechanism. The
+zero-forecast CRITICAL record is already written at `:2669-2680` and the watchdog probes that
+independently of Prefect state (`ops/watchdog.py:1996-2024`), so the change must not double-report.
+
+*Scope note — deliberately narrow:* this covers the **NWP-fetch abort path only**. Other zero-output
+paths exist and are **out of scope**: no operational stations (`run_forecast_cycle.py:2384-2403`) and
+an ordinary end-of-cycle zero-storage (`:3612-3658`) both still return normally. Widening to "every
+zero-forecast cycle fails" is a bigger behavioural change and is not authorised here.
 *Scope (out):* new alert channels, new health metrics, retry policy, redefining what a successful
 forecast is, and the repeat-interval question below.
 *Exit:* the abort path yields a non-successful terminal state, and the watchdog's existing signal is
@@ -173,6 +193,11 @@ of it.
   symptom surfaced as an opaque pandas message.
 - A completeness probe (checking the items the fetch needs rather than inferring readiness from
   cycle age) is the recorded durable fix for Plan 213 D3c's failure mode, not for this one.
+- **The 2026-09-02T18 incomplete cycle (473 of 484 files) is NOT addressed by this plan.** T1 removes
+  the duplicate crash from it, but an 11-file-short cycle's behaviour is unmeasured — it may parse to
+  a truncated forecast, or fail some other way. That is a real second fault, deliberately left for a
+  separate plan rather than folded in here; the adapter source already records the 484-vs-501 gap as
+  unexplained (`meteoswiss_nwp.py:73-80`). Do not let T1 grow to cover it.
 
 ## Dependency graph
 
