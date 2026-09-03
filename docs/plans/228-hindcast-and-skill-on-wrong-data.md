@@ -572,3 +572,35 @@ clean run with nothing to score.
 `docs/decisions/plan-228-hindcast-skill-resampling.md` § "Per-run scope round (2026-09-02, fourth)".
 Still outstanding, unchanged: D3's marking-superseded + recompute remain gated on the mac-mini's
 onboarding/hindcasting run finishing — nothing in this round touched that system.
+
+## ⛔ PER-RUN SCOPE (2026-09-03) — ONE change, then this plan is done
+
+An independent design check (2026-09-03) found the proposed "bump `computation_version` per
+recompute" fix **unsafe**, and its consequences are now **Plan 235**. This plan takes only the piece
+that makes its own migration deployable.
+
+### The one change: a PARTIAL unique index
+
+Migration 0052 currently builds a plain unique index over rows that already violate it. Under 0051
+a nullable `model_artifact_id` was compared raw, so PostgreSQL treated every `NULL` as distinct and
+the live database legitimately accumulated repeated pooled/BMA rows. `CREATE UNIQUE INDEX` will
+**fail on deploy** against the mac-mini's ~115,000 scores.
+
+Make both unique indexes **partial**, applying only to `computation_version >= 2` — the cutoff this
+plan already defines as the boundary of valid data. This grandfathers the known-invalid legacy
+generation, **deletes nothing**, and enforces the corrected NULL-safe key for everything written
+from now on. Also prevent further writes at the legacy version.
+
+**Do NOT** restore the destructive `DELETE`. **Do NOT** implement generation identity, latest-
+generation filtering, retention, or the `hindcast_run_id` requirement — all four are Plan 235.
+
+**Locking test:** a real-PostgreSQL upgrade test seeded with repeated NULL-artifact rows at the
+legacy version, proving the migration completes and the old rows survive.
+
+### ⛔ Then STOP
+
+After this, Plan 228 is complete. Its D3 recompute **must not be executed until Plan 235 lands** —
+without a generation identity the recompute silently stores nothing. That gate is recorded in 235's
+sequencing section.
+
+Do not touch the mac-mini.
