@@ -276,6 +276,75 @@ because both verdict strings occur in this doc's own prose it could never pass �
 unsatisfiable, not merely pending.)
 
 
+## T1 RESULT — measured on the mac mini 2026-09-02/03
+
+T1 VERDICT: INCONCLUSIVE
+
+Run in production, not synthetically: the 111 `onboarding` stations were flipped to
+`operational` on 2026-09-02 (owner-authorised), taking the cycle from 37 to 148 stations, and
+the next cycles measured themselves.
+
+### The two curves
+
+**Extraction (production, GRIB-backed — the real path).** One call per cycle:
+
+| stations | duration | per station | source |
+|---|---|---|---|
+| 37 | 272.6-304.8 s | ~7.6 s | cycles 2026-09-02 00/06/12 |
+| **148** | **1151.6 s** | **7.78 s** | `extraction.completed duration_ms=1151557.8 stations_extracted=148 stations_skipped=0`, 2026-09-03 06:25 |
+
+**Linear, and the plan's projection was close** — it assumed 6.48 s/station (959 s at n=148);
+the truth is 7.78 s/station (1152 s), 20 % higher. 0 stations skipped, so all 148 real basins
+extracted cleanly.
+
+**Model `predict`: still not measured separately.** It is subsumed in the full-cycle number below,
+which turned out to be available directly and made the separate curve unnecessary.
+
+### 🔴 The zarr path is NOT representative — quantified
+
+The zarr/replay measurement this plan authorised gives **0.55 s/station** (82.9 s at n=148,
+clean straight line over n=2,10,25,50,100,148). Production on the same code and the same
+ICON-CH2-EPS grid gives **7.78 s/station**. **The replay path is ~14x faster.**
+
+This confirms, by measurement, the review finding recorded as a scope caveat: `extract()` receives
+an already-open zarr in replay but a freshly-parsed GRIB-backed dataset in the live cycle, and the
+backend dominates. **Any future scaling work must measure the GRIB path.** A zarr-path number is
+not evidence about production.
+
+### Why the verdict is INCONCLUSIVE, and what is known anyway
+
+By this plan's own rule the comparison is `448.9 s + extraction(148) + predict(148)` against the
+30-minute bar. That subtotal is `448.9 + 1151.6 = 1600.5 s = 26.7 min` -- **under** the bar, which
+is the INCONCLUSIVE branch: the measured terms fit, but T1 does not measure enough of the cycle to
+claim the whole thing fits.
+
+**However, production answered the bigger question directly, which T1 was barred from inferring.**
+Full end-to-end cycle wall-clock at 148 stations, from Prefect:
+
+| cycle | stations | duration |
+|---|---|---|
+| 2026-09-03T00 | 148 | **25.5 min** |
+| 2026-09-03T06 | 148 | **26.7 min** |
+| (2026-09-02T00/06/12, before the flip) | 37 | 10.7 / 12.0 / 12.7 min |
+
+So a full 148-station cycle runs **25.5-26.7 min against a 30-minute bar** -- it fits, with about
+**3.3 min (11 %) of margin**, and a ~10 % duty cycle against the 6-hour cadence. Going 37 -> 148
+stations (4x) roughly **doubled** cycle wall-clock (12 -> 26 min), consistent with extraction being
+linear while the 448.9 s fixed phase is not.
+
+This is direct evidence, not a projection -- but it is **not** what T1 was authorised to produce,
+so the verdict above stays INCONCLUSIVE and T2 owns what to do with it.
+
+### 🪤 Found while measuring — NOT caused by the flip
+
+Cycles at 12:00 and 18:00 UTC end in `forecast_cycle.nwp_fetch_failed_aborting` after ~7 min,
+having logged `nwp.cycle_fallback_used fallback_reason=too_recent`. They report COMPLETED at flow
+level but produce no forecasts. **This predates the station flip** (2026-09-01T18 took 6.0 min the
+same way, at 37 stations), and is the known NWP-latency issue that Plan 213 (105 -> 180 min) exists
+to fix -- that PR is implemented but HELD. Roughly half of all cycles are affected. Not in this
+plan's scope; recorded so the 26.7 min figure is read correctly (it is the cost of a cycle that
+actually runs).
+
 ## Separately worth knowing (not in scope, do not fix here)
 
 - **2.87 GB per cycle × 4 = ~11.5 GB/day** of NWP download. Not a wall-clock problem, but it is a
