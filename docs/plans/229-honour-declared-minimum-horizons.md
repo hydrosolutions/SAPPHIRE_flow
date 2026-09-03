@@ -11,6 +11,30 @@ source: 2026-09-01 — owner ruling that Plan 151's AT_MOST shortcut was a worka
 
 # Plan 229 — stop refusing forecasts the model could have made
 
+## ⛔ BLOCKED FOR IMPLEMENTATION — two internal contradictions (found 2026-09-03)
+
+*Raised by the Plan 228 session's joint review of 226/228/229/230/234/235. This plan's scope and
+reasoning are untouched — resolving these is its author's call, not the reviewer's.*
+
+**Do not run `/implement` on this plan until both are settled.** Each is a fork an implementer must
+guess at, and either guess fails a gate:
+
+1. **`HORIZON_CEILING_FLOORS` — deleted or kept?** D1 says declarations replace the table and it is
+   deleted (`:125-134`), while the exit gate requires that same table to keep covering undeclared
+   models (`:237`). Delete it and the gate fails; keep it and D1 is unmet.
+2. **All three runner routes, or one?** D5a/T3 require short-record behaviour on all three
+   (`:161-167,198-206`), while "After implementation" says the strict earlier gate remains on the
+   other routes and extending it is a later decision (`:216-225`). These produce materially
+   different diffs.
+
+**Why this matters more than tidiness:** in this same family, Plan 228 carried one contradiction
+(a task forbidding a change another decision required) into implementation. The run did not fail
+loudly — it picked a reading, built on it, and the contradiction surfaced two review rounds later,
+after the wrong reading had been built upon. A contradicted plan does not stop an implementer; it
+misdirects one.
+
+
+
 ## Status
 
 **DRAFT.** Not for implementation until the owner confirms.
