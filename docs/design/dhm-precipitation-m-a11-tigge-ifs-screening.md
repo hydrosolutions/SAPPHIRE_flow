@@ -464,3 +464,93 @@ Writes `data/dhm_precip/tigge/points/tigge_gauge_timing_offsets_multiseason.csv`
 (season x lead band x elevation band x reading) cell, `season` one of `"2020"`..`"2025"`/`"pooled"`,
 plus its attribution sidecar. Single-season `--year 2025` alone still reproduces the original published
 `tigge_gauge_timing_offsets.csv` unchanged (D6).
+
+---
+
+## 🔴 M-A11c — the climatological phase error is NOT the event-timing error (2026-09-03)
+
+⚠️ **Read this before quoting any number above in a runoff-forecasting context.** Everything earlier in
+this document measures the **climatological mean diurnal-cycle phase** — a season-long average over
+*all* hours. **Runoff responds to individual storms, not to average days**, and the two quantities are
+different. This section measures the second one for the first time.
+
+**Method.** IFS control `tp` from the **00Z init at ending leads 6/12/18/24 h** — four *consecutive*
+6-hourly windows per day, so the stitched series is continuous at a defined D+1 lead. Gauge summed to
+the same period-ending 6-hourly windows (all 6 hours required). An **event** is a gauge 6-h total
+≥ q0.90 of that station's wet 6-h totals, declustered to ≥24 h. For each event, the offset is
+`argmax(IFS in ±24 h) − t0`; if the IFS maximum is `< 0.5 ×` the event threshold it is counted
+**missed**. JJAS 2020–2025, 26 stations, **1,189 matched events**.
+
+🔴 **Scored against a NO-SKILL NULL**, without which none of it is interpretable: the IFS series is
+circularly shifted by whole days, which **preserves IFS's own diurnal climatology exactly** and destroys
+only the day-to-day correspondence. That is precisely "right climatology, zero event skill".
+
+| statistic | null (10 shifts) | observed | verdict |
+|---|---|---|---|
+| median offset | **0.000** (range 0, 0) | **0.000** | **INSIDE the null — carries NO information** |
+| within ±6 h | 0.330 (0.311–0.352) | **0.445** | above null |
+| within ±12 h | 0.547 | 0.603 | above null |
+| events **missed** | 0.488 | **0.311** | above null |
+| IQR | 24.6 h | 18.0 h | above null, but ⛔ see below |
+
+**Window sweep** (±12/24/36/48 h): the IQR simply **tracks the search window** — 12→12, 24→18, 36→30,
+48→42 h. ⛔ **Do not quote an event-timing IQR as a property of IFS**; it describes the window. The
+*increment over the null* is what is window-independent: **+0.109 to +0.126** at every width tested.
+
+### What this establishes
+
+**IFS carries real but modest sub-daily event-timing skill.** Given a significant gauge storm it places
+its own peak in the correct 6-hour window **44.5 %** of the time against a **33.0 %** climatological
+baseline, and detects **68.9 %** of events against a **51.2 %** baseline. Median IFS/gauge event
+magnitude is **0.45–0.92** — systematic under-prediction of storm size.
+
+Turned around: **>6 h out more than half the time**, ~a third of significant events missed entirely.
+⇒ **Usable for daily volume. Not adequate on its own for sub-daily PEAK timing in a fast-responding
+catchment** — but ⛔ "IFS is unsuitable" **overstates it**: the skill is real, and a routing model with
+damping may still extract value. Suitability is a relation between this spread and the **catchment
+concentration time**, not a property of IFS.
+
+### Reconciliation with the climatological result — plausible, NOT yet tested
+
+The large climatological phase error and the absence of a systematic *event* shift can coexist: the
+climatological cycle averages over all hours and is driven by how often and how much it rains through
+the day, including frequent small amounts near local noon (the parameterised-convection signature),
+whereas the event statistic uses only the top decile of wet windows. A model can be badly displaced on
+the average day while placing the largest storms without systematic bias.
+🔴 **This reconciliation is untested.** The falsifiable prediction is that restricting the phase
+calculation to *event* windows should shrink the offset, and restricting the event statistic to *small*
+events should reveal it. Until that is run, treat it as a hypothesis.
+
+### 🪤 Two of the author's own errors, recorded so they are not repeated
+
+1. **A median offset of 0 was reported as "no systematic bias".** It is the **null expectation** — a
+   uniform no-skill distribution in a symmetric window also has median 0. The null measured exactly
+   0.000. ⛔ The median discriminates nothing.
+2. **The first version filtered `ending_lead_hours == 24`**, giving only 2 windows/day (00Z, 12Z, 12 h
+   apart) rather than a continuous 6-hourly series — half the events then *structurally* could not have
+   a zero offset, manufacturing a spurious "IQR 24 h / 32 % within ±6 h". ⇒ **Always verify a
+   constructed forecast series is gap-free before measuring timing on it.**
+
+### Limits
+
+⚠️ **Point-versus-areal**: this compares a point gauge to an IFS cell for patchy convective rain, while
+the gateway serves **basin averages** (`docs/architecture-context.md:617`). ⇒ Probably a **LOWER bound**
+on basin-average timing skill — unquantified. The station pairs sharing a cell (Kirtipur/Khumaltar share
+an IMERG cell; Ilam/Kanyam share an IFS cell) could bound the representativeness floor; not yet done.
+⚠️ **6-hourly archive, 3-hourly operational feed** — the gateway serves 3-hourly and offers **no
+point-level access** (`dhm-precipitation-vision.md:440`), so a finer point-scale measurement is not
+currently possible; a decisive version needs basin-average verification from the gateway itself.
+⚠️ **Control forecast only**, not the 51-member ensemble.
+🔴 **UNREVIEWED by an independent model.** Codex was unavailable (HTTP 404, two attempts, `codex-review.sh`
+correctly reported "NO usable verdict") and the fallback reviewer failed on a 529. The null and the
+window sweep were computed by the same author who made the two errors above.
+
+### Regenerate
+
+```
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
+  uv run python <scratch>/event_timing.py   # per-station offsets
+DHM_PRECIP_XLSX=... uv run python <scratch>/null_test.py   # the null + window sweep
+```
+⚠️ Both scripts are scratch, **not tracked**. Promote them to `scripts/dhm_precip/` before this section
+is relied on for a decision.
