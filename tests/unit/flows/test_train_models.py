@@ -41,7 +41,13 @@ from tests.fakes.fake_stores import (
 )
 
 _RNG = random.Random(42)
-_EPOCH = ensure_utc(datetime(2025, 3, 1, tzinfo=UTC))
+# No module-level `_EPOCH` here — it is defined once, further down this file
+# (currently 2025-01-01). A SECOND `_EPOCH = ...` at this position used to
+# shadow that one silently for every earlier-appearing reference (Python
+# resolves a module global by its value at call time, not by textual
+# position) — the exact landmine `TestMultiParameterSkillComputation` was
+# fixed to avoid by using its own explicit inline `clock` instead of the
+# module-level name. Do not reintroduce a second `_EPOCH` assignment here.
 
 
 def _uuid() -> UUID:
@@ -931,7 +937,16 @@ class TestMultiParameterSkillComputation:
         model_id = ModelId("multi-param-model")
         artifact_id = ArtifactId(_uuid())
         hindcast_run_id = _uuid()
-        clock = lambda: _EPOCH  # noqa: E731
+        # NOT the module-level `_EPOCH` — it is redefined further down this
+        # file to 2025-01-01, which predates `_seed_hindcasts_and_obs`'s
+        # Feb-2025 fixture hindcasts. Against that earlier value, every
+        # resampled observation bucket is still "in the future" as of
+        # `clock()`, so Plan 228's completed-bucket filter
+        # (`_resample_observations_to_forecast_step`) correctly excludes
+        # all of them and no strata are ever built — a fixture bug, not a
+        # defect in the filter. Use an explicit clock strictly after the
+        # seeded hindcasts' valid times instead.
+        clock = lambda: ensure_utc(datetime(2025, 3, 1, tzinfo=UTC))  # noqa: E731
 
         hindcast_store = FakeHindcastStore()
         obs_store = FakeObservationStore()
@@ -1200,3 +1215,77 @@ class TestTrainModelsFlowTenantIsolation:
         assert rejected[0].detail["outcome"] == "skipped_foreign_tenant"
         assert rejected[0].detail["unit_tenant_id"] == str(tenant_b)
         assert rejected[0].detail["principal_tenant_id"] == str(DEFAULT_TENANT_ID)
+
+
+class TestTrainModelsDefaultPeriodEnd:
+    """Plan 228 T5: the default ``period_end`` (used only when the caller
+    omits it) must snap to the last COMPLETE bucket boundary at or before
+    ``now`` — a raw ``clock()`` instant produces the same partial trailing
+    bucket D4 forbids everywhere else. An explicitly supplied ``period_end``
+    passes through unchanged (untouched by this fix)."""
+
+    def test_omitted_period_end_snaps_to_the_last_complete_daily_bucket(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from sapphire_flow.services.scope import (
+            determine_training_scope as real_determine_training_scope,
+        )
+
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = FakeStationForecastModel()
+
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_id, model_id)
+
+        # 06:30 UTC — never a midnight boundary. Within the seeded
+        # observation range (_TRAINING_START + _N_OBS_DAYS ~= 2025-01-10).
+        non_boundary_now = ensure_utc(datetime(2025, 1, 5, 6, 30, tzinfo=UTC))
+        expected_end = ensure_utc(datetime(2025, 1, 5, tzinfo=UTC))
+
+        captured: dict[str, object] = {}
+
+        def _spy(**kwargs: object) -> object:
+            captured["period_end"] = kwargs["period_end"]
+            return real_determine_training_scope(**kwargs)
+
+        monkeypatch.setattr(
+            "sapphire_flow.flows.train_models.determine_training_scope", _spy
+        )
+
+        kwargs = _flow_kwargs(
+            model_id,
+            model,
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        )
+        kwargs.pop("period_end")  # omitted -> the default path under test
+        kwargs["clock"] = lambda: non_boundary_now
+
+        train_models_flow(**kwargs)
+
+        assert captured["period_end"] == expected_end, (
+            f"default period_end was {captured['period_end']}, expected the "
+            f"last complete daily bucket boundary {expected_end} "
+            f"(not the raw clock() instant {non_boundary_now})"
+        )

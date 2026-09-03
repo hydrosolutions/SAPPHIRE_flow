@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.867"
+version = "0.1.868"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -118,11 +118,6 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 [tool.ruff.lint.per-file-ignores]
 "src/sapphire_flow/api/**/*.py" = ["B008", "TCH002", "TCH003"]
 "scripts/**/*.py" = ["T201"]
-# The Dudh Koshi handover README is a markdown document embedded as an
-# f-string. Its tables are one row per line and cannot be wrapped without
-# breaking them, so E501 is off for this file only. Code lines here are still
-# kept under 88 by hand.
-"scripts/dhm_precip/build_dudh_koshi_handover.py" = ["T201", "E501"]
 "tools/**/*.py" = ["T201"]
 
 [tool.pytest.ini_options]
@@ -139,7 +134,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.867"
+current_version = "0.1.868"
 commit = false
 tag = false
 allow_dirty = true

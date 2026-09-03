@@ -34,6 +34,7 @@ from sapphire_flow.types.ids import BasinId, ModelId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.weather import WeatherForecastRecord
 from tests.conftest import (
+    make_observation,
     make_observations,
     make_raw_historical_forcing,
     make_station_config,
@@ -464,6 +465,209 @@ class TestAssembleStationOperationalInputs:
         assert result is not None
         inputs, _ = result
         assert inputs.data.past_dynamic.is_empty()
+
+
+class TestOperationalInputsPastTargetsAreCompleteUtcCalendarBuckets:
+    """Plan 228 D4 (Non-goals RETRACTED — this was live, not a non-goal): at
+    a non-midnight NWP cycle (06/12/18Z), the most recent ``past_targets``
+    bucket must never be a partial day presented as a full one — measured
+    live on the mac-mini: 37 rows where a full day is 144."""
+
+    def test_partial_trailing_day_is_excluded_not_averaged_in(self) -> None:
+        sid = StationId(uuid4())
+        model = _make_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        )
+
+        time_step = timedelta(days=1)
+        lookback_steps = model.data_requirements.lookback_steps
+        issue_time = _utc(2026, 1, 20, hour=6)
+        day_midnight = _utc(2026, 1, 20)
+
+        data_start = ensure_utc(issue_time - (lookback_steps + 2) * time_step)
+        background = make_observations(
+            n=(lookback_steps + 2) * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+        # Day-of-cycle's own partial window [00:00, 06:00) — a sentinel value
+        # that must never surface in past_targets. Buggy (pre-D4) code
+        # fetched observations up to `issue_time` unaligned, forming a
+        # spurious "full day" bucket from only these 6 hours.
+        partial_day = [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(day_midnight + timedelta(hours=h)),
+                value=999.0,
+                rng=random.Random(2000 + h),
+            )
+            for h in range(6)
+        ]
+        obs_store.store_observations(background + partial_day)
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=model,
+            model_id=_MODEL_ID,
+            issue_time=issue_time,
+            cycle_time=issue_time,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=reanalysis,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=lambda: issue_time,
+            forecast_horizon_steps=5,
+            time_step=time_step,
+        )
+
+        assert result is not None
+        inputs, _ = result
+        past_targets = inputs.data.past_targets.sort("timestamp")
+
+        assert 999.0 not in past_targets["discharge"].to_list(), (
+            "past_targets contains a value built from the partial "
+            "[00:00, 06:00) day-of-cycle window"
+        )
+        for ts in past_targets["timestamp"]:
+            assert ts.hour == 0 and ts.minute == 0 and ts.second == 0
+            assert ts < issue_time
+        assert past_targets.height == lookback_steps
+
+    def test_freshness_reflects_the_partial_bucket_not_the_aligned_window(
+        self,
+    ) -> None:
+        """Review fixer round (major): D4 aligns/truncates `past_targets`
+        to exclude the current, still-forming UTC-calendar bucket — correct
+        for the MODEL data, but `observation_staleness_hours` was computed
+        from that same truncated collection. At a 06Z cycle with a fresh
+        reading minutes old, staleness was measured from ~yesterday
+        midnight instead — ~6.2h stale, crossing the default warning
+        threshold for no real reason. Freshness must reflect the latest
+        RAW observation, independent of the aligned model window.
+        """
+        sid = StationId(uuid4())
+        model = _make_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        )
+
+        time_step = timedelta(days=1)
+        lookback_steps = model.data_requirements.lookback_steps
+        issue_time = _utc(2026, 1, 20, hour=6)
+
+        data_start = ensure_utc(issue_time - (lookback_steps + 2) * time_step)
+        background = make_observations(
+            n=(lookback_steps + 2) * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+        # A fresh reading 10 minutes before issue_time — inside the
+        # partial, not-yet-complete UTC-calendar bucket that `past_targets`
+        # correctly excludes.
+        fresh_obs = make_observation(
+            station_id=sid,
+            parameter="discharge",
+            timestamp=ensure_utc(issue_time - timedelta(minutes=10)),
+            value=42.0,
+        )
+        obs_store.store_observations(background + [fresh_obs])
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=model,
+            model_id=_MODEL_ID,
+            issue_time=issue_time,
+            cycle_time=issue_time,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=reanalysis,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=lambda: issue_time,
+            forecast_horizon_steps=5,
+            time_step=time_step,
+        )
+
+        assert result is not None
+        _, metadata = result
+        assert metadata.observation_staleness_hours is not None
+        assert metadata.observation_staleness_hours < 1.0, (
+            "expected freshness to reflect the 10-minute-old raw reading, "
+            f"got {metadata.observation_staleness_hours}h — freshness was "
+            "computed from the aligned/truncated past_targets window "
+            "instead of the latest raw observation"
+        )
+
+
+class TestOperationalInputsCadenceMismatchSkipsGracefully:
+    """Plan 228 review fixer round (major): a real BAFU/SwissMetNet lookback
+    window can legitimately contain an isolated missing bucket (a
+    sensor/comms gap) — hindcast already treats that as insufficient data
+    for one step, never a bug. The live operational cycle must get the
+    SAME treatment: ``assemble_station_operational_inputs`` returns
+    ``None`` (a clean per-cycle skip — the caller's ``inputs_result is
+    None`` branch, not its generic ``except Exception`` that counts a
+    station as FAILED) rather than letting ``validate_time_step_cadence``'s
+    ``ConfigurationError`` propagate undifferentiated."""
+
+    def test_isolated_missing_daily_bucket_returns_none_not_raises(self) -> None:
+        sid = StationId(uuid4())
+        model = _make_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        )
+
+        issue_time = _utc(2026, 1, 20)
+        data_start = ensure_utc(issue_time - timedelta(days=10))
+        days = [1, 2, 3, 5, 6, 7, 8, 9, 10]  # day 4 missing — isolated gap
+        obs = [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(data_start + timedelta(days=d - 1)),
+                rng=random.Random(d),
+            )
+            for d in days
+        ]
+        obs_store.store_observations(obs)
+
+        with capture_logs() as logs:
+            result = assemble_station_operational_inputs(
+                station_id=sid,
+                model=model,
+                model_id=_MODEL_ID,
+                issue_time=issue_time,
+                cycle_time=issue_time,
+                nwp_source=_NWP_SOURCE,
+                forcing_source=reanalysis,
+                weather_forecast_store=nwp_store,
+                obs_store=obs_store,
+                station_store=station_store,
+                basin_store=basin_store,
+                model_state_store=state_store,
+                clock=lambda: issue_time,
+                forecast_horizon_steps=5,
+                time_step=timedelta(days=1),
+            )
+
+        assert result is None
+        skip_events = [
+            e
+            for e in logs
+            if e.get("event") == "operational_inputs.cadence_mismatch_skip"
+        ]
+        assert skip_events
 
 
 class TestAssembleStationOperationalInputsResolvesCaravanStatics:

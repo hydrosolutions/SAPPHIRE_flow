@@ -1253,6 +1253,20 @@ hindcast_forecasts = sa.Table(
         server_default="raw",
     ),
     sa.Column("qc_flags", JSONB, nullable=False, server_default="[]"),
+    # Plan 228 review fixer round: the ensemble's own authoritative time_step
+    # (0050), replacing gap-inference-from-valid_time on read — inference
+    # defaulted to a hardcoded 1 hour for any horizon-1 hindcast, silently
+    # wrong for a horizon-1 DAILY model.
+    sa.Column(
+        "time_step_seconds",
+        sa.Integer,
+        nullable=False,
+        server_default="86400",
+    ),
+    sa.CheckConstraint(
+        "time_step_seconds > 0",
+        name="ck_hindcast_forecasts_time_step_seconds_positive",
+    ),
 )
 
 # Indexes on hindcast_forecasts
@@ -1412,6 +1426,17 @@ skill_scores = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    # Plan 228 per-run scope (blocker, migration 0052): part of the natural
+    # key so two (time_step, phase) cohorts producing a score at the same
+    # (station, model, lead, ...) never collide under `ON CONFLICT DO
+    # NOTHING` — see `uq_skill_scores_natural_key` below.
+    sa.Column(
+        "time_step_seconds",
+        sa.Integer,
+        nullable=False,
+        server_default="86400",
+    ),
+    sa.Column("phase_offset_seconds", sa.Integer, nullable=True),
 )
 
 skill_diagrams = sa.Table(
@@ -1456,11 +1481,72 @@ skill_diagrams = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    # Plan 228 per-run scope (blocker, migration 0052): see
+    # `skill_scores.time_step_seconds`/`.phase_offset_seconds` above.
+    sa.Column(
+        "time_step_seconds",
+        sa.Integer,
+        nullable=False,
+        server_default="86400",
+    ),
+    sa.Column("phase_offset_seconds", sa.Integer, nullable=True),
 )
 
 # Indexes on skill_scores
+#
+# Plan 228 per-run scope (2026-09-03): the tightened natural key below
+# (`model_id` + NULL-safe `model_artifact_id` + `time_step_seconds`/
+# `phase_offset_seconds`) applies only to `computation_version >= 2` —
+# `uq_skill_scores_natural_key_legacy` below covers `< 2` in 0051's original
+# (raw, non-COALESCE'd) shape. See migration 0052's docstring for the full
+# rationale: a plain (non-partial) unique index over the tightened key would
+# fail to deploy against the live mac-mini's known-invalid legacy rows,
+# which legitimately contain repeated NULL-artifact duplicates under 0051's
+# looser guarantee. An intermediate version of this index also added
+# `eval_period_end` as a manufactured per-run identity so a later
+# recomputation of the same stratum would not collide with an earlier one —
+# **that approach is RETRACTED** (independent design check, 2026-09-03): a
+# safe recompute identity is a bigger, interconnected design (stable
+# identity + "every consumer reads the newest generation" + atomic
+# mark-and-replace covering diagrams) that belongs to Plan 235, not to this
+# migration. Two same-stratum, same-version recomputations still collide
+# under `ON CONFLICT DO NOTHING` today — accepted here, closed by 235.
 sa.Index(
     "uq_skill_scores_natural_key",
+    skill_scores.c.station_id,
+    # Plan 228 fixer round (blocker): `model_id` is required alongside
+    # `model_artifact_id` because pooled/BMA combined scores always carry
+    # `model_artifact_id=NULL` (`services/skill/combined_skill.py`) — for
+    # those rows `model_id` (POOLED_MODEL_ID / BMA_MODEL_ID) is the ONLY
+    # column that distinguishes one combination strategy from another.
+    skill_scores.c.model_id,
+    # `model_artifact_id` is nullable for the same reason and needs the
+    # same NULL-safe treatment as season/regime below — PostgreSQL treats
+    # every NULL as distinct, so two NULL-artifact pooled/BMA computations
+    # for the same stratum would otherwise insert duplicate rows forever
+    # instead of colliding under `ON CONFLICT DO NOTHING`.
+    sa.text("COALESCE(model_artifact_id::text, '')"),
+    skill_scores.c.parameter,
+    skill_scores.c.skill_source,
+    sa.text("COALESCE(forcing_type, '')"),
+    skill_scores.c.computation_version,
+    skill_scores.c.lead_time_hours,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    skill_scores.c.metric,
+    # Plan 228 per-run scope (blocker, migration 0052): without these, two
+    # (time_step, phase) cohorts sharing every other column above collide
+    # under `ON CONFLICT DO NOTHING` and one is silently dropped.
+    # `phase_offset_seconds` is nullable (an ensemble with no valid_time),
+    # so it needs the same NULL-safe COALESCE treatment as season/regime
+    # above — NULL never equals NULL in a unique index.
+    skill_scores.c.time_step_seconds,
+    sa.text("COALESCE(phase_offset_seconds, -1)"),
+    unique=True,
+    postgresql_where=sa.text("computation_version >= 2"),
+)
+sa.Index(
+    "uq_skill_scores_natural_key_legacy",
     skill_scores.c.station_id,
     skill_scores.c.model_artifact_id,
     skill_scores.c.parameter,
@@ -1472,6 +1558,7 @@ sa.Index(
     sa.text("COALESCE(flow_regime, '')"),
     skill_scores.c.metric,
     unique=True,
+    postgresql_where=sa.text("computation_version < 2"),
 )
 sa.Index(
     "ix_skill_scores_station_model_version",
@@ -1489,8 +1576,33 @@ sa.Index(
     skill_scores.c.eval_period_end,
     postgresql_where=skill_scores.c.freshness == "current",
 )
+# See `uq_skill_scores_natural_key`/`uq_skill_scores_natural_key_legacy`
+# above — same partial-index split, same rationale.
 sa.Index(
     "uq_skill_diagrams_natural_key",
+    skill_diagrams.c.station_id,
+    # Plan 228 fixer round (blocker): see `uq_skill_scores_natural_key`
+    # above — `model_id` + a NULL-safe `model_artifact_id` are both
+    # required to keep repeated pooled/BMA diagram replays idempotent.
+    skill_diagrams.c.model_id,
+    sa.text("COALESCE(model_artifact_id::text, '')"),
+    skill_diagrams.c.parameter,
+    skill_diagrams.c.skill_source,
+    skill_diagrams.c.computation_version,
+    skill_diagrams.c.lead_time_hours,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    skill_diagrams.c.diagram_type,
+    sa.text("COALESCE(threshold_level, '')"),
+    # Plan 228 per-run scope (blocker, migration 0052): see
+    # `uq_skill_scores_natural_key` above.
+    skill_diagrams.c.time_step_seconds,
+    sa.text("COALESCE(phase_offset_seconds, -1)"),
+    unique=True,
+    postgresql_where=sa.text("computation_version >= 2"),
+)
+sa.Index(
+    "uq_skill_diagrams_natural_key_legacy",
     skill_diagrams.c.station_id,
     skill_diagrams.c.model_artifact_id,
     skill_diagrams.c.parameter,
@@ -1502,6 +1614,7 @@ sa.Index(
     skill_diagrams.c.diagram_type,
     sa.text("COALESCE(threshold_level, '')"),
     unique=True,
+    postgresql_where=sa.text("computation_version < 2"),
 )
 
 # ──────────────────────────────────────────────

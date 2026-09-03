@@ -723,3 +723,88 @@ class TestBmaCrossValidation:
         assert isinstance(scores, list)
         assert isinstance(diagrams, list)
         assert all(s.model_id == BMA_MODEL_ID for s in scores)
+
+
+class TestBmaCrossValidationObservationBounds:
+    """Plan 228 review fixer round (blocker): ``_obs_for_steps`` used to
+    truncate observations to ``[min(hindcast_step), max(hindcast_step)]`` —
+    the ISSUE times, not the forecasts' ``valid_time``s. For a SINGLE
+    hindcast that range collapses (``min == max``), and because
+    observations are stamped at ``valid_time`` (always strictly AFTER
+    ``hindcast_step``), a one-step fold matched ZERO observations. With
+    exactly two hindcast steps, BOTH one-step folds hit this — every
+    cross-validated BMA score silently came from no data at all."""
+
+    def test_two_step_cv_both_single_hindcast_folds_score_against_real_observations(
+        self,
+        station_id: StationId,
+        model_a: ModelId,
+        model_b: ModelId,
+        artifact_id_a: ArtifactId,
+        artifact_id_b: ArtifactId,
+        clock: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        # Exactly 2 hindcast steps -> mid=1 -> two folds, each a SINGLE
+        # hindcast_step. min(step_set) == max(step_set) for every fold.
+        steps = [_utc(2025, 1, 1), _utc(2025, 1, 2)]
+        hindcasts_a = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_a,
+                artifact_id=artifact_id_a,
+                hindcast_step=s,
+                n_steps=1,
+                value=10.0,
+            )
+            for s in steps
+        ]
+        hindcasts_b = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_b,
+                artifact_id=artifact_id_b,
+                hindcast_step=s,
+                n_steps=1,
+                value=12.0,
+            )
+            for s in steps
+        ]
+        # Every observation sits at its forecast's valid_time (hindcast_step
+        # + 1h, per `_make_hindcast`'s fixed hourly time_step) — strictly
+        # AFTER hindcast_step, so `min(step_set) <= ts <= max(step_set)`
+        # (the buggy bound) never matches it for a single-step fold.
+        observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(
+                    datetime.fromtimestamp(s.timestamp() + 3600, tz=UTC)
+                ),
+                value=11.0,
+            )
+            for s in steps
+        ]
+
+        scores, _ = compute_bma_skill_cross_validated(
+            station_id=station_id,
+            parameter="discharge",
+            hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid4,
+            skill_store=None,
+        )
+
+        assert len(scores) > 0, (
+            "both one-step folds produced no skill scores at all — "
+            "observations were bounded by hindcast_step (issue time) "
+            "instead of the forecasts' own valid_time"
+        )
+        assert all(s.sample_size >= 1 for s in scores), (
+            "a skill score was computed with zero matched observations"
+        )

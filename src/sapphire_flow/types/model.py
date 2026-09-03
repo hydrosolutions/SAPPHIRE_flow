@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.enums import (
+        AggregationMethod,
         ArtifactScope,
         ModelArtifactStatus,
         SpatialRepresentation,
@@ -281,6 +282,13 @@ class ModelDataRequirements:
     forecast_horizon_steps: int
     spatial_input_type: SpatialRepresentation
     ensemble_mode: EnsembleMode = EnsembleMode.SINGLE
+    # Plan 228 review fixer round (blocker): the model's DECLARED per-variable
+    # aggregation (FI `PastKnownVariable.aggregation` / `FutureKnownVariable.
+    # aggregation`), captured by the FI adapter so input assembly can honour
+    # it instead of falling back to matching purely on parameter NAME (see
+    # `services/training_data.py::resolved_aggregation_methods`). A `tuple`-
+    # of-pairs `frozenset`, not a `dict`, to keep this dataclass hashable.
+    declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()
 
     def __post_init__(self) -> None:
         if self.lookback_steps < 1:
@@ -288,6 +296,12 @@ class ModelDataRequirements:
         if self.forecast_horizon_steps < 1:
             raise ValueError(
                 f"forecast_horizon_steps must be ≥ 1, got {self.forecast_horizon_steps}"
+            )
+        names = [name for name, _ in self.declared_aggregations]
+        if len(names) != len(set(names)):
+            raise ValueError(
+                "declared_aggregations must not declare conflicting methods "
+                f"for the same parameter: {sorted(names)}"
             )
 
 

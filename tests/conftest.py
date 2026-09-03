@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -14,6 +15,22 @@ import structlog
 # access_token_pepper (R1). Tests never talk to Docker secrets, so provide
 # the env-var fallback process-wide for any TestClient(app) instantiation.
 os.environ.setdefault("ACCESS_TOKEN_PEPPER", "test-only-pepper-do-not-use-in-prod")
+
+# Per-checkout Prefect home. Unset, every worktree and every parallel session
+# shares ~/.prefect and its single SQLite database — measured at 17 GB with a
+# 147 MB write-ahead log on 2026-09-02, with 23 live Prefect processes. Any
+# unscoped `pytest` touching a Prefect flow then queues on that lock, which
+# presents as a hang rather than a failure: two `/implement` runs died as
+# "agent stalled, no progress for 180000ms" after ~4h each, and a 64-hour
+# station-onboarding flow on the mac-mini was "cancelled by the runtime
+# environment".
+#
+# `setdefault`, so an explicit PREFECT_HOME still wins. The containers already
+# scope this (`PREFECT_HOME: /tmp/prefect`, docker-compose.yml); CI is safe
+# because its runners start clean. Local development was the remaining gap.
+os.environ.setdefault(
+    "PREFECT_HOME", str(pathlib.Path(__file__).resolve().parent.parent / ".prefect")
+)
 
 from sapphire_flow.logging import configure_test_logging
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc

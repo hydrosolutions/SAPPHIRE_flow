@@ -172,6 +172,13 @@ class PgObservationStore:
             .where(observations_table.c.parameter == parameter)
             .where(observations_table.c.timestamp >= start)
             .where(observations_table.c.timestamp < end)
+            # Plan 228 review fixer round (major): PostgreSQL makes NO row-order
+            # guarantee without ORDER BY. A downstream `.tail(n)` (hindcast
+            # validation) trims the CHRONOLOGICAL tail, so returning physical
+            # storage order let a recent gap evade validation (or an
+            # irrelevant old gap suppress it). Callers must not have to
+            # re-derive correctness from an unordered result.
+            .order_by(observations_table.c.timestamp)
         )
         if qc_status is not None:
             stmt = stmt.where(observations_table.c.qc_status == qc_status.value)

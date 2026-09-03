@@ -178,6 +178,10 @@ class ParameterDomain(Enum):
 class AggregationMethod(Enum):
     SUM = "sum"
     MEAN = "mean"
+    # Plan 228 review fixer round (blocker): pinned ForecastInterface also
+    # declares MAX (`forecast_interface.common.aggregation.AggregationMethod`)
+    # — a model legally declaring it must not be silently downgraded to MEAN.
+    MAX = "max"
 
 
 class PipelineHealthStatus(Enum):

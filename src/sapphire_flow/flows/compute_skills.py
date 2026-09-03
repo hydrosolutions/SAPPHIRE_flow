@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from uuid import UUID, uuid4
 
 import structlog
@@ -12,10 +13,16 @@ from sapphire_flow.services.skill.combined_skill import (
     compute_bma_skill_cross_validated,
     compute_combined_skill,
 )
-from sapphire_flow.services.skill.service import compute_skill_for_station
+from sapphire_flow.services.skill.service import (
+    compute_skill_for_station,
+    observation_fetch_bounds,
+    partition_by_time_step_and_phase,
+)
 from sapphire_flow.types.enums import ForcingType, ModelCombinationStrategy, SkillSource
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId  # noqa: TC001
 from sapphire_flow.types.skill import SkillDiagram, SkillScore  # noqa: TC001
+
+log = structlog.get_logger(__name__)
 
 
 def _fetch_hindcasts(
@@ -112,14 +119,6 @@ def compute_skills_task(
     if not hindcasts:
         return [], []
 
-    hindcast_steps = [hc.hindcast_step for hc in hindcasts]
-    period_start = min(hindcast_steps)
-    period_end = max(hindcast_steps)
-
-    observations = _fetch_observations(
-        obs_store, station_id, period_start, period_end, parameter=parameter
-    )
-
     thresholds = station_store.fetch_thresholds(station_id) if station_store else []
     flow_regime_config = (
         flow_regime_store.fetch_latest(station_id, parameter)
@@ -131,25 +130,61 @@ def compute_skills_task(
     if deployment_config is not None:
         seasons = deployment_config.get_season_definitions()
 
-    scores, diagrams = compute_skill_for_station(
-        station_id=station_id,
-        model_id=model_id,
-        artifact_id=artifact_id,
-        hindcasts=hindcasts,
-        observations=observations,
-        thresholds=thresholds,
-        flow_regime_config=flow_regime_config,
-        seasons=seasons,
-        skill_source=SkillSource.HINDCAST_REANALYSIS,
-        forcing_type=ForcingType.REANALYSIS,
-        clock=clock,
-        uuid_factory=uuid4,
-        parameter=parameter,
+    # Plan 228 review fixer round (major): `hindcasts` above is a
+    # station/model's ENTIRE unpartitioned history (no `hindcast_run_id`
+    # filter, 1970-2100 bounds). `observation_fetch_bounds` /
+    # `compute_skill_for_station` hard-raise `ConfigurationError` on any
+    # mixed `time_step` or `valid_time` phase within it (Plan 228 D4) — a
+    # single differently configured hindcast run (a retraining, a future
+    # per-cycle anchoring change) would otherwise take down skill scoring
+    # for this station/model permanently, since every future run refetches
+    # the same mixed history and raises again. Partition into homogeneous
+    # cohorts FIRST and compute skill once per cohort, so a mismatch
+    # degrades to "fewer cohorts scored this run", not "none, forever".
+    all_scores: list[SkillScore] = []
+    all_diagrams: list[SkillDiagram] = []
+    cohorts = partition_by_time_step_and_phase(hindcasts)
+    observations_fetched = 0
+    for partition in cohorts.values():
+        period_start, period_end = observation_fetch_bounds(partition)
+        observations = _fetch_observations(
+            obs_store, station_id, period_start, period_end, parameter=parameter
+        )
+        observations_fetched += len(observations)
+
+        scores, diagrams = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=partition,
+            observations=observations,
+            thresholds=thresholds,
+            flow_regime_config=flow_regime_config,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,
+            uuid_factory=uuid4,
+            parameter=parameter,
+        )
+        all_scores.extend(scores)
+        all_diagrams.extend(diagrams)
+
+    _store_skill_results(skill_store, all_scores, all_diagrams)
+
+    # Plan 228 fixer round (major): a task-level summary so a silent
+    # zero-rows-stored run is visible without cross-referencing per-cohort
+    # warnings from `compute_skill_for_station`.
+    log.info(
+        "skill.compute_skills_task.summary",
+        hindcasts_fetched=len(hindcasts),
+        cohorts=len(cohorts),
+        observations_fetched=observations_fetched,
+        scores_stored=len(all_scores),
+        diagrams_stored=len(all_diagrams),
     )
 
-    _store_skill_results(skill_store, scores, diagrams)
-
-    return scores, diagrams
+    return all_scores, all_diagrams
 
 
 @task(
@@ -201,16 +236,6 @@ def compute_combined_skills_task(
     if len(hindcasts_by_model) < 2:
         return [], []
 
-    all_steps = sorted(
-        {hc.hindcast_step for hcs in hindcasts_by_model.values() for hc in hcs}
-    )
-    period_start = min(all_steps)
-    period_end = max(all_steps)
-
-    observations = _fetch_observations(
-        obs_store, station_id, period_start, period_end, parameter=parameter
-    )
-
     thresholds = station_store.fetch_thresholds(station_id) if station_store else []
     flow_regime_config = (
         flow_regime_store.fetch_latest(station_id, parameter)
@@ -222,40 +247,86 @@ def compute_combined_skills_task(
     if deployment_config is not None:
         seasons = deployment_config.get_season_definitions()
 
-    if strategy == ModelCombinationStrategy.BMA:
-        scores, diagrams = compute_bma_skill_cross_validated(
-            station_id=station_id,
-            parameter=parameter,
-            hindcasts_by_model=hindcasts_by_model,
-            observations=observations,
-            thresholds=thresholds,
-            flow_regime_config=flow_regime_config,
-            seasons=seasons,
-            skill_source=SkillSource.HINDCAST_REANALYSIS,
-            forcing_type=ForcingType.REANALYSIS,
-            clock=clock,
-            uuid_factory=uuid4,
-            skill_store=skill_store,
-        )
-    else:
-        scores, diagrams = compute_combined_skill(
-            station_id=station_id,
-            parameter=parameter,
-            strategy=strategy,
-            hindcasts_by_model=hindcasts_by_model,
-            observations=observations,
-            thresholds=thresholds,
-            flow_regime_config=flow_regime_config,
-            seasons=seasons,
-            skill_source=SkillSource.HINDCAST_REANALYSIS,
-            forcing_type=ForcingType.REANALYSIS,
-            clock=clock,
-            uuid_factory=uuid4,
-        )
+    # Plan 228 review fixer round (major): `hindcasts_by_model` above is
+    # EVERY combined model's entire unpartitioned history. This is the
+    # sharper case of the finding in `compute_skills_task` — it UNIONS
+    # hindcasts across every combined model before validating, so a single
+    # model with a differently configured hindcast run poisons the
+    # observation-bounds fetch for the whole combination, every time it
+    # runs. Partition each model's history into homogeneous
+    # `(time_step, phase)` cohorts first, then only combine models that
+    # share a cohort (still >= 2 of them) — a mismatch degrades to "fewer
+    # cohorts combined this run", not "none, forever".
+    partitioned_by_key: dict[tuple[object, object], dict[ModelId, list]] = defaultdict(
+        dict
+    )
+    for model_id, hcs in hindcasts_by_model.items():
+        for key, partition in partition_by_time_step_and_phase(hcs).items():
+            partitioned_by_key[key][model_id] = partition
 
-    _store_skill_results(skill_store, scores, diagrams)
+    all_scores: list[SkillScore] = []
+    all_diagrams: list[SkillDiagram] = []
+    observations_fetched = 0
+    cohorts_combined = 0
+    for per_model_hindcasts in partitioned_by_key.values():
+        if len(per_model_hindcasts) < 2:
+            continue
+        cohorts_combined += 1
 
-    return scores, diagrams
+        cohort_hindcasts = [hc for hcs in per_model_hindcasts.values() for hc in hcs]
+        period_start, period_end = observation_fetch_bounds(cohort_hindcasts)
+        observations = _fetch_observations(
+            obs_store, station_id, period_start, period_end, parameter=parameter
+        )
+        observations_fetched += len(observations)
+
+        if strategy == ModelCombinationStrategy.BMA:
+            scores, diagrams = compute_bma_skill_cross_validated(
+                station_id=station_id,
+                parameter=parameter,
+                hindcasts_by_model=per_model_hindcasts,
+                observations=observations,
+                thresholds=thresholds,
+                flow_regime_config=flow_regime_config,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=clock,
+                uuid_factory=uuid4,
+                skill_store=skill_store,
+            )
+        else:
+            scores, diagrams = compute_combined_skill(
+                station_id=station_id,
+                parameter=parameter,
+                strategy=strategy,
+                hindcasts_by_model=per_model_hindcasts,
+                observations=observations,
+                thresholds=thresholds,
+                flow_regime_config=flow_regime_config,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=clock,
+                uuid_factory=uuid4,
+            )
+        all_scores.extend(scores)
+        all_diagrams.extend(diagrams)
+
+    _store_skill_results(skill_store, all_scores, all_diagrams)
+
+    # Plan 228 fixer round (major): task-level summary — see
+    # `compute_skills_task.summary` above.
+    log.info(
+        "skill.compute_combined_skills_task.summary",
+        candidate_cohorts=len(partitioned_by_key),
+        cohorts_combined=cohorts_combined,
+        observations_fetched=observations_fetched,
+        scores_stored=len(all_scores),
+        diagrams_stored=len(all_diagrams),
+    )
+
+    return all_scores, all_diagrams
 
 
 @flow(

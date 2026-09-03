@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from datetime import timedelta  # noqa: TCH003
+from datetime import UTC, datetime, timedelta  # noqa: TCH003
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import (
     available_declared_static_keys,
     declared_static_naming,
     project_declared_static_attributes,
 )
 from sapphire_flow.types.basin import non_null_static_keys
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AggregationMethod, QcStatus, StaticNaming
 
 if TYPE_CHECKING:
@@ -27,7 +29,11 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
-    from sapphire_flow.types.model import GroupTrainingData, StationTrainingData
+    from sapphire_flow.types.model import (
+        GroupTrainingData,
+        ModelDataRequirements,
+        StationTrainingData,
+    )
     from sapphire_flow.types.station import StationGroup
 
 log = structlog.get_logger()
@@ -53,6 +59,169 @@ _V0_AGGREGATION_FALLBACK: dict[str, AggregationMethod] = {
 }
 
 
+def aggregation_method_for(parameter: str) -> AggregationMethod:
+    """The v0 aggregation method ``parameter`` is TRAINED against (Plan 228
+    D2): a caller comparing a forecast to observations (e.g. skill scoring)
+    must aggregate with this SAME method, never a different one, or the fix
+    substitutes one quantity mismatch for another."""
+    return _V0_AGGREGATION_FALLBACK.get(parameter, AggregationMethod.MEAN)
+
+
+def resolved_aggregation_methods(
+    data_requirements: ModelDataRequirements,
+) -> dict[str, AggregationMethod]:
+    """Per-column aggregation methods for :func:`resample_to_time_step`,
+    with a model's DECLARED per-variable aggregation
+    (``PastKnownVariable.aggregation`` / ``FutureKnownVariable.aggregation``,
+    captured into ``ModelDataRequirements.declared_aggregations`` by the FI
+    adapter) taking precedence over the v0 name-keyed fallback table.
+
+    Plan 228 review fixer round (blocker): every caller that previously
+    passed ``aggregation_methods=None`` to ``resample_to_time_step`` ignored
+    a model's declaration entirely and fell back to matching purely on
+    parameter NAME — a model legally declaring, say, ``discharge`` with
+    ``AggregationMethod.MAX`` would silently receive/train on the MEAN
+    fallback instead. Declared values win; any parameter the model did not
+    declare an aggregation for keeps the v0 fallback unchanged.
+    """
+    return {**_V0_AGGREGATION_FALLBACK, **dict(data_requirements.declared_aggregations)}
+
+
+_CADENCE_TOLERANCE_FRACTION = 0.01
+
+
+def _detect_cadence_us(df: pl.DataFrame) -> float | None:
+    """Median gap (microseconds) between sorted, distinct ``timestamp`` rows.
+
+    Returns ``None`` when the frame is too small (or lacks a usable spread)
+    to have a detectable cadence at all — callers treat that as "nothing to
+    check", never as a match.
+    """
+    if df.is_empty() or df.height < 2:
+        return None
+    timestamps = df["timestamp"].sort()
+    diffs = timestamps.diff().drop_nulls()
+    if diffs.is_empty():
+        return None
+    median_diff_us = diffs.cast(pl.Int64).median()
+    if median_diff_us is None:
+        return None
+    # polars .median() is typed PythonLiteral; the cast column is Int64.
+    return cast("float", median_diff_us)
+
+
+def _all_timestamps_calendar_aligned(df: pl.DataFrame, target_us: float) -> bool:
+    """True iff every ``timestamp`` row already sits on a whole multiple of
+    ``target_us`` since the Unix epoch (Plan 228 D4's calendar grid).
+
+    Plan 228 review fixer round (major): this is checked BEFORE (and
+    independently of) any cadence/height shortcut in
+    :func:`resample_to_time_step` — a frame at the right cadence but the
+    wrong PHASE (e.g. daily rows all stamped 06:00) must still fall through
+    to bucketing, not be waved through as "already correct".
+    """
+    if df.is_empty():
+        return True
+    if target_us <= 0:
+        return True
+    remainder = df["timestamp"].dt.epoch("us") % int(target_us)
+    return bool((remainder == 0).all())
+
+
+def validate_time_step_cadence(
+    df: pl.DataFrame,
+    time_step: timedelta,
+    *,
+    context: str,
+) -> None:
+    """Fail loudly when ``df``'s delivered cadence does not match ``time_step``.
+
+    Plan 228 D1 (option C): a model's ``PastKnownVariable.lookback`` is a
+    count of steps of the declared ``time_step`` (ForecastInterface
+    ``input/variable.py``/``input/requirement.py``) — the model is entitled
+    to assume it, never obliged to check it. P1 was exactly this silently
+    violated: hindcast handed 7 raw ~10-minute rows against a declared
+    ``timedelta(days=1)``. Both assemblers resample ``past_targets`` to
+    ``time_step`` themselves; this is the backstop that makes a future
+    resampling omission (a new caller, a refactor) fail loudly instead of
+    silently, at the one point both paths already call through.
+
+    Deliberately scoped to ``past_targets`` callers only — ``past_dynamic``
+    legitimately carries a finer, unresampled cadence than the model's
+    ``time_step`` in the operational path (e.g. hourly reanalysis feeding a
+    daily model), so a blanket check would misfire there.
+
+    Checks **every** adjacent gap, not the median (Plan 228 review fixer
+    round): a median-of-N check passes an isolated missing bucket (e.g.
+    resampled days 1,2,3,5,6 — gaps 1d,1d,2d,1d — median is still 1d), which
+    silently lets a model read non-consecutive buckets as if they were
+    consecutive steps (`.tail(n)`/`values[-n:]` are position-based, so a gap
+    shifts every earlier value's apparent recency by one step). Every gap
+    must match ``time_step`` within tolerance; a single bad gap raises.
+    """
+    if df.is_empty() or df.height < 2:
+        return
+    timestamps = df["timestamp"].sort()
+    diffs_us = timestamps.diff().drop_nulls().cast(pl.Int64)
+    if diffs_us.is_empty():
+        return
+    target_us = time_step.total_seconds() * 1_000_000
+    if target_us <= 0:
+        return
+    tolerance_us = target_us * _CADENCE_TOLERANCE_FRACTION
+    bad_gaps = diffs_us.filter((diffs_us - target_us).abs() > tolerance_us)
+    if bad_gaps.len() > 0:
+        worst_us = bad_gaps.abs().max()
+        actual = timedelta(microseconds=int(cast("float", worst_us)))
+        raise ConfigurationError(
+            f"{context}: delivered cadence includes a gap of {actual} that "
+            f"does not match the declared time_step {time_step} "
+            f"({bad_gaps.len()} of {diffs_us.len()} gaps out of tolerance)"
+        )
+
+
+def floor_to_time_step(instant: UtcDatetime, time_step: timedelta) -> UtcDatetime:
+    """The UTC-calendar bucket boundary at or before ``instant`` (Plan 228
+    D4): buckets are whole multiples of ``time_step`` since the Unix epoch
+    (UTC midnight, for a daily step) — never phase-aligned to ``instant``
+    itself. A previous fixer round did the opposite (an ``anchor`` parameter
+    that phase-aligned buckets to a forecast's own timestamp); D4 retracts
+    that: it made hindcast consume rolling windows while training consumes
+    UTC calendar days, and it aligned to ``valid_time`` — precisely the value
+    Plan 226 exists to correct.
+    """
+    step_seconds = time_step.total_seconds()
+    if step_seconds <= 0:
+        return instant
+    floored_seconds = (instant.timestamp() // step_seconds) * step_seconds
+    return ensure_utc(datetime.fromtimestamp(floored_seconds, tz=UTC))
+
+
+def aligned_lookback_bounds(
+    instant: UtcDatetime,
+    lookback_steps: int,
+    time_step: timedelta,
+) -> tuple[UtcDatetime, UtcDatetime]:
+    """The ``[start, end)`` fetch bounds covering exactly ``lookback_steps``
+    COMPLETE UTC-calendar buckets of ``time_step``, ending at the last bucket
+    boundary at or before ``instant`` (Plan 228 D4).
+
+    Filtering after the fact is not sufficient: a naive
+    ``[instant - lookback_steps * time_step, instant)`` window has a partial
+    bucket at BOTH ends whenever ``instant`` is not itself a bucket boundary
+    (e.g. a 06:00 UTC cycle for a daily model) — dropping only the trailing
+    one leaves a corrupt leading day, and dropping both starves a 7-day model
+    to 6 days. Aligning ``end`` to the boundary at or before ``instant``
+    (dropping the partial trailing bucket) and deriving ``start`` from THAT
+    aligned ``end`` (extending earlier than the naive start whenever
+    ``instant`` itself isn't aligned) is what keeps every one of the
+    ``lookback_steps`` buckets whole.
+    """
+    end = floor_to_time_step(instant, time_step)
+    start = ensure_utc(end - lookback_steps * time_step)
+    return start, end
+
+
 def resample_to_time_step(
     df: pl.DataFrame,
     time_step: timedelta,
@@ -61,10 +230,35 @@ def resample_to_time_step(
     """Resample a wide-format observations DataFrame to the target time_step.
 
     Expects columns: ``timestamp`` (datetime) + one column per parameter.
-    Returns as-is if the data cadence already matches ``time_step``.
+    Returns as-is ONLY when the data both matches ``time_step`` cadence AND
+    is already stamped on the UTC-calendar grid.
+
+    Buckets are UTC-calendar-aligned (whole multiples of ``time_step`` since
+    the Unix epoch) — Plan 228 D4: every path aggregates onto the SAME grid,
+    never phase-aligned to a caller's own timestamp. Callers that need the
+    result to line up with a specific instant (an ``issue_time``, a
+    forecast's ``valid_time``) must fetch pre-aligned bounds themselves (see
+    :func:`aligned_lookback_bounds`), not ask this function to shift the
+    grid to meet them halfway.
+
+    Plan 228 review fixer round (major): the fast path used to trigger on
+    cadence match ALONE, so already-daily data stamped off the calendar grid
+    (e.g. every row at 06:00, from a non-midnight operational cycle) was
+    returned byte-for-byte unchanged — never rebucketed onto the calendar
+    grid, exactly the phase-aligned behavior D4 forbids. Calendar alignment
+    is now checked FIRST and independently of cadence/height, so a
+    misaligned frame (including a single misaligned row) always falls
+    through to the ``group_by_dynamic`` bucketing below, which re-labels it
+    onto the calendar grid.
+
+    Plan 228 review fixer round (major): sorted by ``timestamp`` on EVERY
+    return path, including the fast paths above — a caller (e.g. hindcast's
+    ``.tail(declared_lookback_steps)``) trims the CHRONOLOGICAL tail, and an
+    unordered store read (no ``ORDER BY``) must not silently defeat that.
     """
-    if df.is_empty() or df.height < 2:
+    if df.is_empty():
         return df
+    df = df.sort("timestamp")
 
     methods = (
         aggregation_methods
@@ -72,19 +266,16 @@ def resample_to_time_step(
         else _V0_AGGREGATION_FALLBACK
     )
 
-    # Detect current cadence via median gap between sorted timestamps.
-    timestamps = df["timestamp"].sort()
-    diffs = timestamps.diff().drop_nulls()
-    if diffs.is_empty():
-        return df
-    median_diff_us = diffs.cast(pl.Int64).median()
     target_us = time_step.total_seconds() * 1_000_000
-    if (
-        median_diff_us is not None
-        # polars .median() is typed PythonLiteral; the cast column is Int64
-        and abs(cast("float", median_diff_us) - target_us) < target_us * 0.01
-    ):
-        return df
+    if _all_timestamps_calendar_aligned(df, target_us):
+        if df.height < 2:
+            return df
+        # Detect current cadence via median gap between sorted timestamps.
+        median_diff_us = _detect_cadence_us(df)
+        if median_diff_us is None:
+            return df
+        if abs(median_diff_us - target_us) < target_us * _CADENCE_TOLERANCE_FRACTION:
+            return df
 
     # Build per-column aggregation expressions for wide-format DataFrame.
     parameter_cols = [c for c in df.columns if c != "timestamp"]
@@ -100,12 +291,14 @@ def resample_to_time_step(
             method = AggregationMethod.MEAN
         if method == AggregationMethod.SUM:
             agg_exprs.append(pl.col(col).sum())
+        elif method == AggregationMethod.MAX:
+            agg_exprs.append(pl.col(col).max())
         else:
             agg_exprs.append(pl.col(col).mean())
 
+    working = df.sort("timestamp")
     resampled = (
-        df.sort("timestamp")
-        .group_by_dynamic("timestamp", every=_timedelta_to_polars(time_step))
+        working.group_by_dynamic("timestamp", every=_timedelta_to_polars(time_step))
         .agg(agg_exprs)
         .sort("timestamp")
     )
@@ -282,9 +475,10 @@ def assemble_station_training_data(
         )
         return None
 
+    aggregation_methods = resolved_aggregation_methods(model.data_requirements)
     past_targets_df = _observations_to_dataframe(observations, parameter)
     past_targets_df = resample_to_time_step(
-        past_targets_df, time_step, aggregation_methods=None
+        past_targets_df, time_step, aggregation_methods=aggregation_methods
     )
 
     # Past-known forcing features are delivered as history (past_dynamic); the
@@ -296,6 +490,7 @@ def assemble_station_training_data(
         future_features=future_features,
         past_targets=past_targets_df,
         time_step=time_step,
+        aggregation_methods=aggregation_methods,
     )
 
     return StationTrainingData(
@@ -321,6 +516,7 @@ def _future_dynamic_from_forcing(
     future_features: frozenset[str],
     past_targets: pl.DataFrame,
     time_step: timedelta,
+    aggregation_methods: dict[str, AggregationMethod] | None = None,
 ) -> pl.DataFrame:
     if not future_features:
         return forcing_df.select("timestamp").clear()
@@ -329,7 +525,7 @@ def _future_dynamic_from_forcing(
     future_forcing = resample_to_time_step(
         forcing_df.select(["timestamp", *future_cols]),
         time_step,
-        aggregation_methods=None,
+        aggregation_methods=aggregation_methods,
     ).with_columns(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
 
     return (

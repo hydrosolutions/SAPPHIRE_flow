@@ -23,13 +23,19 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.operational_inputs import (
     build_future_dynamic_frame,
     observations_to_wide_dataframe,
     raw_forcing_to_dataframe,
 )
-from sapphire_flow.services.training_data import resample_to_time_step
+from sapphire_flow.services.training_data import (
+    aligned_lookback_bounds,
+    resample_to_time_step,
+    resolved_aggregation_methods,
+    validate_time_step_cadence,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleMode,
@@ -252,6 +258,12 @@ def assemble_assignment_inputs(
             )
 
     lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
+    # Plan 228 D4: see `operational_inputs.py` — past_targets bounds are
+    # ALIGNED and EXTENDED to complete UTC-calendar buckets, never `past_
+    # dynamic`'s unresampled `lookback_start`/`issue_time` window (below).
+    past_targets_start, past_targets_end = aligned_lookback_bounds(
+        issue_time, reqs.lookback_steps, time_step
+    )
 
     target_parameters = list(reqs.target_parameters)
     all_observations: list[Observation] = []
@@ -260,17 +272,66 @@ def assemble_assignment_inputs(
             obs_store.fetch_observations(
                 station_id=station_id,
                 parameter=parameter,
-                start=lookback_start,
-                end=issue_time,
+                start=past_targets_start,
+                end=past_targets_end,
                 qc_status=QcStatus.QC_PASSED,
             )
         )
     past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
-        past_targets, time_step, aggregation_methods=None
+        past_targets, time_step, aggregation_methods=resolved_aggregation_methods(reqs)
     )
+    # Plan 228 D1(C): backstop shared with the hindcast assembler — see
+    # `validate_time_step_cadence` for why this is scoped to past_targets.
+    #
+    # Review fixer round (major): a real BAFU/SwissMetNet lookback window
+    # can legitimately contain an isolated missing bucket (sensor/comms
+    # gap) — a KNOWN per-station data-availability condition, not a bug.
+    # `INCOMPLETE_AT_CYCLE` already exists for exactly this (assigned in
+    # `track_resolution.py` for the analogous forcing-side condition);
+    # stamp it here directly rather than letting the exception fall through
+    # to the caller's generic `_contained_assemble` catch-all, which would
+    # mislabel it `ASSEMBLY_FAILED` (a genuine programming bug, `log.exception`
+    # stack trace and all) instead of an expected, recoverable data gap.
+    try:
+        validate_time_step_cadence(
+            past_targets, time_step, context="track_assembly.past_targets"
+        )
+    except ConfigurationError as exc:
+        log.warning(
+            "track_assembly.cadence_mismatch_skip",
+            station_id=str(station_id),
+            model_id=str(model_id),
+            issue_time=str(issue_time),
+            error=str(exc),
+        )
+        return UnavailableTrackContext(
+            assignment=assignment_key,
+            reason=StationUnavailableReason.INCOMPLETE_AT_CYCLE,
+        )
 
-    latest_obs_ts = max((o.timestamp for o in all_observations), default=None)
+    # Freshness must reflect the LATEST raw observation, not the aligned
+    # `past_targets` window (review fixer round, major): see
+    # `operational_inputs.py`'s identical fix — `past_targets_end` excludes
+    # the current UTC-calendar bucket entirely (D4), so at a 06/12/18Z cycle
+    # `all_observations` stops well before `issue_time` even when a fresh
+    # reading landed minutes ago. Fetch the trailing gap
+    # `[past_targets_end, issue_time)` separately, UNRESAMPLED, for
+    # freshness only — it is never mixed into `past_targets`.
+    freshness_observations = list(all_observations)
+    if past_targets_end < issue_time:
+        for parameter in target_parameters:
+            freshness_observations.extend(
+                obs_store.fetch_observations(
+                    station_id=station_id,
+                    parameter=parameter,
+                    start=past_targets_end,
+                    end=issue_time,
+                    qc_status=QcStatus.QC_PASSED,
+                )
+            )
+
+    latest_obs_ts = max((o.timestamp for o in freshness_observations), default=None)
     observation_staleness_hours: float | None = None
     if latest_obs_ts is not None:
         observation_staleness_hours = (now - latest_obs_ts).total_seconds() / 3600.0

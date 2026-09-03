@@ -5,12 +5,17 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import polars as pl
+import pytest
 from structlog.testing import capture_logs
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.training_data import (
+    aligned_lookback_bounds,
     assemble_group_training_data,
     assemble_station_training_data,
+    floor_to_time_step,
     resample_to_time_step,
+    validate_time_step_cadence,
 )
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
@@ -1026,6 +1031,146 @@ class TestResampleToTimeStep:
         assert result.height == 1
         assert abs(result["discharge"][0] - 96.0) < 1e-9  # 24 * 4.0
 
+    def test_buckets_are_utc_calendar_aligned_never_phase_aligned(self) -> None:
+        """Plan 228 D4: a previous fixer round's ``anchor`` parameter
+        phase-aligned buckets to a caller's own timestamp; D4 retracts
+        that — every path aggregates onto UTC-calendar buckets, full stop.
+        3 days of 10-minute discharge starting at 06:00 UTC (never a
+        midnight boundary) must still bucket to UTC midnight."""
+        start = ensure_utc(datetime(2024, 1, 1, 6, tzinfo=UTC))
+        n = 3 * 24 * 6
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(start.timestamp() + i * 600, tz=UTC)
+                    )
+                    for i in range(n)
+                ],
+                "discharge": [5.0] * n,
+            }
+        )
+
+        result = resample_to_time_step(df, timedelta(days=1))
+
+        # Every bucket boundary must fall at UTC midnight, never at 06:00.
+        for ts in result["timestamp"]:
+            assert ts.hour == 0 and ts.minute == 0 and ts.second == 0, (
+                f"bucket at {ts} is not UTC-calendar aligned"
+            )
+
+
+class TestResampleAlreadyStepSizedDataStillCalendarAligns:
+    """Plan 228 review fixer round (major): the fast path used to trigger on
+    cadence match ALONE — already-daily rows stamped off the UTC-calendar
+    grid (e.g. every row at 06:00, from a non-midnight operational cycle)
+    were returned byte-for-byte unchanged, never rebucketed. Those rows then
+    pass ``validate_time_step_cadence`` (which only checks GAPS, not phase)
+    and can join 06:00 forecasts — exactly the phase-aligned behavior D4
+    forbids. The existing UTC-calendar test
+    (``test_buckets_are_utc_calendar_aligned_never_phase_aligned``) uses
+    finer 10-minute input, so it never enters this fast path at all.
+    """
+
+    def test_already_daily_cadence_at_0600_is_still_rebucketed_to_midnight(
+        self,
+    ) -> None:
+        start = ensure_utc(datetime(2024, 1, 1, 6, tzinfo=UTC))
+        n = 5
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(start.timestamp() + i * 86400, tz=UTC)
+                    )
+                    for i in range(n)
+                ],
+                "discharge": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+        result = resample_to_time_step(df, timedelta(days=1))
+
+        for ts in result["timestamp"]:
+            assert ts.hour == 0 and ts.minute == 0 and ts.second == 0, (
+                f"already-daily-cadence bucket at {ts} is still phase-aligned "
+                "to 06:00, not the UTC-calendar grid"
+            )
+
+    def test_single_misaligned_row_is_floored_to_the_calendar_grid(self) -> None:
+        df = pl.DataFrame(
+            {
+                "timestamp": [ensure_utc(datetime(2024, 1, 1, 6, tzinfo=UTC))],
+                "discharge": [42.0],
+            }
+        )
+
+        result = resample_to_time_step(df, timedelta(days=1))
+
+        assert result.height == 1
+        ts = result["timestamp"][0]
+        assert ts == ensure_utc(datetime(2024, 1, 1, tzinfo=UTC)), (
+            f"single-row frame at {ts} was returned unchanged instead of "
+            "floored onto the UTC-calendar grid"
+        )
+        assert abs(result["discharge"][0] - 42.0) < 1e-9
+
+
+class TestValidateTimeStepCadence:
+    """Plan 228 review fixer round (major): direct unit coverage for
+    ``validate_time_step_cadence``, wired as a hard `ConfigurationError`-
+    raising check into the live operational forecast cycle
+    (`operational_inputs.py`, `track_assembly.py`) and hindcast
+    (`hindcast.py`), with previously zero direct tests anywhere."""
+
+    def test_raises_on_a_genuinely_mismatched_cadence(self) -> None:
+        # Raw ~10-minute-cadence data against a declared daily time_step —
+        # the exact P1 shape (144x shortfall).
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(_BASE.timestamp() + i * 600, tz=UTC)
+                    )
+                    for i in range(20)
+                ],
+                "discharge": [1.0] * 20,
+            }
+        )
+        with pytest.raises(ConfigurationError, match="does not match"):
+            validate_time_step_cadence(df, timedelta(days=1), context="test")
+
+    def test_does_not_raise_on_a_clean_uniform_cadence(self) -> None:
+        df = _hourly_discharge(48, value=1.0)
+        # Should not raise: cadence matches declared time_step exactly.
+        validate_time_step_cadence(df, timedelta(hours=1), context="test")
+
+    def test_raises_on_an_isolated_missing_bucket(self) -> None:
+        # Plan 228 review fixer round (major): days 1,2,3,5,6 — gaps
+        # 1d,1d,2d,1d. The median gap is still 1d (3 of 4 gaps match), so a
+        # median-only check passes this straight through; every adjacent
+        # gap must be checked to catch the isolated 2-day gap on day 4.
+        days = [1, 2, 3, 5, 6]
+        df = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(
+                        datetime.fromtimestamp(
+                            _BASE.timestamp() + (d - 1) * 86400, tz=UTC
+                        )
+                    )
+                    for d in days
+                ],
+                "discharge": [1.0] * len(days),
+            }
+        )
+        with pytest.raises(ConfigurationError, match="does not match"):
+            validate_time_step_cadence(df, timedelta(days=1), context="test")
+
+    def test_does_not_raise_on_fewer_than_two_rows(self) -> None:
+        df = pl.DataFrame({"timestamp": [_BASE], "discharge": [1.0]})
+        validate_time_step_cadence(df, timedelta(days=1), context="test")
+
 
 class TestResampleSnowAggregationFallback:
     """Plan 145 D2: swe/snow_depth (states) MEAN, snowmelt (flux) SUMs — via the
@@ -1146,3 +1291,49 @@ class TestSnowReachesPastDynamicViaHybridSource:
         assert "swe" in result.past_dynamic.columns
         values = result.past_dynamic.sort("timestamp")["swe"].to_list()
         assert values == [100.0, 101.0, 102.0, 103.0, 104.0]
+
+
+class TestFloorToTimeStep:
+    """Plan 228 D4: the UTC-calendar bucket boundary at or before an
+    instant — never phase-aligned to the instant itself."""
+
+    def test_midnight_instant_is_its_own_floor(self) -> None:
+        midnight = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        assert floor_to_time_step(midnight, timedelta(days=1)) == midnight
+
+    def test_non_midnight_instant_floors_to_the_preceding_midnight(self) -> None:
+        six_am = ensure_utc(datetime(2026, 1, 10, 6, tzinfo=UTC))
+        expected = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        assert floor_to_time_step(six_am, timedelta(days=1)) == expected
+
+    def test_hourly_step_floors_to_the_hour(self) -> None:
+        instant = ensure_utc(datetime(2026, 1, 10, 6, 45, 30, tzinfo=UTC))
+        expected = ensure_utc(datetime(2026, 1, 10, 6, tzinfo=UTC))
+        assert floor_to_time_step(instant, timedelta(hours=1)) == expected
+
+
+class TestAlignedLookbackBounds:
+    """Plan 228 D4: fetch bounds covering exactly ``lookback_steps``
+    COMPLETE UTC-calendar buckets, ending at the boundary at or before the
+    given instant — never a naive ``instant - lookback_steps * time_step``,
+    which has a partial bucket at both ends whenever ``instant`` is not
+    itself a boundary."""
+
+    def test_end_is_the_boundary_at_or_before_instant(self) -> None:
+        issue_time = ensure_utc(datetime(2026, 1, 15, 6, tzinfo=UTC))
+        _, end = aligned_lookback_bounds(issue_time, 7, timedelta(days=1))
+        assert end == ensure_utc(datetime(2026, 1, 15, tzinfo=UTC))
+        assert end <= issue_time  # NO-FUTURE-LEAKAGE
+
+    def test_start_is_exactly_lookback_steps_before_the_aligned_end(self) -> None:
+        issue_time = ensure_utc(datetime(2026, 1, 15, 6, tzinfo=UTC))
+        start, end = aligned_lookback_bounds(issue_time, 7, timedelta(days=1))
+        assert end - start == 7 * timedelta(days=1)
+
+    def test_a_midnight_instant_reproduces_the_naive_window(self) -> None:
+        # When `instant` IS already a boundary, alignment is a no-op — the
+        # aligned window equals the naive `instant - lookback * step` one.
+        issue_time = ensure_utc(datetime(2026, 1, 15, tzinfo=UTC))
+        start, end = aligned_lookback_bounds(issue_time, 7, timedelta(days=1))
+        assert end == issue_time
+        assert start == ensure_utc(issue_time - 7 * timedelta(days=1))

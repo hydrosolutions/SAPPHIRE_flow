@@ -21,6 +21,7 @@ from sapphire_flow.types.station import StationGroup, StationWeatherSource
 if TYPE_CHECKING:
     from sapphire_flow.types.model import ModelArtifact, StationModelInputs
 from tests.conftest import (
+    make_observation,
     make_observations,
     make_raw_historical_forcing,
     make_station_config,
@@ -1420,3 +1421,323 @@ class TestSnowReachesPastDynamicViaHybridSource:
         for inputs in recording.calls:
             assert "swe" in inputs.data.past_dynamic.columns
             assert not inputs.data.past_dynamic.is_empty()
+
+
+class TestHindcastResamplesPastTargetsToDeclaredTimeStep:
+    """Plan 228 T1/P1: a model's ``lookback_steps`` count of ``past_targets``
+    rows must span its declared ``time_step`` window, exactly as the
+    operational path already delivers (``operational_inputs.py:551``).
+    Before the fix, hindcast handed the model raw ~10-minute-cadence rows
+    against a declared ``timedelta(days=1)``: 7 rows spanned ~70 minutes,
+    not 7 days — a 144x shortfall, measured live on the mac-mini
+    (2026-09-01).
+    """
+
+    def test_tail_lookback_spans_the_declared_window_not_raw_cadence(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        lookback_steps = 7
+        issue_time = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+
+        # 12 days of real mac-mini cadence (~604s / 10min) observations,
+        # ending just before issue_time — far more than 7 RAW rows, but
+        # exactly enough for 7 daily means.
+        data_start = ensure_utc(issue_time - timedelta(days=12))
+        observations = make_observations(
+            n=12 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+        )
+
+        assert inputs is not None
+        past_targets = inputs.data.past_targets
+
+        # This mirrors exactly what a daily model reads
+        # (`LinearRegressionDaily._extract_discharge`: `sorted_df.tail(7)`,
+        # `NwpRegression._initial_lags`: `values[-self._n_lags:]`).
+        tail = past_targets.sort("timestamp").tail(lookback_steps)
+        assert tail.height == lookback_steps
+
+        span = tail["timestamp"].max() - tail["timestamp"].min()
+        declared_window = lookback_steps * time_step
+
+        # Buggy code reports ~70 minutes here (7 raw 10-minute rows); fixed
+        # code must span within one time_step of the full declared window.
+        assert span >= declared_window - time_step, (
+            f"tail({lookback_steps}) of past_targets spans only {span} "
+            f"against a declared {declared_window} lookback window"
+        )
+
+
+class TestHindcastValidatesTheChronologicalTailNotThePhysicalOne:
+    """Plan 228 review fixer round (major): ``.tail(declared_lookback_steps)``
+    trims whatever rows happen to be LAST in ``obs_df``'s physical order — a
+    real risk given the observation store issues no ``ORDER BY`` and (before
+    this fixer round) ``resample_to_time_step``'s fast path could return
+    rows unsorted. Feeding a scrambled (but otherwise gap-free and complete)
+    10-day observation list must not corrupt the CHRONOLOGICAL last 7 days'
+    validation."""
+
+    def test_scrambled_input_order_does_not_suppress_a_clean_chronological_tail(
+        self,
+    ) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        declared_lookback_steps = 7
+        fetch_lookback_steps = 10
+        issue_time = ensure_utc(datetime(2022, 3, 1, tzinfo=UTC))
+
+        # 10 complete, consecutive calendar days ending the day before
+        # issue_time — chronologically gap-free, including its last 7 days.
+        data_start = ensure_utc(issue_time - timedelta(days=10))
+        by_day = {
+            day: make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(data_start + timedelta(days=day - 1)),
+                value=float(day),
+                rng=random.Random(day),
+            )
+            for day in range(1, 11)
+        }
+        # Scrambled PHYSICAL order (odds then evens): the LAST 7 elements in
+        # this list order are days {7,9,2,4,6,8,10} — a non-contiguous
+        # subset with real 2-day gaps between several of them, even though
+        # every day 1-10 is genuinely present. A validator that trusts
+        # PHYSICAL order (instead of sorting first) sees those manufactured
+        # gaps and wrongly raises; the true chronological tail (days 4-10)
+        # has none.
+        scrambled_order = [1, 3, 5, 7, 9, 2, 4, 6, 8, 10]
+        observations = [by_day[day] for day in scrambled_order]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=fetch_lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+            declared_lookback_steps=declared_lookback_steps,
+        )
+
+        assert inputs is not None, (
+            "a scrambled but chronologically gap-free observation list "
+            "wrongly suppressed the hindcast step — validation examined an "
+            "arbitrary PHYSICAL tail instead of the true chronological one"
+        )
+        # The chronological tail must be exactly days 4-10 (values 4.0-10.0),
+        # in order — not whatever the scrambled physical order left last.
+        tail = inputs.data.past_targets.tail(declared_lookback_steps)
+        assert tail["discharge"].to_list() == [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+
+
+class TestHindcastCadenceMismatchSkipsStepGracefully:
+    """Plan 228 review fixer round (major): a real BAFU/SwissMetNet lookback
+    window can legitimately contain an isolated missing bucket (a
+    sensor/comms gap). ``validate_time_step_cadence`` must still catch it
+    (a positional misread is worse than no score), but hindcast must treat
+    it exactly like its OTHER insufficient-data conditions
+    (``no_observations``, ``no_forcing``) — return ``None`` so the step is
+    recorded as "insufficient data", never raise an undifferentiated
+    exception out of the assembler."""
+
+    def test_isolated_missing_daily_bucket_returns_none_not_raises(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        issue_time = ensure_utc(datetime(2022, 1, 10, tzinfo=UTC))
+
+        # Days 1,2,3,5,6 before issue_time — an isolated missing bucket on
+        # day 4 (gaps 1d,1d,2d,1d; median is still 1d).
+        data_start = ensure_utc(issue_time - timedelta(days=7))
+        days = [1, 2, 3, 5, 6]
+        observations = [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(data_start + timedelta(days=d - 1)),
+                rng=random.Random(d),
+            )
+            for d in days
+        ]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=7,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+        )
+
+        assert inputs is None
+
+
+class TestHindcastPastTargetsAreCompleteUtcCalendarBuckets:
+    """Plan 228 D4: for a non-midnight ``issue_time`` (a 06/12/18Z cycle),
+    only COMPLETE UTC-calendar-day buckets may reach the model — never a
+    partial trailing day presented as if it were a full one. A previous
+    fixer round fixed this by phase-aligning buckets to ``issue_time``
+    instead (an ``anchor`` parameter); D4 retracted that (it made hindcast
+    consume rolling windows while training consumes UTC calendar days) in
+    favour of aligning the FETCH BOUNDS to the calendar grid instead.
+    """
+
+    def test_partial_trailing_day_is_excluded_not_averaged_in(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        lookback_steps = 7
+        # 06:00 UTC — never a midnight boundary. Day D's hours [00:00, 06:00)
+        # are BEFORE issue_time (real past data) but only 1/4 of a full day.
+        issue_time = ensure_utc(datetime(2022, 1, 15, 6, tzinfo=UTC))
+        day_d_midnight = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+
+        # 12 complete prior days at a real 10-minute cadence, all far from
+        # the sentinel value used for day D's partial hours below.
+        data_start = ensure_utc(issue_time - timedelta(days=12))
+        observations = make_observations(
+            n=12 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+        # Day D's own partial window [00:00, 06:00) — a distinct sentinel
+        # value that must NEVER surface in past_targets. Buggy (pre-D4) code
+        # fetched observations up to `issue_time` unaligned, forming a
+        # spurious "day D" bucket from only these 6 hours.
+        partial_day_observations = [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(day_d_midnight + timedelta(hours=h)),
+                value=999.0,
+                rng=random.Random(1000 + h),
+            )
+            for h in range(6)
+        ]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations + partial_day_observations,
+            weather_sources=[],
+            static_attributes=None,
+        )
+
+        assert inputs is not None
+        past_targets = inputs.data.past_targets.sort("timestamp")
+
+        # No bucket may be built from the partial day-D window at all.
+        assert 999.0 not in past_targets["discharge"].to_list(), (
+            "past_targets contains a value built from the partial "
+            "[00:00, 06:00) day-D window — a partial bucket leaked through "
+            "as if it were a complete day"
+        )
+        # Every bucket is UTC-midnight-aligned and strictly before issue_time.
+        for ts in past_targets["timestamp"]:
+            assert ts.hour == 0 and ts.minute == 0 and ts.second == 0
+            assert ts < issue_time
+        # The most recent bucket is the day BEFORE day D — a full complete
+        # day, not day D's partial one.
+        assert past_targets["timestamp"].max() == ensure_utc(
+            day_d_midnight - timedelta(days=1)
+        )
+
+
+class TestHindcastValidatesOnlyTheDeclaredLookbackWindow:
+    """Plan 228 ALSO FIX #1: hindcast runners default to a much larger fetch
+    ``lookback_steps`` (720) than any model actually consumes via its own
+    ``.tail(n)``. Validating cadence over the WHOLE fetched frame let a
+    single stale bucket anywhere in that huge window suppress every
+    hindcast step — even though the model never reads that far back.
+    Validation must be scoped to ``declared_lookback_steps`` (the model's
+    own ``data_requirements.lookback_steps``), trimmed from the tail."""
+
+    def test_a_stale_bucket_outside_the_declared_lookback_does_not_block(
+        self,
+    ) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        declared_lookback_steps = 7  # what the model actually reads
+        fetch_lookback_steps = 30  # the runner's larger fetch window
+        issue_time = ensure_utc(datetime(2022, 2, 1, tzinfo=UTC))
+
+        # 30 complete daily buckets, EXCEPT day -20 is missing entirely — a
+        # gap far outside the model's own 7-day tail, inside the runner's
+        # 30-day fetch window.
+        data_start = ensure_utc(issue_time - timedelta(days=30))
+        skip_day = 10  # the 10th day from data_start — well before the tail
+        observations = [
+            make_observation(
+                station_id=sid,
+                parameter="discharge",
+                timestamp=ensure_utc(data_start + timedelta(days=d)),
+                rng=random.Random(d),
+            )
+            for d in range(30)
+            if d != skip_day
+        ]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=fetch_lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=[],
+            all_forcing=[],
+            all_observations=observations,
+            weather_sources=[],
+            static_attributes=None,
+            declared_lookback_steps=declared_lookback_steps,
+        )
+
+        assert inputs is not None, (
+            "a gap outside the model's own declared lookback window "
+            "wrongly suppressed the hindcast step"
+        )
+        tail = inputs.data.past_targets.sort("timestamp").tail(declared_lookback_steps)
+        assert tail.height == declared_lookback_steps

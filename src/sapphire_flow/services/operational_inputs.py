@@ -9,9 +9,15 @@ import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
-from sapphire_flow.services.training_data import resample_to_time_step
+from sapphire_flow.services.training_data import (
+    aligned_lookback_bounds,
+    resample_to_time_step,
+    resolved_aggregation_methods,
+    validate_time_step_cadence,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    AggregationMethod,
     EnsembleMode,
     ForcingRoute,
     QcStatus,
@@ -443,6 +449,27 @@ def raw_forcing_to_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
+def _merge_declared_aggregations(
+    requirements: list[ModelDataRequirements],
+) -> frozenset[tuple[str, AggregationMethod]]:
+    """Union every assigned model's declared per-parameter aggregation,
+    raising if two models declare CONFLICTING aggregations for the same
+    parameter name (Plan 228 review fixer round, blocker) — a superset
+    assembly cannot honour both at once, so this fails loudly rather than
+    silently picking one model's declaration over the other's."""
+    merged: dict[str, AggregationMethod] = {}
+    for req in requirements:
+        for name, method in req.declared_aggregations:
+            existing = merged.get(name)
+            if existing is not None and existing != method:
+                raise ConfigurationError(
+                    "Station assigns models with conflicting declared "
+                    f"aggregation for {name!r}: {existing!r} != {method!r}"
+                )
+            merged[name] = method
+    return frozenset(merged.items())
+
+
 def build_superset_requirements(
     requirements: list[ModelDataRequirements],
 ) -> ModelDataRequirements:
@@ -500,6 +527,7 @@ def build_superset_requirements(
         forecast_horizon_steps=max(r.forecast_horizon_steps for r in requirements),
         spatial_input_type=requirements[0].spatial_input_type,
         ensemble_mode=superset_ensemble_mode,
+        declared_aggregations=_merge_declared_aggregations(requirements),
     )
 
 
@@ -533,6 +561,16 @@ def assemble_station_operational_inputs(
         else model.data_requirements
     )
     lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
+    # Plan 228 D4: past_targets bounds are ALIGNED to UTC-calendar bucket
+    # boundaries and EXTENDED so `reqs.lookback_steps` buckets are all
+    # complete — a non-midnight `issue_time` (a 06/12/18Z cycle) otherwise
+    # presents the most recent bucket as a full day when it is really a
+    # partial one (measured: 37 rows where a full day is 144). Scoped to
+    # `past_targets` only: `past_dynamic` (below) legitimately carries a
+    # different, unresampled cadence.
+    past_targets_start, past_targets_end = aligned_lookback_bounds(
+        issue_time, reqs.lookback_steps, time_step
+    )
 
     # --- past_targets ---
     target_parameters = list(reqs.target_parameters)
@@ -541,18 +579,63 @@ def assemble_station_operational_inputs(
         obs = obs_store.fetch_observations(
             station_id=station_id,
             parameter=parameter,
-            start=lookback_start,
-            end=issue_time,
+            start=past_targets_start,
+            end=past_targets_end,
             qc_status=QcStatus.QC_PASSED,
         )
         all_observations.extend(obs)
 
     past_targets = observations_to_wide_dataframe(all_observations, target_parameters)
     past_targets = resample_to_time_step(
-        past_targets, time_step, aggregation_methods=None
+        past_targets, time_step, aggregation_methods=resolved_aggregation_methods(reqs)
     )
+    # Plan 228 D1(C): backstop shared with the hindcast assembler — see
+    # `validate_time_step_cadence` for why this is scoped to past_targets.
+    #
+    # Review fixer round (major): a real BAFU/SwissMetNet lookback window
+    # can legitimately contain an isolated missing bucket (sensor/comms
+    # gap) — the SAME real-world condition this module already treats as
+    # "skip this station's forecast for this cycle" (e.g. `no_observations`
+    # above, `no_nwp` below), never as a station-failed bug. Skip the SAME
+    # way here: return `None` so the caller's `inputs_result is None`
+    # branch degrades this one cycle cleanly, instead of raising into the
+    # generic per-station `except Exception` that counts it as a failure.
+    try:
+        validate_time_step_cadence(
+            past_targets, time_step, context="operational_inputs.past_targets"
+        )
+    except ConfigurationError as exc:
+        log.warning(
+            "operational_inputs.cadence_mismatch_skip",
+            station_id=str(station_id),
+            issue_time=str(issue_time),
+            error=str(exc),
+        )
+        return None
 
-    latest_obs_ts = max((o.timestamp for o in all_observations), default=None)
+    # Freshness must reflect the LATEST raw observation, not the aligned
+    # `past_targets` window (review fixer round, major): `past_targets_end`
+    # excludes the current UTC-calendar bucket entirely (D4), so at a
+    # 06/12/18Z cycle `all_observations` stops ~6-18h before `issue_time`
+    # even when a fresh reading landed minutes ago — manufacturing spurious
+    # staleness (measured: ~6.2h at 06Z, enough to cross the default
+    # warning threshold; worse at 12Z/18Z). Fetch the trailing gap
+    # `[past_targets_end, issue_time)` separately, UNRESAMPLED, for
+    # freshness only — it is never mixed into `past_targets`.
+    freshness_observations: list[Observation] = list(all_observations)
+    if past_targets_end < issue_time:
+        for parameter in target_parameters:
+            freshness_observations.extend(
+                obs_store.fetch_observations(
+                    station_id=station_id,
+                    parameter=parameter,
+                    start=past_targets_end,
+                    end=issue_time,
+                    qc_status=QcStatus.QC_PASSED,
+                )
+            )
+
+    latest_obs_ts = max((o.timestamp for o in freshness_observations), default=None)
     observation_staleness_hours: float | None = None
     if latest_obs_ts is not None:
         observation_staleness_hours = (now - latest_obs_ts).total_seconds() / 3600.0

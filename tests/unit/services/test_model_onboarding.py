@@ -59,6 +59,8 @@ def _make_skill_score(
     metric: str,
     score: float,
     sample_size: int = 200,
+    computation_version: int = 1,
+    freshness: SkillFreshness = SkillFreshness.CURRENT,
 ) -> object:
     from sapphire_flow.types.skill import SkillScore
 
@@ -70,7 +72,7 @@ def _make_skill_score(
         model_artifact_id=artifact_id,
         skill_source=SkillSource.HINDCAST_REANALYSIS,
         forcing_type=None,
-        computation_version=1,
+        computation_version=computation_version,
         computed_at=_NOW,
         lead_time_hours=24,
         season=None,
@@ -79,7 +81,7 @@ def _make_skill_score(
         metric=metric,
         score=score,
         sample_size=sample_size,
-        freshness=SkillFreshness.CURRENT,
+        freshness=freshness,
         eval_period_start=_NOW,
         eval_period_end=_NOW,
         created_at=_NOW,
@@ -559,6 +561,99 @@ class TestEvaluateSkillGate:
         # No valid strata → metric_scores is empty, gate fails (no data for nse)
         assert len(result.metric_scores) == 0
         assert not result.passed
+        assert "nse" in result.failing_metrics
+
+    def test_stale_v1_score_never_overrides_current_v2(self) -> None:
+        """Review fixer round (major): migrations 0051/0052 and
+        ``_COMPUTATION_VERSION = 2`` deliberately let a stale v1 score and
+        its corrected v2 recompute coexist in the store — ``mark_stale``
+        never deletes the old row. A v1 score corrupted by the pre-Plan-228
+        instantaneous-observation join FAILS the gate (nse=0.1 < 0.5); the
+        corrected v2 recompute for the SAME stratum PASSES it (nse=0.8).
+        Only the current v2 score may decide the gate.
+        """
+        from sapphire_flow.types.model_onboarding import SkillGateMetric
+
+        skill_store = FakeSkillStore()
+        model_id = ModelId("m5")
+        artifact_id = ArtifactId(uuid4())
+        stale_v1 = _make_skill_score(
+            model_id=model_id,
+            artifact_id=artifact_id,
+            metric="nse",
+            score=0.1,
+            computation_version=1,
+            freshness=SkillFreshness.STALE,
+        )
+        current_v2 = _make_skill_score(
+            model_id=model_id,
+            artifact_id=artifact_id,
+            metric="nse",
+            score=0.8,
+            computation_version=2,
+            freshness=SkillFreshness.CURRENT,
+        )
+        skill_store._scores.extend([stale_v1, current_v2])  # type: ignore[attr-defined]
+
+        config = make_deployment_config(
+            skill_gate_thresholds={
+                "nse": SkillGateMetric(threshold=0.5, higher_is_better=True)
+            },
+            min_skill_samples=100,
+        )
+
+        result = evaluate_skill_gate(
+            model_id=model_id,
+            model_artifact_id=artifact_id,
+            skill_store=skill_store,
+            config=config,
+        )
+
+        assert result.passed, (
+            f"expected the current v2 score (0.8) to control the gate, got "
+            f"failing_metrics={result.failing_metrics!r}, "
+            f"metric_scores={result.metric_scores!r} — the stale v1 score "
+            "(0.1) was allowed to decide it"
+        )
+        assert result.failing_metrics == frozenset()
+        assert dict(result.metric_scores)["nse"] == 0.8
+
+    def test_current_v1_score_still_used_when_no_v2_exists(self) -> None:
+        """Guards the filter above from over-restricting: when only v1
+        scores exist (no recompute has happened yet for this stratum), a
+        CURRENT v1 score must still control the gate rather than being
+        excluded outright."""
+        from sapphire_flow.types.model_onboarding import SkillGateMetric
+
+        skill_store = FakeSkillStore()
+        model_id = ModelId("m6")
+        artifact_id = ArtifactId(uuid4())
+        current_v1 = _make_skill_score(
+            model_id=model_id,
+            artifact_id=artifact_id,
+            metric="nse",
+            score=0.8,
+            computation_version=1,
+            freshness=SkillFreshness.CURRENT,
+        )
+        skill_store._scores.append(current_v1)  # type: ignore[attr-defined]
+
+        config = make_deployment_config(
+            skill_gate_thresholds={
+                "nse": SkillGateMetric(threshold=0.5, higher_is_better=True)
+            },
+            min_skill_samples=100,
+        )
+
+        result = evaluate_skill_gate(
+            model_id=model_id,
+            model_artifact_id=artifact_id,
+            skill_store=skill_store,
+            config=config,
+        )
+
+        assert result.passed
+        assert dict(result.metric_scores)["nse"] == 0.8
 
 
 class TestCreateAssignment:

@@ -16,13 +16,20 @@ from sqlalchemy.exc import (
     PendingRollbackError,
 )
 
-from sapphire_flow.exceptions import StoreError
+from sapphire_flow.exceptions import ConfigurationError, StoreError
 from sapphire_flow.services.caravan_statics import (
     declared_static_naming,
     project_declared_static_attributes,
 )
+from sapphire_flow.services.training_data import (
+    aligned_lookback_bounds,
+    resample_to_time_step,
+    resolved_aggregation_methods,
+    validate_time_step_cadence,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
+    AggregationMethod,
     EnsembleRepresentation,
     ForcingType,
     QcStatus,
@@ -152,6 +159,8 @@ def _assemble_hindcast_inputs(
     weather_sources: list[StationWeatherSource],
     static_attributes: pl.DataFrame | None,
     parameter: str = "discharge",
+    declared_lookback_steps: int | None = None,
+    aggregation_methods: dict[str, AggregationMethod] | None = None,
 ) -> StationModelInputs | None:
     lookback_start = ensure_utc(issue_time - lookback_steps * time_step)
     # +1 because the fetch end is exclusive
@@ -166,14 +175,22 @@ def _assemble_hindcast_inputs(
         and r.parameter in required_features
     ]
 
-    # NO-FUTURE-LEAKAGE: end=issue_time (unchanged from original).
+    # Plan 228 D4: past_targets bounds are ALIGNED to UTC-calendar bucket
+    # boundaries and EXTENDED so `lookback_steps` buckets are all complete —
+    # a naive `[issue_time - lookback_steps * time_step, issue_time)` window
+    # has a partial bucket at both ends whenever `issue_time` is not itself a
+    # boundary (a 06:00 UTC cycle for a daily model). NO-FUTURE-LEAKAGE still
+    # holds: `target_bucket_end <= issue_time` by construction.
+    target_lookback_start, target_bucket_end = aligned_lookback_bounds(
+        issue_time, lookback_steps, time_step
+    )
     observations = [
         o
         for o in all_observations
         if o.station_id == station_id
         and o.parameter == parameter
         and o.qc_status == QcStatus.QC_PASSED
-        and lookback_start <= o.timestamp < issue_time
+        and target_lookback_start <= o.timestamp < target_bucket_end
     ]
 
     if not observations:
@@ -198,7 +215,60 @@ def _assemble_hindcast_inputs(
     else:
         forcing_df = pl.DataFrame(schema={"timestamp": pl.Datetime("us", "UTC")})
 
+    # Plan 228 P1: the operational path resamples observations to the
+    # model's time_step before delivery (`operational_inputs.py`); hindcast
+    # did not, so a model's `lookback_steps` count of RAW rows (~10-minute
+    # cadence) was read as that many days. The FI contract keys
+    # `PastKnownVariable.lookback` on the declared `time_step` (D1) — SAP3,
+    # not the model, owns aggregating to it. `validate_time_step_cadence` is
+    # the backstop: it fails loudly if a future change breaks this instead
+    # of silently shipping raw rows again. Buckets are UTC-calendar-aligned
+    # (D4) — the fetch bounds above already put `issue_time`'s own phase out
+    # of the picture, so no `anchor` is passed (or exists) here.
     obs_df = _observations_to_dataframe(observations, parameter)
+    obs_df = resample_to_time_step(
+        obs_df, time_step, aggregation_methods=aggregation_methods
+    )
+    # ALSO FIX #1 (Plan 228 per-run scope): validate only the window the
+    # model actually CONSUMES (`declared_lookback_steps`, the model's own
+    # `data_requirements.lookback_steps`), never the runner's much larger
+    # fetch window (`lookback_steps`, default 720). Without this, a single
+    # stale bucket anywhere in a 720-bucket fetch — far outside what a
+    # 7-step model ever reads via `.tail(7)` — suppressed the hindcast step
+    # entirely. `declared_lookback_steps=None` (no model context available)
+    # falls back to validating the whole delivered frame, unchanged.
+    #
+    # Review fixer round (major): `.tail()` trims the CHRONOLOGICAL tail, so
+    # it must run against timestamp-sorted rows — `resample_to_time_step`
+    # now guarantees that on every return path, but this explicit `.sort()`
+    # keeps the invariant local rather than relying on a callee's contract
+    # (the observation store issues no `ORDER BY`, so an unsorted frame here
+    # would silently validate an arbitrary physical tail instead).
+    obs_df = obs_df.sort("timestamp")
+    validation_window = (
+        obs_df.tail(declared_lookback_steps)
+        if declared_lookback_steps is not None
+        else obs_df
+    )
+    # Review fixer round (major): a real BAFU/SwissMetNet lookback window
+    # can legitimately contain an isolated missing bucket (sensor/comms gap)
+    # — the SAME real-world condition `no_observations`/`no_forcing` above
+    # already treat as "insufficient data for this step", never as a bug.
+    # A cadence mismatch caught here gets the identical treatment: skip this
+    # ONE step (`HindcastStepResult(success=False, error="insufficient
+    # data")` at the call site), not an undifferentiated exception.
+    try:
+        validate_time_step_cadence(
+            validation_window, time_step, context="hindcast.past_targets"
+        )
+    except ConfigurationError as exc:
+        log.warning(
+            "hindcast.skip.cadence_mismatch",
+            station_id=str(station_id),
+            issue_time=str(issue_time),
+            error=str(exc),
+        )
+        return None
 
     # Split forcing into past (≤ issue_time) and future (> issue_time).
     # Reanalysis serves as teacher forcing in hindcast (v0-scope §A13).
@@ -328,7 +398,11 @@ def run_station_hindcast(
     parameter = next(iter(targets), "discharge") if targets else "discharge"
 
     # Pre-fetch all data for the full period (H.2 + H.3 from architecture).
-    full_start = ensure_utc(period_start - lookback_steps * time_step)
+    # Plan 228 D4: aligned to the EARLIEST issue_time's own complete-bucket
+    # window (never later than the naive `period_start - lookback_steps *
+    # time_step`), so the per-step assembler always finds its aligned
+    # lookback fully covered by this prefetch.
+    full_start, _ = aligned_lookback_bounds(period_start, lookback_steps, time_step)
     full_end = ensure_utc(period_end + (forecast_horizon_steps + 1) * time_step)
 
     t0 = time.perf_counter()
@@ -371,6 +445,10 @@ def run_station_hindcast(
                 weather_sources=weather_sources,
                 static_attributes=static_df,
                 parameter=parameter,
+                declared_lookback_steps=model.data_requirements.lookback_steps,
+                aggregation_methods=resolved_aggregation_methods(
+                    model.data_requirements
+                ),
             )
             if inputs is None:
                 results.append(
@@ -520,7 +598,8 @@ def run_group_hindcast(
         group_id=str(group.id),
     )
 
-    full_start = ensure_utc(period_start - lookback_steps * time_step)
+    # Plan 228 D4: see `run_station_hindcast` — aligned to complete buckets.
+    full_start, _ = aligned_lookback_bounds(period_start, lookback_steps, time_step)
     full_end = ensure_utc(period_end + (forecast_horizon_steps + 1) * time_step)
 
     fetchable_sids = [
@@ -585,6 +664,10 @@ def run_group_hindcast(
                     weather_sources=weather_sources_map[sid],
                     static_attributes=static_map.get(sid),
                     parameter=parameter_map.get(sid, "discharge"),
+                    declared_lookback_steps=model.data_requirements.lookback_steps,
+                    aggregation_methods=resolved_aggregation_methods(
+                        model.data_requirements
+                    ),
                 )
                 if inputs is None:
                     skipped[sid] = "insufficient data"
