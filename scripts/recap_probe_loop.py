@@ -69,6 +69,24 @@ _IFS_VAR = "tp"
 _IFS_RADIATION_VARS = ("ssr", "str")
 _ERA5_RADIATION_VARS = ("surface_net_solar_radiation", "surface_net_thermal_radiation")
 
+# Temperature — the OTHER variable the 12300 feed actually ingests. Probing only
+# `tp` was a real blind spot: ERA5 gaps on this Gateway are PER-VARIABLE (measured
+# 2026-09-03 — `total_precipitation` missing 08-23 while `2m_temperature` was
+# missing 08-24), so a temperature outage was invisible behind a green `tp` probe.
+_IFS_TEMP_VAR = "2t"
+_ERA5_TEMP_VAR = "2m_temperature"
+
+# Ensemble spot-check. The feed needs all 51 members (fc + 50 pf), but the API
+# serves ONE member per call, so counting all 50 every cycle is disproportionate.
+# Sampling the ends plus the middle detects the failure mode that actually
+# occurs: partial publication (measured 2026-08-20 — pf absent 09:27 UTC, all 50
+# present by 12:59 UTC). A green `fc` says nothing about any of this.
+_PF_SAMPLE_MEMBERS = ("1", "25", "50")
+
+# Snow (JSNOW). Its reanalysis lags much further back than ERA5's, so it gets its
+# own, deeper window — the ERA5 behind-edge window returns nothing for it.
+_SNOW_VARS = ("hs", "rof", "swe")
+
 
 def _load_key() -> str:
     key_file = os.environ.get("RECAP_API_KEY_FILE")
@@ -234,7 +252,7 @@ def main() -> int:
 
     # 6) IFS radiation — mirrors (3)'s shape exactly (fc, run_hour 0, run-0 and
     #    run-1), so (3)'s `tp` records are a same-window control for these.
-    for ifs_var in _IFS_RADIATION_VARS:
+    for ifs_var in (_IFS_TEMP_VAR, *_IFS_RADIATION_VARS):
         for n in (0, 1):
             rd = today - timedelta(days=n)
             _probe(
@@ -264,7 +282,7 @@ def main() -> int:
     #    the identical window as the control.
     era5_start = today - timedelta(days=12)
     era5_end = today - timedelta(days=8)
-    for era5_var in (_ERA5_VAR, *_ERA5_RADIATION_VARS):
+    for era5_var in (_ERA5_VAR, _ERA5_TEMP_VAR, *_ERA5_RADIATION_VARS):
         _probe(
             run_ts,
             f"era5_behind_edge_{era5_var}",
@@ -278,6 +296,73 @@ def main() -> int:
                 start_date=era5_start,
                 end_date=era5_end,
                 hru_code=_HRU,
+                include_provenance=True,
+            ),
+        )
+
+    # 8) Ensemble spot-check: the feed needs 51 members, the probe otherwise only
+    #    ever sees `fc`. One call per member (the API serves one at a time), so
+    #    we sample rather than enumerate — see `_PF_SAMPLE_MEMBERS`. A member that
+    #    is absent while `fc` succeeds is the partial-publication signature.
+    for member in _PF_SAMPLE_MEMBERS:
+        _probe(
+            run_ts,
+            f"ifs_forecast_pf_member-{member}",
+            {
+                "run_date": today.isoformat(),
+                "ifs_type": "pf",
+                "run_hour": 0,
+                "member": member,
+                "variable": _IFS_VAR,
+            },
+            lambda m=member: client.ecmwf.ifs_forecast(
+                variable=_IFS_VAR,
+                run_date=today,
+                hru_code=_HRU,
+                ifs_type="pf",
+                run_hour=0,
+                member=m,
+                horizon_days=15,
+                include_provenance=True,
+            ),
+        )
+
+    # 9) Snow (JSNOW) forecast — the channel Plan 219 wants to ingest. Same
+    #    run-0 shape as the IFS sections so they are directly comparable.
+    for snow_var in _SNOW_VARS:
+        _probe(
+            run_ts,
+            f"snow_forecast_{snow_var}",
+            {"run_date": today.isoformat(), "run_hour": 0, "variable": snow_var},
+            lambda v=snow_var: client.snow.forecast(
+                hru_code=_HRU,
+                variable=v,
+                run_date=today,
+                run_hour=0,
+                include_provenance=True,
+            ),
+        )
+
+    # 10) Snow reanalysis over a DEEPER window than (7): JSNOW reanalysis lags
+    #     well behind ERA5's, and the t-12..t-8 window returns nothing for it
+    #     (measured 2026-08-31). Probing where data plausibly exists is what
+    #     makes a failure here meaningful rather than expected.
+    snow_start = today - timedelta(days=20)
+    snow_end = today - timedelta(days=16)
+    for snow_var in _SNOW_VARS:
+        _probe(
+            run_ts,
+            f"snow_reanalysis_{snow_var}",
+            {
+                "start": snow_start.isoformat(),
+                "end": snow_end.isoformat(),
+                "variable": snow_var,
+            },
+            lambda v=snow_var: client.snow.reanalysis(
+                hru_code=_HRU,
+                variable=v,
+                start_date=snow_start,
+                end_date=snow_end,
                 include_provenance=True,
             ),
         )
