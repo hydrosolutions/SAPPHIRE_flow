@@ -91,6 +91,20 @@ parallelising stations · the daily-aggregation defect.
 in the future is attempted; a station with no overlap is skipped with a clear reason; red-first
 tests for each; `uv run pytest`, ruff, and the pyright ratchet pass.
 
+## ⚠️ Constraint from the family review (2026-09-03)
+
+*Added by the Plan 228 session after a joint review of 226/228/229/230/234/235. This plan's own
+structure and scope are untouched.*
+
+**Narrowing must select a SUBSET of the existing issue-time grid — it must not re-derive that grid.**
+`_issue_times` takes its phase from `period_start` (`services/hindcast.py:108`), so passing a raw
+observation-start timestamp as the new bound would shift **every** issue time rather than merely
+dropping candidate dates.
+
+That would breach this plan's own scope — "no change to what a hindcast computes, only to which
+dates are attempted" — and would collide with **Plan 226**, which owns issue-time and valid-time
+anchoring. Compute the narrowed bound, then snap it forward onto the existing grid.
+
 ## Non-goals
 
 Parallel execution · changing hindcast computation · the daily-mean-runoff defect · the training

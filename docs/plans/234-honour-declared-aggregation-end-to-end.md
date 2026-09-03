@@ -4,7 +4,7 @@ created: 2026-09-02
 plan: 234
 title: SAP3 does not honour the aggregation and lookback the ForecastInterface says it owes
 scope: Thread each channel's declared aggregation method through every assembly path, and deliver exactly the declared lookback at the model boundary. Split out of Plan 228's final review round. No FI change — the contract already specifies this.
-depends_on: [228]
+depends_on: [228, 235]
 blocks: []
 source: 2026-09-02 — Plan 228's implement review, findings deferred by owner decision to keep 228 shippable
 ---
@@ -19,8 +19,14 @@ before being carried across; they are not speculative.
 
 ## ⛔ This is OUR defect, not an FI gap. Do not file an FI issue.
 
-Checked against the pinned `forecastinterface` v0.1.19 docs, which are explicit
-(`docs/input_requirement.md:105,164,170`):
+Checked against the ForecastInterface docs, which are explicit. *(Family review 2026-09-03
+corrected a mis-versioned citation here: the line numbers below are **v0.1.20's**. The identical
+statements exist in the pinned v0.1.19 at `docs/input_requirement.md:103,109,115`. Plan 229 bumps FI
+to v0.1.20; that diff adds future-horizon semantics and leaves `PastKnownVariable.aggregation` and
+the provider-side aggregation language **unchanged**, so this plan's argument holds under either
+version and 229 may land first.)*
+
+`docs/input_requirement.md:105,164,170` (v0.1.20):
 
 > *"When a model declares a variable at a resolution coarser than the delivered data, **SAP3
 > aggregates** with `SUM`, `MEAN` or `MAX`… Default follows the per-parameter convention

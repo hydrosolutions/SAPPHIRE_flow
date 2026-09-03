@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-03
 plan: 235
 title: A skill recompute must replace what it supersedes — generations, not collisions
-scope: Give a logical recompute one stable identity, make every consumer read the newest generation, and bound retention. Split out of Plan 228 when an independent design check showed version-bumping alone was unsafe. MUST land before Plan 228's D3 recompute is executed.
+scope: Give a logical recompute one stable identity, make every consumer read the newest generation, and record retention growth. Split out of Plan 228 when an independent design check showed version-bumping alone was unsafe. MUST land before Plan 228's D3 recompute is executed.
 depends_on: [228]
 blocks: []
 source: 2026-09-03 — independent design check of Plan 228's proposed recompute fix
@@ -83,7 +83,7 @@ or the defect simply moves to whichever path was left out.
 **A Plan 226 recompute that omits the run id would publish both the old unanchored and the new
 anchored cohorts inside the same newest generation.** Generation identity alone does not prevent
 this — the run id must be required on the hindcast→skill handoff. Plan 234 records the same defect
-from the artifact-attribution angle (`docs/plans/234-...:53-59`); it is one defect with two
+from the artifact-attribution angle (`docs/plans/234-honour-declared-aggregation-end-to-end.md:74-79`); it is one defect with two
 symptoms and must be fixed once, here.
 
 ## Sequencing — this is the constraint that binds the family

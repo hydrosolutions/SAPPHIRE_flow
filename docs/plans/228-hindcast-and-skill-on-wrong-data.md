@@ -3,7 +3,7 @@ status: READY
 created: 2026-09-01
 plan: 228
 title: Every skill score in the database is computed on the wrong comparison, and two models hindcast on 70 minutes of history
-scope: Two defects in how hindcast and skill scoring consume observations. Fix both, then recompute. No change to any model's maths, no change to the operational forecast path, no anchoring work (that is Plan 226).
+scope: Two defects in how hindcast and skill scoring consume observations. Fix both. ⚠️ The recompute AND the marking (D3) belong to Plan 235 — see the D3 gate below; this plan executes neither. No change to any model's maths, no change to the operational forecast path, no anchoring work (that is Plan 226).
 depends_on: []
 blocks: [226]
 source: 2026-09-01 — measured on the live mini during Plan 226's T-M task
@@ -188,7 +188,12 @@ cadence and assert that what the model receives spans the declared lookback wind
 
 ### T3 — fix P2, per D2. A locking test must compare a daily-mean forecast against a daily-mean observation and fail against the current instantaneous join.
 
-### T4 — execute D3, and state in `docs/` that every score predating this plan is invalid.
+### T4 — state in `docs/` that every score predating this plan is invalid
+
+⚠️ **T4 no longer executes D3** *(family review, 2026-09-03)*. The documentation half stands; the
+live half — marking scores superseded and recomputing — moved to **Plan 235**, because supersession
+is not atomic and cannot touch diagrams (`store/skill_store.py:185-203`), so marking before 235
+would strip every current trustworthy result without publishing a replacement.
 
 ### T5 — snap the training window's default end to a complete bucket
 
@@ -369,7 +374,7 @@ against the code before disposition.
 | FI-declared aggregation bypassed/flattened on every path | blocker | **→ Plan 234.** Broad FI-conformance work, not this plan's subject. **Not an FI issue** — the FI docs already specify the method, the default and that SAP3 owes it |
 | Cohort partitioning writes scores whose natural key omits `time_step`/`phase`, so cohorts collide under `ON CONFLICT DO NOTHING` | blocker | **FIX HERE.** This branch introduced the partitioning, so it owns the data-loss path it created. Latent today (one step, one phase after D4), live the moment heterogeneity appears |
 | Declared lookback validated but not delivered (`validation_window` trims; `past_targets=obs_df` does not) | major | **→ Plan 234.** Today's models self-slice with `tail(N)`, so P1 is genuinely fixed; the invariant is simply not enforced where the contract places it |
-| Hindcasts attributed to the wrong artifact when the run id is omitted | major | **→ Plan 234** |
+| Hindcasts attributed to the wrong artifact when the run id is omitted | major | **→ Plan 235** *(family review 2026-09-03 reassigned this from 234; 235 owns run scoping across all three handoffs, so one defect has one owner)* |
 | Phase validation reads only `vts[0]`, so an internally mixed-phase ensemble passes | major | **FIX HERE.** A hole in code this branch added |
 | Decision record contradicts the implemented behaviour (still describes the removed anchor) | minor | **FIX HERE.** The record must not describe a mechanism that was deleted |
 
