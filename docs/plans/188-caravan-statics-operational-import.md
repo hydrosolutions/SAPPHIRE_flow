@@ -12,7 +12,7 @@ supersedes: []
 
 # Plan 188 — run the Caravan statics import for real
 
-## Status — T1-T3 MERGED 2026-08-28; **T4 NOT RUN**. Do not archive this plan.
+## Status — T1-T4 all DONE. T4 ran 2026-09-03T15:05Z; see T4 EVIDENCE below.
 
 | task | state | evidence |
 |---|---|---|
@@ -362,15 +362,45 @@ Missing from manifest:    0
 
 **Acceptance — all three criteria met:**
 
-| criterion | result |
-|---|---|
-| basins carrying `caravan:` keys | **148** (all) |
-| distinct `caravan:` keys written | **216** |
-| bare CAMELS-CH keys still present | **300 — unchanged from before the import** |
+| criterion | result | query |
+|---|---|---|
+| basins carrying `caravan:` keys | **148** (all) | `count(*) from basins where attributes::text like '%caravan:%'` |
+| distinct `caravan:` keys written | **216** | `jsonb_object_keys` filtered `like 'caravan:%'` |
+| bare CAMELS-CH keys | **300, key set byte-identical to pre-import** | see baseline below |
+| `caravan:` values written | **31 968** (216 x 148) | `jsonb_each` over the namespace |
+| null / NaN among those | **0 / 0** | `v = 'null'::jsonb`, `v::text in ('"NaN"','"nan"')` |
 
-The third row is the one that matters: the namespace guard's claim (additive, disjoint keyspace,
-never shadowing a bare attribute) is now confirmed **against real data** rather than a fixture,
-which is what this plan asked for.
+#### The pre-import baseline, and its provenance
+
+"Unchanged" needs a before-state. The bare key set was dumped from **this production database on
+the mini on 2026-09-02**, before the import, while investigating `cmal_small` coverage: **300 keys**.
+Re-dumped after the import and diffed: **identical — no bare key added, removed or renamed.**
+(An independent review correctly flagged that an earlier draft asserted "300 unchanged" without
+recording where the before-state came from, and that a *key-set* match does not prove *values*
+unchanged. Both are addressed here.)
+
+#### Value-level proof that bare attributes were not overwritten
+
+A key-count match is not enough, so two value checks on `area` — the attribute D15 singles out,
+because a wrong derivation there would rescale every discharge through the m3/s <-> mm/day
+conversion:
+
+| check | result | reading |
+|---|---|---|
+| bare `area` vs the geometry-derived `area_km2` column | **max deviation 0.0000 %** across 148 | the bare value is bit-for-bit what it was pre-import (same 0.00 % measured 2026-09-02) |
+| bare `area` vs `caravan:area` | **0 of 148 identical**, median difference 0.27 % | the two derivations coexist and differ, exactly as D15 predicts — the namespaced value did NOT displace the bare one |
+
+So the namespace guard's claim (additive, disjoint keyspace, never shadowing a bare attribute) is
+confirmed **against real data at the value level**, which is what this plan asked for.
+
+#### Scope limit on the finiteness claim
+
+The gate's finite-value check (`services/caravan_statics.py`) covers the **model-declared subset**
+(`cmal_pool_pt`'s ~50), not all 216 imported columns — the parser converts non-finite source values
+to `None` and imports every column
+(`adapters/caravan_attributes.py`). The 0-null / 0-NaN audit above was therefore run over **all
+31 968 values**, not just the gated subset, so the stronger claim holds by measurement rather than
+by inference from the absence of a `StaticCoverageGap`.
 
 **216 keys landed, not ~50.** D2 *gates* on `cmal_pool_pt`'s declared statics, but the import writes
 every column the delivery carries. That is why the `cmal_small` note below could be answered
@@ -387,7 +417,15 @@ declares **78** statics (from its `config.yaml` in the owner's Dropbox model tre
 landed, the question was worth checking rather than assuming.
 
 Resolved each declared name through `CARAVAN_ALIAS` exactly as `caravan_statics.py` does
-(`caravan:` + alias-or-name): **76 of 78 resolve.** The two that do not:
+(`caravan:` + alias-or-name): **76 of 78 resolve.**
+
+*Provenance, stated because it limits who can re-check this:* the 78-name list was read from
+`cmal_small/config.yaml` in the owner's Dropbox model tree, which is **not in this repo** — so the
+denominator 78 and the 76 count are reproducible only with that file to hand. The two named gaps
+below are verifiable from the repo and the database alone. An independent review could confirm the
+mechanism and the two gaps but explicitly could not ratify "76/78".
+
+The two that do not resolve:
 
 | declared | looked for | actually delivered as |
 |---|---|---|
