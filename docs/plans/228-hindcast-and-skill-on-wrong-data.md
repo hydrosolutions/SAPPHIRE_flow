@@ -589,18 +589,35 @@ the live database legitimately accumulated repeated pooled/BMA rows. `CREATE UNI
 Make both unique indexes **partial**, applying only to `computation_version >= 2` — the cutoff this
 plan already defines as the boundary of valid data. This grandfathers the known-invalid legacy
 generation, **deletes nothing**, and enforces the corrected NULL-safe key for everything written
-from now on. Also prevent further writes at the legacy version.
+from now on.
+
+**⚠️ It also opens a hole that must be closed in the same change** *(family review, 2026-09-03)*.
+A partial index on `>= 2` removes 0051's uniqueness protection from **future v1 writes**, and those
+are reachable: the store accepts an arbitrary `SkillScore.computation_version` under an unrestricted
+`ON CONFLICT DO NOTHING` (`store/skill_store.py:31`), and `docs/standards/cicd.md:184` requires
+one-version schema compatibility — so a **previous image rolled back onto the new schema can still
+emit v1**. Either reject writes below the current version at the store boundary, or keep a second
+partial index covering `< 2` with 0051's raw-NULL shape. Whichever is chosen, this plan's existing
+"also prevent further writes at the legacy version" claim must become true rather than aspirational.
 
 **Do NOT** restore the destructive `DELETE`. **Do NOT** implement generation identity, latest-
 generation filtering, retention, or the `hindcast_run_id` requirement — all four are Plan 235.
 
-**Locking test:** a real-PostgreSQL upgrade test seeded with repeated NULL-artifact rows at the
-legacy version, proving the migration completes and the old rows survive.
+**Locking tests:** (1) a real-PostgreSQL upgrade test seeded with repeated NULL-artifact rows at the
+legacy version, proving the migration completes and the old rows survive; (2) a test that a v1 write
+is rejected — or still deduplicated — after the cut, covering the rollback path above.
+
+**Also correct a false statement in migration 0051's own docstring** *(family review)*: it says
+migration 0016 dropped `computation_version` from the natural key, but `0008`'s original unique
+index never contained it (`alembic/versions/0008_add_constraints_indexes_columns.py:50`). 0051 adds
+it for the first time; the docstring should say so.
 
 ### ⛔ Then STOP
 
-After this, Plan 228 is complete. Its D3 recompute **must not be executed until Plan 235 lands** —
-without a generation identity the recompute silently stores nothing. That gate is recorded in 235's
-sequencing section.
+After this, Plan 228 is complete. **NONE of its D3 may be executed until Plan 235 lands — including
+the marking, not just the recompute** *(family review, 2026-09-03)*. Marking first would strip every
+current, trustworthy result without publishing a replacement, because supersession is not yet atomic
+and cannot touch diagrams (`store/skill_store.py:185-203`). Mark-and-replace is one operation and it
+belongs to 235.
 
 Do not touch the mac-mini.
