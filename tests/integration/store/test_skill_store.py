@@ -238,6 +238,13 @@ class TestPgSkillStore:
         with the first and was silently dropped. This can only be observed
         against a real Postgres unique index — a fake/in-memory store has
         no `ON CONFLICT` to exercise.
+
+        `computation_version=2`: the tightened key only applies to
+        `computation_version >= 2` (migration 0052's partial index, per-run
+        scope 2026-09-03) — `_COMPUTATION_VERSION` (the version every real
+        write uses today) is 2, and a `computation_version=1` row would
+        instead land under the legacy (untightened) partial index, which
+        does not disambiguate by time_step/phase at all.
         """
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
@@ -248,6 +255,7 @@ class TestPgSkillStore:
             sid,
             mid,
             aid,
+            computation_version=2,
             lead_time_hours=24,
             metric="mae",
             score=1.0,
@@ -258,6 +266,7 @@ class TestPgSkillStore:
             sid,
             mid,
             aid,
+            computation_version=2,
             lead_time_hours=24,
             metric="mae",
             score=2.0,
@@ -285,6 +294,11 @@ class TestPgSkillStore:
         scheduled `compute_combined_skills_task` run) would therefore
         accumulate duplicate pooled scores indefinitely. This can only be
         observed against a real Postgres unique index.
+
+        `computation_version=2`: see the same note on
+        `test_natural_key_disambiguates_cohorts_by_time_step_and_phase`
+        above — the NULL-safe `model_artifact_id` compare only applies to
+        the tightened (`>= 2`) partial index.
         """
         sid = _seed_station(db_connection)
         # POOLED_MODEL_ID is pre-seeded into `models` by migration 0024.
@@ -292,13 +306,25 @@ class TestPgSkillStore:
         store = PgSkillStore(db_connection)
 
         first_run = _make_score(
-            sid, mid, None, metric="crps", lead_time_hours=24, score=0.5
+            sid,
+            mid,
+            None,
+            computation_version=2,
+            metric="crps",
+            lead_time_hours=24,
+            score=0.5,
         )
         # A second computation of the SAME stratum (same natural key, same
         # None artifact_id) — as a real repeated `compute_combined_skills_task`
         # run would produce.
         second_run = _make_score(
-            sid, mid, None, metric="crps", lead_time_hours=24, score=0.5
+            sid,
+            mid,
+            None,
+            computation_version=2,
+            metric="crps",
+            lead_time_hours=24,
+            score=0.5,
         )
         store.store_skill_scores([first_run])
         store.store_skill_scores([second_run])
@@ -309,75 +335,52 @@ class TestPgSkillStore:
             f"ON CONFLICT DO NOTHING, got {len(results)} duplicate rows"
         )
 
-    def test_recomputation_with_changed_score_supersedes_without_losing_history(
+    def test_legacy_version_writes_still_deduplicated_after_partial_index_cut(
         self, db_connection: sa.Connection
     ) -> None:
-        """Plan 228 fixer round (blocker, third review): `computation_version`
-        is a static schema/algorithm marker
-        (`services/skill/service.py::_COMPUTATION_VERSION`), never a per-run
-        identity — so a LATER, legitimately different recomputation of the
-        SAME stratum at the SAME version (a changed score, sample size, and
-        a later `eval_period_end` — e.g. next week's scheduled
-        `compute_combined_skills_task` run, with more observations
-        available) shared an identical natural key with the FIRST
-        computation before `eval_period_end` joined the key, and the
-        second `INSERT ... ON CONFLICT DO NOTHING` silently discarded the
-        corrected score forever.
-
-        `eval_period_end` is now part of the natural key: the later
-        computation is a NEW row (not silently dropped), `fetch_latest_
-        scores` surfaces it as current, and the FIRST computation's row is
-        still present in the table — nothing is deleted, so history stays
-        auditable.
+        """Plan 228 per-run scope (2026-09-03): the tightened natural key
+        (migration 0052) is a PARTIAL index applying only to
+        `computation_version >= 2`, to let it deploy against the live
+        mac-mini's known-invalid legacy (`< 2`) duplicates without deleting
+        anything. That partial-index split must not silently remove ALL
+        uniqueness protection from a future `computation_version < 2`
+        write — reachable via `docs/standards/cicd.md`'s one-version
+        rollback-compatibility rule (a previous image rolled back onto this
+        schema can still emit v1). `uq_skill_scores_natural_key_legacy`
+        covers exactly that case, in 0051's original shape: a repeated v1
+        write for the identical stratum (same non-null `model_artifact_id`,
+        so 0051's raw NULL-vs-NULL caveat does not apply here) still
+        collides under `ON CONFLICT DO NOTHING`, exactly as it did before
+        migration 0052.
         """
         sid = _seed_station(db_connection)
-        # POOLED_MODEL_ID is pre-seeded into `models` by migration 0024.
-        mid = POOLED_MODEL_ID
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
         store = PgSkillStore(db_connection)
 
-        first_run = _make_score(
-            sid,
-            mid,
-            None,
-            metric="crps",
-            lead_time_hours=24,
-            score=0.5,
-            sample_size=10,
-            eval_period_end=_T1,
+        first_write = _make_score(
+            sid, mid, aid, computation_version=1, metric="crps", score=0.5
         )
-        # A LATER recomputation of the exact same stratum: more data
-        # accumulated by the time this ran, so the score, sample size, and
-        # evaluation window all differ from the first run.
-        second_run = _make_score(
-            sid,
-            mid,
-            None,
-            metric="crps",
-            lead_time_hours=24,
-            score=0.7,
-            sample_size=15,
-            eval_period_end=_T2,
+        second_write = _make_score(
+            sid, mid, aid, computation_version=1, metric="crps", score=0.9
         )
-        store.store_skill_scores([first_run])
-        store.store_skill_scores([second_run])
+        store.store_skill_scores([first_write])
+        store.store_skill_scores([second_write])
 
-        # History is auditable: the earlier computation must not be deleted.
-        row_count = db_connection.execute(
+        count = db_connection.execute(
             sa.select(sa.func.count())
             .select_from(skill_scores)
-            .where(skill_scores.c.station_id == sid, skill_scores.c.model_id == mid)
+            .where(
+                skill_scores.c.station_id == sid,
+                skill_scores.c.model_id == mid,
+                skill_scores.c.computation_version == 1,
+            )
         ).scalar_one()
-        assert row_count == 2, (
-            "the earlier computation must still be present in the table "
-            f"for audit, found {row_count} row(s)"
+        assert count == 1, (
+            "a repeated computation_version=1 write for the same stratum "
+            f"must still collide under the legacy partial index, found "
+            f"{count} row(s)"
         )
-
-        # But callers see the LATER computation as current.
-        results = store.fetch_latest_scores(sid, mid)
-        assert len(results) == 1
-        assert results[0].score == 0.7
-        assert results[0].sample_size == 15
-        assert results[0].eval_period_end == _T2
 
     def test_pooled_and_bma_null_artifact_scores_do_not_collide(
         self, db_connection: sa.Connection
@@ -388,6 +391,13 @@ class TestPgSkillStore:
         `model_id` was not part of the natural key at all before this fix,
         so a NULL-safe `model_artifact_id` alone would have made these two
         legitimately-distinct rows collide. Both must survive.
+
+        `computation_version=2`: see the note on
+        `test_natural_key_disambiguates_cohorts_by_time_step_and_phase`
+        above — `model_id` is only in the tightened (`>= 2`) key. (Under
+        the legacy `< 2` key, raw `NULL` is never equal to `NULL` anyway, so
+        this scenario would pass trivially there without exercising the fix
+        this test locks.)
         """
         sid = _seed_station(db_connection)
         # Both are pre-seeded into `models` by migration 0024.
@@ -396,10 +406,22 @@ class TestPgSkillStore:
         store = PgSkillStore(db_connection)
 
         pooled_score = _make_score(
-            sid, pooled_mid, None, metric="crps", lead_time_hours=24, score=0.5
+            sid,
+            pooled_mid,
+            None,
+            computation_version=2,
+            metric="crps",
+            lead_time_hours=24,
+            score=0.5,
         )
         bma_score = _make_score(
-            sid, bma_mid, None, metric="crps", lead_time_hours=24, score=0.7
+            sid,
+            bma_mid,
+            None,
+            computation_version=2,
+            metric="crps",
+            lead_time_hours=24,
+            score=0.7,
         )
         store.store_skill_scores([pooled_score, bma_score])
 

@@ -60,42 +60,7 @@ class PgSkillStore:
             .where(*filters)
             .scalar_subquery()
         )
-        version_filters = [*filters, ss.c.computation_version == max_ver]
-        # Plan 228 fixer round (blocker): `computation_version` is a static
-        # algorithm/schema marker — two rows can share it while being
-        # genuinely different computations of DIFFERENT strata (different
-        # `(time_step, phase)` cohorts, lead times, seasons, ...), each
-        # with its own `eval_period_end`. "Latest" is resolved PER STRATUM
-        # — every natural-key column except `eval_period_end` itself — via
-        # a window function, so a cohort with a smaller eval window doesn't
-        # vanish just because ANOTHER stratum's eval window is larger. See
-        # `db/metadata.py::uq_skill_scores_natural_key`.
-        stratum_cols = [
-            ss.c.model_id,
-            ss.c.model_artifact_id,
-            ss.c.parameter,
-            ss.c.skill_source,
-            ss.c.forcing_type,
-            ss.c.lead_time_hours,
-            ss.c.season,
-            ss.c.flow_regime,
-            ss.c.metric,
-            ss.c.time_step_seconds,
-            ss.c.phase_offset_seconds,
-        ]
-        ranked = (
-            sa.select(
-                ss,
-                sa.func.max(ss.c.eval_period_end)
-                .over(partition_by=stratum_cols)
-                .label("_stratum_max_eval_end"),
-            )
-            .where(*version_filters)
-            .subquery()
-        )
-        stmt = sa.select(ranked).where(
-            ranked.c.eval_period_end == ranked.c._stratum_max_eval_end
-        )
+        stmt = sa.select(ss).where(*filters, ss.c.computation_version == max_ver)
         rows = self._conn.execute(stmt).mappings().all()
         return [_row_to_score(row) for row in rows]
 
@@ -117,35 +82,7 @@ class PgSkillStore:
             .where(*filters)
             .scalar_subquery()
         )
-        version_filters = [*filters, sd.c.computation_version == max_ver]
-        # See `fetch_latest_scores` above — "latest" is resolved PER
-        # STRATUM via a window function, not globally.
-        stratum_cols = [
-            sd.c.model_id,
-            sd.c.model_artifact_id,
-            sd.c.parameter,
-            sd.c.skill_source,
-            sd.c.lead_time_hours,
-            sd.c.season,
-            sd.c.flow_regime,
-            sd.c.diagram_type,
-            sd.c.threshold_level,
-            sd.c.time_step_seconds,
-            sd.c.phase_offset_seconds,
-        ]
-        ranked = (
-            sa.select(
-                sd,
-                sa.func.max(sd.c.eval_period_end)
-                .over(partition_by=stratum_cols)
-                .label("_stratum_max_eval_end"),
-            )
-            .where(*version_filters)
-            .subquery()
-        )
-        stmt = sa.select(ranked).where(
-            ranked.c.eval_period_end == ranked.c._stratum_max_eval_end
-        )
+        stmt = sa.select(sd).where(*filters, sd.c.computation_version == max_ver)
         rows = self._conn.execute(stmt).mappings().all()
         return [_row_to_diagram(row) for row in rows]
 

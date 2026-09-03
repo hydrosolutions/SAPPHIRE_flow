@@ -626,3 +626,62 @@ and cannot touch diagrams (`store/skill_store.py:185-203`). Mark-and-replace is 
 belongs to 235.
 
 Do not touch the mac-mini.
+
+## Implementation status (2026-09-03, fifth round) — the partial-index cut, plan complete
+
+Executed the "⛔ PER-RUN SCOPE (2026-09-03)" section above in full:
+
+- **Migration 0052's tightened natural key is now a PARTIAL index** (`WHERE computation_version >=
+  2`) on both `uq_skill_scores_natural_key`/`uq_skill_diagrams_natural_key` — a plain (non-partial)
+  `CREATE UNIQUE INDEX` over the tightened, NULL-safe key would fail to deploy against the live
+  mac-mini's ~115,000 `computation_version = 1` scores, which legitimately contain repeated
+  NULL-`model_artifact_id` duplicates under 0051's looser (raw) guarantee. **Deletes nothing** — the
+  legacy generation is grandfathered untouched.
+- **Retracted the `eval_period_end`-as-recompute-identity mechanism** that had been added on top of
+  this branch between per-run-scope rounds (not previously recorded in the plan doc): removed
+  `eval_period_end` from both natural keys, and reverted `PgSkillStore.fetch_latest_scores`/
+  `fetch_latest_diagrams` (and the `FakeSkillStore` mirror) to plain `max(computation_version)`
+  selection. That mechanism is unsafe on its own (no "every consumer reads the newest generation",
+  no atomic mark-and-replace covering diagrams) — the full design is Plan 235's, which must land
+  before this plan's D3 executes. A later, same-version recomputation of the same stratum again
+  silently collides under `ON CONFLICT DO NOTHING` — a known, accepted gap closed by 235, not this
+  plan.
+- **Closed the hole a bare partial-index cut would have opened**: a second partial index per table —
+  `uq_skill_scores_natural_key_legacy`/`uq_skill_diagrams_natural_key_legacy` (`WHERE
+  computation_version < 2`) — in EXACTLY 0051's original (raw, non-`COALESCE`) shape, so a future
+  `computation_version < 2` write (reachable via `docs/standards/cicd.md`'s one-version rollback
+  compatibility) is still deduplicated exactly as it was before 0052, not left with zero protection.
+  Chose this over store-boundary version rejection because ~30 existing integration tests
+  deliberately call `store_skill_scores` at `computation_version=1` to exercise unrelated
+  version-selection behavior; a hard floor there would have required rewriting all of them for no
+  behavioral gain the plan's scope asked for.
+- **Corrected migration 0051's docstring** (and the matching claim in the decision record and
+  `docs/touchpoint-maps.md`): it said migration 0016 "dropped" `computation_version` from the
+  natural key; in fact 0008's original index never contained it, and 0051 adds it for the first
+  time.
+- Three pre-existing locking tests that exercise the tightened key (`test_natural_key_
+  disambiguates_cohorts_by_time_step_and_phase`, `test_repeated_pooled_computation_with_null_
+  artifact_is_idempotent`, `test_pooled_and_bma_null_artifact_scores_do_not_collide`) now
+  compute at `computation_version=2` explicitly, matching real usage
+  (`_COMPUTATION_VERSION = 2`) and the version boundary the tightened index now requires.
+
+**Locking tests**, both proven RED against the pre-fix code before being restored to green:
+
+- `tests/integration/db/test_migration_0052_partial_index.py::TestMigration0052PartialIndex::
+  test_upgrade_survives_legacy_null_artifact_duplicates` — a real Alembic upgrade from 0051, seeded
+  with two `computation_version=1` NULL-artifact duplicates. RED (plain tightened index):
+  `psycopg.errors.UniqueViolation: could not create unique index "uq_skill_scores_natural_key"`.
+  GREEN once partial.
+- `tests/integration/store/test_skill_store.py::TestPgSkillStore::
+  test_legacy_version_writes_still_deduplicated_after_partial_index_cut` — two identical v1 writes
+  for the same stratum. RED (legacy index creation temporarily deleted from the migration): both
+  survive uncollided (`count == 2`, expected 1). GREEN with the legacy index present.
+
+`uv run ruff check`/`ruff format --check` clean on every touched file. Pyright ratchet: 393 <= 400
+(improved from the prior round's 394). `uv run pytest tests/integration/store/test_skill_store.py
+tests/integration/db/test_migration_0052_partial_index.py` — 22 passed. Full `tests/unit`/
+`tests/integration` suite report and version bump: see the session's exit-gate output.
+
+**Plan 228 is now complete.** Its D3 (marking existing scores superseded, recomputing) remains
+gated on Plan 235 landing first, and on the mac-mini's onboarding/hindcasting run finishing. Do not
+touch the mac-mini.

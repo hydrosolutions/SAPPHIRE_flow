@@ -1,4 +1,4 @@
-"""restore computation_version to the skill natural keys (Plan 228 review fixer round)
+"""add computation_version to the skill natural keys (Plan 228 review fixer round)
 
 Revision ID: 0051
 Revises: 0050
@@ -12,13 +12,18 @@ older one without deleting it. That design requires `computation_version`
 to be part of the natural key, so two rows differing ONLY by version are
 DISTINCT and can both exist.
 
-Migration 0016 ("Add parameter column...") dropped and recreated both
-`uq_skill_scores_natural_key` and `uq_skill_diagrams_natural_key` to add the
-new `parameter` column — and silently DROPPED `computation_version` from
-both in the process (present in the original 0001/0008 definition, absent
-from 0016 onward). `db/metadata.py`'s Python `sa.Index` objects were never
-updated to match — they still declare `computation_version` as part of the
-key, which has been FALSE of the live schema since 0016. The result,
+**Correction (family review, 2026-09-03): `computation_version` was never in
+the natural key before this migration — it was not "dropped" by anything.**
+0008's original `uq_skill_scores_natural_key` (`alembic/versions/0008_add_
+constraints_indexes_columns.py:50-62`) already omits it, and migration 0016
+("Add parameter column...") only added `parameter` on top of that same
+0008 shape — there is no earlier revision where `computation_version` was
+present and later removed. `db/metadata.py`'s Python `sa.Index` objects,
+however, DID (wrongly) declare `computation_version` as part of the key from
+early on, so the Python model and the live schema disagreed from 0008
+onward, not just since 0016. This migration adds `computation_version` to
+the live schema for the FIRST time, finally matching what `db/metadata.py`
+already (if long incorrectly) declared. The result,
 proved by an integration test storing a corrupted v1 score, marking it
 stale, and recomputing at v2 for the identical stratum: the CORRECTED row's
 `INSERT ... ON CONFLICT DO NOTHING` collides with the STALE v1 row (every
@@ -26,16 +31,16 @@ column the live index actually checks is identical) and is silently
 dropped — the exact blocker Plan 228's D3 recompute depends on not
 happening, except it is unconditional and has nothing to do with Plan 228
 specifically: ANY versioned recompute of an existing stratum has been
-silently a no-op since 0016.
+silently a no-op for as long as this table has existed.
 
-Adds `computation_version` back to both unique indexes, matching what
-`db/metadata.py` already (and, until now, wrongly) claimed. A duplicate can
-exist in the live table already (two rows same-key-old-shape, differing
-only by version, both currently permitted to coexist is not the failure
-mode — the failure mode is the OPPOSITE, an attempted second version being
-REJECTED — so no pre-existing row can violate the new, less restrictive
-constraint; adding a column to a unique index only shrinks the set of rows
-considered duplicates).
+Adds `computation_version` to both unique indexes for the first time,
+matching what `db/metadata.py` already (and, until now, wrongly) claimed. A
+duplicate can exist in the live table already (two rows same-key-old-shape,
+differing only by version, both currently permitted to coexist is not the
+failure mode — the failure mode is the OPPOSITE, an attempted second version
+being REJECTED — so no pre-existing row can violate the new, less
+restrictive constraint; adding a column to a unique index only shrinks the
+set of rows considered duplicates).
 """
 
 from collections.abc import Sequence

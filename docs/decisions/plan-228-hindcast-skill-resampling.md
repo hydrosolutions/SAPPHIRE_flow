@@ -1,15 +1,20 @@
 # Decision Record — hindcast and skill scoring ran on the wrong data (Plan 228)
 
-**Date**: 2026-09-01 (updated 2026-09-02 — see § D4 and "Per-run scope round (third)")
+**Date**: 2026-09-01 (updated 2026-09-03 — see § D4, "Per-run scope round (third)",
+and "Per-run scope round (2026-09-03) — the partial-index cut")
 **Status**: Fix implemented and committed on `feat/plan-228-hindcast-skill-resampling`,
 **held at PR — not yet merged to `main`**; two independent-review fixer rounds
 complete, PLUS a per-run scope correction (§ D4 below) that removed a wrong
 `anchor`-based fix from fixer round 1 and replaced it with aligned/extended
-fetch bounds, PLUS a third per-run-scope round (bottom of this record) closing
-the three findings a subsequent review left open (cohort-collision natural
-key, internally-mixed-phase validation, this record's own staleness);
-**existing scores not yet marked/recomputed**
-(gated on the mac-mini's in-flight onboarding/hindcasting test run — see D3 below)
+fetch bounds, PLUS a third per-run-scope round closing the three findings a
+subsequent review left open (cohort-collision natural key, internally-mixed-phase
+validation, this record's own staleness), PLUS a fourth per-run-scope round
+(bottom of this record) that made migration 0052's tightened natural key a
+PARTIAL index (deployable against the live mac-mini's legacy duplicates) after
+retracting an unsafe `eval_period_end`-based recompute-identity mechanism to
+Plan 235; **existing scores not yet marked/recomputed**
+(gated on the mac-mini's in-flight onboarding/hindcasting test run — see D3 below,
+and on Plan 235 landing first — D3's marking/recompute must not run before then)
 **Owners**: Bea (orchestrator)
 **Cross-reference**: `docs/plans/228-hindcast-and-skill-on-wrong-data.md` (source plan),
 `docs/touchpoint-maps.md` § Operational inputs / Training-hindcast-skill (routing
@@ -172,17 +177,19 @@ resolved:
   that, and only one was: `_COMPUTATION_VERSION` (`services/skill/service.py`)
   was still `1`; bumping it to `2` was necessary but, on its own, not
   sufficient — **the LIVE `uq_skill_scores_natural_key`/
-  `uq_skill_diagrams_natural_key` indexes have not actually included
-  `computation_version` since migration 0016** ("Add parameter column...",
-  2026-03-27), which dropped and recreated both indexes to add `parameter`
-  and silently dropped `computation_version` in the process.
-  `db/metadata.py`'s Python `sa.Index` objects were never updated to match
-  and have been WRONG about the live schema ever since — a pure
-  metadata/migration drift, unrelated to Plan 228, that made ANY versioned
-  recompute of an existing stratum a silent no-op since 0016, not merely the
-  one this plan needed. Migration 0051 restores `computation_version` to
-  both live indexes (matching what `db/metadata.py` already, if incorrectly,
-  declared); `_COMPUTATION_VERSION` is now `2`. Locked by
+  `uq_skill_diagrams_natural_key` indexes have never actually included
+  `computation_version`.** `db/metadata.py`'s Python `sa.Index` objects
+  declared it as part of the key from early on, but the live schema (0008's
+  original definition, unchanged in shape by migration 0016's later addition
+  of `parameter`) never matched that declaration — **correction, family
+  review 2026-09-03: this is not something 0016 "dropped"; `computation_
+  version` was never in the live index at any point before migration 0051**,
+  a pure metadata/migration drift, unrelated to Plan 228, that made ANY
+  versioned recompute of an existing stratum a silent no-op for as long as
+  this table has existed, not merely the one this plan needed. Migration
+  0051 adds `computation_version` to both live indexes for the first time
+  (matching what `db/metadata.py` already, if incorrectly, declared);
+  `_COMPUTATION_VERSION` is now `2`. Locked by
   `tests/integration/store/test_skill_store.py::TestPgSkillStore::test_recompute_after_mark_stale_supersedes_the_corrupted_score`
   — proven RED (stash 0051 + the version bump, keep the test): the corrected
   row collides with the stale row and `fetch_latest_scores` returns the
@@ -585,3 +592,85 @@ for either reason is now diagnosable from logs rather than looking identical to 
 run with nothing to score. `uv run pytest tests/unit` and `tests/integration` both zero
 failures after the fix (pytest's own exit status checked directly, not through a
 pipeline).
+
+## Per-run scope round (2026-09-03) — the partial-index cut, and retracting `eval_period_end`
+
+Between the round above and this one, an intermediate version of migration 0052 (not
+recorded in this document, per-run-scope violation of its own) added `eval_period_end` to
+both natural keys as a manufactured per-run identity, so a later recomputation of the same
+stratum at the same `computation_version` would not collide with an earlier one under
+`ON CONFLICT DO NOTHING`. **An independent design check (2026-09-03) found that fix unsafe
+and retracted it.** Giving a recompute a safe, stable identity is a bigger, interconnected
+problem than one migration can safely solve in isolation — it also requires every consumer
+to read the newest generation (six call sites did not) and an atomic mark-and-replace
+operation covering both scores AND diagrams (there was none; `mark_stale` cannot touch
+diagrams at all). That whole design now belongs to **Plan 235**, which must land before
+Plan 228's D3 (marking existing scores superseded, and recomputing) executes — see Plan
+235's own document for the full design. `eval_period_end`-as-identity, the window-function
+"resolve latest per stratum" logic in `PgSkillStore.fetch_latest_scores`/
+`fetch_latest_diagrams` (and its `FakeSkillStore` mirror), and the locking test that
+exercised it are all removed from this branch; a later, same-version recomputation of the
+same stratum again collides and is silently dropped — a known, accepted gap until Plan 235
+closes it.
+
+**This run's actual scope: make migration 0052's tightened natural key deployable.** A
+plain (non-partial) `CREATE UNIQUE INDEX` over the tightened, NULL-safe key (`model_id` +
+`COALESCE(model_artifact_id)` + `time_step_seconds`/`phase_offset_seconds`) would **fail on
+deploy**: under 0051's raw (non-`COALESCE`) compare, PostgreSQL never treats two `NULL`
+`model_artifact_id`s as equal, so the live mac-mini's ~115,000 `computation_version = 1`
+scores legitimately already contain repeated NULL-artifact rows (the exact pooled/BMA
+duplication bug this migration exists to close, at the legacy version). Both
+`uq_skill_scores_natural_key` and `uq_skill_diagrams_natural_key` are now **partial indexes**
+(`WHERE computation_version >= 2`) — the tightened key applies only to the version boundary
+this document already defines as "valid, post-fix data." **Deletes nothing**; the legacy
+generation is grandfathered untouched.
+
+**Closing the hole this opens** (family review, 2026-09-03): a partial index covering only
+`>= 2` would, by itself, remove ALL uniqueness protection from a FUTURE `computation_version
+< 2` write — reachable via `docs/standards/cicd.md`'s one-version rollback-compatibility
+rule (a previous image rolled back onto this schema can still emit v1), since the store
+places no floor on `SkillScore.computation_version`. Rather than add that floor as new
+application-level validation (which would have required rewriting the ~30 existing
+integration tests that deliberately call `store_skill_scores` at `computation_version=1` to
+exercise unrelated version-selection behavior), each table keeps a SECOND partial index —
+`uq_skill_scores_natural_key_legacy` / `uq_skill_diagrams_natural_key_legacy` — covering
+`computation_version < 2`, in EXACTLY 0051's original (raw, non-`COALESCE`, no `model_id`,
+no `time_step_seconds`/`phase_offset_seconds`) shape. A future v1 write is therefore still
+deduplicated under precisely the guarantee 0051 already gave it — no better, no worse, and
+no silent regression to zero protection. Because the two predicates (`>= 2` / `< 2`) are
+mutually exclusive, every row is covered by exactly one index and the two can never
+conflict with each other's rows.
+
+**Also corrected**: migration 0051's own docstring claimed migration 0016 "dropped"
+`computation_version` from the natural key. False — 0008's original index
+(`alembic/versions/0008_add_constraints_indexes_columns.py:50-62`) never contained it; 0016
+only added `parameter` on top of that same shape. 0051 adds `computation_version` to the
+live schema for the first time. Corrected in 0051's own docstring and in this record's
+fixer-round entry above.
+
+**Locking tests**, both proven RED against the pre-fix code before being restored to green:
+
+- `tests/integration/db/test_migration_0052_partial_index.py::
+  TestMigration0052PartialIndex::test_upgrade_survives_legacy_null_artifact_duplicates` — a
+  real Alembic upgrade from 0051, seeded with two `computation_version=1` rows sharing every
+  0051 natural-key column (both `model_artifact_id=NULL`). RED (against a plain, non-partial
+  tightened index): `psycopg.errors.UniqueViolation: could not create unique index
+  "uq_skill_scores_natural_key"`. GREEN once the index is partial.
+- `tests/integration/store/test_skill_store.py::TestPgSkillStore::
+  test_legacy_version_writes_still_deduplicated_after_partial_index_cut` — two identical
+  `computation_version=1` writes for the same stratum (non-null `model_artifact_id`, so
+  0051's raw-NULL caveat does not apply). RED (with the legacy partial index removed, tested
+  by temporarily deleting its creation from the migration): both rows survive uncollided
+  (`count == 2`, not the expected 1). GREEN with `uq_skill_scores_natural_key_legacy`
+  present.
+
+Three existing locking tests (`test_natural_key_disambiguates_cohorts_by_time_step_and_
+phase`, `test_repeated_pooled_computation_with_null_artifact_is_idempotent`,
+`test_pooled_and_bma_null_artifact_scores_do_not_collide`) were updated to compute at
+`computation_version=2` explicitly — they exercise the TIGHTENED key, which now only
+applies at that version boundary; production always writes `_COMPUTATION_VERSION = 2`, so
+this matches real usage.
+
+`uv run pytest tests/integration/store/test_skill_store.py tests/integration/db/
+test_migration_0052_partial_index.py` — 22 passed. Full suite gates re-run at the end of
+this round (see the plan document's exit-gate report).

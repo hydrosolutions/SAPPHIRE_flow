@@ -1493,6 +1493,24 @@ skill_diagrams = sa.Table(
 )
 
 # Indexes on skill_scores
+#
+# Plan 228 per-run scope (2026-09-03): the tightened natural key below
+# (`model_id` + NULL-safe `model_artifact_id` + `time_step_seconds`/
+# `phase_offset_seconds`) applies only to `computation_version >= 2` —
+# `uq_skill_scores_natural_key_legacy` below covers `< 2` in 0051's original
+# (raw, non-COALESCE'd) shape. See migration 0052's docstring for the full
+# rationale: a plain (non-partial) unique index over the tightened key would
+# fail to deploy against the live mac-mini's known-invalid legacy rows,
+# which legitimately contain repeated NULL-artifact duplicates under 0051's
+# looser guarantee. An intermediate version of this index also added
+# `eval_period_end` as a manufactured per-run identity so a later
+# recomputation of the same stratum would not collide with an earlier one —
+# **that approach is RETRACTED** (independent design check, 2026-09-03): a
+# safe recompute identity is a bigger, interconnected design (stable
+# identity + "every consumer reads the newest generation" + atomic
+# mark-and-replace covering diagrams) that belongs to Plan 235, not to this
+# migration. Two same-stratum, same-version recomputations still collide
+# under `ON CONFLICT DO NOTHING` today — accepted here, closed by 235.
 sa.Index(
     "uq_skill_scores_natural_key",
     skill_scores.c.station_id,
@@ -1524,28 +1542,23 @@ sa.Index(
     # above — NULL never equals NULL in a unique index.
     skill_scores.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
-    # Plan 228 fixer round (blocker): `computation_version` is a static
-    # algorithm/schema marker (bumped only when the SCORING CODE changes),
-    # never a per-run identity — every OTHER column above is fixed for the
-    # lifetime of a stratum, so two genuinely distinct computations of the
-    # SAME stratum at the SAME algorithm version (e.g. today's and next
-    # week's `compute_combined_skills_task` run, both scoring
-    # `POOLED_MODEL_ID`/`model_artifact_id=NULL`) shared an identical key
-    # and the later `INSERT ... ON CONFLICT DO NOTHING` silently discarded
-    # the corrected score forever. `eval_period_end` is the run's own
-    # identity: it is fixed for every row a single `compute_skill_for_
-    # station`/`compute_combined_skill` call produces (one `eval_start`/
-    # `eval_end` pair per call — see `service.py::compute_skill_for_
-    # station`), and grows monotonically as more observations become
-    # available to a LATER call. A retry of the same run (same eval
-    # window) still collides and is idempotent; a later recomputation gets
-    # a distinct key, is inserted as a NEW row (the earlier one is never
-    # deleted — full history stays queryable), and
-    # `PgSkillStore.fetch_latest_scores` surfaces it as current by
-    # preferring the greatest `eval_period_end` within the greatest
-    # `computation_version`.
-    skill_scores.c.eval_period_end,
     unique=True,
+    postgresql_where=sa.text("computation_version >= 2"),
+)
+sa.Index(
+    "uq_skill_scores_natural_key_legacy",
+    skill_scores.c.station_id,
+    skill_scores.c.model_artifact_id,
+    skill_scores.c.parameter,
+    skill_scores.c.skill_source,
+    sa.text("COALESCE(forcing_type, '')"),
+    skill_scores.c.computation_version,
+    skill_scores.c.lead_time_hours,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    skill_scores.c.metric,
+    unique=True,
+    postgresql_where=sa.text("computation_version < 2"),
 )
 sa.Index(
     "ix_skill_scores_station_model_version",
@@ -1563,6 +1576,8 @@ sa.Index(
     skill_scores.c.eval_period_end,
     postgresql_where=skill_scores.c.freshness == "current",
 )
+# See `uq_skill_scores_natural_key`/`uq_skill_scores_natural_key_legacy`
+# above — same partial-index split, same rationale.
 sa.Index(
     "uq_skill_diagrams_natural_key",
     skill_diagrams.c.station_id,
@@ -1583,12 +1598,23 @@ sa.Index(
     # `uq_skill_scores_natural_key` above.
     skill_diagrams.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
-    # Plan 228 fixer round (blocker): see `uq_skill_scores_natural_key`
-    # above — `eval_period_end` is the per-run identity that lets a later
-    # recomputation's diagrams supersede (for `fetch_latest_diagrams`)
-    # without deleting the earlier ones.
-    skill_diagrams.c.eval_period_end,
     unique=True,
+    postgresql_where=sa.text("computation_version >= 2"),
+)
+sa.Index(
+    "uq_skill_diagrams_natural_key_legacy",
+    skill_diagrams.c.station_id,
+    skill_diagrams.c.model_artifact_id,
+    skill_diagrams.c.parameter,
+    skill_diagrams.c.skill_source,
+    skill_diagrams.c.computation_version,
+    skill_diagrams.c.lead_time_hours,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    skill_diagrams.c.diagram_type,
+    sa.text("COALESCE(threshold_level, '')"),
+    unique=True,
+    postgresql_where=sa.text("computation_version < 2"),
 )
 
 # ──────────────────────────────────────────────
