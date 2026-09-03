@@ -18,10 +18,20 @@ citation audit that corrected D3).
 
 ## ⛔ PER-RUN SCOPE (binding)
 
-- 🔴 **THIS RUN BUILDS T1 AND T2 ONLY. It does NOT run T3.** T3 is 105,216 authenticated
-  requests against NASA GES DISC — a multi-hour, outward-facing operation that needs its own
-  explicit authorisation. ⛔ If the retrieval loop looks ready to run the window, **stop and
-  report**. T2 is a hard gate: a mismatch **ends the plan** rather than starting T3.
+- ✅ **T1 and T2 are DONE** (branch `docs/plan-225`, v0.1.856). T2 passed on the real pair:
+  coordinate vectors exact, `max_abs_diff = 0.0`. The gate is cleared.
+- 🔴 **THIS RUN BUILDS T3 AND THEN RETRIEVES ONE DAY — 48 GRANULES. NOT THE WINDOW.**
+  The full 105,216-granule retrieval needs its own authorisation *after* the trial reports.
+  ⛔ If the loop looks ready to continue past the trial day, **stop and report**.
+  **Why a trial at all:** the subset route has never fetched more than one granule, and D3's
+  four behaviours do not exist yet — measured on HEAD, there is **no cadence, no `429`/`Retry-After`
+  handling, no reused `Session`, and no per-day filename resolution**; `fetch_one_subset_granule`'s
+  own docstring records them as deferred. A window run before they exist would be 105,216 bare
+  `requests.get` calls with no delay, and NASA's first 429 would abort on a non-retryable branch.
+- **D3's four behaviours are part of THIS task**, not the window run: fixed cadence between
+  successful requests; 429 retried honouring `Retry-After` with backoff; **one** authenticated
+  cookie-bearing session reused across calls; each day's filenames resolved **once**.
+  ⛔ Build them as behaviours of the existing client — no scheduler, no new config surface.
 - ✅ **Network: GES DISC OPeNDAP only** (`gpm1.gesdisc.eosdis.nasa.gov`), Earthdata credentials
   from `~/.netrc`. ⛔ **Never the Copernicus CDS** — a wrong root once triggered a live
   ERA5-Land download on this track. T2 fetches **exactly one** subset granule.
@@ -87,6 +97,24 @@ strictly, is the whole point.
   ⚠️ **"Variable layout" includes the dtype and any `scale_factor`/`add_offset`** — they decide what a
   decoded value *is*, and D5's tolerance is derived from them.
 
+  **D1 ADDENDUM (2026-09-02, measured during the T3 full-window run).** NASA writes the HDF5
+  `FileHeader` `ProductVersion` as `V07B` up to 2024-05 and as `07B` from 2024-06 on, with every other
+  contract field and the filename-derived `granule_revision` unchanged across that boundary. The SUBSET
+  comparator now removes exactly one leading `V` before comparing that ONE field, at comparison time
+  only (the observed spelling is still stored and digested unmodified). ⛔ D1's prohibition **holds**:
+  `assert_contract_consistent` — the ARCHIVE comparator — had its **acceptance predicate** left
+  unchanged. (⚠️ Corrected 2026-09-02, confirming Codex round: the earlier wording here, "was **not**
+  touched", was literally inaccurate — the function *was* edited, to name the differing field in its
+  message. The predicate is now the same whole-dataclass `observed != replace(frozen, granule_revision=…)`
+  it always was, with the field-by-field difference list used only to BUILD that message, so the scope
+  lock is true **by construction** rather than by test.) An equivalence test still perturbs all twelve
+  fields, against both spellings of the frozen product version, and fails if anyone reintroduces a second
+  acceptance predicate. ⚠️ The archive route therefore still
+  carries the same exposure and would abort at the same 2024-06 boundary on a multi-granule run; it is
+  recorded as a **known gap** (with what would substantiate a fix) under M-A5d in
+  `docs/design/dhm-precipitation-milestones.md`, not fixed here — only one archive granule is banked, so
+  a tolerance there would be reasoned, not sampled.
+
 - **D2 — The route is recorded in the acquisition manifest and is part of the identity.** A bundle built
   from subset granules must be distinguishable from one built from full-field granules, because the two
   read different grids. ⇒ The route string enters the record and therefore the digest. ⛔ A bundle whose
@@ -120,6 +148,34 @@ strictly, is the whole point.
   ✅ **Resumability already exists** — validate-and-reuse an existing artifact rather than re-downloading
   (`:985-990`). ⇒ Preserve that behaviour for the subset filename; do not build a checkpoint store.
   Record gaps as gaps (Plan 220's rule: a gap is data, a wrong retrieval is not).
+
+- **D3b — BOUNDED CONCURRENCY within a day, added 2026-09-01 after the 48-granule trial.** The trial
+  measured **2.394 s per granule** of GES DISC round-trip for a ~25 KB body (~10.7 kB/s): the route is
+  **latency-bound**, because GES DISC subsets server-side. Serially the 105,216-granule window is
+  ~4.2 days of almost pure waiting. ⇒ `--subset-workers` fetches N of a **day's** granules at once;
+  ⛔ **never across days** — parallel days would race to list the same directory, and one-listing-per-day
+  (D3.4) then holds **structurally** rather than by a check. Default **1** (the trial's own behaviour);
+  the owner's run is 4.
+  **The four things concurrency would otherwise break, each a locked behaviour:**
+  1. 🔴 **The cadence is a GLOBAL rate limit.** N workers each honouring a 1 s interval is N req/s —
+     the politeness property D3.1 exists for, silently multiplied. The pause is taken **inside** the one
+     shared `RequestPacer`'s mutex, so the interval separates any two requests whatever thread issues
+     them. ⇒ **Peak rate is `1 / --request-interval-seconds` no matter how many workers run**; workers
+     buy latency hiding, never a higher request rate. At the 1.0 s default and 4 workers the run is
+     ~107,400 requests at ~1 req/s ⇒ **~30 h**, mean and peak both ~1.0 req/s (serial: ~0.29 req/s).
+  2. 🔴 **A 429 backs off GLOBALLY.** `Retry-After` is registered as a **deadline on the shared limiter**,
+     not slept inside the receiving call, so every worker waits it out and the delay is served **once**.
+  3. 🔴 **The manifest is folded in granule-start order, never completion order.** The acquisition record
+     is identity-bearing; completion-ordered `granule_checksums` would make two identical runs write
+     different bytes. (The *digest* survives either way — `_canonical_json` sorts keys — but the record's
+     bytes are the record.)
+  4. **Sessions are one per WORKER THREAD.** `requests.Session` is not documented thread-safe, and one
+     session behind a lock would serialise exactly the I/O the workers exist to overlap. ⇒ **D3.3's
+     literal "one session" becomes "one per worker"**; the property it exists for is unchanged — each
+     thread authenticates once and keeps its cookie jar, so a run pays `workers` cold Earthdata redirect
+     chains instead of 105,216 (`redirects=0` after each thread's first request).
+  ⚠️ A fatal contract violation still aborts the run, but the rest of **its own day** is already in
+  flight and is awaited first: the abort is bounded by a day, not by a granule.
 
 - **D4 — OPeNDAP access facts, measured 2026-08-31, not assumed.**
   - Endpoint: `https://gpm1.gesdisc.eosdis.nasa.gov/opendap/GPM_L3/GPM_3IMERGHHE.07/<yyyy>/<ddd>/<granule>.HDF5`

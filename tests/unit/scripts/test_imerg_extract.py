@@ -287,6 +287,112 @@ class TestReadGranule:
             ie.read_granule(path)
 
 
+# --- Plan 225 (M-A5d) D2 — the route-aware subset reader. Fixture mirrors
+# the MEASURED OPeNDAP subset structure: root-level `/precipitation` (no
+# `/Grid` group), a 1-element-array `_FillValue`. ---
+
+
+def _write_fake_subset_granule(
+    path: Path,
+    *,
+    archive_filename: str,
+    fill_value: float = -9999.9,
+    lat_count: int = 50,
+    lon_count: int = 90,
+    value: float = 1.0,
+    lat_start: float | None = None,
+    lon_start: float | None = None,
+) -> None:
+    # 🔴 Plan 225 fixer round 3 (BLOCKER) — the BOX's coordinates come from the
+    # MEASURED float32 constants, never from a `linspace` derivation: the
+    # subset contract pins them EXACTLY, and a fixture that regenerated them
+    # arithmetically would only ever test its own arithmetic (measured
+    # 2026-09-01: the two disagree on 20 of 50 lat / 18 of 90 lon values).
+    # `lat_start`/`lon_start` stay only for the deliberately WRONG full-field
+    # grid a refusal test needs.
+    lat = (
+        np.asarray(ia.EXPECTED_SUBSET_LAT_VECTOR, dtype=np.float32)
+        if lat_start is None
+        else np.round(
+            np.linspace(lat_start, lat_start + 0.1 * (lat_count - 1), lat_count), 6
+        ).astype(np.float32)
+    )
+    lon = (
+        np.asarray(ia.EXPECTED_SUBSET_LON_VECTOR, dtype=np.float32)
+        if lon_start is None
+        else np.round(
+            np.linspace(lon_start, lon_start + 0.1 * (lon_count - 1), lon_count), 6
+        ).astype(np.float32)
+    )
+    precip = np.full((1, lon_count, lat_count), value, dtype=np.float32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as f:
+        f.attrs["FileHeader"] = (
+            f"FileName={archive_filename.removesuffix('.HDF5')}.RT-H5;\n"
+            "AlgorithmVersion=3IMERGHH;\nProductVersion=V07B;\n"
+        ).encode()
+        # Plan 225 fixer round 2, finding 1 — the root-level `Grid.GridHeader`
+        # global attribute the REAL live probe response retains (measured
+        # 2026-08-31): `contract_from_open_subset_granule` derives the
+        # longitude convention from its `WestBoundingCoordinate`, not from
+        # this fixture's own (always-positive) `/lon` slice.
+        f.attrs["Grid.GridHeader"] = (
+            b"BinMethod=ARITHMETIC_MEAN;\nRegistration=CENTER;\n"
+            b"LatitudeResolution=0.1;\nLongitudeResolution=0.1;\n"
+            b"NorthBoundingCoordinate=90;\nSouthBoundingCoordinate=-90;\n"
+            b"EastBoundingCoordinate=180;\nWestBoundingCoordinate=-180;\n"
+            b"Origin=SOUTHWEST;\n"
+        )
+        f.create_dataset("lat", data=lat)
+        f.create_dataset("lon", data=lon)
+        ds = f.create_dataset("precipitation", data=precip)
+        ds.attrs["DimensionNames"] = b"time,lon,lat"
+        ds.attrs["units"] = b"mm/hr"
+        ds.attrs["_FillValue"] = np.array([fill_value], dtype=np.float32)
+
+
+class TestReadSubsetGranule:
+    def test_reshapes_into_the_same_layout_read_granule_produces(
+        self, tmp_path: Path
+    ) -> None:
+        start = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+        archive_filename = _granule_filename(start)
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(path, archive_filename=archive_filename, value=2.5)
+        ds, contract = ie.read_subset_granule(path, archive_filename=archive_filename)
+        assert set(ds.coords) == {"valid_time", "latitude", "longitude"}
+        assert ds["valid_time"].values[0] == np.datetime64("2020-07-15T00:00:00")
+        assert ds["precipitation"].shape == (1, 50, 90)
+        assert contract.granule_revision == "V07B"
+
+    def test_fill_value_becomes_nan(self, tmp_path: Path) -> None:
+        start = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+        archive_filename = _granule_filename(start)
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(
+            path, archive_filename=archive_filename, value=-9999.9
+        )
+        ds, _contract = ie.read_subset_granule(path, archive_filename=archive_filename)
+        assert bool(np.isnan(ds["precipitation"].values).all())
+
+    def test_rejects_a_full_field_shaped_response(self, tmp_path: Path) -> None:
+        """D2 — 'a full-field granule offered against the subset contract is
+        refused' (T1 verify), exercised through the pipeline-shaped reader."""
+        start = datetime(2020, 7, 15, 0, 0, tzinfo=UTC)
+        archive_filename = _granule_filename(start)
+        path = tmp_path / "subset.dap.nc4"
+        _write_fake_subset_granule(
+            path,
+            archive_filename=archive_filename,
+            lat_count=1800,
+            lon_count=3600,
+            lat_start=-89.95,
+            lon_start=-179.95,
+        )
+        with pytest.raises(ia.ImergReadContractError, match="grid shape"):
+            ie.read_subset_granule(path, archive_filename=archive_filename)
+
+
 # --- D9 storage/identity/manifest primitives ---
 
 
@@ -785,6 +891,46 @@ def _write_complete_acquisition_manifest(
     )
 
 
+def _complete_subset_acquisition_manifest(
+    data_root: Path, *, granule_checksums: dict[str, str]
+) -> ia.ImergAcquisitionManifest:
+    """Plan 225 (M-A5d) D2 (fixer review, finding 1) — the SUBSET_ROUTE
+    counterpart of `_complete_acquisition_manifest`: `granule_checksums` is
+    keyed by the ARCHIVE filename (D2's own identity, mirroring
+    `acquire_subset_granule`), and `read_contract` is the SUBSET contract
+    (`ImergSubsetReadContract`), not the archive one."""
+    retrieved_starts = {
+        ia.parse_granule_filename(name)[0].start for name in granule_checksums
+    }
+    probe_name = sorted(granule_checksums)[0]
+    probe_path = ia.subset_granule_artifact_path(data_root, archive_filename=probe_name)
+    contract = ia.observe_subset_read_contract(
+        probe_path, archive_filename=probe_name
+    ).as_manifest_dict()
+    return ia.ImergAcquisitionManifest(
+        route=ia.SUBSET_ROUTE,
+        collection_short_name=ia.COLLECTION_SHORT_NAME,
+        granule_revision=ia.PINNED_GRANULE_REVISION_PER_PLAN,
+        requested_window_start=ia.FIRST_GRANULE_START,
+        requested_window_end=ia.LAST_GRANULE_START,
+        box=ia.STUDY_BOX,
+        read_contract=contract,
+        requested=ia.EXPECTED_GRANULE_COUNT,
+        retrieved=len(granule_checksums),
+        missing=tuple(
+            start.isoformat()
+            for start in ia.all_granule_starts()
+            if start not in retrieved_starts
+        ),
+        granule_checksums=granule_checksums,
+        granule_retrieved_at={
+            name: datetime(2026, 8, 28, tzinfo=UTC) for name in granule_checksums
+        },
+        retrospective=True,
+        generated_at=datetime(2026, 8, 28, tzinfo=UTC),
+    )
+
+
 class TestRunEndToEnd:
     def _write_two_granules(self, data_root: Path) -> dict[str, str]:
         from scripts.dhm_precip.imerg_acquire import (
@@ -1092,6 +1238,109 @@ class TestRunEndToEnd:
         )
         assert code == 5  # noqa: PLR2004
 
+    def _write_two_subset_granules(self, data_root: Path) -> dict[str, str]:
+        """Plan 225 (M-A5d) D2 (fixer review, finding 1) — the SUBSET_ROUTE
+        counterpart of `_write_two_granules`: artifacts land under
+        `imerg_subset_raw_dir`, keyed (in the returned dict, and therefore in
+        the manifest's `granule_checksums`) by the ARCHIVE filename, exactly
+        as `acquire_subset_granule`/`subset_granule_artifact_path` do."""
+        from scripts.dhm_precip.imerg_acquire import (
+            FIRST_GRANULE_START,
+            ImergGranuleId,
+            subset_granule_artifact_path,
+        )
+
+        starts = [FIRST_GRANULE_START, FIRST_GRANULE_START + timedelta(minutes=30)]
+        values = [2.0, 4.0]  # mean == 3.0, matching the archive-route test
+        checksums: dict[str, str] = {}
+        for start, value in zip(starts, values, strict=True):
+            archive_filename = ImergGranuleId(start=start).filename(revision="V07B")
+            path = subset_granule_artifact_path(
+                data_root, archive_filename=archive_filename
+            )
+            _write_fake_subset_granule(
+                path, archive_filename=archive_filename, value=value
+            )
+            checksums[archive_filename] = checksum_file(path)
+        return checksums
+
+    def test_run_dispatches_to_the_subset_reader_for_a_subset_route_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 225 (M-A5d) D2 (fixer review, finding 1 — locking) — `run()`
+        must DISPATCH on the acquisition manifest's own `route`: a
+        SUBSET_ROUTE manifest must be read through `read_subset_granule` and
+        `imerg_subset_raw_dir`, never the archive reader/directory. Before
+        this fix `run()` unconditionally called `read_granule` against
+        `imerg_raw_dir`, which would either read nothing (wrong directory)
+        or crash on a subset-shaped file — this end-to-end run is the
+        pipeline-shaped proof the dispatch actually wires up."""
+        data_root = tmp_path / "data_root"
+        checksums = self._write_two_subset_granules(data_root)
+        ia.write_acquisition_manifest(
+            _complete_subset_acquisition_manifest(
+                data_root, granule_checksums=checksums
+            ),
+            ia.acquisition_manifest_path(data_root),
+        )
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+
+        args = ie.build_parser().parse_args(["--data-root", str(data_root)])
+        code = ie.run(
+            args,
+            clock=lambda: datetime(2026, 8, 28, tzinfo=UTC),
+            coords_path=coords_path,
+            expected_stations=frozenset({Station("A")}),
+        )
+        assert code == 0
+
+        found_dir, manifest = ie.discover_imerg_bundle(data_root)
+        assert manifest.route == ia.SUBSET_ROUTE
+        assert manifest.granule_revision == "V07B"
+        assert manifest.granules_retrieved == 2  # noqa: PLR2004
+
+        series = pl.read_csv(found_dir / ie._NEAREST_SERIES_FILENAME)
+        first_row = series.filter(pl.col("timestamp_utc") == "2020-01-01T00:00:00")
+        assert first_row["precip_mm_per_h"][0] == pytest.approx(3.0)
+        assert first_row["granule_count"][0] == 2  # noqa: PLR2004
+
+    def test_run_refuses_a_subset_manifest_whose_artifact_is_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """D9 (locking) — the subset-route path resolution must look for the
+        subset artifact (`raw_subset/<archive-name>.dap.nc4`), not the
+        archive one; a manifest naming a granule whose SUBSET artifact is
+        absent must be refused even if an archive-shaped file of the same
+        name happens to sit under `raw/`."""
+        from scripts.dhm_precip.imerg_acquire import FIRST_GRANULE_START, ImergGranuleId
+
+        data_root = tmp_path / "data_root"
+        checksums = self._write_two_subset_granules(data_root)
+        ia.write_acquisition_manifest(
+            _complete_subset_acquisition_manifest(
+                data_root, granule_checksums=checksums
+            ),
+            ia.acquisition_manifest_path(data_root),
+        )
+        # Remove one subset artifact from disk without updating the manifest.
+        removed_name = ImergGranuleId(start=FIRST_GRANULE_START).filename(
+            revision="V07B"
+        )
+        ia.subset_granule_artifact_path(
+            data_root, archive_filename=removed_name
+        ).unlink()
+        coords_path = tmp_path / "station_coordinates.csv"
+        _write_coords_csv(coords_path)
+        args = ie.build_parser().parse_args(["--data-root", str(data_root)])
+        with pytest.raises(ExtractionInputAbsentError, match="absent from disk"):
+            ie.run(
+                args,
+                clock=lambda: datetime(2026, 8, 28, tzinfo=UTC),
+                coords_path=coords_path,
+                expected_stations=frozenset({Station("A")}),
+            )
+
 
 # --- main() must catch a mid-extraction D1 read-contract/revision
 # violation, not let it escape as a raw traceback (fixer round 2) ---
@@ -1152,10 +1401,86 @@ class TestMainCatchesMidExtractionD1Violation:
             expected_stations=frozenset({Station("A")}),
         )
 
-        assert exit_code not in (0, None)
+        # 🔴 TIGHTENED (2026-09-02, Codex review) — "not 0" was true before
+        # and after the acquisition CLI grew a permanent/transient exit split,
+        # so it could not notice that this CLI still reported a PERMANENT
+        # contract violation as the retryable 3. A mid-extraction D1 violation
+        # reads the same banked bytes to the same conclusion for ever.
+        assert exit_code == 6  # noqa: PLR2004
         captured = capsys.readouterr()
         assert "imerg_extract.cli.failed" in captured.err
         assert "ImergReadContractError" in captured.err
+
+    def test_the_extract_cli_mirrors_the_acquire_clis_exit_codes(self) -> None:
+        """⛔ The extract table's own comment promises "the IMERG leaves carry
+        T1's exit codes". Before this it mapped EVERY `ImergAcquisitionError`
+        to 3, so the promise held only for the leaves that happened to be 3.
+        ⇒ Assert the two CLIs agree leaf by leaf, so they cannot drift apart
+        silently again.
+
+        🔴 The leaves are now DISCOVERED, not hand-listed (2026-09-02,
+        confirming Codex round). The hand-written tuple claimed to walk the
+        hierarchy "leaf by leaf" and did not: it omitted
+        `ImergRateLimitedError` outright and spent four of its ten entries on
+        non-leaf parents. A new leaf added to `imerg_acquire` now joins this
+        assertion automatically."""
+        from scripts.dhm_precip import imerg_acquire as ia
+
+        def descendants(cls: type) -> set[type]:
+            subs = set(cls.__subclasses__())
+            return subs.union(*(descendants(s) for s in subs)) if subs else set()
+
+        # ⛔ `__module__`-filtered: `__subclasses__` also sees a subclass any
+        # OTHER test module defined earlier in the same session, which would
+        # make this assertion depend on collection order.
+        # 🔴 The foreign subclass that makes the fragility REAL rather than
+        # hypothetical, and makes this test order-INDEPENDENT: without it the
+        # guard passes either way and locks nothing. Under raw
+        # `__subclasses__()` this test-local class stops
+        # `ImergRateLimitedError` — a PRODUCTION leaf — from counting as one,
+        # silently shrinking the floor below. It lives inside the function, so
+        # it is unreachable to every other test.
+        class _TestLocalRateLimitedError(ia.ImergRateLimitedError):
+            pass
+
+        assert _TestLocalRateLimitedError in ia.ImergRateLimitedError.__subclasses__()
+
+        production = ia.ImergAcquisitionError.__module__
+        family = {
+            c
+            for c in {ia.ImergAcquisitionError} | descendants(ia.ImergAcquisitionError)
+            if c.__module__ == production
+        }
+        # 🔴 The SAME filter on leaf detection (2026-09-02, final Codex round).
+        # The family was filtered and the leaf test was not, so a subclass
+        # defined in another test module — this suite defines several, to lock
+        # the comparators' subclass strictness — stopped its PRODUCTION parent
+        # from counting as a leaf and quietly dropped it from the floor below.
+        # The floor then depended on collection state.
+        leaves = sorted(
+            (
+                c
+                for c in family
+                if not any(s.__module__ == production for s in c.__subclasses__())
+            ),
+            key=lambda c: c.__name__,
+        )
+        # a guard against the discovery itself silently finding nothing
+        assert {c.__name__ for c in leaves} >= {
+            "ImergCredentialsError",
+            "ImergGranuleMissingError",
+            "ImergInvalidRequestError",
+            "ImergMalformedArtifactError",
+            "ImergRateLimitedError",
+            "ImergRetriesExhaustedError",
+            "ImergStorageError",
+            "ImergSubsetCoordinateMismatchError",
+        }
+        # ⛔ EVERY class in the family, leaf or not: a parent that disagreed
+        # would still mis-report any error raised as the parent itself.
+        for cls in sorted(family, key=lambda c: c.__name__):
+            error = cls("x")
+            assert ie._exit_code_for(error) == ia._exit_code_for(error), cls.__name__
 
 
 # --- D9 (BLOCKER) — T2 DERIVES completeness; it never trusts the label ---

@@ -472,6 +472,243 @@ IMERG Early. **Not yet met**: the bulk retrieval and the resulting published bun
 the owner's go-ahead — which now rests on a **measured** projection (Plan 224 above), not an assumed
 granule size, and on the full-field-versus-subset choice that projection exposes.
 
+**M-A5d — the OPeNDAP subset route, built and cross-checked, 847 GB → 2.7 GB (Plan 225, T1+T2 only,
+2026-08-31).** M-A5c's own "different D1 read contract" caveat above is now closed. **Probed
+2026-08-31**: GES DISC serves the same granule over OPeNDAP, and a server-side subset over the frozen
+box (`dap4.ce=/precipitation[0][2600:2689][1160:1209];/lon[2600:2689];/lat[1160:1209]`) is **25,524 B —
+315x smaller** than the archive-route granule (8,047,136 B) — ⇒ the full 2020-2025 window drops from
+846.7 GB to **~2.7 GB**, dissolving the disk-margin question M-A5c's projection posed. Built (T1): a
+**second, separately-frozen** read contract (`ImergSubsetReadContract`) pinning the box-local 90x50
+grid, the root-level `/precipitation` path OPeNDAP's flattening of `/Grid` produces, the exact lat/lon
+vectors, and — new relative to the archive contract — dtype and `scale_factor`/`add_offset` (measured:
+unpacked float32, neither present); a route-distinct raw directory (`raw_subset/`) so an archive and a
+subset artifact for the SAME granule can never collide on disk; contract-validation dispatch on the
+manifest's recorded `route` (`GES DISC HTTPS archive` vs `GES DISC OPeNDAP subset`), so a record naming
+one route can no longer be checked against the other's contract shape; and a route-aware reader
+(`read_subset_granule`) normalising the subset response into the SAME `(valid_time, latitude,
+longitude)` layout the archive reader produces. The archive contract/parser (`ImergReadContract`,
+`contract_from_open_granule`) are **untouched**. **Cross-checked (T2), on the granule already held**
+(`2020-07-15T00:00Z`): one live, authenticated OPeNDAP request — the ONE this run's per-run scope
+permitted — fetched the subset over the exact same box, cached under `raw_subset/`, and compared
+cell-for-cell against the archive-route granule already on disk. **Coordinate vectors matched exactly**
+(50 lat + 90 lon values, bit-for-bit) and **all 4,500 decoded values matched exactly** (max abs diff
+`0.0`, tolerance frozen at `0.0` from the observed unpacked-float32/no-packing dtype on both sides,
+before the comparison ran, per D5) — the subset route reads the identical underlying grid, not a
+resampled one. ⚠️ That claim was briefly UNREPRODUCIBLE on HEAD: fixer round 1's derived exact-pin
+constants rejected the very file it describes (see fixer round 3 below). It is true again, and now
+RE-MEASURED through the production path rather than remembered — `run_subset_cross_check` over the two
+committed artifacts returns `lat_exact_match=True, lon_exact_match=True, max_abs_diff=0.0,
+tolerance=0.0` (2026-09-01, no network: the cached subset artifact validates and is reused), locked by
+`TestSubsetContractAgainstTheRealArtifact`, which skips where `data/` is absent (CI) and runs on any
+host that holds the two files. ⛔ **T3 (retrieving the full 105,216-granule window through this route) was explicitly
+NOT run this pass** — it is a multi-hour, outward-facing operation gated on its own authorisation,
+per Plan 225's per-run scope; the projected ~2.7 GB is a **measured extrapolation** from one granule's
+subset size, not yet a bulk-retrieval result.
+
+**Fixer round (2026-08-31), same commit's follow-up review — six findings closed.** The
+route-dispatched CONTRACT validation above existed at commit time, but `imerg_extract.run()` itself
+still unconditionally called the archive reader against `raw/` regardless of the acquisition record's
+`route` — a subset-route bundle could not actually be extracted end to end. Closed: `run()` now
+dispatches on `acquisition.route` (subset → `raw_subset/<archive-name>.dap.nc4` +
+`read_subset_granule`; archive → unchanged), with its own `assert_subset_contract_consistent` and an
+end-to-end `run()` test over a synthetic subset manifest (blocker). `ImergSubsetReadContract` was
+tightened to pin the T2-approved lat/lon vectors and longitude convention EXACTLY (previously only
+their lengths were checked, so a same-shaped grid at the wrong location — or in the wrong hemisphere
+convention — would have passed) and to reject any packed (`scale_factor`/`add_offset`) response at
+construction, protecting every subset read `run()` performs, not only T2's one cross-checked granule;
+`cross_check_subset_against_archive` gained a matching archive-side packing/dtype check and dropped its
+unconstrained `box` parameter (major x2). The archive parser's "vice versa" refusal of a subset-shaped
+file is now a typed `ImergReadContractError`, not a bare `KeyError` (minor). All six locking tests were
+proven to fail against the pre-fix code before being restored green.
+
+**Fixer round 2 (2026-09-01), independent Codex pass over that commit — four more findings closed.**
+1. **Longitude convention was derived from the wrong field (MAJOR).** `contract_from_open_subset_
+granule` derived `longitude_convention` from the box-local `/lon` slice's own `min()` — which is
+ALWAYS positive for this box (80-89E), so it could only ever derive `"UNSIGNED_360"`, no matter what
+the real global grid's convention is. Inspecting the real committed probe response
+(`data/dhm_precip/imerg_early/raw_subset/…HDF5.dap.nc4`, the actual live 2020-07-15T00:00Z granule)
+confirmed the true source: OPeNDAP's flattening retains the `/Grid` group's own `GridHeader` attribute
+at ROOT level, renamed `Grid.GridHeader` (`WestBoundingCoordinate=-180;EastBoundingCoordinate=180`),
+and `/lon`'s own `LongName` independently reads "...from -180 to 180." — i.e. the box is always cut
+from a SIGNED_180 global grid, and the previous fixer round's pinned `EXPECTED_SUBSET_LONGITUDE_
+CONVENTION` (derived from the box's own sign) had frozen the wrong value. Fixed: `longitude_convention`
+is now derived from the retained `Grid.GridHeader`'s `WestBoundingCoordinate`, and the pinned
+expectation is `"SIGNED_180"` unconditionally. Five locking tests (derivation from the header despite
+an all-positive local slice, rejection of a contradictory header, rejection of a missing header, and
+the corrected — previously backwards — accept/reject pair) all proven to fail against the pre-fix code.
+2. **Subset acquisition trusted bytes on disk without validating them (MAJOR).** `acquire_subset_
+granule` treated `target.exists()` alone as sufficient to reuse a cached artifact, and installed a
+freshly downloaded file via `os.replace` without ever opening it — an HTTP-200 login page, a truncated
+download, or a stale malformed cache entry would be served (or reused) forever, weaker than the archive
+route's own validate-and-reuse. Fixed: both the existing-artifact and the freshly-downloaded-tmp paths
+now run the D1 subset contract (`observe_subset_read_contract`) before being trusted; an invalid cache
+falls through to a fresh download rather than being served, and a malformed download is never installed
+(the HDF5/open failure is converted to a typed `ImergReadContractError`, never a raw `OSError`). Only a
+VALID cache still suppresses the HTTP call. Two locking tests (malformed new download never installed;
+malformed existing cache does not suppress the re-fetch) proven to fail against the pre-fix code.
+3. **The T2 hard gate had no production caller (MAJOR).** `cross_check_subset_against_archive` returns
+a report on a value mismatch rather than raising, and `assert_subset_cross_check_passed` — the function
+that turns a failed report into the plan's required stop — had no caller anywhere in the module; a
+caller computing the report and forgetting to check `.passed` would silently continue past D5's hard
+stop. Fixed: `run_subset_cross_check` is now the ONE production T2 entry point (computes the report,
+then enforces the gate before ever returning it); the "value mismatch is refused" test now drives THIS
+function and asserts the raise, not merely `report.passed is False`. Proven to fail against the pre-fix
+code (no such function existed).
+4. **Offering an archive-shaped file to the subset parser raised a raw `KeyError`, not the typed error
+(minor).** The "vice versa" of the prior round's own archive-parser fix — `contract_from_open_subset_
+granule`'s `f["precipitation"]` lookup was unguarded, and the fixture claiming to test this actually
+built a root-level layout with a full-field SHAPE, never a real `/Grid`-shaped archive file. Fixed:
+the lookup is wrapped and converted to `ImergReadContractError`; a new locking test feeds a REAL
+archive-shaped fixture (`_write_fake_archive_granule_for_box`) to the subset parser and proves the
+typed error, failing against the pre-fix code with a raw `KeyError`.
+
+All nine new/changed locking tests were proven RED against the pre-fix code (source reverted via
+`git stash`, tests kept) before the fix was restored and the suite turned green again.
+
+**Fixer round 3 (2026-09-01), escalated round — one blocker and two majors closed, plus the two minors
+the previous round deferred.**
+1. 🔴 **BLOCKER — the frozen subset coordinate vectors rejected real data, so the route could not
+ingest a single granule.** Round 1's `EXPECTED_SUBSET_LAT_VECTOR`/`LON_VECTOR` were built by idealised
+arithmetic (`float(np.float32(round(edge + spacing/2 + i*spacing, 6)))`). Measured against the real
+committed OPeNDAP response: **20 of 50 lat values differed** (max `1.907e-06`) and **18 of 90 lon
+values differed** (max `7.629e-06`), so `ImergSubsetReadContract.__post_init__` raised on the very
+granule T2 is built on — and because IMERG's grid is fixed and global, on **every** subset granule.
+The `round(..., 6)` before the float32 cast is the defect: six-decimal rounding lands on a different
+float32 than the one NASA's grid carries. ⛔ Fixed by **deleting the derivation**, not by widening the
+comparison: the pin is now 50 + 90 float32 literals **transcribed from observed data** — the archive
+granule's own `/Grid/lat[1160:1210]` and `/Grid/lon[2600:2690]`, which is exactly D4's published
+constraint. `np.array_equal` against the real subset response is `True` for both, bit for bit, no
+tolerance. (A tolerance was explicitly rejected: it is what would let a subset service's own grid pass,
+the precise hazard D1 exists to prevent.)
+   **The tests were circular too.** Every fixture — `_ARCHIVE_LAT`/`_ARCHIVE_LON`,
+`_write_fake_subset_granule`, and `test_imerg_extract.py`'s — was `np.linspace`-generated and therefore
+coincided with the formula under test, and a `test_lat_lon_vectors_match_the_derived_t2_approved_box_
+constants` compared the fixture to the production derivation while its own docstring warned against
+exactly that "fixture-only accident". That test is deleted; the fixtures' box slice now comes from the
+measured constants; and the new `TestSubsetContractAgainstTheRealArtifact` validates the **real**
+artifacts through the production path (`observe_subset_read_contract`, `run_subset_cross_check`), with
+a clean skip where `data/` is absent. **Revert-proof: all three real-data tests FAIL against the
+restored idealised derivation and pass against the fix.**
+2. **MAJOR — registration and bounds were under-validated.** The subset contract had **no**
+`coordinate_registration` field at all, although its frozen cell centres assume `CENTER` (under
+`CORNER` the same numbers name cell EDGES and every station maps half a cell away), and the
+longitude-convention check collapsed to a single `west_bound < 0` sign test, so a changed east bound or
+another malformed negative-west convention passed silently. Fixed: `coordinate_registration` is pinned
+to `CENTER` and `global_bounds` pins all four measured global bounds `(90, -180, -90, 180)` exactly,
+both parsed from the retained `Grid.GridHeader`. Independent mutation tests for registration, west,
+east and north, plus contract-level mutations for a recorded (manifest round-trip) contract.
+3. **MAJOR — the permanent manifest writer was not route-aware.** The checksum-based archive-revision
+guard ran **before** route identity was considered. Raw storage is keyed by the ARCHIVE filename on
+both routes, so a complete archive record and a complete subset record of the same granule share every
+key while necessarily carrying different bytes (8 MB global HDF5 vs 25 KB OPeNDAP response) — a
+legitimate route switch looked exactly like a GES DISC revision and was refused. Fixed: the retained-
+checksum revision guard applies **only when old and new records share a route**; a real route change is
+still not waved through, because `route` is part of the identity content and the existing orphan guard
+refuses to strand any published bundle. Four locking tests: archive→subset, subset→archive, same-route
+disagreement still refused, and a route switch beside a published bundle still refused.
+4. **MINOR — malformed-but-openable HDF5 bypassed recovery.** A valid HDF5 missing `units`,
+`DimensionNames` or `_FillValue` raised a raw `KeyError`; `_validate_subset_artifact` wrapped only
+`OSError`, so validate-and-reuse could never refetch a poisoned-but-openable cache entry (the existing
+tests covered only garbage bytes). Fixed at the parser, with a backstop in the validation path; locking
+tests per attribute plus a cached-file recovery test.
+5. **MINOR — D5's mandated comparison ORDER was not implemented.** D5 requires the coordinate vectors
+be compared FIRST, precisely because they are the station-mapping invariant; values are only indirect
+evidence. The coordinate equality was evaluated last, so a mismatched grid could reach value comparison
+or raise a raw numpy broadcasting error before the gate fired. Fixed: `cross_check_subset_against_
+archive` calls the new `assert_subset_coordinates_match` immediately after reading both contracts and
+before opening either precipitation array, raising the typed
+`ImergSubsetCoordinateMismatchError` (an `ImergReadContractError` subclass). The locking test builds an
+archive covering the box with 91 lon cells, so the pre-fix code crashed on broadcasting instead.
+
+**Exit (T1+T2 only):** a second, separately-frozen OPeNDAP subset read contract; route-dispatched
+contract validation with a locking test per mismatched combination; a route-distinct raw directory; a
+route-aware reader; and an exact, real-data cross-check against the archive route on the one granule
+both routes now hold. **Not yet met**: the bulk retrieval (T3) and the resulting published bundle —
+gated on a separate go-ahead, per the plan's binding per-run scope.
+
+**M-A5d follow-up (2026-09-02) — the full-window T3 run hit a MEASURED NASA metadata change, and the
+exit codes could not tell a supervisor whether to retry.** A 30-hour subset backfill over the pinned
+D5 window froze its read contract on a 2020 granule and aborted at **2024-06-02**. Cause, measured
+across every banked granule rather than inferred: NASA writes the HDF5 `FileHeader` field
+`ProductVersion` as **`V07B` for 2020-01 .. 2024-05** and as **`07B` from 2024-06 onward**. All fifteen
+other contract fields — grid shape, both coordinate vectors, units, fill value, dtype, registration,
+global bounds, longitude convention, dimension names, variable path — are **identical across that
+boundary**, and the authoritative revision (`granule_revision`, parsed from the FILENAME, which D1
+treats as the identity axis) reads `V07B` on **both** sides. The leading `V` is therefore cosmetic.
+
+Three changes, all on `scripts/dhm_precip/imerg_acquire.py`:
+
+1. **A narrow, documented comparison tolerance — SUBSET ROUTE ONLY.** `assert_subset_contract_
+consistent` compares `file_header_product_version` with **exactly one leading `V`** removed and nothing
+else, so `07B` vs `07C` and `V07B` vs `V07C` still trip the gate (Plan 211's own probe MEASURED a live
+`V07C`, so a real version change is not hypothetical). ⛔ The tolerance is at **comparison time only**:
+the observed spelling is stored unmodified on the contract, enters the acquisition manifest, and is
+therefore covered by the manifest digest — it is the evidence NASA changed the string.
+2. **The mismatch error names every differing field with both values** (long coordinate vectors
+truncated head-and-tail), replacing a whole-dataclass `!=` that reported only THAT something differed
+— which is what cost the hours of granule-bisecting that found the one cosmetic character. Where the
+revision ALSO differs, the revision message now carries the other differences with it rather than
+dropping them.
+3. **A permanent/transient exit-code split, so a supervising loop can act on the code.** Exit **6 now
+means PERMANENT — do not retry**; exit 3 keeps its previous meaning for everything else. The split is
+by **repairability, not by class family**, and runs in both directions:
+   - `ImergReadContractError` → **6**: a granule that reads cleanly and genuinely disagrees with the
+     frozen contract is stable archive drift; the next attempt reaches the same conclusion.
+   - `ImergMalformedArtifactError` (new, a subclass of the above) → **3**: unreadable bytes — a
+     truncated body, an HTTP-200 login page — are an accident of one transfer that a re-download
+     repairs. ⚠️ This is raised *after* the network retry unit has completed, so classing it permanent
+     would abort a 30-hour run outright on a single transient truncation — worse than the retry waste
+     the split exists to stop.
+   - `ImergPermanentRequestError` (new) → **6**: a 4xx that no retry can fix, such as the HTTP 400 a
+     malformed OPeNDAP `dap4.ce` constraint returns (Plan 225 D4 measured exactly that 400). 🔴 Raised
+     for an **enumerated** set (`_PERMANENT_CLIENT_STATUSES` = 400, 405, 410, 411, 414, 415, 417, 422,
+     426, 428, 431), with every other 4xx falling through to **retryable**. The membership rule is
+     stated on the set itself so a new status can be classified without guessing: **a status belongs
+     iff the request cannot succeed unless the request itself changes** — an unchanged retry cannot add
+     a `Content-Length` (411), change media type (415), drop an `Expect` (417), switch protocol (426)
+     or add a precondition (428). The first cut had it the other way round — "all 4xx
+     except a listed few" — which **fails unsafely**: 409 Conflict and 423 Locked clear without the
+     request changing, and calling them permanent stops a 30-hour run. Failing toward retry only wastes
+     time. (401/403/404/429 keep their own codes, classified above the branch.)
+   - **A stable schema violation is PERMANENT even though it reaches the artifact validator.** A granule
+     that opens cleanly but carries, say, a non-numeric `scale_factor` used to be swept into
+     `ImergMalformedArtifactError` (3) by a blanket `except (KeyError, ValueError)` and would have been
+     re-downloaded for ever. The distinction is drawn at the **raising sites** —
+     `_optional_numeric_attr`, `_attr_scalar_float`, `subset_global_bounds` all raise the permanent
+     `ImergReadContractError` — and `_validate_subset_artifact`'s residual `ValueError` branch inherits
+     the same verdict, while `OSError`/`KeyError` (bytes that are unreadable or incomplete) stay
+     retryable.
+   - ⚠️ **Two senses of "retryable".** `RequestPacer.run` retries `ImergTransientError` only, so an
+     unlisted 4xx or a malformed artifact aborts the current run after one attempt. Exit 3 is still
+     correct for them because it addresses the **external supervisor**, which re-runs the window and
+     resumes from the banked granules. Recorded in `RequestPacer.run`'s docstring and beside the exit
+     table so the word cannot be read as the in-run loop.
+   - `ImergInvalidRequestError` (caller-argument faults: out-of-window or misordered bounds, `workers <
+     1`) → **6**. Measured motivation: one 308-attempt run burned 307 attempts at 60 s each on
+     permanent failures while also containing one genuinely transient `ImergRetriesExhaustedError`
+     whose re-run succeeded — a single code could not serve both.
+   - `scripts/dhm_precip/imerg_extract.py` now carries the same leaf codes, so a mid-extraction D1
+     violation reports 6 there too; a locking test asserts the two CLIs agree leaf by leaf.
+
+⚠️ **KNOWN GAP, deliberately left open — the ARCHIVE route carries the same `ProductVersion` exposure
+and is NOT fixed.** `assert_contract_consistent` reads the same `FileHeader.ProductVersion` field of the
+same NASA product into the same field name, so an archive-route run spanning 2024-06 would abort at the
+same boundary. It was **not** given the tolerance: Plan 225's hazard section is explicit — *"⛔ Do NOT
+relax, parameterise or share the existing contract"* — and only **one** archive granule (2020-07-15) is
+banked, so extending the tolerance there would be **reasoned, not sampled**, which is exactly the
+standard the subset-side change was held to. The archive parser and contract remain untouched.
+**What would substantiate a fix**: banking archive-route granules on both sides of 2024-06 and
+measuring `FileHeader.ProductVersion` on them directly, as was done for the subset route. Until then
+the archive comparator stays byte-exact, and an equivalence test
+(`test_the_archive_comparator_accepts_exactly_what_it_used_to`) perturbs every one of its twelve fields
+and fails if anyone widens it, against both spellings of the frozen product version. The comparator's
+**verdict** is the whole-dataclass `observed != replace(frozen, granule_revision=…)` it has always been
+— the field-by-field difference list only builds the message — so the scope lock holds **by
+construction**, and a subclass instance whose every field matches is refused on both routes (the subset
+comparator, which cannot use `==` because its tolerance needs a per-field seam, makes that check
+explicit). **No multi-granule archive-route run should be started across the 2024-06 boundary without
+closing this first.**
+
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC
 axis, so the gauge side must be normalised before any pairing.)* **The point of this track.**

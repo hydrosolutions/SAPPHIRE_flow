@@ -19,11 +19,14 @@ import fcntl
 import os
 import re
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Final, Protocol, TypeAlias, TypeVar, runtime_checkable
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -39,7 +42,10 @@ from scripts.dhm_precip.era5_manifest import checksum_file  # noqa: E402
 from scripts.dhm_precip.era5_request import STUDY_AREA, STUDY_YEARS  # noqa: E402
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from concurrent.futures import Future
+
+    import requests
 
 log = structlog.get_logger(__name__)
 
@@ -59,9 +65,43 @@ class ImergTransientError(ImergAcquisitionError):
     """Retryable transport error or 5xx — never surfaces past the retry loop."""
 
 
+class ImergRateLimitedError(ImergTransientError):
+    """D3.2 — GES DISC answered 429. RETRYABLE, and it carries the server's
+    own `Retry-After` when one was sent, so the retry honours the server's
+    number instead of guessing. ⛔ Before T3 a 429 fell through the status
+    ladder's non-retryable tail into `ImergRequestFailedError`, so NASA's
+    FIRST throttle aborted the whole run."""
+
+    def __init__(
+        self, message: str, *, retry_after_seconds: float | None = None
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ImergRequestFailedError(ImergAcquisitionError):
     """GES DISC rejected the request, retries were exhausted, or an artifact
     failed post-acquisition validation."""
+
+
+class ImergPermanentRequestError(ImergRequestFailedError):
+    """GES DISC rejected the request in a way NO retry can repair — a 4xx
+    client error such as the HTTP 400 a malformed OPeNDAP `dap4.ce` constraint
+    returns (Plan 225 D4 MEASURED exactly that 400 for `/Grid/precipitation`).
+    ⛔ PERMANENT: CLI exit code 6.
+
+    ⚠️ Raised for an ENUMERATED set of statuses (`_PERMANENT_CLIENT_STATUSES`),
+    never for "4xx minus a few". An except-list fails unsafely — a status
+    nobody enumerated (409 Conflict, 423 Locked) would be called permanent and
+    stop a recoverable run — so the unlisted default is retryable and only
+    statuses permanent BY CONSTRUCTION are named here."""
+
+
+class ImergInvalidRequestError(ImergPermanentRequestError):
+    """The CALLER's own arguments are invalid — an out-of-window or misordered
+    bound, a worker count below one. ⛔ PERMANENT by construction: the same
+    arguments produce the same failure for ever, so a supervisor must report
+    and stop rather than retry. CLI exit code 6."""
 
 
 class ImergGranuleMissingError(ImergRequestFailedError):
@@ -69,9 +109,49 @@ class ImergGranuleMissingError(ImergRequestFailedError):
     probe."""
 
 
+class ImergRetriesExhaustedError(ImergRequestFailedError):
+    """The pacer used every attempt on ONE logical request and never got an
+    answer. ⛔ A DISTINCT type, not the generic parent, because the window
+    runner must be able to turn *this* into a gap and continue while a
+    `ImergReadContractError` — same parent, also a `ImergRequestFailedError` —
+    still stops the run. Catching the parent would silently convert a contract
+    violation into a gap, which is exactly the "wrong retrieval" Plan 220
+    forbids."""
+
+
 class ImergReadContractError(ImergRequestFailedError):
     """D1 — an observed granule's structure, revision included, fails the
-    frozen read contract. ⛔ Stop and report rather than blending."""
+    frozen read contract. ⛔ Stop and report rather than blending.
+    PERMANENT — a granule that READS cleanly and genuinely disagrees with the
+    frozen contract is stable archive drift, and the next attempt reads the
+    same bytes to the same conclusion: CLI exit code 6, so a supervising loop
+    reports and stops instead of retrying.
+    ⚠️ EXCEPT `ImergMalformedArtifactError` below, which is the opposite case
+    and stays retryable."""
+
+
+class ImergMalformedArtifactError(ImergReadContractError):
+    """The bytes on disk are not a readable granule AT ALL — a truncated body,
+    an HTTP-200 login page, a file that opens as HDF5 but carries none of the
+    contract's structure.
+
+    🔴 RETRYABLE, so CLI exit code 3 and NOT its parent's permanent 6. Those
+    bytes are an accident of ONE transfer, and a re-download replaces them;
+    treating them as permanent would abort a 30-hour window run outright on a
+    single truncated response — strictly worse than the retry waste the exit
+    split exists to stop. ⛔ The distinction is drawn HERE, at the raising site
+    (`_validate_subset_artifact`), by WHICH failure the bytes produced — never
+    guessed downstream from an exit code."""
+
+
+class ImergSubsetCoordinateMismatchError(ImergReadContractError):
+    """D5 step 1 (fixer round 3, finding MINOR 2) — the subset response's
+    coordinate vectors disagree with the archive route's own slice over the
+    frozen box. ⛔ Raised BEFORE any precipitation value is read: the
+    coordinate vectors are the station-mapping invariant, so a mismatch here
+    means every value comparison downstream would be comparing different
+    places. A distinct type so a caller can tell "the two routes disagree
+    about WHERE" from "they disagree about HOW MUCH"."""
 
 
 class ImergStorageError(ImergAcquisitionError):
@@ -346,7 +426,19 @@ def contract_from_open_granule(f: object, *, filename: str) -> ImergReadContract
         filename_revision=revision,
         file_header_filename=parse_grid_header_field(file_header, "FileName"),
     )
-    grid = f["Grid"]  # type: ignore[index]
+    try:
+        grid = f["Grid"]  # type: ignore[index]
+    except KeyError as exc:
+        # (fixer review, finding 4) — a subset-shaped response (root-level
+        # `/precipitation`, no `/Grid` group) must fail the ARCHIVE parser
+        # with a typed, reportable error, not a raw h5py `KeyError`: this is
+        # the "vice versa" of T1's own verify clause, and a caller catching
+        # only `ImergReadContractError` must not see it slip through.
+        raise ImergReadContractError(
+            f"granule {filename!r} has no top-level 'Grid' group — the "
+            "ARCHIVE route's contract requires /Grid/precipitation, and this "
+            f"response is not archive-shaped (D1): {exc}"
+        ) from exc
     precip = grid["precipitation"]
     lat = np.asarray(grid["lat"][:], dtype=np.float64)
     lon = np.asarray(grid["lon"][:], dtype=np.float64)
@@ -460,21 +552,1634 @@ def assert_identity_matches_plan_and_header(
         )
 
 
+#: (2026-09-02) — MEASURED across every banked granule of the pinned D5 window:
+#: NASA writes the `FileHeader` `ProductVersion` as `V07B` for 2020-01..2024-05
+#: and as `07B` from 2024-06 onward. All FIFTEEN other contract fields — grid
+#: shape, both coordinate vectors, units, fill value, dtype, registration,
+#: global bounds, longitude convention, dimension names, variable path — are
+#: identical across that boundary, and the AUTHORITATIVE revision
+#: (`granule_revision`, parsed from the FILENAME) reads `V07B` on BOTH sides.
+#: The leading `V` is therefore COSMETIC: NASA stopped writing the prefix
+#: inside the header partway through the archive, and a full-window run that
+#: froze its contract on a 2020 granule aborted at 2024-06-02 on it.
+#:
+#: ⇒ A DELIBERATE, DOCUMENTED tolerance: exactly ONE leading `V` is removed
+#: before comparing, and nothing else. `07B` vs `07C` — and `V07B` vs `V07C` —
+#: still differ, so a REAL version change still trips the gate (Plan 211's own
+#: probe saw a live `V07C` drift, so that is not hypothetical).
+#:
+#: ⛔ The tolerance lives HERE, at COMPARISON time only. The observed spelling
+#: is stored UNMODIFIED on the contract: it is identity-bearing (it enters the
+#: acquisition manifest and therefore the digest) and it is the evidence that
+#: NASA changed the string. We record what we saw and compare with a stated
+#: tolerance — we never normalise what we observed.
+#: ⚠️ "Unmodified" means THIS rule changes nothing — not byte-for-byte from the
+#: file: `parse_grid_header_field` has always stripped surrounding whitespace
+#: off every header field. The meaningful `V07B`/`07B` spelling — the whole
+#: point of recording it — is what is preserved.
+def product_version_for_comparison(value: str) -> str:
+    """The `file_header_product_version` spelling two contracts are compared
+    on: the value trimmed, with one leading `V` removed if present."""
+    stripped = value.strip()
+    return stripped[1:] if stripped.startswith("V") else stripped
+
+
+#: 🔴 SUBSET ROUTE ONLY. The one field the SUBSET comparison reads through
+#: `product_version_for_comparison` rather than by equality. A dict, not an
+#: `if`, so the tolerated field is named once.
+#:
+#: ⛔ It is NOT applied to the archive route. Plan 225's hazard section is
+#: explicit — "Do NOT relax, parameterise or share the existing contract"
+#: (`docs/plans/225-imerg-opendap-subset-route.md`) — and D1 keeps
+#: `assert_contract_consistent` exactly as strict as it has always been. The
+#: MEASURED failure is on the subset route; the archive route has ONE banked
+#: granule (2020-07), so extending the tolerance there would be REASONED, not
+#: sampled. See `docs/design/dhm-precipitation-milestones.md` for the recorded
+#: archive-route exposure this deliberately leaves open.
+_SUBSET_CONTRACT_TOLERATED_FIELDS: dict[str, Callable[[str], str]] = {
+    "file_header_product_version": product_version_for_comparison,
+}
+
+#: Values at each end of a truncated coordinate vector. The lat/lon vectors run
+#: to 1800/3600 (archive) and 50/90 (subset) floats: dumping them buries the
+#: field that actually differs.
+_CONTRACT_VALUE_PREVIEW = 4
+
+
+class _AbsentField:
+    """A field one contract carries and the other does not. 🔴 The FORMATTER
+    must SURVIVE that (2026-09-02, final Codex round): it runs only to explain
+    a verdict already reached, so a subclass that adds a field must still
+    produce the typed `ImergReadContractError` a caller catches — never a bare
+    `AttributeError` from reading the subclass's extra field off the base
+    object. Asymmetry is itself a difference, and is reported as one.
+
+    ⛔ Its own CLASS, not a bare `object()`: `isinstance` then NARROWS the
+    `getattr` default away, so a per-field toleration still typechecks against
+    `str` instead of the sentinel's widened `object`."""
+
+    __slots__ = ()
+
+
+_ABSENT_FIELD: Final = _AbsentField()
+
+
+def _render_contract_value(value: object) -> str:
+    """A contract field rendered for an error message, long coordinate vectors
+    truncated head-and-tail with the elided count stated."""
+    if value is _ABSENT_FIELD:
+        return "<no such field on this contract>"
+    if isinstance(value, tuple) and len(value) > 2 * _CONTRACT_VALUE_PREVIEW:
+        head = ", ".join(repr(v) for v in value[:_CONTRACT_VALUE_PREVIEW])
+        tail = ", ".join(repr(v) for v in value[-_CONTRACT_VALUE_PREVIEW:])
+        elided = len(value) - 2 * _CONTRACT_VALUE_PREVIEW
+        return f"({head}, ...{elided} more..., {tail})"
+    return repr(value)
+
+
+#: Either frozen read contract. ⛔ A UNION for one FORMATTER, never a shared
+#: contract: each route keeps its own type, its own frozen instance and its own
+#: assertion (D1). `ImergSubsetReadContract` is defined further down, so the
+#: alias is a string — `from __future__ import annotations` does not defer a
+#: bare assignment.
+AnyImergReadContract: TypeAlias = "ImergReadContract | ImergSubsetReadContract"
+
+
+def contract_field_differences(
+    observed: AnyImergReadContract,
+    frozen: AnyImergReadContract,
+    *,
+    ignore: Sequence[str] = (),
+    tolerated: Mapping[str, Callable[[str], str]] | None = None,
+) -> tuple[str, ...]:
+    """Every field on which two read contracts of the SAME type disagree,
+    rendered `name: observed=<...> frozen=<...>`.
+
+    ⛔ Field by field, not a whole-dataclass `!=`: the whole-dataclass form
+    reported only THAT something differed, which cost hours of bisecting
+    granules to find a one-field, cosmetic difference. Shared by both routes
+    because it is a FORMATTER — each route still owns its own contract type,
+    its own frozen instance and its own assertion (D1).
+
+    ⛔ `tolerated` DEFAULTS TO NOTHING, so the shared formatter is strict by
+    construction and a route opts in explicitly. The archive route passes
+    none and is therefore exactly as strict as the whole-dataclass `!=` it
+    replaced; only the MESSAGE improved."""
+    tolerations: Mapping[str, Callable[[str], str]] = tolerated or {}
+    differences: list[str] = []
+    # ⛔ The UNION of both field lists, observed order first: iterating only
+    # `fields(observed)` assumed the two shapes were symmetric, and a subclass
+    # adding a field then read that field off the BASE object and raised a bare
+    # `AttributeError` out of a function whose whole job is to explain a
+    # failure. A field missing on either side is reported, not raised on.
+    observed_names = [f.name for f in fields(observed)]
+    field_names = observed_names + [
+        f.name for f in fields(frozen) if f.name not in set(observed_names)
+    ]
+    for name in field_names:
+        if name in ignore:
+            continue
+        observed_value = getattr(observed, name, _ABSENT_FIELD)
+        frozen_value = getattr(frozen, name, _ABSENT_FIELD)
+        tolerate = tolerations.get(name)
+        if isinstance(observed_value, _AbsentField) or isinstance(
+            frozen_value, _AbsentField
+        ):
+            pass  # present on one side only — a difference no toleration spans
+        elif tolerate is not None:
+            if tolerate(observed_value) == tolerate(frozen_value):
+                continue
+        elif observed_value == frozen_value:
+            continue
+        differences.append(
+            f"{name}: observed={_render_contract_value(observed_value)} "
+            f"frozen={_render_contract_value(frozen_value)}"
+        )
+    return tuple(differences)
+
+
+def _also_differs_suffix(differences: Sequence[str]) -> str:
+    """The tail appended to a REVISION-mismatch message when other fields
+    differ too. ⛔ Without it the early revision check would report only the
+    revision and silently drop every other difference, so "every differing
+    field is named" would not be true in exactly the case with the most to
+    say."""
+    if not differences:
+        return ""
+    return " — and it ALSO differs on: " + "; ".join(differences)
+
+
 def assert_contract_consistent(
     observed: ImergReadContract, *, frozen: ImergReadContract
 ) -> None:
-    """D1 — frozen on the first granule, asserted on every subsequent one."""
-    if observed.granule_revision != frozen.granule_revision:
+    """D1 — frozen on the first granule, asserted on every subsequent one.
+
+    🔴 The VERDICT is the whole-dataclass expression this function has always
+    used; `contract_field_differences` supplies only the MESSAGE. That makes
+    the scope lock TRUE BY CONSTRUCTION rather than true-by-test: there is no
+    second acceptance predicate that could drift from the first.
+
+    ⛔ Why not let the field iterator decide (2026-09-02, Codex review): a
+    dataclass `==` also requires the two operands to be the SAME concrete
+    class, so the old expression rejects a SUBCLASS of `ImergReadContract`
+    whose every field matches, while a field-by-field loop accepts it. A
+    subclass is valid at the annotated interface, so that is a real widening,
+    not a hypothetical one — and D1's rule is to refuse to blend anything that
+    is not exactly the frozen shape."""
+    # 🔴 VERDICT FIRST, MESSAGE SECOND (2026-09-02, final Codex round). Both
+    # acceptance expressions are evaluated and the clean case returns BEFORE
+    # any formatting runs, so the message builder can never turn an accepted
+    # contract into a crash — and on the failing path a formatter fault would
+    # at worst mis-word an error that was already correctly refused.
+    revision_differs = observed.granule_revision != frozen.granule_revision
+    contract_differs = observed != replace(
+        frozen, granule_revision=observed.granule_revision
+    )
+    if not revision_differs and not contract_differs:
+        return
+    # ⛔ NO `tolerated=`: every non-revision field is compared by EQUALITY,
+    # exactly as strictly as the whole-dataclass `!=`. Plan 225's hazard
+    # section is explicit — "Do NOT relax, parameterise or share the existing
+    # contract" — and the MEASURED `V`-prefix boundary is a SUBSET-route
+    # observation; the archive route has ONE banked granule, so tolerating it
+    # here would be reasoned rather than sampled.
+    differences = contract_field_differences(
+        observed, frozen, ignore=("granule_revision",)
+    )
+    if revision_differs:
         raise ImergReadContractError(
             f"granule revision {observed.granule_revision!r} != frozen "
             f"{frozen.granule_revision!r} — stop and report rather than "
             "blending mixed revisions into one bundle (D1)"
+            + _also_differs_suffix(differences)
         )
-    if observed != replace(frozen, granule_revision=observed.granule_revision):
+    if contract_differs:
         raise ImergReadContractError(
             "observed read contract differs from the frozen one on a field "
-            "other than revision (D1) — refusing to blend"
+            "other than revision (D1) — refusing to blend: "
+            + (
+                "; ".join(differences)
+                if differences
+                # The one disagreement the field loop cannot render: every
+                # field matches but the concrete types differ.
+                else f"observed is a {type(observed).__name__}, frozen is a "
+                f"{type(frozen).__name__}"
+            )
         )
+
+
+# --- Plan 225 (M-A5d) D1 — the SUBSET route's own, SEPARATELY-frozen read
+# contract. `ImergReadContract`/`contract_from_open_granule` above stay
+# untouched: GES DISC's OPeNDAP subset service flattens the HDF5 `/Grid`
+# group into root-level variables (`/precipitation`, not
+# `/Grid/precipitation`) and slices to a box-local grid, so the archive
+# parser cannot read it and must not be parameterised to try (D1 warns in so
+# many words against a shared/relaxed contract). ---
+
+SUBSET_ROUTE = "GES DISC OPeNDAP subset"
+OPENDAP_BASE_URL = (
+    "https://gpm1.gesdisc.eosdis.nasa.gov/opendap/GPM_L3/GPM_3IMERGHHE.07"
+)
+SUBSET_VARIABLE_PATH = "/precipitation"
+
+#: D4 — measured 2026-08-31: the OPeNDAP response carries the archive's own
+#: 0.1 deg grid, so the frozen STUDY_BOX maps to an EXACT cell count —
+#: DERIVED, never a bare literal (matches EXPECTED_GRANULE_COUNT's own rule).
+_GRID_SPACING_DEG = 0.1
+EXPECTED_SUBSET_LON_COUNT: int = round(
+    (STUDY_BOX[3] - STUDY_BOX[1]) / _GRID_SPACING_DEG
+)
+EXPECTED_SUBSET_LAT_COUNT: int = round(
+    (STUDY_BOX[0] - STUDY_BOX[2]) / _GRID_SPACING_DEG
+)
+EXPECTED_SUBSET_GRID_SHAPE: tuple[int, int, int] = (
+    1,
+    EXPECTED_SUBSET_LON_COUNT,
+    EXPECTED_SUBSET_LAT_COUNT,
+)
+EXPECTED_SUBSET_DTYPE = "float32"
+"""Measured 2026-08-31 on the live probe granule (2020-07-15T00:00Z,
+80-89E/26-31N): the subset response is UNPACKED float32 — no
+`scale_factor`/`add_offset` — the same encoding the archive route's own
+`/Grid/precipitation` has always used (D1's dtype/packing warning)."""
+
+#: The root-level global attribute the subset response retains for the
+#: archive route's `/Grid` group attribute of the same name — MEASURED on
+#: the live probe granule 2026-08-31: OPeNDAP's flattening renames it
+#: `Grid.GridHeader` (a literal dot) rather than dropping it, exactly as
+#: `FileHeader` (already a root attribute) survives unprefixed.
+SUBSET_GRID_HEADER_ATTR = "Grid.GridHeader"
+
+#: D1 (fixer review round 2, finding 1 — MAJOR) — the box is entirely in the
+#: eastern, northern hemisphere (80-89E/26-31N), so a LOCAL `lon.min() < 0`
+#: rule can only ever derive "UNSIGNED_360" for a granule honestly covering
+#: this box, regardless of what the GLOBAL grid's own convention is. The real
+#: probe response's retained `Grid.GridHeader` carries
+#: `WestBoundingCoordinate=-180;EastBoundingCoordinate=180` — the same
+#: -180..180 grid the archive contract's own fixtures pin — and `/lon`'s
+#: `LongName` attribute independently confirms it ("...from -180 to 180.").
+#: ⇒ the box can only ever be cut from a SIGNED_180 global grid; pinned to
+#: exactly that ONE value, DERIVED from the retained header (not the box's
+#: own sign) in `contract_from_open_subset_granule` — never a bare literal
+#: restating what was measured.
+EXPECTED_SUBSET_LONGITUDE_CONVENTION = "SIGNED_180"
+
+#: D1 (fixer round 3 — BLOCKER) — the T2-approved EXACT cell centres,
+#: MEASURED, not derived. ⛔ No arithmetic defines this pin any more: the
+#: previous derivation (`float(np.float32(round(edge + spacing/2 + i*spacing,
+#: 6)))`) was MEASURED WRONG against the real OPeNDAP response held at
+#: `data/dhm_precip/imerg_early/raw_subset/3B-HHR-E.MS.MRG.3IMERG.20200715-
+#: S000000-E002959.0000.V07B.HDF5.dap.nc4` — 20 of 50 lat values differed (max
+#: 1.907e-06) and 18 of 90 lon values differed (max 7.629e-06), so the contract
+#: rejected the very granule T2 is built on, and would have rejected EVERY
+#: subset granule: IMERG's grid is fixed and global. The `round(..., 6)` before
+#: the float32 cast is the defect — six-decimal rounding lands on a DIFFERENT
+#: float32 than the one NASA's own grid carries.
+#:
+#: ⇒ These 50 + 90 values are TRANSCRIBED from observed float32 data: the
+#: archive granule's own `/Grid/lat[1160:1210]` and `/Grid/lon[2600:2690]`
+#: (float32, 1800 / 3600), which is exactly D4's published constraint
+#: `/precipitation[0][2600:2689][1160:1209]`. Measured 2026-09-01:
+#: `np.array_equal` against the real subset response is True for BOTH — bit
+#: for bit, no tolerance. `exact_coordinate_vector`'s own rule ("⛔ No
+#: rounding") is what D1 cites; this is that rule applied to the pin itself.
+#: ⛔ Do NOT re-derive these arithmetically and do NOT widen the comparison to
+#: a tolerance: a tolerance would let a subset service's own grid pass, which
+#: is the precise hazard this contract exists to prevent.
+#: `tests/unit/scripts/test_imerg_acquire.py::TestSubsetContractAgainstTheRealArtifact`
+#: locks them against the committed artifacts (skipped where `data/` is absent).
+EXPECTED_SUBSET_LAT_VECTOR: tuple[float, ...] = (
+    26.049999237060547,
+    26.149999618530273,
+    26.25,
+    26.349998474121094,
+    26.44999885559082,
+    26.549999237060547,
+    26.649999618530273,
+    26.75,
+    26.849998474121094,
+    26.94999885559082,
+    27.049999237060547,
+    27.149999618530273,
+    27.25,
+    27.349998474121094,
+    27.44999885559082,
+    27.549999237060547,
+    27.649999618530273,
+    27.75,
+    27.849998474121094,
+    27.94999885559082,
+    28.049999237060547,
+    28.149999618530273,
+    28.25,
+    28.349998474121094,
+    28.44999885559082,
+    28.549999237060547,
+    28.649999618530273,
+    28.75,
+    28.849998474121094,
+    28.94999885559082,
+    29.049999237060547,
+    29.149999618530273,
+    29.25,
+    29.349998474121094,
+    29.44999885559082,
+    29.549999237060547,
+    29.649999618530273,
+    29.75,
+    29.849998474121094,
+    29.94999885559082,
+    30.049999237060547,
+    30.149999618530273,
+    30.25,
+    30.349998474121094,
+    30.44999885559082,
+    30.549999237060547,
+    30.649999618530273,
+    30.75,
+    30.849998474121094,
+    30.94999885559082,
+)
+
+EXPECTED_SUBSET_LON_VECTOR: tuple[float, ...] = (
+    80.04999542236328,
+    80.1500015258789,
+    80.25,
+    80.3499984741211,
+    80.44999694824219,
+    80.54999542236328,
+    80.6500015258789,
+    80.75,
+    80.8499984741211,
+    80.94999694824219,
+    81.04999542236328,
+    81.1500015258789,
+    81.25,
+    81.3499984741211,
+    81.44999694824219,
+    81.54999542236328,
+    81.6500015258789,
+    81.75,
+    81.8499984741211,
+    81.94999694824219,
+    82.04999542236328,
+    82.1500015258789,
+    82.25,
+    82.3499984741211,
+    82.44999694824219,
+    82.54999542236328,
+    82.6500015258789,
+    82.75,
+    82.8499984741211,
+    82.94999694824219,
+    83.04999542236328,
+    83.1500015258789,
+    83.25,
+    83.3499984741211,
+    83.44999694824219,
+    83.54999542236328,
+    83.6500015258789,
+    83.75,
+    83.8499984741211,
+    83.94999694824219,
+    84.04999542236328,
+    84.1500015258789,
+    84.25,
+    84.3499984741211,
+    84.44999694824219,
+    84.54999542236328,
+    84.6500015258789,
+    84.75,
+    84.8499984741211,
+    84.94999694824219,
+    85.04999542236328,
+    85.1500015258789,
+    85.25,
+    85.3499984741211,
+    85.44999694824219,
+    85.54999542236328,
+    85.6500015258789,
+    85.75,
+    85.8499984741211,
+    85.94999694824219,
+    86.04999542236328,
+    86.1500015258789,
+    86.25,
+    86.3499984741211,
+    86.44999694824219,
+    86.54999542236328,
+    86.6500015258789,
+    86.75,
+    86.8499984741211,
+    86.94999694824219,
+    87.04999542236328,
+    87.1500015258789,
+    87.25,
+    87.3499984741211,
+    87.44999694824219,
+    87.54999542236328,
+    87.6500015258789,
+    87.75,
+    87.8499984741211,
+    87.94999694824219,
+    88.04999542236328,
+    88.1500015258789,
+    88.25,
+    88.3499984741211,
+    88.44999694824219,
+    88.54999542236328,
+    88.6500015258789,
+    88.75,
+    88.8499984741211,
+    88.94999694824219,
+)
+
+#: D1 (fixer round 3 — MAJOR) — the retained GLOBAL grid's own bounding box,
+#: (north, west, south, east) in `STUDY_BOX`'s own order. MEASURED on the real
+#: probe response's `Grid.GridHeader` 2026-09-01: `NorthBoundingCoordinate=90;
+#: SouthBoundingCoordinate=-90; EastBoundingCoordinate=180;
+#: WestBoundingCoordinate=-180`. ⛔ Pinned EXACTLY rather than reduced to a
+#: single `west < 0` sign test: a changed east bound, or another malformed
+#: negative-west convention, would otherwise pass while extraction still
+#: treats the coordinates as cell centres of a -180..180 grid.
+EXPECTED_SUBSET_GLOBAL_BOUNDS: tuple[float, float, float, float] = (
+    90.0,
+    -180.0,
+    -90.0,
+    180.0,
+)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ImergSubsetReadContract:
+    """D1 — the SECOND frozen read contract, one field frozen at a time just
+    as strictly as `ImergReadContract`, but on a DIFFERENT shape: the
+    box-local 90x50 grid, a root-level `/precipitation` variable, and the
+    dtype/packing fields the archive contract has never needed (⛔ two
+    contracts, neither weakened into the other)."""
+
+    variable_path: str
+    dimension_names: tuple[str, ...]
+    units: str
+    fill_value: float
+    dtype: str
+    scale_factor: float | None
+    add_offset: float | None
+    coordinate_registration: str
+    global_bounds: tuple[float, float, float, float]
+    longitude_convention: str
+    grid_shape: tuple[int, int, int]
+    lat_vector: tuple[float, ...]
+    lon_vector: tuple[float, ...]
+    granule_revision: str
+    file_header_product_version: str
+
+    def __post_init__(self) -> None:
+        for label, observed, expected in (
+            ("variable path", self.variable_path, SUBSET_VARIABLE_PATH),
+            ("units", self.units, EXPECTED_UNITS),
+            ("dimension order", self.dimension_names, EXPECTED_DIMENSION_NAMES),
+            ("dtype", self.dtype, EXPECTED_SUBSET_DTYPE),
+            ("grid shape", self.grid_shape, EXPECTED_SUBSET_GRID_SHAPE),
+            # (fixer round 3, finding MAJOR 1) — the frozen cell centres above
+            # are only meaningful under CENTER registration: under CORNER the
+            # same numbers name cell EDGES and every station maps half a cell
+            # away. Pinned explicitly rather than assumed.
+            (
+                "registration",
+                self.coordinate_registration,
+                EXPECTED_REGISTRATION,
+            ),
+            # (fixer round 3, finding MAJOR 1) — the EXACT global bounds, not a
+            # single `west < 0` sign test: a changed east bound or another
+            # malformed negative-west convention must not pass.
+            (
+                "global bounds",
+                self.global_bounds,
+                EXPECTED_SUBSET_GLOBAL_BOUNDS,
+            ),
+        ):
+            if observed != expected:
+                raise ImergReadContractError(
+                    f"observed subset {label} {observed!r} != expected "
+                    f"{expected!r} (D1)"
+                )
+        if abs(self.fill_value - EXPECTED_FILL_VALUE) > _FILL_VALUE_TOLERANCE:
+            raise ImergReadContractError(
+                f"observed subset fill value {self.fill_value!r} != expected "
+                f"{EXPECTED_FILL_VALUE!r} (D1)"
+            )
+        # (fixer review, finding 2/3) — ⛔ ONE approved longitude convention,
+        # not a two-value membership check: the subset never crosses the sign
+        # boundary, so admitting the OTHER convention would silently accept a
+        # response the box could never honestly produce.
+        if self.longitude_convention != EXPECTED_SUBSET_LONGITUDE_CONVENTION:
+            raise ImergReadContractError(
+                f"observed subset longitude convention "
+                f"{self.longitude_convention!r} != the box-pinned "
+                f"{EXPECTED_SUBSET_LONGITUDE_CONVENTION!r} (D1)"
+            )
+        # (fixer review, finding 3) — packing DECIDES what a decoded value
+        # IS, and D5's cross-check tolerance is derived assuming there is
+        # none. Rejecting it HERE — at contract construction, which
+        # `read_subset_granule` always goes through before it ever touches a
+        # raw value — protects every subset read this run performs, not only
+        # the one granule T2's cross-check happens to compare.
+        if self.scale_factor is not None or self.add_offset is not None:
+            raise ImergReadContractError(
+                "the subset response is PACKED (scale_factor/add_offset "
+                "present) — this contract's decoded values assume none; "
+                "refusing to accept a packed subset granule (D1)"
+            )
+        if len(self.lat_vector) != self.grid_shape[2]:
+            raise ImergReadContractError(
+                f"subset lat_vector length {len(self.lat_vector)} != "
+                f"grid_shape[2] {self.grid_shape[2]} (D1)"
+            )
+        if len(self.lon_vector) != self.grid_shape[1]:
+            raise ImergReadContractError(
+                f"subset lon_vector length {len(self.lon_vector)} != "
+                f"grid_shape[1] {self.grid_shape[1]} (D1)"
+            )
+        # (fixer review, finding 2) — the LENGTH checks above accept ANY
+        # same-sized grid; only an EXACT match against the T2-approved,
+        # box-derived cell centres proves this response actually covers the
+        # frozen box rather than some other same-shaped patch of the globe.
+        if self.lat_vector != EXPECTED_SUBSET_LAT_VECTOR:
+            raise ImergReadContractError(
+                "observed subset lat_vector does not exactly match the "
+                "T2-approved frozen box coordinates (D1) — a same-sized grid "
+                "at the wrong location must not be accepted"
+            )
+        if self.lon_vector != EXPECTED_SUBSET_LON_VECTOR:
+            raise ImergReadContractError(
+                "observed subset lon_vector does not exactly match the "
+                "T2-approved frozen box coordinates (D1) — a same-sized grid "
+                "at the wrong location must not be accepted"
+            )
+
+    def as_manifest_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def _attr_scalar_float(raw: object) -> float:
+    """The subset response's `_FillValue` was measured as a 1-element ARRAY
+    (unlike the archive's scalar) — OPeNDAP's own re-encoding, not ours to
+    normalise away silently. Reads either shape the same way."""
+    try:
+        array = np.asarray(raw, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError) as exc:
+        # 🔴 PERMANENT, and typed HERE at the raising site (2026-09-02, Codex
+        # review): an attribute that is PRESENT but not a number reads the same
+        # way from the same bytes for ever, so a re-download cannot repair it.
+        raise ImergReadContractError(
+            f"attribute {raw!r} is not numeric (D1): {exc}"
+        ) from exc
+    if array.size != 1:
+        raise ImergReadContractError(
+            f"expected a scalar (or 1-element) attribute, got shape {array.shape}"
+        )
+    return float(array[0])
+
+
+def _optional_numeric_attr(
+    attrs: object, name: str, *, archive_filename: str
+) -> float | None:
+    """An optional packing attribute (`scale_factor`, `add_offset`) as a float,
+    or None when absent.
+
+    🔴 The retryable/permanent split drawn AT THE RAISING SITE (2026-09-02,
+    Codex review). ABSENT is fine. PRESENT-but-not-a-number is a STABLE schema
+    violation — the same bytes parse to the same failure for ever — so it is a
+    plain `ImergReadContractError` (permanent, exit 6), never the retryable
+    `ImergMalformedArtifactError`. A bare `float(...)` here used to raise a raw
+    `ValueError` that `_validate_subset_artifact` swept into the malformed
+    bucket, which would have retried an unrepairable granule for ever."""
+    if name not in attrs:  # type: ignore[operator]
+        return None
+    raw = attrs[name]  # type: ignore[index]
+    try:
+        return float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ImergReadContractError(
+            f"subset granule {archive_filename!r} has a non-numeric "
+            f"{name!r} attribute {raw!r} — the response reads cleanly and is "
+            f"structurally wrong, which no re-download repairs (D1): {exc}"
+        ) from exc
+
+
+def read_subset_grid_header_global(f: object) -> str:
+    """The subset response's own retained `Grid.GridHeader` global attribute
+    (D1, fixer review round 2, finding 1) — read the SAME way
+    `read_file_header` reads `FileHeader`, since OPeNDAP's flattening treats
+    both as root-level attributes now. This is the only field that can carry
+    the GLOBAL grid's longitude convention: the box-local `/lon` slice is
+    entirely positive by construction, so its own min/max can never reveal
+    whether the grid it was cut from is signed."""
+    raw = f.attrs.get(SUBSET_GRID_HEADER_ATTR)  # type: ignore[attr-defined]
+    if raw is None:
+        raise ImergReadContractError(
+            f"subset granule is missing the root-level {SUBSET_GRID_HEADER_ATTR!r} "
+            "global attribute (D1) — cannot derive the longitude convention "
+            "from a box-local slice alone"
+        )
+    return _attr_text(raw)
+
+
+def subset_global_bounds(grid_header: str) -> tuple[float, float, float, float]:
+    """D1 (fixer round 3, finding MAJOR 1) — the RETAINED global grid's own
+    bounding box as `(north, west, south, east)`, `STUDY_BOX`'s own order.
+    ⛔ Every one of the four is read and pinned: reducing the header to a
+    single `west < 0` sign test let `Registration=CORNER`, a changed east
+    bound, or another malformed negative-west convention through while
+    extraction still treated the coordinates as cell centres of a -180..180
+    grid."""
+    try:
+        return (
+            float(parse_grid_header_field(grid_header, "NorthBoundingCoordinate")),
+            float(parse_grid_header_field(grid_header, "WestBoundingCoordinate")),
+            float(parse_grid_header_field(grid_header, "SouthBoundingCoordinate")),
+            float(parse_grid_header_field(grid_header, "EastBoundingCoordinate")),
+        )
+    except ValueError as exc:
+        raise ImergReadContractError(
+            f"a bounding coordinate in the retained {SUBSET_GRID_HEADER_ATTR!r} "
+            f"is not a number: {grid_header!r} (D1): {exc}"
+        ) from exc
+
+
+def contract_from_open_subset_granule(
+    f: object, *, archive_filename: str
+) -> ImergSubsetReadContract:
+    """D1's subset contract parser — the ONE implementation, mirroring
+    `contract_from_open_granule`'s role for the archive route. `f` is an open
+    `h5py.File` on the OPeNDAP `.dap.nc4` response; `archive_filename` is the
+    ARCHIVE spelling this subset granule corresponds to — D2's identity check
+    is against that same name, since the embedded `FileHeader` (a root-level
+    attribute, unaffected by the `/Grid` flattening) is unchanged by
+    server-side subsetting."""
+    revision = parse_granule_filename(archive_filename)[1]
+    file_header = read_file_header(f)
+    assert_identity_matches_plan_and_header(
+        archive_filename=archive_filename,
+        filename_revision=revision,
+        file_header_filename=parse_grid_header_field(file_header, "FileName"),
+    )
+    try:
+        precip = f["precipitation"]  # type: ignore[index]  # OPeNDAP flattens /Grid
+        lat = np.asarray(f["lat"][:], dtype=np.float64)  # type: ignore[index]
+        lon = np.asarray(f["lon"][:], dtype=np.float64)  # type: ignore[index]
+    except KeyError as exc:
+        # (fixer review round 2, finding 4 — minor) — an ARCHIVE-shaped
+        # response (root has no `/precipitation`, only a `/Grid` GROUP) must
+        # fail the SUBSET parser with a typed, reportable error, not a raw
+        # h5py `KeyError` — the "vice versa" of the archive parser's own
+        # subset-shaped refusal (D1, finding 4 of round 1).
+        raise ImergReadContractError(
+            f"granule {archive_filename!r} has no root-level 'precipitation' "
+            "variable — the SUBSET route's contract requires OPeNDAP's "
+            f"flattened /precipitation, and this response is not "
+            f"subset-shaped (D1): {exc}"
+        ) from exc
+    grid_shape = tuple(int(n) for n in precip.shape)
+    if len(grid_shape) != 3:  # noqa: PLR2004 - D1 pins a 3-D grid
+        raise ImergReadContractError(
+            f"observed subset 'precipitation' shape {grid_shape} is not 3-D (D1)"
+        )
+    attrs = precip.attrs
+    grid_header = read_subset_grid_header_global(f)
+    bounds = subset_global_bounds(grid_header)
+    # (fixer round 3, finding MAJOR 1) — derived from the RETAINED global
+    # grid's own bounds, never the box-local `lon` slice's min/max (that is
+    # always positive for this box and would silently derive "UNSIGNED_360"
+    # regardless of the true convention). The bounds themselves are pinned
+    # EXACTLY by the contract, so this sign test can no longer be the only
+    # thing standing between a malformed header and acceptance.
+    west_bound = bounds[1]
+    # (fixer round 3, finding MINOR 1) — a valid-but-malformed HDF5 (openable,
+    # but missing `units` / `DimensionNames` / `_FillValue`) must fail with the
+    # typed contract error every other D1 refusal raises, not a raw `KeyError`:
+    # `acquire_subset_granule`'s validate-and-reuse only catches
+    # `ImergReadContractError`, so a raw `KeyError` would escape the recovery
+    # path and a poisoned cache entry could never be refetched.
+    try:
+        dimension_names = tuple(_attr_text(attrs["DimensionNames"]).split(","))
+        units = _attr_text(attrs["units"])
+        fill_value = _attr_scalar_float(attrs["_FillValue"])
+    except KeyError as exc:
+        raise ImergReadContractError(
+            f"subset granule {archive_filename!r} is missing the required "
+            f"'precipitation' attribute {exc} — the response is openable but "
+            "does not carry the D1 subset contract's fields (D1)"
+        ) from exc
+    return ImergSubsetReadContract(
+        variable_path=SUBSET_VARIABLE_PATH,
+        dimension_names=dimension_names,
+        units=units,
+        fill_value=fill_value,
+        dtype=str(precip.dtype),
+        scale_factor=_optional_numeric_attr(
+            attrs, "scale_factor", archive_filename=archive_filename
+        ),
+        add_offset=_optional_numeric_attr(
+            attrs, "add_offset", archive_filename=archive_filename
+        ),
+        coordinate_registration=parse_grid_header_field(grid_header, "Registration"),
+        global_bounds=bounds,
+        longitude_convention=("SIGNED_180" if west_bound < 0.0 else "UNSIGNED_360"),
+        grid_shape=(grid_shape[0], grid_shape[1], grid_shape[2]),
+        lat_vector=exact_coordinate_vector(lat),
+        lon_vector=exact_coordinate_vector(lon),
+        granule_revision=revision,
+        file_header_product_version=parse_grid_header_field(
+            file_header, "ProductVersion"
+        ),
+    )
+
+
+def observe_subset_read_contract(
+    path: Path, *, archive_filename: str
+) -> ImergSubsetReadContract:
+    """Open an OPeNDAP subset artifact and extract every D1 subset field —
+    the subset-route counterpart of `observe_read_contract`."""
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        return contract_from_open_subset_granule(f, archive_filename=archive_filename)
+
+
+def assert_subset_contract_consistent(
+    observed: ImergSubsetReadContract, *, frozen: ImergSubsetReadContract
+) -> None:
+    """D1/D2 (fixer review, finding 1) — the subset route's own counterpart
+    of `assert_contract_consistent`, frozen on the first subset granule a run
+    reads and asserted on every subsequent one. ⛔ A separate function, not a
+    shared/parameterised one: the two contracts are separately frozen and
+    must stay that way (D1).
+
+    ⚠️ Subclass strictness, DELIBERATELY (2026-09-02, Codex review). The
+    archive comparator gets it free from its whole-dataclass `!=`; this one
+    CANNOT use that expression, because the tolerance must apply per field and
+    `==` has no seam for it. ⇒ The concrete-type check is made EXPLICIT below,
+    so the subset route is exactly as strict about the type as the archive
+    route while still tolerating the measured `V`-prefix spelling — the two
+    properties are independent and both are kept."""
+    if type(observed) is not type(frozen):
+        raise ImergReadContractError(
+            "observed subset read contract is a "
+            f"{type(observed).__name__} but the frozen one is a "
+            f"{type(frozen).__name__} — refusing to blend two shapes (D1)"
+        )
+    # 🔴 The MEASURED `V`-prefix tolerance is applied HERE and ONLY here: the
+    # subset route is where the boundary was observed, and sampled across the
+    # whole pinned window rather than reasoned from one granule.
+    differences = contract_field_differences(
+        observed,
+        frozen,
+        ignore=("granule_revision",),
+        tolerated=_SUBSET_CONTRACT_TOLERATED_FIELDS,
+    )
+    if observed.granule_revision != frozen.granule_revision:
+        raise ImergReadContractError(
+            f"subset granule revision {observed.granule_revision!r} != frozen "
+            f"{frozen.granule_revision!r} — stop and report rather than "
+            "blending mixed revisions into one bundle (D1)"
+            + _also_differs_suffix(differences)
+        )
+    if differences:
+        raise ImergReadContractError(
+            "observed subset read contract differs from the frozen one on a "
+            "field other than revision (D1) — refusing to blend: "
+            + "; ".join(differences)
+        )
+
+
+def subset_box_indices(
+    vector: Sequence[float], *, low: float, high: float
+) -> tuple[int, int]:
+    """D4 — the CONTIGUOUS, inclusive `(start, stop)` index range (the
+    `dap4.ce` slice convention) a global coordinate vector covers within
+    `[low, high]`. DERIVED from the archive's own frozen vector, never a bare
+    literal restating the box (D10's rule) — the box is fixed, so the range
+    is fixed, but it is computed from data, not hand-copied from a probe."""
+    matches = [i for i, v in enumerate(vector) if low <= v <= high]
+    if not matches:
+        raise ImergReadContractError(
+            f"no coordinate values fall within [{low}, {high}] (D4)"
+        )
+    start, stop = matches[0], matches[-1]
+    if matches != list(range(start, stop + 1)):
+        raise ImergReadContractError(
+            f"coordinate values within [{low}, {high}] are not contiguous (D4)"
+        )
+    return start, stop
+
+
+def global_grid_centres(*, count: int, low: float, high: float) -> tuple[float, ...]:
+    """The archive route's own GLOBAL cell CENTRES, derived from the pinned
+    registration (CENTER), global bounds and grid shape. ⛔ Used ONLY to derive
+    the INTEGER box index range for D4's `dap4.ce` constraint — never as a
+    coordinate pin: `EXPECTED_SUBSET_{LAT,LON}_VECTOR` are MEASURED for that,
+    because fixer round 3 measured this very arithmetic wrong at float32
+    precision. Integers are safe where floats were not: the nearest cell centre
+    sits 0.05 deg from a box edge, which no float64 error here can cross."""
+    step = (high - low) / count
+    return tuple(low + step * (index + 0.5) for index in range(count))
+
+
+def subset_box_index_bounds() -> tuple[tuple[int, int], tuple[int, int]]:
+    """D4's `(lon_bounds, lat_bounds)` for the frozen `STUDY_BOX`, DERIVED
+    from the pinned global grid rather than restated as `(2600, 2689)` /
+    `(1160, 1209)`. T2's cross-check reads them off the archive granule it
+    already holds; a window run has no archive granule to read, and must not
+    hand-copy a probe's numbers instead (D10's rule)."""
+    north, west, south, east = EXPECTED_SUBSET_GLOBAL_BOUNDS
+    lon_centres = global_grid_centres(count=EXPECTED_GRID_SHAPE[1], low=west, high=east)
+    lat_centres = global_grid_centres(
+        count=EXPECTED_GRID_SHAPE[2], low=south, high=north
+    )
+    return (
+        subset_box_indices(lon_centres, low=STUDY_BOX[1], high=STUDY_BOX[3]),
+        subset_box_indices(lat_centres, low=STUDY_BOX[2], high=STUDY_BOX[0]),
+    )
+
+
+def subset_granule_url(*, archive_filename: str, start: datetime) -> str:
+    """D4 — measured 2026-08-31: OPeNDAP mirrors the archive's own
+    year/day-of-year layout, with `.dap.nc4` appended to the ARCHIVE
+    filename (never a differently-named product)."""
+    doy = start.timetuple().tm_yday
+    return f"{OPENDAP_BASE_URL}/{start.year:04d}/{doy:03d}/{archive_filename}.dap.nc4"
+
+
+def subset_constraint(
+    *, lon_start: int, lon_stop: int, lat_start: int, lat_stop: int
+) -> str:
+    """D4's measured `dap4.ce` constraint shape, parameterised over the box
+    indices `subset_box_indices` derives — never a magic literal restating
+    the box."""
+    return (
+        f"{SUBSET_VARIABLE_PATH}[0][{lon_start}:{lon_stop}][{lat_start}:{lat_stop}];"
+        f"/lon[{lon_start}:{lon_stop}];/lat[{lat_start}:{lat_stop}]"
+    )
+
+
+def parse_retry_after(raw: str | None) -> float | None:
+    """D3.2 — RFC 9110 `Retry-After` in its delta-seconds form. ⛔ Returns
+    None (⇒ the caller BACKS OFF instead) for an absent, empty, non-numeric
+    or HTTP-date header rather than guessing: resolving the date form needs a
+    clock, and threading an injected clock through the HTTP seam is a config
+    surface D3 forbids for a case the backoff fallback already covers safely.
+    A negative delay clamps to 0."""
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    return max(seconds, 0.0)
+
+
+#: 🔴 The ENUMERATED permanent 4xx statuses (2026-09-02, Codex review).
+#:
+#: ⭐ THE RULE, so a future reader can classify a NEW status without guessing:
+#: a status belongs here iff the request CANNOT SUCCEED UNLESS THE REQUEST
+#: ITSELF CHANGES. Re-issuing identical bytes can only reproduce it — no
+#: amount of waiting helps. If waiting, or a server-side change, could clear
+#: it, it does NOT belong here.
+#:   400 Bad Request         — malformed syntax (Plan 225 D4 MEASURED exactly
+#:                             this for a `/Grid/precipitation` constraint)
+#:   405 Method Not Allowed  — the method is wrong for the resource
+#:   410 Gone                — the resource is permanently absent
+#:   411 Length Required     — an unchanged retry cannot add `Content-Length`
+#:   414 URI Too Long        — the URI itself is over the server's limit
+#:   415 Unsupported Media   — an unchanged retry cannot change media type
+#:   417 Expectation Failed  — an unchanged retry cannot drop its `Expect`
+#:   422 Unprocessable       — well-formed but semantically rejected
+#:   426 Upgrade Required    — an unchanged retry cannot switch protocol
+#:   428 Precondition Req'd  — an unchanged retry cannot add a precondition
+#:   431 Headers Too Large   — the request headers are over the limit
+#: (RFC 9110 §15.5.x; 428 and 431 are RFC 6585 §§3-5.)
+#:
+#: ⛔ NOT "all 4xx except a listed few". That shape FAILS UNSAFELY: any status
+#: nobody thought of — 409 Conflict and 423 Locked both resolve without the
+#: request changing — would be called permanent and STOP a 30-hour run. The
+#: default therefore falls through to RETRYABLE. Failing toward "retry" wastes
+#: time; failing toward "permanent" throws away the job.
+#: (401/403/404/429 never reach this set — they are classified above it.)
+_PERMANENT_CLIENT_STATUSES: frozenset[int] = frozenset(
+    {400, 405, 410, 411, 414, 415, 417, 422, 426, 428, 431}
+)
+_CLIENT_ERROR_FLOOR = 400
+_SERVER_ERROR_FLOOR = 500
+
+
+def _raise_for_http_status(
+    status: int, *, url: str, retry_after: str | None = None
+) -> None:
+    """One status ladder, shared by BOTH real HTTP clients (fixer review,
+    finding 5): 404 missing (D4 counts it), 401/403 credentials (exit 2),
+    429 rate-limited and RETRYABLE (D3.2), 5xx retryable. ⛔ A MODULE-level
+    function, not a method on either client class — `RealImergSubsetHttpClient`
+    needs the identical ladder and reaching into a sibling class's
+    underscore-named method would be a private-boundary violation, not a
+    shared helper."""
+    if status == 404:  # noqa: PLR2004 - HTTP status literal
+        raise ImergGranuleMissingError(f"not found: {url}")
+    if status in (401, 403):
+        raise ImergCredentialsError(f"Earthdata Login rejected {url} (status {status})")
+    if status == 429:  # noqa: PLR2004 - HTTP status literal
+        # D3.2 — ⛔ ABOVE the `status != 200` tail, which used to swallow this
+        # into the non-retryable `ImergRequestFailedError`: at 105,216
+        # requests a throttle is expected, not exceptional.
+        raise ImergRateLimitedError(
+            f"{url} returned 429 (rate limited)",
+            retry_after_seconds=parse_retry_after(retry_after),
+        )
+    if status in _PERMANENT_CLIENT_STATUSES:
+        # ⛔ ABOVE the generic tail: these statuses describe a request that is
+        # itself wrong, so re-issuing the identical request can only reproduce
+        # them. Plan 225 D4 MEASURED such a 400 (a `/Grid/precipitation`
+        # constraint OPeNDAP flattens away).
+        raise ImergPermanentRequestError(
+            f"{url} returned status {status}, which retrying cannot repair"
+        )
+    if status >= _SERVER_ERROR_FLOOR:
+        raise ImergTransientError(f"{url} returned status {status}")
+    if _CLIENT_ERROR_FLOOR <= status < _SERVER_ERROR_FLOOR:
+        # 🔴 The UNLISTED 4xx default is RETRYABLE, not permanent: 408 Request
+        # Timeout, 409 Conflict, 423 Locked and 425 Too Early can all clear
+        # without the request changing. Exit 3 — the supervisor may try again.
+        raise ImergRequestFailedError(
+            f"{url} returned status {status}, which is not permanent by "
+            "construction — a later attempt may succeed"
+        )
+    if status != 200:  # noqa: PLR2004 - HTTP status literal
+        raise ImergRequestFailedError(f"{url} returned unexpected status {status}")
+
+
+#: D3.3 — the sessions, one per thread. ⛔ A `requests.Session` is NOT
+#: documented thread-safe, and the window runner now fetches a day's granules
+#: on N worker threads (`--subset-workers`). The alternative — ONE session
+#: behind a lock — would serialise exactly the I/O the workers exist to
+#: overlap, so D3.3's literal "one session" becomes "one per worker thread".
+#: The MEASURABLE property D3.3 exists for is unchanged: each thread
+#: authenticates once and keeps its cookie jar, so only the first request on
+#: each thread pays the Earthdata redirect chain (`redirects=0` thereafter) —
+#: N cold chains for a whole run instead of 105,216.
+_SESSIONS = threading.local()
+
+
+def earthdata_session() -> requests.Session:
+    """D3.3/D4 — the authenticated, cookie-bearing session of the CALLING
+    THREAD, shared by BOTH real clients on it. Every call used to be a bare
+    `requests.get`, which builds a THROWAWAY session and discards its cookie
+    jar, so every single request re-ran the full Earthdata Login redirect
+    chain — D4 measured that chain, and that a cookie jar plus
+    `--location-trusted`-equivalent auth is what makes it terminate rather
+    than loop. A `requests.Session` supplies both: the jar persists across
+    calls, and `Session.rebuild_auth` re-resolves `~/.netrc` for the
+    redirect TARGET host, which is exactly what `--location-trusted` does.
+    ⛔ No credential appears in this module."""
+    import requests
+
+    session = getattr(_SESSIONS, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.trust_env = True
+        _SESSIONS.session = session
+    return session
+
+
+def _session_for(session: requests.Session | None) -> requests.Session:
+    """`None` means the calling thread's shared session (D3.3). An injected
+    one is the test seam that proves no bare `requests.get` survives."""
+    return session if session is not None else earthdata_session()
+
+
+@runtime_checkable
+class ImergSubsetHttpClient(Protocol):
+    """D4's injected OPeNDAP seam — fetch, not list/download-to-path: the
+    subset response is small enough to hold in memory (~25 KB measured), and
+    there is no day-directory listing step (the archive filename this subset
+    corresponds to is already known — D2)."""
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes: ...
+
+
+#: D3 — the TOTAL-ELAPSED bound on ONE subset request, in seconds.
+#:
+#: Measured on the 48-granule trial (2026-08-31): 47 fetches took 112.5 s in
+#: total (mean 2.394 s each, ~10.7 kB/s for a ~25 KB body); the 48th was held
+#: open for 1,971 s. GES DISC never answered 429 — it TRICKLED, so every recv
+#: reset `timeout_seconds` and the per-recv read timeout never fired. ⇒ A
+#: per-recv timeout catches a DEAD connection; only a total-elapsed bound
+#: catches a live-but-useless one.
+#:
+#: Why 120 s and not something tighter:
+#:   * it is 50x the measured healthy mean and 6.1% of the observed stall —
+#:     healthy and stalled are separated by nearly three orders of magnitude,
+#:     so any bound in that gap kills the outlier;
+#:   * to trip it, the ~25 KB body would have to arrive slower than ~213 B/s,
+#:     a 50x throughput collapse;
+#:   * ⛔ the asymmetry decides the side to err on. Abandoning too eagerly is
+#:     NOT merely a cheap extra retry: if GES DISC is genuinely slow for a
+#:     stretch, every attempt trips and the granule is recorded as a gap that
+#:     is not one — a WRONG record, which Plan 220 ranks worse than a slow
+#:     one. The deadline is therefore deliberately generous, because the
+#:     deadline also covers GES DISC's own server-side subsetting time, not
+#:     just the transfer.
+#: ⛔ A property of one request, like the timeout beside it — not a config
+#: surface, not a scheduler (D3).
+DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS = 120.0
+
+#: Read granularity for the streamed body; the deadline is checked once per
+#: chunk, so this is also how often a trickle is re-examined.
+SUBSET_STREAM_CHUNK_BYTES = 65536
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RealImergSubsetHttpClient:
+    """D4 — the SAME `.netrc`-based Earthdata Login auth as the archive
+    route, over `requests`' own redirect+cookie handling (measured
+    2026-08-31: a bare `requests.get` with `params={"dap4.ce": ...}`
+    succeeds end to end — no extra session/cookie plumbing was needed to
+    reproduce curl's `--location-trusted` behaviour). Window-scale
+    pacing and retry (D3.1/D3.2) live in `RequestPacer`, so this class stays
+    a thin transport — but the SESSION (D3.3) is shared here, because a
+    throwaway per-call session is a transport property, not a policy."""
+
+    timeout_seconds: float = 60.0
+    """PER-RECV read timeout. ⚠️ It RESETS on every byte received, so it
+    bounds a dead connection and nothing else — see `deadline_seconds`."""
+    deadline_seconds: float = DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS
+    """TOTAL elapsed bound on this one request, measured from just before the
+    request is issued. A trickling response is ABANDONED as a transient
+    failure, so `RequestPacer` retries it on exactly the path it already uses
+    for a fired read timeout."""
+    session: requests.Session | None = None
+    """D3.3 — see `RealImergHttpClient.session`; both default to the SAME
+    per-thread `earthdata_session()`."""
+    monotonic: Callable[[], float] | None = None
+    """The test seam for `deadline_seconds`, alongside `session`: `None` means
+    `time.monotonic`. ⛔ Injected rather than called directly so a trickle can
+    be proved without a 120-second test."""
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        import requests
+
+        now = self.monotonic if self.monotonic is not None else time.monotonic
+        started = now()
+        try:
+            response = _session_for(self.session).get(
+                url,
+                params={"dap4.ce": constraint},
+                timeout=self.timeout_seconds,
+                # ⛔ stream=True is what makes the deadline enforceable at all:
+                # `response.content` blocks inside requests until the whole
+                # body has arrived, with no seam to check elapsed time.
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise ImergTransientError(f"failed to fetch subset {url}: {exc}") from exc
+        _raise_for_http_status(
+            response.status_code,
+            url=url,
+            retry_after=response.headers.get("Retry-After"),
+        )
+        chunks: list[bytes] = []
+        try:
+            for chunk in response.iter_content(chunk_size=SUBSET_STREAM_CHUNK_BYTES):
+                chunks.append(chunk)
+                elapsed = now() - started
+                if elapsed > self.deadline_seconds:
+                    raise ImergTransientError(
+                        f"abandoned {url} after {elapsed:.1f}s "
+                        f"(deadline {self.deadline_seconds:.0f}s, "
+                        f"{sum(len(c) for c in chunks)} bytes received): the "
+                        "response is trickling, so the per-recv read timeout "
+                        "would never fire"
+                    )
+        except requests.RequestException as exc:
+            raise ImergTransientError(f"failed to fetch subset {url}: {exc}") from exc
+        finally:
+            # ⛔ An abandoned stream must release its connection back to the
+            # pool, or the retry competes with the attempt it replaced.
+            response.close()
+        content = b"".join(chunks)
+        log.info(
+            "imerg.acquire.subset_fetched",
+            url=url,
+            bytes=len(content),
+            # D3.3 — the number the cookie jar exists to shrink: a cold
+            # Earthdata redirect chain costs several round trips per request,
+            # a warm one none. Logged because "requests issued" is the figure
+            # that decides whether a 105,216-granule window is polite.
+            redirects=len(response.history),
+        )
+        return content
+
+
+_PacedResult = TypeVar("_PacedResult")
+
+
+class RequestPacer:
+    """D3.1/D3.2 — the ONE place a GES DISC request is paced and retried, for
+    day listings and subset fetches alike. ⛔ Not a scheduler and not a config
+    surface: a fixed interval BETWEEN requests, and a bounded retry that
+    honours the server's own `Retry-After` when it sends one and backs off
+    exponentially when it does not. The counters are what a T3 report means by
+    "requests actually issued" — the figure that decides whether a window run
+    is polite, which a granule count alone never showed.
+
+    🔴 GLOBAL, not per-caller — this is what makes `--subset-workers` safe:
+      * the cadence pause is taken while holding `_gate`, so the interval
+        separates any two requests whatever THREAD issues them. N workers each
+        honouring a 1 s interval of their own would be N requests/second,
+        silently multiplying the very politeness property D3.1 exists for;
+      * a 429's delay is registered on the SHARED `_paused_until`, so it
+        pauses every worker rather than only the one that received it —
+        answering NASA's "slow down" at 3/4 speed is not answering it.
+    ⛔ One `RequestPacer` per RUN, shared by every worker; a second instance
+    would be a second, unsynchronised rate limit."""
+
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], None],
+        interval_seconds: float,
+        max_attempts: int = 5,
+        backoff_base_seconds: float = 2.0,
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        self._sleep = sleep
+        self._interval_seconds = interval_seconds
+        self._max_attempts = max_attempts
+        self._backoff_base_seconds = backoff_base_seconds
+        self._monotonic = monotonic if monotonic is not None else time.monotonic
+        """The 429 pause is a DEADLINE, not a duration: every worker must
+        resume at the same instant, not each sleep the full delay in turn.
+        Injected so that can be proved without real time passing."""
+        self._gate = threading.Lock()
+        self._issued_any = False
+        self._paused_until: float | None = None
+        self._last_issue_at: float | None = None
+        self.requests_issued = 0
+        self.rate_limited = 0
+        self.retry_after_honoured = 0
+        self.min_issue_gap_seconds: float | None = None
+        """The SMALLEST observed gap between two consecutive request starts —
+        the run's measured peak rate, and the number that makes the politeness
+        of a concurrent run visible rather than argued."""
+
+    def gate_locked(self) -> bool:
+        """Whether a thread is currently inside the paced region. ⛔ The public
+        seam a test needs: counting sleeps cannot tell ONE global limiter from
+        N per-worker ones, because both sleep once per request — the
+        difference is whether those sleeps overlap."""
+        return self._gate.locked()
+
+    def _take_slot(self) -> None:
+        """Wait for this request's turn, then claim it. ⛔ Everything here runs
+        under `_gate`, which is what makes the interval and the 429 pause
+        GLOBAL; the request itself is issued outside it, so fetches still
+        overlap and the workers are not serialised."""
+        with self._gate:
+            if self._paused_until is not None:
+                # ⛔ BEFORE the cadence pause: a server-stated backoff is a
+                # floor on when anyone may speak again, not an addition to it.
+                remaining = self._paused_until - self._monotonic()
+                if remaining > 0:
+                    self._sleep(remaining)
+            if self._issued_any:
+                # ⛔ Only once a request has already been issued, so a cached
+                # artifact — which never reaches here — costs no delay, and
+                # the first request of a run is not delayed either.
+                self._sleep(self._interval_seconds)
+            now = self._monotonic()
+            if self._last_issue_at is not None:
+                gap = now - self._last_issue_at
+                self.min_issue_gap_seconds = (
+                    gap
+                    if self.min_issue_gap_seconds is None
+                    else min(self.min_issue_gap_seconds, gap)
+                )
+            self._last_issue_at = now
+            self._issued_any = True
+            self.requests_issued += 1
+
+    def run(self, issue: Callable[[], _PacedResult]) -> _PacedResult:
+        """Issue one logical request, paced and retried.
+
+        ⚠️ RECORDED, not changed (2026-09-02, confirming Codex round) — the
+        loop retries `ImergTransientError` and NOTHING else. So the two senses
+        of "retryable" in this module are NOT the same set:
+
+        * IN-RUN retryable = `ImergTransientError` (transport faults, 5xx, and
+          429 through `ImergRateLimitedError`). Only these get another attempt
+          here.
+        * SUPERVISOR retryable = every error the CLI maps to exit 3. That is a
+          strictly LARGER set: an unlisted 4xx (408, 409, 423, 425) and a
+          malformed artifact both abort the current run after ONE attempt and
+          exit 3, telling the external supervisor it may re-run the window.
+
+        Wherever a comment in this module calls an error "retryable" without
+        qualification it means the SECOND sense — the exit-code contract — and
+        exit 3 is correct for those cases precisely because the window runner
+        resumes from banked granules, so a re-run costs the failed granule
+        rather than the run. ⛔ Do not widen this `except` to close the gap:
+        the in-run loop is a POLITENESS mechanism bounded by `max_attempts`,
+        not a general recovery layer."""
+        last: ImergTransientError | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            self._take_slot()
+            try:
+                return issue()
+            except ImergTransientError as exc:
+                last = exc
+                delay = self._backoff_base_seconds * (2 ** (attempt - 1))
+                rate_limited = isinstance(exc, ImergRateLimitedError)
+                if rate_limited:
+                    with self._gate:
+                        self.rate_limited += 1
+                        if exc.retry_after_seconds is not None:
+                            # ⛔ The SERVER's number wins over our backoff curve.
+                            delay = exc.retry_after_seconds
+                            self.retry_after_honoured += 1
+                        # ⛔ Registered even on the LAST attempt: the server
+                        # asked everyone to slow down, and the next granule's
+                        # request is still a request.
+                        until = self._monotonic() + delay
+                        if self._paused_until is None or until > self._paused_until:
+                            self._paused_until = until
+                log.warning(
+                    "imerg.acquire.request_retry",
+                    attempt=attempt,
+                    max_attempts=self._max_attempts,
+                    rate_limited=rate_limited,
+                    delay_seconds=delay,
+                    error=str(exc),
+                )
+                if not rate_limited and attempt < self._max_attempts:
+                    # A 429 is NOT slept here: `_take_slot` waits out the
+                    # shared pause above, so the delay is served exactly once
+                    # and every other worker serves it too.
+                    self._sleep(delay)
+        raise ImergRetriesExhaustedError(
+            f"exhausted {self._max_attempts} attempts against GES DISC"
+        ) from last
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PacedSubsetClient:
+    """D3.1/D3.2 — an `ImergSubsetHttpClient` whose fetches go through a
+    `RequestPacer`. ⛔ A wrapper around the CLIENT rather than a change to
+    `acquire_subset_granule`: a validated cached artifact issues no request,
+    so it must not consume cadence either, and that falls out for free here."""
+
+    client: ImergSubsetHttpClient
+    pacer: RequestPacer
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        return self.pacer.run(
+            lambda: self.client.fetch_subset(url=url, constraint=constraint)
+        )
+
+
+def imerg_subset_raw_dir(data_root: Path) -> Path:
+    """D2 — a route-DISTINCT directory: `acquire_granule`'s existing-path
+    reuse is keyed only by filename, so the two routes must never share a
+    directory or a same-named archive/subset pair could collide."""
+    return imerg_early_root(data_root) / "raw_subset"
+
+
+def subset_granule_artifact_path(data_root: Path, *, archive_filename: str) -> Path:
+    return imerg_subset_raw_dir(data_root) / f"{archive_filename}.dap.nc4"
+
+
+def _validate_subset_artifact(
+    path: Path, *, archive_filename: str
+) -> ImergSubsetReadContract:
+    """D2/D3 (fixer review round 2, finding 2 — MAJOR) — the ONE place
+    `acquire_subset_granule` trusts bytes on disk, existing or freshly
+    downloaded. An HTTP-200 login page or a truncated download is not valid
+    HDF5/NetCDF4 and would otherwise raise a raw `OSError` from `h5py.File`;
+    this converts that into the same typed `ImergReadContractError` a
+    structural mismatch already raises, so a caller catching only the typed
+    hierarchy still sees it, matching `ImergReadContractError`'s own
+    docstring ("...or an artifact failed post-acquisition validation")."""
+    try:
+        return observe_subset_read_contract(path, archive_filename=archive_filename)
+    except ImergReadContractError:
+        raise
+    except OSError as exc:
+        # 🔴 RETRYABLE (2026-09-02, Codex review). These bytes are not a granule
+        # at all — a truncated body or an HTTP-200 login page — and this raise
+        # sits AFTER the network retry unit has completed, so nothing has yet
+        # had a chance to re-download them. Typing it as the permanent parent
+        # would turn one transient truncation into a hard abort of a 30-hour
+        # window run. ⛔ Stable archive drift reads cleanly and fails in
+        # `assert_*_contract_consistent` instead; THAT is the permanent case.
+        raise ImergMalformedArtifactError(
+            f"subset artifact {path} could not be opened as HDF5/NetCDF4 (D1): {exc}"
+        ) from exc
+    except KeyError as exc:
+        # (fixer round 3, finding MINOR 1) — a BACKSTOP behind the parser's own
+        # typed translation: a file that OPENS as HDF5 but is missing a name
+        # the contract needs must still reach the validate-and-reuse recovery
+        # path, which catches only the typed hierarchy. ⛔ Not a bare
+        # `except Exception`.
+        # RETRYABLE, like the `OSError` branch: a name the parser did NOT
+        # anticipate being absent is as consistent with a partially-written
+        # body as with a product change, and the ambiguous case must fail
+        # toward retry — the contract-required names are already typed
+        # PERMANENT by the parser itself, so nothing stable lands here.
+        raise ImergMalformedArtifactError(
+            f"subset artifact {path} opened but is missing a name the D1 "
+            f"subset contract requires (D1): {exc!r}"
+        ) from exc
+    except ValueError as exc:
+        # 🔴 PERMANENT (2026-09-02, confirming Codex round). A `ValueError`
+        # means the file OPENED and a value READ — a `float(...)` on a
+        # non-numeric `scale_factor`, say — and was wrong. Re-downloading
+        # identical bytes cannot repair a stable schema violation, so calling
+        # this retryable would retry for ever: the exact waste the exit split
+        # exists to remove, in the other direction. ⛔ The distinction is drawn
+        # at the RAISING SITES (`_optional_numeric_attr`, `_attr_scalar_float`,
+        # `subset_global_bounds`); this is only the untyped residue, and it
+        # inherits the same verdict.
+        raise ImergReadContractError(
+            f"subset artifact {path} opened cleanly but a value it carries is "
+            f"not what the D1 subset contract requires (D1): {exc!r}"
+        ) from exc
+
+
+def acquire_subset_granule(
+    granule: ImergGranuleId,
+    *,
+    archive_filename: str,
+    client: ImergSubsetHttpClient,
+    data_root: Path,
+    lon_bounds: tuple[int, int],
+    lat_bounds: tuple[int, int],
+) -> Path:
+    """D2/D4 — fetch ONE OPeNDAP subset granule, reusing an existing cached
+    artifact rather than re-fetching (preserves `acquire_granule`'s own
+    resumability for the subset filename, per D3). No retry loop, no
+    day-listing: T3's window-scale concerns (D3 cadence/backoff/session
+    reuse) are out of this run's scope.
+    ⛔ (fixer review round 2, finding 2 — MAJOR) — VALIDATE-and-reuse, not
+    merely exists-and-reuse: an HTTP-200 login page, a truncated download, or
+    a stale malformed cache entry must not be trusted just because a file
+    sits at this path. Only an artifact that PASSES the D1 subset contract
+    suppresses the HTTP call; an invalid cache falls through to a fresh
+    download rather than either serving bad bytes or hard-failing on a
+    corrupt cache a re-fetch would repair. A malformed fresh download is
+    never installed: it must pass the same validation before `os.replace`."""
+    target = subset_granule_artifact_path(data_root, archive_filename=archive_filename)
+    if target.exists():
+        try:
+            _validate_subset_artifact(target, archive_filename=archive_filename)
+        except ImergReadContractError as exc:
+            log.warning(
+                "imerg.acquire.subset_cache_invalid",
+                path=str(target),
+                error=str(exc),
+            )
+        else:
+            return target
+    lon_start, lon_stop = lon_bounds
+    lat_start, lat_stop = lat_bounds
+    url = subset_granule_url(archive_filename=archive_filename, start=granule.start)
+    constraint = subset_constraint(
+        lon_start=lon_start, lon_stop=lon_stop, lat_start=lat_start, lat_stop=lat_stop
+    )
+    content = client.fetch_subset(url=url, constraint=constraint)
+    imerg_subset_raw_dir(data_root).mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(target.name + ".tmp")
+    try:
+        tmp_path.write_bytes(content)
+        _validate_subset_artifact(tmp_path, archive_filename=archive_filename)
+        os.replace(tmp_path, target)
+    except OSError as exc:
+        raise ImergStorageError(f"failed to write {target}: {exc}") from exc
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return target
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SubsetCrossCheckReport:
+    """D5 — the T2 gate: exact coordinate agreement first (the actual
+    station-mapping invariant D1 exists to protect), THEN decoded values
+    within a tolerance frozen from the observed dtype/packing BEFORE the
+    comparison runs."""
+
+    lat_exact_match: bool
+    lon_exact_match: bool
+    max_abs_diff: float
+    tolerance: float
+    values_within_tolerance: bool
+
+    @property
+    def passed(self) -> bool:
+        return (
+            self.lat_exact_match
+            and self.lon_exact_match
+            and self.values_within_tolerance
+        )
+
+
+def subset_cross_check_tolerance(*, subset_contract: ImergSubsetReadContract) -> float:
+    """D5 — frozen BEFORE the comparison runs, from the observed dtype and
+    packing. The archive route's `/Grid/precipitation` is UNPACKED float32
+    (D1's own contract has never had `scale_factor`/`add_offset` fields
+    because none has ever been observed there). If the subset side matches
+    that exactly, the two grids hold bit-identical values and the tolerance
+    is zero; any packing or dtype drift on the subset side means this
+    function has no data to derive a tolerance from, so it refuses rather
+    than guessing one (⛔ "within float tolerance" left unnamed is
+    adjustable, which would defeat D5's stop rule)."""
+    if subset_contract.dtype != EXPECTED_SUBSET_DTYPE:
+        raise ImergReadContractError(
+            f"subset dtype {subset_contract.dtype!r} != the archive route's "
+            f"unpacked {EXPECTED_SUBSET_DTYPE!r} — D5's tolerance must be "
+            "derived from the dtype mismatch before comparing, not assumed "
+            "zero (D1)"
+        )
+    if (
+        subset_contract.scale_factor is not None
+        or subset_contract.add_offset is not None
+    ):
+        raise ImergReadContractError(
+            "the subset response is PACKED (scale_factor/add_offset present) "
+            "— D5's tolerance must be derived from the packing before "
+            "comparing, not assumed zero (D1)"
+        )
+    return 0.0
+
+
+def _first_disagreement(a: Sequence[float], b: Sequence[float]) -> int:
+    """The index of the first differing element, or the shorter length."""
+    for i, (x, y) in enumerate(zip(a, b, strict=False)):
+        if x != y:
+            return i
+    return min(len(a), len(b))
+
+
+def assert_subset_coordinates_match(
+    *,
+    archive_lat: tuple[float, ...],
+    archive_lon: tuple[float, ...],
+    subset_contract: ImergSubsetReadContract,
+) -> None:
+    """D5 step 1 — the coordinate vectors, compared EXACTLY and in order,
+    before anything reads a precipitation value. ⛔ No tolerance: D1's whole
+    point is that a subset service's own grid must not pass."""
+    for label, archive_vector, subset_vector in (
+        ("lat", archive_lat, subset_contract.lat_vector),
+        ("lon", archive_lon, subset_contract.lon_vector),
+    ):
+        if archive_vector != subset_vector:
+            raise ImergSubsetCoordinateMismatchError(
+                f"the subset response's {label} vector does not match the "
+                f"archive route's own slice over the frozen box (D5): "
+                f"{len(subset_vector)} subset value(s) vs "
+                f"{len(archive_vector)} archive value(s), first disagreement "
+                f"at index {_first_disagreement(archive_vector, subset_vector)} "
+                "— stop and report rather than comparing values across "
+                "different places"
+            )
+
+
+def cross_check_subset_against_archive(
+    *,
+    archive_path: Path,
+    data_root: Path,
+    client: ImergSubsetHttpClient,
+) -> SubsetCrossCheckReport:
+    """D5 — T2: fetch (or reuse) the OPeNDAP subset for the granule already
+    held via the archive route, and compare cell for cell over the frozen
+    `STUDY_BOX`. ⛔ Not parameterised over an arbitrary box (fixer review,
+    finding 2): D1 pins ONE box, and the T2 gate this function IS must
+    compare against exactly that box, never a caller-supplied one. ⛔ The
+    coordinate VECTORS are compared first and exactly — "all cells match" is
+    only indirect evidence of alignment."""
+    import h5py
+
+    box = STUDY_BOX
+    archive_filename = archive_path.name
+    archive_contract = observe_read_contract(archive_path, filename=archive_filename)
+    granule, _revision = parse_granule_filename(archive_filename)
+    lon_start, lon_stop = subset_box_indices(
+        archive_contract.lon_vector, low=box[1], high=box[3]
+    )
+    lat_start, lat_stop = subset_box_indices(
+        archive_contract.lat_vector, low=box[2], high=box[0]
+    )
+    subset_path = acquire_subset_granule(
+        granule,
+        archive_filename=archive_filename,
+        client=client,
+        data_root=data_root,
+        lon_bounds=(lon_start, lon_stop),
+        lat_bounds=(lat_start, lat_stop),
+    )
+    subset_contract = observe_subset_read_contract(
+        subset_path, archive_filename=archive_filename
+    )
+    archive_lat = tuple(archive_contract.lat_vector[lat_start : lat_stop + 1])
+    archive_lon = tuple(archive_contract.lon_vector[lon_start : lon_stop + 1])
+    # (fixer round 3, finding MINOR 2) — D5 step 1, BEFORE a single
+    # precipitation value is read: the coordinate vectors ARE the
+    # station-mapping invariant, values are only indirect evidence. Comparing
+    # them last let a mismatched grid reach the value comparison — or raise a
+    # raw numpy broadcasting error — before the gate that exists to catch it
+    # ever fired.
+    assert_subset_coordinates_match(
+        archive_lat=archive_lat,
+        archive_lon=archive_lon,
+        subset_contract=subset_contract,
+    )
+    with h5py.File(archive_path, "r") as f:
+        archive_precip = f["Grid"]["precipitation"]  # type: ignore[index]
+        archive_attrs = archive_precip.attrs
+        # (fixer review, finding 3) — verify the ARCHIVE side's own
+        # dtype/packing too, not only the subset side: D5's tolerance is
+        # derived assuming BOTH grids are unpacked float32, and the archive
+        # contract has never recorded these attributes to check them itself.
+        archive_is_packed = (
+            "scale_factor" in archive_attrs or "add_offset" in archive_attrs
+        )
+        if archive_is_packed:
+            raise ImergReadContractError(
+                "the archive route's precipitation is PACKED (scale_factor/"
+                "add_offset present) — D5's tolerance assumes an unpacked "
+                "archive side; refusing to compare without a tolerance "
+                "derived for this encoding (D1)"
+            )
+        archive_dtype = str(archive_precip.dtype)  # type: ignore[attr-defined]
+        if archive_dtype != EXPECTED_SUBSET_DTYPE:
+            raise ImergReadContractError(
+                f"the archive route's precipitation dtype {archive_dtype!r} != "
+                f"the expected unpacked {EXPECTED_SUBSET_DTYPE!r} — D5's "
+                "tolerance assumes matching unpacked encodings on both sides (D1)"
+            )
+        lon_slice = slice(lon_start, lon_stop + 1)
+        lat_slice = slice(lat_start, lat_stop + 1)
+        archive_slice = archive_precip[0, lon_slice, lat_slice]  # type: ignore[index]
+        archive_box = np.asarray(archive_slice, dtype=np.float64)
+    with h5py.File(subset_path, "r") as f:
+        subset_values = np.asarray(f["precipitation"][:], dtype=np.float64)[0]  # type: ignore[index]
+
+    tolerance = subset_cross_check_tolerance(subset_contract=subset_contract)
+    max_abs_diff = float(np.max(np.abs(archive_box - subset_values)))
+    return SubsetCrossCheckReport(
+        lat_exact_match=archive_lat == subset_contract.lat_vector,
+        lon_exact_match=archive_lon == subset_contract.lon_vector,
+        max_abs_diff=max_abs_diff,
+        tolerance=tolerance,
+        values_within_tolerance=max_abs_diff <= tolerance,
+    )
+
+
+def assert_subset_cross_check_passed(report: SubsetCrossCheckReport) -> None:
+    """D5 — ⛔ a mismatch STOPS the plan; report it rather than adjusting the
+    tolerance to pass, which is precisely why the tolerance is frozen before
+    the comparison runs."""
+    if not report.passed:
+        raise ImergReadContractError(
+            "D5 subset/archive cross-check FAILED — stop and report rather "
+            f"than adjusting the tolerance to pass: {report}"
+        )
+
+
+def run_subset_cross_check(
+    *,
+    archive_path: Path,
+    data_root: Path,
+    client: ImergSubsetHttpClient,
+) -> SubsetCrossCheckReport:
+    """D5 — T2's ONE production entry point (fixer review round 2, finding 3
+    — MAJOR). `cross_check_subset_against_archive` alone RETURNS a failed
+    report on a mismatch rather than raising — a caller that forgets to check
+    `.passed` would silently continue past D5's hard stop, which is exactly
+    what the plan forbids ("a mismatch ends the plan rather than starting
+    T3"). This is the only function any T2 caller should use: it computes the
+    report and enforces the gate itself before ever returning one, so the gate
+    cannot be bypassed by calling the lower-level function directly.
+    ⛔ D5's required ORDERING (coordinates before values) is now EXECUTED,
+    not merely implied: `cross_check_subset_against_archive` calls
+    `assert_subset_coordinates_match` immediately after reading both
+    contracts and before it opens either precipitation array (fixer round 3,
+    finding MINOR 2). `ImergSubsetReadContract.__post_init__`'s own exact
+    lat/lon pin is a second, independent gate against the FROZEN box; the
+    cross-check gate is against the ARCHIVE's own slice."""
+    report = cross_check_subset_against_archive(
+        archive_path=archive_path, data_root=data_root, client=client
+    )
+    assert_subset_cross_check_passed(report)
+    return report
 
 
 # --- storage layout ---
@@ -599,7 +2304,11 @@ class ImergAcquisitionManifest(BaseModel):
     requested: int
     retrieved: int
     missing: tuple[str, ...] = ()
-    """ISO timestamps of granules requested but absent (404) from the archive."""
+    """ISO timestamps of granules requested but not obtained: absent (404)
+    from the archive, or unretrievable after the pacer exhausted its attempts
+    (each attempt bounded by `DEFAULT_SUBSET_REQUEST_DEADLINE_SECONDS`). ⛔ A
+    gap either way — the record never fabricates, scales or fills one — but
+    the run report's `failed` count is what separates the two causes."""
     granule_checksums: dict[str, str] = {}
     granule_retrieved_at: dict[str, datetime] = {}
     retrospective: bool
@@ -640,19 +2349,31 @@ def _write_acquisition_manifest_locked(
                 f"({'; '.join(violations[:3])}) — the permanent record must "
                 "never be downgraded (D10)"
             )
-        revised = sorted(
-            name
-            for name, sha in manifest.granule_checksums.items()
-            if name in existing.granule_checksums
-            and existing.granule_checksums[name] != sha
-        )
-        if revised:
-            raise ImergStorageError(
-                f"re-download checksum(s) for {revised[:5]} "
-                f"({len(revised)} granule(s)) disagree with the retained "
-                f"COMPLETE acquisition manifest at {path} — GES DISC revised "
-                "the archive; resolve that before replacing the record (D10)"
+        # D2/D10 (fixer round 3, finding MAJOR 2) — the revision guard is
+        # SAME-ROUTE ONLY. Raw storage is keyed by the ARCHIVE filename on both
+        # routes, so an archive record and a subset record of the same granule
+        # share every key while NECESSARILY carrying different bytes: an
+        # 8 MB global HDF5 against a 25 KB OPeNDAP `.dap.nc4`. Comparing them
+        # made a legitimate route switch look exactly like a GES DISC archive
+        # revision and refused it. ⛔ A real route change is not waved through:
+        # `route` is part of the identity content, so the orphan guard below
+        # still refuses to strand any published bundle, and the completeness
+        # check above still refuses a downgrade.
+        if existing.route == manifest.route:
+            revised = sorted(
+                name
+                for name, sha in manifest.granule_checksums.items()
+                if name in existing.granule_checksums
+                and existing.granule_checksums[name] != sha
             )
+            if revised:
+                raise ImergStorageError(
+                    f"re-download checksum(s) for {revised[:5]} "
+                    f"({len(revised)} granule(s)) disagree with the retained "
+                    f"COMPLETE acquisition manifest at {path} — GES DISC "
+                    "revised the archive; resolve that before replacing the "
+                    "record (D10)"
+                )
     if existing is not None and acquisition_record_identity_content(
         manifest
     ) != acquisition_record_identity_content(existing):
@@ -708,29 +2429,56 @@ def read_acquisition_manifest(path: Path) -> ImergAcquisitionManifest | None:
 _READ_CONTRACT_FIELDS: frozenset[str] = frozenset(
     ImergReadContract.__dataclass_fields__
 )
+_SUBSET_READ_CONTRACT_FIELDS: frozenset[str] = frozenset(
+    ImergSubsetReadContract.__dataclass_fields__
+)
+
+#: D2 — route -> the frozen contract class it must satisfy. ⛔ Route DISPATCH,
+#: not a shared/relaxed contract: a route absent here is unrecognised, never
+#: silently accepted.
+_KNOWN_ROUTES: frozenset[str] = frozenset((ROUTE, SUBSET_ROUTE))
+_CONTRACT_FIELDS_BY_ROUTE: dict[str, frozenset[str]] = {
+    ROUTE: _READ_CONTRACT_FIELDS,
+    SUBSET_ROUTE: _SUBSET_READ_CONTRACT_FIELDS,
+}
+_CONTRACT_CLASS_BY_ROUTE: dict[
+    str, type[ImergReadContract] | type[ImergSubsetReadContract]
+] = {
+    ROUTE: ImergReadContract,
+    SUBSET_ROUTE: ImergSubsetReadContract,
+}
 
 
 def read_contract_violations(
-    raw: dict[str, object], *, granule_revision: str
+    raw: dict[str, object], *, granule_revision: str, route: str
 ) -> tuple[str, ...]:
-    """D1 — a recorded contract must SATISFY the frozen contract, not merely
-    carry its field NAMES: a record whose every value read "recorded" derived
-    as COMPLETE under a presence-only check. ⛔ `ImergReadContract` is the
-    judge (the JSON round-trip turns its tuples into lists)."""
-    if set(raw) != set(_READ_CONTRACT_FIELDS):
+    """D1/D2 — a recorded contract must SATISFY the frozen contract for ITS
+    OWN recorded route, not merely carry SOME contract's field names: a
+    record whose every value read "recorded" derived as COMPLETE under a
+    presence-only check, and a record naming one route while carrying the
+    OTHER route's contract shape must not pass either. The contract class for
+    `route` is the judge (the JSON round-trip turns its tuples into lists)."""
+    expected_fields = _CONTRACT_FIELDS_BY_ROUTE.get(route)
+    if expected_fields is None:
+        return (f"route {route!r} is not a recognised IMERG route (D2)",)
+    if set(raw) != set(expected_fields):
         return (
-            f"read_contract fields {sorted(raw)} != D1's "
-            f"{sorted(_READ_CONTRACT_FIELDS)}",
+            f"read_contract fields {sorted(raw)} != the {route!r} route's "
+            f"{sorted(expected_fields)}",
         )
+    contract_cls = _CONTRACT_CLASS_BY_ROUTE[route]
     try:
-        contract = ImergReadContract(
+        contract = contract_cls(
             **{  # type: ignore[arg-type]
                 key: tuple(value) if isinstance(value, list) else value
                 for key, value in raw.items()
             }
         )
     except (ImergReadContractError, TypeError, ValueError) as exc:
-        return (f"read_contract does not satisfy the D1 read contract: {exc}",)
+        return (
+            f"read_contract does not satisfy the D1 read contract for the "
+            f"{route!r} route: {exc}",
+        )
     if contract.granule_revision != granule_revision:
         return (
             f"read_contract granule_revision {contract.granule_revision!r} != "
@@ -747,11 +2495,16 @@ def pinned_provenance_violations(
     box: tuple[int, ...],
     retrospective: bool,
 ) -> tuple[str, ...]:
-    """D1/D7 — the pins every IMERG record must carry, checked identically by
-    the record and by the bundle's predicate. ⛔ Constants, never parameters."""
+    """D1/D2/D7 — the pins every IMERG record must carry, checked identically
+    by the record and by the bundle's predicate. ⛔ Constants, never
+    parameters — except `route`, which is now one of TWO known constants
+    (D2), never an arbitrary string."""
     v: list[str] = []
-    if route != ROUTE:
-        v.append(f"route {route!r} != {ROUTE!r}")
+    if route not in _KNOWN_ROUTES:
+        v.append(
+            f"route {route!r} is not one of the known IMERG routes "
+            f"{sorted(_KNOWN_ROUTES)}"
+        )
     if collection_short_name != COLLECTION_SHORT_NAME:
         v.append(f"collection {collection_short_name!r} != {COLLECTION_SHORT_NAME!r}")
     if granule_revision != PINNED_GRANULE_REVISION_PER_PLAN:
@@ -852,7 +2605,9 @@ def acquisition_completeness_violations(
     )
     v.extend(
         read_contract_violations(
-            manifest.read_contract, granule_revision=manifest.granule_revision
+            manifest.read_contract,
+            granule_revision=manifest.granule_revision,
+            route=manifest.route,
         )
     )
     if manifest.retrieved != len(manifest.granule_checksums):
@@ -921,40 +2676,38 @@ class RealImergHttpClient:
     no credential appears in this module."""
 
     timeout_seconds: float = 60.0
-
-    @staticmethod
-    def _raise_for_status(status: int, *, url: str) -> None:
-        """One status ladder: 404 missing (D4 counts it), 401/403 credentials
-        (exit 2), 5xx retryable."""
-        if status == 404:  # noqa: PLR2004 - HTTP status literal
-            raise ImergGranuleMissingError(f"not found: {url}")
-        if status in (401, 403):
-            raise ImergCredentialsError(
-                f"Earthdata Login rejected {url} (status {status})"
-            )
-        if status >= 500:  # noqa: PLR2004 - HTTP status literal
-            raise ImergTransientError(f"{url} returned status {status}")
-        if status != 200:  # noqa: PLR2004 - HTTP status literal
-            raise ImergRequestFailedError(f"{url} returned unexpected status {status}")
+    session: requests.Session | None = None
+    """D3.3 — `None` uses the calling thread's `earthdata_session()`; a test
+    injects a double to prove every call goes through ONE reused session."""
 
     def list_directory(self, url: str) -> str:
         import requests
 
         try:
-            response = requests.get(url, timeout=self.timeout_seconds)
+            response = _session_for(self.session).get(url, timeout=self.timeout_seconds)
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to list {url}: {exc}") from exc
-        self._raise_for_status(response.status_code, url=url)
+        _raise_for_http_status(
+            response.status_code,
+            url=url,
+            retry_after=response.headers.get("Retry-After"),
+        )
         return response.text
 
     def download_to_path(self, *, url: str, target: Path) -> None:
         import requests
 
         try:
-            response = requests.get(url, timeout=self.timeout_seconds, stream=True)
+            response = _session_for(self.session).get(
+                url, timeout=self.timeout_seconds, stream=True
+            )
         except requests.RequestException as exc:
             raise ImergTransientError(f"failed to download {url}: {exc}") from exc
-        self._raise_for_status(response.status_code, url=url)
+        _raise_for_http_status(
+            response.status_code,
+            url=url,
+            retry_after=response.headers.get("Retry-After"),
+        )
         try:
             with target.open("wb") as fh:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -1119,6 +2872,365 @@ def retrieve_window(
     return report, frozen, checksums
 
 
+# --- T3: the SUBSET-route window runner (D2/D3) ---
+
+#: D3.1 — the fixed cadence between successful GES DISC requests. One second
+#: is not a measurement, it is a POLICY choice: at 105,216 granules it caps
+#: the run at ~1 req/s (~29 h) against a service that publishes no documented
+#: rate limit, and `Retry-After` handling (D3.2) is what adapts if GES DISC
+#: disagrees. ⛔ Overridable per run, never per granule.
+#: 🔴 With `--subset-workers` > 1 this is the GLOBAL cap, enforced inside
+#: `RequestPacer._take_slot`: the peak rate a run can reach is
+#: `1 / interval` NO MATTER how many workers it has, so raising the worker
+#: count buys latency hiding, never a higher request rate.
+DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS = 1.0
+
+#: How many of a DAY's granules are fetched at once. ⛔ Conservative on
+#: purpose: 1 is the serial behaviour the 48-granule trial measured, so the
+#: default changes nothing and concurrency is something a run asks for.
+#:
+#: Why it is worth asking for: the trial measured 2.394 s per granule of GES
+#: DISC round-trip for a ~25 KB body (~10.7 kB/s) — LATENCY-bound, because
+#: GES DISC subsets server-side, so the window's cost is wall-clock waiting
+#: rather than bandwidth. Overlapping those waits is the only lever, and the
+#: shared `RequestPacer` keeps the request RATE fixed while they overlap.
+#:
+#: ⛔ Concurrency is WITHIN a day, never across days. Days run in order, each
+#: after its ONE directory listing (D3.4) — that structure is what keeps D3.4
+#: true by construction rather than by a check, and it is why the request
+#: count stays the number this design exists to keep honest. Parallel days
+#: would race to list the same directory.
+DEFAULT_SUBSET_WORKERS = 1
+
+
+def granule_starts_between(start: datetime, end: datetime) -> list[datetime]:
+    """The inclusive half-hour starts of an EXPLICIT `[start, end]` bound.
+    ⛔ There is no default bound and no continuation past `end`: a run covers
+    exactly what its caller stated, so a trial day can never quietly become a
+    window."""
+    if not granule_start_in_window(start) or not granule_start_in_window(end):
+        raise ImergInvalidRequestError(
+            f"[{start.isoformat()}, {end.isoformat()}] is not a half-hour "
+            f"aligned UTC range inside the pinned D5 window "
+            f"[{FIRST_GRANULE_START.isoformat()}, {LAST_GRANULE_START.isoformat()}]"
+        )
+    if start > end:
+        raise ImergInvalidRequestError(
+            f"granule window start {start.isoformat()} is after its end "
+            f"{end.isoformat()}"
+        )
+    starts: list[datetime] = []
+    current = start
+    while current <= end:
+        starts.append(current)
+        current += timedelta(minutes=30)
+    return starts
+
+
+def group_granule_starts_by_day(starts: Sequence[datetime]) -> list[list[datetime]]:
+    """D3.4 — the day directory is listed once per DAY, so the runner walks
+    days and then granules, never granules alone."""
+    grouped: dict[str, list[datetime]] = {}
+    for start in sorted(starts):
+        grouped.setdefault(start.strftime("%Y-%j"), []).append(start)
+    return list(grouped.values())
+
+
+def resolve_day_filenames(
+    day_starts: Sequence[datetime], *, client: ImergHttpClient, pacer: RequestPacer
+) -> dict[datetime, str]:
+    """D3.4 — ONE directory listing per day, resolving every granule of that
+    day from it. ⛔ `acquire_granule` lists the day directory once per GRANULE,
+    and does it BEFORE checking whether the file is already on disk, so a
+    105,216-granule window would have issued 105,216 listings on top of its
+    downloads — which is why 105,216 counts data requests, not HTTP traffic.
+    A start absent from the listing is simply absent from the result: the
+    caller records it as a gap and ⛔ never fills it."""
+    directory_url = ImergGranuleId(start=day_starts[0]).directory_url()
+    listing = pacer.run(lambda: client.list_directory(directory_url))
+    resolved: dict[datetime, str] = {}
+    for start in day_starts:
+        try:
+            resolved[start] = resolve_granule_filename(
+                listing, ImergGranuleId(start=start)
+            )
+        except ImergGranuleMissingError:
+            continue
+    return resolved
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SubsetWindowRetrievalReport:
+    """T3 — what a subset-route run actually did, in BOTH units D3 cares
+    about: granules and requests. `reused` is derived from whether the pacer
+    issued a request, not from a flag the acquisition returns, so a cache hit
+    that secretly re-fetched could not be reported as a reuse."""
+
+    requested: int
+    retrieved: int
+    reused: int
+    missing: tuple[str, ...]
+    total_bytes: int
+    requests_issued: int
+    rate_limited: int
+    min_request_gap_seconds: float | None = None
+    """The SMALLEST gap the run actually left between two request starts —
+    its measured PEAK rate, from the one shared limiter. ⛔ Reported rather
+    than derived from the configured interval: with N workers "we set an
+    interval" and "we honoured it globally" are different claims, and only
+    this one is a measurement."""
+    failed: int = 0
+    """How many of `missing` are there because the pacer EXHAUSTED its
+    attempts rather than because GES DISC does not hold the granule. ⛔ Both
+    are gaps in the record, but they are not the same finding: a non-zero
+    `failed` says the run met the request deadline repeatedly and its gaps
+    deserve a re-run before anyone reads them as absent data."""
+
+
+@dataclass
+class _CountingSubsetClient:
+    """ONE per granule task: `calls == 0` is how the run tells a reused
+    artifact from a fetched one. ⛔ Not a before/after delta on the SHARED
+    pacer's counter, which is what the serial loop used: under N workers that
+    delta attributes other workers' requests to this granule and would report
+    a fetch as a reuse. The property the delta bought — that the reuse count
+    comes from whether the CLIENT was called, never from a flag the
+    acquisition returns — is preserved exactly."""
+
+    client: ImergSubsetHttpClient
+    calls: int = 0
+
+    def fetch_subset(self, *, url: str, constraint: str) -> bytes:
+        self.calls += 1
+        return self.client.fetch_subset(url=url, constraint=constraint)
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _SubsetGranuleOutcome:
+    """What one worker did with one granule. ⛔ Deliberately inert: every
+    decision the acquisition record depends on — freezing the contract,
+    checksumming, counting — is taken by the caller in GRANULE-START order,
+    never in completion order."""
+
+    start: datetime
+    filename: str
+    path: Path | None
+    reused: bool
+    exhausted: bool
+
+
+def _fetch_one_subset(
+    start: datetime,
+    *,
+    filename: str,
+    client: ImergSubsetHttpClient,
+    data_root: Path,
+    lon_bounds: tuple[int, int],
+    lat_bounds: tuple[int, int],
+) -> _SubsetGranuleOutcome:
+    """One worker's whole job. ⛔ It catches exactly the two typed failures the
+    serial loop turned into gaps and NOTHING else: anything further —
+    `ImergReadContractError` above all — escapes into the `Future` and is
+    re-raised by the caller, still fatal, still at a deterministic point in
+    the day's order. Catching more here would turn a route/grid disagreement
+    into a silent gap, which is the wrong retrieval D1 and D5 exist to stop."""
+    counting = _CountingSubsetClient(client=client)
+    try:
+        path = acquire_subset_granule(
+            ImergGranuleId(start=start),
+            archive_filename=filename,
+            client=counting,
+            data_root=data_root,
+            lon_bounds=lon_bounds,
+            lat_bounds=lat_bounds,
+        )
+    except ImergGranuleMissingError:
+        return _SubsetGranuleOutcome(
+            start=start, filename=filename, path=None, reused=False, exhausted=False
+        )
+    except ImergRetriesExhaustedError as exc:
+        # ⛔ ONE stalled granule must not kill a 105,216-granule run. Pre-
+        # deadline this propagated and aborted the window: the trial's 1,971 s
+        # stall succeeded on its retry, but a granule that stalls on EVERY
+        # attempt would have ended the run with everything after it
+        # unattempted. It is a gap instead — Plan 220's rule — and ⛔ nothing
+        # fills it.
+        log.warning(
+            "imerg.acquire.subset_granule_unretrievable",
+            granule=start.isoformat(),
+            filename=filename,
+            error=str(exc),
+        )
+        return _SubsetGranuleOutcome(
+            start=start, filename=filename, path=None, reused=False, exhausted=True
+        )
+    return _SubsetGranuleOutcome(
+        start=start,
+        filename=filename,
+        path=path,
+        reused=counting.calls == 0,
+        exhausted=False,
+    )
+
+
+def retrieve_subset_window(
+    granule_starts: Sequence[datetime],
+    *,
+    client: ImergHttpClient,
+    subset_client: ImergSubsetHttpClient,
+    data_root: Path,
+    clock: Callable[[], datetime],
+    sleep: Callable[[float], None],
+    interval_seconds: float = DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS,
+    workers: int = DEFAULT_SUBSET_WORKERS,
+    monotonic: Callable[[], float] | None = None,
+) -> SubsetWindowRetrievalReport:
+    """D2/D3 — retrieve exactly `granule_starts` through the OPeNDAP SUBSET
+    route: each day's filenames resolved ONCE (D3.4), every request paced and
+    retried through one `RequestPacer` (D3.1/D3.2) over one reused session per
+    worker thread (D3.3), already-valid artifacts reused rather than
+    re-fetched, and gaps recorded AS gaps (Plan 220: a gap is data, a wrong
+    retrieval is not — ⛔ nothing here scales, fills or interpolates one).
+    Writes the permanent acquisition manifest with `route=SUBSET_ROUTE` (D2)
+    whenever at least one granule was obtained. ⛔ It iterates the caller's
+    explicit set and stops: there is no default window and no continuation.
+
+    `workers` fetches that many of a DAY's granules at once — the route is
+    latency-bound (2.394 s measured for a ~25 KB body), so overlap is the only
+    lever. ⛔ Three properties concurrency would otherwise break, and does not:
+      1. the cadence and any 429 backoff are GLOBAL, in the one shared
+         `RequestPacer` (see `_take_slot`), so N workers are not N req/s;
+      2. days stay strictly ordered and each is listed once, so D3.4 holds
+         STRUCTURALLY rather than by a check;
+      3. the record is folded in GRANULE-START order, never completion order,
+         so two identical runs write a byte-identical manifest whatever order
+         the network answered in — the record is identity-bearing and its
+         digest is compared.
+    ⚠️ A fatal error (a contract violation) still aborts the run, but the rest
+    of ITS OWN day has already been submitted and is awaited before the
+    exception leaves the pool: the abort is bounded by a day, not by a
+    granule. Everything after that day is never attempted."""
+    if workers < 1:
+        raise ImergInvalidRequestError(
+            f"workers must be at least 1, got {workers} — a run with no worker "
+            "would issue no request at all"
+        )
+    starts = sorted(granule_starts)
+    pacer = RequestPacer(
+        sleep=sleep, interval_seconds=interval_seconds, monotonic=monotonic
+    )
+    paced_client = PacedSubsetClient(client=subset_client, pacer=pacer)
+    lon_bounds, lat_bounds = subset_box_index_bounds()
+    requested = 0
+    retrieved = 0
+    reused = 0
+    failed = 0
+    total_bytes = 0
+    missing: list[str] = []
+    checksums: dict[str, str] = {}
+    retrieved_at: dict[str, datetime] = {}
+    frozen: ImergSubsetReadContract | None = None
+    # ⛔ ONE pool for the whole run, not one per day: a worker thread's
+    # Earthdata session (D3.3) is bound to the thread, so a per-day pool would
+    # pay a cold redirect chain 2,192 times over instead of `workers` times.
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="imerg-subset"
+    ) as pool:
+        for day_starts in group_granule_starts_by_day(starts):
+            filenames = resolve_day_filenames(day_starts, client=client, pacer=pacer)
+            pending: dict[datetime, Future[_SubsetGranuleOutcome]] = {
+                start: pool.submit(
+                    _fetch_one_subset,
+                    start,
+                    filename=filename,
+                    client=paced_client,
+                    data_root=data_root,
+                    lon_bounds=lon_bounds,
+                    lat_bounds=lat_bounds,
+                )
+                for start in day_starts
+                if (filename := filenames.get(start)) is not None
+            }
+            # ⛔ `day_starts` order, NOT `as_completed`: everything below
+            # writes the permanent record.
+            for start in day_starts:
+                requested += 1
+                future = pending.get(start)
+                if future is None:
+                    missing.append(start.isoformat())
+                    continue
+                outcome = future.result()
+                if outcome.path is None:
+                    # ⛔ A gap for a 404 and a gap for an exhausted retry are
+                    # both gaps, but only the second says the run met the
+                    # request deadline repeatedly and deserves a re-run.
+                    missing.append(start.isoformat())
+                    failed += int(outcome.exhausted)
+                    continue
+                contract = observe_subset_read_contract(
+                    outcome.path, archive_filename=outcome.filename
+                )
+                if frozen is None:
+                    frozen = contract
+                else:
+                    assert_subset_contract_consistent(contract, frozen=frozen)
+                # ⛔ Keyed by the ARCHIVE filename on BOTH routes (the permanent
+                # record's own convention), while the checksum is of the SUBSET
+                # bytes — that pairing is exactly what makes a route switch
+                # distinguishable from an archive revision.
+                checksums[outcome.filename] = checksum_file(outcome.path)
+                retrieved_at[outcome.filename] = clock()
+                retrieved += 1
+                total_bytes += outcome.path.stat().st_size
+                reused += int(outcome.reused)
+    report = SubsetWindowRetrievalReport(
+        requested=requested,
+        retrieved=retrieved,
+        reused=reused,
+        missing=tuple(sorted(missing)),
+        total_bytes=total_bytes,
+        requests_issued=pacer.requests_issued,
+        rate_limited=pacer.rate_limited,
+        min_request_gap_seconds=pacer.min_issue_gap_seconds,
+        failed=failed,
+    )
+    if frozen is not None:
+        write_acquisition_manifest(
+            ImergAcquisitionManifest(
+                route=SUBSET_ROUTE,
+                collection_short_name=COLLECTION_SHORT_NAME,
+                granule_revision=frozen.granule_revision,
+                requested_window_start=starts[0],
+                requested_window_end=starts[-1],
+                box=STUDY_BOX,
+                read_contract=frozen.as_manifest_dict(),
+                requested=requested,
+                retrieved=retrieved,
+                missing=tuple(missing),
+                granule_checksums=checksums,
+                granule_retrieved_at=retrieved_at,
+                retrospective=True,
+                generated_at=clock(),
+            ),
+            acquisition_manifest_path(data_root),
+        )
+    log.info(
+        "imerg.acquire.subset_window_complete",
+        route=SUBSET_ROUTE,
+        requested=report.requested,
+        retrieved=report.retrieved,
+        reused=report.reused,
+        missing=len(report.missing),
+        failed=report.failed,
+        total_bytes=report.total_bytes,
+        requests_issued=report.requests_issued,
+        rate_limited=report.rate_limited,
+        workers=workers,
+        min_request_gap_seconds=report.min_request_gap_seconds,
+    )
+    return report
+
+
 # --- D10 disk projection ---
 
 
@@ -1165,6 +3277,45 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "ISO 8601 UTC half-hour timestamp to probe (default: the most "
             "recently likely-available granule, now minus 5 hours)."
+        ),
+    )
+    # --- T3: the SUBSET-route window run. ⛔ BOTH bounds are REQUIRED and
+    # have NO default: the retrieval covers exactly the stated range, so a
+    # later run must state its own rather than inherit a trial's.
+    parser.add_argument(
+        "--subset-window-start",
+        type=str,
+        default=None,
+        help=(
+            "ISO 8601 UTC half-hour start of a SUBSET-route retrieval "
+            "(requires --subset-window-end; no default — the bound is always "
+            "stated explicitly)."
+        ),
+    )
+    parser.add_argument(
+        "--subset-window-end",
+        type=str,
+        default=None,
+        help="ISO 8601 UTC half-hour end of the SUBSET-route retrieval, inclusive.",
+    )
+    parser.add_argument(
+        "--request-interval-seconds",
+        type=float,
+        default=DEFAULT_SUBSET_REQUEST_INTERVAL_SECONDS,
+        help=(
+            "D3.1 cadence between successive GES DISC requests — the GLOBAL "
+            "cap: the peak rate is 1/interval however many workers run."
+        ),
+    )
+    parser.add_argument(
+        "--subset-workers",
+        type=int,
+        default=DEFAULT_SUBSET_WORKERS,
+        help=(
+            "How many of a DAY's granules to fetch at once (default "
+            f"{DEFAULT_SUBSET_WORKERS} = serial). The route is latency-bound, "
+            "so this hides waiting; it does NOT raise the request rate, which "
+            "--request-interval-seconds caps globally."
         ),
     )
     return parser
@@ -1253,9 +3404,39 @@ def _nearest_existing_ancestor(path: Path) -> Path:
 #: Ordered subclass-first, mirroring `imerg_extract._EXIT_BY_ERROR`: the
 #: per-subclass exit codes the error docstrings promise are HONORED, not
 #: merely documented. A raw `OSError` never reaches the typed hierarchy.
+#:
+#: ⚠️ (2026-09-02) — exit **6 means PERMANENT: do not retry**. A supervising
+#: loop cannot read exit 3 that way, because 3 is the WHOLE
+#: `ImergAcquisitionError` family and MEASURED over one 308-attempt run it
+#: covered a frozen-contract violation (permanent), an out-of-window bound
+#: (permanent) AND an `ImergRetriesExhaustedError` (genuinely transient — a
+#: re-run of that same day succeeded). A retry loop that treated 3 as fatal
+#: would stop on a recoverable failure; one that treated it as transient burned
+#: 200 attempts x 60 s on a contract violation. ⇒ The PERMANENT classes get
+#: their own code and 3 keeps its meaning unchanged for everything else.
+#:
+#: ⚠️ "Retryable" HERE means retryable BY THE EXTERNAL SUPERVISOR — a re-run of
+#: the CLI — not by `RequestPacer.run`, whose in-run loop retries only
+#: `ImergTransientError`. See that method's docstring: the two sets differ, and
+#: exit 3 is the right answer for both because a re-run resumes from the banked
+#: granules rather than restarting the window.
+#:
+#: 🔴 The split is by REPAIRABILITY, not by class family, and BOTH directions
+#: matter. `ImergMalformedArtifactError` is a contract failure a re-download
+#: CAN repair, so it stays 3 even though its parent is 6 — otherwise ONE
+#: truncated HTTP-200 body would permanently abort a 30-hour window run, which
+#: is worse than the retry waste this split exists to stop.
+#: `ImergPermanentRequestError` is a request failure NO retry can repair (the
+#: OPeNDAP 400 of Plan 225 D4), so it is 6 even though its parent is 3.
 _EXIT_BY_ERROR: tuple[tuple[type[Exception], int], ...] = (
     (ImergCredentialsError, 2),
     (ImergStorageError, 5),
+    # ⛔ STRICTLY BEFORE its parent: unreadable bytes are the one contract
+    # failure a re-download CAN repair, so they keep the retryable 3.
+    (ImergMalformedArtifactError, 3),
+    (ImergReadContractError, 6),
+    # covers `ImergInvalidRequestError`, its caller-argument subclass.
+    (ImergPermanentRequestError, 6),
     (ImergAcquisitionError, 3),
     (OSError, 5),
 )
@@ -1268,10 +3449,64 @@ def _exit_code_for(exc: Exception) -> int:
     return 1
 
 
+def _run_subset_window(args: argparse.Namespace, **kwargs: object) -> None:
+    """T3's CLI path: an EXPLICIT `[start, end]` bound, retrieved through the
+    subset route. ⛔ Separate from the probe path, and reached only when both
+    bounds were given."""
+    starts = granule_starts_between(
+        parse_cli_utc_timestamp(args.subset_window_start),
+        parse_cli_utc_timestamp(args.subset_window_end),
+    )
+    report = retrieve_subset_window(
+        starts,
+        client=kwargs.get("client") or RealImergHttpClient(),  # type: ignore[arg-type]
+        subset_client=kwargs.get("subset_client") or RealImergSubsetHttpClient(),  # type: ignore[arg-type]
+        data_root=args.data_root,
+        clock=kwargs.get("clock") or (lambda: datetime.now(UTC)),  # type: ignore[arg-type]
+        sleep=kwargs.get("sleep") or __import__("time").sleep,  # type: ignore[arg-type]
+        interval_seconds=args.request_interval_seconds,
+        workers=args.subset_workers,
+    )
+    log.warning(
+        "imerg.acquire.cli.subset_window_stop",
+        message=(
+            "the SUBSET-route retrieval covered exactly the requested bound "
+            "and stopped; any further range is a separate, explicitly "
+            "bounded run"
+        ),
+        requested=report.requested,
+        retrieved=report.retrieved,
+        reused=report.reused,
+        missing=len(report.missing),
+        total_bytes=report.total_bytes,
+        requests_issued=report.requests_issued,
+        rate_limited=report.rate_limited,
+        failed=report.failed,
+        workers=args.subset_workers,
+        min_request_gap_seconds=report.min_request_gap_seconds,
+    )
+
+
 def main(argv: list[str] | None = None, **kwargs: object) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_cli_logging()
+    if bool(args.subset_window_start) != bool(args.subset_window_end):
+        parser.error(
+            "--subset-window-start and --subset-window-end are given together "
+            "or not at all — a half-stated bound is never completed by a default"
+        )
+    if args.subset_window_start:
+        try:
+            _run_subset_window(args, **kwargs)
+        except (ImergAcquisitionError, OSError, ValueError) as exc:
+            log.error(
+                "imerg.acquire.cli.failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return _exit_code_for(exc)
+        return 0
     granule_start = (
         parse_cli_utc_timestamp(args.granule_start)
         if args.granule_start
