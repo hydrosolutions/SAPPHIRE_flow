@@ -3,8 +3,8 @@ status: DRAFT
 created: 2026-08-31
 plan: 226
 title: The daily models label calendar-day quantities with wall-clock instants — and two paths they depend on are already broken
-scope: Anchor the daily models' valid_times to the calendar day they actually predict, and fix the two pre-existing defects that make anchoring meaningless without them (hindcast lookback by rows, skill's unresampled observation join). Restores the combined forecast that Plan 222 takes dark.
-depends_on: [222]
+scope: Anchor the daily models' valid_times to the calendar day they actually predict. ANCHORING ONLY — P1 and P2 were fixed and shipped by Plan 228; the recompute they imply belongs to Plan 235. Restores the combined forecast that Plan 222 takes dark.
+depends_on: [222, 228]
 blocks: []
 source: 2026-08-31 — split out of Plan 222 after two review rounds showed the anchoring half rests on pre-existing brokenness
 ---

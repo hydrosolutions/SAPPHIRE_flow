@@ -47,7 +47,14 @@ flood threshold is set on" — silently receives a mean. For a flood threshold t
 between crossing and not crossing.
 
 Aggregation must be retained keyed by channel (time_step, temporality, product, variable) and
-threaded through training, hindcast, both operational assemblers and scoring. When one assembly
+threaded through training, hindcast, both operational assemblers and scoring.
+
+**This REPLACES Plan 228's flat representation, and preserves its bucket machinery**
+*(family review, 2026-09-03)*. 228 introduced a parameter-keyed aggregation declaration
+(`types/model.py:274`) which is correct as far as it goes but cannot express two channels of the
+same parameter at different time steps or temporalities. This plan replaces that representation
+with a channel-keyed one. It does **not** touch 228's UTC complete-bucket machinery, which stays
+exactly as shipped. When one assembly
 serves several models, **effective** methods must be compared — including defaults, so an explicit
 declaration and an identical default do not read as a conflict, and two genuinely different methods
 are not silently merged.
@@ -64,12 +71,12 @@ Today's models self-slice (`tail(7)`), so Plan 228's reported defect is genuinel
 invariant is not enforced where the contract places it, and a model that consumes its whole frame
 would get whatever it was handed.
 
-### A3 — hindcasts are attributed to the wrong artifact when the run id is omitted
+### A3 — MOVED to Plan 235
 
-`flows/compute_skills.py:104,150` and `services/onboarding.py:109,156` fetch unfiltered histories,
-so old-artifact predictions can be scored and published under a new artifact, and rerun duplicates
-double-weighted. `HindcastStore` has no `model_artifact_id` filter
-(`store/hindcast_store.py:138`).
+Artifact/run attribution was originally recorded here. The family review (2026-09-03) assigned it
+**solely to Plan 235**, which owns run scoping across all three handoffs
+(`flows/compute_skills.py:85-116`, `:226`, `services/onboarding.py:157`). One defect, one owner —
+two plans specifying it invited two different implementations.
 
 ## Non-goals
 
@@ -77,6 +84,8 @@ double-weighted. `HindcastStore` has no `model_artifact_id` filter
 - Re-opening Plan 228's D1-D4 or its shipped fix.
 - The skill natural-key and phase-validation defects — those stayed in Plan 228 because that branch
   introduced them.
+- Run/artifact attribution (the former A3) and anything about skill score generations — **Plan 235**.
+- Plan 228's UTC complete-bucket machinery, which this plan preserves unchanged.
 
 ## Exit gates
 

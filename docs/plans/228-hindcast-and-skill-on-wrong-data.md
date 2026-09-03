@@ -536,3 +536,88 @@ it was piped through. A `tail`-truncated run reported success over these very tw
 ### ⛔ Still forbidden
 
 Do not touch the mac-mini.
+
+## Implementation status (2026-09-02, fourth round) — both failing tests closed, both were fixture bugs
+
+Diagnosed before fixing, per this run's scope:
+
+1. **`test_computes_skills_for_all_target_parameters`.** `tests/unit/flows/test_train_models.py`
+   declares module-level `_EPOCH` twice — 2025-03-01 (line 44, immediately shadowed, otherwise
+   unused) and 2025-01-01 (line 122, the value every other test in the file reads). This test's
+   `clock = lambda: _EPOCH` resolved to the second, later-defined value (2025-01-01), which
+   **predates** the Feb-2025 hindcasts `_seed_hindcasts_and_obs` seeds. Against that clock, the
+   review fixer round's completed-bucket filter in `_resample_observations_to_forecast_step`
+   correctly excluded every observation bucket as not-yet-elapsed, so nothing was scored. **Test
+   fixture bug, not a defect in the filter** — the filter did exactly what a `now` chronologically
+   before its data should make it do. Fixed by giving the test an explicit clock (2025-03-01) after
+   every seeded valid time, instead of the shared, since-shadowed `_EPOCH`.
+2. **`test_mixed_time_step_history_degrades_gracefully`.** The injected daily-cadence hindcast was
+   dated 2025-02-01 (valid time 2025-02-02) — **after** the test's `clock()` (`_EPOCH` = 2025-01-15).
+   The same completed-bucket filter correctly excluded that bucket; `partition_by_time_step_and_
+   phase` produced both cohorts correctly, but the daily cohort's one observation had not "happened"
+   yet relative to the clock exercising it. **Test fixture bug**, not a cohort-selection defect —
+   `compute_skills_task` does not silently drop one cohort in favor of another. Fixed by dating the
+   fixture 2025-01-01 (valid time 2025-01-02), well before `_EPOCH`.
+
+Neither fix touched `partition_by_time_step_and_phase`, `observation_fetch_bounds`, or the
+completed-bucket rule. Per this run's explicit diagnostic requirement, `compute_skill_for_station`
+now logs a `structlog` WARNING distinguishing "observations exist but no bucket has elapsed yet"
+(`skill.compute_skill_for_station.no_elapsed_observation_buckets`) from "resampled buckets exist but
+none matched a forecast `valid_time`" (`skill.compute_skill_for_station.no_matching_strata`) — so a
+real recompute that silently stores zero rows is diagnosable from logs, not indistinguishable from a
+clean run with nothing to score.
+
+`uv run pytest tests/unit` — pytest's own exit status checked directly (not through a pipe) — green.
+`ruff check`/`ruff format --check` clean; pyright ratchet 394 <= 400 (unchanged). Full detail:
+`docs/decisions/plan-228-hindcast-skill-resampling.md` § "Per-run scope round (2026-09-02, fourth)".
+Still outstanding, unchanged: D3's marking-superseded + recompute remain gated on the mac-mini's
+onboarding/hindcasting run finishing — nothing in this round touched that system.
+
+## ⛔ PER-RUN SCOPE (2026-09-03) — ONE change, then this plan is done
+
+An independent design check (2026-09-03) found the proposed "bump `computation_version` per
+recompute" fix **unsafe**, and its consequences are now **Plan 235**. This plan takes only the piece
+that makes its own migration deployable.
+
+### The one change: a PARTIAL unique index
+
+Migration 0052 currently builds a plain unique index over rows that already violate it. Under 0051
+a nullable `model_artifact_id` was compared raw, so PostgreSQL treated every `NULL` as distinct and
+the live database legitimately accumulated repeated pooled/BMA rows. `CREATE UNIQUE INDEX` will
+**fail on deploy** against the mac-mini's ~115,000 scores.
+
+Make both unique indexes **partial**, applying only to `computation_version >= 2` — the cutoff this
+plan already defines as the boundary of valid data. This grandfathers the known-invalid legacy
+generation, **deletes nothing**, and enforces the corrected NULL-safe key for everything written
+from now on.
+
+**⚠️ It also opens a hole that must be closed in the same change** *(family review, 2026-09-03)*.
+A partial index on `>= 2` removes 0051's uniqueness protection from **future v1 writes**, and those
+are reachable: the store accepts an arbitrary `SkillScore.computation_version` under an unrestricted
+`ON CONFLICT DO NOTHING` (`store/skill_store.py:31`), and `docs/standards/cicd.md:184` requires
+one-version schema compatibility — so a **previous image rolled back onto the new schema can still
+emit v1**. Either reject writes below the current version at the store boundary, or keep a second
+partial index covering `< 2` with 0051's raw-NULL shape. Whichever is chosen, this plan's existing
+"also prevent further writes at the legacy version" claim must become true rather than aspirational.
+
+**Do NOT** restore the destructive `DELETE`. **Do NOT** implement generation identity, latest-
+generation filtering, retention, or the `hindcast_run_id` requirement — all four are Plan 235.
+
+**Locking tests:** (1) a real-PostgreSQL upgrade test seeded with repeated NULL-artifact rows at the
+legacy version, proving the migration completes and the old rows survive; (2) a test that a v1 write
+is rejected — or still deduplicated — after the cut, covering the rollback path above.
+
+**Also correct a false statement in migration 0051's own docstring** *(family review)*: it says
+migration 0016 dropped `computation_version` from the natural key, but `0008`'s original unique
+index never contained it (`alembic/versions/0008_add_constraints_indexes_columns.py:50`). 0051 adds
+it for the first time; the docstring should say so.
+
+### ⛔ Then STOP
+
+After this, Plan 228 is complete. **NONE of its D3 may be executed until Plan 235 lands — including
+the marking, not just the recompute** *(family review, 2026-09-03)*. Marking first would strip every
+current, trustworthy result without publishing a replacement, because supersession is not yet atomic
+and cannot touch diagrams (`store/skill_store.py:185-203`). Mark-and-replace is one operation and it
+belongs to 235.
+
+Do not touch the mac-mini.
