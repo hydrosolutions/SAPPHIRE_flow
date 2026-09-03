@@ -60,6 +60,15 @@ _LOG_PATH = Path(
 _ERA5_VAR = "total_precipitation"
 _IFS_VAR = "tp"
 
+# Radiation variables (owner request 2026-09-03) — measured available for HRU
+# 12300 on that date. Probed over the SAME windows as the `tp` /
+# `total_precipitation` controls, so any divergence is attributable to the
+# VARIABLE rather than to the window or the date. Availability is not the
+# question here; STABILITY over time is, which is what accumulating these in
+# the JSONL answers.
+_IFS_RADIATION_VARS = ("ssr", "str")
+_ERA5_RADIATION_VARS = ("surface_net_solar_radiation", "surface_net_thermal_radiation")
+
 
 def _load_key() -> str:
     key_file = os.environ.get("RECAP_API_KEY_FILE")
@@ -222,6 +231,56 @@ def main() -> int:
             include_provenance=True,
         ),
     )
+
+    # 6) IFS radiation — mirrors (3)'s shape exactly (fc, run_hour 0, run-0 and
+    #    run-1), so (3)'s `tp` records are a same-window control for these.
+    for ifs_var in _IFS_RADIATION_VARS:
+        for n in (0, 1):
+            rd = today - timedelta(days=n)
+            _probe(
+                run_ts,
+                f"ifs_forecast_{ifs_var}_run-{n}",
+                {
+                    "run_date": rd.isoformat(),
+                    "ifs_type": "fc",
+                    "run_hour": 0,
+                    "variable": ifs_var,
+                },
+                lambda v=ifs_var, d=rd: client.ecmwf.ifs_forecast(
+                    variable=v,
+                    run_date=d,
+                    hru_code=_HRU,
+                    ifs_type="fc",
+                    run_hour=0,
+                    level_type="sfc",
+                    horizon_days=15,
+                    include_provenance=True,
+                ),
+            )
+
+    # 7) ERA5 radiation, probed BEHIND the lag edge (t-12..t-8) so it normally
+    #    SUCCEEDS. (2)'s to-today window is EXPECTED to fail past the edge and
+    #    would say nothing about radiation stability. `_ERA5_VAR` is probed over
+    #    the identical window as the control.
+    era5_start = today - timedelta(days=12)
+    era5_end = today - timedelta(days=8)
+    for era5_var in (_ERA5_VAR, *_ERA5_RADIATION_VARS):
+        _probe(
+            run_ts,
+            f"era5_behind_edge_{era5_var}",
+            {
+                "start": era5_start.isoformat(),
+                "end": era5_end.isoformat(),
+                "variable": era5_var,
+            },
+            lambda v=era5_var: client.ecmwf.era5_land_reanalysis(
+                variable=v,
+                start_date=era5_start,
+                end_date=era5_end,
+                hru_code=_HRU,
+                include_provenance=True,
+            ),
+        )
 
     sys.stdout.write(f"# recap probe cycle complete -> {_LOG_PATH}\n")
     return 0
