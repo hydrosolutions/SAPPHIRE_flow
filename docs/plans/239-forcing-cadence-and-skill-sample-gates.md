@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-04
 plan: 239
 title: Deliver each model its declared resolution (specify first — 3 attempts refuted), and make skill scores state their basis
@@ -13,7 +13,7 @@ source: 2026-09-04 — a scoped onboarding trial (nwp_rainfall_runoff, 2020-2026
 
 ## Status
 
-**DRAFT.** Was READY; returned to DRAFT 2026-09-04 after three refuted implementation attempts — T0 (specify the check) is now a prerequisite. T2 is independent and buildable.
+**READY.** Owner confirmed 2026-09-04 after the T0 specification landed.
 
 ## ⛔ DO NOT OVER-ENGINEER — binding on this plan AND on every reviewer
 
