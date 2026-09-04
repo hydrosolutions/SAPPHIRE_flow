@@ -295,6 +295,18 @@ function parseManifest(context) {
   }
 }
 
+function readyPlanNeedsContract(context) {
+  if (!context || context.inspectionExitCode !== 1 ||
+      typeof context.inspectionRawOutput !== 'string' ||
+      utf8Bytes(context.inspectionRawOutput).length > MANIFEST_MAX_BYTES) return false
+  try {
+    const manifest = JSON.parse(context.inspectionRawOutput)
+    return manifest.status === 'READY' && manifest.valid === false && Array.isArray(manifest.diagnostics)
+  } catch (_error) {
+    return false
+  }
+}
+
 function usable(report) {
   if (!report || report.reviewerFailed !== false || !Array.isArray(report.findings)) return false
   const ids = report.findings.map((finding) => finding.id)
@@ -528,7 +540,15 @@ const context = await agent(
 )
 
 const manifest = parseManifest(context)
-if (!manifest || !asSha(context.headSha)) return stopResult('PLAN_INCOMPLETE: context manifest is invalid')
+if (!context || !asSha(context.headSha)) {
+  return stopResult('PLAN_INCOMPLETE: context manifest or git state is invalid')
+}
+if (!manifest && readyPlanNeedsContract(context)) {
+  return stopResult(
+    'PLAN_CONTRACT_REQUIRED: set a legacy or malformed READY plan to DRAFT, normalize its Tasks and Exit gates, run plan review, and obtain fresh owner confirmation',
+  )
+}
+if (!manifest) return stopResult('PLAN_INCOMPLETE: context manifest or git state is invalid')
 const tasks = manifest.tasks
 const exitGates = manifest.exitGates
 if (context.worktreeStatus.trim().length > 0) {

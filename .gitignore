@@ -31,7 +31,7 @@ src/sapphire_flow/data/__pycache__/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
-sapphire-flow-*-codex-review.md
+/sapphire-flow-*-codex-review.md
 
 # Config overlays — ignore gitignored local operator tweaks, keep .gitkeep tracked
 config/overlays/local/*

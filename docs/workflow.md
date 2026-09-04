@@ -177,12 +177,11 @@ and risk class.
   result binds them to the reviewed document fingerprint. Task and gate identities
   must exactly match the validated manifest. A missing reviewer yields
   `REVIEW_INCOMPLETE`.
-- `confirm` receives the prior packet and owner dispositions. The same two
-  perspectives check only accepted fixes, disposition rationales, and
-  contradictions or regressions in the changed area. The prior reviewed
-  fingerprint remains the old evidence anchor while a separately validated
-  current fingerprint identifies the corrected plan. It is not a fresh audit
-  and runs once.
+- `confirm` receives the prior packet and owner dispositions. Because the compact
+  packet deliberately carries no prior plan text, the same two perspectives
+  review the complete current plan once while rechecking prior findings and
+  dispositions. The prior and current fingerprints remain separate evidence
+  anchors; neither is presented as a text delta.
 
 Each finding has a stable per-report ID, severity, exact location, violated
 contract, and smallest sufficient correction. A blocker or major is admissible
@@ -236,6 +235,13 @@ proportional to the risk it removes.
 
 An implementer's “done” claim is evidence, not approval. Every READY-plan task
 receives independent evidence and no task may be selected as merely “key.”
+
+Legacy READY plans are migrated only when selected for implementation: set the
+plan to DRAFT, normalize its existing work into the task fields and single Exit
+gates fence above without expanding scope, run `plan` review, and obtain fresh
+owner confirmation. `implement` returns `PLAN_CONTRACT_REQUIRED` when a selected
+READY plan lacks that structure. This keeps old plans visible without weakening
+evidence requirements or forcing a bulk rewrite.
 
 The `implement` workflow has two modes:
 
@@ -320,7 +326,7 @@ a tool as follows:
 
 | Policy stage | Tool | Where it lives |
 |---|---|---|
-| Plan review and confirmation — **default** | **`plan` workflow** — one read-only Claude+Codex review, owner dispositions, and at most one delta confirmation | `.claude/workflows/plan.js` |
+| Plan review and confirmation — **default** | **`plan` workflow** — one read-only Claude+Codex review, owner dispositions, and at most one complete confirmation review | `.claude/workflows/plan.js` |
 | Interactive plan stress-test / surface design forks | `grill-me` skill | `.claude/skills/grill-me/` |
 | READY-plan implementation — **default** | **`implement` workflow** — every task evidenced, one independent full verification per candidate, one Claude+Codex review, owner disposition, and at most one confirmation repair; hold-at-PR | `.claude/workflows/implement.js` |
 | Vision → ordered, human-approved milestone list (WF1) | `vision-decompose` skill | skill |

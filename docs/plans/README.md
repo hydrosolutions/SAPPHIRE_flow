@@ -39,6 +39,11 @@ behavior changes—the **Pre-change** failure that the same evidence exposes. Us
 `N/A` only for documentation, mechanical, or integration/gate tasks and say why.
 Do not add a separate acceptance-map table or persistent run-state file.
 
+Legacy READY plans are migrated only when selected: return the plan to DRAFT,
+normalize its existing scope into those task fields plus one `## Exit gates`
+command fence, run `plan` review, and obtain fresh owner confirmation. Do not
+bulk-rewrite the backlog or weaken `implement` for old formats.
+
 
 ## Archived by the 2026-08-28 stale-status audit
 
@@ -374,7 +379,7 @@ exit criteria — Plan 212 owns that deeper screening.
   YAML-only readiness, archived status diagnostics, and tagging policy agree. Deliberately leaves
   workflow JavaScript to 232/233 instead of testing behavior that those plans immediately replace.
 - **232** — Lean plan review — `READY` — replace the autonomous five-round planner/reviewer loop with
-  one read-only Claude+Codex default review, explicit owner dispositions, and one delta confirmation.
+  one read-only Claude+Codex default review, explicit owner dispositions, and one complete confirmation.
   Uses existing task IDs as the evidence ledger and removes the Sonnet-only duplicate. Depends on 231;
   blocks 233.
 - **233** — Task-evidenced implementation — `READY` — implement bounded manifest transport,

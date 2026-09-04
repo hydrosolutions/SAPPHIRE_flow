@@ -141,9 +141,9 @@ staleness, or non-fresh required repair returns `NOT_READY` and stops. There is 
 fixer pass. A human may still explicitly accept a documented residual risk under repository policy.
 
 Plan-review confirmation keeps the prior reviewed fingerprint as the old evidence anchor and validates
-the current plan independently. It passes both fingerprints to the delta reviewers and must allow them
-to differ when an owner-disposed fix changed the plan; a changed plan is the normal input to confirmation,
-not a packet-mismatch failure.
+the current plan independently. It passes both fingerprints to the confirmation reviewers and must
+allow them to differ when an owner-disposed fix changed the plan; because no prior plan text is carried,
+the reviewers recheck the complete current plan instead of claiming a text-delta review.
 
 ### D6 — terminal output stays decision-useful
 
@@ -219,6 +219,10 @@ manifest containing:
 
 Inspection rejects duplicate required fields within a task and requires exactly one bash/sh command
 fence in `## Exit gates`; it never silently overwrites or ignores ambiguous contract text.
+
+Existing READY plans that predate this grammar are normalized only when the owner selects them: return
+the plan to DRAFT, preserve its scope while adding the required fields/fence, run plan review, and obtain
+fresh owner confirmation. Do not bulk-rewrite the backlog or admit a weaker legacy evidence mode.
 
 The UTF-8 encoded manifest must not exceed 8,192 bytes. Exceeding that ceiling is an explicit invalid
 inspection result, never truncation. Unit tests measure the largest current active source and the
@@ -349,8 +353,8 @@ behavioral adoption check without pretending source tests simulate the workflow.
 entropy, and their preflight uses the compact deterministic manifest in D9 rather than returning plan
 text through structured output. Exact task and gate evidence remains fingerprint-bound, agent command
 output is capped, and terminal results do not duplicate evidence or internal reports. Plan confirmation
-accepts a separately validated corrected fingerprint while preserving the prior fingerprint for delta
-review. Git tag state is transported as a count and fingerprint. Ambiguous duplicate task fields or
+accepts a separately validated corrected fingerprint while preserving the prior fingerprint, then
+rechecks the complete current plan once. Git tag state is transported as a count and fingerprint. Ambiguous duplicate task fields or
 multiple Exit-gate command fences fail inspection, and valid synthetic scale tests prove manifest
 capacity against the current plan corpus. UTF-8 fingerprinting and byte ceilings use only globals
 available in the workflow sandbox while preserving Python/JavaScript fingerprint parity.

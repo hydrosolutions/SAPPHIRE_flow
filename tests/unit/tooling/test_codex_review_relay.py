@@ -28,7 +28,7 @@ printf '%s\\n' "$last"
 
 
 def _run_relay(
-    prompt: Path, bin_dir: Path, marker: Path
+    prompt: Path, bin_dir: Path, marker: Path, *extra_args: str
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -36,7 +36,7 @@ def _run_relay(
         "CODEX_MARKER": str(marker),
     }
     return subprocess.run(
-        [str(RELAY), str(prompt)],
+        [str(RELAY), str(prompt), *extra_args],
         cwd=REPO_ROOT,
         env=env,
         check=False,
@@ -72,8 +72,23 @@ def test_relay_rejects_empty_or_cleared_prompt_before_codex(tmp_path: Path) -> N
         assert not marker.exists()
 
 
+def test_relay_rejects_extra_codex_arguments_before_invocation(tmp_path: Path) -> None:
+    bin_dir, marker = _fake_codex(tmp_path)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("concise review", encoding="utf-8")
+
+    result = _run_relay(
+        prompt, bin_dir, marker, "--dangerously-bypass-approvals-and-sandbox"
+    )
+
+    assert result.returncode == 64
+    assert "usage:" in result.stderr
+    assert not marker.exists()
+
+
 def test_relay_source_reads_prompt_once() -> None:
     source = RELAY.read_text(encoding="utf-8")
 
     assert 'prompt=$(<"$prompt_file")' in source
     assert '$(cat "$prompt_file")' not in source
+    assert '"$@"' not in source

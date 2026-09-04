@@ -20,17 +20,16 @@
 # version of this script did exactly that and failed its own smoke test). The
 # real signal is the caller's timeout, which surfaces here as a non-zero exit.
 #
-# Usage:  scripts/codex-review.sh <prompt-file> [extra codex args...]
+# Usage:  scripts/codex-review.sh <prompt-file>
 # Exit:   0 with Codex's output on stdout; non-zero on any failure to review.
 set -euo pipefail
 
-if [ "$#" -lt 1 ]; then
-    echo "usage: $0 <prompt-file> [extra codex args...]" >&2
+if [ "$#" -ne 1 ]; then
+    echo "usage: $0 <prompt-file>" >&2
     exit 64
 fi
 
 prompt_file="$1"
-shift
 
 if [ ! -r "$prompt_file" ]; then
     echo "$0: prompt file not readable: $prompt_file" >&2
@@ -52,7 +51,7 @@ fi
 # `< /dev/null` is the whole point — see the header. Output is captured so an
 # empty verdict can be caught even on a zero exit.
 set +e
-output=$(codex exec --sandbox read-only --skip-git-repo-check "$@" \
+output=$(codex exec --sandbox read-only --skip-git-repo-check \
     "$prompt" < /dev/null 2>&1)
 status=$?
 set -e

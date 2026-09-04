@@ -3,7 +3,7 @@ status: READY
 created: 2026-09-02
 plan: 232
 title: Replace iterative plan-review loops with one review and one confirmation
-scope: Make plan review read-only, owner-controlled, and bounded. Use plan tasks as the only completion contract; run one ordinary Claude+Codex review and at most one delta confirmation; retire the duplicate Sonnet-only workflow. Preserve policy-required high-risk review outside this ordinary pair. Do not change implementation orchestration.
+scope: Make plan review read-only, owner-controlled, and bounded. Use plan tasks as the only completion contract; run one ordinary Claude+Codex review and at most one confirmation review; retire the duplicate Sonnet-only workflow. Preserve policy-required high-risk review outside this ordinary pair. Do not change implementation orchestration.
 depends_on: [231]
 blocks: [233]
 source: 2026-09-02 workflow audit, repeated review escalation on small plans, and selected design principles from hydrosolutions/lean-environmental-modeling-orchestration at commit 3ad109f2619d71aef2f94c3da28d2401a1720b44
@@ -87,9 +87,8 @@ discard the two reports through another model.
 
 `plan` has two modes and never edits the plan:
 
-**Review** runs the ordinary pair once and returns the two reports plus the reviewed plan snapshot.
-The snapshot exists only in the returned packet so confirmation can show a real text delta; there is
-no digest, ancestry protocol, or repository sidecar.
+**Review** runs the ordinary pair once and returns the two reports plus a compact plan fingerprint and
+task/gate identity manifest. The packet does not repeat the plan text or add repository sidecars.
 
 The owner then assigns every blocker/major one disposition:
 
@@ -101,10 +100,10 @@ The owner then assigns every blocker/major one disposition:
 Only the owner may choose `accept-risk`; a model never infers it. Accepted risks remain visible in the
 terminal output.
 
-**Confirm** receives the prior reports, snapshot, and owner dispositions. The same perspectives check
-only accepted fixes, disposition rationales, and contradictions/regressions introduced in the
-changed area. It is not a fresh audit and runs once. Retain compact fail-closed start and terminal
-plan-staleness checks against authoritative upstream movement.
+**Confirm** receives the prior reports, fingerprint, and owner dispositions. Since the compact packet
+contains no prior plan text, the same perspectives review the complete current plan once while
+rechecking prior findings and dispositions. Retain compact fail-closed start and terminal plan-staleness
+checks against authoritative upstream movement.
 
 Return `READY`, `NOT_READY`, or `REVIEW_INCOMPLETE` as advice plus any `acceptedRisks`. The owner alone
 sets YAML READY. For high-risk work, `READY` additionally requires the externally commissioned panel
@@ -119,7 +118,7 @@ Claude-only diagnostic cannot be represented as the required review or recommend
 ### D6 — structural guards stay honest and small
 
 Use focused Python source-regression tests only for dangerous anchors: no review loop; no plan writer;
-complete Claude+Codex slots; no mutation before owner action; confirm is delta-scoped; reviewer
+complete Claude+Codex slots; no mutation before owner action; confirm rechecks the current plan once; reviewer
 failure cannot yield READY. These tests do not prove workflow runtime behavior. `node --check` proves
 syntax only. Do not build a JavaScript workflow harness.
 

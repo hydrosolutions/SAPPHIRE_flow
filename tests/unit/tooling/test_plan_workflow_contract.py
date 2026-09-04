@@ -111,15 +111,17 @@ class TestPlanWorkflowContract:
 
         assert "/tmp/sapphire-flow" not in source
         assert "`.claude/sapphire-flow" not in source
-        assert "sapphire-flow-*-codex-review.md" in gitignore
+        assert "/sapphire-flow-*-codex-review.md" in gitignore
         assert "Edit(sapphire-flow-*-codex-review.md)" in settings
         assert "Bash(./scripts/codex-review.sh sapphire-flow-plan-:*)" in settings
 
-    def test_confirmation_is_one_delta_scoped_pass(self) -> None:
+    def test_confirmation_rechecks_the_complete_current_plan_once(self) -> None:
         source = _source()
 
-        assert "not a fresh audit" in source
-        assert "changed area" in source
+        assert "Review the complete current plan again" in source
+        assert "still present anywhere in the current plan" in source
+        assert "not a fresh audit" not in source
+        assert "changed area" not in source
         assert "ownerDispositions" in source
         assert "acceptedRisks" in source
         assert "const acceptedRisks = acceptedPriorFindings()" in source
@@ -165,9 +167,8 @@ class TestPlanWorkflowContract:
         source = _source()
 
         assert "const reviewersComplete" in source
-        assert "reviewersComplete ? 'READY' : 'REVIEW_INCOMPLETE'" in source
-        assert (
-            "if (mode === 'review' && reviewersComplete) recommendation = 'NOT_READY'"
-            in source
-        )
+        assert "let recommendation = 'REVIEW_INCOMPLETE'" in source
+        assert "if (reviewersComplete) {" in source
+        assert "if (mode === 'review' && !planWentStale)" in source
+        assert "if (hasBlocking || planWentStale) recommendation" not in source
         assert "CONFIRM_REQUIRED" in source

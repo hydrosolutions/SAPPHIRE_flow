@@ -141,7 +141,7 @@ class TestImplementWorkflowContract:
 
         assert "/tmp/sapphire-flow" not in source
         assert "`.claude/sapphire-flow" not in source
-        assert "sapphire-flow-*-codex-review.md" in gitignore
+        assert "/sapphire-flow-*-codex-review.md" in gitignore
         assert "Edit(sapphire-flow-*-codex-review.md)" in settings
         assert "Bash(./scripts/codex-review.sh sapphire-flow-implement-:*)" in settings
 
@@ -155,6 +155,17 @@ class TestImplementWorkflowContract:
         assert "const acceptedRisks = acceptedPriorFindings()" in source
         assert "sameFinding" in source
         assert "sameUniqueStrings(dispositionIds, findingIds)" in source
+
+    def test_legacy_ready_plan_has_an_on_demand_migration_path(self) -> None:
+        source = _source()
+        policy = WORKFLOW_POLICY.read_text(encoding="utf-8")
+
+        assert "PLAN_CONTRACT_REQUIRED" in source
+        assert "set a legacy or malformed READY plan to DRAFT" in source
+        assert "readyPlanNeedsContract" in source
+        assert "context.inspectionExitCode !== 1" in source
+        assert "if (!context || !asSha(context.headSha))" in source
+        assert "Legacy READY plans are migrated only when selected" in policy
 
     def test_confirmation_and_git_state_are_bound_fail_closed(self) -> None:
         source = _source()

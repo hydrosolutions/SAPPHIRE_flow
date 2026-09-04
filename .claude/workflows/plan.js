@@ -1,6 +1,6 @@
 export const meta = {
   name: 'plan',
-  description: 'Read-only plan review: one Claude+Codex pair, explicit owner dispositions, and at most one delta confirmation.',
+  description: 'Read-only plan review: one Claude+Codex pair, explicit owner dispositions, and at most one confirmation review.',
   phases: [
     { title: 'Preflight' },
     { title: 'Review' },
@@ -335,9 +335,8 @@ const reviewContext = {
 
 const reviewScope = mode === 'review'
   ? `Review the complete plan against its stated scope and every task contract.`
-  : `This is confirmation, not a fresh audit. Compare the prior fingerprint, current plan, and owner ` +
-    `dispositions. Check only accepted fixes, disposition rationales, and contradictions or regressions ` +
-    `introduced in the changed area.`
+  : `Review the complete current plan again as the single confirmation pass. Recheck prior findings and ` +
+    `owner dispositions, but also report any blocker or major still present anywhere in the current plan.`
 const priorContext = compactPriorReview()
 
 const claudePrompt =
@@ -402,12 +401,14 @@ const staleAtEnd = await agent(
 )
 const planWentStale = stale(staleAtEnd)
 
-let recommendation = reviewersComplete ? 'READY' : 'REVIEW_INCOMPLETE'
-if (mode === 'review' && reviewersComplete) recommendation = 'NOT_READY'
-if (hasBlocking || planWentStale) recommendation = 'NOT_READY'
-const ownerAction = mode === 'review'
-  ? hasBlocking ? 'OWNER_DISPOSITION_REQUIRED' : 'CONFIRM_REQUIRED'
-  : null
+let recommendation = 'REVIEW_INCOMPLETE'
+let ownerAction = null
+if (reviewersComplete) {
+  recommendation = mode === 'review' || hasBlocking || planWentStale ? 'NOT_READY' : 'READY'
+  if (mode === 'review' && !planWentStale) {
+    ownerAction = hasBlocking ? 'OWNER_DISPOSITION_REQUIRED' : 'CONFIRM_REQUIRED'
+  }
+}
 
 return {
   planPath,

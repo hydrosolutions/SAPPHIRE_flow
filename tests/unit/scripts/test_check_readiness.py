@@ -238,6 +238,37 @@ true
             "duplicate fields: Verification" in item for item in manifest["diagnostics"]
         )
 
+    def test_verification_fingerprint_includes_bold_subsections(
+        self, mod: ModuleType, tmp_path: Path
+    ) -> None:
+        plan = tmp_path / "plan.md"
+        verification = "run the check.\n\n**Details:** keep this part of the contract."
+        plan.write_text(
+            f"""---
+status: READY
+---
+## Tasks
+### T1 — Bold subsection
+**Outcome:** result.
+**In:** one file.
+**Out:** other files.
+**Pre-change:** run pre-change.
+**Verification:** {verification}
+## Exit gates
+```bash
+true
+```
+""",
+            encoding="utf-8",
+        )
+
+        is_valid, manifest = mod.inspect_plan(plan)
+
+        assert is_valid is True
+        assert manifest["tasks"][0]["verificationFingerprint"] == mod.fingerprint(
+            verification
+        )
+
     def test_rejects_multiple_exit_gate_fences(
         self, mod: ModuleType, tmp_path: Path
     ) -> None:

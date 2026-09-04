@@ -26,7 +26,9 @@ _CANONICAL_STATUSES = {
 _TASK_HEADING = re.compile(
     r"^###\s+([A-Za-z0-9][A-Za-z0-9._-]*)\s+(?:—|-)\s+.+$", re.MULTILINE
 )
-_FIELD_HEADING = re.compile(r"^\*\*([^*\n]+):\*\*\s*", re.MULTILINE)
+_FIELD_HEADING = re.compile(
+    r"^\*\*(Outcome|In|Out|Pre-change|Verification):\*\*\s*", re.MULTILINE
+)
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:
