@@ -1741,7 +1741,10 @@ def _real_fixture_path(stac_token: str, step: int, variant: str) -> Path:
 
 
 def _skip_unless_real_fixtures() -> None:
-    if not _REAL_FIXTURE_DIR.glob("*.grib2"):
+    # `Path.glob()` returns a generator, which is ALWAYS truthy — the previous
+    # `if not ...glob(...)` could never skip (independent review, Plan 237).
+    # Materialise it so the guard actually guards.
+    if not any(_REAL_FIXTURE_DIR.glob("*.grib2")):
         pytest.skip(f"real fixtures not found at {_REAL_FIXTURE_DIR}")
 
 
@@ -1772,6 +1775,11 @@ def _real_fixture_handler(features: list[dict[str, object]]) -> object:
     exact xarray semantics production hits (Plan 237's "measured" claims
     were reproduced this way, not through the byte-magic fakes the rest of
     this file uses elsewhere)."""
+
+    # Guard here rather than in each test: every caller of this handler needs
+    # the real GRIB fixtures, and without them the tests would fail with a 404
+    # rather than skip (independent review, Plan 237).
+    _skip_unless_real_fixtures()
 
     def handler(request: httpx.Request) -> httpx.Response:
         q = str(request.url)
@@ -1824,7 +1832,7 @@ class TestAssertCycleComplete:
             np.datetime64(datetime(2026, 4, 23, 0, 0), "ns"),
             np.datetime64(datetime(2026, 4, 23, 0, 0), "ns") + np.timedelta64(3, "h"),
         ]
-        _assert_cycle_complete(ds, expected)  # must not raise
+        _assert_cycle_complete(ds, expected, expected_members=range(2))
 
     def test_missing_step_names_it(self) -> None:
         entries = [(m, 0, "tp") for m in range(2)]
@@ -1834,7 +1842,7 @@ class TestAssertCycleComplete:
             np.datetime64(datetime(2026, 4, 23, 0, 0), "ns") + np.timedelta64(3, "h"),
         ]
         with pytest.raises(AdapterError, match="missing valid_time step"):
-            _assert_cycle_complete(ds, expected)
+            _assert_cycle_complete(ds, expected, expected_members=range(2))
 
     def test_missing_member_at_a_present_step_names_it(self) -> None:
         # Step 0 has both members; step 3 has ONLY member 0 — the join="outer"
@@ -1846,7 +1854,29 @@ class TestAssertCycleComplete:
             np.datetime64(datetime(2026, 4, 23, 0, 0), "ns") + np.timedelta64(3, "h"),
         ]
         with pytest.raises(AdapterError, match="wholly missing"):
-            _assert_cycle_complete(ds, expected)
+            _assert_cycle_complete(ds, expected, expected_members=range(2))
+
+    def test_member_absent_from_every_step_names_it(self) -> None:
+        # Independent review (Plan 237): a member absent from EVERY file at EVERY
+        # step never enters the `member` coordinate, so the NaN scan — which
+        # iterates OBSERVED members — could never see it. Only member 0 here;
+        # member 1 is expected but wholly absent from the coordinate.
+        entries = [(0, 0, "tp"), (0, 3, "tp")]
+        ds = self._dataset(entries)
+        expected = [
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns"),
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns") + np.timedelta64(3, "h"),
+        ]
+        with pytest.raises(AdapterError, match="ensemble member.* absent"):
+            _assert_cycle_complete(ds, expected, expected_members=range(2))
+
+    def test_unexpected_extra_step_names_it(self) -> None:
+        # (i) claims SET EQUALITY, so a superset is a contract breach too.
+        entries = [(m, s, "tp") for m in range(2) for s in (0, 3)]
+        ds = self._dataset(entries)
+        expected = [np.datetime64(datetime(2026, 4, 23, 0, 0), "ns")]
+        with pytest.raises(AdapterError, match="unexpected valid_time step"):
+            _assert_cycle_complete(ds, expected, expected_members=range(2))
 
 
 class TestFetchGribFilesDuplicateAssetDedup:

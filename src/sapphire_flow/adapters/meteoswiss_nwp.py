@@ -381,7 +381,9 @@ def _expected_valid_times(
 
 
 def _assert_cycle_complete(
-    ds: xr.Dataset, expected_valid_times: Sequence[np.datetime64]
+    ds: xr.Dataset,
+    expected_valid_times: Sequence[np.datetime64],
+    expected_members: Sequence[int],
 ) -> None:
     """Fail loudly rather than silently store a NaN-filled partial cycle
     (Plan 237 T1 -- "Why de-duplication ALONE makes things worse").
@@ -407,6 +409,32 @@ def _assert_cycle_complete(
             "NWP cycle incomplete: missing valid_time step(s) "
             f"{[str(t) for t in missing_times]} "
             f"(expected {len(expected)} steps, found {len(observed)})"
+        )
+
+    # (iii) EXPECTED members must be present in the coordinate. The NaN scan
+    # below inspects only members that made it into the coordinate, so a member
+    # absent from EVERY file at EVERY step (e.g. ctrl/member 0 never fetched)
+    # would never be examined.
+    observed_members = (
+        {int(m) for m in np.atleast_1d(ds.coords["member"].values)}
+        if "member" in ds.coords
+        else set()
+    )
+    missing_members = sorted(set(int(m) for m in expected_members) - observed_members)
+    if missing_members:
+        raise AdapterError(
+            "NWP cycle incomplete: ensemble member(s) absent from the combined "
+            f"dataset: {missing_members} "
+            f"(expected {len(expected_members)}, found {len(observed_members)})"
+        )
+
+    # (iv) unexpected extra times are also a contract breach -- (i) asserted set
+    # equality, so report a superset rather than silently tolerating it.
+    unexpected_times = sorted(observed - expected)
+    if unexpected_times:
+        raise AdapterError(
+            "NWP cycle malformed: unexpected valid_time step(s) "
+            f"{[str(t) for t in unexpected_times]} not in the requested window"
         )
 
     spatial_dims = tuple(d for d in ds.dims if d not in ("member", "valid_time"))
@@ -1049,8 +1077,12 @@ class MeteoSwissNwpAdapter:
         # individually, group matched datasets by member, concat each group
         # along valid_time (sorted), then concat members.
         datasets: list[xr.Dataset] = []
+        # Parallel to PARAM_GROUPS: did this declared group yield a dataset?
+        _group_parsed: list[bool] = [False] * len(self.PARAM_GROUPS)
         str_paths = [str(p) for p in grib_files]
-        for _stac_token, short_name, type_of_level in self.PARAM_GROUPS:
+        for _group_index, (_stac_token, short_name, type_of_level) in enumerate(
+            self.PARAM_GROUPS
+        ):
             per_file: list[xr.Dataset] = []
             for p in str_paths:
                 try:
@@ -1107,9 +1139,31 @@ class MeteoSwissNwpAdapter:
                 continue
 
             datasets.append(combined)
+            _group_parsed[_group_index] = True
 
         if not datasets:
             raise AdapterError("No parameter groups could be parsed from GRIB2 files")
+        # Plan 237 (independent review): a WHOLLY absent parameter cannot be
+        # detected from `merged.data_vars` -- it simply never appears, so the
+        # NaN scan in `_assert_cycle_complete` would pass on a cycle that lost an
+        # entire variable. Detect it HERE, where the loop still knows which
+        # declared groups produced data. Keyed on the STAC token, not the cfgrib
+        # data_var name: `PARAM_GROUPS` carries the GRIB shortName (`2t`) while
+        # cfgrib exposes the variable as `t2m`, so a data_vars-name comparison
+        # would false-positive on EVERY cycle.
+        if len(datasets) != len(self.PARAM_GROUPS) and self._max_files is None:
+            missing_groups = [
+                token
+                for (token, _short, _lvl), parsed in zip(
+                    self.PARAM_GROUPS, _group_parsed, strict=False
+                )
+                if not parsed
+            ]
+            raise AdapterError(
+                "NWP cycle incomplete: parameter group(s) wholly absent: "
+                f"{missing_groups} (expected {len(self.PARAM_GROUPS)} groups, "
+                f"parsed {len(datasets)})"
+            )
 
         merged = xr.merge(datasets, compat="override")
         merged = convert_raw_dataset(merged)
@@ -1142,7 +1196,9 @@ class MeteoSwissNwpAdapter:
             )
         elif cycle_time is not None and window_end is not None:
             _assert_cycle_complete(
-                merged, _expected_valid_times(cycle_time, window_end)
+                merged,
+                _expected_valid_times(cycle_time, window_end),
+                expected_members=range(_MIN_ENSEMBLE_MEMBERS + 1),
             )
 
         return merged
