@@ -136,6 +136,21 @@ exit criteria — Plan 212 owns that deeper screening.
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 242 landing first.
+- **245** — A time grid is a step AND a phase — `DRAFT, unreviewed` — Nepal Time is
+  UTC+05:45, so an hourly NPT grid and an hourly UTC grid **never share a timestamp**
+  (Nepali `HH:00` = UTC `:15`; a Nepali day runs 18:15 → 18:15 UTC). Converting to UTC
+  does not fix it — conversion relabels instants, it does not move them onto a grid,
+  and afterwards the offset is invisible because everything is nominally UTC. The code
+  treats a time step as a scalar everywhere (`rules_for` matches by equality,
+  `native_step_seconds` is read off the first pair), and `stations.timezone` is carried
+  through four layers and **never read to make a decision**. Declares `TimeGrid(step,
+  phase)`, forbids implicit alignment, and requires a declared resample rather than a
+  shift. **Owner decision: every input series is expected PERIOD-ENDING** — ratifying
+  what M-D3 established for DHM and ERA5-Land, but stating it where an adapter author
+  reads rather than in a research design doc. ⛔ Period convention and timezone phase
+  are independent; conflating them stacks a silent 1-hour error on the 45-minute one.
+  Convention and type only: daily-model anchoring stays Plan 226, aggregation threading
+  stays Plan 234.
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
   alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).

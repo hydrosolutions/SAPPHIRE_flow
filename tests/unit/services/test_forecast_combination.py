@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -1182,13 +1183,18 @@ class TestBuildCombinedForecastsQualityControl:
     def test_water_level_datum_present_out_of_range_values_fail_range_check(
         self,
     ) -> None:
-        """The datum-present case must prove the rule still RUNS, not only
-        that valid shifted values pass: an implementation that skipped
-        `range_check` for every water_level combination -- datum present or
-        absent -- passes the clean-shift test above. Here the DATUM-RELATIVE
-        values (101.0..105.0) sit outside the -2..20 m bounds
+        """The datum-present case must prove the rule still RUNS, and that it
+        runs on DATUM-RELATIVE values -- not only that valid shifted values
+        pass: an implementation that skipped `range_check` for every
+        water_level combination -- datum present or absent -- passes the
+        clean-shift test above. Here the datum-relative values
+        (101.0..105.0) sit outside the -2..20 m bounds
         (`config/forecast_qc_rules.py:149-176`), so the combination must be
-        QC_FAILED with a `range_check` flag."""
+        QC_FAILED with a `range_check` flag -- and the datum provenance
+        `add_forecast_datum_details` stamps on that flag must show the
+        relative values the rule saw, so a datum-ignoring implementation
+        (which would also fail these raw 551.0..555.0 masl values) cannot
+        pass this test."""
         vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2)]
         ens_a = _members_ensemble_at(
             model_id=_MODEL_A, valid_times=vts, n_members=5, parameter="water_level"
@@ -1234,6 +1240,31 @@ class TestBuildCombinedForecastsQualityControl:
         assert len(forecasts) == 1
         assert forecasts[0].qc_status == QcStatus.QC_FAILED
         assert [f.rule_id for f in forecasts[0].qc_flags] == ["range_check"]
+
+        # QC_FAILED plus a `range_check` flag would ALSO be produced by an
+        # implementation that ignored the datum and range-checked the raw
+        # masl values (551.0..555.0, likewise outside -2..20). The datum
+        # provenance `add_forecast_datum_details` appends to the flag detail
+        # is what separates the two: it reports the relative values the rule
+        # actually saw next to the raw ones they came from. Read the fields,
+        # not the whole message, so rewording the flag text stays free.
+        detail = forecasts[0].qc_flags[0].detail
+        assert detail is not None
+        reported = {
+            field: float(value)
+            for field, value in re.findall(
+                r"(raw_min|relative_min|raw_median|relative_median|datum_masl)"
+                r"=(-?\d+(?:\.\d+)?)",
+                detail,
+            )
+        }
+        assert reported == {
+            "raw_min": 551.0,
+            "relative_min": 101.0,
+            "raw_median": 553.0,
+            "relative_median": 103.0,
+            "datum_masl": 450.0,
+        }
 
     def test_water_level_datum_absent_skips_the_datum_dependent_rule(self) -> None:
         """No datum on file: `forecast_skipped_rules` skips `range_check`

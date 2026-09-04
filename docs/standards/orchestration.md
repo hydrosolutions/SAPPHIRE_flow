@@ -179,16 +179,17 @@ for model in station_scoped_models:
     # (station -> next model, group -> dropped, combined -> stored marked failed).
     # NOTE: there is no separate QC filter at the Phase C entry point; that gate
     # partitions by AlertEligibility alone (Plan 242 T3a corrected this claim).
-# rule_set, overrides, baselines batch pre-fetched at flow start
-for station_id, model_ensembles in all_ensembles.items():
-    for model_id, param_ensembles in list(model_ensembles.items()):
-        for param, ensemble in list(param_ensembles.items()):
-            flags = qc_checker.check(ensemble, rule_set, overrides[station_id], baselines[station_id])
-            status = aggregate_qc_status(flags)
-            if status == QcStatus.QC_FAILED:
-                del all_ensembles[station_id][model_id][param]  # filtered from Phase C
+# rule_set, overrides, baselines batch pre-fetched at flow start.
+# QC runs INSIDE assignment execution, not as a pass over all_ensembles:
+#   station  -> run_station_forecast returns AssignmentFailure(QC_FAILED);
+#               the assignment never yields an ensemble, so nothing reaches
+#               all_ensembles and the flow tries the next model by priority.
+#   group    -> run_group_forecast returns no forecast for that station.
+#   combined -> QC'd in build_combined_forecasts, STORED marked QC_FAILED
+#               (Plan 242 OD-1) and excluded from the Forecast Lab (OD-1a).
+#               The combined product is never an alert input either way.
 
-check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010) — QC-failed ensembles already filtered above
+check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010) — partitions by AlertEligibility ONLY; there is no qc_status predicate here
 ```
 
 **Phase 8 implementation notes for Flow 1:**
