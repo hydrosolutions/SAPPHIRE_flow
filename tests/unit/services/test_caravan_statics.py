@@ -44,8 +44,12 @@ class TestResolveCaravanStaticKey:
 
     def test_every_declared_alias_pair_matches_the_plan_table(self) -> None:
         # Plan 155 G8: "Checked against PT's 50: 29 direct + 21 aliased =
-        # 50, zero unresolved." — pin the exact 21-pair table so a future
+        # 50, zero unresolved." — pin the exact pair table so a future
         # edit cannot silently drop or corrupt one.
+        # 2026-09-04: 21 -> 23. `forest_fraction`/`permafrost_fraction` added
+        # for `cmal_small` (78 declared statics; these two were the only ones
+        # unresolved). cmal_pool_pt declares neither, so its resolution is
+        # unchanged.
         expected = {
             "slope": "slp_dg_sav",
             "stream_gradient": "sgr_dk_sav",
@@ -68,6 +72,8 @@ class TestResolveCaravanStaticKey:
             "soil_water_content": "swc_pc_syr",
             "karst_fraction": "kar_pc_sse",
             "irrigated_fraction": "ire_pc_sse",
+            "forest_fraction": "for_pc_sse",
+            "permafrost_fraction": "prm_pc_sse",
         }
         assert expected == CARAVAN_ALIAS
 
