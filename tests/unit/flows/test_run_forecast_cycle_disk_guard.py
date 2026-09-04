@@ -330,9 +330,17 @@ class TestDiskSoftLimitFlowLevel:
 
 
 class TestDiskHardLimitFlowLevel:
-    """DiskHardLimitError from the adapter → flow returns FAILED."""
+    """DiskHardLimitError from the adapter → the flow ABORTS (Plan 237 T2).
 
-    def test_hard_breach_flow_health_is_failed(self) -> None:
+    Until Plan 237 the flow returned `ForecastCycleResult(health=FAILED)`. A hard
+    breach routes through the NWP abort by design (the DiskHardLimitError handler
+    returns None precisely so the nwp_outcome-is-None branch fires), and that
+    branch now raises so Prefect stops reporting a zero-forecast cycle COMPLETED.
+    The CRITICAL DISK_USAGE record is still emitted BEFORE the abort, so the
+    disk alert is unaffected — that is asserted below.
+    """
+
+    def test_hard_breach_aborts_instead_of_returning(self) -> None:
         sid = StationId(uuid4())
         station_store = FakeStationStore()
         obs_store = FakeObservationStore()

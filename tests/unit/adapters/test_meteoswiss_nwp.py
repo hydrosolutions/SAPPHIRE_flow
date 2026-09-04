@@ -2033,7 +2033,41 @@ class TestParseGribFilesRealDuplicateAndCompleteness:
         assert "temperature" in ds.data_vars
         assert ds.sizes["valid_time"] == 2
 
+    def test_incomplete_cycle_parses_silently_without_the_window(
+        self, tmp_path: Path
+    ) -> None:
+        """The fault this assertion closes, demonstrated on THIS code.
+
+        Independent review (Plan 237, diff round 1) found the b1/b2 tests could
+        not serve as the plan's mandatory RED-first proof: run against the parent
+        commit they raise `TypeError` for the added `cycle_time`/`window_end`
+        keywords, which proves only that a signature changed — not that the parent
+        SILENTLY ACCEPTED an incomplete cycle.
+
+        Calling without those keywords reproduces the parent's semantics exactly
+        (the completeness branch is gated on both being non-None), so this test
+        pins the actual pre-change behaviour: a cycle missing an entire step
+        parses to a dataset and returns it, with nothing raised. The very next
+        test feeds the SAME files with the window threaded and asserts it now
+        fails — that pair is the real red/green boundary.
+        """
+        _skip_unless_real_fixtures()
+        adapter = _make_adapter(
+            httpx.MockTransport(lambda _req: httpx.Response(404)),  # type: ignore[arg-type]
+            tmp_path,
+        )
+        files = [
+            _real_fixture_path("tot_prec", 0, "ctrl"),
+            _real_fixture_path("tot_prec", 0, "perturb"),
+            _real_fixture_path("t_2m", 0, "ctrl"),
+            _real_fixture_path("t_2m", 0, "perturb"),
+        ]
+        # No cycle_time/window_end => the completeness check cannot run.
+        ds = adapter._parse_grib_files(files)
+        assert ds.sizes["valid_time"] == 1  # one step, silently accepted
+
     def test_missing_entire_step_names_it(self, tmp_path: Path) -> None:
+        _skip_unless_real_fixtures()
         adapter = _make_adapter(
             httpx.MockTransport(lambda _req: httpx.Response(404)),  # type: ignore[arg-type]
             tmp_path,
@@ -2054,6 +2088,7 @@ class TestParseGribFilesRealDuplicateAndCompleteness:
     def test_missing_perturb_only_at_a_present_step_names_it(
         self, tmp_path: Path
     ) -> None:
+        _skip_unless_real_fixtures()
         # Step 0 is a full 21-member cycle; step 1 has ONLY the ctrl file
         # (no perturb) — exactly the production shape (09-02T18/09-03T18:
         # duplicates/gaps were perturb-only). Check (i) alone would pass
@@ -2081,6 +2116,7 @@ class TestParseGribFilesRealDuplicateAndCompleteness:
     def test_complete_cycle_with_window_threaded_does_not_raise(
         self, tmp_path: Path
     ) -> None:
+        _skip_unless_real_fixtures()
         # Control: step 0 alone IS complete (both variants, 21 members) —
         # the completeness assertion must not fire on a genuinely full
         # window.
@@ -2105,9 +2141,37 @@ class TestParseGribFilesCompletenessSkippedWithMaxFiles:
     T1) — the completeness assertion must be skipped, and say why, rather
     than misfire on a deliberately-truncated smoke-test fetch."""
 
+    def test_wholly_absent_parameter_group_names_it(self, tmp_path: Path) -> None:
+        """A parameter absent from EVERY file aborts (independent review round 1).
+
+        This branch cannot live in `_assert_cycle_complete`: a wholly missing
+        variable never enters `ds.data_vars`, so a name comparison there would see
+        nothing to complain about. It also cannot compare `data_vars` against
+        `PARAM_GROUPS` names — those carry the GRIB shortName (`2t`) while cfgrib
+        exposes `t2m`, which would fail EVERY healthy cycle. So the parse loop
+        reports which declared groups produced no data at all.
+        """
+        _skip_unless_real_fixtures()
+        adapter = _make_adapter(
+            httpx.MockTransport(lambda _req: httpx.Response(404)),  # type: ignore[arg-type]
+            tmp_path,
+        )
+        # tot_prec only — the t_2m group yields nothing.
+        files = [
+            _real_fixture_path("tot_prec", 0, "ctrl"),
+            _real_fixture_path("tot_prec", 0, "perturb"),
+        ]
+        with pytest.raises(AdapterError, match="parameter group.* wholly absent"):
+            adapter._parse_grib_files(
+                files,
+                cycle_time=_REAL_CYCLE,
+                window_end=_REAL_CYCLE,
+            )
+
     def test_max_files_set_skips_completeness_and_logs_reason(
         self, tmp_path: Path
     ) -> None:
+        _skip_unless_real_fixtures()
         client = httpx.Client(
             transport=httpx.MockTransport(lambda _req: httpx.Response(404)),
             base_url="https://dummy",
