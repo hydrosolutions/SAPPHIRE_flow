@@ -118,7 +118,7 @@ class TestHorizonDeclarationSurvivesTheAdapter:
                 "mean_temperature": _future(semantics=fi.HorizonSemantics.EXACT),
             }
         )
-        resolved = resolve_required_steps(adapter, _MODEL_ID, 15, opt_in={_MODEL_ID: 5})
+        resolved = resolve_required_steps(adapter, _MODEL_ID, 15)
         assert resolved.source == "declared"
         assert resolved.steps == 15
 
@@ -138,13 +138,14 @@ class TestHorizonDeclarationSurvivesTheAdapter:
         assert resolved.source == "model_at_most"
         assert resolved.steps == 4
 
-    def test_undeclared_model_still_falls_through_to_the_provider_opt_in(self) -> None:
-        # The interim table must keep working for a model that declares nothing —
-        # this is what stops Plan 241 T3 from breaking cmal_pool_pt.
+    def test_undeclared_model_stays_strict(self) -> None:
+        # A model that says nothing is never silently truncated (rung 2 = strict).
+        # Before Plan 241 T3 this fell through to a provider-side opt-in table; that
+        # table existed only because the declaration could not reach the resolver.
         adapter = _adapter({"precipitation": _future()})
-        resolved = resolve_required_steps(adapter, _MODEL_ID, 15, opt_in={_MODEL_ID: 5})
-        assert resolved.source == "provider_opt_in"
-        assert resolved.steps == 5
+        resolved = resolve_required_steps(adapter, _MODEL_ID, 15)
+        assert resolved.source == "declared"
+        assert resolved.steps == 15
 
     def test_fi_default_exact_is_not_treated_as_a_declaration(self) -> None:
         """🔴 The landmine this projection had to dodge.
@@ -163,12 +164,7 @@ class TestHorizonDeclarationSurvivesTheAdapter:
         adapter = _adapter({"precipitation": undeclared})
         # Projected as "no declaration", NOT as EXACT.
         assert adapter.data_requirements.declared_horizon_semantics is None  # type: ignore[attr-defined]
-        # ...so the interim opt-in is still reachable.
-        resolved = resolve_required_steps(adapter, _MODEL_ID, 15, opt_in={_MODEL_ID: 5})
-        assert resolved.source == "provider_opt_in"
-
-    def test_undeclared_model_with_no_opt_in_stays_strict(self) -> None:
-        adapter = _adapter({"precipitation": _future()})
-        resolved = resolve_required_steps(adapter, _MODEL_ID, 15, opt_in={})
+        # ...so it stays STRICT rather than being read as an explicit EXACT.
+        resolved = resolve_required_steps(adapter, _MODEL_ID, 15)
         assert resolved.source == "declared"
         assert resolved.steps == 15
