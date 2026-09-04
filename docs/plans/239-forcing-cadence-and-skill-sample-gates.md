@@ -2,8 +2,8 @@
 status: DRAFT
 created: 2026-09-04
 plan: 239
-title: Two silent-data gates — hindcast forcing cadence, and skill sample size
-scope: Add a cadence backstop to the hindcast FORCING path (Plan 228 fixed only observations), and make skill scores state what they actually rest on (minimum-sample gate + covered-vs-requested eval window). Two small guards against silently-wrong numbers. No new subsystem, no change to how skill is computed.
+title: Deliver the declared time step (both directions), and make skill scores state their basis
+scope: Guarantee every model receives the time step it DECLARED — aggregate when data is finer, fail loudly when it is coarser (currently silent) — across hindcast and training; and make skill scores state what they actually rest on (n<30 marked, eval period = the span actually used). Two small guards against silently-wrong numbers. No new subsystem, no change to how skill is computed.
 depends_on: [228]
 blocks: []
 source: 2026-09-04 — a scoped onboarding trial (nwp_rainfall_runoff, 2020-2026) surfaced both: forcing is never cadence-checked, and 23.5% of the run's 67,326 skill scores rest on n<30 while their eval_period claims 6.7 years
@@ -56,6 +56,29 @@ no backstop to catch it.
 `_V0_AGGREGATION_FALLBACK`). **The backstop matters more than the resample**: it must fail LOUDLY
 rather than silently ship raw rows.
 
+### D1b — the rule is "deliver the DECLARED step", and it fails in BOTH directions
+
+**Owner correction (2026-09-04): not every model is daily.** Some declare sub-daily steps, so the
+requirement is not "aggregate to daily" — it is **give each model exactly the cadence it declared**.
+That has two failure directions, and only one of them is currently handled.
+
+**Downsampling (data finer than the model) works.** Hourly forcing → daily model aggregates
+correctly, precipitation summed and temperature averaged.
+
+**Upsampling (data COARSER than the model) fails SILENTLY — verified 2026-09-04:**
+
+    5 DAILY rows, model declares time_step = 1 hour
+      -> resample_to_time_step returns 5 ROWS, unchanged, no error, no warning
+      -> a 5-day span at hourly cadence should be ~120 rows
+
+`group_by_dynamic(every="1h")` on daily input simply puts each daily row in its own hourly bucket.
+The model then receives 5 rows spaced 24 h apart and treats them as 5 consecutive hours — it believes
+it has 5 hours of history when it has 5 days. **This is the exact mirror of the Plan 228 bug** (which
+read raw 10-minute rows as days), and it is live for any sub-daily model the moment one is assigned.
+
+**Upsampling must fail loudly.** Coarse data cannot be invented into fine data, so there is no
+correct silent behaviour — the only options are refuse, or fabricate. Refuse.
+
 ## D2 — skill scores do not say what they rest on
 
 `skill_scores` already records `sample_size` (NOT NULL) and `eval_period_start`/`eval_period_end`, so
@@ -77,23 +100,29 @@ failure shape as the dead-man reporting green off stale rows: the number is not 
 loses information and would collide with Plan 235's recompute-identity work. State the basis; let the
 consumer decide.
 
-## Open questions the owner owns
+## Owner decisions — ANSWERED 2026-09-04
 
-- **Q1:** the minimum-sample threshold, and what happens at it — record a flag/`freshness`-style
-  marker on the row (recommended), or emit a pipeline-health WARNING, or both?
-- **Q2:** should `eval_period_*` become the COVERED window, or should a separate covered-window pair
-  be added alongside the requested one? Overwriting is smaller; adding preserves "what was asked".
-  **Recommendation: overwrite**, because the requested window is already implicit in the run's params
-  and the stored value's only real consumer question is "what does this score rest on?"
-- **Q3:** does D1 also apply to the TRAINING path, or is `services/training_data.py` already covered?
-  It owns `resample_to_time_step`, but this plan has not verified its call sites.
+- **Q1 — minimum-sample threshold: 30.** Scores below it are RETAINED and MARKED, never suppressed.
+- **Q2 — `eval_period_*` becomes the period the score was ACTUALLY CALCULATED FROM**, not the period
+  requested. ("Optimally, we'd store the period from which the scores are calculated.")
+- **Q3 — YES, the training path is in scope**, on the same basis as hindcast: verify its
+  `resample_to_time_step` call sites and give it the same both-directions guard.
 
 ## Phases
 
-### T1 — forcing cadence backstop (D1)
+### T1 — deliver the declared step, in both directions (D1 + D1b)
 `services/hindcast.py`: route `forcing_df` through `resample_to_time_step` +
-`validate_time_step_cadence`, mirroring the `obs_df` block Plan 228 added. Red-first test: hourly
-forcing into a daily model must FAIL LOUDLY, not silently deliver 24 rows as one step.
+`validate_time_step_cadence`, mirroring the `obs_df` block Plan 228 added. **Add an upsample guard in
+`resample_to_time_step` itself** (it is the shared seam — hindcast, training and the operational path
+all call it): when the data's detected cadence is COARSER than the requested `time_step`, raise
+rather than return the coarse frame. Red-first tests both ways: hourly forcing into a daily model
+aggregates correctly; daily forcing into an hourly model FAILS LOUDLY instead of silently returning
+5 rows for a 5-day span.
+
+### T1b — the same audit for training (Q3)
+Verify every `resample_to_time_step` call site in `services/training_data.py` actually applies the
+model's declared step. The upsample guard in T1 protects them all once it lands; T1b is confirming
+there is no path that bypasses the helper entirely.
 
 ### T2 — skill basis honesty (D2, gated on Q1/Q2)
 Minimum-sample marker per Q1; `eval_period_*` semantics per Q2. Tests: a 1-sample score is
@@ -116,8 +145,9 @@ that a low-n score is retained-but-marked rather than suppressed.
 
 ## Exit gates
 
-1. Hourly forcing into a daily model fails loudly in a test (T1's red-first case), and the existing
-   daily path is unchanged — `time_step_seconds = 86400` still holds for a re-run.
+1. Hourly forcing into a daily model AGGREGATES correctly; daily forcing into an hourly model FAILS
+   LOUDLY. The existing daily path is unchanged — `time_step_seconds = 86400` still holds on a re-run.
+   No `resample_to_time_step` call site can silently hand a model a cadence it did not declare.
 2. A low-n score is distinguishable from a well-supported one without inspecting the table.
 3. A scoring window containing a data hole reports its covered span.
 4. Unit suite green.
