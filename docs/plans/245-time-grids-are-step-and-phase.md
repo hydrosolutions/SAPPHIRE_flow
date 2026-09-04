@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-04
 plan: 245
 title: A time grid is a step AND a phase — and every input is period-ending
-scope: Make the phase of a time series a first-class, declared property rather than an assumption; declare period-ending as the repo-wide input convention and enforce it at the adapter boundary; forbid implicit alignment between grids that do not share a phase. Explicitly NOT the daily-model anchoring fix (Plan 226), NOT threading declared aggregation (Plan 234), NOT building any Nepali adapter.
+scope: Make the phase of a time series a first-class declared property; declare period-ending as the repo-wide input convention; make the preparation step phase-aware with per-parameter interpolation, a refusal on upsampling and degradation flagged through the existing input-quality channel; and publish explicit interval bounds. Explicitly NOT the daily-model anchoring fix (Plan 226), NOT threading declared aggregation (Plan 234), NOT building any Nepali adapter, NOT API read-time local-day aggregation.
 depends_on: []
 blocks: []
 source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 242; investigation showed the codebase treats a time step as a scalar throughout
@@ -47,6 +47,84 @@ and the other on `:15` — and the offset is now *invisible*, because everything
   look.
 
 ## Owner decisions
+
+*Taken in a grill-me session on 2026-09-04. Every number below was computed, not asserted;
+the commands are in the task verifications.*
+
+**OD-0 — the target grid is `(step, phase)`; the SOURCE is not assumed to be a grid at all.**
+Observations arrive at whatever cadence and phase the provider sends — 10-minute on `:02` marks,
+15-minute, hourly, or three manual readings a day at 08:00/12:00/16:00 with 4 h/4 h/16 h spacing.
+Ingest stores native instants in UTC and grids nothing. The store already behaves this way (Swiss
+observations today carry `:05` and `:55` marks alongside the `:00/:10/:20` majority), so this
+ratifies existing behaviour rather than changing it. All grid difficulty belongs to ONE component:
+the preparation step that maps an arbitrary series onto a declared target grid.
+
+**OD-2 — sub-daily runs on UTC phase; daily runs on a local-anchored phase.** These are different
+products, not an inconsistency: a daily forecast *means* a civil day, an hourly one does not. Keeping
+sub-daily on UTC means the hourly forcing is consumed exactly as delivered and only instantaneous
+observations are interpolated — the benign direction. Concretely:
+
+| Product | Grid | As UTC |
+|---|---|---|
+| Nepal daily | `(86400 s, 64800 s)` | 18:00Z → 18:00Z |
+| Nepal sub-daily | `(3600 s, 0)` | UTC hours, matching forcing exactly |
+| Swiss daily | `(86400 s, 0)` | 00:00Z → 00:00Z, unchanged |
+
+⛔ **A DST-observing zone has no uniform civil-day grid at all.** Measured: Zurich civil days run 23,
+24 or 25 hours (29 Mar 2026 is 23:00Z→22:00Z = 23 h; 25 Oct is 22:00Z→23:00Z = 25 h). A "day" that is
+not 86400 s is not a step, so no amount of phase bookkeeping rescues it. Nepal has **no DST** —
+`Asia/Kathmandu` is UTC+05:45 for all twelve months — so its civil day *is* a uniform grid. This is
+why the phase is declared per deployment and never derived from a timezone: derivation would give
+18:15 for Nepal (ignoring OD-3) and something broken for Switzerland.
+
+**OD-3 — a daily bucket is whole UTC hours: 18:00Z→18:00Z, not the exact civil 18:15Z.** The forcing
+is hourly, so an exact civil day would require apportioning one hourly precipitation accumulation
+across the boundary **every single day**, under an assumption of uniform rainfall within that hour —
+the least safe assumption available for convective rain. The whole-hour bucket introduces **no
+assumption at all**: every value is used as delivered. The cost is a documented 15-minute
+displacement (a Nepali "day" runs 00:45–23:45 local), which is 0.6% of the day and is stated on the
+label rather than discovered. The shift is uniform, so consecutive days partition the timeline
+exactly — no gaps, no overlaps, no drift, no value counted twice.
+
+**OD-4 — forecast `valid_time` is period-ending**, consistent with OD-1. The daily bucket above is
+stamped `18:00Z` on its closing day. The tempting alternative — stamping "the date it is about",
+e.g. `2026-09-05 00:00Z` — is rejected: that instant is *inside* the window it labels and corresponds
+to no boundary, which is precisely the defect Plan 226 exists to correct.
+
+**OD-5 — published data carries explicit interval bounds, not just a stamp.** A consumer receiving
+`2026-09-05 18:00Z` alone must know our rounding rule, our period convention and our timezone
+reasoning to interpret it. The same value carrying `period_start` and `period_end` requires them to
+know nothing. This follows CF conventions and netCDF, which attach `bounds` to every value for
+exactly this reason, and it makes OD-3's 15-minute displacement self-describing. It also
+future-proofs OD-3: moving to exact civil days later would need no consumer change.
+
+**OD-6 — resampling: coarsen freely, interpolate with a per-parameter method, never upsample.**
+
+| Case | Rule |
+|---|---|
+| Target coarser than source | Aggregate with the parameter's declared `AggregationMethod` (SUM for accumulations, MEAN for state variables) |
+| Instantaneous variable onto off-phase marks | Linear interpolation between bracketing observations, subject to a maximum gap — beyond it emit nothing, never a straight line across a two-day hole |
+| Accumulation onto a straddling boundary | Apportion by overlap fraction; flag as degraded when the split interval exceeds **15 minutes** |
+| Target finer than the source's median spacing | **Refuse.** Three readings a day cannot become 24 hourly values; that is invention, not interpolation |
+
+The method is determined by the parameter, never by the caller. Degradation is reported through the
+existing `InputQualityFlag` channel, which Plan 242 made persistent and API-visible — no second
+mechanism.
+
+**Why 15 minutes is the threshold, and why phase matters more than length.** Measured straddling
+rates per day:
+
+| Source | vs UTC hours | vs Nepali hours |
+|---|---|---|
+| 10-min on `:00` | 0 / 144 | **24 / 144** |
+| 10-min on `:02` | 24 / 144 | 24 / 144 |
+| **15-min on `:00`** | **0 / 96** | **0 / 96** |
+| hourly on `:00` | 0 / 24 | all |
+
+A 15-minute source on quarter-hour marks splits **nothing**, against either grid — because 15 divides
+the 345-minute NPT offset exactly (23 × 15). A 10-minute source does not, even on perfect `:00`
+marks, because 10 does not. **This is what to request from DHM: 15-minute data on `:00/:15/:30/:45`.**
+Not "sub-hourly", and specifically not 10-minute, which is worse than 15 in a way no one would guess.
 
 **OD-1 — every input series is expected in the PERIOD-ENDING scheme.** A value stamped `16:00` is the
 quantity for `15:00 → 16:00`. This is now the repo-wide convention for ingested data, not a
@@ -115,62 +193,99 @@ Every code task carries the Task Exit Gate (`docs/workflow.md:378-390`).
 
 ### T1 — declare both conventions where an adapter author will find them
 
-**Outcome:** period-ending is stated as the repo-wide input convention with its two consequences, and
-phase is defined as a first-class grid property, in the documents an adapter author actually reads.
+**Outcome:** period-ending is stated as the repo-wide input convention with its two consequences;
+phase is defined as a grid property; and the DST limitation is written down as a limitation.
 
-**In:** `docs/conventions.md` (the primary home), cross-referenced from
-`docs/architecture-context.md` § data flows and `docs/spec/types-and-protocols.md`. Must state that
-period convention and timezone phase are independent, and give the NPT worked example.
+**In:** `docs/conventions.md` (primary home), cross-referenced from `docs/architecture-context.md`
+§ data flows and `docs/spec/types-and-protocols.md`. Must carry the NPT worked example (a Nepali day
+is 18:00Z→18:00Z covering 00:45–23:45 local), state that period convention and timezone phase are
+independent, and record that a DST-observing zone has no uniform civil-day grid.
 
-**Out:** any code change; any per-source audit of existing adapters (that is T4).
+**Out:** any code change; the per-adapter audit (T6).
 
-**Pre-change:** N/A — documentation task. `grep -rn "period-ending" docs/conventions.md docs/architecture-context.md` returns nothing today; the convention exists only in `docs/design/dhm-precipitation-milestones.md:119`, a research design doc.
+**Pre-change:** N/A — documentation task. `grep -rn "period-ending" docs/conventions.md docs/architecture-context.md` returns nothing; the convention exists only in `docs/design/dhm-precipitation-milestones.md:119`, a research design doc no adapter author reads.
 
-**Verification:** N/A — documentation task. The convention must be stated with its NPT worked example and both consequences.
+**Verification:** N/A — documentation task. The convention appears with its worked example and both consequences, and the DST limitation is stated.
 
 ### T2 — a typed `TimeGrid`
 
-**Outcome:** `TimeGrid(step: timedelta, phase: timedelta)` exists as a frozen dataclass with
-`__post_init__` enforcing `0 <= phase < step`, plus a constructor deriving phase from an IANA
-timezone and a step, and a predicate for whether two grids are alignable.
+**Outcome:** `TimeGrid(step, phase)` exists as a frozen dataclass enforcing `0 <= phase < step`, with
+a predicate for whether two grids are alignable and a helper for whether one nests into another.
 
-**In:** `src/sapphire_flow/types/` (a new module or `domain.py`), and
-`docs/spec/types-and-protocols.md`. Depends on T1.
+**In:** `src/sapphire_flow/types/` and `docs/spec/types-and-protocols.md`. Depends on T1.
 
-**Out:** changing any existing signature to take it. Adoption is T3.
+**Out:** deriving phase from an IANA timezone — explicitly not offered, since derivation is what
+would reintroduce DST. Changing existing signatures to take it (T3).
 
-**Pre-change:** `uv run python -c "from sapphire_flow.types.domain import TimeGrid"` fails with ImportError — no such type exists.
+**Pre-change:** `uv run python -c "from sapphire_flow.types.domain import TimeGrid"` fails with ImportError.
 
-**Verification:** `uv run pytest tests/unit/types/test_time_grid.py` — hourly UTC and hourly NPT are both step 3600 and are NOT alignable; `Asia/Kathmandu` at daily yields phase 65700s (18:15 UTC); phase >= step and negative phase both raise; the Swiss `Europe/Zurich` daily case is exercised for a whole-hour zone.
+**Verification:** `uv run pytest tests/unit/types/test_time_grid.py` — hourly UTC and hourly Nepali are both step 3600 and NOT alignable; a 15-minute grid on quarter-hour marks nests into both, a 10-minute grid nests into neither; phase >= step and negative phase both raise.
 
-### T3 — make the station timezone load-bearing
+### T3 — declare the operational grid phase in deployment config
 
-**Outcome:** `stations.timezone` is read to derive a station's grid phase, instead of being carried
-and ignored.
+**Outcome:** the daily grid origin is an explicit, readable declaration in deployment config
+(`daily_grid_origin = "18:00"` in the Nepal overlay), parsed once into a phase.
 
-**In:** the observation and forcing boundary where a series' grid is established; `types/station.py`.
-Depends on T2.
+**In:** `config/overlays/` and the deployment config model. Written as a time-of-day, not a duration,
+so a reviewer can check OD-3's rounding judgement at a glance — `64800` hides exactly the decision
+that should be visible. Parsed to a `timedelta` at the config boundary per CLAUDE.md's
+parse-don't-validate rule. Depends on T2.
 
-**Out:** the daily-model anchoring fix (Plan 226) and the aggregation threading (Plan 234).
+**Out:** deriving it from `stations.timezone`, which stays descriptive metadata for display. Any
+per-station or per-model override — one deployment value covers both Nepal tenants.
 
-**Pre-change:** `grep -rn "\.timezone" --include=*.py src/sapphire_flow | grep -v "timezone.utc\|datetime.timezone"` shows the field only being copied between layers (`config/onboarding.py:131`, `store/station_store.py:136`, `api/routes/api_stations.py:220`, `services/calculated_station_onboarding.py:102`) and never read to make a decision.
+**Pre-change:** `grep -rn "grid_origin\|grid_phase" config/ src/sapphire_flow/config/` returns nothing; no deployment declares a grid phase, and `stations.timezone` is carried through four layers without being read.
 
-**Verification:** `uv run pytest tests/unit/types/test_station.py tests/unit/services/` — a station in `Asia/Kathmandu` yields a different daily grid phase from one in `Europe/Zurich`, and the value is used rather than merely stored.
+**Verification:** `uv run pytest tests/unit/config/` — the Nepal overlay parses `"18:00"` to a 64800 s phase; a Swiss overlay with no declaration defaults to phase 0; a value not a whole multiple of the step's resolution is rejected.
 
-### T4 — audit every existing input adapter against the convention
+### T4 — make the preparation step phase-aware
 
-**Outcome:** each adapter's period convention and grid phase are recorded — confirmed, converted, or
-flagged unresolved. No adapter is left implicit.
+**Outcome:** an arbitrary source series is mapped onto a declared target grid by the OD-6 rules —
+coarsen, interpolate, or refuse — with degradation flagged.
 
-**In:** the adapters under `src/sapphire_flow/adapters/`, recorded in `docs/touchpoint-maps.md` or a
-table in `docs/conventions.md`. Depends on T1.
+**In:** `services/training_data.py:225` `resample_to_time_step`, which currently buckets with
+`group_by_dynamic(every=...)` and no `offset`, so every bucket is epoch-aligned. polars supplies
+`offset`, `closed` and `label`, so this is a parameter change plus the interpolation and refusal
+logic, not a rewrite. Also its three callers: `services/hindcast.py:229`,
+`services/operational_inputs.py`, `services/skill/service.py:278`. Degradation is reported via the
+existing `InputQualityFlag`. Depends on T2, T3.
 
-**Out:** fixing an adapter found to be non-conforming — each becomes its own change, so that a
-conversion is never bundled with the audit that found it.
+**Out:** the daily-model anchoring fix (Plan 226) and aggregation threading (Plan 234). Changing
+`AggregationMethod` itself.
 
-**Pre-change:** N/A — audit task. No such record exists; `docs/design/dhm-precipitation-milestones.md:119` covers the DHM workbook and ERA5-Land only.
+**Pre-change:** `grep -n "group_by_dynamic" services/training_data.py` shows `every=` with no `offset`, and the docstring states buckets are epoch-aligned by Plan 228 D4 — so a Nepali-phased series is silently re-bucketed onto UTC marks, which is a 15-minute shift presented as a resample.
 
-**Verification:** N/A — audit task. Every adapter appears in the table with a cited source for its convention, or is explicitly marked unresolved.
+**Verification:** `uv run pytest tests/unit/services/test_training_data.py` — a 15-minute source on quarter-hour marks maps onto BOTH a UTC-hourly and a Nepali-hourly target with zero apportionment; an accumulation straddling a boundary is apportioned and flagged only when the split interval exceeds 15 minutes; an instantaneous series is interpolated but not across a gap beyond the maximum; and a target finer than the source's median spacing is REFUSED, with the refusal locked by a test rather than only the success path.
+
+### T5 — publish explicit interval bounds
+
+**Outcome:** a published value carries `period_start` and `period_end`, so a consumer needs to know
+none of our conventions to interpret it.
+
+**In:** the API forecast schemas and the Forecast Lab snapshot. Follows CF/netCDF practice, which
+attaches bounds to every value for this reason. Depends on T2.
+
+**Out:** API read-time local-day aggregation — deferred by the owner; this task makes it possible
+later without a consumer change, which is the point. Changing any stored `valid_time`.
+
+**Pre-change:** an API forecast response carries `valid_time` alone, so the 15-minute displacement in OD-3 is only discoverable from documentation.
+
+**Verification:** `uv run pytest tests/unit/api/` — a daily Nepal forecast response carries bounds of 18:00Z to 18:00Z spanning exactly 24 h, and the bounds are consistent with the period-ending stamp.
+
+### T6 — audit every existing input adapter against the convention
+
+**Outcome:** each adapter's period convention and native phase are recorded — confirmed, converted,
+or flagged unresolved.
+
+**In:** the adapters under `src/sapphire_flow/adapters/`, recorded as a table in
+`docs/conventions.md`. Depends on T1.
+
+**Out:** fixing a non-conforming adapter — each becomes its own change, so a conversion is never
+bundled with the audit that found it.
+
+**Pre-change:** N/A — audit task. No such record exists; `docs/design/dhm-precipitation-milestones.md:119` covers the DHM workbook and ERA5-Land only, and the Pyramid AWS source is NPT (`docs/design/dhm-precipitation-vision.md:354`), so both timebases are already in the building undocumented.
+
+**Verification:** N/A — audit task. Every adapter appears with a cited source for its convention, or is explicitly marked unresolved.
 
 ## Exit gates
 
@@ -181,13 +296,14 @@ uv run pytest
 uv run python scripts/check_readiness.py --inspect-json docs/plans/245-time-grids-are-step-and-phase.md
 ```
 
-Three conditions hold in addition:
+Four conditions hold in addition:
 
-1. **No code path aligns two series on `step` alone.** The failure mode this plan exists to prevent
-   is two "hourly" series being treated as comparable when they share no instant.
-2. **No implicit shift.** A grid mismatch is resolved by a declared resample or refused. A test must
-   lock the refusal, not only the success path.
-3. **The convention is stated where an adapter author reads, not only in a research design doc.**
+1. **No code path aligns two series on `step` alone.** Two "hourly" series that share no instant must
+   not be treated as comparable.
+2. **No implicit shift.** A grid mismatch is resolved by a declared resample or refused, and the
+   REFUSAL is locked by a test, not only the success path.
+3. **Upsampling is refused, not flagged.** Three readings a day must not become 24 hourly values.
+4. **The conventions are stated where an adapter author reads**, not only in a research design doc.
 
 ## Dependency graph
 
@@ -197,7 +313,9 @@ Three conditions hold in addition:
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 1, "depends_on": ["T1"]},
     {"id": "T3", "phase": 2, "depends_on": ["T2"]},
-    {"id": "T4", "phase": 2, "depends_on": ["T1"]}
+    {"id": "T4", "phase": 2, "depends_on": ["T2", "T3"]},
+    {"id": "T5", "phase": 3, "depends_on": ["T2"]},
+    {"id": "T6", "phase": 1, "depends_on": ["T1"]}
   ]
 }
 ```
