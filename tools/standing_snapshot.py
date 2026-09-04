@@ -128,16 +128,39 @@ def collect_repo() -> dict[str, Any]:
 # -------------------------------------------------------------------------- plans
 
 
-_STATUS_PATTERNS = (
-    re.compile(r"^status:\s*(.+)$", re.IGNORECASE),
+_YAML_STATUS_PATTERN = re.compile(r"^status:\s*(.+)$", re.IGNORECASE)
+_LEGACY_STATUS_PATTERNS = (
     re.compile(r"^\*\*Status\*\*:?\s*(.+)$", re.IGNORECASE),
     re.compile(r"^\*\*Status:\*\*\s*(.+)$", re.IGNORECASE),
 )
 
 
-def _status_from_lines(lines: list[str]) -> str:
+def _yaml_status(lines: list[str]) -> str:
+    if not lines or lines[0].strip() != "---":
+        return ""
+    closing_index = next(
+        (
+            index
+            for index, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        ),
+        None,
+    )
+    if closing_index is None:
+        return ""
+    matches = [
+        hit.group(1).strip().strip("*")[:70]
+        for line in lines[1:closing_index]
+        if (hit := _YAML_STATUS_PATTERN.match(line))
+    ]
+    if len(matches) > 1:
+        return "NONE"
+    return matches[0] if matches else ""
+
+
+def _legacy_status(lines: list[str]) -> str:
     for line in lines[:40]:
-        for pattern in _STATUS_PATTERNS:
+        for pattern in _LEGACY_STATUS_PATTERNS:
             hit = pattern.match(line.strip())
             if hit:
                 return hit.group(1).strip().strip("*")[:70]
@@ -149,12 +172,15 @@ def _plan_number(name: str) -> str | None:
     return match.group(1) + match.group(2) if match else None
 
 
-def _parse_plan(path: Path) -> Plan | None:
+def _parse_plan(path: Path, *, archived: bool = False) -> Plan | None:
     number = _plan_number(path.name)
     if not number:
         return None
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return Plan(number=number, path=path, status=_status_from_lines(lines) or "NONE")
+    status = _yaml_status(lines)
+    if archived and not status:
+        status = _legacy_status(lines)
+    return Plan(number=number, path=path, status=status or "NONE")
 
 
 def _main_subjects() -> list[str]:
@@ -183,7 +209,11 @@ def _shipping_commits(number: str, subjects: list[str]) -> list[str]:
 
 def collect_plans(findings: list[Finding]) -> dict[str, Any]:
     active = [p for p in map(_parse_plan, sorted(PLANS_DIR.glob("*.md"))) if p]
-    archived = [p for p in map(_parse_plan, sorted(ARCHIVE_DIR.glob("*.md"))) if p]
+    archived = [
+        plan
+        for path in sorted(ARCHIVE_DIR.glob("*.md"))
+        if (plan := _parse_plan(path, archived=True))
+    ]
 
     by_status: dict[str, list[str]] = defaultdict(list)
     for plan in active:
@@ -293,7 +323,11 @@ def _check_stranded(known: list[Plan], findings: list[Finding]) -> list[dict[str
             behind_raw = run(["git", "rev-list", "--count", f"{branch}..main"])
             behind = int(behind_raw) if behind_raw.isdigit() else 10**6
             blob = run(["git", "show", f"{branch}:{path}"], timeout=20)
-            status = _status_from_lines(blob.splitlines()) or "NONE"
+            lines = blob.splitlines()
+            status = _yaml_status(lines)
+            if path.startswith("docs/plans/archive/") and not status:
+                status = _legacy_status(lines)
+            status = status or "NONE"
             prior = best.get(number)
             if prior is None or behind < prior["behind_main"]:
                 best[number] = {

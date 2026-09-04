@@ -37,6 +37,13 @@ if [ ! -r "$prompt_file" ]; then
     exit 66
 fi
 
+prompt=$(<"$prompt_file")
+prompt_no_space="${prompt//[[:space:]]/}"
+if [ -z "$prompt_no_space" ] || [ "$prompt_no_space" = "temporarypromptcleared." ]; then
+    echo "$0: empty or cleared prompt — NO usable prompt" >&2
+    exit 65
+fi
+
 if ! command -v codex >/dev/null 2>&1; then
     echo "$0: codex CLI not found on PATH" >&2
     exit 127
@@ -46,7 +53,7 @@ fi
 # empty verdict can be caught even on a zero exit.
 set +e
 output=$(codex exec --sandbox read-only --skip-git-repo-check "$@" \
-    "$(cat "$prompt_file")" < /dev/null 2>&1)
+    "$prompt" < /dev/null 2>&1)
 status=$?
 set -e
 

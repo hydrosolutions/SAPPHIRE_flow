@@ -5,21 +5,26 @@
 **The orchestrator (Opus) NEVER writes code directly.**
 
 1. **Explore** the codebase before each phase to gather context for agent prompts
-2. **Delegate** all implementation work to Sonnet 4.6 general-purpose agents
-3. **Coordinate** parallel vs sequential execution based on the plan's dependency graph
-4. **Review** all changes via `git diff` after agents complete
-5. **Iterate** by delegating fixes to subagents if issues found
-6. **Commit** only when all tests pass
+2. **Use `plan`** for the bounded read-only plan review and owner confirmation
+3. **Use `implement`** for READY plans; one Sonnet implementer executes the
+   dependency graph in order
+4. **Verify** every declared task and exit gate independently on the committed candidate
+5. **Review** once with separate Claude and Codex perspectives
+6. **Repair** at most once, and only after owner dispositions; then hold at PR
 
 ## Plan Structure
 
-Plans are organized as **phases** containing **tasks**. Each task is a unit of
-work delegatable to a single subagent.
+Plans are organized as **phases** containing **tasks**. Each task is one bounded
+unit in the implementation ledger. Under `## Tasks`, write each task heading as
+`### <stable-id> — <name>`; IDs such as `T1`, `1a`, and `A0` are valid.
 
 Each task specifies:
 
-1. **Scope** — what is in / explicitly out of scope (one sentence each)
-2. **Verification** — exact `uv run` command that must pass
+1. **Outcome** — one observable behavior or artifact
+2. **In / Out** — bounded files and explicit exclusions
+3. **Verification** — exact command, test node, or bounded inspection
+4. **Pre-change** — discriminating RED evidence for behavioral changes, or an
+   explained `N/A` for mechanical/documentation work
 
 Interface details (types, Protocols, signatures) belong in implementation-level
 plans only, not high-level plans. The subagent reads the codebase and docs.
@@ -44,8 +49,9 @@ Plans end with a JSON dependency graph:
 }
 ```
 
-Tasks within a phase run in parallel unless marked otherwise. Phases run
-sequentially based on `depends_on`.
+The dependency graph records ordering. The default `implement` workflow keeps
+one implementer responsible for the whole graph; direct/manual work may delegate
+independent tasks in parallel when the graph explicitly permits it.
 
 ## Preserve Existing Logic
 
@@ -61,43 +67,43 @@ extremely good reason.** The architecture and flow designs represent deliberate 
 
 ## Plan Readiness
 
-- Plans start as `status: DRAFT`. No subagent runs from a DRAFT plan.
-- Opus self-reviews the plan before presenting it to the user.
-- User confirms the plan. Opus sets `status: READY`.
-- A second review round is required only if the user requests changes.
-- Do not present a plan as ready without user confirmation.
+- The author creates a `DRAFT` plan.
+- Planning and independent-review agents may read a DRAFT plan, but implementation
+  agents may not execute it.
+- The owner decides how review findings are resolved in the DRAFT.
+- The required confirming review runs after those decisions are folded in.
+- Only the owner may set its YAML `status: READY`.
+
+Reviewer recommendations are advisory and never change plan status. Plans 232
+and 233 own the executable planning and implementation workflow mechanics.
 
 ### Plan status vocabulary
 
-Active plans in `docs/plans/` use one of the following statuses in their
-frontmatter:
+YAML `status:` frontmatter is the only machine-readable status source for active
+plans in `docs/plans/`. The canonical active statuses are `DRAFT`, `READY`,
+`BLOCKED`, `DEFERRED`, `PARTIAL`, `SUPERSEDED`, and `COMPLETE`:
 
 - **DRAFT** — plan is being written or has not yet been confirmed by the user.
-  Not ready for implementation. No subagent runs from a DRAFT plan.
+  It may be planned and reviewed, but it is not ready for implementation.
 - **READY** — plan is confirmed and ready to execute. Subagents may be
   dispatched.
-- **IN_PROGRESS** — plan is actively being implemented. Used while a session
-  is mid-execution.
+- **BLOCKED** — execution cannot proceed until a named blocker changes.
 - **DEFERRED** — scope-validated, intentionally postponed to a future version
-  (v0b, v1, etc.). Distinct from `DRAFT` (unplanned / not ready) and from
-  `ARCHIVED` (closed historical record). Deferred plans stay in `docs/plans/`
-  (not `archive/`) until they are re-promoted (flipped back to `DRAFT` or
-  `READY`) or archived.
-- **DONE** — plan is complete. Typically archived promptly; see below.
+  (v0b, v1, etc.).
+- **PARTIAL** — some work landed; remaining work needs renewed owner approval.
+- **SUPERSEDED** — another named authority replaces the plan.
+- **COMPLETE** — the plan is fully implemented; archive it when references allow.
 
-Plans that have been moved to `docs/plans/archive/` are collectively referred
-to as **ARCHIVED**. Archive is the terminal state: closed historical records
-that are no longer part of the active registry.
-
-Note: this codification does **not** backfill legacy archive-only labels such
-as `COMPLETE`, `RESOLVED`, or archived `READY`. Historical plan records in
-`docs/plans/archive/` keep whatever status they were archived with.
+Do not use `IN_PROGRESS` or `DONE` as active-plan statuses; execution progress
+belongs to the branch, run, or PR. `ARCHIVED` is a location, not an active status.
+A missing active YAML status is reported as `NONE`, never inferred from body
+prose. Historical files already in `docs/plans/archive/` retain their legacy
+labels.
 
 ## Multi-Model Review
 
-Multi-model review is **mandatory for all non-trivial work** — plans and
-patches/code changes alike. The goal is convergent, independently-checked
-output before any human approval gate.
+Multi-model review is **mandatory for all non-trivial plans and patches** before
+the relevant owner gate. A model may not approve its own output.
 
 **Trivial exemption** (single-perspective self-check is enough) applies *only* to:
 
@@ -106,32 +112,46 @@ output before any human approval gate.
 - single-line log text
 - mechanical, no-behavior-change edits
 
-**When in doubt, treat the work as non-trivial.**
+When in doubt, treat the work as non-trivial.
+
+### Tasks are the single completion ledger
+
+Every non-trivial plan task contains:
+
+- **Outcome:** one observable behavior or artifact.
+- **In / Out:** bounded files and explicit exclusions.
+- **Verification:** an exact test node, command, or bounded `file:property`
+  inspection.
+- **Pre-change:** for changed behavior, how the same evidence fails before the
+  change and why. Use `N/A` only for documentation, mechanical, or gate tasks,
+  with the reason stated.
+
+Task IDs are the stable keys used by review and implementation. Account for
+every task. Do not add a second acceptance ledger, persistent run file, or
+parallel completion vocabulary.
 
 ### Context packet
 
-Before any non-trivial plan, review, or implementation pass, the orchestrator
-builds a concise **context packet** and hands it to every model on the task.
-The packet tells each model what to read, what repo rules govern the task, what
-is in and out of scope, and how success is verified. It **points to canonical
-sources — it does not duplicate them**.
+Before review, the orchestrator builds one factual context packet and gives the
+same packet to both reviewers. It points to canonical sources rather than
+duplicating them.
 
 Minimum fields:
 
-- **User request / task objective**
-- **Current plan path**, if any
-- **Repo workflow sources to read** — `CLAUDE.md`, `AGENTS.md`, `docs/workflow.md`
-- **Task-specific context files**
-- **Relevant source / test paths**
-- **Constraints and non-goals**
-- **Required verification gates**
-- **Known owner decisions**
-- **Open questions**
-- **Forbidden files / actions**
-- **Expected output format**
+- plan path, YAML status, and whole-document fingerprint;
+- task IDs, Pre-change modes, and Pre-change/Verification fingerprints;
+- exit-gate IDs and fingerprints;
+- reviewed `HEAD`;
+- applicable authoritative document paths.
 
-Any reviewer may request missing context. **Missing or contradictory required
-context is an escalation trigger** (see Escalation).
+The packet is produced by `scripts/check_readiness.py --inspect-json`, is capped at
+8,192 UTF-8 bytes, and never contains copied plan text or restated task contracts.
+Reviewers and implementers read the plan path directly. Agent command evidence carries
+the matching fingerprint, numeric exit, and one output excerpt of at most 1,000
+characters. Inspection accepts any structurally valid canonical status, including DRAFT;
+the unchanged default checker remains the separate READY-only implementation gate.
+
+Missing or contradictory required context makes the review incomplete.
 
 ### Touchpoint maps
 
@@ -144,50 +164,63 @@ deployment**; **Training / hindcast / skill**; **Alerting / alert-state**. Their
 governance — the right-sizing fitness test — is below (see
 Right-sizing).
 
-### Required perspectives
+### Plan review
 
-Non-trivial work requires at least:
+The `plan` workflow is read-only and has two modes:
 
-- **Claude / orchestrator design perspective** — requirements, architecture,
-  contracts, user-visible behavior.
-- **Codex repo-grounded perspective** — must cite `file:line` evidence for its
-  claims.
+Every invocation explicitly classifies `riskClass` as `ordinary` or `high`;
+there is no silent default. Confirmation is bound to the prior plan path, mode,
+and risk class.
 
-**High-risk work adds an independent reviewer panel** on top of the two required
-perspectives. High-risk work includes security/auth surface, container/privilege
-or secrets handling, data-loss or migration risk, external-facing contract or API
-change, live-DB impact, Prefect scheduling, Docker entrypoint, FI contract
-boundary, user-visible behavior, or anything the owner flags as high-risk.
+- `review` runs one Claude design/proportionality review and one real Codex
+  repo-grounded review in parallel. Both reports are returned separately and the
+  result binds them to the reviewed document fingerprint. Task and gate identities
+  must exactly match the validated manifest. A missing reviewer yields
+  `REVIEW_INCOMPLETE`.
+- `confirm` receives the prior packet and owner dispositions. The same two
+  perspectives check only accepted fixes, disposition rationales, and
+  contradictions or regressions in the changed area. The prior reviewed
+  fingerprint remains the old evidence anchor while a separately validated
+  current fingerprint identifies the corrected plan. It is not a fresh audit
+  and runs once.
 
-Rules that always hold:
+Each finding has a stable per-report ID, severity, exact location, violated
+contract, and smallest sufficient correction. A blocker or major is admissible
+only when the plan is unsafe, contradictory, unexecutable, incomplete against
+its stated scope, or guarded by evidence that would not discriminate against
+the current repository. Reviewer preferences and desirable follow-ons are not
+blocking. Reports are never flattened or silently reconciled by another model.
 
-- **A model may not approve its own output.**
-- **The revision author may not approve their own revision.**
+The owner disposes every blocker and major as one of:
 
-### Review redundancy principle
+- `fix` — amend the plan;
+- `reject` — the finding is wrong, with rationale;
+- `follow-up` — genuine but out of scope, with rationale;
+- `accept-risk` — explicitly accept an in-scope concern, with rationale.
 
-- **Two independent perspectives are the minimum floor, not the maximum.**
-- When risk or uncertainty is non-trivial, **prefer one additional independent
-  review over one fewer.**
-- Extra review cost is acceptable when it reduces implementation, safety, data,
-  API, or workflow risk.
-- If reviewers disagree, or a reviewer returns "uncertain", **add another
-  independent review or escalate to the human owner.**
+Only the owner may accept risk. An accepted finding is matched by ID, location,
+and violated contract, so reusing an ID cannot hide a new concern. Accepted risks remain visible. The workflow
+returns advisory `READY`, `NOT_READY`, or `REVIEW_INCOMPLETE`; only the owner
+changes YAML status. Initial `review` mode never recommends READY: it returns
+`CONFIRM_REQUIRED` when clean, or asks for owner dispositions when blocked.
+Only a complete `confirm` pass may advise READY.
+
+### High-risk review
+
+The ordinary Claude+Codex pair is the default floor. Security/auth,
+container/privilege or secrets handling, data-loss or migration risk,
+external-facing contract or API changes, live-DB impact, Prefect scheduling,
+Docker entrypoints, FI contract boundaries, user-visible behavior, and anything
+the owner flags as high-risk require an additional independently commissioned
+panel. Its result is supplied separately; the ordinary pair cannot waive it.
+Ordinary work does not gain reviewers autonomously.
 
 ### Right-sizing (guard against over-engineering)
 
-Our review loops are **monotonically additive**: the completeness lens is rewarded
-for finding what's *missing*, and "progress" is measured as *fewer open findings* —
-so the loop's natural endpoint is "nothing left to add," which is the
-over-engineering attractor. Left unchecked, plans over-scope and detail-bearing docs
-accrete reference detail that rots. Counter it two ways:
-
-- **In-loop:** the `plan` workflow (and its Sonnet-only predecessor `plan-review`) runs a
-  standing **proportionality lens** that argues for cuts each round (over-scope, gold-plating,
-  speculative generality, and reference detail that belongs in code/docstrings).
-- **Before READY** — for **detail-bearing artifacts** (docs, checklists, schemas; not
-  code): run one **subtractive right-sizing pass** that judges the artifact against
-  its *fitness test*, not against "is anything missing?".
+The Claude review includes proportionality: flag gold-plating, speculative
+generality, unnecessary phases or abstractions, and reference detail that should
+remain in code. Prefer the smallest correction that satisfies the task contract.
+For detail-bearing artifacts, use one subtractive right-sizing pass before READY.
 
 **Fitness test — state what the artifact is FOR, then keep only what serves it.** You
 cannot judge "too much detail" without it. Example (routing / touchpoint map): every
@@ -196,138 +229,83 @@ bullet names a symbol/subsystem to go read; no bullet teaches how the code works
 cross-cutting** invariant — a localized fact the named symbol already reveals is not a
 contract.
 
-This guard is itself subject to the trivial-exemption rule: do not add process weight
-that exceeds the risk it removes.
+This guard is subject to the trivial exemption: process weight must remain
+proportional to the risk it removes.
 
-### Verdicts and blockers
+### Evidence-led implementation
 
-Each reviewer returns exactly one verdict: **APPROVE | NEEDS_CHANGES | ESCALATE**.
+An implementer's “done” claim is evidence, not approval. Every READY-plan task
+receives independent evidence and no task may be selected as merely “key.”
 
-- **Blockers are tracked by decision area, not exact wording.**
-- A narrower repo-fact restatement in the same decision area counts as the
-  **same blocker recurring**, not a new one.
+The `implement` workflow has two modes:
 
-### Iteration budget
+Every invocation explicitly classifies `riskClass` as `ordinary` or `high`;
+there is no silent default.
 
-- **Target: 3 review/revise iterations.**
-- **Hard maximum: 5 iterations.**
-- **One iteration** = one review round returning one or more `NEEDS_CHANGES`
-  verdicts, followed by exactly one revised plan or patch.
+- `build` uses one Sonnet implementer for the whole dependency graph. Behavioral
+  tasks report the declared pre-change fingerprint, its expected non-zero exit,
+  one bounded output excerpt, and separate `beforeEvidence` and `afterEvidence`. Any task
+  declaring a real pre-change check must show its expected failure; an explained
+  `N/A` is reported as not applicable. Evidence already green for behavior
+  claimed missing makes the plan `PLAN_INCOMPLETE`.
+  The implementer runs targeted checks, updates docs, bumps the patch version,
+  and commits without tagging.
+- A read-only verifier then checks commit advancement, non-empty base diff,
+  clean worktree, version bump, scope, every task ID, and all plan gates. Task
+  and gate inventories come from the validated manifest and must exactly match
+  the evidence. Each result carries the declared fingerprint, numeric exit,
+  and one output excerpt of at most 1,000 characters. The verifier also proves the READY plan did not change and
+  reruns the deterministic readiness check. It owns one complete exit-gate run
+  per committed candidate. Each task is `PASS`, `FAIL`, or `UNVERIFIABLE`;
+  anything but complete evidence stops before review.
 
-### Escalation
+Implementation starts only on a named feature branch, never `main` or the base
+branch. The branch must remain unchanged, a compact tag count and deterministic
+tag-set fingerprint must remain equal to their preflight values, and the remote
+feature-branch SHA must not move before `PR_READY`; the workflow never tags or
+pushes and never transports the full tag list through agent responses.
 
-Escalate to the human owner when any of the following occur:
+After verification, one Claude design/proportionality reviewer and one real
+Codex repo-grounded reviewer inspect the committed diff in parallel. Reports
+remain separate. A missing reviewer makes engineering review incomplete. A
+blocker or major returns `OWNER_DECISION_REQUIRED` without changing the patch;
+the owner uses the same `fix`, `reject`, `follow-up`, or `accept-risk`
+dispositions as plan review.
 
-- the same blocker recurs twice
-- reviewers disagree on user-visible behavior
-- repo facts invalidate the plan or patch
-- scope grows materially beyond the approved plan
-- a boundary touch lacks human acknowledgement or is not named in the approved plan
-- required context is missing or contradictory
-- the hard maximum of 5 iterations is reached
+`confirm` permits one fixer for only owner-disposed `fix` findings, followed by
+one independent full verification and one delta-only Claude+Codex confirmation.
+There is no second automated repair pass. Minors and follow-ups are never
+auto-fixed. Confirmation is bound to the prior mode, plan path, base branch,
+reviewed plan/commit, and explicit risk class. High-risk work still requires its
+separate independent panel.
 
-**Escalation packet** contents:
+Terminal fields are deliberately small:
 
-- status
-- unresolved blocker
-- reviewer disagreement
-- options
-- recommended next action
+- `taskCompletion`: `COMPLETE`, `INCOMPLETE`, or `UNVERIFIABLE`;
+- `engineeringReview`: `PASS`, `BLOCKED`, or `INCOMPLETE`;
+- `recommendation`: `PR_READY` or `NOT_READY`.
 
-### Post-ratification confirming pass
+Return one canonical copy of task evidence, gate evidence, separate parsed reviews,
+deviations, and accepted risks beside those fields. Do not return plan snapshots,
+task contracts, full raw command output, Codex raw verdict text, or nested copies of
+implementer/fixer/verifier reports. The Codex report retains its exit code and a
+`rawVerdictPresent` boolean. No “pass with notes” may hide an incomplete task.
 
-After owner-ratified design decisions are folded into a plan, run **one
-confirming multi-model review round before human READY approval**. This round
-checks that:
-
-- ratified decisions are reflected consistently
-- repo facts still match
-- acceptance criteria are complete
-- the plan has an executable phase / task breakdown
-
-**The plan may not move to READY** until this confirming round returns APPROVE,
-or the remaining concerns are explicitly accepted by the human owner.
-
-### Post-implementation review gate
-
-**An implementation agent's "done" or "complete" claim is evidence, not
-approval.** After implementation, the patch must pass independent review before
-PR approval.
-
-The **implementer report** must include:
-
-- changed files
-- tests / commands run
-- deviations from the READY plan
-- residual risks
-
-The **Claude / design reviewer** checks:
-
-- the patch matches the approved plan
-- requirements and non-goals are respected
-- behavior / user-visible implications are correct
-- no unresolved design decision was made silently
-
-The **Codex repo-grounded reviewer** checks:
-
-- diff correctness
-- tests are meaningful
-- verification commands actually ran / passed
-- no unintended files changed
-- repo patterns / contracts are followed
-
-- **Any `NEEDS_CHANGES` verdict returns the patch to implementation.**
-- The target-3 / hard-max-5 review-fix iteration budget applies.
-- **The patch may not go to human PR approval** until independent reviewers
-  APPROVE, or the remaining concerns are explicitly accepted by the human owner.
-
-### Post-WF2 adversarial review rounds (Codex CLI) — MANDATORY before merge
-
-WF2's built-in quality gate is necessary but **not sufficient**. A green test
-suite plus one review pass can hide real correctness bugs. On **Plan 105** (the
-first WF2-track build, 2026-07-10) a *second* adversarial Codex round caught
-**3 blockers** — a self-defeating disk tripwire (checked before the sweep that
-frees space), a scratch-dir leak on the parse-stage failure path, and a hard
-disk breach masked as a soft one — that **159 green tests and the first review
-had both missed**, plus a locked test that passed *for the wrong reason*.
-
-So after ANY WF2 (or WF2-substitute conventional) build, **before merging the
-hold-at-PR**:
-
-1. **Run independent adversarial review on the COMMITTED diff** — `codex exec
-   -s read-only …` reading `git diff main...HEAD`, and/or a strong Claude
-   reviewer. Each round hunts for: regressions from the refactor, edge cases,
-   **silent-failure modes**, and whether the locked tests would catch a *subtly*
-   broken impl (not merely pass). Give each round a **distinct focus** — don't
-   re-run the same checklist.
-2. **Loop review → fix → re-review UNTIL the reviewer converges** (APPROVE / no
-   blockers). Target 3, **hard-max 5** rounds (same budget as `plan-review`).
-   **Escalate to the human on non-convergence after 5** — do not merge.
-3. **Prove test soundness, not just green.** For each blocker fixed, verify the
-   locking test **FAILS against the buggy code** (e.g. `git stash` the impl,
-   keep the test, run it — expect RED). Green ≠ correct.
-4. Only the human merges — once the loop converges clean, or the human
-   explicitly accepts the residuals.
-
-**Now automated by the `implement` workflow (manual fallback retained).** The rounds
-above — independent Codex review of the committed diff → fix → re-review until converge,
-test-soundness proof, hold-at-PR — are exactly what `.claude/workflows/implement.js` runs
-for you on a READY plan (it also locks the plan's key acceptance criteria *red-first* and
-re-verifies the gates after every fixer round). So for a normal build, run `implement`
-rather than hand-rolling these rounds. Keep running them **by hand** when `implement`
-isn't used, or when the Codex CLI hangs (a known intermittent failure) — the convention
-is the policy; the workflow is one way to execute it. The plan-side loop `plan` (and its
-predecessor `plan-review`) already loops-until-converge + escalates-after-5. *(Distinct
-from this: Plan 112 tracks reimplementing the manifest-driven WF2 `vision-build`
-auto-test-authoring path — a different contract than `implement`'s conventional build.)*
-
-### Authority gates
+### Human authority
 
 - The **human owner is the terminal authority.**
 - The **human approves READY** before implementation.
 - The **human approves the PR** before merge.
 - **Codex writes code only from a human-approved READY plan.**
 - **No actor except the human merges.**
+- `PR_READY` never authorizes merge, deployment, operational rollout, or
+  scientific adoption. Those remain human decisions.
+
+The first later owner-selected READY implementation using the rewritten workflow
+is the behavioral adoption check. Its PR records that every task received
+evidence, complete gates ran once per candidate, findings waited for owner
+disposition, and no second repair loop occurred. Do not create a test-only build
+or permanent run ledger for this check.
 
 ### Context maintenance
 
@@ -342,10 +320,9 @@ a tool as follows:
 
 | Policy stage | Tool | Where it lives |
 |---|---|---|
-| Plan-doc review loop (pre-READY / confirming round) — **default** | **`plan` workflow** — a real independent Codex pass (`codex exec`) is a required reviewer EVERY round, alongside Claude design/proportionality lenses | `.claude/workflows/plan.js` |
-| — lighter Sonnet-only variant of the above (legacy fallback; no Codex) | `plan-review` workflow | `.claude/workflows/plan-review.js` |
+| Plan review and confirmation — **default** | **`plan` workflow** — one read-only Claude+Codex review, owner dispositions, and at most one delta confirmation | `.claude/workflows/plan.js` |
 | Interactive plan stress-test / surface design forks | `grill-me` skill | `.claude/skills/grill-me/` |
-| READY-plan build + post-implementation Codex gate — **default** | **`implement` workflow** — red-first acceptance tests → independent verify (re-runs the gates) → Codex-diff review loop with re-verified fixer rounds; hold-at-PR | `.claude/workflows/implement.js` |
+| READY-plan implementation — **default** | **`implement` workflow** — every task evidenced, one independent full verification per candidate, one Claude+Codex review, owner disposition, and at most one confirmation repair; hold-at-PR | `.claude/workflows/implement.js` |
 | Vision → ordered, human-approved milestone list (WF1) | `vision-decompose` skill | skill |
 | Manifest-driven milestone build w/ auto-test-authoring (WF2 — **separate track, currently unused**; see Plan 112) | `vision-build` skill | skill, driven by `.claude/workflow-capabilities.json` |
 | Task Exit Gate / acceptance gates for WF2 | gate manifest | `.claude/workflow-capabilities.json` (mirrors `.github/workflows/ci.yml`) |
@@ -355,24 +332,23 @@ Notes:
 - **The policy is not auto-enforced.** No hook blocks a commit or PR for skipping
   multi-model review — the tools above run it, but the orchestrator is
   responsible for invoking them.
-- **`plan` / `implement` are the DEFAULT Codex-backed workflows** (the manual,
-  hand-rolled `codex exec` review is now baked in as a reflexive step). `plan-review`
-  is the older **Sonnet-only** plan variant, kept as a fallback (it does NOT run Codex).
-  `plan` and `implement` shell out to Codex, so they require **`codex exec --sandbox
+- **`plan` / `implement` are the default Codex-backed workflows.** They shell
+  out to Codex, so they require **`codex exec --sandbox
   read-only`** to be permitted in the local allowlist (`.claude/settings.local.json`) —
   they hang or are denied without it.
-- **🔴 Codex is invoked through `scripts/codex-review.sh` — never a hand-rolled
-  `codex exec`.** `codex exec` blocks on `Reading additional input from stdin...`
-  unless stdin is closed: it writes its entire review, then waits until the caller's
-  timeout kills it (exit 143). The verdict is produced and thrown away, and **the run
-  reports a normal, green round that had no independent reviewer in it at all.** Both
-  workflows carried the required `< /dev/null` only as *prose* inside a prompt; on
-  **2026-08-28 a `plan` run reported "0 blockers + 1 major" with
-  `codexFailedRounds` = 2 of 2** — the agent had omitted the redirect both rounds. The
-  redirect now lives in the script, where a caller cannot forget it.
-  - **Before trusting ANY `plan`/`implement` round, check `codexFailedRounds` in the
-    task output.** Non-zero means those rounds were Claude-only and do **not** meet the
-    `CLAUDE.md` independent-review floor, however normally the run reports.
+- **Codex is invoked through `scripts/codex-review.sh`, never a hand-rolled
+  `codex exec`.** The script closes stdin so a completed review cannot hang until
+  timeout. The workflow requires a zero numeric exit and non-empty raw verdict;
+  a non-zero exit or unusable output makes the reviewer incomplete.
+  The relay writes its prompt to a deterministic, content-fingerprinted, shell-safe
+  workflow-specific, gitignored `sapphire-flow-*-codex-review.md` path at the
+  worktree root via the file-write tool. Shared permissions allow only that file pattern and the two
+  exact relay command prefixes. The relay reads the prompt once and rejects empty
+  content or the fixed cleared sentinel before invoking Codex,
+  so concurrent identical prompts may safely share a path. It does not use shell heredocs or redirects, which the
+  Claude sandbox cannot analyze reliably.
+  - A missing or failed Codex report yields `REVIEW_INCOMPLETE` for planning or
+    `engineeringReview: INCOMPLETE` for implementation; it is never clean.
   - A manual pass is `./scripts/codex-review.sh <prompt-file>`; a non-zero exit means
     no usable verdict. Scope the prompt — a broad one over a long document can still
     exceed the 10-minute cap.
@@ -383,47 +359,35 @@ Notes:
   locked-test-authoring soundness gate (twice): the auto-author kept writing
   tests against the changing `_fetch_nwp_task` signature that *errored* instead
   of failing RED. We pivoted to a **conventional build** — author-controlled
-  locked tests + a delegated implementation + the manual post-WF2 adversarial
-  rounds above (which caught 3 blockers). Lesson: for signature-changing work,
+  locked tests + a delegated implementation + an independent patch review
+  (which caught 3 blockers). Lesson: for signature-changing work,
   the auto-authored locked tests may not converge; be ready to author them by
-  hand and always run the post-WF2 adversarial rounds. Confirm the manifest's
+  hand and always run the standard independent patch review. Confirm the manifest's
   gate commands locally before a launch (see the manifest's own `_comment`).
   Adoption stance is manual-deploy-first, then WF2 fix-mode on confirmed bugs,
   **hold-at-PR — never auto-merge**.
-- **Staleness gate (Plan 200).** Both `plan` and `implement` refuse to proceed from a
-  plan doc the working branch never saw a correction to: at PREFLIGHT (before any work
-  starts) and again at FINALIZE (before recommending a PR), each checks that the branch
-  **contains** the latest plan-changing commit from both `origin/main` and local `main` —
-  escalating (no warning, no partial build) only when that commit is absent from the
-  branch **and** the branch's actual **worktree** copy of the plan (not the last commit —
-  `plan.js` revises the doc in place without committing mid-loop) differs from that ref's
-  content. A failed `git fetch`, or any other git command erroring rather than returning
-  an expected result (a distinct `checkOk` flag, not the redundant top-level `stale`
-  boolean, is what the caller trusts), escalates too — fail-closed, never a silent compare
-  against stale or absent data. Escalation returns `escalated: true` with `escalationReason` naming the
-  stale ref(s). At PREFLIGHT this means `implement.js` builds nothing and `plan.js` edits
-  nothing; a FINALIZE hit fires **after** implement's round has already committed, or
-  plan's round has already revised the doc in place — that completed work is preserved on
-  the branch, but the run is forced to `NOT-READY` / `NOT PR-READY` rather than being
-  recommended against a spec that moved out from under it mid-run. This is a build-time
-  gate; a plain equality check would false-escalate on every `/plan` run, since `/plan`
-  edits the plan doc in place by design — the predicate is containment, not equality.
-  Separately, a branch merely **behind** `origin/main` (D5) only **warns** with the
-  behind-count and `git merge origin/main` — it never escalates, since `main` moves
-  several times a day and a hard stop there would be disabled within a day. A commit-time
+- **Staleness gate (Plan 200).** Both `plan` and `implement` fail closed before
+  work and before a terminal recommendation when the plan's authoritative
+  `main`/`origin/main` history moved beyond the branch copy. A failed fetch or git
+  check also fails closed. A branch merely behind `origin/main` warns and proceeds.
+  A commit-time
   nudge (`unpushed-main-nudge`, `.pre-commit-config.yaml`, `post-commit` stage) separately
   warns — never blocks — when local `main` carries commits `origin/main` doesn't have yet;
   silent on every other branch. See `docs/plans/archive/200-workflows-refuse-a-stale-spec.md`.
 
 ## Task Exit Gate
 
-After each subagent completes, the orchestrator verifies:
+For manual/direct work, the orchestrator verifies:
 
 1. Task's verification command passes
 2. `uv run ruff check src/ tests/` and `uv run ruff format --check src/ tests/` clean
 3. `uv run pyright src/` — no type errors in changed modules
 4. `uv run pytest` — all tests pass
 5. Affected docs updated in the same change
+
+Inside `implement`, the implementer runs task-targeted checks only. The
+independent verifier runs every task's exact verification and the plan Exit gates
+once on each committed candidate.
 
 ## Documentation Hygiene
 
@@ -442,4 +406,5 @@ type(scope): description
 **Types**: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
 **Scope**: module name — `feat(types): add domain enums`, `test(qc): add range check tests`
 
-Every commit includes a patch version bump (see CLAUDE.md). Tag after committing.
+Every code commit includes a patch version bump. Never create a tag on a feature branch.
+On pushes to `main`, `.github/workflows/tag-main.yml` creates the version tag when absent.

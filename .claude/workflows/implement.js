@@ -1,673 +1,809 @@
 export const meta = {
   name: 'implement',
-  description: 'Build a READY plan, then GATE the diff with an iterative independent Codex review. An implementer locks the plan’s key acceptance criteria RED-FIRST (from the spec, failing as a real assertion — the best of WF2, done Plan-105-safely), follows the phase graph, runs the exit gates, and commits locally (hold-at-PR: it never pushes or merges). Then a REAL independent Codex CLI pass (codex exec -s read-only over git diff) plus a Claude design reviewer critique the COMMITTED diff each round; a fixer resolves every blocker+major and re-commits; loops UNTIL clean or ESCALATES. Proves test-soundness (a locking test must fail against the buggy code). The human owns the PR + merge.',
+  description: 'Implement every READY-plan task with evidence, verify once, review once, and allow one owner-scoped confirmation repair.',
   phases: [
+    { title: 'Preflight' },
     { title: 'Implement' },
-    { title: 'Review loop' },
+    { title: 'Verify' },
+    { title: 'Review' },
     { title: 'Finalize' },
   ],
 }
 
-// ── WHY THIS EXISTS ──────────────────────────────────────────────────────────
-// Post-implementation review is already MANDATORY (docs/workflow.md: post-impl gate +
-// post-WF2 adversarial Codex rounds). But running it was manual: hand-write a codex
-// prompt against the diff, launch, babysit, loop. `implement` makes that reflexive —
-// the independent Codex review of the committed diff is a baked-in stage, same idiom as
-// the `plan` workflow. A green test suite + one review pass hides real bugs (Plan 105:
-// a second adversarial Codex round caught 3 blockers 159 green tests missed), so this
-// loops-until-converge and proves each locking test FAILS against the buggy code.
-//
-// BEST-OF-BOTH with the old WF2/vision-build: WF2's distinctive value was authoring the
-// acceptance test FIRST, from the spec (red-first), so the test locks the REQUIREMENT
-// independently of the implementation. WF2's auto-authoring BROKE on Plan 105 (tests
-// against a not-yet-existing/changing signature ERRORED instead of failing RED, so the
-// "prove it's red" gate never converged; the team fell back to hand-authoring). `implement`
-// keeps that red-first discipline for the plan's KEY acceptance criteria, Plan-105-safely:
-// a not-yet-existing symbol must fail as a RED ASSERTION, never an import/collection error;
-// if it can't, the workflow ESCALATES for a human to hand-author rather than skipping.
-//
-// ── USAGE ────────────────────────────────────────────────────────────────────
-// Workflow({ name: 'implement', args: { planPath: 'docs/plans/NNN-....md', repo, baseBranch: 'main', maxRounds: 3 } })
-//   planPath   (required)  a READY plan doc to implement.
-//   repo       (optional)  repo root (default '.').
-//   baseBranch (optional)  the branch the diff is measured against (default 'main').
-//   maxRounds  (optional)  max review↔fix rounds before ESCALATION (default 5).
-//   codexTimeoutMs (optional) per-Codex-call Bash timeout (default 600000).
-// Returns: { planPath, rounds, converged, stalled, exhausted, escalated,
-//            escalationReason, residualBlockerCount, residualMajorCount,
-//            residualFindings, codexFailedRounds, implementerReport, final }.
-//
-// hold-at-PR (HARD): the workflow COMMITS locally on the CURRENT branch and STOPS. It
-//   NEVER pushes, opens a PR, or merges — the human does that after reading the result.
-//   Run it on a dedicated branch/worktree that already has the READY plan in the tree.
-
-// ── args ─────────────────────────────────────────────────────────────────────
 let A = args || {}
 if (typeof A === 'string') {
-  try { A = JSON.parse(A) } catch (_e) { A = {} }
+  try { A = JSON.parse(A) } catch (_error) { A = {} }
 }
+
 const planPath = A.planPath
 const repo = A.repo || '.'
 const baseBranch = A.baseBranch || 'main'
-const maxRounds = A.maxRounds || 5
+const mode = A.mode || 'build'
+const riskClass = A.riskClass
+const priorReview = A.priorReview || null
+const ownerDispositions = Array.isArray(A.ownerDispositions) ? A.ownerDispositions : []
+const additionalReview = A.additionalReview || null
 const codexTimeoutMs = A.codexTimeoutMs || 600000
-if (!planPath) {
-  throw new Error('implement requires args.planPath (a READY plan doc to build)')
+const MANIFEST_MAX_BYTES = 8192
+
+if (!planPath) throw new Error('implement requires args.planPath')
+if (!['build', 'confirm'].includes(mode)) throw new Error("implement mode must be 'build' or 'confirm'")
+if (!['ordinary', 'high'].includes(riskClass)) {
+  throw new Error("implement requires explicit riskClass 'ordinary' or 'high'")
 }
 
-// Normalize a value to a git SHA (trimmed, lowercase, 7–40 hex) or null. A noisy/failed
-// HEAD capture must NOT string-compare as "fresh" against another noisy value.
-const asSha = (s) => {
-  const t = typeof s === 'string' ? s.trim().toLowerCase() : ''
-  return /^[0-9a-f]{7,40}$/.test(t) ? t : null
+const asSha = (value) => {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return /^[0-9a-f]{7,40}$/.test(normalized) ? normalized : null
 }
 
-const IMPL_REPORT = {
+const tagStateValid = (value) => Number.isInteger(value?.tagCount) && value.tagCount >= 0 &&
+  typeof value.tagFingerprint === 'string' &&
+  /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value.tagFingerprint.trim().toLowerCase())
+
+const READINESS = {
   type: 'object',
-  required: ['changedFiles', 'commandsRun', 'deviations', 'residualRisks', 'committed', 'exitGatesPassed', 'testSoundnessProved', 'acceptanceTestsRedFirst'],
+  required: ['exitCode', 'outputExcerpt'],
   properties: {
-    changedFiles: { type: 'array', items: { type: 'string' } },
-    commandsRun: { type: 'array', items: { type: 'string' } }, // exit-gate cmds + their pass/fail
-    deviations: { type: 'array', items: { type: 'string' } },  // where the impl departed from the plan + why
-    residualRisks: { type: 'array', items: { type: 'string' } },
-    committed: { type: 'boolean' },                            // did it land a local commit (NOT pushed)
-    commitSha: { type: 'string' },
-    exitGatesPassed: { type: 'boolean' },                      // ruff + pyright + pytest ALL green
-    testSoundnessProved: { type: 'boolean' },                 // new locking tests shown to FAIL against buggy code
-    lockingTestProofs: { type: 'array', items: { type: 'string' } }, // which tests, proven fail-against-buggy
-    // Best-of-both with the old WF2/vision-build: the plan's KEY acceptance criteria were
-    // authored as tests FIRST (red-first, from the SPEC) and shown to fail RED before
-    // implementing to green — OR there were no testable acceptance criteria. FALSE means
-    // it could NOT be done cleanly (e.g. Plan-105 signature churn where a not-yet-existing
-    // symbol ERRORS rather than fails RED) → escalate for a human to hand-author.
-    acceptanceTestsRedFirst: { type: 'boolean' },
-    acceptanceTests: { type: 'array', items: { type: 'string' } }, // which acceptance criteria were locked red-first
+    exitCode: { type: 'number' },
+    outputExcerpt: { type: 'string', maxLength: 1000 },
   },
 }
 
-// Independent verification of the implementer's self-report — the workflow must not
-// trust "committed/gates passed", it re-checks against git + re-runs the gates.
-const VERIFY = {
+const CONTEXT = {
   type: 'object',
-  required: ['headSha', 'diffNonEmpty', 'worktreeClean', 'gatesPassed'],
+  required: [
+    'inspectionExitCode', 'inspectionRawOutput', 'headSha', 'worktreeStatus', 'branchName',
+    'tagCount', 'tagFingerprint', 'remoteBranchSha',
+  ],
   properties: {
+    inspectionExitCode: { type: 'number' },
+    inspectionRawOutput: { type: 'string', maxLength: MANIFEST_MAX_BYTES },
     headSha: { type: 'string' },
-    diffNonEmpty: { type: 'boolean' }, // git diff <base>...HEAD has real changes
-    worktreeClean: { type: 'boolean' }, // nothing uncommitted left behind
-    gatesPassed: { type: 'boolean' },  // ruff + pyright + pytest re-run green
-    notes: { type: 'string' },
+    worktreeStatus: { type: 'string', maxLength: 1000 },
+    branchName: { type: 'string' },
+    tagCount: { type: 'number' },
+    tagFingerprint: { type: 'string', maxLength: 64 },
+    remoteBranchSha: { type: 'string' },
   },
 }
 
-// reviewerFailed: a Codex pass that could not produce a verdict (see plan.js).
-// rawVerdict: the Codex relay's UNEDITED codex output, so a human can audit that the
-// relay did not silently launder/soften Codex's findings while "transcribing".
-const FINDINGS = {
+const TASK_EVIDENCE = {
   type: 'object',
-  required: ['findings'],
+  required: [
+    'taskId', 'preChangeFingerprint', 'preChangeStatus', 'preChangeExitCode',
+    'preChangeOutputExcerpt', 'verificationFingerprint', 'exitCode', 'outputExcerpt',
+    'beforeEvidence', 'afterEvidence', 'status',
+  ],
   properties: {
-    reviewerFailed: { type: 'boolean' },
-    rawVerdict: { type: 'string' },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['severity', 'issue', 'location', 'suggestion'],
-        properties: {
-          severity: { type: 'string', enum: ['blocker', 'major', 'minor'] },
-          issue: { type: 'string' },
-          location: { type: 'string' }, // file:line in the DIFF the finding is grounded in
-          suggestion: { type: 'string' },
-        },
-      },
+    taskId: { type: 'string' },
+    preChangeFingerprint: { type: 'string' },
+    preChangeStatus: {
+      type: 'string',
+      enum: ['EXPECTED_FAILURE', 'NOT_APPLICABLE', 'UNVERIFIABLE'],
+    },
+    preChangeExitCode: { type: 'number' },
+    preChangeOutputExcerpt: { type: 'string', maxLength: 1000 },
+    verificationFingerprint: { type: 'string' },
+    exitCode: { type: 'number' },
+    outputExcerpt: { type: 'string', maxLength: 1000 },
+    beforeEvidence: { type: 'string', maxLength: 1000 },
+    afterEvidence: { type: 'string', maxLength: 1000 },
+    status: {
+      type: 'string',
+      enum: ['READY_FOR_VERIFICATION', 'PASS', 'FAIL', 'UNVERIFIABLE', 'PLAN_INCOMPLETE'],
     },
   },
 }
 
-// The fixer's structured self-report — so the loop can GATE on test-soundness after a
-// fix round (the git/gate VERIFY below is non-mutating and cannot re-prove soundness).
-const FIX_REPORT = {
+const VERIFICATION_EVIDENCE = {
   type: 'object',
-  required: ['changelog', 'testSoundnessProved'],
+  required: ['taskId', 'verificationFingerprint', 'exitCode', 'outputExcerpt', 'afterEvidence', 'status'],
   properties: {
-    changelog: { type: 'string' },
-    testSoundnessProved: { type: 'boolean' }, // every blocker/bug-fix locking test shown to fail-against-buggy (or none needed)
-    lockingTestProofs: { type: 'array', items: { type: 'string' } },
-    disputedFindings: { type: 'array', items: { type: 'string' } }, // findings judged wrong + why (not complied with)
+    taskId: { type: 'string' },
+    verificationFingerprint: { type: 'string' },
+    exitCode: { type: 'number' },
+    outputExcerpt: { type: 'string', maxLength: 1000 },
+    afterEvidence: { type: 'string', maxLength: 1000 },
+    status: { type: 'string', enum: ['PASS', 'FAIL', 'UNVERIFIABLE'] },
   },
 }
 
-const FINAL = {
+const GATE_EVIDENCE = {
   type: 'object',
-  required: ['summary', 'recommendation'],
+  required: ['gateId', 'fingerprint', 'exitCode', 'outputExcerpt'],
   properties: {
-    summary: { type: 'string' },
-    residualRisks: { type: 'array', items: { type: 'string' } },
-    recommendation: { type: 'string', enum: ['PR-READY', 'NOT-READY'] },
+    gateId: { type: 'string' },
+    fingerprint: { type: 'string' },
+    exitCode: { type: 'number' },
+    outputExcerpt: { type: 'string', maxLength: 1000 },
   },
 }
 
-// The independent Codex reviewer prompt — adversarial, over the COMMITTED diff.
-function codexDiffPrompt(round) {
-  return (
-    `CRITICAL, ADVERSARIAL, repo-grounded review (round ${round}) of the COMMITTED implementation of the ` +
-    `plan at ${planPath} in repo ${repo}. First read the plan, then read the diff: ` +
-    `\`git diff ${baseBranch}...HEAD\` (and \`git diff ${baseBranch}...HEAD --stat\`). You are INDEPENDENT — ` +
-    `assume the diff is subtly wrong until you prove otherwise. Hunt for: correctness bugs and regressions ` +
-    `from the change, edge cases, SILENT-FAILURE modes, missed callers/config/migrations, ForecastInterface ` +
-    `contract breaks, deviations from the READY plan, unintended files changed, and whether the added/locked ` +
-    `TESTS would actually catch a subtly-broken impl (not merely pass). Verify claims with your own Read+Grep. ` +
-    `Only GENUINE problems. For each: severity (BLOCKER/MAJOR/MINOR), the file:line in the diff, and a ` +
-    `concrete fix. Output a VERDICT line, then BLOCKERS / MAJORS / MINORS with file:line + fix, then a ` +
-    `CONFIRMED list of what you verified correct. Do NOT edit any file.`
-  )
+const CHANGE_REPORT = {
+  type: 'object',
+  required: ['taskEvidence', 'changedFiles', 'deviations', 'residualRisks', 'rootCauseBundles', 'committed'],
+  properties: {
+    taskEvidence: { type: 'array', items: TASK_EVIDENCE },
+    changedFiles: { type: 'array', items: { type: 'string' } },
+    deviations: { type: 'array', items: { type: 'string', maxLength: 1000 } },
+    residualRisks: { type: 'array', items: { type: 'string', maxLength: 1000 } },
+    rootCauseBundles: { type: 'array', items: { type: 'string', maxLength: 1000 } },
+    committed: { type: 'boolean' },
+    commitSha: { type: 'string' },
+  },
 }
 
-// ── STALENESS GATE (Plan 200) ────────────────────────────────────────────────
-// PR #201 postmortem: a plan-doc correction made AFTER a build started, and never
-// pushed, could not reach the running branch before it merged — the branch built
-// (faithfully) from a plan an hour stale. A preflight-only check would NOT have
-// caught it (nothing was stale when the build started); the gate must also run at
-// FINALIZE, the only point where the workflow could still have seen the correction.
-//
-// D1 — CONTAINMENT, not equality, against BOTH origin/main and local main. Plain
-// equality false-escalates on every legitimate run (`/plan` edits the plan doc in
-// place by design). The predicate: the branch must CONTAIN the latest plan-changing
-// commit from each ref. Escalate only when that commit is ABSENT from the branch
-// AND the branch's own copy of the plan differs from that ref's version — the
-// signature of a correction the branch never saw, while still allowing edits the
-// branch itself made on top of the latest plan.
-//
-// NOTE — this check is pinned to `main`/`origin/main` specifically, INDEPENDENT of
-// `baseBranch` (below): plan docs in this repo are committed directly to `main`, never
-// to a feature `baseBranch` (see CLAUDE.md "Plans direct to main; PRs for code"), so
-// `main` is the only ref a plan correction can land on. `checkBaseBehind`, further
-// down, IS parameterized on `baseBranch` — that check is about the actual diff base,
-// which legitimately can differ from `main`.
-//
-// The content comparison is against the WORKTREE file, never HEAD's committed blob:
-// a fixer/planner round can edit files without an intervening commit, so at FINALIZE
-// the on-disk file can already differ from HEAD. Diffing HEAD's blob against a ref
-// would false-escalate when the worktree independently already matches the ref, and
-// could equally miss real staleness if the worktree drifted from a HEAD that still
-// happens to match the ref.
-//
-// D3 — fetch origin FIRST; a failed fetch, or ANY other git command erroring instead
-// of returning one of its EXPECTED results, fails CLOSED (checkOk=false) rather than
-// silently reading as "not stale" (an unavailable check must not resemble a passing
-// one). `git log -1 -- <path>` returning a SHA does NOT mean the path exists now — a
-// deleted/archived plan still has a deletion commit — so existence is checked with
-// `cat-file -e` against the ref's current tip, not `log`.
-const STALE_PLAN = {
+const VERIFY = {
   type: 'object',
-  required: ['fetchOk', 'checkOk', 'stale', 'staleRefs'],
+  required: [
+    'headSha', 'branchName', 'tagCount', 'tagFingerprint', 'remoteBranchSha', 'diffNonEmpty',
+    'worktreeStatus', 'versionBumped', 'scopeStatus', 'taskEvidence',
+    'changedFiles', 'gateEvidence', 'deviations', 'planDiffOutputExcerpt', 'planDiffExitCode',
+    'readinessExitCode', 'readinessOutputExcerpt',
+  ],
+  properties: {
+    headSha: { type: 'string' },
+    branchName: { type: 'string' },
+    tagCount: { type: 'number' },
+    tagFingerprint: { type: 'string', maxLength: 64 },
+    remoteBranchSha: { type: 'string' },
+    diffNonEmpty: { type: 'boolean' },
+    worktreeStatus: { type: 'string', maxLength: 1000 },
+    versionBumped: { type: 'boolean' },
+    scopeStatus: { type: 'string', enum: ['IN_SCOPE', 'DEVIATION'] },
+    taskEvidence: { type: 'array', items: VERIFICATION_EVIDENCE },
+    changedFiles: { type: 'array', items: { type: 'string' } },
+    gateEvidence: { type: 'array', items: GATE_EVIDENCE },
+    deviations: { type: 'array', items: { type: 'string', maxLength: 1000 } },
+    planDiffOutputExcerpt: { type: 'string', maxLength: 1000 },
+    planDiffExitCode: { type: 'number' },
+    readinessExitCode: { type: 'number' },
+    readinessOutputExcerpt: { type: 'string', maxLength: 1000 },
+  },
+}
+
+const FINDING = {
+  type: 'object',
+  required: ['id', 'severity', 'location', 'violatedContract', 'correction'],
+  properties: {
+    id: { type: 'string', maxLength: 1000 },
+    severity: { type: 'string', enum: ['blocker', 'major', 'minor'] },
+    location: { type: 'string', maxLength: 1000 },
+    violatedContract: { type: 'string', maxLength: 1000 },
+    correction: { type: 'string', maxLength: 1000 },
+  },
+}
+
+const REVIEW = {
+  type: 'object',
+  required: ['reviewerFailed', 'findings'],
+  properties: {
+    reviewerFailed: { type: 'boolean' },
+    rawVerdict: { type: 'string', maxLength: 8000 },
+    findings: { type: 'array', items: FINDING },
+  },
+}
+
+const CODEX_REVIEW = {
+  type: 'object',
+  required: ['reviewerFailed', 'findings', 'exitCode', 'rawVerdict'],
+  properties: {
+    reviewerFailed: { type: 'boolean' },
+    findings: { type: 'array', items: FINDING },
+    exitCode: { type: 'number' },
+    rawVerdict: { type: 'string', maxLength: 8000 },
+  },
+}
+
+const STALENESS = {
+  type: 'object',
+  required: ['fetchOk', 'checkOk', 'staleRefs', 'behindCount'],
   properties: {
     fetchOk: { type: 'boolean' },
-    checkOk: { type: 'boolean' }, // false = a git command errored; treat as unverifiable, NOT as "not stale"
-    stale: { type: 'boolean' },   // informational only — the caller derives staleness from staleRefs itself
-    staleRefs: { type: 'array', items: { type: 'string' } },
-    notes: { type: 'string' },
+    checkOk: { type: 'boolean' },
+    staleRefs: { type: 'array', items: { type: 'string', maxLength: 1000 } },
+    behindCount: { type: 'number' },
+    notes: { type: 'string', maxLength: 1000 },
   },
 }
-// NOTE — this gate is deliberately MAIN-ONLY, and does not follow `baseBranch`.
-// Plan documents live on `main` (docs/plans/), so `main`/`origin/main` is where a
-// plan correction lands regardless of which branch a diff is measured against. A
-// run invoked with `baseBranch: 'release-v1'` still checks the plan against main,
-// which is intended: the spec's authority is main, not the integration target.
-function stalePlanPromptText(stage) {
+
+function stalenessPrompt(stage) {
   return (
-    `Check whether the CURRENT branch in repo ${repo} has gone stale against the plan doc at ${planPath}, ` +
-    `at the ${stage} stage of a build. Throughout, distinguish an EXPECTED git result (empty output, "not an ` +
-    `ancestor", "no diff") from a git COMMAND ERROR (a non-zero exit for any reason OTHER than the one ` +
-    `documented expected-negative below) — a command error means the check could NOT run and MUST fail closed ` +
-    `(checkOk=false), never be read as "not stale". Steps:\n` +
-    `1. Run \`git -C ${repo} fetch origin main --quiet\`. If it FAILS (offline/auth/no such remote/etc.), STOP ` +
-    `and return {"fetchOk": false, "checkOk": false, "stale": false, "staleRefs": [], "notes": "<what failed>"} ` +
-    `— do NOT compare against a possibly-stale origin/main.\n` +
-    `2. Check whether ${planPath} exists in the CURRENT WORKTREE right now: \`test -f ${repo}/${planPath}\`.\n` +
-    `3. For EACH of these two refs — "origin/main" and "main" — first check whether the plan file exists AT ` +
-    `THAT REF'S CURRENT TIP: \`git -C ${repo} cat-file -e <ref>:${planPath}\` (exit 0 = exists there now, ` +
-    `non-zero = absent there now). Do NOT use \`git log -1 -- <path>\` non-empty output as a proxy for "exists" ` +
-    `— a plan later DELETED or ARCHIVED (e.g. moved to docs/plans/archive/) still has history touching the ` +
-    `path, so \`log\` finds its deletion commit even though the blob is gone at that ref now; only \`cat-file ` +
-    `-e\` tells you whether it exists THERE NOW.\n` +
-    `   - ABSENT at the ref AND ABSENT in the worktree (step 2): consistent, SKIP this ref (not stale for it).\n` +
-    `   - ABSENT at the ref but PRESENT in the worktree: that ref no longer has this plan (likely archived or ` +
-    `moved upstream) while the branch still does — record this ref in staleRefs with a note that it was ` +
-    `removed there; do NOT attempt a content diff against a blob that no longer exists.\n` +
-    `   - PRESENT at the ref: continue to step 4.\n` +
-    `4. Find the latest commit on that ref that touched the file: \`git -C ${repo} log -1 --format=%H <ref> -- ` +
-    `${planPath}\`. Step 3 already confirmed the blob exists at the ref's tip, so this MUST return a SHA; if it ` +
-    `errors or returns empty anyway, that is a COMMAND ERROR — checkOk=false.\n` +
-    `5. Check containment: \`git -C ${repo} merge-base --is-ancestor <sha> HEAD\`. Exit 0 = contained (not ` +
-    `stale for this ref). Exit 1 = NOT contained — this is the EXPECTED negative, not an error; go to step 6. ` +
-    `Any OTHER exit code (e.g. an invalid SHA) is a COMMAND ERROR — checkOk=false.\n` +
-    `6. If NOT contained, compare the ACTUAL WORKTREE FILE — not HEAD's last commit; the current branch may ` +
-    `have UNCOMMITTED edits to the plan — against that ref's content: \`git -C ${repo} diff <ref> -- ` +
-    `${planPath}\`. An EMPTY diff (exit 0, no output) means the worktree copy ALREADY matches that ref's ` +
-    `content — NOT stale for it (a branch whose own working copy already carries an equivalent edit must not ` +
-    `false-escalate), even if the committed HEAD blob differs. A NON-EMPTY diff means that ref is STALE against ` +
-    `what is actually on disk — record its name ("origin/main" or "main") in staleRefs. Plain \`git diff\` (no ` +
-    `--exit-code) exits non-zero ONLY on a real error, never merely for having a diff — so any non-zero exit ` +
-    `here is a COMMAND ERROR — checkOk=false.\n` +
-    `Return fetchOk=true, checkOk=(false if ANY step above hit a command error, true otherwise), ` +
-    `stale=(staleRefs is non-empty) — informational; the caller derives staleness from staleRefs itself, not ` +
-    `from this field — staleRefs, and notes explaining what you found (the SHAs compared, which ref(s) were ` +
-    `stale vs current, and why).`
+    `In repo ${repo}, run the fail-closed ${stage} staleness check for ${planPath}. Do not edit files. ` +
+    `Fetch origin/main first; fetch failure means fetchOk=false and checkOk=false. Report ` +
+    `git rev-list --count HEAD..origin/main as behindCount. For origin/main and main, use cat-file to ` +
+    `check whether the plan exists at the ref tip. When absent, use git log to distinguish a new branch ` +
+    `plan with no ref history from a plan removed upstream. When present, find the latest plan-changing ` +
+    `commit and test whether it is an ancestor of HEAD; if not, compare the actual worktree file with the ` +
+    `ref. Record only differing or removed refs in staleRefs. Any unexpected git exit or unverifiable ` +
+    `comparison means checkOk=false. Return concise facts only, without command output.`
   )
 }
-// D5 — a stale BASE (the branch is behind origin/${baseBranch}) WARNS and proceeds; it
-// never escalates. A hard refusal fires on essentially every branch (a base branch
-// moves several times a day) and would be disabled within a day — the same failure as
-// a blocking commit hook (D4). This is deliberately weaker than a refusal to a stale
-// PLAN. Unlike the plan-staleness check above, this IS parameterized on `baseBranch`
-// (default 'main') — it measures drift against the actual branch the diff will be
-// compared to, which the caller may override.
-const BASE_BEHIND = {
-  type: 'object',
-  required: ['behindCount'],
-  properties: { behindCount: { type: 'number' }, notes: { type: 'string' } },
+
+function stale(check) {
+  return !check || !check.fetchOk || !check.checkOk ||
+    !Array.isArray(check.staleRefs) || check.staleRefs.length > 0
 }
-async function checkBaseBehind(phaseTitle) {
-  const baseBehind = await agent(
-    `In repo ${repo}, fetch the base branch fresh (\`git -C ${repo} fetch origin ${baseBranch} --quiet\`; if ` +
-    `that fails, proceed with whatever origin/${baseBranch} is already known locally) and report how many ` +
-    `commits origin/${baseBranch} has that the current branch (HEAD) lacks: \`git -C ${repo} rev-list --count ` +
-    `HEAD..origin/${baseBranch}\`. Return behindCount as a number (0 if the command errors, e.g. no such ` +
-    `remote-tracking ref). Do not edit anything.`,
-    { label: 'base-behind', phase: phaseTitle, model: 'sonnet', effort: 'low', schema: BASE_BEHIND },
+
+function utf8Bytes(text) {
+  const bytes = []
+  for (let index = 0; index < text.length; index += 1) {
+    let codePoint = text.charCodeAt(index)
+    if (codePoint >= 0xd800 && codePoint <= 0xdbff) {
+      const next = index + 1 < text.length ? text.charCodeAt(index + 1) : 0
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + next - 0xdc00
+        index += 1
+      } else {
+        codePoint = 0xfffd
+      }
+    } else if (codePoint >= 0xdc00 && codePoint <= 0xdfff) {
+      codePoint = 0xfffd
+    }
+
+    if (codePoint <= 0x7f) bytes.push(codePoint)
+    else if (codePoint <= 0x7ff) {
+      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f))
+    } else if (codePoint <= 0xffff) {
+      bytes.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f))
+    } else {
+      bytes.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      )
+    }
+  }
+  return bytes
+}
+
+function fingerprint(text) {
+  let value = 0x811c9dc5
+  for (const byte of utf8Bytes(String(text))) {
+    value ^= byte
+    value = Math.imul(value, 0x01000193) >>> 0
+  }
+  return value.toString(16).padStart(8, '0')
+}
+
+function manifestValid(manifest) {
+  const validFingerprint = (value) => typeof value === 'string' && /^[0-9a-f]{8}$/.test(value)
+  const uniqueIds = (items) => Array.isArray(items) && items.length > 0 &&
+    new Set(items.map((item) => item.id)).size === items.length
+  return !!manifest && manifest.valid === true && manifest.status === 'READY' &&
+    Array.isArray(manifest.diagnostics) && manifest.diagnostics.length === 0 &&
+    validFingerprint(manifest.documentFingerprint) && uniqueIds(manifest.tasks) &&
+    manifest.tasks.every((task) => typeof task.id === 'string' && task.id.trim().length > 0 &&
+      ['N/A', 'executable'].includes(task.preChangeMode) &&
+      validFingerprint(task.preChangeFingerprint) && validFingerprint(task.verificationFingerprint)) &&
+    uniqueIds(manifest.exitGates) && manifest.exitGates.every((gate) =>
+      typeof gate.id === 'string' && gate.id.trim().length > 0 && validFingerprint(gate.fingerprint),
+    )
+}
+
+function parseManifest(context) {
+  if (!context || context.inspectionExitCode !== 0 ||
+      typeof context.inspectionRawOutput !== 'string' ||
+      utf8Bytes(context.inspectionRawOutput).length > MANIFEST_MAX_BYTES) return null
+  try {
+    const manifest = JSON.parse(context.inspectionRawOutput)
+    return manifestValid(manifest) ? manifest : null
+  } catch (_error) {
+    return null
+  }
+}
+
+function usable(report) {
+  if (!report || report.reviewerFailed !== false || !Array.isArray(report.findings)) return false
+  const ids = report.findings.map((finding) => finding.id)
+  return new Set(ids).size === ids.length && report.findings.every((finding) =>
+    ['blocker', 'major', 'minor'].includes(finding.severity) &&
+    [finding.id, finding.location, finding.violatedContract, finding.correction]
+      .every((value) => typeof value === 'string' && value.trim().length > 0),
   )
-  if (baseBehind && baseBehind.behindCount > 0) {
-    log(`⚠️ WARN — this branch is ${baseBehind.behindCount} commit(s) behind origin/${baseBranch}. Proceeding, ` +
-        `but review against the current diff and run \`git merge origin/${baseBranch}\` before opening the PR.`)
-  }
-  return baseBehind
 }
-// The caller derives staleness itself from fetchOk/checkOk/staleRefs — never trusting
-// the agent-reported `stale` boolean on its own, since a structurally-valid-but-wrong
-// {stale:false} alongside a non-empty staleRefs must still be treated as stale.
-function isPlanStale(check) {
-  return !check || !check.fetchOk || !check.checkOk || !Array.isArray(check.staleRefs) || check.staleRefs.length > 0
+
+function codexUsable(report) {
+  return usable(report) && Number.isInteger(report.exitCode) && report.exitCode === 0 &&
+    typeof report.rawVerdict === 'string' && report.rawVerdict.trim().length > 0
 }
-function staleEscalation(check, stage) {
-  if (!check || !check.fetchOk) {
-    return `plan-staleness check could not run at ${stage} (${check?.notes || 'git fetch failed'})`
+
+function priorCodexUsable(report) {
+  return usable(report) && Number.isInteger(report.exitCode) && report.exitCode === 0 &&
+    report.rawVerdictPresent === true
+}
+
+function publicReview(report) {
+  if (!report) return null
+  const result = { reviewerFailed: report.reviewerFailed, findings: report.findings }
+  if (Number.isInteger(report.exitCode)) {
+    result.exitCode = report.exitCode
+    result.rawVerdictPresent = typeof report.rawVerdict === 'string' && report.rawVerdict.trim().length > 0
   }
-  if (!check.checkOk) {
-    return `plan-staleness check hit a git error at ${stage} and produced no trustworthy verdict — treating as stale (${check.notes || 'see notes'})`
+  return result
+}
+
+function blocking(report) {
+  if (!usable(report)) return []
+  return report.findings.filter((finding) => ['blocker', 'major'].includes(finding.severity))
+}
+
+function taskIdsMatch(evidence, tasks) {
+  if (!Array.isArray(evidence) || evidence.length !== tasks.length) return false
+  const expected = tasks.map((task) => task.id).sort()
+  const actual = evidence.map((item) => item.taskId).sort()
+  return expected.every((taskId, index) => taskId === actual[index])
+}
+
+function sameUniqueStrings(actual, expected) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) return false
+  if (new Set(actual).size !== actual.length || new Set(expected).size !== expected.length) return false
+  if (actual.length !== expected.length) return false
+  const sortedActual = [...actual].sort()
+  const sortedExpected = [...expected].sort()
+  return sortedActual.every((value, index) => value === sortedExpected[index])
+}
+
+function implementationEvidenceHasContent(evidence) {
+  return typeof evidence.beforeEvidence === 'string' && evidence.beforeEvidence.trim().length > 0 &&
+    typeof evidence.afterEvidence === 'string' && evidence.afterEvidence.trim().length > 0 &&
+    typeof evidence.outputExcerpt === 'string' && evidence.outputExcerpt.trim().length > 0
+}
+
+function verificationEvidenceHasContent(evidence) {
+  return typeof evidence.afterEvidence === 'string' && evidence.afterEvidence.trim().length > 0 &&
+    typeof evidence.outputExcerpt === 'string' && evidence.outputExcerpt.trim().length > 0
+}
+
+function preChangeEvidenceValid(evidence, task) {
+  if (!task || evidence.preChangeFingerprint !== task.preChangeFingerprint ||
+      !Number.isInteger(evidence.preChangeExitCode) ||
+      typeof evidence.preChangeOutputExcerpt !== 'string' ||
+      evidence.preChangeOutputExcerpt.trim().length === 0) {
+    return false
   }
-  return `plan at ${planPath} is STALE at ${stage} against ${(check.staleRefs || []).join(', ')}: ${check.notes || ''}`
+  return task.preChangeMode === 'N/A'
+    ? evidence.preChangeStatus === 'NOT_APPLICABLE' && evidence.preChangeExitCode === 0
+    : evidence.preChangeStatus === 'EXPECTED_FAILURE' && evidence.preChangeExitCode !== 0
+}
+
+function taskEvidenceComplete(evidence, tasks) {
+  const task = tasks.find((item) => item.id === evidence.taskId)
+  return !!task && evidence.verificationFingerprint === task.verificationFingerprint &&
+    Number.isInteger(evidence.exitCode) && evidence.exitCode === 0 &&
+    evidence.status === 'PASS' && verificationEvidenceHasContent(evidence)
+}
+
+function taskEvidenceReady(evidence, tasks) {
+  const task = tasks.find((item) => item.id === evidence.taskId)
+  return !!task && preChangeEvidenceValid(evidence, task) &&
+    evidence.verificationFingerprint === task.verificationFingerprint &&
+    Number.isInteger(evidence.exitCode) && evidence.exitCode === 0 &&
+    evidence.status === 'READY_FOR_VERIFICATION' && implementationEvidenceHasContent(evidence)
+}
+
+function gateEvidenceComplete(evidence, gates) {
+  return taskIdsMatch(
+    evidence?.map((item) => ({ taskId: item.gateId })) || [],
+    gates.map((gate) => ({ id: gate.id })),
+  ) && evidence.every((item) => {
+    const gate = gates.find((candidate) => candidate.id === item.gateId)
+    return !!gate && item.fingerprint === gate.fingerprint &&
+      Number.isInteger(item.exitCode) && item.exitCode === 0 &&
+      typeof item.outputExcerpt === 'string' && item.outputExcerpt.trim().length > 0
+  })
+}
+
+function priorBlockingFindings() {
+  if (!priorReview || !priorReview.reviews) return []
+  const reports = [priorReview.reviews.claude, priorReview.reviews.codex]
+  if (riskClass === 'high' && priorReview.reviews.additional) reports.push(priorReview.reviews.additional)
+  return reports.reduce((items, report) => items.concat(blocking(report)), [])
+}
+
+function dispositionsCover(findings) {
+  const allowed = ['fix', 'reject', 'follow-up', 'accept-risk']
+  const findingIds = findings.map((finding) => finding.id)
+  const dispositionIds = ownerDispositions.map((item) => item.findingId)
+  if (!sameUniqueStrings(dispositionIds, findingIds)) return false
+  return findings.every((finding) => {
+    const matches = ownerDispositions.filter((item) => item.findingId === finding.id)
+    if (matches.length !== 1 || !allowed.includes(matches[0].disposition)) return false
+    return matches[0].disposition === 'fix' || String(matches[0].rationale || '').trim().length > 0
+  })
+}
+
+function sameFinding(left, right) {
+  return left.id === right.id && left.location === right.location &&
+    left.violatedContract === right.violatedContract
+}
+
+function acceptedPriorFindings() {
+  if (mode !== 'confirm') return []
+  const acceptedIds = new Set(ownerDispositions
+    .filter((item) => item.disposition === 'accept-risk')
+    .map((item) => item.findingId))
+  return priorBlockingFindings().filter((finding) => acceptedIds.has(finding.id))
+}
+
+function compactPriorReview() {
+  if (!priorReview) return null
+  return {
+    planPath: priorReview.planPath,
+    mode: priorReview.mode,
+    riskClass: priorReview.riskClass,
+    baseBranch: priorReview.baseBranch,
+    reviewedCommit: priorReview.reviewedCommit,
+    planFingerprint: priorReview.planFingerprint,
+    findings: {
+      claude: priorReview.reviews?.claude?.findings || [],
+      codex: priorReview.reviews?.codex?.findings || [],
+      additional: priorReview.reviews?.additional?.findings || [],
+    },
+  }
+}
+
+function canonicalTaskEvidence(report, implementationEvidence) {
+  return report.taskEvidence.map((verified) => {
+    const implemented = implementationEvidence.find((item) => item.taskId === verified.taskId) || {}
+    return {
+      taskId: verified.taskId,
+      preChangeFingerprint: implemented.preChangeFingerprint,
+      preChangeStatus: implemented.preChangeStatus,
+      preChangeExitCode: implemented.preChangeExitCode,
+      preChangeOutputExcerpt: implemented.preChangeOutputExcerpt,
+      verificationFingerprint: verified.verificationFingerprint,
+      exitCode: verified.exitCode,
+      outputExcerpt: verified.outputExcerpt,
+      beforeEvidence: implemented.beforeEvidence,
+      afterEvidence: verified.afterEvidence,
+      status: verified.status,
+    }
+  })
+}
+
+function compactVerification(report, taskEvidence) {
+  return {
+    headSha: report.headSha,
+    changedFiles: report.changedFiles,
+    scopeStatus: report.scopeStatus,
+    deviations: report.deviations,
+    taskEvidence,
+    gateEvidence: report.gateEvidence.map((item) => ({
+      gateId: item.gateId,
+      fingerprint: item.fingerprint,
+      exitCode: item.exitCode,
+      outputExcerpt: item.outputExcerpt,
+    })),
+  }
+}
+
+function stopResult(reason, taskEvidence = [], taskCompletion = 'INCOMPLETE') {
+  return {
+    planPath,
+    mode,
+    riskClass,
+    baseBranch,
+    taskCompletion,
+    engineeringReview: 'INCOMPLETE',
+    recommendation: 'NOT_READY',
+    reason,
+    taskEvidence,
+    reviews: { claude: null, codex: null, additional: publicReview(additionalReview) },
+    deviations: { change: [], verification: [] },
+    acceptedRisks: acceptedPriorFindings(),
+  }
+}
+
+phase('Preflight')
+
+const readiness = await agent(
+  `In repo ${repo}, run exactly: uv run python scripts/check_readiness.py ${planPath}. Do not edit anything. ` +
+  `Return the numeric process exit code and a relevant output excerpt of at most 1,000 characters without ` +
+  `interpreting readiness.`,
+  { label: 'readiness-check', phase: 'Preflight', model: 'sonnet', effort: 'low', schema: READINESS },
+)
+const readinessOk = !!readiness && Number.isInteger(readiness.exitCode) &&
+  typeof readiness.outputExcerpt === 'string' && readiness.outputExcerpt.length > 0 && readiness.exitCode === 0
+if (!readinessOk) return stopResult('PLAN_INCOMPLETE: deterministic YAML READY check failed')
+
+const staleAtStart = await agent(
+  stalenessPrompt('PREFLIGHT'),
+  { label: 'implement-staleness-preflight', phase: 'Preflight', model: 'sonnet', effort: 'low', schema: STALENESS },
+)
+if (stale(staleAtStart)) return stopResult('PLAN_INCOMPLETE: plan staleness could not be cleared')
+if (staleAtStart.behindCount > 0) log(`Warning: branch is ${staleAtStart.behindCount} commit(s) behind origin/main.`)
+
+const context = await agent(
+  `In repo ${repo}, run exactly: uv run python scripts/check_readiness.py --inspect-json ${planPath}. ` +
+  `Return its numeric exit code as inspectionExitCode and its unedited stdout as inspectionRawOutput. Also ` +
+  `return the current HEAD SHA, branch name, tagCount, and tagFingerprint. Derive the fingerprint from ` +
+  `git tag --list | LC_ALL=C sort | git hash-object --stdin and return only its hexadecimal hash, never tag ` +
+  `names. Also return git status --porcelain (at most 1,000 characters), ` +
+  `and the current origin/<branch> SHA or the literal NONE when that remote branch does not exist. Do not ` +
+  `return plan text, task contracts, commands, or summaries. Do not review or edit anything.`,
+  { label: 'implementation-context', phase: 'Preflight', model: 'sonnet', effort: 'low', schema: CONTEXT },
+)
+
+const manifest = parseManifest(context)
+if (!manifest || !asSha(context.headSha)) return stopResult('PLAN_INCOMPLETE: context manifest is invalid')
+const tasks = manifest.tasks
+const exitGates = manifest.exitGates
+if (context.worktreeStatus.trim().length > 0) {
+  return stopResult('IMPLEMENTATION_INCOMPLETE: worktree must be clean before build or confirmation')
+}
+const branchAtStart = String(context.branchName || '').trim()
+const branchSafeAtStart = branchAtStart.length > 0 && branchAtStart !== 'HEAD' &&
+  branchAtStart !== 'main' && branchAtStart !== baseBranch &&
+  tagStateValid(context) &&
+  (context.remoteBranchSha === 'NONE' || !!asSha(context.remoteBranchSha))
+if (!branchSafeAtStart) {
+  return stopResult('IMPLEMENTATION_INCOMPLETE: build requires a named feature branch with a git baseline')
+}
+
+const preHead = asSha(context.headSha)
+let fixFindings = []
+if (mode === 'confirm') {
+  if (!priorReview || !priorReview.reviews || !asSha(priorReview.reviewedCommit)) {
+    return stopResult('NOT_READY: confirm requires the prior review packet and reviewed commit')
+  }
+  if (priorReview.mode !== 'build' || priorReview.planPath !== planPath ||
+      priorReview.baseBranch !== baseBranch || priorReview.riskClass !== riskClass ||
+      asSha(priorReview.reviewedCommit) !== preHead ||
+      priorReview.planFingerprint !== manifest.documentFingerprint) {
+    return stopResult('NOT_READY: reviewed commit or READY plan changed before confirmation')
+  }
+  const previousFindings = priorBlockingFindings()
+  const priorTaskEvidence = priorReview.taskEvidence
+  const priorImplementationComplete = taskIdsMatch(priorTaskEvidence, tasks) &&
+    priorTaskEvidence.every((evidence) =>
+      preChangeEvidenceValid(evidence, tasks.find((task) => task.id === evidence.taskId)) &&
+      taskEvidenceComplete(evidence, tasks),
+    )
+  if (!usable(priorReview.reviews.claude) || !priorCodexUsable(priorReview.reviews.codex) ||
+      !priorImplementationComplete || !dispositionsCover(previousFindings)) {
+    return stopResult('NOT_READY: complete prior reports and one owner disposition per blocker/major are required')
+  }
+  const fixIds = new Set(ownerDispositions
+    .filter((item) => item.disposition === 'fix')
+    .map((item) => item.findingId))
+  fixFindings = previousFindings.filter((finding) => fixIds.has(finding.id))
 }
 
 phase('Implement')
 
-// PREFLIGHT — NEVER implement a plan that is not READY. A DRAFT is a proposal, not an
-// instruction (CLAUDE.md trust hierarchy); building one silently is a real hazard.
-const PREFLIGHT = {
-  type: 'object',
-  required: ['status', 'isReady'],
-  properties: { status: { type: 'string' }, isReady: { type: 'boolean' } },
-}
-const preflight = await agent(
-  `Read ONLY the YAML frontmatter and the Status section of the plan at ${planPath} (repo ${repo}). ` +
-  `Return its 'status:' value and isReady=true ONLY if that status is exactly READY (not DRAFT/SPLIT/etc.).`,
-  { label: 'preflight-status', phase: 'Implement', model: 'sonnet', effort: 'low', schema: PREFLIGHT },
-)
-if (!preflight || !preflight.isReady) {
-  log(`⚠️ ESCALATION — ${planPath} is not READY (status=${preflight?.status || 'unknown'}). ` +
-      `Refusing to implement a non-READY plan.`)
-  return {
-    planPath, rounds: 0, converged: false, stalled: false, exhausted: false,
-    escalated: true, escalationReason: `plan is not READY (status=${preflight?.status || 'unknown'})`,
-    residualBlockerCount: 0, residualMajorCount: 0, residualFindings: [], codexFailedRounds: 0,
-    implementerReport: null, verify: null, final: null,
-  }
-}
+let implementerReport = null
+let fixerReport = null
 
-// PREFLIGHT STALENESS — D1/D3/D5 (Plan 200). Runs AFTER the READY check (no point
-// staleness-checking a plan that isn't buildable yet) and BEFORE any implementation work.
-const staleAtPreflight = await agent(
-  stalePlanPromptText('PREFLIGHT'),
-  { label: 'stale-plan-preflight', phase: 'Implement', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
-)
-if (isPlanStale(staleAtPreflight)) {
-  const reason = staleEscalation(staleAtPreflight, 'PREFLIGHT')
-  log(`⚠️ ESCALATION — ${reason}. Refusing to build from an unverifiable or superseded spec (PR #201 postmortem).`)
-  return {
-    planPath, rounds: 0, converged: false, stalled: false, exhausted: false,
-    escalated: true, escalationReason: reason,
-    residualBlockerCount: 0, residualMajorCount: 0, residualFindings: [], codexFailedRounds: 0,
-    implementerReport: null, verify: null, final: null,
-  }
-}
-await checkBaseBehind('Implement')
-
-// Capture HEAD BEFORE implementing, so verification can prove a NEW commit actually
-// landed — a false `committed:true` over a pre-existing/stale branch diff must NOT pass.
-const PREHEAD = { type: 'object', required: ['headSha'], properties: { headSha: { type: 'string' } } }
-const preHeadRes = await agent(
-  `Run 'git rev-parse HEAD' in repo ${repo} and return headSha. Do NOT edit, stage, or commit anything.`,
-  { label: 'pre-head', phase: 'Implement', model: 'sonnet', effort: 'low', schema: PREHEAD },
-)
-const preHead = preHeadRes && preHeadRes.headSha ? preHeadRes.headSha : null
-
-// The independent verification prompt — reused after the initial build AND after every
-// fixer round (a fixer can break gates or skip a proof just as an implementer can).
-const verifyPromptText =
-  `Independently VERIFY the committed state in repo ${repo} — trust nothing that was claimed. ` +
-  `Run and report: 'git rev-parse HEAD' (headSha); 'git diff ${baseBranch}...HEAD --stat' — is there a REAL ` +
-  `non-empty diff (diffNonEmpty)?; 'git status --porcelain' — is the worktree CLEAN with nothing uncommitted ` +
-  `left (worktreeClean)?; and RE-RUN THE EXIT-GATE COMMANDS EXACTLY AS THE PLAN'S "Exit gates" SECTION ` +
-  `SPECIFIES (read ${planPath} for them) — typically ruff check + ruff format --check + a pyright check + ` +
-  `pytest. **CRITICAL — judge pyright by the REPO'S policy, not raw exit code:** this repo gates pyright by a ` +
-  `RATCHET against a baseline (run it the repo's way, e.g. 'uv run pyright --outputjson src/ > live.json && ` +
-  `uv run python tools/pyright_ratchet.py live.json tools/pyright_baseline.json'). Hundreds of PRE-EXISTING ` +
-  `errors are expected; a non-zero raw 'pyright src/' caused ONLY by pre-existing baseline errors (no NEW ` +
-  `errors introduced by this diff) is a PASS, not a failure. **PYTEST TAKES SEVERAL MINUTES (this repo has ` +
-  `~2000 tests, ~4+ min):** run it in the FOREGROUND to completion with a GENEROUS Bash timeout (e.g. ` +
-  `600000ms) and WAIT for the actual pass/fail line — do NOT background it and give up / submit early. You ` +
-  `MUST observe the final pytest summary before reporting; an unfinished/unobserved pytest is NOT a pass, but ` +
-  `waiting the full duration is expected and required, not a reason to bail. Report gatesPassed=true ONLY if ` +
-  `every gate passes by the repo's ACTUAL convention. Put the exact commands you ran + their outcomes ` +
-  `(including the final pytest summary line) in notes. Do NOT edit, stage, commit, push, or merge anything.`
-
-const implementerReport = await agent(
-  `You are the IMPLEMENTER of the READY plan at ${planPath} (repo ${repo}). Read the plan and its dependency ` +
-  `graph, then implement it FOLLOWING THE PHASE ORDER (respect task_depends_on; do dependent phases in sequence). ` +
-  `RED-FIRST ACCEPTANCE TESTS (borrowed from WF2, done Plan-105-safely): for the plan's KEY acceptance ` +
-  `criteria, author the test(s) FROM THE SPEC **first** and confirm each fails RED — a genuine ASSERTION ` +
-  `failure, NOT a collection/import ERROR. If a target symbol does not exist yet, write the test so it still ` +
-  `fails as a RED assertion (guard the import and assert the expected behavior), never an ImportError. If a ` +
-  `criterion CANNOT be made to fail cleanly red (e.g. signature churn — the Plan-105 trap), set ` +
-  `acceptanceTestsRedFirst=false and NOTE which criteria in acceptanceTests — but STILL complete the ` +
-  `implementation (do NOT stop): the independent diff review will scrutinize test meaningfulness and a human ` +
-  `is flagged. Otherwise implement to make the red tests green. (If the plan has no testable acceptance ` +
-  `criteria, acceptanceTestsRedFirst=true.) ` +
-  `Obey CLAUDE.md: type hints, frozen dataclasses at boundaries, structlog, no bare except, tests for new behavior. ` +
-  `UPDATE every affected doc (CLAUDE.md §Documentation Hygiene: no code change without its doc sync — specs, ` +
-  `conventions, touchpoint maps as relevant). Then run the plan's exit gates (from the plan's "Exit gates" ` +
-  `section — typically ruff check + ruff format --check + a pyright check + pytest) and make them pass. For ` +
-  `PYRIGHT, use the repo's RATCHET (e.g. tools/pyright_ratchet.py vs baseline) — hundreds of PRE-EXISTING ` +
-  `errors are expected and are NOT the gate; only NEW errors introduced by your diff fail it. For each ` +
-  `locking test of a CORRECTNESS/BUG FIX (not every feature test), PROVE it is sound: ` +
-  `confirm it FAILS against the buggy/absent code (stash the impl, keep the test, run it, expect RED), then ` +
-  `restore. This is CODE, so follow the FULL mandatory version workflow (CLAUDE.md §Version Bumping): ` +
-  `uv run bump-my-version bump patch; STAGE the version files with your changes; commit with a conventional ` +
-  `message on the CURRENT branch. **DO NOT TAG** — per PR #149 the version bump goes in the commit, but the ` +
-  `tag is applied on \`main\` AFTER merge, never on a feature branch (tagging a feature branch collides with ` +
-  `parallel sessions, which has happened repeatedly). ` +
-  `HOLD-AT-PR (HARD): commit + tag LOCALLY only — do NOT push, do NOT open a PR, do NOT merge. If a phase ` +
-  `cannot be implemented as written (the plan is wrong against the real code), STOP and report the deviation ` +
-  `rather than silently working around it. Return the report: changedFiles, commandsRun (each gate + ` +
-  `pass/fail), deviations (with why), residualRisks, committed, commitSha, exitGatesPassed (true ONLY if ` +
-  `ruff+pyright+pytest ALL green), testSoundnessProved (true if every correctness/bug-fix locking test was ` +
-  `shown to fail-against-buggy, OR there were none to prove), lockingTestProofs (which tests you proved), ` +
-  `acceptanceTestsRedFirst (true if the key acceptance criteria were locked red-first OR none were testable; ` +
-  `false if a criterion could not be made to fail cleanly red), and acceptanceTests (which criteria you locked).`,
-  { label: 'implement', phase: 'Implement', model: 'sonnet', effort: 'high', schema: IMPL_REPORT },
-)
-log(`Implemented: committed=${implementerReport?.committed}, sha=${implementerReport?.commitSha || '(none)'}, ` +
-    `gatesPassed(self)=${implementerReport?.exitGatesPassed}, testSoundness=${implementerReport?.testSoundnessProved}, ` +
-    `acceptanceRedFirst=${implementerReport?.acceptanceTestsRedFirst}, ` +
-    `${(implementerReport?.changedFiles || []).length} file(s), ${(implementerReport?.deviations || []).length} deviation(s)`)
-
-// INDEPENDENT VERIFICATION — do NOT trust the implementer's self-report of a commit or
-// green gates (the whole point of this workflow is that a "done" claim is evidence, not
-// proof). Re-derive HEAD, a non-empty diff, a clean worktree, re-run the gates, AND prove
-// a FRESH commit landed (verify.headSha must differ from the pre-implement HEAD) so a
-// stale pre-existing branch diff can never masquerade as this build's work.
-const verify = await agent(
-  verifyPromptText,
-  { label: 'verify-impl', phase: 'Implement', model: 'sonnet', effort: 'medium', schema: VERIFY },
-)
-const freshCommit = !!asSha(verify?.headSha) && !!asSha(preHead) && asSha(verify.headSha) !== asSha(preHead)
-const verified = !!verify && verify.diffNonEmpty && verify.worktreeClean && verify.gatesPassed && freshCommit
-log(`Verify: preHead=${preHead || '(none)'}, headSha=${verify?.headSha || '(none)'}, freshCommit=${freshCommit}, ` +
-    `diffNonEmpty=${verify?.diffNonEmpty}, worktreeClean=${verify?.worktreeClean}, gatesPassed=${verify?.gatesPassed}`)
-
-// HARD gate — a genuinely unverifiable build (no commit, unsound tests, empty/stale/
-// dirty diff, or gates that FAIL by the repo's real convention) aborts before review.
-// Red-first is NOT here (see below): a red-first miss is a soft flag, not an abort —
-// the independent diff review still adds value and should run.
-if (!implementerReport || !implementerReport.committed || !implementerReport.testSoundnessProved || !verified) {
-  log(`⚠️ ESCALATION — implementation not independently verified ` +
-      `(committed=${implementerReport?.committed}, testSoundness=${implementerReport?.testSoundnessProved}, ` +
-      `freshCommit=${freshCommit}, diffNonEmpty=${verify?.diffNonEmpty}, worktreeClean=${verify?.worktreeClean}, ` +
-      `gatesPassed=${verify?.gatesPassed}). A human must intervene before review — do NOT proceed to the diff ` +
-      `review over an unverified/empty/stale/failing diff.`)
-  return {
-    planPath, rounds: 0, converged: false, stalled: false, exhausted: false,
-    escalated: true, escalationReason: 'implementation not independently verified (fresh commit / non-empty diff / clean worktree / green gates / test-soundness)',
-    residualBlockerCount: 0, residualMajorCount: 0, residualFindings: [], codexFailedRounds: 0,
-    implementerReport, verify, final: null,
-  }
-}
-
-// SOFT flag — red-first not achieved (e.g. the Plan-105 case, or the implementer built
-// test-alongside rather than test-first). Do NOT abort: `testSoundnessProved` already
-// gives the "test catches the absent code" guarantee, and the independent diff review
-// below is a SECOND line of defence on test meaningfulness / spec-conformance. Carry it
-// as a residual risk for the human instead of skipping the review entirely.
-const redFirstMissed = !implementerReport.acceptanceTestsRedFirst
-if (redFirstMissed) {
-  log(`⚠️ Red-first acceptance NOT achieved (acceptanceTestsRedFirst=false) — proceeding to the independent ` +
-      `Codex-diff review, which scrutinises test meaningfulness; surfacing as a residual risk. ` +
-      `(If this is the Plan-105 case, a human should hand-author the locked test before merge.)`)
-  // Added after Plan 152: a gate that will NOT go red is not always an implementation
-  // slip — it is often a PLAN defect, where the plan asked for behavior the repo already
-  // has, so there is no fix to stash and nothing to prove. That distinction changes who
-  // must act (plan author vs implementer), so name it explicitly rather than filing every
-  // case under "implementer built test-alongside".
-  log(`   ↳ DISTINGUISH THE CAUSE before treating this as an implementation slip: if the asserted behavior ` +
-      `ALREADY EXISTS in the repo, this is a PLAN DEFECT (the task specified a gate that gates nothing) — ` +
-      `report it against the plan, do not paper over it by weakening or relocating the test. If the behavior ` +
-      `is genuinely absent and the test still would not go red, it is a test-authoring problem.`)
-}
-
-phase('Review loop')
-let round = 0
-let prevOpen = Infinity
-let lastFindings = []
-let converged = false
-let stalled = false
-let fixerUnverified = false
-let codexFailedRounds = 0
-let lastVerifiedHead = asSha(verify.headSha) // advances each time a fixer commit is independently verified
-while (round < maxRounds) {
-  round += 1
-
-  // ONE required independent Codex pass over the committed diff + a Claude design
-  // reviewer checking the diff against the plan. Distinct focuses, in parallel.
-  const reviewThunks = [
-    () => agent(
-      `You are a RELAY for an INDEPENDENT Codex review of a COMMITTED diff — you add NO opinions; you run Codex ` +
-      `and translate its verdict verbatim.\n\n` +
-      `STEP 1 — write this exact prompt to a scratch file (heredoc, safe quoting) and run it, giving the Bash ` +
-      `call a timeout of ${codexTimeoutMs}ms so a hung CLI cannot stall the workflow:\n` +
-      `  ./scripts/codex-review.sh <scratch-file>\n` +
-      `(run the SCRIPT — do NOT hand-roll a \`codex exec\` call. The script owns the mandatory ` +
-      `\`< /dev/null\` redirect; without it \`codex exec\` writes its whole review, then blocks on ` +
-      `"Reading additional input from stdin..." until your timeout kills it — the verdict is produced ` +
-      `and thrown away, and the round silently has NO independent reviewer. That is exactly what ` +
-      `happened on 2026-08-28, twice in one run, when this instruction was prose instead of a script. ` +
-      `A non-zero exit from the script means NO usable verdict.)\n` +
-      `The prompt is:\n<<<CODEX_PROMPT\n${codexDiffPrompt(round)}\nCODEX_PROMPT\n\n` +
-      `STEP 2 — a Bash TIMEOUT, NON-ZERO exit, empty output, or a startup/hang message ALL count as NO usable ` +
-      `verdict. In any of those, KILL and retry ONCE. If still nothing, return {"reviewerFailed": true, ` +
-      `"findings": []} — never invent findings, never return a clean empty result for a dead reviewer.\n\n` +
-      `STEP 3 — map Codex's BLOCKERS/MAJORS/MINORS into 'findings' (issue/location=file:line/suggestion), ` +
-      `relaying FAITHFULLY — no drop/soften/upgrade/add. ALSO return 'rawVerdict' = Codex's UNEDITED output ` +
-      `verbatim (so a human can audit the transcription). Clean review → {"findings": [], "rawVerdict": "..."} ` +
-      `without reviewerFailed.`,
-      { label: `codex-review-r${round}`, phase: 'Review loop', model: 'sonnet', effort: 'low', schema: FINDINGS },
-    ),
-    () => agent(
-      `You are a Claude DESIGN reviewer of the COMMITTED implementation of ${planPath} (repo ${repo}). ` +
-      `Read the plan, then \`git diff ${baseBranch}...HEAD\`. Check: the patch matches the approved plan; ` +
-      `requirements + non-goals respected; user-visible behavior correct; no unresolved design decision made ` +
-      `silently; the tests are MEANINGFUL (would fail on a subtly-broken impl), not just green. Cite file:line ` +
-      `in the diff. Return ONLY genuine blocker/major/minor findings with concrete fixes; empty if sound.`,
-      { label: `design-review-r${round}`, phase: 'Review loop', model: 'sonnet', effort: 'high', schema: FINDINGS },
-    ),
-  ]
-  // Per-slot accounting BEFORE filtering (slot 0 is always the independent Codex relay).
-  // A reviewer is UNUSABLE if it died (null) or signaled reviewerFailed; either way the
-  // panel is incomplete and the loop must not falsely converge.
-  const rawReviews = await parallel(reviewThunks)
-  const usable = rawReviews.map((r) => !!r && r.reviewerFailed !== true)
-  const lost = usable.filter((u) => !u).length
-  const codexFailed = !usable[0]
-  if (codexFailed) codexFailedRounds += 1
-  if (lost > 0) log(`Round ${round}: WARNING — ${lost} reviewer(s) incomplete (null or reviewerFailed).`)
-  if (codexFailed) log(`Round ${round}: WARNING — the independent Codex pass produced no verdict (CLI hang/error).`)
-
-  const reviews = rawReviews.filter((r, i) => usable[i])
-  const findings = reviews.flatMap((r) => r.findings || [])
-  const blockers = findings.filter((f) => f.severity === 'blocker')
-  const majors = findings.filter((f) => f.severity === 'major')
-  const open = blockers.length + majors.length
-  lastFindings = findings
-  log(`Round ${round}: ${blockers.length} blocker(s), ${majors.length} major(s), ${findings.length} finding(s)`)
-
-  if (open === 0) {
-    if (lost === 0) {
-      converged = true
-      log(`Round ${round}: no blockers or majors, full panel (incl. Codex) reported — converged.`)
-      break
-    }
-    log(`Round ${round}: 0 blockers/majors but ${lost} reviewer(s) incomplete — re-reviewing, not converging.`)
-    continue
-  }
-
-  if (round > 1 && open >= prevOpen) {
-    stalled = true
-    log(`Round ${round}: no progress (open ${open} >= prev ${prevOpen}) — stopping to avoid thrash.`)
-    break
-  }
-  prevOpen = open
-
-  // Fixer resolves every blocker+major, PROVES test-soundness, and commits+tags.
-  const fixReport = await agent(
-    `You are the FIXER for the committed implementation of ${planPath} (repo ${repo}). ` +
-    `Reviewers (including an INDEPENDENT Codex pass over the diff) raised:\n${JSON.stringify(findings, null, 2)}\n\n` +
-    `Resolve EVERY blocker and major (minors where cheap) by editing the CODE + tests, and UPDATE any affected ` +
-    `docs (CLAUDE.md §Documentation Hygiene). For each locking test of a CORRECTNESS/BUG fix, PROVE it is sound: ` +
-    `confirm the test FAILS against the buggy code (stash the fix, keep the test, run it — expect RED), then ` +
-    `restore. Re-run the exit gates (ruff/pyright/pytest) until green. Follow the FULL version workflow: ` +
-    `uv run bump-my-version bump patch; STAGE the version files; commit on the CURRENT branch. **DO NOT TAG** ` +
-    `— per PR #149 tags go on \`main\` after merge, never on a feature branch. HOLD-AT-PR: commit LOCALLY only — no ` +
-    `push/PR/merge. If a finding is WRONG, do NOT comply blindly — record it in disputedFindings with why. ` +
-    `Return: changelog, testSoundnessProved (true if every correctness/bug-fix locking test was shown ` +
-    `fail-against-buggy, OR none needed), lockingTestProofs, disputedFindings.`,
-    { label: `fix-r${round}`, phase: 'Review loop', model: 'sonnet', effort: 'high', schema: FIX_REPORT },
+if (mode === 'build') {
+  implementerReport = await agent(
+    `You are the single Sonnet implementer for the READY plan ${planPath} in ${repo}. Read the plan directly. ` +
+    `Implement every task ` +
+    `in dependency order; do not split work across coding agents. Before changing a behavioral task, run its ` +
+    `declared Pre-change/Verification evidence. If it is already green for behavior claimed missing, or cannot ` +
+    `discriminate the change, stop without inventing a substitute and mark that task PLAN_INCOMPLETE. For each ` +
+    `task return its manifest Pre-change and Verification fingerprints, preChangeStatus, numeric ` +
+    `preChangeExitCode, numeric after-test exitCode, separate beforeEvidence and afterEvidence, and one ` +
+    `relevant outputExcerpt per command capped at 1,000 characters. Never return full command output. ` +
+    `Use (no output) as the excerpt for a successful silent command. ` +
+    `A behavioral task requires EXPECTED_FAILURE and a non-zero pre-change exit; if it is already green, use ` +
+    `UNVERIFIABLE and PLAN_INCOMPLETE. Documentation/mechanical tasks use NOT_APPLICABLE, exit 0, and their ` +
+    `declared N/A reason; stop if the plan uses N/A for behavior-changing work. Run only task-targeted checks while editing. ` +
+    `Do not run the plan's complete Exit gates; the independent verifier owns one complete exit-gate run per committed candidate. ` +
+    `When related failures share a cause, report one root-cause bundle with task IDs, evidence, cause, and the ` +
+    `smallest in-scope correction. Update affected docs. At a stable candidate run ` +
+    `uv run bump-my-version bump patch, stage the version files with the patch, and commit conventionally on ` +
+    `the current feature branch. Never tag, push, open a PR, merge, deploy, or adopt a scientific result. ` +
+    `Return one concise taskEvidence entry for every task ID, without repeating plan text.\n\n` +
+    `Task identity manifest:\n${JSON.stringify(tasks)}`,
+    { label: 'implement-build', phase: 'Implement', model: 'sonnet', effort: 'high', schema: CHANGE_REPORT },
   )
-  log(`Round ${round} fix: testSoundness=${fixReport?.testSoundnessProved}, ${String(fixReport?.changelog || '').slice(0, 240)}`)
-
-  // INDEPENDENTLY VERIFY the fixer before the next review can converge — a fixer can break
-  // the gates, skip the test-soundness proof, or fail to commit just as an implementer can.
-  // Require: a FRESH commit (headSha advanced past the last verified one), clean worktree,
-  // non-empty diff, re-run-green gates (via the non-mutating VERIFY agent), AND the fixer's
-  // own testSoundnessProved (the two reviewers additionally check test meaningfulness each
-  // round). Without this, the loop could converge over a fix that silently broke pytest or
-  // skipped the fail-against-buggy proof.
-  const fixVerify = await agent(
-    verifyPromptText,
-    { label: `verify-fix-r${round}`, phase: 'Review loop', model: 'sonnet', effort: 'medium', schema: VERIFY },
+} else if (mode === 'confirm' && fixFindings.length > 0) {
+  fixerReport = await agent(
+    `You are the only confirmation fixer for ${planPath} in ${repo}. Address only the owner-disposed fix ` +
+    `findings below and any direct regression in the same touched area. Do not fix minors, follow-ups, rejected ` +
+    `findings, or accepted risks. Use one root-cause bundle for related failures. Run affected task-targeted ` +
+    `checks only; do not run the complete Exit gates. Read the plan directly and return fingerprint-bound ` +
+    `Pre-change and Verification evidence for every affected task, with command excerpts capped at 1,000 ` +
+    `characters and no repeated plan text. If the ` +
+    `patch changes, run uv run bump-my-version bump patch, stage the version files, and commit conventionally. ` +
+    `Never tag, push, open a PR, merge, deploy, or make a second repair pass.\n\nFix findings:\n` +
+    `${JSON.stringify(fixFindings)}\n\nOwner dispositions:\n${JSON.stringify(ownerDispositions)}\n\n` +
+    `Task identity manifest:\n${JSON.stringify(tasks)}`,
+    { label: 'implement-confirm-fix', phase: 'Implement', model: 'sonnet', effort: 'high', schema: CHANGE_REPORT },
   )
-  const fixFresh = !!asSha(fixVerify?.headSha) && asSha(fixVerify.headSha) !== lastVerifiedHead
-  const fixVerified = !!fixVerify && fixVerify.diffNonEmpty && fixVerify.worktreeClean && fixVerify.gatesPassed &&
-    fixFresh && !!fixReport && fixReport.testSoundnessProved === true
-  log(`Round ${round} fix verify: headSha=${fixVerify?.headSha || '(none)'}, fresh=${fixFresh}, ` +
-      `worktreeClean=${fixVerify?.worktreeClean}, gatesPassed=${fixVerify?.gatesPassed}, ` +
-      `testSoundness=${fixReport?.testSoundnessProved}`)
-  if (!fixVerified) {
-    fixerUnverified = true
-    log(`⚠️ Round ${round}: the fixer's commit FAILED independent verification ` +
-        `(fresh commit=${fixFresh}, worktreeClean=${fixVerify?.worktreeClean}, gatesPassed=${fixVerify?.gatesPassed}, ` +
-        `testSoundness=${fixReport?.testSoundnessProved}) — stopping; a human must intervene. Do NOT treat as converged.`)
-    break
-  }
-  lastVerifiedHead = asSha(fixVerify.headSha)
 }
 
-const residualBlockers = lastFindings.filter((f) => f.severity === 'blocker')
-const residualMajors = lastFindings.filter((f) => f.severity === 'major')
-const exhausted = !converged && !stalled && round === maxRounds
-const escalated = !converged
-const escalationReason = converged
-  ? null
-  : fixerUnverified
-    ? `round ${round} fixer commit failed independent verification (fresh commit / clean worktree / green gates / test-soundness) — the fix is not trustworthy`
-    : stalled
-      ? `stalled after ${round} round(s): a fix failed to reduce the blocker+major count (stuck)`
-      : `did not converge within maxRounds=${maxRounds}: ${residualBlockers.length} blocker(s) + ${residualMajors.length} major(s) remain`
-if (escalated) {
-  log(`⚠️ ESCALATION — implement could NOT converge (${escalationReason}). ` +
-      `Do NOT open a PR as-is. A human must resolve the residual ` +
-      `${residualBlockers.length} blocker(s) + ${residualMajors.length} major(s).`)
+if (mode === 'build') {
+  const implementationAccounted = implementerReport && taskIdsMatch(implementerReport.taskEvidence, tasks)
+  const implementationStopped = !implementationAccounted || implementerReport.taskEvidence.some(
+    (evidence) => !taskEvidenceReady(evidence, tasks),
+  )
+  if (implementationStopped || !implementerReport.committed || !asSha(implementerReport.commitSha)) {
+    return stopResult(
+      'IMPLEMENTATION_INCOMPLETE: implementer did not produce one committed candidate with evidence for every task',
+      implementerReport?.taskEvidence || [],
+    )
+  }
 }
+if (fixFindings.length > 0 &&
+    (!fixerReport || !fixerReport.committed || !asSha(fixerReport.commitSha))) {
+  return stopResult('NOT_READY: required confirmation repair did not produce a fresh commit', fixerReport?.taskEvidence || [])
+}
+
+phase('Verify')
+
+const verifier = await agent(
+  `You are the independent read-only verifier for the committed candidate of ${planPath} in ${repo}. Do not ` +
+  `trust the implementer/fixer report and do not edit files. Read the READY plan and ` +
+  `git diff ${baseBranch}...HEAD. Return current HEAD, branch name, tagCount, and tagFingerprint derived from ` +
+  `git tag --list | LC_ALL=C sort | git hash-object --stdin; return only the hexadecimal hash, never tag ` +
+  `names. Return the current origin/<branch> ` +
+  `SHA or NONE, whether the base diff is non-empty, git status --porcelain capped at 1,000 characters, whether the candidate commit ` +
+  `contains the required patch-version bump, changed files, scope ` +
+  `status, and deviations. Run git diff ${preHead}...HEAD -- ${planPath}; return its numeric exit as ` +
+  `planDiffExitCode and an output excerpt as planDiffOutputExcerpt, ` +
+  `using an empty string only when that diff has no output. ` +
+  `then rerun uv run python scripts/check_readiness.py ${planPath} and return its numeric exit and an ` +
+  `output excerpt. Cap every command excerpt at 1,000 characters; never return full command output. ` +
+  `Use (no output) for successful silent task or gate commands. ` +
+  `Independently run every task's exact Verification and return exactly one PASS, ` +
+  `FAIL, or UNVERIFIABLE entry per task ID with its manifest Verification fingerprint, numeric exit code, ` +
+  `one outputExcerpt, and ` +
+  `observed afterEvidence. ` +
+  `Run every plan Exit gates command exactly ` +
+  `once for this candidate; de-duplicate identical task/gate commands while mapping the same result to ` +
+  `each task. Return one entry per gate ID with its manifest fingerprint, numeric exit code, and one ` +
+  `outputExcerpt. This is the one complete exit-gate run per committed candidate. Read commands from the ` +
+  `plan; do not repeat them in the response.\n\nTask identity manifest:\n${JSON.stringify(tasks)}\n\n` +
+  `Exit-gate identity manifest:\n${JSON.stringify(exitGates)}`,
+  { label: `verify-${mode}`, phase: 'Verify', model: 'sonnet', effort: 'medium', schema: VERIFY },
+)
+
+const verifiedHead = asSha(verifier?.headSha)
+const repairRequired = mode === 'confirm' && fixFindings.length > 0
+const candidateFresh = mode === 'build'
+  ? !!verifiedHead && verifiedHead !== preHead
+  : repairRequired
+    ? !!verifiedHead && verifiedHead !== asSha(priorReview.reviewedCommit)
+    : !!verifiedHead && verifiedHead === asSha(priorReview.reviewedCommit)
+const reportCommit = mode === 'build' ? asSha(implementerReport?.commitSha) : asSha(fixerReport?.commitSha)
+const reportMatches = !repairRequired && mode === 'confirm' ? true : reportCommit === verifiedHead
+const taskIdsVerified = !!verifier && taskIdsMatch(verifier.taskEvidence, tasks)
+const hasUnverifiableTask = taskIdsVerified && verifier.taskEvidence.some((item) => item.status === 'UNVERIFIABLE')
+const tasksComplete = taskIdsVerified && verifier.taskEvidence.every(
+  (item) => taskEvidenceComplete(item, tasks),
+)
+const taskCompletion = tasksComplete ? 'COMPLETE' : hasUnverifiableTask ? 'UNVERIFIABLE' : 'INCOMPLETE'
+const gatesPassed = !!verifier && gateEvidenceComplete(verifier.gateEvidence, exitGates)
+const branchSafe = !!verifier && verifier.branchName === branchAtStart &&
+  tagStateValid(verifier) && verifier.tagCount === context.tagCount &&
+  verifier.tagFingerprint === context.tagFingerprint &&
+  verifier.remoteBranchSha === context.remoteBranchSha
+const planUnchanged = !!verifier && Number.isInteger(verifier.planDiffExitCode) &&
+  verifier.planDiffExitCode === 0 && verifier.planDiffOutputExcerpt.trim().length === 0
+const finalReadinessOk = !!verifier && Number.isInteger(verifier.readinessExitCode) &&
+  verifier.readinessExitCode === 0 && typeof verifier.readinessOutputExcerpt === 'string' &&
+  verifier.readinessOutputExcerpt.trim().length > 0
+const implementationEvidence = mode === 'build'
+  ? implementerReport.taskEvidence
+  : priorReview.taskEvidence || []
+const taskEvidence = verifier ? canonicalTaskEvidence(verifier, implementationEvidence) : []
+const verificationPassed = !!verifier && candidateFresh && reportMatches && verifier.diffNonEmpty &&
+  verifier.worktreeStatus.trim().length === 0 && verifier.versionBumped &&
+  verifier.scopeStatus === 'IN_SCOPE' && gatesPassed && tasksComplete && branchSafe &&
+  planUnchanged && finalReadinessOk
+
+if (!verificationPassed) {
+  return {
+    ...stopResult('IMPLEMENTATION_INCOMPLETE: independent task or repository verification failed', taskEvidence, taskCompletion),
+    deviations: { change: implementerReport?.deviations || fixerReport?.deviations || [], verification: verifier?.deviations || [] },
+  }
+}
+
+phase('Review')
+
+const reviewScope = mode === 'build'
+  ? `Review the complete committed diff against every READY-plan task and the verifier evidence.`
+  : `Perform a delta-only confirmation, not a fresh audit. Check only owner-disposed fixes, disposition ` +
+    `rationales, and regressions introduced in the touched area.`
+const verificationContext = compactVerification(verifier, taskEvidence)
+const priorContext = compactPriorReview()
+
+const claudePrompt =
+  `You are the Claude design/proportionality reviewer for ${planPath} in ${repo}. ${reviewScope} Check plan ` +
+  `fit, non-goals, owner decisions, and whether the smallest correct patch was used. A blocker/major must ` +
+  `identify an unsafe, contradictory, incorrect, incomplete task, or non-discriminating test—not a preference ` +
+  `or desirable follow-up. Use IDs CLAUDE-001 onward, preserving prior IDs that remain. Return exact location, ` +
+  `violated contract, and smallest correction. Return findings only: no diff summary, repeated task text, or ` +
+  `process narrative. Do not edit.\n\nVerification:\n${JSON.stringify(verificationContext)}\n\n` +
+  `Prior review:\n${JSON.stringify(priorContext)}\n\nOwner dispositions:\n${JSON.stringify(ownerDispositions)}`
+
+const codexPrompt =
+  `Independently review the committed diff ${baseBranch}...HEAD for ${planPath} in ${repo}. ${reviewScope} ` +
+  `Verify correctness, callers, contracts, test meaningfulness, and every verifier task entry against repository ` +
+  `source. Use IDs CODEX-001 onward, preserving prior IDs that remain. Cite exact file:line and return the ` +
+  `violated contract and smallest sufficient correction. Do not block on preferences or follow-ups. Return ` +
+  `findings only in under 6,000 characters: no diff summary, repeated task text, or process narrative. Do not ` +
+  `edit.\n\nVerification:\n${JSON.stringify(verificationContext)}\n\nPrior review:\n` +
+  `${JSON.stringify(priorContext)}\n\n` +
+  `Owner dispositions:\n${JSON.stringify(ownerDispositions)}`
+
+const promptFingerprint = fingerprint(codexPrompt)
+const codexPromptPath = `sapphire-flow-implement-${mode}-${promptFingerprint}-codex-review.md`
+
+const [claudeReview, codexReview] = await parallel([
+  () => agent(
+    claudePrompt,
+    { label: `implement-claude-${mode}`, phase: 'Review', model: 'sonnet', effort: 'high', schema: REVIEW },
+  ),
+  () => agent(
+    `You are a relay for a real Codex review. Use the Write tool to write only ${codexPromptPath}, with the ` +
+    `exact contents between the CODEX_REVIEW_PROMPT tags below (exclude the tags). Then, in one foreground ` +
+    `Bash tool call, run exactly ./scripts/codex-review.sh ${codexPromptPath}, capture its numeric exit and raw ` +
+    `output, and set that Bash call's timeout to ${codexTimeoutMs}ms. Do not use heredocs, redirects, background ` +
+    `execution, or a hand-written codex exec command. Do not edit tracked repository files or any ` +
+    `other file. On timeout, ` +
+    `non-zero exit, empty output, or unparseable verdict, retry once; then return reviewerFailed=true rather ` +
+    `than a clean report. Always return the final numeric script exitCode. Otherwise transcribe Codex ` +
+    `faithfully and include unedited output as rawVerdict. ` +
+    `Add no opinion. After the final attempt, replace the temporary prompt file contents with temporary prompt cleared.` +
+    `\n\n<CODEX_REVIEW_PROMPT>\n${codexPrompt}\n` +
+    `</CODEX_REVIEW_PROMPT>`,
+    { label: `implement-codex-${mode}`, phase: 'Review', model: 'sonnet', effort: 'low', schema: CODEX_REVIEW },
+  ),
+])
+
+const reviewersComplete = usable(claudeReview) && codexUsable(codexReview)
+const acceptedRisks = acceptedPriorFindings()
+const reports = [claudeReview, codexReview]
+if (riskClass === 'high') reports.push(additionalReview)
+const hasBlocking = reports.some((report) =>
+  blocking(report).some((finding) => !acceptedRisks.some((accepted) => sameFinding(finding, accepted))),
+)
+const highRiskComplete = riskClass === 'ordinary' || usable(additionalReview)
+const engineeringReview = !reviewersComplete || !highRiskComplete
+  ? 'INCOMPLETE'
+  : hasBlocking
+    ? 'BLOCKED'
+    : 'PASS'
 
 phase('Finalize')
 
-// FINALIZE STALENESS — D1 re-checked (Plan 200). The PR #201 correction landed on
-// local `main` an HOUR into the run; a preflight-only check would have passed and
-// then gone stale DURING the build. This is the only point left where the workflow
-// can still catch it, before recommending the diff for a PR against a superseded spec.
-const staleAtFinalize = await agent(
-  stalePlanPromptText('FINALIZE'),
-  { label: 'stale-plan-finalize', phase: 'Finalize', model: 'sonnet', effort: 'low', schema: STALE_PLAN },
+const staleAtEnd = await agent(
+  stalenessPrompt('FINALIZE'),
+  { label: 'implement-staleness-finalize', phase: 'Finalize', model: 'sonnet', effort: 'low', schema: STALENESS },
 )
-const planWentStale = isPlanStale(staleAtFinalize)
-if (planWentStale) {
-  log(`⚠️ ESCALATION at FINALIZE — ${staleEscalation(staleAtFinalize, 'FINALIZE')}. Do NOT open a PR from this ` +
-      `commit — the spec moved out from under it; the work is not lost, it just must not be proposed as-is.`)
-}
-
-const final = await agent(
-  `Read the plan at ${planPath} and the final \`git diff ${baseBranch}...HEAD\` (repo ${repo}). ` +
-  `The review loop ended: converged=${converged}, stalled=${stalled}, exhausted=${exhausted}, ` +
-  `residual blockers=${residualBlockers.length}, residual majors=${residualMajors.length}, ` +
-  `rounds where the Codex pass failed=${codexFailedRounds}, red-first acceptance achieved=${!redFirstMissed}, ` +
-  `plan went STALE during the build=${planWentStale}. ` +
-  `Return: (1) 'summary' — a <=6-line summary of what was built + how it was verified; ` +
-  `(2) 'residualRisks' — anything a human PR reviewer should still eyeball` +
-  (redFirstMissed ? ` — you MUST include that red-first acceptance was NOT achieved (a human should confirm the acceptance tests genuinely lock the spec, or hand-author them)` : ``) +
-  (planWentStale ? ` — you MUST include that the plan went stale during the build and this diff must be rebuilt against the current spec before a PR` : ``) + `; ` +
-  `(3) 'recommendation' — 'PR-READY' (ready for a HUMAN to open/approve the PR — NOT auto-mergeable) only if ` +
-  `no residual blockers/majors, the exit gates passed, AND the plan did NOT go stale during the build; else 'NOT-READY'. ` +
-  `Remember: hold-at-PR — you are NOT merging; only the human merges. This is advice to the PR owner.`,
-  { label: 'finalize', phase: 'Finalize', model: 'sonnet', effort: 'medium', schema: FINAL },
-)
-
-// PR-READY requires ACTUAL convergence (no residual blockers/majors on a complete panel)
-// AND a plan that did not go stale during the build. An escalated run — stalled,
-// exhausted, a failed reviewer, or a finalize-time staleness hit — is NOT-READY no
-// matter what the finalize agent inferred from a possibly-partial finding set.
-if (final && (!converged || planWentStale) && final.recommendation !== 'NOT-READY') {
-  log(`Overriding finalize recommendation → NOT-READY (converged=${converged}, planWentStale=${planWentStale}).`)
-  final.recommendation = 'NOT-READY'
-}
-
-const finalEscalated = escalated || planWentStale
-const finalEscalationReason = planWentStale
-  ? (escalationReason ? `${escalationReason}; also: ${staleEscalation(staleAtFinalize, 'FINALIZE')}` : staleEscalation(staleAtFinalize, 'FINALIZE'))
-  : escalationReason
+const planWentStale = stale(staleAtEnd)
+const prReady = readinessOk && tasksComplete && verificationPassed && reviewersComplete &&
+  gatesPassed && branchSafe && planUnchanged && finalReadinessOk &&
+  !hasBlocking && !planWentStale && highRiskComplete
+const ownerAction = mode === 'build' && reviewersComplete && hasBlocking
+  ? 'OWNER_DECISION_REQUIRED'
+  : null
 
 return {
   planPath,
-  rounds: round,
-  converged,
-  stalled,
-  exhausted,
-  escalated: finalEscalated,
-  escalationReason: finalEscalationReason,
-  residualBlockerCount: residualBlockers.length,
-  residualMajorCount: residualMajors.length,
-  residualFindings: lastFindings,
-  codexFailedRounds,
-  redFirstMissed,
+  mode,
+  riskClass,
+  baseBranch,
+  taskCompletion,
+  engineeringReview,
+  recommendation: prReady ? 'PR_READY' : 'NOT_READY',
+  ownerAction,
+  reviewedCommit: verifiedHead,
+  planFingerprint: manifest.documentFingerprint,
+  taskEvidence,
+  gateEvidence: verifier.gateEvidence,
+  reviews: {
+    claude: publicReview(claudeReview),
+    codex: publicReview(codexReview),
+    additional: publicReview(additionalReview),
+  },
+  ownerDispositions,
+  acceptedRisks,
+  deviations: { change: implementerReport?.deviations || fixerReport?.deviations || [], verification: verifier.deviations },
   planWentStale,
-  implementerReport,
-  verify,
-  final,
 }

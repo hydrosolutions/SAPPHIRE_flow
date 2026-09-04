@@ -26,9 +26,9 @@ See `docs/workflow.md` for the full conventions. Key points:
 - **Orchestrator (Opus) never writes code** — delegates to Sonnet 4.6 subagents
 - **Plans are phase-based** with JSON dependency graphs for parallel/sequential execution
 - **Every code change updates affected docs** — no exceptions
-- **No subagent runs from a DRAFT plan** — user must confirm first
+- **Planning and independent-review agents may read a DRAFT plan, but implementation agents may not execute it.** Only the owner may set its YAML `status: READY`. This happens after the required confirming review.
 - **Multi-model review is mandatory for all non-trivial plans and patches** (trivial-only exemption: typos, comments, single-line log text, mechanical no-behavior edits). Orchestrator builds a context packet first; Claude design + Codex repo-grounded (`file:line`) perspectives are the floor, not the ceiling; no model approves its own output; confirming review before READY and post-implementation review before PR; human owns READY and merge. See `docs/workflow.md` § Multi-Model Review.
-- **Run that review with the repo workflows — the default, not an afterthought:** for a non-trivial **plan**, run the **`plan`** workflow (a real independent Codex pass is a required reviewer every round); to build a **READY** plan, run the **`implement`** workflow (red-first acceptance tests → independent verify → Codex diff-review loop with re-verified fixer rounds, hold-at-PR). `plan-review` is the older Sonnet-only plan variant, kept as a fallback (no Codex). `plan` and `implement` shell out to Codex, so they need `codex exec --sandbox read-only` permitted in the local allowlist. **Codex is invoked via `scripts/codex-review.sh`, never a hand-rolled `codex exec`** — the script owns the mandatory `< /dev/null`, without which Codex writes its whole review and then blocks on stdin until the timeout kills it, so the round silently has no independent reviewer. **Check `codexFailedRounds` in the task output before trusting any round:** non-zero means those rounds were Claude-only and do not meet the review floor above, however green the run looks. See `docs/workflow.md` § Tooling.
+- **Run that review with the repo workflows:** explicitly classify `riskClass` as `ordinary` or `high`. For a non-trivial plan, run `plan` in read-only `review` mode (one Claude + real Codex pair), record owner dispositions, then run at most one delta-scoped `confirm`. Only the owner sets READY. For a READY plan, `implement` uses one implementer, independently verifies every task and the full gates once per candidate, pauses for owner dispositions, and permits at most one confirmation repair/delta review. Reviewer failure is incomplete, never clean. Both workflows invoke Codex through `scripts/codex-review.sh`, never a hand-rolled `codex exec`; the script owns the mandatory `< /dev/null` and both workflows hold at PR. See `docs/workflow.md` § Tooling.
 
 ### Avoid Task Jags
 
@@ -37,9 +37,9 @@ Stay focused on the current task until completion. Do not change direction mid-s
 
 ### Plan Readiness
 
-Plans start as `status: DRAFT`. Opus self-reviews before presenting to user.
-User confirms, then Opus sets `status: READY`. Do not begin implementation from
-a DRAFT plan.
+Plans start as `status: DRAFT`. Planning and independent review may refine the
+DRAFT, but implementation may not begin. The required confirming review runs
+after owner decisions are folded in. Only the owner may set its YAML `status: READY`.
 
 ## Ask Questions
 
@@ -248,10 +248,11 @@ value: str | None = None
 
 ### Version Bumping (mandatory)
 
-**Every CODE commit MUST include a patch version bump.** The one exception:
-**plan-doc-only commits made directly to `main`** (see the plan-workflow rule
-below) do **not** bump — the version tracks code releases, and bumping on plan
-commits collides with in-flight code PRs. Code changes always go through a PR
+Every code commit includes a patch version bump. Never create a tag on a feature branch.
+On pushes to `main`, `.github/workflows/tag-main.yml` creates the version tag when absent.
+The one exception is plan-doc-only commits made directly to `main`; those do
+not bump because the version tracks code releases and bumping plan commits can
+collide with in-flight code PRs. Code changes always go through a PR
 (hold-at-PR) and always bump.
 
 Before committing code, follow this exact sequence:
@@ -259,27 +260,11 @@ Before committing code, follow this exact sequence:
 1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/sapphire_flow/__init__.py`
 2. Stage version files alongside code changes
 3. Commit with a conventional commit message
-4. **Do NOT tag on a feature branch** — tagging happens automatically, on `main`, after the PR merges (see below).
 
 **Rules:**
 - **Patch bumps**: Automatic with every commit. Claude MUST do this.
 - **Minor/major bumps**: Only when the user explicitly requests. Use `uv run bump-my-version bump minor` or `major`.
 - **Never let bump-my-version create its own commit** — config has `commit = false`. Fold version changes into the real commit.
-- **Tagging on `main` is automatic — NEVER tag on a feature branch.** *(Changed 2026-08-21, Plan 197.)*
-  `.github/workflows/tag-main.yml` runs on every push to `main`, reads `${VERSION}` from `pyproject.toml`
-  at the pushed commit, and creates `v${VERSION}` if it does not already exist — replacing the manual
-  "tag after merge" step, which was skipped 5 times in 3 days. It is deliberately **not** gated on CI
-  (a tag identifies a version, it does not gate a release — see `docs/standards/cicd.md` § Image tagging
-  and versioning) and is idempotent (a docs-only push finds its version's tag already present and
-  no-ops). Patch versions are still a **global sequence**, but every worktree shares one `.git` and
-  therefore one tag namespace, while each branch's `bump-my-version` computes the next patch from its
-  **own** `pyproject.toml` — which cannot see what other branches have already tagged. With several
-  sessions active this collides routinely: `v0.1.692`, `v0.1.697` and `v0.1.712` were each claimed twice
-  in a single day, each costing a re-bump. **The version bump still happens in the commit** (so every
-  diff carries its version); the `git tag` is still created only on `main`, after merge — now by the
-  workflow rather than by hand. If two branches land the same number, fix it once on `main` rather than
-  in each branch. Gaps in the tag series (a version claimed by a branch that never reached `main`, or
-  two versions landing on the same commit) remain expected — see `docs/standards/cicd.md`.
 - **Prefer a separate clone over a shared worktree for long-running parallel work.** Worktrees share `.git`, so
   tags, refs and `core.bare` state are common to all of them; a clone gives an independent namespace.
 
