@@ -1,5 +1,5 @@
 ---
-status: READY
+status: SUPERSEDED
 created: 2026-09-02
 plan: 231
 title: Make plan status, readiness, and tagging policy agree
@@ -10,6 +10,11 @@ source: 2026-09-02 workflow review — status and tagging instructions conflict,
 ---
 
 # Plan 231 — one durable policy and one readiness check
+
+Superseded by Plan 242, which preserves the durable readiness/status rules but
+replaces confirmation-mode workflow policy with owner-run prompt passes.
+
+Note: the remainder of this document is retained as historical context and may reference tooling that no longer exists in the repository.
 
 ## Problem
 
