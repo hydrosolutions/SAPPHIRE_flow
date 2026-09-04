@@ -137,14 +137,27 @@ then a module default, and confirm each fails.
 }
 ```
 
-## Exit
+## Exit gates
 
-**Every published event-timing RESULT** in § M-A11c is produced by
-`scripts/dhm_precip/ifs_event_timing.py` under a complete frozen convention, over inputs pinned by
-SHA-256, reported as observed + null + increment with its counts, and asserted by a test that fails if
-document or code drifts. ⚠️ *"Result", not "number"* — dates, lead definitions, thresholds and code
-references are also numbers and are not measured results. ⛔ **No uncertainty interval is published**;
-the report states `n = 6 seasons` and that none is available.
+- **Every published event-timing RESULT** in § M-A11c is produced by
+  `scripts/dhm_precip/ifs_event_timing.py` under a complete frozen convention, over inputs pinned by
+  SHA-256, reported as observed + null + increment with its matched/searched counts.
+- ⚠️ *"Result", not "number"* — dates, lead definitions, thresholds and code references are also
+  numbers and are **not** measured results.
+- ⛔ **No uncertainty interval is published.** The report states `n = 6 seasons` and that none is
+  available (D4).
+- The binding test fails in **both** directions: perturb a figure in § M-A11c, and separately perturb a
+  module default. ⛔ Prove each by reverting.
+- T1's acceptance values reproduce on checksum-pinned inputs: exact-window 0.179 / null 0.095,
+  within ±6 h 0.442 / null 0.309, missed 0.248 / null 0.400, increments +0.130 / +0.133 / +0.134 /
+  +0.118 at ±12/24/36/48 h.
+
+```bash
+uv run pytest tests/unit/scripts/test_ifs_event_timing.py
+uv run ruff check scripts/dhm_precip/ifs_event_timing.py && uv run ruff format --check scripts/dhm_precip/ifs_event_timing.py
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx uv run python -m scripts.dhm_precip.ifs_event_timing
+uv run pytest tests/unit
+```
 
 ## Non-goals
 
