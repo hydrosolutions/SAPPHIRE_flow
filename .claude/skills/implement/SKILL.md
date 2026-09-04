@@ -6,7 +6,7 @@ description: Implement one owner-approved SAPPHIRE Flow plan without automated o
 Use the plan path supplied by the user. One agent owns the complete implementation.
 
 1. Run `uv run python scripts/check_readiness.py <plan-path>`. Stop if it is not
-   READY. Require a clean named feature branch, fetch `origin main` once, and stop
+   READY. Require a clean named feature branch, run `git fetch origin main` once, and stop
    if the plan is stale or superseded.
 2. Implement only the plan. Do not split work across agents or add abstractions,
    fallbacks, hardening, or follow-ups that the plan does not require.
