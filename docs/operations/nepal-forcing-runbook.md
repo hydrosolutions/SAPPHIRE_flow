@@ -137,6 +137,43 @@ Still believed to hold (but re-check):
 - Pure `era5_land_reanalysis` past its edge hard-fails rather than truncating (expected; the edge was
   ~7 days back on 2026-08-20).
 
+## The snow channel (Plan 219)
+
+The feed requests **`snow_depth`, `snowmelt` and `swe`** alongside precipitation and temperature.
+
+**How it is turned on.** `_fetch_nwp_task` already fetches, converts, stores and contains snow — it
+simply does nothing unless given a requirements map. The feed passes a fixed one. **In production
+that map is derived from each station's assigned models; this feed deliberately has no model, so it
+supplies its own. That is a documented DIVERGENCE from the production opt-in gate — do not read this
+feed as evidence that the gate works.**
+
+**A snow gap does NOT page.** The dead-man exists for IFS operating evidence; snow is an additional
+observation on top.
+
+| outcome | `ok` | dead-man |
+|---|---|---|
+| IFS ok, snow ok | true | green |
+| IFS ok, **snow missing** | **true** — records `snow_unavailable` + `snow_degraded_reason` | **green** |
+| IFS missing | false | **red** — unchanged |
+
+On the usual `source_data_missing` path the task returns before snow is attempted, so that record
+reads *IFS missing / snow not attempted* and pages for IFS. No second fetch is made just to populate
+a row.
+
+**New JSONL keys, added additively** — every legacy key keeps its meaning, so the historical records
+stay comparable: `snow_requested` (the three variables) and `snow_unavailable` (bool), plus
+`snow_degraded_reason` when snow is absent. `rows`/`members`/`parameters` remain IFS-shaped.
+
+**⚠️ Units are owner-supplied, not measured.** `hs` metres → cm (×100); `rof`/`swe` mm → mm
+(identity). HRU 12300 has effectively no snow in any season — depth peaks at 0.0006 in mid-winter
+reanalysis — so no magnitude comparison could confirm them here. **Confirm with the Gateway team
+before any snowy basin relies on these numbers.** A later factor change will NOT correct rows already
+stored: the store ignores repeats and `value` is not part of the natural key, so re-running cannot
+overwrite them.
+
+**The converters are shared**, so the snow *reanalysis* path converts too — that blast radius is
+intended, not incidental.
+
 ## Monitoring — the Healthchecks.io dead-man
 
 This feed is not covered by the host watchdog (see Caveats). Its only alerting is a

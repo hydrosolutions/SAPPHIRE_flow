@@ -214,17 +214,16 @@ The recap API-key secret is **Nepal-only**, provided by the
 ## Snow-variable status
 
 `hs` (snow depth), `rof` (snowmelt), `swe` (SWE) are confirmed variable
-names (Resolved Gateway Question 4), but their Gateway source-unit magnitudes
-are **UNCONFIRMED** — `RecapVariable.convert` is deliberately `None` for all
-three (`adapters/recap_gateway.py`). Do not assume a unit conversion factor
-without live-verifying against the Gateway response (§ Live smoke execution).
+names (Resolved Gateway Question 4). Their conversion factors are now SET
+(`adapters/recap_gateway.py`), replacing the former `convert=None` sentinel.
+
+**Units are OWNER-SUPPLIED, not measured** (Plan 219, 2026-09-04): `hs` metres -> cm (x100), `rof`/`swe` mm -> mm (identity). HRU 12300 has effectively no snow in ANY season (depth peaks at 0.0006 in mid-winter reanalysis), so no magnitude comparison could confirm them there. **CONFIRM WITH THE GATEWAY TEAM BEFORE ANY SNOWY BASIN USES THIS CHANNEL** — an m/cm mix-up is a 100x error that 12300 would never reveal. Note a later factor change does NOT correct rows already stored: the store ignores repeats and `value` is not part of the natural key, so a re-run cannot overwrite them.
 The deterministic snow-forecast fetch path (`fetch_snow_forecast`) and the
 daily-snow → sub-daily 51-member IFS broadcast (model-input service) are
 built and unit-tested (Plan 082 Task 2H-snow), and are wired into the main
 Flow-1 forecast-cycle storage path (Plan 145): `_fetch_nwp_task` fetches +
 stores snow rows under the SAME resolved IFS cycle for every station whose
 active model assignment(s) require a future snow variable, capability-gated
-via `SnowForecastSource` (Recap Gateway only). No FI model may yet declare a
-canonical unit on `swe`/`snow_depth`/`snowmelt` (see the `convert=None` note
-above) — the pipeline (shape/provenance/co-retrieval) is wired, but consuming
-the magnitudes operationally still needs the unit-resolution follow-on plan.
+via `SnowForecastSource` (Recap Gateway only). A model declaring a canonical unit on `swe`/`snow_depth`/`snowmelt` is now
+unblocked in code, but see the owner-supplied caveat above before relying on
+the magnitudes at a basin that actually has snow.
