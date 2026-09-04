@@ -1701,6 +1701,8 @@ scheduled against a live feed before M-I4.**
      "note": "Plan 216. Re-measures M-A9's Use-1 timing question against the operational ECMWF IFS forecast (TIGGE via ECDS) instead of ERA5-Land. Screening only — see docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md."},
     {"id": "M-A11b", "depends_on": ["M-A11"],
      "note": "Plan 220. Closes prerequisite 2 of M-A11's independent verdict — JJAS 2020-2024 alongside 2025, per-year and pooled, same estimator. Does NOT gate M-DEC; feeds a later retraining decision."},
+    {"id": "M-A12", "depends_on": ["M-A11"],
+     "note": "Plan 240. Screens GraphCast (GFS-initialised, NOAA Open Data) precipitation against the same 26 gauges through the UNCHANGED M-A11c estimator, same four JJAS seasons and shared station-season support as IFS control. Does NOT gate M-DEC — a second archived operational product, not a new statistic. See docs/design/dhm-precipitation-m-a12-graphcast-screening.md."},
     {"id": "M-DEC", "depends_on": ["M-A9", "M-A11"], "kind": "decision",
      "note": "Owner Phase-2 GO / NO-GO. M-A9 exits with a RECOMMENDATION; only this node authorises Track G."},
     {"id": "M-G1",  "depends_on": ["M-DEC"]},
