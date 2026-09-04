@@ -51,10 +51,11 @@ stable across every window tested. See M-A11c.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+import json
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import polars as pl
@@ -65,7 +66,11 @@ if TYPE_CHECKING:
 from sapphire_flow.exceptions import SapphireError
 from scripts.dhm_precip.diurnal_phase import BAND_NAMES, band_of
 from scripts.dhm_precip.domain_types import Station, StationCoordinate
-from scripts.dhm_precip.loader import resolve_coords_path
+from scripts.dhm_precip.loader import (
+    compute_sha256,
+    resolve_coords_path,
+    resolve_source_path,
+)
 from scripts.dhm_precip.ma6_pairs import (
     MaskedGaugeSeries,
     load_gauge_masked_population,
@@ -195,6 +200,67 @@ class EventTimingResult:
         return float(q75 - q25)
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FrozenConvention:
+    """D3 — every knob that governs which stations, seasons and events are
+    retained, serialized so the report proves what produced it rather than
+    asserting it in prose. Changing any field here is a reviewed commit
+    (⛔ never a CLI habit), and T2's binding test fails if one drifts from
+    what § M-A11c states."""
+
+    seasons: tuple[int, ...]
+    leads: tuple[int, ...]
+    lead_label: str
+    init_hour: int
+    search_windows_h: tuple[int, ...]
+    event_quantile: float
+    decluster_h: int
+    miss_fraction: float
+    min_wet_windows: int
+    min_candidates: int
+    null_shift_days: tuple[int, ...]
+    min_amplitude: float
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StatisticRow:
+    """D1 — observed, null and increment together, never the increment
+    alone and never an absolute rate alone. ⛔ Two denominators, carried on
+    every row rather than assumed by position: `n_events` is the SEARCHED
+    count (the `missed` denominator), `n_matched` the MATCHED count (the
+    `exact window` / `within ±6 h` denominator) — see `EventTimingResult`.
+    The NULL's own per-draw counts travel with it (`null_n_events`,
+    `null_n_matched`): a null rate whose denominator is not published is not
+    comparable to the observed one."""
+
+    window_h: int
+    statistic: str
+    n_events: int
+    n_matched: int
+    observed: float
+    null_mean: float
+    null_min: float
+    null_max: float
+    null_n_events: tuple[int, ...]
+    null_n_matched: tuple[int, ...]
+
+    @property
+    def increment(self) -> float:
+        return self.observed - self.null_mean
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class EventTimingReport:
+    """The complete, machine-checkable output D2 binds § M-A11c to: the
+    frozen convention, the SHA-256 of every consumed input (D7), and one row
+    per (window, statistic) with observed + null + increment together (D1).
+    ⛔ No uncertainty interval field — D4 states none is available."""
+
+    convention: FrozenConvention
+    input_digests: dict[str, str]
+    rows: tuple[StatisticRow, ...]
+
+
 def season_bounds(
     year: int, *, months: tuple[int, ...] = TIGGE_MONTHS
 ) -> tuple[datetime, datetime]:
@@ -233,6 +299,16 @@ def gauge_season_windows(series: MaskedGaugeSeries, *, year: int) -> pl.DataFram
     )
 
 
+def tigge_series_paths(
+    *, tigge_root: Path, seasons: tuple[int, ...]
+) -> tuple[Path, ...]:
+    """One parquet per season, in season order — the SAME path list
+    `load_ifs_series` reads and `consumed_input_digests` hashes (D7). A
+    second derivation of this list is how the digests could silently stop
+    matching what was actually read."""
+    return tuple(tigge_root / "points" / points_filename(year) for year in seasons)
+
+
 def load_ifs_series(
     *,
     tigge_root: Path,
@@ -243,7 +319,7 @@ def load_ifs_series(
     """The station series at one initialisation hour and one lead set. ⛔ No
     deduplication: a single init hour and a strictly increasing lead set
     already yield one value per valid time."""
-    paths = [tigge_root / "points" / points_filename(year) for year in seasons]
+    paths = tigge_series_paths(tigge_root=tigge_root, seasons=seasons)
     missing = [str(path) for path in paths if not path.exists()]
     if missing:
         raise EventTimingInputError(
@@ -263,6 +339,25 @@ def load_ifs_series(
         )
         .sort("station", "valid_time_utc")
     )
+
+
+def consumed_input_digests(
+    *, tigge_root: Path, seasons: tuple[int, ...]
+) -> dict[str, str]:
+    """D7 — the SHA-256 of every file this run actually reads: the gauge
+    workbook (`DHM_PRECIP_XLSX`, already separately pinned to
+    `PRODUCTION_SOURCE_SHA256` by `load_long_frame`), the station coordinates
+    CSV (`DHM_PRECIP_COORDS` — read by `ma6_pairs.load_gauge_masked_population`
+    to build the population and again by `load_elevations` for the banding),
+    and the six TIGGE station-series parquets. Keyed by the path exactly as
+    resolved, so the report shows what was addressed, not an assumption about
+    it."""
+    paths = (
+        resolve_source_path(),
+        resolve_coords_path(),
+        *tigge_series_paths(tigge_root=tigge_root, seasons=seasons),
+    )
+    return {str(path): compute_sha256(path) for path in paths}
 
 
 def _epoch_hours(times: pl.Series) -> np.ndarray:
@@ -470,6 +565,10 @@ def _emit(line: str = "") -> None:
     print(line, flush=True)  # noqa: T201 — the report IS this tool's output
 
 
+MACHINE_BLOCK_HEADING = (
+    "machine-readable report (D2 — full precision; the binding compares THIS):"
+)
+
 # The three headline rows of M-A11c's table, in its order. The first row also
 # carries the window's event counts.
 REPORTED_STATISTICS: tuple[tuple[str, Callable[[EventTimingResult], float]], ...] = (
@@ -479,9 +578,197 @@ REPORTED_STATISTICS: tuple[tuple[str, Callable[[EventTimingResult], float]], ...
 )
 
 
-def _spread(draws: list[float]) -> str:
-    values = np.asarray(draws)
-    return f"{values.mean():.3f} ({values.min():.3f}–{values.max():.3f})"
+def build_report(
+    cells: list[StationSeasonCell],
+    *,
+    windows_h: tuple[int, ...],
+    base: EventTimingParams,
+    leads: tuple[int, ...],
+    lead_label: str,
+    init_hour: int,
+    seasons: tuple[int, ...],
+    null_shift_days: tuple[int, ...],
+    min_amplitude: float,
+    input_digests: dict[str, str],
+) -> EventTimingReport:
+    """Pure — no I/O, no new statistic. Reorganises exactly what
+    `measure_events` already returns into the D1/D3/D7 schema: one
+    `StatisticRow` per (window, statistic) carrying observed + null +
+    increment + both counts, plus the frozen convention and the digests the
+    caller resolved (D2 binds both)."""
+    convention = FrozenConvention(
+        seasons=seasons,
+        leads=leads,
+        lead_label=lead_label,
+        init_hour=init_hour,
+        search_windows_h=windows_h,
+        event_quantile=base.event_quantile,
+        decluster_h=base.decluster_h,
+        miss_fraction=base.miss_fraction,
+        min_wet_windows=base.min_wet_windows,
+        min_candidates=base.min_candidates,
+        null_shift_days=null_shift_days,
+        min_amplitude=min_amplitude,
+    )
+    rows: list[StatisticRow] = []
+    for window_h in windows_h:
+        params = replace(base, search_window_h=window_h)
+        observed = measure_events(cells, params=params)
+        nulls = [
+            measure_events(cells, params=params, shift_days=shift)
+            for shift in null_shift_days
+        ]
+        for label, statistic in REPORTED_STATISTICS:
+            draws = [statistic(null) for null in nulls]
+            rows.append(
+                StatisticRow(
+                    window_h=window_h,
+                    statistic=label,
+                    n_events=observed.n_events,
+                    n_matched=observed.n_matched,
+                    observed=statistic(observed),
+                    null_mean=float(np.mean(draws)),
+                    null_min=float(np.min(draws)),
+                    null_max=float(np.max(draws)),
+                    null_n_events=tuple(null.n_events for null in nulls),
+                    null_n_matched=tuple(null.n_matched for null in nulls),
+                )
+            )
+    return EventTimingReport(
+        convention=convention, input_digests=input_digests, rows=tuple(rows)
+    )
+
+
+def format_report(result: EventTimingReport, *, n_stations: int, n_cells: int) -> str:
+    """The printed form of `EventTimingReport` — table plus the convention
+    and digest blocks T2's binding test checks against § M-A11c."""
+    convention = result.convention
+    lines = [
+        f"lead set {convention.leads} from {convention.init_hour:02d}Z — "
+        f"{convention.lead_label}",
+        f"published D+1 for comparison: {LEAD_BANDS['D+1']} + most-recent-init dedup",
+        f"{n_stations} stations, {n_cells} station-seasons, "
+        f"event = gauge 6-h total ≥ q{convention.event_quantile:.2f} of its "
+        f"station's wet windows, declustered {convention.decluster_h} h",
+        f"null = whole-day circular shift within season, "
+        f"{len(convention.null_shift_days)} draws {convention.null_shift_days}",
+        "",
+        "frozen convention (D3):",
+        f"  seasons={convention.seasons} min_wet_windows={convention.min_wet_windows} "
+        f"min_candidates={convention.min_candidates} "
+        f"miss_fraction={convention.miss_fraction:g} "
+        f"min_amplitude={convention.min_amplitude:g}",
+        "",
+        "consumed input digests, sha256 (D7):",
+    ]
+    lines += [
+        f"  {path}  {digest}" for path, digest in sorted(result.input_digests.items())
+    ]
+    lines += [
+        "",
+        f"uncertainty: n = {len(convention.seasons)} seasons — no reliable "
+        "inferential interval is available (D4). The ±window spread below is "
+        "parameter sensitivity, not uncertainty.",
+        "",
+        "  ⛔ 'exact' and '±6 h' are fractions of MATCHED events; 'missed' is a "
+        "fraction of ALL events searched.",
+        "  ⚠️ IQR is censored at the search window and 'missed' depends on "
+        "--miss-fraction; neither is window-independent.",
+        "",
+        f"{'window':>8s}{'events':>8s}{'matched':>9s}{'statistic':>14s}"
+        f"{'observed':>11s}{'null mean (min–max)':>24s}{'increment':>11s}",
+    ]
+    for window_h in result.convention.search_windows_h:
+        window_rows = [row for row in result.rows if row.window_h == window_h]
+        for position, row in enumerate(window_rows):
+            lead = (
+                f"{'±' + str(window_h) + ' h':>8s}{row.n_events:>8d}{row.n_matched:>9d}"
+                if position == 0
+                else " " * 25
+            )
+            null_spread = f"{row.null_mean:.3f} ({row.null_min:.3f}–{row.null_max:.3f})"
+            lines.append(
+                f"{lead}{row.statistic:>14s}{row.observed:>11.3f}{null_spread:>24s}"
+                f"{row.increment:>+11.3f}"
+            )
+    lines += [
+        "",
+        f"null counts per draw ({len(convention.null_shift_days)} draws), "
+        "searched / matched (D1):",
+    ]
+    for window_h in result.convention.search_windows_h:
+        row = next(row for row in result.rows if row.window_h == window_h)
+        lines.append(
+            f"{'±' + str(window_h) + ' h':>8s}  "
+            f"searched {_count_span(row.null_n_events)}  "
+            f"matched {_count_span(row.null_n_matched)}"
+        )
+    return "\n".join(lines)
+
+
+def _count_span(counts: tuple[int, ...]) -> str:
+    """A null count is a distribution over draws, not a single number — the
+    mean alone would hide a draw that searched a different event set."""
+    if not counts:
+        return "n/a"
+    return f"mean {float(np.mean(counts)):.1f} ({min(counts)}–{max(counts)})"
+
+
+def report_payload(result: EventTimingReport) -> dict[str, object]:
+    """🔴 D2 — the report as DATA, at FULL float precision, and the thing the
+    document binding actually compares.
+
+    The human table rounds (`.3f`) and the convention line uses `:g`, so a
+    default that moves by less than the printed precision — `miss_fraction`
+    0.5 → 0.5000001 — renders byte-identically and a text comparison of the
+    printed report passes. That is a silent drift of exactly the kind this
+    plan exists to prevent. Every field travels here unrounded instead, and
+    `asdict` means a field ADDED to `FrozenConvention` or `StatisticRow`
+    enters the binding automatically rather than having to be remembered."""
+
+    def _jsonable(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        return {
+            key: list(cast("tuple[object, ...]", value))
+            if isinstance(value, tuple)
+            else value
+            for key, value in pairs
+        }
+
+    return {
+        "convention": asdict(result.convention, dict_factory=_jsonable),
+        "input_digests": dict(sorted(result.input_digests.items())),
+        "rows": [
+            asdict(row, dict_factory=_jsonable) | {"increment": row.increment}
+            for row in result.rows
+        ],
+    }
+
+
+def _compact(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def render_machine_block(result: EventTimingReport) -> str:
+    """The canonical serialization of `report_payload` the document embeds
+    beside the human table (D2). Valid JSON, laid out one convention, one
+    digest and one statistic row per line so a drift is a one-line diff
+    rather than a wholesale rewrite. Deterministic: sorted keys, fixed
+    layout, shortest round-tripping float repr."""
+    payload = report_payload(result)
+    digests = ",\n    ".join(
+        f"{_compact(path)}: {_compact(digest)}"
+        for path, digest in cast("dict[str, str]", payload["input_digests"]).items()
+    )
+    rows = ",\n    ".join(
+        _compact(row) for row in cast("list[object]", payload["rows"])
+    )
+    return (
+        "{\n"
+        f'  "convention": {_compact(payload["convention"])},\n'
+        f'  "input_digests": {{\n    {digests}\n  }},\n'
+        f'  "rows": [\n    {rows}\n  ]\n'
+        "}"
+    )
 
 
 def report(
@@ -491,59 +778,28 @@ def report(
     base: EventTimingParams,
     leads: tuple[int, ...],
     init_hour: int,
+    seasons: tuple[int, ...],
     null_shift_days: tuple[int, ...],
     min_amplitude: float,
+    input_digests: dict[str, str],
 ) -> None:
     stations = sorted({str(cell.station) for cell in cells})
-    _emit(f"lead set {leads} from {init_hour:02d}Z — {CONTINUOUS_DAY_LABEL}")
-    _emit(f"published D+1 for comparison: {LEAD_BANDS['D+1']} + most-recent-init dedup")
-    _emit(
-        f"{len(stations)} stations, {len(cells)} station-seasons, "
-        f"event = gauge 6-h total ≥ q{base.event_quantile:.2f} of its station's wet "
-        f"windows, declustered {base.decluster_h} h"
+    result = build_report(
+        cells,
+        windows_h=windows_h,
+        base=base,
+        leads=leads,
+        lead_label=CONTINUOUS_DAY_LABEL,
+        init_hour=init_hour,
+        seasons=seasons,
+        null_shift_days=null_shift_days,
+        min_amplitude=min_amplitude,
+        input_digests=input_digests,
     )
-    _emit(
-        f"null = whole-day circular shift within season, {len(null_shift_days)} draws "
-        f"{null_shift_days}"
-    )
+    _emit(format_report(result, n_stations=len(stations), n_cells=len(cells)))
     _emit()
-    _emit(
-        "  ⛔ 'exact' and '±6 h' are fractions of MATCHED events; 'missed' is a "
-        "fraction of ALL events searched."
-    )
-    _emit(
-        "  ⚠️ IQR is censored at the search window and 'missed' depends on "
-        "--miss-fraction; neither is window-independent."
-    )
-    _emit()
-    _emit(
-        f"{'window':>8s}{'events':>8s}{'matched':>9s}{'statistic':>14s}"
-        f"{'observed':>11s}{'null mean (min–max)':>24s}{'skill':>9s}"
-    )
-    for window_h in windows_h:
-        params = replace(base, search_window_h=window_h)
-        observed = measure_events(cells, params=params)
-        nulls = [
-            measure_events(cells, params=params, shift_days=shift)
-            for shift in null_shift_days
-        ]
-        for row, (label, statistic) in enumerate(REPORTED_STATISTICS):
-            value = statistic(observed)
-            draws = [statistic(null) for null in nulls]
-            lead = (
-                f"{'±' + str(window_h) + ' h':>8s}{observed.n_events:>8d}"
-                f"{observed.n_matched:>9d}"
-                if row == 0
-                else " " * 25
-            )
-            _emit(
-                f"{lead}{label:>14s}{value:>11.3f}{_spread(draws):>24s}"
-                f"{value - float(np.mean(draws)):>+9.3f}"
-            )
-        _emit(
-            f"{' ' * 25}{'median / IQR':>14s}"
-            f"{observed.median_offset_h:>+8.1f} /{observed.iqr_h:>5.1f} h"
-        )
+    _emit(MACHINE_BLOCK_HEADING)
+    _emit(render_machine_block(result))
     _emit()
 
     phases = station_phases(cells, min_amplitude=min_amplitude)
@@ -617,21 +873,25 @@ def main() -> int:
         decluster_h=args.decluster_h,
         miss_fraction=args.miss_fraction,
     )
+    seasons = tuple(sorted(set(args.seasons)))
     cells = build_cells(
         tigge_root=args.tigge_root,
-        seasons=tuple(args.seasons),
+        seasons=seasons,
         leads=tuple(args.leads),
         init_hour=args.init_hour,
         params=base,
     )
+    input_digests = consumed_input_digests(tigge_root=args.tigge_root, seasons=seasons)
     report(
         cells,
         windows_h=windows,
         base=base,
         leads=tuple(args.leads),
         init_hour=args.init_hour,
+        seasons=seasons,
         null_shift_days=tuple(args.null_shift_days),
         min_amplitude=args.min_amplitude,
+        input_digests=input_digests,
     )
     return 0
 
