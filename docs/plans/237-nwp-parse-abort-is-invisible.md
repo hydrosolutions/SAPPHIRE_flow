@@ -166,10 +166,20 @@ question below).
    as a secondary assertion, but the primary condition must be *expected vs observed*, because
    absence is the failure mode actually seen in production.
 
+   *Deriving "expected":* take it from the window the walk actually requests
+   (`window_end = cycle_time + 120 h`, `meteoswiss_nwp.py:704-709`) and the cadence, rather than a
+   literal `121` in the assertion — 121 is the empirical value confirmed by three healthy cycles at
+   exactly 484 files, not an independently sourced constant, and hardcoding it would silently
+   mis-fire if MeteoSwiss ever changes cadence or horizon. If the combining code cannot see the
+   requested window, thread it in rather than re-deriving it there.
+
    ⚠️ **The `max_files` smoke path must stay green.** `tests/integration/live/test_meteoswiss_nwp_live.py:66-77,89-120`
-   deliberately fetches only a handful of files, so a bare 121-step assertion would fail it by
-   design. Scope the check to the steps the fetch actually *requested* (or exempt it explicitly when
-   `max_files` is set) — and state which, rather than leaving the implementer to choose.
+   deliberately fetches only a handful of files, so a bare full-grid assertion would fail it by
+   design. **Decision, so the implementer does not have to make it:** scope the check to the steps
+   the fetch actually **requested** — i.e. the intersection of the window grid with any `max_files`
+   truncation — rather than exempting the check when `max_files` is set. Scoping keeps the assertion
+   live on every path including the smoke test; an exemption would create a configuration in which
+   the check silently does nothing.
 
 *Scope (out):* retrying, re-fetching, changing pagination, the byte/file caps, the age guard,
 `_combine_cfgrib_datasets`' member contract, and any change to how gaps are marked downstream
