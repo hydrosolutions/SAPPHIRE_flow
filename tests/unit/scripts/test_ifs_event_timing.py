@@ -16,10 +16,13 @@ reproduces them with.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import polars as pl
@@ -45,18 +48,21 @@ from scripts.dhm_precip.ifs_event_timing import (
     EventTimingReport,
     FrozenConvention,
     StationSeasonCell,
+    StatisticRow,
     build_cells,
     build_report,
     consumed_input_digests,
     format_report,
     gauge_season_windows,
     measure_events,
+    render_machine_block,
+    report_payload,
     season_bounds,
     station_phases,
     tigge_series_paths,
     whole_day_shift,
 )
-from scripts.dhm_precip.loader import resolve_source_path
+from scripts.dhm_precip.loader import resolve_coords_path, resolve_source_path
 from scripts.dhm_precip.ma6_pairs import MaskedGaugeSeries
 
 STATION = Station("Aiselukhark")
@@ -291,6 +297,31 @@ class TestBuildReport:
             assert row.increment == pytest.approx(row.observed - row.null_mean)
             assert row.null_min <= row.null_mean <= row.null_max
 
+    def test_every_row_carries_the_nulls_own_counts(self) -> None:
+        """D1 — observed, null, increment AND THEIR COUNTS travel together: a
+        null rate whose searched/matched denominators are not published is not
+        comparable to the observed one. One entry per draw, never a mean that
+        would hide a draw searching a different event set."""
+        result = self._report(digests={})
+        for row in result.rows:
+            assert len(row.null_n_events) == 1  # one null draw in this fixture
+            assert len(row.null_n_matched) == 1
+            assert all(isinstance(count, int) for count in row.null_n_events)
+            assert all(isinstance(count, int) for count in row.null_n_matched)
+            assert all(
+                matched <= searched
+                for searched, matched in zip(
+                    row.null_n_events, row.null_n_matched, strict=True
+                )
+            )
+
+    def test_format_report_publishes_the_null_counts(self) -> None:
+        result = self._report(digests={})
+        text = format_report(result, n_stations=1, n_cells=1)
+        assert "null counts per draw" in text
+        assert "searched" in text
+        assert "matched" in text
+
     def test_input_digests_pass_through_unchanged(self) -> None:
         """D7 — `build_report` carries whatever digests it is given; it does
         not compute them (that is `consumed_input_digests`, tested below
@@ -310,6 +341,82 @@ class TestBuildReport:
         assert "deadbeef" in text
         assert "n = 6 seasons" in text
         assert "no reliable inferential interval is available" in text
+
+    def test_the_sample_size_is_derived_from_the_seasons_actually_used(self) -> None:
+        """D4 — a hard-coded 6 prints a FALSE sample size for any valid
+        non-default `--seasons` run."""
+        result = build_report(
+            [_synthetic_cell()],
+            windows_h=(12,),
+            base=EventTimingParams(search_window_h=12),
+            leads=CONTINUOUS_DAY_LEADS,
+            lead_label=CONTINUOUS_DAY_LABEL,
+            init_hour=DEFAULT_INIT_HOUR,
+            seasons=(2023, 2024),
+            null_shift_days=(1,),
+            min_amplitude=MIN_HARMONIC_AMPLITUDE,
+            input_digests={},
+        )
+        text = format_report(result, n_stations=1, n_cells=1)
+        assert "n = 2 seasons" in text
+        assert "n = 6 seasons" not in text
+
+
+class TestReportPayload:
+    """🔴 D2 — the payload is what the document binding compares, so it must
+    carry FULL precision: the printed report rounds results to `.3f` and the
+    convention to `:g`, which is how a drifted default survived the first
+    version of the binding."""
+
+    def _report(self, *, miss_fraction: float) -> EventTimingReport:
+        return build_report(
+            [_synthetic_cell()],
+            windows_h=(12,),
+            base=EventTimingParams(search_window_h=12, miss_fraction=miss_fraction),
+            leads=CONTINUOUS_DAY_LEADS,
+            lead_label=CONTINUOUS_DAY_LABEL,
+            init_hour=DEFAULT_INIT_HOUR,
+            seasons=DEFAULT_SEASONS,
+            null_shift_days=(1,),
+            min_amplitude=MIN_HARMONIC_AMPLITUDE,
+            input_digests={"a.parquet": "deadbeef"},
+        )
+
+    def test_a_drift_the_printed_report_rounds_away_survives_in_the_payload(
+        self,
+    ) -> None:
+        published = self._report(miss_fraction=0.5)
+        drifted = self._report(miss_fraction=0.5000001)
+        assert format_report(drifted, n_stations=1, n_cells=1) == format_report(
+            published, n_stations=1, n_cells=1
+        ), "the printed report is expected to round this drift away"
+        assert report_payload(drifted) != report_payload(published)
+        convention = report_payload(drifted)["convention"]
+        assert isinstance(convention, dict)
+        assert convention["miss_fraction"] == 0.5000001
+
+    def test_every_convention_and_row_field_reaches_the_payload(self) -> None:
+        """`asdict` rather than a hand-written field list: a field ADDED to
+        `FrozenConvention` or `StatisticRow` must enter the binding without
+        anyone remembering to add it here."""
+        payload = report_payload(self._report(miss_fraction=0.5))
+        convention = payload["convention"]
+        rows = payload["rows"]
+        assert isinstance(convention, dict)
+        assert isinstance(rows, list)
+        assert set(cast("dict[str, object]", convention)) == {
+            field.name for field in fields(FrozenConvention)
+        }
+        assert set(cast("dict[str, object]", rows[0])) == {
+            field.name for field in fields(StatisticRow)
+        } | {"increment"}
+        assert payload["input_digests"] == {"a.parquet": "deadbeef"}
+
+    def test_the_machine_block_round_trips_as_json(self) -> None:
+        report = self._report(miss_fraction=0.5)
+        assert json.loads(render_machine_block(report)) == json.loads(
+            json.dumps(report_payload(report))
+        )
 
 
 def _production_inputs_available() -> bool:
@@ -340,7 +447,10 @@ class TestConsumedInputDigestsOnProductionData:
     """D7 — the emitted digests are the files' REAL sha256, independently
     recomputed here with `shasum -a 256` rather than the module's own
     hashing utility, so a bug shared between production code and test would
-    not hide itself."""
+    not hide itself. ⚠️ `station_coordinates.csv` is in the list because it
+    IS consumed — `ma6_pairs` reads it to build the station population and
+    `load_elevations` reads it again for the elevation banding — so the same
+    convention on a different coordinates file must fail loudly."""
 
     def test_digests_match_shasum(self) -> None:
         digests = consumed_input_digests(
@@ -348,9 +458,10 @@ class TestConsumedInputDigestsOnProductionData:
         )
         paths = (
             resolve_source_path(),
+            resolve_coords_path(),
             *tigge_series_paths(tigge_root=DEFAULT_TIGGE_ROOT, seasons=DEFAULT_SEASONS),
         )
-        assert len(digests) == len(paths) == 7
+        assert len(digests) == len(paths) == 8
         for path in paths:
             shasum = subprocess.run(
                 ["shasum", "-a", "256", str(path)],

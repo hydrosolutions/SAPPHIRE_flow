@@ -51,10 +51,11 @@ stable across every window tested. See M-A11c.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+import json
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import polars as pl
@@ -227,7 +228,10 @@ class StatisticRow:
     alone and never an absolute rate alone. ⛔ Two denominators, carried on
     every row rather than assumed by position: `n_events` is the SEARCHED
     count (the `missed` denominator), `n_matched` the MATCHED count (the
-    `exact window` / `within ±6 h` denominator) — see `EventTimingResult`."""
+    `exact window` / `within ±6 h` denominator) — see `EventTimingResult`.
+    The NULL's own per-draw counts travel with it (`null_n_events`,
+    `null_n_matched`): a null rate whose denominator is not published is not
+    comparable to the observed one."""
 
     window_h: int
     statistic: str
@@ -237,6 +241,8 @@ class StatisticRow:
     null_mean: float
     null_min: float
     null_max: float
+    null_n_events: tuple[int, ...]
+    null_n_matched: tuple[int, ...]
 
     @property
     def increment(self) -> float:
@@ -340,11 +346,17 @@ def consumed_input_digests(
 ) -> dict[str, str]:
     """D7 — the SHA-256 of every file this run actually reads: the gauge
     workbook (`DHM_PRECIP_XLSX`, already separately pinned to
-    `PRODUCTION_SOURCE_SHA256` by `load_long_frame`) plus the six TIGGE
-    station-series parquets. Keyed by the path exactly as resolved, so the
-    report shows what was addressed, not an assumption about it."""
-    workbook = resolve_source_path()
-    paths = (workbook, *tigge_series_paths(tigge_root=tigge_root, seasons=seasons))
+    `PRODUCTION_SOURCE_SHA256` by `load_long_frame`), the station coordinates
+    CSV (`DHM_PRECIP_COORDS` — read by `ma6_pairs.load_gauge_masked_population`
+    to build the population and again by `load_elevations` for the banding),
+    and the six TIGGE station-series parquets. Keyed by the path exactly as
+    resolved, so the report shows what was addressed, not an assumption about
+    it."""
+    paths = (
+        resolve_source_path(),
+        resolve_coords_path(),
+        *tigge_series_paths(tigge_root=tigge_root, seasons=seasons),
+    )
     return {str(path): compute_sha256(path) for path in paths}
 
 
@@ -553,6 +565,10 @@ def _emit(line: str = "") -> None:
     print(line, flush=True)  # noqa: T201 — the report IS this tool's output
 
 
+MACHINE_BLOCK_HEADING = (
+    "machine-readable report (D2 — full precision; the binding compares THIS):"
+)
+
 # The three headline rows of M-A11c's table, in its order. The first row also
 # carries the window's event counts.
 REPORTED_STATISTICS: tuple[tuple[str, Callable[[EventTimingResult], float]], ...] = (
@@ -614,6 +630,8 @@ def build_report(
                     null_mean=float(np.mean(draws)),
                     null_min=float(np.min(draws)),
                     null_max=float(np.max(draws)),
+                    null_n_events=tuple(null.n_events for null in nulls),
+                    null_n_matched=tuple(null.n_matched for null in nulls),
                 )
             )
     return EventTimingReport(
@@ -648,9 +666,9 @@ def format_report(result: EventTimingReport, *, n_stations: int, n_cells: int) -
     ]
     lines += [
         "",
-        "uncertainty: n = 6 seasons — no reliable inferential interval is "
-        "available (D4). The ±window spread below is parameter sensitivity, "
-        "not uncertainty.",
+        f"uncertainty: n = {len(convention.seasons)} seasons — no reliable "
+        "inferential interval is available (D4). The ±window spread below is "
+        "parameter sensitivity, not uncertainty.",
         "",
         "  ⛔ 'exact' and '±6 h' are fractions of MATCHED events; 'missed' is a "
         "fraction of ALL events searched.",
@@ -673,7 +691,84 @@ def format_report(result: EventTimingReport, *, n_stations: int, n_cells: int) -
                 f"{lead}{row.statistic:>14s}{row.observed:>11.3f}{null_spread:>24s}"
                 f"{row.increment:>+11.3f}"
             )
+    lines += [
+        "",
+        f"null counts per draw ({len(convention.null_shift_days)} draws), "
+        "searched / matched (D1):",
+    ]
+    for window_h in result.convention.search_windows_h:
+        row = next(row for row in result.rows if row.window_h == window_h)
+        lines.append(
+            f"{'±' + str(window_h) + ' h':>8s}  "
+            f"searched {_count_span(row.null_n_events)}  "
+            f"matched {_count_span(row.null_n_matched)}"
+        )
     return "\n".join(lines)
+
+
+def _count_span(counts: tuple[int, ...]) -> str:
+    """A null count is a distribution over draws, not a single number — the
+    mean alone would hide a draw that searched a different event set."""
+    if not counts:
+        return "n/a"
+    return f"mean {float(np.mean(counts)):.1f} ({min(counts)}–{max(counts)})"
+
+
+def report_payload(result: EventTimingReport) -> dict[str, object]:
+    """🔴 D2 — the report as DATA, at FULL float precision, and the thing the
+    document binding actually compares.
+
+    The human table rounds (`.3f`) and the convention line uses `:g`, so a
+    default that moves by less than the printed precision — `miss_fraction`
+    0.5 → 0.5000001 — renders byte-identically and a text comparison of the
+    printed report passes. That is a silent drift of exactly the kind this
+    plan exists to prevent. Every field travels here unrounded instead, and
+    `asdict` means a field ADDED to `FrozenConvention` or `StatisticRow`
+    enters the binding automatically rather than having to be remembered."""
+
+    def _jsonable(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        return {
+            key: list(cast("tuple[object, ...]", value))
+            if isinstance(value, tuple)
+            else value
+            for key, value in pairs
+        }
+
+    return {
+        "convention": asdict(result.convention, dict_factory=_jsonable),
+        "input_digests": dict(sorted(result.input_digests.items())),
+        "rows": [
+            asdict(row, dict_factory=_jsonable) | {"increment": row.increment}
+            for row in result.rows
+        ],
+    }
+
+
+def _compact(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def render_machine_block(result: EventTimingReport) -> str:
+    """The canonical serialization of `report_payload` the document embeds
+    beside the human table (D2). Valid JSON, laid out one convention, one
+    digest and one statistic row per line so a drift is a one-line diff
+    rather than a wholesale rewrite. Deterministic: sorted keys, fixed
+    layout, shortest round-tripping float repr."""
+    payload = report_payload(result)
+    digests = ",\n    ".join(
+        f"{_compact(path)}: {_compact(digest)}"
+        for path, digest in cast("dict[str, str]", payload["input_digests"]).items()
+    )
+    rows = ",\n    ".join(
+        _compact(row) for row in cast("list[object]", payload["rows"])
+    )
+    return (
+        "{\n"
+        f'  "convention": {_compact(payload["convention"])},\n'
+        f'  "input_digests": {{\n    {digests}\n  }},\n'
+        f'  "rows": [\n    {rows}\n  ]\n'
+        "}"
+    )
 
 
 def report(
@@ -702,6 +797,9 @@ def report(
         input_digests=input_digests,
     )
     _emit(format_report(result, n_stations=len(stations), n_cells=len(cells)))
+    _emit()
+    _emit(MACHINE_BLOCK_HEADING)
+    _emit(render_machine_block(result))
     _emit()
 
     phases = station_phases(cells, min_amplitude=min_amplitude)

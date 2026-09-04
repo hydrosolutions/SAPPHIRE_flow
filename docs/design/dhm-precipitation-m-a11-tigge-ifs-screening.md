@@ -517,8 +517,11 @@ prior text if the disagreement itself is ever relevant again.
    inverting the sign against the tracked `diurnal_phase.py:31` / `tigge_gauge_timing.py:347`.
 3. **Wrong lead band** — leads 6/12/18/24 from the 00Z run were called "D+1"; the published D+1 is
    **24/30/36/42 with most-recent-initialisation deduplication** (`tigge_ifs.py:574`).
-4. 🔴 **"Within ±6 h" spans the PREVIOUS, SAME and NEXT window** — so the first version's "44.5 % in the
-   correct 6-hour window" was **simply wrong**. Exact-window agreement is `offset == 0`.
+4. 🔴 **"Within ±6 h" spans the PREVIOUS, SAME and NEXT window** — so the first version's headline
+   "in the correct 6-hour window" rate was **simply wrong**: it reported a ±6 h span as exact-window
+   agreement. Exact-window agreement is `offset == 0`; its value is the `exact window` row of the bound
+   block below. ⛔ The first version's own figure is not reproducible from the repo and is not restated
+   here (D5).
 
 Also confirmed: the reconciliation used raw sums per clock position where the tracked M-A6 estimator
 divides each clock hour by **its own observation count** — a small effect that does not change the
@@ -527,9 +530,15 @@ conclusion below (established separately for M-A6/M-A9/M-A11; not requoted here,
 ### Reproducible results
 
 The null circularly shifts IFS by whole days **within season**, preserving its own diurnal climatology
-and destroying only day-to-day correspondence. The block below is `format_report()`'s exact output —
-`tests/unit/scripts/test_m_a11c_document_binding.py` regenerates it from the frozen defaults and fails
-closed if this block and that output ever disagree, in either direction.
+and destroying only day-to-day correspondence. Every observed rate is published with the null's own rate
+**and the null's own searched/matched counts** (D1) — a null rate whose denominator is not shown is not
+comparable to the observed one.
+
+The two blocks below are the module's own output: `format_report()` for humans and
+`render_machine_block()` for the binding. `tests/unit/scripts/test_m_a11c_document_binding.py`
+regenerates both from the frozen defaults and fails closed if either disagrees, in either direction —
+comparing the JSON block by parsed **value** (so a default that drifts below the printed precision still
+fails) and the text block whitespace-insensitively (so re-wrapping a line does not).
 
 <!-- m-a11c-report:start -->
 ```text
@@ -543,6 +552,7 @@ frozen convention (D3):
 
 consumed input digests, sha256 (D7):
   data/dhm_precip/combined_precipitation_37_stations.xlsx  8dc57e4364ef788b022779a42df86918200d1c8dc723948f22657bc70ff98f57
+  data/dhm_precip/station_coordinates.csv  d57a712b7aeb0933d52ff3e0dda49d9f81c3ffac155c428025ea9cc7bffe6dff
   data/dhm_precip/tigge/points/tigge_station_series_jjas2020.parquet  160ec7a348889a9fcc90fef70dc2c329d63bc5d62ffb43e45f2cc329992d7914
   data/dhm_precip/tigge/points/tigge_station_series_jjas2021.parquet  7d5fa36f0bd8847550fef7fab174e699bd80c2f26d489b1af20c96bddd9bc1ce
   data/dhm_precip/tigge/points/tigge_station_series_jjas2022.parquet  acf8985ade9f73aae946e3e9f5f62bd59bb90dd53cd333a50517b58f023cfb3b
@@ -568,6 +578,47 @@ uncertainty: n = 6 seasons — no reliable inferential interval is available (D4
    ±48 h    2110     1818  exact window      0.115     0.052 (0.043–0.057)     +0.063
                             within ±6 h      0.283     0.165 (0.144–0.177)     +0.118
                                  missed      0.138     0.258 (0.226–0.282)     -0.120
+
+null counts per draw (10 draws), searched / matched (D1):
+   ±12 h  searched mean 2110.0 (2110–2110)  matched mean 980.0 (936–1043)
+   ±24 h  searched mean 2110.0 (2110–2110)  matched mean 1266.6 (1204–1344)
+   ±36 h  searched mean 2110.0 (2110–2110)  matched mean 1439.2 (1385–1514)
+   ±48 h  searched mean 2110.0 (2110–2110)  matched mean 1564.8 (1514–1634)
+```
+
+🔴 **The same report as DATA, at full precision — this is the block the binding actually compares.**
+The human table above rounds to three decimals and prints the convention with `:g`, so a default that
+drifts by less than the printed precision renders byte-identically; the JSON below does not, and the
+binding compares it by parsed VALUE, not as text.
+
+```json
+{
+  "convention": {"decluster_h":24,"event_quantile":0.9,"init_hour":0,"lead_label":"first 24 h of one 00Z run (⛔ not the published D+1)","leads":[6,12,18,24],"min_amplitude":0.05,"min_candidates":3,"min_wet_windows":30,"miss_fraction":0.5,"null_shift_days":[7,11,13,17,19,23,29,31,-9,-15],"search_windows_h":[12,24,36,48],"seasons":[2020,2021,2022,2023,2024,2025]},
+  "input_digests": {
+    "data/dhm_precip/combined_precipitation_37_stations.xlsx": "8dc57e4364ef788b022779a42df86918200d1c8dc723948f22657bc70ff98f57",
+    "data/dhm_precip/station_coordinates.csv": "d57a712b7aeb0933d52ff3e0dda49d9f81c3ffac155c428025ea9cc7bffe6dff",
+    "data/dhm_precip/tigge/points/tigge_station_series_jjas2020.parquet": "160ec7a348889a9fcc90fef70dc2c329d63bc5d62ffb43e45f2cc329992d7914",
+    "data/dhm_precip/tigge/points/tigge_station_series_jjas2021.parquet": "7d5fa36f0bd8847550fef7fab174e699bd80c2f26d489b1af20c96bddd9bc1ce",
+    "data/dhm_precip/tigge/points/tigge_station_series_jjas2022.parquet": "acf8985ade9f73aae946e3e9f5f62bd59bb90dd53cd333a50517b58f023cfb3b",
+    "data/dhm_precip/tigge/points/tigge_station_series_jjas2023.parquet": "3942ba0d7063c22dc24303bcbcb3847c07e3cea39bb37ae55670e144d380b315",
+    "data/dhm_precip/tigge/points/tigge_station_series_jjas2024.parquet": "89a410b6c5ac69025c4fa78c3b7242fe4d843a94db2a5899cd54f0ec1209524c",
+    "data/dhm_precip/tigge/points/tigge_station_series_jjas2025.parquet": "f5b06fcb3cd8d79fb3bbfa0da97e24e01b85a8cd80e240e8efc9086cb419b22e"
+  },
+  "rows": [
+    {"increment":0.1061618753170594,"n_events":2110,"n_matched":1353,"null_max":0.21145833333333333,"null_mean":0.19243383791280017,"null_min":0.17094017094017094,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1037,977,995,960,960,950,936,955,1043,987],"observed":0.29859571322985956,"statistic":"exact window","window_h":12},
+    {"increment":0.12972062813412644,"n_events":2110,"n_matched":1353,"null_max":0.615625,"null_mean":0.5849874280373444,"null_min":0.5512820512820513,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1037,977,995,960,960,950,936,955,1043,987],"observed":0.7147080561714708,"statistic":"within ±6 h","window_h":12},
+    {"increment":-0.17677725118483412,"n_events":2110,"n_matched":1353,"null_max":0.5563981042654028,"null_mean":0.5355450236966824,"null_min":0.5056872037914691,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1037,977,995,960,960,950,936,955,1043,987],"observed":0.3587677725118483,"statistic":"missed","window_h":12},
+    {"increment":0.0844702389099311,"n_events":2110,"n_matched":1586,"null_max":0.10462287104622871,"null_mean":0.09459659589460861,"null_min":0.08139534883720931,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1316,1287,1281,1233,1241,1231,1204,1238,1344,1291],"observed":0.17906683480453972,"statistic":"exact window","window_h":24},
+    {"increment":0.13285537290929467,"n_events":2110,"n_matched":1586,"null_max":0.3209013209013209,"null_mean":0.3091370608864178,"null_min":0.29485049833887045,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1316,1287,1281,1233,1241,1231,1204,1238,1344,1291],"observed":0.44199243379571246,"statistic":"within ±6 h","window_h":24},
+    {"increment":-0.15137440758293835,"n_events":2110,"n_matched":1586,"null_max":0.42938388625592416,"null_mean":0.3997156398104265,"null_min":0.3630331753554502,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1316,1287,1281,1233,1241,1231,1204,1238,1344,1291],"observed":0.24834123222748816,"statistic":"missed","window_h":24},
+    {"increment":0.07536402020841301,"n_events":2110,"n_matched":1707,"null_max":0.07974137931034483,"null_mean":0.07050592706750966,"null_min":0.059927797833935016,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1514,1464,1449,1392,1407,1394,1385,1412,1502,1473],"observed":0.14586994727592267,"statistic":"exact window","window_h":36},
+    {"increment":0.13433495523115466,"n_events":2110,"n_matched":1707,"null_max":0.22743425728500355,"null_mean":0.21540142438220208,"null_min":0.19855595667870035,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1514,1464,1449,1392,1407,1394,1385,1412,1502,1473],"observed":0.34973637961335674,"statistic":"within ±6 h","window_h":36},
+    {"increment":-0.12691943127962083,"n_events":2110,"n_matched":1707,"null_max":0.34360189573459715,"null_mean":0.31791469194312794,"null_min":0.2824644549763033,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1514,1464,1449,1392,1407,1394,1385,1412,1502,1473],"observed":0.1909952606635071,"statistic":"missed","window_h":36},
+    {"increment":0.06252277168261224,"n_events":2110,"n_matched":1818,"null_max":0.05730129390018484,"null_mean":0.05243872446700272,"null_min":0.04262295081967213,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1634,1595,1585,1514,1528,1516,1525,1534,1623,1594],"observed":0.11496149614961496,"statistic":"exact window","window_h":48},
+    {"increment":0.1179553464915773,"n_events":2110,"n_matched":1818,"null_max":0.1774406332453826,"null_mean":0.165322981341206,"null_min":0.1436065573770492,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1634,1595,1585,1514,1528,1516,1525,1534,1623,1594],"observed":0.2832783278327833,"statistic":"within ±6 h","window_h":48},
+    {"increment":-0.12000000000000002,"n_events":2110,"n_matched":1818,"null_max":0.2824644549763033,"null_mean":0.2583886255924171,"null_min":0.22559241706161137,"null_n_events":[2110,2110,2110,2110,2110,2110,2110,2110,2110,2110],"null_n_matched":[1634,1595,1585,1514,1528,1516,1525,1534,1623,1594],"observed":0.13838862559241707,"statistic":"missed","window_h":48}
+  ]
+}
 ```
 <!-- m-a11c-report:end -->
 
@@ -601,8 +652,9 @@ between this spread and the **catchment concentration time**, not a property of 
 - **Four samples/day CAN identify harmonic 1** (harmonic 2 is Nyquist and orthogonal, so the gauge
   bimodality does not alias into it). But higher **odd** harmonics do alias, and with no hourly IFS that
   is unmeasurable ⇒ the **underlying hourly physical phase is not identifiable from this data.** The
-  ~+2.5 h offset between 6-hourly-window and hourly gauge phase is the **group delay of a box sum** and
-  cancels when both products are treated identically.
+  offset between 6-hourly-window and hourly gauge phase is the **group delay of a box sum** and cancels
+  when both products are treated identically. ⛔ Its magnitude is **not** produced by
+  `ifs_event_timing.py` and is therefore not quoted here (T2 — bind it or delete it).
 - 🔴 **The "frequent small amounts drive the climatology" reconciliation is REFUTED** — splitting each
   product at q0.90 of its own wet 6-h totals, the LARGE subset does **not** approach zero under any
   matched-estimator variant. ⚠️ That split also does **not compare the same storms** — gauge-LARGE and
@@ -626,8 +678,11 @@ DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
   uv run python -m scripts.dhm_precip.ifs_event_timing
 ```
 
-Prints the frozen convention, the SHA-256 of every consumed input, and the observed/null/increment table
-above for each of ±12/24/36/48 h, then the climatological phase displacement on the same pairing.
+Prints the frozen convention, the SHA-256 of every consumed input (the gauge workbook, the station
+coordinates CSV and the six TIGGE season parquets), the observed/null/increment table above for each of
+±12/24/36/48 h with the null's per-draw counts, the full-precision JSON block, and then the
+climatological phase displacement on the same pairing. Both fenced blocks above are copied verbatim from
+this command's output.
 Read-only; writes nothing. Needs `data/dhm_precip/tigge/points/tigge_station_series_jjas<year>.parquet`
 for every season (`tigge_ifs --year <y>`). Every knob is a flag — `--search-window-h`,
 `--event-quantile`, `--decluster-h`, `--miss-fraction`, `--leads`, `--init-hour`, `--null-shift-days`,
@@ -640,8 +695,12 @@ this module as a D+1 figure.
 
 ### Provenance
 
-Reviewed by Codex 2026-09-03 (verdict NEEDS-CHANGES; four defects, all folded here) and again 2026-09-04
-(Plan 238; seven findings, all folded — D1 weakened, D4 replaced, D7 added, one false claim removed). The
+Reviewed by Codex 2026-09-03 (verdict NEEDS-CHANGES; four defects, all folded here), again 2026-09-04 on
+the plan (Plan 238; seven findings, all folded — D1 weakened, D4 replaced, D7 added, one false claim
+removed), and a third time 2026-09-04 on the implementation (NEEDS-CHANGES; six findings, all folded —
+🔴 the binding could be silenced by ROUNDING and is now on parsed VALUES, the null's own counts are
+published, `n` is derived from the seasons used, the coordinates CSV joined the pinned inputs, and the
+two result figures that had escaped the fence were removed). The
 measurement is tracked as `scripts/dhm_precip/ifs_event_timing.py`, with each of the four original
 defects fixed by reusing the tracked implementation — `tigge_gauge_timing._gauge_window_lookup` for the
 `(h−6, h]` windows, `tigge_gauge_timing.estimate_station_phase` (hence `diurnal_phase.harmonic_phase_h`,
