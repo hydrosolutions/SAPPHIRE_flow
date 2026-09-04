@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-03
 revised: 2026-09-04
 plan: 237
@@ -14,7 +14,7 @@ source: Measured on the mac mini 2026-09-03/04 after 15 Slack alerts in one day;
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-09-04, after four independent review rounds.
 
 ## ⛔ Proportionality — two tasks
 
