@@ -82,11 +82,23 @@ property of the output.** All three passed local testing and were caught only by
 1. **Compare against the EXPECTED BUCKET SET.** The question is "does every slot the model will read
    exist across the consumed window?" — not any gap statistic, and not the existing validator, which
    answers a different question and is correctly scoped to `past_targets`.
-2. **The window is PER FEATURE CLASS, not one window.** `NwpRainfallRunoff` is future-forcing-only
-   (`_n_lags = 0`); its lookback is TARGET history. Validating its forcing from `lookback_start`
-   inspects rows it never reads, so a missing unconsumed row at `issue_time` falsely skips a step
-   whose future forcing is complete. Past-forcing, future-forcing and targets each have their own
-   consumed window, and models declare them separately.
+   **Confirmed by independent plan review (2026-09-04): this is the right property, and NO simpler
+   complete check already exists.** `_validate_continuous_window`
+   (`models/nwp_regression.py:659`) already demonstrates the approach — but only inside one model,
+   using that feature's own lookback. `assess_future_coverage` (`services/nwp_coverage.py:128`)
+   counts rows without checking their expected timestamps, and `_station_complete`
+   (`services/track_resolution.py:143`) checks members share a timestamp set without comparing it to
+   the issue-anchored expected set.
+2. **The window is PER DECLARED INPUT SERIES — "per feature class" is TOO COARSE.**
+   `SeasonalPrecipRunoffRegression` declares 7 target steps, **45** precipitation steps and **14**
+   temperature steps (`models/nwp_regression.py:752,765`), all in the same past-forcing class, and
+   the adapter collapses them into a single maximum `lookback_steps` of 45
+   (`adapters/forecast_interface.py:656,707`). A class-wide 45-day expected set would reject a model
+   whose temperature is complete over the 14 days it actually reads.
+   Separately, `NwpRainfallRunoff` is future-forcing-only (`_n_lags = 0`), so its lookback is TARGET
+   history: validating its forcing from `lookback_start` inspects rows it never reads.
+   **Training adds one more distinction:** future forcing there is aligned only to existing target
+   timestamps, not to every bucket in the requested range (`models/nwp_regression.py:257`).
 3. **It must cover hindcast, training AND operational** — all three bypass today.
 4. **⚠️ The operational path needs particular care:** `_aggregate_nwp_records_to_time_step` is called
    both for model input AND by `reduced_daily_step_times`, which feeds
@@ -133,29 +145,75 @@ consumer decide.
 
 ### T0 — SPECIFY the resolution check (BLOCKS T1; do not skip)
 
-Write the check down before writing code: the expected-bucket-set comparison, the per-feature-class
-consumed windows (past-forcing / future-forcing / targets), and the behaviour when a model declares a
-resolution we cannot serve. Three implementations were refuted without this; the fourth should not
-start until D1 § "What the check must actually be" is a specification rather than a direction.
-**Exit: a reviewer can predict the outcome for every row of D1's failure table from the spec alone.**
+Write the check down before writing code: the expected-bucket-set comparison, the **per declared
+input series** consumed windows, and the behaviour when a model declares a resolution we cannot
+serve. Three implementations were refuted without this; the fourth must not start until D1 § "What
+the check must actually be" is a specification rather than a direction.
+
+**Exit — a FINITE VERDICT TABLE a reviewer can check without reading code.** It must state the
+expected outcome for, at minimum:
+  * every row of D1's failure table (median / minimum / aggregate-then-validate);
+  * **`NwpRainfallRunoff`** — future-forcing-only, so a missing *unconsumed* past-forcing row at
+    `issue_time` must NOT skip a step whose future forcing is complete;
+  * **`SeasonalPrecipRunoffRegression`** — unequal past lookbacks in one class (7 target / 45 precip
+    / 14 temperature): temperature complete over its own 14 days must PASS even though the
+    collapsed class maximum is 45.
+Predicting only the failure table is NOT sufficient — a spec using one expected set per feature class
+predicts all three of those rows correctly and still fails the Seasonal case.
+
+Follow `docs/workflow.md`'s task shape for a non-trivial task: outcome, bounded in/out scope, exact
+verification, and pre-change evidence.
 
 ### T1 — apply it to hindcast, training and operational (gated on T0)
 
 All three bypass today. Correct the two in-code comments calling finer unresampled `past_dynamic`
-legitimate. Guard the operational MODEL-INPUT caller only — never `reduced_daily_step_times`, whose
-completeness check must keep degrading. Red-first tests must include **every row of D1's failure
-table**, so no rejected mechanism can be reintroduced.
+legitimate. Red-first tests must include **every row of D1's failure table plus T0's two model
+cases**, so no rejected mechanism can be reintroduced.
 
-### T2 — skill basis honesty (D2) — INDEPENDENT of T0/T1, buildable now
+**Operational containment — the placement in the previous draft was WRONG.** Guarding
+`build_future_dynamic_frame` is not enough: it is also used by the legacy station-superset assembler
+(`services/operational_inputs.py:727`), and an exception there is caught at STATION level
+(`flows/run_forecast_cycle.py:3058,3082`), skipping **every** assigned model for that station,
+fallbacks included. The containment point that lets one model fail while its siblings continue is the
+**assignment-local coverage gate** (`services/run_station_forecast.py:249`) — its current count-only
+check is what needs the expected-set condition. **No new component is required.**
+`reduced_daily_step_times` must still never raise; its completeness check exists to degrade and walk
+back.
 
-Mark scores with `sample_size < 30` (retained, never suppressed) and make `eval_period_*` the span
-the score was actually calculated from. Shares no mechanism with the resolution work and is not
-blocked by it.
+**Also name the per-track path:** `services/track_assembly.py:345` independently delivers raw
+`past_dynamic` without resampling. Correcting only `operational_inputs.py` leaves that production
+path unchanged.
 
-### T3 — docs
+### T2 — skill basis honesty (D2) — mechanically INDEPENDENT of T0/T1
+
+Mark scores with `sample_size < 30` (retained, never suppressed), and make `eval_period_*` **the
+first and last MATCHED valid times per stratum** — today every stratum receives the global
+minimum/maximum hindcast steps (`services/skill/service.py:656`) and the stratum builder discards the
+matched timestamps entirely (`:316`).
+
+**⚠️ Two endpoints CANNOT express an internal hole, and D2's wording overclaimed that they could.**
+With matched samples in 2020 and 2026 the min and max still describe a 6.7-year span. Narrowing the
+endpoints to first/last matched is worth doing on its own, but **`sample_size` is what reveals a thin
+score** — representing discontinuous coverage would need apparatus this plan will not add.
+
+**The low-n premise is narrower than D2 implied:** the promotion gate already excludes scores below a
+configurable `min_skill_samples` (`services/model_onboarding.py:900`), and the dashboard already
+shows `sample_size` as "N" (`api/templates/models/detail.html:86`). **What is missing is specifically
+an explicit `<30` marker on the stored row** — not sample-size data, and not a minimum-sample gate in
+general.
+
+**On sequencing:** T2 shares no mechanism with T0/T1 and is not blocked by them. It is still a task
+in a DRAFT plan, so it needs the owner's READY like anything else (`docs/workflow.md`), and T3 below
+is split so T2's docs do not wait on T1.
+
+### T3a — docs for T2 (with T2, not after T1)
 
 What a score's `sample_size` and eval window mean, and that a low-n score is retained-but-marked.
-Add the resolution rule itself once T1 lands.
+Split from T3b so T2's required doc change ships with T2 — every code change updates affected docs.
+
+### T3b — docs for T1
+
+The resolution rule and the per-declared-series windows, once T1 lands.
 
 ```json
 {
@@ -163,7 +221,8 @@ Add the resolution rule itself once T1 lands.
     {"id": "T0", "parallel": false, "depends_on": []},
     {"id": "T1", "parallel": false, "depends_on": ["T0"]},
     {"id": "T2", "parallel": true,  "depends_on": []},
-    {"id": "T3", "parallel": false, "depends_on": ["T1", "T2"]}
+    {"id": "T3a", "parallel": false, "depends_on": ["T2"]},
+    {"id": "T3b", "parallel": false, "depends_on": ["T1"]}
   ]
 }
 ```
@@ -175,8 +234,9 @@ Add the resolution rule itself once T1 lands.
 2. **T1**: hindcast, training and operational all deliver the declared resolution or record "cannot
    run this model here" with a reason; the run continues either way. The operational completeness
    path still degrades and walks back — it must NOT raise. Tests cover every refuted mechanism.
-3. **T2**: a low-n score is distinguishable from a well-supported one without inspecting the table,
-   and a scoring window containing a data hole reports its covered span.
+3. **T2**: a stored score carries an explicit `<30` marker, and `eval_period_*` holds the first and
+   last MATCHED valid times for that stratum. NOT a gate: two endpoints cannot express an internal
+   hole — `sample_size` is what reveals a thin score.
 4. Unit suite green; no in-code comment still calls finer unresampled `past_dynamic` legitimate.
 
 ## Implementation history — read before attempting T1
