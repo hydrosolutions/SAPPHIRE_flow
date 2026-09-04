@@ -14,7 +14,9 @@ another, both GFS/ECMWF-initialised differently (D7) — it licenses no "AI vs p
 $ cd /Users/bea/Documents/GitHub/sapphire-ma6   # or SAPPHIRE_flow — data/dhm_precip is shared
 DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
   uv run python -m scripts.dhm_precip.graphcast_acquire --seasons 2022 2023 2024 2025
-# ⛔ ONE model version per comparison — the driver REFUSES a pooled run (D2):
+# ⛔ ONE model version per comparison — the driver REFUSES a pooled run (D2),
+# and REFUSES any run whose two sides do not share identical (station, season)
+# support (D6; `--allow-support-intersection` is the explicit, never-default opt-out):
 DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
   uv run python -m scripts.dhm_precip.graphcast_ifs_compare --seasons 2022 2023 2024
 DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
@@ -78,8 +80,15 @@ adaptation, no estimator change.
 
 `scripts/dhm_precip/graphcast_ifs_compare.py` runs the **unmodified** `ifs_event_timing.build_cells` /
 `report` twice — once against the GraphCast tree, once against the production IFS tree — asserts the
-station-season support before ranking (D6), restricts both sides to the shared support, and prints both
-reports with the D7 initialisation confound stated in its header.
+station-season support before ranking (D6) and prints both reports with the D7 initialisation confound
+stated in its header.
+
+⛔ **D6's support assertion fails closed.** If the two products' actual `(station, season)` support is
+not **identical**, the driver **refuses to rank** and names the differing cells, because a cell missing
+on one side is indistinguishable in the output from a difference in model skill. Comparing on the
+*intersection* is available only behind an explicit `--allow-support-intersection` opt-in, which is
+never the default and which prints the accepted asymmetry above the reports. Both runs reported here
+pass the identical-support assertion (74 cells for v1, 21 for v3).
 
 ### 🔴 The archive changes model version mid-record — the seasons must never be pooled
 
@@ -108,27 +117,53 @@ case-insensitively, `model_version` is no longer pinned, `initialization_model` 
 group's skill **relative to the IFS control on the same seasons**, never the raw GraphCast numbers.
 Increment = observed − null mean; the ratio is GraphCast's increment over IFS's on the same events.
 
-**v1 — JJAS 2022/2023/2024**, 26 stations, 74 station-seasons (identical support both sides), 1037 events:
+⚠️ **Two denominators, and they are not the same number for the two products.** `events searched` is
+the `missed` denominator; `matched` is the `exact` / `within ±6 h` denominator. The two products do
+**not** search an identical event count at every window: `build_cells` drops an event that cannot
+raise `min_candidates=3` forecast candidates inside the window, and at ±12 h GraphCast falls short on
+six events the IFS control still searches. The per-window searched count for **each** product is
+therefore given below rather than one figure for both.
 
-| window | GC matched | IFS matched | GC `within ±6 h` | IFS `within ±6 h` | ratio |
-|---|---|---|---|---|---|
-| ±12 h | 548 | 686 | +0.058 | +0.122 | 0.48 |
-| ±24 h | 640 | 785 | +0.111 | +0.142 | 0.78 |
-| ±36 h | 690 | 855 | +0.107 | +0.143 | 0.75 |
-| ±48 h | 734 | 909 | +0.102 | +0.130 | 0.78 |
+⚠️ **`exact` and `within ±6 h` are higher-is-better; `missed` is lower-is-better**, so a *negative*
+`missed` increment is the model beating its null. Sign alone does not say which product is ahead.
 
-**v3 — JJAS 2025**, 21 stations, 21 station-seasons (identical support both sides), 367 events:
+**v1 — JJAS 2022/2023/2024**, 26 stations, 74 station-seasons (identical station-season support both
+sides, asserted before ranking):
 
-| window | GC matched | IFS matched | GC `within ±6 h` | IFS `within ±6 h` | ratio |
-|---|---|---|---|---|---|
-| ±12 h | 174 | 206 | +0.060 | +0.123 | 0.49 |
-| ±24 h | 201 | 248 | +0.079 | +0.136 | 0.58 |
-| ±36 h | 220 | 268 | +0.060 | +0.158 | 0.38 |
-| ±48 h | 238 | 291 | +0.042 | +0.140 | 0.30 |
+| window | events searched (GC / IFS) | matched (GC / IFS) | `exact` incr. (GC / IFS) | `within ±6 h` incr. (GC / IFS) | `missed` incr. (GC / IFS) | ±6 h ratio |
+|---|---|---|---|---|---|---|
+| ±12 h | **1031** / 1037 | 548 / 686 | +0.042 / +0.086 | +0.058 / +0.122 | −0.143 / −0.205 | 0.48 |
+| ±24 h | 1037 / 1037 | 640 / 785 | +0.065 / +0.072 | +0.111 / +0.142 | −0.145 / −0.175 | 0.78 |
+| ±36 h | 1037 / 1037 | 690 / 855 | **+0.067** / +0.064 | +0.107 / +0.143 | −0.136 / −0.162 | 0.74 |
+| ±48 h | 1037 / 1037 | 734 / 909 | **+0.062** / +0.055 | +0.102 / +0.130 | −0.131 / −0.157 | 0.79 |
 
-**Reading.** In **both** groups GraphCast beats its own whole-day-shift null (every increment is
-positive) but scores **below the IFS control on every window and every statistic** — it also matches
-fewer gauge events outright (61.7 % vs 75.7 % at ±24 h for v1; 54.8 % vs 67.6 % for v3).
+**v3 — JJAS 2025**, 21 stations, 21 station-seasons (identical station-season support both sides,
+asserted before ranking):
+
+| window | events searched (GC / IFS) | matched (GC / IFS) | `exact` incr. (GC / IFS) | `within ±6 h` incr. (GC / IFS) | `missed` incr. (GC / IFS) | ±6 h ratio |
+|---|---|---|---|---|---|---|
+| ±12 h | 367 / 367 | 174 / 206 | +0.054 / +0.091 | +0.060 / +0.123 | −0.117 / −0.142 | 0.49 |
+| ±24 h | 367 / 367 | 201 / 248 | +0.047 / +0.076 | +0.079 / +0.136 | −0.111 / −0.116 | 0.58 |
+| ±36 h | 367 / 367 | 220 / 268 | +0.041 / +0.085 | +0.060 / +0.158 | **−0.096** / −0.090 | 0.38 |
+| ±48 h | 367 / 367 | 238 / 291 | +0.029 / +0.076 | +0.042 / +0.140 | **−0.092** / −0.092 | 0.30 |
+
+(**Bold** marks the four window×statistic cells where GraphCast is *ahead of* the IFS control. At v3
+±48 h the two `missed` increments are −0.09210 and −0.09183 — a separation of 0.0003, which is noise
+at this sample size, not a result.)
+
+**Reading.** In **both** groups GraphCast beats its own whole-day-shift null on every statistic —
+positively on `exact` and `within ±6 h`, negatively on the lower-is-better `missed`. Against the IFS
+control it is behind on the statistics that matter for a flood peak, but **not uniformly**, so the
+claim is stated at the precision the numbers support:
+
+- **`within ±6 h` increment: GraphCast is lower than the IFS control at every window in both groups**
+  — 8 of 8 window×group cells, the largest gap at ±12 h (ratio 0.48 / 0.49).
+- **Matched events: GraphCast matches fewer at every window in both groups** — 8 of 8 (61.7 % vs
+  75.7 % at ±24 h for v1; 54.8 % vs 67.6 % for v3).
+- `exact window` increment: GraphCast is lower in 6 of 8 cells. ⛔ It is **higher** — better — at v1
+  ±36 h (+0.067 vs +0.064) and ±48 h (+0.062 vs +0.055).
+- `missed` increment: GraphCast is the weaker reduction in 6 of 8 cells. ⛔ It is **slightly stronger**
+  at v3 ±36 h (−0.09591 vs −0.09046) and ±48 h (−0.09210 vs −0.09183).
 
 ⛔ **The v1/v3 difference is NOT distinguishable from a year effect**, and no claim of model change —
 in either direction — is supportable:
@@ -140,17 +175,33 @@ in either direction — is supportable:
   Madhi). So version, year **and** station composition all move together.
 - D6's identical-support assertion holds **within** each group — it cannot hold between them.
 
-⇒ What the two groups jointly support is the **stable** finding: **GraphCast's event timing is worse
-than the IFS control against these gauges, in both model versions and in all four seasons.** ⛔ Whether
-v3 is better or worse than v1 is **not answerable from this archive**.
+⇒ What the two groups jointly support is the **narrow** finding: **GraphCast has a lower `within ±6 h`
+timing increment and matches fewer gauge events than the IFS control, at every search window, in both
+version-group comparisons.** ⛔ That is **two comparisons — one pooled over three v1 seasons and one
+single v3 season — not four independent per-season results**, and it is not a whole-of-model verdict:
+GraphCast leads on `exact window` at the two widest v1 windows. ⛔ Whether v3 is better or worse than
+v1 is **not answerable from this archive**.
 
 ### Provenance
 
 Plan 240, READY 2026-09-04 after an independent Codex review (NEEDS-CHANGES, cut the acquisition to
 half its original size and named four correctness items — folded) and a confirming pass
 (READY-TO-BUILD). Implemented and measured against the live bucket the same day; covered by
-`tests/unit/scripts/test_graphcast_acquire.py` (22 tests, no network — every extraction test opens a
-REAL in-memory HDF5 fixture through h5py's own gzip+shuffle filter pipeline, never a mock).
+`tests/unit/scripts/test_graphcast_acquire.py` (27 tests, no network — every extraction test opens a
+REAL in-memory HDF5 fixture through h5py's own gzip+shuffle filter pipeline, never a mock) and
+`tests/unit/scripts/test_graphcast_ifs_compare.py` (9 tests pinning D6's fail-closed support
+assertion, including the default policy itself).
+
+A **third** independent Codex review — the first this implementation had, the `implement` workflow
+having returned `reviews: {claude: null, codex: null}` — returned NEEDS-CHANGES on the written
+conclusion and on two code paths, all folded 2026-09-04: the conclusion above was overstated (see the
+per-statistic breakdown, which now names the four cells where GraphCast leads); D6's support check
+*printed* an asymmetry and continued, and now refuses; and the acquisition opened the first requested
+initialisation directly, so one absent file at the head of the run aborted every season instead of
+being recorded as the gap D6 says it is (`probe_grid` now walks to the first available forecast). The
+review's own suggested replacement wording — "lower `exact` and `±6 h` increments … in both
+comparisons" — was **checked against the recomputed report rather than adopted**, and is itself too
+strong: GraphCast's `exact window` increment is *higher* than the control's at v1 ±36 h and ±48 h.
 
 The 2025 season was retrieved 2026-09-04 (122/122 forecasts, **0 gaps**, 12,688 rows,
 `version=3_2025-02-20`). 2022 and 2023 are complete (12,688 rows each); 2024 has 12,480 rows with two

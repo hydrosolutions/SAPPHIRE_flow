@@ -38,6 +38,7 @@ from scripts.dhm_precip.graphcast_acquire import (
     extract_box_apcp,
     forecast_key,
     nearest_cell_indices,
+    probe_grid,
     season_init_times,
     season_versions,
     write_points_parquet,
@@ -371,3 +372,66 @@ class TestWritePointsParquet:
         assert out_path.name == "tigge_station_series_jjas2022.parquet"
         assert out_path.parent.name == "points"
         assert pl.read_parquet(out_path).height == 1
+
+
+class TestProbeGrid:
+    """D5/D6 — the publication grid comes from the first AVAILABLE forecast.
+    ⛔ A missing key at the head of the run is a gap `retrieve_season` still
+    records; it must not abort every season. The run fails only when NO
+    requested init is present, because then there is no grid at all."""
+
+    def test_reads_the_grid_from_the_first_key_when_it_is_present(self) -> None:
+        inits = season_init_times(2022)[:3]
+        fs = _FakeS3FileSystem(
+            {
+                f"noaa-oar-mlwp-data/{forecast_key(inits[0])}": _fake_forecast_bytes(),
+            }
+        )
+        lat, lon = probe_grid(fs=fs, inits=inits)
+        assert (lat.size, lon.size) == EXPECTED_GRID_SHAPE
+
+    def test_walks_past_a_missing_first_key_instead_of_aborting(self) -> None:
+        """The defect this test pins: opening `inits[0]` directly aborted the
+        WHOLE multi-season retrieval when that single file was absent."""
+        inits = season_init_times(2022)[:3]
+        fs = _FakeS3FileSystem(
+            {
+                # inits[0] and inits[1] deliberately absent — gaps, not errors.
+                f"noaa-oar-mlwp-data/{forecast_key(inits[2])}": _fake_forecast_bytes(),
+            }
+        )
+        lat, lon = probe_grid(fs=fs, inits=inits)
+        assert (lat.size, lon.size) == EXPECTED_GRID_SHAPE
+
+    def test_missing_first_key_of_the_first_season_still_reaches_a_later_season(
+        self,
+    ) -> None:
+        """The multi-season shape of the same defect — season 2022's head is
+        absent, so the grid must come from 2023."""
+        inits = (*season_init_times(2022)[:2], *season_init_times(2023)[:2])
+        fs = _FakeS3FileSystem(
+            {
+                f"noaa-oar-mlwp-data/{forecast_key(inits[3])}": _fake_forecast_bytes(),
+            }
+        )
+        lat, lon = probe_grid(fs=fs, inits=inits)
+        assert (lat.size, lon.size) == EXPECTED_GRID_SHAPE
+
+    def test_fails_when_no_requested_initialisation_is_present(self) -> None:
+        inits = season_init_times(2022)[:3]
+        with pytest.raises(GraphcastAcquisitionError, match="no requested"):
+            probe_grid(fs=_FakeS3FileSystem({}), inits=inits)
+
+    def test_still_asserts_the_pin_on_whichever_file_it_lands_on(self) -> None:
+        """⛔ Walking forward must not weaken D2 — the file actually opened is
+        still checked against the pin."""
+        inits = season_init_times(2022)[:2]
+        fs = _FakeS3FileSystem(
+            {
+                f"noaa-oar-mlwp-data/{forecast_key(inits[1])}": _fake_forecast_bytes(
+                    initialization_model="IFS"
+                ),
+            }
+        )
+        with pytest.raises(GraphcastAcquisitionError, match="initialization_model"):
+            probe_grid(fs=fs, inits=inits)

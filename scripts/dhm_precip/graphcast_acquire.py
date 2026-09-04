@@ -50,7 +50,9 @@ function, same distance metric, applied to a different point cloud shape.
 
 D6 — retrieved for the SAME four seasons the IFS comparison recomputes on
 (`graphcast_ifs_compare.py`); a missing forecast key is a recorded gap,
-never filled.
+never filled. That holds at the HEAD of the run too: the grid probe walks
+to the first AVAILABLE forecast (`probe_grid`) rather than opening
+`inits[0]` and aborting every season if that one file happens to be absent.
 
 D7 — this archive is GFS-initialised; IFS control is ECMWF-initialised.
 This module does not judge the comparison, only produces one side of it —
@@ -453,6 +455,53 @@ def write_points_parquet(frame: pl.DataFrame, *, out_root: Path, year: int) -> P
     return out_path
 
 
+def probe_grid(
+    *, fs: s3fs.S3FileSystem, inits: tuple[datetime, ...]
+) -> tuple[np.ndarray, np.ndarray]:
+    """D5/D6 — the publication grid's own latitude/longitude axes, read from
+    the FIRST AVAILABLE forecast among `inits` rather than from `inits[0]`
+    unconditionally.
+
+    ⛔ A missing first key is a GAP, not a fatal condition: `retrieve_season`
+    re-requests every init including this one and records the absent ones as
+    gaps (never filled). Opening `inits[0]` directly meant one absent file at
+    the head of the first season aborted the whole multi-season run — a
+    retrieval failure caused by the very condition D6 says to record and
+    carry on from. This walks forward instead, logs which keys it stepped
+    over, and fails only when NO requested init is present, because then
+    there is no grid to derive at all."""
+    import h5py  # noqa: PLC0415 — lazy: unit tests must not require network/h5py
+
+    skipped: list[str] = []
+    for init_time in inits:
+        key = forecast_key(init_time)
+        try:
+            fh = fs.open(f"{GRAPHCAST_BUCKET}/{key}", mode="rb", cache_type="none")
+        except FileNotFoundError:
+            skipped.append(key)
+            continue
+        try:
+            with h5py.File(fh, "r") as h5:
+                _assert_pinned_identity(dict(h5.attrs), key=key)
+                lat = np.asarray(h5["latitude"][:])
+                lon = np.asarray(h5["longitude"][:])
+        finally:
+            fh.close()
+        if skipped:
+            log.warning(
+                "graphcast_acquire.grid_probe_skipped_missing_keys",
+                skipped=skipped,
+                used=key,
+            )
+        return lat, lon
+    raise GraphcastAcquisitionError(
+        f"no requested initialisation is present in the bucket "
+        f"({len(skipped)} keys tried, first {skipped[0] if skipped else 'n/a'}) "
+        "— the publication grid cannot be derived, so no season can be "
+        "extracted"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -473,21 +522,16 @@ def main() -> int:
     fs = s3fs.S3FileSystem(anon=True)
     coords = load_dhm_coordinates()
 
-    # D5 — derive the nearest-cell mapping ONCE, from the first season's
-    # first available forecast, then reuse it for every subsequent file.
+    # D5 — derive the nearest-cell mapping ONCE, from the first AVAILABLE
+    # forecast across the requested seasons, then reuse it for every
+    # subsequent file. D6 — a missing key at the head of the run is a gap
+    # that `retrieve_season` still records; it must not abort the run.
     seasons = tuple(sorted(set(args.seasons)))
     leads = tuple(sorted(set(args.leads)))
-    first_init = season_init_times(seasons[0])[0]
-    import h5py  # noqa: PLC0415
-
-    probe_key = forecast_key(first_init)
-    with (
-        fs.open(f"{GRAPHCAST_BUCKET}/{probe_key}", mode="rb", cache_type="none") as fh,
-        h5py.File(fh, "r") as h5,
-    ):
-        _assert_pinned_identity(dict(h5.attrs), key=probe_key)
-        lat = np.asarray(h5["latitude"][:])
-        lon = np.asarray(h5["longitude"][:])
+    candidate_inits = tuple(
+        init_time for year in seasons for init_time in season_init_times(year)
+    )
+    lat, lon = probe_grid(fs=fs, inits=candidate_inits)
     nearest = nearest_cell_indices(coords, lat=lat, lon=lon)
 
     for year in seasons:

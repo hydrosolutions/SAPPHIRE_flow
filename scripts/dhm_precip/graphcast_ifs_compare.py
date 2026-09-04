@@ -7,13 +7,19 @@ number in its output comes from `ifs_event_timing.build_cells` and
 `ifs_event_timing.report`, called twice with a different `tigge_root` (D3)
 — once for GraphCast (`graphcast_acquire`'s output tree), once for IFS
 control (the production `data/dhm_precip/tigge` tree). The only logic
-here is D6's support check: `build_cells` silently drops any
+here is D6's support ASSERTION: `build_cells` silently drops any
 (station, season) that lacks BOTH sides, so GraphCast's gaps and IFS's
 gaps can leave the two products with different station-season support —
 ranking on that would let a missing cell on one side masquerade as a
-model difference. This module intersects the two support sets BEFORE
-calling `report`, and states the intersection explicitly, rather than
-letting the estimator run on cells report() never asked to align.
+model difference.
+
+⛔ D6 therefore FAILS CLOSED: if the two products' actual (station, season)
+support is not IDENTICAL, this module REFUSES to rank them and names the
+differing cells. Intersecting instead is available only behind the explicit
+`--allow-support-intersection` opt-in, which is never the default — a
+silent intersection is exactly the failure D6 exists to prevent, because
+the resulting numbers are computed on a support neither product was
+retrieved for and nothing in the printed report says so.
 
 D7 — GraphCast here is GFS-initialised; IFS control is ECMWF-initialised.
 This module states that confound in its own header; it answers "which
@@ -33,6 +39,7 @@ weather, which partly controls for it — never the raw GraphCast numbers.
 from __future__ import annotations
 
 import argparse
+from enum import Enum, auto
 from pathlib import Path
 
 from scripts.dhm_precip.graphcast_acquire import (
@@ -93,6 +100,16 @@ def _resolve_version(graphcast_root: Path, seasons: tuple[int, ...]) -> str:
     return distinct[0]
 
 
+class SupportPolicy(Enum):
+    """D6 — what to do when the two products' (station, season) support is
+    not identical. ⛔ `REQUIRE_IDENTICAL` is the only default; the other
+    member exists so that a deliberate, argued exception is visible in the
+    command line and in the printed report rather than applied silently."""
+
+    REQUIRE_IDENTICAL = auto()
+    ALLOW_INTERSECTION = auto()
+
+
 def _support(cells: list[StationSeasonCell]) -> set[tuple[str, int]]:
     return {(str(cell.station), cell.year) for cell in cells}
 
@@ -101,6 +118,52 @@ def _restrict(
     cells: list[StationSeasonCell], support: set[tuple[str, int]]
 ) -> list[StationSeasonCell]:
     return [cell for cell in cells if (str(cell.station), cell.year) in support]
+
+
+def resolve_shared_support(
+    *,
+    support_graphcast: set[tuple[str, int]],
+    support_ifs: set[tuple[str, int]],
+    policy: SupportPolicy = SupportPolicy.REQUIRE_IDENTICAL,
+) -> set[tuple[str, int]]:
+    """D6's assertion, BEFORE any ranking. Returns the support both reports
+    are restricted to.
+
+    ⛔ Fails closed. Under the default `REQUIRE_IDENTICAL` any asymmetry —
+    a cell present for one product and not the other — raises, naming the
+    differing cells, because a difference in what was searched is
+    indistinguishable in the output from a difference in model skill.
+    `ALLOW_INTERSECTION` is an explicit opt-in, never a fallback: it still
+    refuses an empty intersection."""
+    if not support_graphcast or not support_ifs:
+        raise EventTimingInputError(
+            "one side has NO (station, season) cell at all "
+            f"(GraphCast {len(support_graphcast)}, IFS {len(support_ifs)}) — "
+            "there is nothing to compare (D6)"
+        )
+    only_graphcast = sorted(support_graphcast - support_ifs)
+    only_ifs = sorted(support_ifs - support_graphcast)
+    if not only_graphcast and not only_ifs:
+        return set(support_graphcast)
+    detail = (
+        f"only in GraphCast ({len(only_graphcast)}): {only_graphcast}; "
+        f"only in IFS control ({len(only_ifs)}): {only_ifs}"
+    )
+    if policy is SupportPolicy.REQUIRE_IDENTICAL:
+        raise EventTimingInputError(
+            "D6 REFUSES to rank: the two products do not share identical "
+            f"(station, season) support — {detail}. A cell missing on one "
+            "side masquerades as a model difference. Re-retrieve the missing "
+            "cells, or pass --allow-support-intersection to compare on the "
+            "intersection deliberately and on the record."
+        )
+    common = support_graphcast & support_ifs
+    if not common:
+        raise EventTimingInputError(
+            "no (station, season) cell is present on BOTH sides — nothing to "
+            f"compare (D6); {detail}"
+        )
+    return common
 
 
 def main() -> int:
@@ -118,7 +181,23 @@ def main() -> int:
     )
     parser.add_argument("--graphcast-root", type=Path, default=DEFAULT_GRAPHCAST_ROOT)
     parser.add_argument("--tigge-root", type=Path, default=DEFAULT_TIGGE_ROOT)
+    parser.add_argument(
+        "--allow-support-intersection",
+        action="store_true",
+        help=(
+            "⛔ D6 opt-out, NOT a default: compare on the INTERSECTION of the "
+            "two products' (station, season) support instead of refusing an "
+            "asymmetry. Only for a deliberate, argued exception — the "
+            "resulting numbers rest on a support neither product was "
+            "retrieved for"
+        ),
+    )
     args = parser.parse_args()
+    policy = (
+        SupportPolicy.ALLOW_INTERSECTION
+        if args.allow_support_intersection
+        else SupportPolicy.REQUIRE_IDENTICAL
+    )
 
     seasons = tuple(sorted(set(args.seasons)))
     version = _resolve_version(args.graphcast_root, seasons)
@@ -148,30 +227,34 @@ def main() -> int:
 
     support_graphcast = _support(graphcast_cells)
     support_ifs = _support(ifs_cells)
-    common = support_graphcast & support_ifs
 
     print("=" * 78)
     print(f"GraphCast model version: {version}   seasons: {list(seasons)}")
     print(_D2_YEAR_CONFOUND)
     print("-" * 78)
-    print("D6 — station-season support check (BEFORE any ranking)")
+    print("D6 — station-season support ASSERTION (BEFORE any ranking)")
     print(f"  GraphCast cells: {len(support_graphcast)}")
     print(f"  IFS control cells: {len(support_ifs)}")
-    print(f"  shared support: {len(common)}")
-    only_graphcast = sorted(support_graphcast - support_ifs)
-    only_ifs = sorted(support_ifs - support_graphcast)
-    if only_graphcast:
-        print(f"  ⛔ only in GraphCast ({len(only_graphcast)}): {only_graphcast}")
-    if only_ifs:
-        print(f"  ⛔ only in IFS control ({len(only_ifs)}): {only_ifs}")
+    print(f"  policy: {policy.name}")
+
+    # ⛔ Fails closed BEFORE anything is ranked or printed as a result.
+    common = resolve_shared_support(
+        support_graphcast=support_graphcast,
+        support_ifs=support_ifs,
+        policy=policy,
+    )
+    if common == support_graphcast == support_ifs:
+        print(f"  identical support on both sides: {len(common)} cells")
+    else:
+        print(
+            f"  ⛔ SUPPORT ASYMMETRY ACCEPTED under an explicit opt-in — "
+            f"ranked on the intersection ({len(common)} cells), which is NOT "
+            "what either product was retrieved for"
+        )
+        print(f"  ⛔ only in GraphCast: {sorted(support_graphcast - support_ifs)}")
+        print(f"  ⛔ only in IFS control: {sorted(support_ifs - support_graphcast)}")
     print(_D7_CONFOUND)
     print("=" * 78)
-
-    if not common:
-        raise EventTimingInputError(
-            "no (station, season) cell is present on BOTH sides — nothing to "
-            "compare (D6)"
-        )
 
     graphcast_common = _restrict(graphcast_cells, common)
     ifs_common = _restrict(ifs_cells, common)
