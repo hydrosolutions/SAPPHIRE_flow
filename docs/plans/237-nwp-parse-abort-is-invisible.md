@@ -4,7 +4,7 @@ created: 2026-09-03
 revised: 2026-09-04
 plan: 237
 title: The NWP fetch must produce a complete, unambiguous cycle or fail loudly — and its abort must not report COMPLETED
-scope: Make the NWP fetch/parse yield either a complete, duplicate-free dataset or a named failure — de-duplicate on a collision-safe identity, make the download destination injective, and assert completeness so the outer join cannot NaN-fill silently. Separately, make the NWP-fetch abort reach a non-successful terminal state. Two tasks. No retry logic, no re-fetch, no STAC pagination rework, no alert-channel work.
+scope: Make the NWP fetch/parse yield either a complete, duplicate-free dataset or a named failure — de-duplicate on a collision-safe identity, make the download destination injective, and assert completeness so the outer join cannot NaN-fill silently. Make the NWP-fetch abort reach a non-successful terminal state. And alert once per zero-forecast incident instead of every 30 minutes. Three tasks. No retry logic, no re-fetch, no STAC pagination rework, no alert-channel work.
 depends_on: []
 blocks: []
 source: Measured on the mac mini 2026-09-03/04 after 15 Slack alerts in one day; four failing cycles analysed, hardened through two independent review rounds
@@ -18,8 +18,16 @@ source: Measured on the mac mini 2026-09-03/04 after 15 Slack alerts in one day;
 
 ## ⛔ Proportionality — two tasks
 
-**Do not add:** retry-on-failure, a re-fetch path, STAC pagination rework, new alert channels, a
-general gap-marking overhaul (that is Plan 235/236 territory), or a third task.
+**Do not add:** retry-on-failure, a re-fetch path, STAC pagination rework, **new** alert channels, a
+general gap-marking overhaul (that is Plan 235/236 territory), or a fourth task.
+
+⚠️ **T3 was added 2026-09-04, after this plan reached READY.** Revisions 1-4 said "no third task"
+and "no alert-channel work", and four review rounds were conducted under that constraint. The owner
+then decided the re-alert cadence question that those revisions had deliberately left open, so the
+decision is recorded here as T3 rather than in a separate plan. T3 changes **cadence policy only**,
+reusing a policy and helper that already exist in this repo — it adds no channel, no threshold and
+no new mechanism. It is independent of T1/T2 and touches a different file. Reviewers: this is the
+one relaxation; do not treat it as licence for more.
 
 ⚠️ **One earlier constraint is deliberately relaxed.** Revisions 1-2 of this plan forbade any
 completeness check, deferring it to Plan 213 D3c. **The second review round showed de-duplication is
@@ -249,13 +257,51 @@ new alert.
 abort path does not end successfully **and** that the CRITICAL record is written exactly once.
 **RED first.**
 
-## Open question for the owner
+## The re-alert question — DECIDED 2026-09-04 (now T3)
 
-**Should a zero-forecast cycle keep re-alerting every 30 minutes?** One failure produced eight pages.
-Options: alert once per state transition (the watchdog already emits a distinct `RECOVERED`, so the
-machinery exists); widen the interval; or leave it. An operational-signal judgement, **out of T2's
-scope**, best answered after T1 lands — the honest volume is unknown until the duplicate bug stops
-causing most of it.
+Revisions 1-4 left this open for the owner. **Decided: alert once per incident.**
+
+The governing principle: **never re-notify faster than the underlying condition can change.** The
+forecast cycle runs every 6 h, so between 12:00 and 18:00 UTC nothing can make the state improve —
+no retry, no reprocessing, no self-healing. Every repeat inside that window is information-free by
+construction: eight pages carrying one bit. Noise is not free; it trains the reader to swipe away the
+channel that must eventually carry a flood alert.
+
+The current cadence is not careless — `ops/watchdog.py:8-11` documents deliberate hysteresis (alert
+on first failure, then every 6th consecutive failure ≈ 30 min at 5-min ticks, then once on recovery).
+It is simply calibrated for a **5-minute probe**, where the condition genuinely can change between
+alerts, and then applied to a **6-hourly batch**, where it cannot.
+
+**The policy T3 adopts already exists in this repo and is in production**: backup staleness uses a
+dedicated "alert once" policy (`ops/watchdog.py:13-18`, `_backup_notification_kind:1132`) — exactly
+one alert on the first stale tick, silence while it stays stale, exactly one recovery alert.
+
+*Not adopted, deliberately:* simply widening 30 → 60 min (halves the noise without fixing the
+reasoning, and would be revisited), and escalation on consecutive missed cycles (a second
+consecutive failed cycle IS worse news than the first and worth a distinct louder alert — but that
+is a new signal, not a cadence fix, and belongs to its own plan if wanted).
+
+**T3 — Forecast-production freshness alerts once per incident, not every 30 minutes.**
+*Scope (in):* apply the existing "alert once" policy to the forecast-production freshness check —
+one alert on entering the zero-forecast state, silence while it persists, exactly one `RECOVERED`.
+**Reuse the backup-staleness policy already in this file** (`ops/watchdog.py:13-18`,
+`_backup_notification_kind:1132`) rather than writing a second mechanism; the delivery-retry
+behaviour it documents (a notification that fails to post is retried each tick until it lands) must
+be preserved, because "alert once" must mean once *delivered*, not once *attempted*.
+*Scope (out):* the health, BAFU-forecast and BAFU-observation checks (their 5-min probe cadence
+makes the current hysteresis correct — do **not** change them); new channels; thresholds; what
+counts as a zero-forecast cycle; escalation on consecutive misses.
+*Exit:* one zero-forecast incident spanning several ticks produces exactly one critical alert and
+exactly one `RECOVERED`; the other checks' cadence is byte-for-byte unchanged.
+*Verification:* `uv run pytest tests/unit/ops/test_watchdog.py -q` — a test driving several
+consecutive zero-forecast ticks and asserting exactly one alert, plus one on recovery, and a test
+asserting the health/BAFU checks still alert on the 6th consecutive failure. **RED first** against
+today's code, which alerts on ticks 1, 6, 12, …
+
+🚀 *Deploying T3 differs from T1/T2.* The watchdog runs as a **host process** under launchd
+(`uv run python -m sapphire_flow.ops.watchdog`, `scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist`),
+not inside a container — so it ships by **pulling the host checkout on the mini, not by rebuilding
+the image**. T1/T2 ship in the image. Do not assume one deploy covers both.
 
 ## Separately worth knowing (not in scope, do not fix here)
 
@@ -274,7 +320,7 @@ causing most of it.
 
 ## Exit gates
 
-- `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py tests/unit/flows/test_run_forecast_cycle.py -q` passes, with the RED-first tests above proven red against the pre-change code.
+- `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/ops/test_watchdog.py -q` passes, with the RED-first tests above proven red against the pre-change code.
 - `uv run ruff check` and `uv run ruff format --check` clean on changed files.
 - `uv run pyright` no worse than the recorded ratchet baseline.
 
@@ -285,7 +331,8 @@ causing most of it.
   "plan": 237,
   "tasks": [
     {"id": "T1", "depends_on": [], "parallel": true},
-    {"id": "T2", "depends_on": [], "parallel": true}
+    {"id": "T2", "depends_on": [], "parallel": true},
+    {"id": "T3", "depends_on": [], "parallel": true}
   ]
 }
 ```
