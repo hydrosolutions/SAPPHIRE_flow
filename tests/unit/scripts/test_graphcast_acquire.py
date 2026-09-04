@@ -30,6 +30,7 @@ from scripts.dhm_precip.domain_types import (
 )
 from scripts.dhm_precip.graphcast_acquire import (
     EXPECTED_GRID_SHAPE,
+    VERSION_COLUMN,
     GraphcastAcquisitionError,
     NearestCellIndex,
     _assert_pinned_identity,
@@ -38,6 +39,7 @@ from scripts.dhm_precip.graphcast_acquire import (
     forecast_key,
     nearest_cell_indices,
     season_init_times,
+    season_versions,
     write_points_parquet,
 )
 
@@ -79,25 +81,75 @@ class TestAttrStr:
 
 
 class TestAssertPinnedIdentity:
+    """The pin as REVISED at the 2025 boundary: `model_name` case-insensitive,
+    `model_version` no longer pinned (absent in v3), `initialization_model`
+    still strict, and `version` recorded rather than merely tolerated."""
+
     def _attrs(self, **overrides: str) -> dict[str, object]:
         base = {
             "model_name": "GraphCast",
             "model_version": "v1",
             "initialization_model": "GFS",
+            "version": "1_2023-10-14",
         }
         base.update(overrides)
         return base
 
-    def test_accepts_the_pinned_variant(self) -> None:
-        _assert_pinned_identity(self._attrs(), key="k")  # must not raise
+    def test_accepts_the_pinned_variant_and_returns_its_version(self) -> None:
+        assert _assert_pinned_identity(self._attrs(), key="k") == "1_2023-10-14"
+
+    def test_accepts_a_lowercase_model_name(self) -> None:
+        """2025's files say "graphcast", 2024's say "GraphCast" — case only,
+        genuinely cosmetic, and it must not reject a valid season."""
+        attrs = self._attrs(model_name="graphcast", version="3_2025-02-20")
+        del attrs["model_version"]  # v3 files carry no `model_version` at all
+        assert _assert_pinned_identity(attrs, key="k") == "3_2025-02-20"
 
     def test_rejects_the_ifs_initialised_variant(self) -> None:
         with pytest.raises(GraphcastAcquisitionError, match="initialization_model"):
             _assert_pinned_identity(self._attrs(initialization_model="IFS"), key="k")
 
-    def test_rejects_a_different_model_version(self) -> None:
-        with pytest.raises(GraphcastAcquisitionError, match="model_version"):
-            _assert_pinned_identity(self._attrs(model_version="v2"), key="k")
+    def test_rejects_a_file_with_no_version_attribute(self) -> None:
+        attrs = self._attrs()
+        del attrs["version"]
+        with pytest.raises(GraphcastAcquisitionError, match="version"):
+            _assert_pinned_identity(attrs, key="k")
+
+
+class TestSeasonVersions:
+    """D2 — `version` must be CONSTANT within a season but is ALLOWED to
+    differ between seasons, and the value is carried through so every row and
+    every report line is labelled."""
+
+    def _write(self, root: Path, year: int, versions: list[str]) -> None:
+        out_dir = root / "points"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        n = len(versions)
+        pl.DataFrame(
+            {
+                "station": ["A"] * n,
+                "init_time_utc": [datetime(year, 6, 1 + i, 0) for i in range(n)],
+                "ending_lead_hours": [6] * n,
+                "valid_time_utc": [datetime(year, 6, 1 + i, 6) for i in range(n)],
+                "tigge_mm": [1.0] * n,
+                VERSION_COLUMN: versions,
+            }
+        ).write_parquet(out_dir / f"tigge_station_series_jjas{year}.parquet")
+
+    def test_a_version_change_within_a_season_fails(self, tmp_path: Path) -> None:
+        self._write(tmp_path, 2025, ["1_2023-10-14", "3_2025-02-20"])
+        with pytest.raises(GraphcastAcquisitionError, match="not constant"):
+            season_versions(out_root=tmp_path, seasons=(2025,))
+
+    def test_a_version_change_between_seasons_is_allowed_and_labelled(
+        self, tmp_path: Path
+    ) -> None:
+        self._write(tmp_path, 2024, ["1_2023-10-14"] * 2)
+        self._write(tmp_path, 2025, ["3_2025-02-20"] * 2)
+        assert season_versions(out_root=tmp_path, seasons=(2024, 2025)) == {
+            2024: "1_2023-10-14",
+            2025: "3_2025-02-20",
+        }
 
 
 class TestNearestCellIndices:
@@ -134,6 +186,7 @@ def _fake_forecast_bytes(
     model_name: str = "GraphCast",
     model_version: str = "v1",
     initialization_model: str = "GFS",
+    version: str = "1_2023-10-14",
     units: str = "m",
     n_steps: int = 5,
     apcp_mm_per_step: float = 1.0,
@@ -151,6 +204,7 @@ def _fake_forecast_bytes(
         f.attrs["model_name"] = model_name
         f.attrs["model_version"] = model_version
         f.attrs["initialization_model"] = initialization_model
+        f.attrs["version"] = version
         f.create_dataset("latitude", data=lat)
         f.create_dataset("longitude", data=lon)
         apcp = f.create_dataset(
@@ -216,6 +270,22 @@ class TestExtractBoxApcp:
         assert row6["tigge_mm"] == pytest.approx(2.0)  # step 1 * 2.0 mm
         row12 = frame.filter(frame["ending_lead_hours"] == 12).row(0, named=True)
         assert row12["tigge_mm"] == pytest.approx(4.0)  # step 2 * 2.0 mm
+
+    def test_every_row_is_labelled_with_the_files_own_model_version(self) -> None:
+        """D2 — a v3 file's rows say v3, read off the file, never assumed."""
+        init = datetime(2025, 6, 1, 0)
+        fs = _FakeS3FileSystem(
+            {
+                f"noaa-oar-mlwp-data/{forecast_key(init)}": _fake_forecast_bytes(
+                    model_name="graphcast", version="3_2025-02-20"
+                )
+            }
+        )
+        frame = extract_box_apcp(
+            fs=fs, init_time=init, nearest=_one_station_grid_nearest(), lead_hours=(6,)
+        )
+        assert frame is not None
+        assert frame[VERSION_COLUMN].to_list() == ["3_2025-02-20"]
 
     def test_negative_numerical_noise_is_clipped_to_zero(self) -> None:
         init = datetime(2022, 6, 1, 0)

@@ -19,6 +19,15 @@ D7 — GraphCast here is GFS-initialised; IFS control is ECMWF-initialised.
 This module states that confound in its own header; it answers "which
 archived operational product scores higher against these gauges", never
 "AI vs physics" (Plan 240).
+
+D2 — the archive changed model version mid-record: 2022-2024 are GraphCast
+v1 (`version` "1_2023-10-14"), 2025 is v3 ("3_2025-02-20"). ⛔ The two are
+NEVER pooled: this driver reads the version each requested season recorded
+and REFUSES to run if the requested seasons span more than one, so a
+version group is always run on its own. Because the version is perfectly
+confounded with the year (v3 exists only in 2025), the headline is each
+group's skill RELATIVE TO IFS on the SAME seasons — IFS meets the same
+weather, which partly controls for it — never the raw GraphCast numbers.
 """
 
 from __future__ import annotations
@@ -31,8 +40,9 @@ from scripts.dhm_precip.graphcast_acquire import (
     DEFAULT_GRAPHCAST_SEASONS,
     EXPECTED_INIT_MODEL,
     EXPECTED_MODEL_NAME,
-    EXPECTED_MODEL_VERSION,
     GRAPHCAST_PREFIX,
+    GraphcastAcquisitionError,
+    season_versions,
 )
 from scripts.dhm_precip.ifs_event_timing import (
     CONTINUOUS_DAY_LEADS,
@@ -53,11 +63,34 @@ from scripts.dhm_precip.ifs_event_timing import (
 )
 
 _D7_CONFOUND = (
-    f"D7 confound: GraphCast here is {EXPECTED_MODEL_NAME} {EXPECTED_MODEL_VERSION} "
-    f"initialised from {EXPECTED_INIT_MODEL} ({GRAPHCAST_PREFIX}); IFS control below "
-    "is initialised from its own ECMWF analysis. This answers 'which archived "
-    "operational product scores higher against these gauges', NOT 'AI vs physics'."
+    f"D7 confound: GraphCast here is {EXPECTED_MODEL_NAME} initialised from "
+    f"{EXPECTED_INIT_MODEL} ({GRAPHCAST_PREFIX}); IFS control below is initialised "
+    "from its own ECMWF analysis. This answers 'which archived operational product "
+    "scores higher against these gauges', NOT 'AI vs physics'."
 )
+
+_D2_YEAR_CONFOUND = (
+    "⛔ D2 confound: GraphCast model version is PERFECTLY confounded with year in "
+    "this archive (v3 exists only from 2025), so a raw v1-vs-v3 difference could be "
+    "that year's weather. Read each group only against the IFS control below it, "
+    "which met the same weather. ⛔ A single season supports NO claim of model "
+    "improvement — interannual variability on this track is large (the measured IFS "
+    "offset spans ~9 h across six seasons)."
+)
+
+
+def _resolve_version(graphcast_root: Path, seasons: tuple[int, ...]) -> str:
+    """D2 — one version group per run. ⛔ Refuses to pool two model versions
+    into one number."""
+    by_season = season_versions(out_root=graphcast_root, seasons=seasons)
+    distinct = sorted({v for v in by_season.values() if v is not None})
+    if len(distinct) != 1:
+        raise GraphcastAcquisitionError(
+            f"requested seasons {list(seasons)} span GraphCast versions "
+            f"{by_season} — run ONE version group per invocation; two model "
+            "versions must never be pooled (D2)"
+        )
+    return distinct[0]
 
 
 def _support(cells: list[StationSeasonCell]) -> set[tuple[str, int]]:
@@ -88,6 +121,7 @@ def main() -> int:
     args = parser.parse_args()
 
     seasons = tuple(sorted(set(args.seasons)))
+    version = _resolve_version(args.graphcast_root, seasons)
     leads = tuple(args.leads)
     windows = tuple(DEFAULT_SEARCH_WINDOWS_H)
     base = EventTimingParams(
@@ -117,6 +151,9 @@ def main() -> int:
     common = support_graphcast & support_ifs
 
     print("=" * 78)
+    print(f"GraphCast model version: {version}   seasons: {list(seasons)}")
+    print(_D2_YEAR_CONFOUND)
+    print("-" * 78)
     print("D6 — station-season support check (BEFORE any ranking)")
     print(f"  GraphCast cells: {len(support_graphcast)}")
     print(f"  IFS control cells: {len(support_ifs)}")
@@ -140,7 +177,10 @@ def main() -> int:
     ifs_common = _restrict(ifs_cells, common)
 
     print()
-    print(f"### GraphCast ({GRAPHCAST_PREFIX}) — restricted to shared support ###")
+    print(
+        f"### GraphCast {version} ({GRAPHCAST_PREFIX}) seasons {list(seasons)} "
+        "— restricted to shared support ###"
+    )
     graphcast_digests = consumed_input_digests(
         tigge_root=args.graphcast_root, seasons=seasons
     )
@@ -157,7 +197,10 @@ def main() -> int:
     )
 
     print()
-    print("### IFS control (ECMWF) — restricted to shared support ###")
+    print(
+        f"### IFS control (ECMWF) seasons {list(seasons)} — restricted to shared "
+        f"support — the control for GraphCast {version} above ###"
+    )
     ifs_digests = consumed_input_digests(tigge_root=args.tigge_root, seasons=seasons)
     report(
         ifs_common,

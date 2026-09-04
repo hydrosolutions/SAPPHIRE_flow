@@ -12,10 +12,24 @@ seasons x 122 days = 488 forecasts, never 0-240 h and never the 06/12/18Z
 runs (all four are published in the bucket — measured, T1 — but only 00Z
 feeds the frozen `ifs_event_timing` convention).
 
-D2 — the pinned archive variant is `GRAP_v100_GFS` (GraphCast v1,
-GFS-initialised); `GRAP_v100_IFS` also exists in the bucket and must never
-be substituted silently, so every retrieved file's own global attributes
-are asserted against the pin rather than trusted from its key alone.
+D2 — the pinned archive variant is `GRAP_v100_GFS` (GFS-initialised);
+`GRAP_v100_IFS` also exists in the bucket and must never be substituted
+silently, so every retrieved file's own global attributes are asserted
+against the pin rather than trusted from its key alone.
+⚠️ REVISED after the 2025 season tripped the original pin. Measured across
+the boundary (2024-09-30 vs 2025-06-01), the physics is identical — same
+`units='m'`, same "6-hr accumulated precipitation", same (41, 721, 1440)
+grid, same `initialization_model='GFS'` — but three attributes moved:
+`model_name` "GraphCast" -> "graphcast" (case only, cosmetic),
+`model_version` "v1" -> ABSENT, and `version` "1_2023-10-14" ->
+"3_2025-02-20" — a REAL GraphCast v1 -> v3 change. The original pin caught
+this only because `model_version` went absent; it did not watch `version`
+at all, so a file that kept `model_version='v1'` while `version` moved
+would have pooled two model versions SILENTLY. ⇒ `model_name` is now
+compared case-insensitively, `model_version` is no longer pinned (it does
+not exist in v3), `initialization_model` stays strict, and `version` is
+RECORDED on every row, required CONSTANT within a season and allowed to
+differ BETWEEN seasons. ⛔ Two model versions are never pooled.
 
 D4 — read off T1's real sample, not documentation: `apcp`'s `long_name` is
 "6-hr accumulated precipitation" and its `units` is `"m"`. It is already a
@@ -91,9 +105,12 @@ log = structlog.get_logger(__name__)
 # convenient default).
 GRAPHCAST_BUCKET = "noaa-oar-mlwp-data"
 GRAPHCAST_PREFIX = "GRAP_v100_GFS"
-EXPECTED_MODEL_NAME = "GraphCast"
-EXPECTED_MODEL_VERSION = "v1"
+EXPECTED_MODEL_NAME = "GraphCast"  # compared case-insensitively — see D2 above
 EXPECTED_INIT_MODEL = "GFS"
+
+# D2 — the model version the file itself declares, carried to every emitted
+# row so no report line is ever unlabelled.
+VERSION_COLUMN = "graphcast_version"
 
 # D1 — only 00Z. ⛔ These leads MUST match
 # `ifs_event_timing.CONTINUOUS_DAY_LEADS` exactly; not re-imported (that
@@ -160,24 +177,36 @@ def _attr_str(value: object) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
 
-def _assert_pinned_identity(attrs: dict[str, object], *, key: str) -> None:
+def _assert_pinned_identity(attrs: dict[str, object], *, key: str) -> str:
     """D2 — the file's OWN global attributes must state the pinned variant,
-    never assumed from its key alone."""
+    never assumed from its key alone; returns the model `version` the file
+    declares, so the caller can label every row with it.
+
+    ⛔ `model_version` is deliberately NOT pinned: it reads "v1" in the
+    2022-2024 files and is ABSENT in the 2025 (v3) files, so pinning it
+    rejects a valid season for a cosmetic reason while still failing to
+    notice a `version` move. `version` is the attribute that actually
+    identifies the model."""
     model_name = _attr_str(attrs.get("model_name", ""))
-    model_version = _attr_str(attrs.get("model_version", ""))
     init_model = _attr_str(attrs.get("initialization_model", ""))
-    if (model_name, model_version, init_model) != (
-        EXPECTED_MODEL_NAME,
-        EXPECTED_MODEL_VERSION,
+    if (model_name.casefold(), init_model) != (
+        EXPECTED_MODEL_NAME.casefold(),
         EXPECTED_INIT_MODEL,
     ):
         raise GraphcastAcquisitionError(
             f"{key}: attributes (model_name={model_name!r}, "
-            f"model_version={model_version!r}, "
             f"initialization_model={init_model!r}) do not match the pinned "
-            f"({EXPECTED_MODEL_NAME!r}, {EXPECTED_MODEL_VERSION!r}, "
-            f"{EXPECTED_INIT_MODEL!r})"
+            f"({EXPECTED_MODEL_NAME!r}, {EXPECTED_INIT_MODEL!r}) "
+            "(model_name is compared case-insensitively)"
         )
+    version = _attr_str(attrs.get("version", "")).strip()
+    if not version:
+        raise GraphcastAcquisitionError(
+            f"{key}: no `version` global attribute — the model version "
+            "cannot be labelled, and two model versions must never be "
+            "pooled silently (D2)"
+        )
+    return version
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -268,7 +297,7 @@ def extract_box_apcp(
 
     try:
         with h5py.File(fh, "r") as h5:
-            _assert_pinned_identity(dict(h5.attrs), key=key)
+            version = _assert_pinned_identity(dict(h5.attrs), key=key)
             dset = h5[GRAPHCAST_PRECIP_VAR]
             units = _attr_str(dset.attrs.get("units", ""))
             if units != EXPECTED_PRECIP_UNITS:
@@ -310,17 +339,20 @@ def extract_box_apcp(
             "ending_lead_hours": lead_col,
             "valid_time_utc": valid_col,
             "tigge_mm": mm_col,
+            VERSION_COLUMN: version,
         }
     )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class SeasonRetrieval:
-    """One season's extracted rows plus which inits were gaps (D6)."""
+    """One season's extracted rows plus which inits were gaps (D6) and the
+    single GraphCast model version every one of its files declared (D2)."""
 
     frame: pl.DataFrame
     gaps: tuple[datetime, ...]
     n_requested: int
+    version: str | None
 
 
 def retrieve_season(
@@ -365,12 +397,49 @@ def retrieve_season(
                 "ending_lead_hours": pl.Int64,
                 "valid_time_utc": pl.Datetime("ns"),
                 "tigge_mm": pl.Float64,
+                VERSION_COLUMN: pl.Utf8,
             }
         )
     )
     return SeasonRetrieval(
-        frame=frame, gaps=tuple(sorted(gaps)), n_requested=len(inits)
+        frame=frame,
+        gaps=tuple(sorted(gaps)),
+        n_requested=len(inits),
+        version=_one_version(frame, label=f"season {year}"),
     )
+
+
+def _one_version(frame: pl.DataFrame, *, label: str) -> str | None:
+    """D2 — a season must declare exactly ONE model version. A mid-season
+    change is a hard error: it would pool GraphCast v1 and v3 rows into a
+    single number with nothing in the output to show it happened. ⛔ Across
+    seasons the version IS allowed to differ — that is the whole point of
+    labelling it."""
+    if frame.height == 0:
+        return None
+    distinct = sorted(set(frame[VERSION_COLUMN].to_list()))
+    if len(distinct) != 1:
+        raise GraphcastAcquisitionError(
+            f"{label}: GraphCast model version is not constant within the "
+            f"season ({distinct}) — two model versions must never be pooled "
+            "(D2)"
+        )
+    return distinct[0]
+
+
+def season_versions(
+    *, out_root: Path, seasons: tuple[int, ...]
+) -> dict[int, str | None]:
+    """The model version each ALREADY-RETRIEVED season records (D2), read
+    from the season parquet itself so a comparison is labelled by what was
+    stored rather than by an assumption about it. Re-checks constancy within
+    each season on the read side too."""
+    versions: dict[int, str | None] = {}
+    for year in seasons:
+        path = out_root / "points" / points_filename(year)
+        frame = pl.read_parquet(path, columns=[VERSION_COLUMN])
+        versions[year] = _one_version(frame, label=str(path))
+    return versions
 
 
 def write_points_parquet(frame: pl.DataFrame, *, out_root: Path, year: int) -> Path:
@@ -437,6 +506,7 @@ def main() -> int:
             n_requested=result.n_requested,
             n_gaps=len(result.gaps),
             n_rows=result.frame.height,
+            graphcast_version=result.version,
         )
         if result.gaps:
             log.warning(
