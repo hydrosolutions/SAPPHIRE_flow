@@ -60,6 +60,41 @@ def resolve_cycle(now: datetime) -> datetime:
     return now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def fetch_failure(outcome: object | None) -> str | None:
+    """Why this run's NWP fetch failed, or None if it delivered.
+
+    THREE distinct signals must all count as failure, and `summarize_stored`
+    cannot tell them apart: it QUERIES the cycle's existing rows, so a
+    same-cycle re-run after an earlier success would classify STALE rows as a
+    fresh success and leave the dead-man green through a real outage.
+
+      * ``outcome is None``      -- flow-fatal.
+      * ``fetch_failure_reason`` -- the generic exception boundary (Plan 223 D5).
+      * ``nwp_unavailable``      -- no adequate cycle, i.e. `source_data_missing`.
+        `run_forecast_cycle` sets this WITHOUT `fetch_failure_reason`, so the
+        Plan 223 check alone does not catch it.
+
+    The third is the one that actually occurred: the Gateway published nothing
+    for 2026-08-29/30. For the production forecast cycle `nwp_unavailable` only
+    means "fall back to runoff-only" and is NOT fatal — but this feed exists
+    solely to fetch NWP, so for it the condition is terminal.
+
+    Reads both flags with `getattr` defaults deliberately: the host script and
+    the container image have repeatedly been at different versions here, and an
+    absent attribute must degrade to "that signal is unavailable" rather than
+    raise AttributeError mid-run. `nwp_unavailable` predates
+    `fetch_failure_reason`, so the older signal keeps working on an older image.
+    """
+    if outcome is None:
+        return "outcome_none"
+    reason = getattr(outcome, "fetch_failure_reason", None)
+    if reason is not None:
+        return str(reason)
+    if getattr(outcome, "nwp_unavailable", False):
+        return "nwp_unavailable"
+    return None
+
+
 def classify(stored: dict[str, Any]) -> tuple[bool, str | None]:
     """Decide whether a completed run actually delivered usable forcing.
 
@@ -236,16 +271,13 @@ def run(clock: Callable[[], datetime]) -> int:
                 clock=lambda: ensure_utc(clock()),
                 pipeline_health_store=stores["pipeline_health_store"],
             )
-            # Plan 223 D5: `_fetch_nwp_task` may now return a non-None
-            # `_NwpFetchOutcome` that is STILL a failure (`fetch_failure_reason`
-            # set) rather than bare `None` -- this check must catch both, or a
-            # fatal NWP fetch would silently classify existing rows as success.
-            if outcome is None or outcome.fetch_failure_reason is not None:
-                reason = outcome.fetch_failure_reason if outcome is not None else None
+            # See `fetch_failure`: a non-None outcome can still be a failure,
+            # and `summarize_stored` below would otherwise report the cycle's
+            # PRE-EXISTING rows as a fresh success.
+            failure = fetch_failure(outcome)
+            if failure is not None:
                 raise RuntimeError(
-                    f"NWP fetch failed (flow-fatal condition): {reason}"
-                    if reason is not None
-                    else "NWP fetch returned None (flow-fatal condition)"
+                    f"NWP fetch failed (flow-fatal condition): {failure}"
                 )
             stored = summarize_stored(conn, cycle)
     except Exception as exc:  # noqa: BLE001 - every failure mode becomes a record
