@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-03
 plan: 235
 title: A skill recompute must replace what it supersedes — generations, not collisions
@@ -13,8 +13,14 @@ source: 2026-09-03 — independent design check of Plan 228's proposed recompute
 
 ## Status
 
-**DRAFT — not reviewed.** Created 2026-09-03 after an independent design check found the simpler
-fix unsafe. Every finding below is from that check and cites live code.
+**READY — owner confirmed 2026-09-04.** Cleared for `/implement`.
+
+Two independent reviews plus a design check. Every finding folded; all forks settled — D2c (marking
+uses the append-only path, no UPDATE grant) and D2d (a losing recompute is written and ignored).
+
+⚠️ **D2c and D2d were folded AFTER the second review and have not themselves been reviewed.** The
+owner accepted that in exchange for not spending another round. They are the two sections an
+implementer should read most carefully.
 
 ## ⛔ BINDING ON THIS PLAN **AND ON ITS REVIEW** — read before changing anything
 
