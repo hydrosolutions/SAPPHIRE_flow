@@ -48,6 +48,9 @@ EXIT_RUN_FAILED = 1
 EXIT_CONFIG = 2
 
 _DEFAULT_STATION = "22222222-2222-2222-2222-222222222222"
+
+# Plan 219 Q3: all three, matching the standing probe's snow set.
+_SNOW_VARIABLES = frozenset({"snow_depth", "snowmelt", "swe"})
 _MIN_EXPECTED_HORIZON_DAYS = 14.0
 
 
@@ -240,6 +243,7 @@ def run(clock: Callable[[], datetime]) -> int:
     started = time.perf_counter()
     stored: dict[str, Any] | None = None
     error: BaseException | None = None
+    snow_unavailable = False
     engine = sa.create_engine(database_url)
     try:
         with engine.begin() as conn:
@@ -263,6 +267,14 @@ def run(clock: Callable[[], datetime]) -> int:
                 ),
                 max_cycle_age_hours=max_age,
             )
+            # Plan 219: turn the snow channel on. `_fetch_nwp_task` ALREADY
+            # fetches, converts, stores and contains snow — it simply does
+            # nothing unless given a requirements map. In production that map
+            # is derived from each station's assigned models
+            # (`_compute_required_snow`); this feed deliberately has no model
+            # (Plan 192), so it supplies a fixed one. That is a documented
+            # divergence from the production opt-in gate, not evidence the gate
+            # works — see the runbook.
             outcome = _fetch_nwp_task.fn(
                 adapter=adapter,
                 station_configs=[binding],
@@ -270,7 +282,9 @@ def run(clock: Callable[[], datetime]) -> int:
                 weather_forecast_store=stores["weather_forecast_store"],
                 clock=lambda: ensure_utc(clock()),
                 pipeline_health_store=stores["pipeline_health_store"],
+                required_snow={station_id: _SNOW_VARIABLES},
             )
+            snow_unavailable = bool(getattr(outcome, "snow_unavailable", False))
             # See `fetch_failure`: a non-None outcome can still be a failure,
             # and `summarize_stored` below would otherwise report the cycle's
             # PRE-EXISTING rows as a fresh success.
@@ -290,6 +304,17 @@ def run(clock: Callable[[], datetime]) -> int:
         duration_s=time.perf_counter() - started,
         error=error,
     )
+    # Plan 219 D5: additive only. Every legacy key keeps its meaning —
+    # `rows`/`members`/`parameters` stay IFS-shaped — so the 12+ historical
+    # records stay comparable and the analysis does not need a version check.
+    record["snow_requested"] = sorted(_SNOW_VARIABLES)
+    record["snow_unavailable"] = snow_unavailable
+    if snow_unavailable:
+        # D4: a snow-only gap is RECORDED, not PAGED. This feed exists for IFS
+        # operating evidence; snow is an additional observation. Production
+        # already treats `snow_unavailable` as degradation affecting only
+        # snow-fed models. `ok` is deliberately NOT cleared here.
+        record["snow_degraded_reason"] = "snow_unavailable"
     emit(record, sink)
     return EXIT_OK if record["ok"] else EXIT_RUN_FAILED
 
