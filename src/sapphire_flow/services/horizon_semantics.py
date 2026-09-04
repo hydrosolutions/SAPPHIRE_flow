@@ -82,6 +82,22 @@ def _model_declared_floor(model: object) -> int | object | None:
     unreadable means "not declared", never a crash — this runs inside the forecast
     cycle, where an exception would take down the whole group.
     """
+    # Plan 241 T2: an FI-discovered model is wrapped in `ForecastInterfaceAdapter`,
+    # which consumes `input_requirement` internally and never re-exposes it — so the
+    # walk below finds nothing and rung 1 could never fire. The adapter now projects
+    # the resolved declaration onto `ModelDataRequirements`; prefer that when present.
+    projected = getattr(model, "data_requirements", None)
+    declared = getattr(projected, "declared_horizon_semantics", None)
+    if declared == _AT_MOST:
+        floor = getattr(projected, "declared_min_future_steps", None)
+        if isinstance(floor, int) and not isinstance(floor, bool):
+            return floor
+        return None
+    if declared is not None:
+        # An explicit EXACT: strict, and the provider opt-in must not be consulted.
+        return _DECLARED_EXACT
+
+    # Native (non-adapter) models may expose the FI requirement directly.
     requirement = getattr(model, "input_requirement", None)
     dynamic: Any = getattr(requirement, "dynamic", None)
     if not isinstance(dynamic, dict):

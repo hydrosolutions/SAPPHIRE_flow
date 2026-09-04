@@ -692,6 +692,53 @@ class ForecastInterfaceAdapter:
                 label="aggregation",
             )
 
+        # Plan 241 T2 — project the model's own horizon declaration.
+        # Resolution rules, identical to `services/horizon_semantics.py`: ONE
+        # variable declaring EXACT makes the whole model strict (an explicit
+        # "I need my full horizon" must not be overridden by another variable's
+        # tolerance), and otherwise the binding floor is the LARGEST declared —
+        # satisfying the least tolerant variable satisfies the rest. Read
+        # defensively: on FI < 0.1.20 the attributes simply do not exist, and
+        # anything unreadable means "not declared", never a raise.
+        declared_horizon_semantics: str | None = None
+        declared_min_future_steps: int | None = None
+        _floors: list[int] = []
+        _saw_at_most = False
+        for _name, _future_variable in future_variables:
+            # 🔴 FI >= 0.1.20 DEFAULTS `horizon_semantics` to EXACT, so the field
+            # being EXACT does NOT mean the model said so. Treating the default as
+            # an explicit declaration would make every model look strict, the
+            # provider opt-in would never be consulted again, and `cmal_pool_pt`
+            # would fall from its 5-step floor to its declared ~15 — breaking a
+            # model that works today. Pydantic's `model_fields_set` carries only
+            # what the caller actually passed, which is the one reliable way to
+            # tell "declared EXACT" from "did not declare".
+            _fields_set = getattr(_future_variable, "model_fields_set", frozenset())
+            if "horizon_semantics" not in _fields_set:
+                declared_horizon_semantics = None
+                declared_min_future_steps = None
+                _saw_at_most = False
+                break
+            _semantics = getattr(_future_variable, "horizon_semantics", None)
+            _value = getattr(_semantics, "value", None)
+            if _value is None:
+                declared_horizon_semantics = None
+                declared_min_future_steps = None
+                _saw_at_most = False
+                break
+            if _value != "at_most":
+                declared_horizon_semantics = "exact"
+                declared_min_future_steps = None
+                _saw_at_most = False
+                break
+            _saw_at_most = True
+            _floor = getattr(_future_variable, "min_future_steps", None)
+            if isinstance(_floor, int) and not isinstance(_floor, bool):
+                _floors.append(_floor)
+        if _saw_at_most:
+            declared_horizon_semantics = "at_most"
+            declared_min_future_steps = max(_floors) if _floors else None
+
         [spatial_rep] = spatial_reps
         return ModelDataRequirements(
             target_parameters=frozenset(req.targets),
@@ -713,6 +760,8 @@ class ForecastInterfaceAdapter:
                 EnsembleMode.ENSEMBLE if any_ensemble_future else EnsembleMode.SINGLE
             ),
             declared_aggregations=frozenset(declared_aggregation.items()),
+            declared_horizon_semantics=declared_horizon_semantics,
+            declared_min_future_steps=declared_min_future_steps,
         )
 
     def _declared_fi_units(self) -> dict[str, Unit]:

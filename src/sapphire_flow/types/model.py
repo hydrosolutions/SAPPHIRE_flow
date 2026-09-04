@@ -289,6 +289,21 @@ class ModelDataRequirements:
     # `services/training_data.py::resolved_aggregation_methods`). A `tuple`-
     # of-pairs `frozenset`, not a `dict`, to keep this dataclass hashable.
     declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()
+    # Plan 241 T2: the model's OWN horizon declaration (FI >= 0.1.20
+    # `FutureKnownVariable.horizon_semantics` / `min_future_steps`), captured by
+    # the FI adapter so `services/horizon_semantics.py` can honour it. Without
+    # this the declaration dies at the adapter boundary — the adapter consumes
+    # `input_requirement` internally and never re-exposes it, so rung 1 could
+    # never fire for ANY FI-discovered model, on ANY FI version.
+    #
+    # `"exact"` means the model explicitly requires its full horizon; `"at_most"`
+    # means fewer steps are acceptable, with `declared_min_future_steps` the
+    # binding floor. `None` means the model declares nothing (FI < 0.1.20, a
+    # native model, or a model that simply did not say) — preserving today's
+    # strict default. Plain `str`/`int` rather than the FI enum so this dataclass
+    # stays hashable and free of an FI import.
+    declared_horizon_semantics: str | None = None
+    declared_min_future_steps: int | None = None
 
     def __post_init__(self) -> None:
         if self.lookback_steps < 1:
