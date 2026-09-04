@@ -45,6 +45,8 @@ after owner decisions are folded in. Only the owner may set its YAML `status: RE
 
 Ask clarifying questions often to fill gaps. Better to clarify upfront than to implement the wrong solution.
 
+**Put every question to the user in plain language:** the decision, one or two sentences of context, and your recommendation — no jargon, no identifiers (file paths, column names, plan/PR numbers), and no re-deriving the analysis behind it.
+
 ---
 
 ## ForecastInterface Adherence (MANDATORY)
