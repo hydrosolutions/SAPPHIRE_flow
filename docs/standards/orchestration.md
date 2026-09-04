@@ -190,7 +190,7 @@ check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_prioritie
 
 **Phase 8 implementation notes for Flow 1:**
 
-- Step 1.7 (`prepare_inputs`) must wire input quality assessment as a sub-step: call `assess_input_quality()` from `services/input_quality.py` and attach the result to the prepared inputs so downstream steps and `forecast.input_quality_assessed` logging have access to it.
+- Step 1.7 (`prepare_inputs`) must wire input quality assessment as a sub-step: call `assess_input_quality()` from `services/input_quality.py` and attach the result to the prepared inputs so downstream steps and `forecast.input_quality_assessed` logging have access to it. **Status (Plan 242 T4b, 2026-09-04):** the assessment call and downstream persistence/API exposure are done (Plan 242 T1a-T1c); the `forecast.input_quality_assessed` logging event itself remains unimplemented (`docs/standards/logging.md` § Canonical forecast cycle events) -- emitting it was out of Plan 242's persist-and-serve scope.
 - Phase 8 must also design season-aware threshold resolution — thresholds in `InputQualityConfig` may need to vary by season (e.g. stricter thresholds during monsoon). See Plan 023 §Season-aware threshold resolution for options and the bounding invariant.
 
 For group-scoped models, the artifact is deserialized once per model (not per station) and passed to all mapped tasks via Prefect's `unmapped()`. This eliminates deserialization overhead without changing the per-station `predict()` contract.

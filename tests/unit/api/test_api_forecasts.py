@@ -6,9 +6,12 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.domain import InputQualityFlag
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
+    InputQualityCategory,
+    InputQualityLevel,
     NwpCycleSource,
 )
 from sapphire_flow.types.ids import (
@@ -222,3 +225,55 @@ class TestGetForecast:
         assert isinstance(ens["series"], dict)
         for _q_key, values in ens["series"].items():
             assert len(values) == 5
+
+
+class TestForecastDetailInputQuality:
+    """Plan 242 T1c: the detail serializer is separate from ForecastSummary
+    and builds its response explicitly — it does NOT inherit the fields for
+    free, so it needs the same wiring proven independently here."""
+
+    def test_degraded_forecast_exposes_level_and_flags(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from dataclasses import replace
+
+        station = make_station_config(rng=random.Random(1))
+        flags = (
+            InputQualityFlag(
+                category=InputQualityCategory.NWP,
+                level=InputQualityLevel.PARTIAL,
+                detail="NWP 10.0h stale (threshold: 6.0h)",
+            ),
+        )
+        fc = replace(
+            _make_operational_forecast(station_id=station.id, rng=random.Random(2)),
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=flags,
+        )
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(f"/api/v1/forecasts/{fc.id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["input_quality"] == "degraded"
+        assert body["input_quality_flags"] == [
+            {
+                "category": "nwp",
+                "level": "partial",
+                "detail": "NWP 10.0h stale (threshold: 6.0h)",
+            }
+        ]
+
+    def test_legacy_forecast_serialises_as_null(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fc = _make_operational_forecast(station_id=station.id, rng=random.Random(2))
+        assert fc.input_quality is None
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(f"/api/v1/forecasts/{fc.id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["input_quality"] is None
+        assert body["input_quality_flags"] is None

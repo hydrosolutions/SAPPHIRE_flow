@@ -17,9 +17,12 @@ from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.domain import InputQualityFlag
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
+    InputQualityCategory,
+    InputQualityLevel,
     InterpolationMethod,
     NwpCycleSource,
 )
@@ -253,6 +256,97 @@ class TestStoreAndFetchForecast:
         assert fetched.representation == EnsembleRepresentation.QUANTILES
         assert "quantile" in fetched.ensemble.values.columns
         assert "member_id" not in fetched.ensemble.values.columns
+
+
+class TestInputQualityRoundTrip:
+    """Plan 242 T1b — the input-quality pair must round-trip by VALUE, not
+    merely be present. Before this task the read path never set the field,
+    so a DEGRADED-with-flags forecast silently read back as
+    ``InputQualityLevel.FULL`` with an empty flag tuple — a plausible
+    default that a presence-only assertion would miss."""
+
+    def test_degraded_forecast_round_trips_by_value(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection, "input_quality_degraded")
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        flags = (
+            InputQualityFlag(
+                category=InputQualityCategory.OBSERVATION,
+                level=InputQualityLevel.DEGRADED,
+                detail="Observations 48.0h stale (threshold: 24.0h)",
+            ),
+            InputQualityFlag(
+                category=InputQualityCategory.NWP,
+                level=InputQualityLevel.PARTIAL,
+                detail="NWP 10.0h stale (threshold: 6.0h)",
+            ),
+        )
+        fc = dataclasses.replace(
+            _make_forecast(sid, mid, aid),
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=flags,
+        )
+        store.store_forecast(fc)
+        fetched = store.fetch_forecast(fc.id)
+        assert fetched is not None
+        assert fetched.input_quality == InputQualityLevel.DEGRADED
+        assert fetched.input_quality_flags == flags
+
+    def test_row_written_without_columns_reads_as_unknown_not_full(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """A row inserted directly at the DB layer, bypassing the store's
+        write path entirely (the shape of every pre-T1b row), must read
+        back as unknown (``None``) rather than the dataclass's old
+        ``FULL`` default."""
+        from sapphire_flow.db.metadata import forecasts
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection, "input_quality_legacy")
+        fid = uuid4()
+        db_connection.execute(
+            sa.insert(forecasts).values(
+                id=fid,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=None,
+                issued_at=_ISSUED_A,
+                nwp_cycle_reference_time=None,
+                nwp_cycle_source="primary",
+                representation="members",
+                status="raw",
+                version=1,
+                parameter="discharge",
+                units="m\u00b3/s",
+            )
+        )
+        db_connection.execute(
+            sa.insert(forecast_values).values(
+                id=uuid4(),
+                forecast_id=fid,
+                issued_at=_ISSUED_A,
+                valid_time=_ISSUED_A,
+                lead_time_hours=0,
+                member_id=0,
+                quantile=None,
+                value=1.0,
+            )
+        )
+
+        store = PgForecastStore(db_connection)
+        fetched = store.fetch_forecast(fid)
+        assert fetched is not None
+        assert fetched.input_quality is None, (
+            "a legacy row with no assessment must read as unknown (None), "
+            f"got {fetched.input_quality!r}"
+        )
+        assert fetched.input_quality_flags == ()
 
 
 class TestFetchLatest:

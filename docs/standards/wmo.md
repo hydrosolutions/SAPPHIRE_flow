@@ -164,11 +164,32 @@ Maps to: overall architecture validation, pipeline monitoring (Flow 4), Nepal v1
 
 ### Addressed in v0
 
-| Gap | WMO reference | Resolution |
-|-----|--------------|------------|
-| **QC "missing" status** | WMO-168 Vol I | Added `MISSING` to `QcStatus` enum. Expected-but-not-received observations are represented as explicit gap markers (`value = NULL`, `qc_status = 'missing'`). Aligns with WMO standard QC flag vocabulary (good, suspect, erroneous, missing). |
-| **Sharpness metric** | WMO-1364 (sharpness dimension) | Added explicit sharpness metrics to skill computation spec: mean prediction interval width (P10–P90, P25–P75), mean ensemble range. Computed per lead time alongside reliability diagnostics. |
-| **Forecasters informed when forecast produced under degraded input conditions** | WMO-1072, QMF-H | `InputQualityLevel` + `InputQualityFlag` on `OperationalForecast`; API exposes quality level and flags; dashboard displays at-a-glance indicator. (Plan 023) |
+**Standing rule (Plan 242 T4c, added 2026-09-04):** a row in either table below moves to
+*Verified* only on evidence from the running system or a named, runnable test — **never** on a
+plan's `status`, and **never** on a plan's own declared-but-unclaimed prerequisite. Two failure
+modes produced the drift this section corrects, and a reader should be able to tell them apart:
+Plan 023 was archived at `status: READY` by commit `33bdc640` — a pure file move containing no
+code — while its own text deferred the DB columns and API exposure to later phases
+(`023:733-740`, `023:472-477`); those deferred phases were then simply **never picked up** by any
+later plan. The row went stale not because the plan lied about its own status, but because nothing
+tracked the gap between "specified" and "implemented" once the plan was archived. No tooling
+enforces this rule — the audit that found the drift was cheap; this is a convention, re-run
+whenever this section is touched.
+
+#### Verified against the running system
+
+| Gap | WMO reference | Evidence | Verified |
+|-----|--------------|----------|----------|
+| **Sharpness metric** | WMO-1364 (sharpness dimension) | Mean prediction interval width (P10–P90, P25–P75), mean ensemble range, computed per lead time: `services/skill/metrics.py:107-117`, emitted at `services/skill/service.py:448-455`. | 2026-09-02 (D-D) |
+| **QC flag vocabulary** | WMO-168 Vol I | `QcStatus` (`types/enums.py`) maps cleanly onto WMO-168's good / suspect / erroneous / missing, plus `RAW` as a pre-check state. | 2026-09-02 (D-D) |
+| **Automated range + temporal-consistency checks** | WMO-168 Vol I | `_apply_range_check` and `_apply_rate_of_change` (`services/qc.py:50`, `:71`), run by `Stage1QualityChecker` (`services/qc.py:225`) against every ingested observation. | 2026-09-02 (D-D) |
+| **Forecasters informed when forecast produced under degraded input conditions** | WMO-1072, QMF-H | `InputQualityLevel`/`InputQualityFlag` persisted on `forecasts` (migration `0053`) and read back by value, not by dataclass default (`store/forecast_store.py`, `tests/integration/store/test_forecast_store.py`); exposed on both the list and detail API responses to every authenticated role (`api/schemas.py` `ForecastSummary`, `api/routes/api_forecasts.py`, `tests/unit/api/`) — Plan 242 Phase 1 (T1a–T1c), closing Plan 023's unfinished half. | 2026-09-04 (Plan 242 T4c) |
+
+#### Specified, not verified
+
+| Gap | WMO reference | What exists | What is missing |
+|-----|--------------|-------------|------------------|
+| **QC "missing" status — production coverage** | WMO-168 Vol I | `MISSING` exists in `QcStatus` and is enforced as an invariant both in the domain type (`types/observation.py:47-49`) and as a DB check constraint (`db/metadata.py:543`: `(qc_status = 'missing') = (value IS NULL)`). | No direct gauged-feed path in operational ingest synthesises a `MISSING` row for a timestamp that was expected and did not arrive. Measured 2026-09-02/03: `SELECT count(*) FROM observations WHERE qc_status='missing'` returns **0** on the mini, and all 148 deployed stations are `gauging_status = 'gauged'` (the one existing producer, `services/component_derivation.py:116`, only fires for `CALCULATED` stations, of which this deployment has none). The gauged-feed producer is **Plan 243** (`docs/plans/243-explicit-gap-markers-for-unmarked-feeds.md`, `status: DRAFT`), not yet built — stays here until it lands. |
 
 ### Deferred to v1+
 
@@ -176,7 +197,7 @@ Maps to: overall architecture validation, pipeline monitoring (Flow 4), Nepal v1
 |-----|--------------|------|----------|
 | **Impact-based warnings** | WMO-1150 | Add impact layer (exposure, vulnerability) on top of existing danger levels. Nepal DHM may handle alerting in-house. | v1 |
 | **CAP alert format** | WMO-1109 | CAP XML serializer for alert records. Optional API endpoint or push feed for DHM integration. | v1 |
-| **WIGOS Station Identifiers** | WMO-1192 | Column added in v0 (present in `stations` table). Population: Swiss stations have WIGOS IDs in v0; Nepal stations populated during v1 onboarding. | v0 (column), v1 (Nepal population) |
+| **WIGOS Station Identifiers** | WMO-1192 | Column added in v0 (present in `stations` table, `wigos_id`). **Correction (Plan 242 T4a, measured 2026-09-02):** the previous row claimed "Swiss stations have WIGOS IDs in v0" -- false; `wigos_id` is populated on **0 of 148** stations. Population is unstarted work, not a v0 accomplishment, and remains explicitly out of this plan's scope (populating the column is separate work). | v0 (column, done), v1 (population, including Swiss -- not started) |
 | **WaterML 2.0 / WHOS** | WHOS | Optional WaterML 2.0 serializer for observation and forecast time series. Only if international data sharing is required. | v1+ |
 | **Advanced EPS calibration** | WMO-1254 Tier 2/3 | MOS (Tier 2) after 6–12 months NWP archive. EMOS/BMA (Tier 3) post-v1. | v1 |
 | **Neighboring station visualization** | WMO-168 Vol I (spatial consistency) | Dashboard map view showing neighboring stations for manual spatial consistency assessment. Not automated QC — SAPPHIRE is a forecast tool, not a QC platform. | v1+ (dashboard) |

@@ -18,7 +18,12 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from sapphire_flow.types.enums import ModelAssignmentStatus, StationKind, StationStatus
+from sapphire_flow.types.enums import (
+    ModelAssignmentStatus,
+    QcStatus,
+    StationKind,
+    StationStatus,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import (
@@ -201,7 +206,19 @@ def fetch_combined_forecast_for_cycle(
     candidates = stores.forecast_store.fetch_forecasts_for_cycle(
         publication_cycle_time, station_id, _DISCHARGE_PARAMETER
     )
-    return next((f for f in candidates if f.model_id == model_id), None)
+    # Plan 242 T2a / OD-1a: a QC_FAILED combination is stored (OD-1 --
+    # evidence of what was rejected and why) but must never be served here
+    # as an ordinary available forecast. This is a filter, not a schema
+    # change: the snapshot format stays at v2 (Plan 244 is what would
+    # surface it).
+    return next(
+        (
+            f
+            for f in candidates
+            if f.model_id == model_id and f.qc_status != QcStatus.QC_FAILED
+        ),
+        None,
+    )
 
 
 def fetch_model_display(

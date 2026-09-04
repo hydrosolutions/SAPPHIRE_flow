@@ -115,6 +115,17 @@ def _to_forecast_summary(row: Any) -> ForecastSummary:
         qc_status=row.qc_status.value,
         nwp_cycle_source=row.nwp_cycle_source.value,
         created_at=row.created_at,
+        input_quality=row.input_quality.value if row.input_quality else None,
+        input_quality_flags=[
+            {
+                "category": f.category.value,
+                "level": f.level.value,
+                "detail": f.detail,
+            }
+            for f in row.input_quality_flags
+        ]
+        if row.input_quality is not None
+        else None,
     )
 
 
@@ -260,6 +271,14 @@ def list_forecasts(
     parameter: str | None = Query(None),
     start: str | None = Query(None),
     end: str | None = Query(None),
+    degraded_only: bool = Query(
+        False,
+        description=(
+            "Return only forecasts assessed PARTIAL or DEGRADED input "
+            "quality (Plan 242 OD-2). Forecasts with no assessment "
+            "recorded (unknown) are never included."
+        ),
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     stores: dict[str, Any] = Depends(get_stores),
@@ -284,6 +303,7 @@ def list_forecasts(
         end_dt,
         model_id=mid,
         parameter=parameter,
+        degraded_only=degraded_only,
         limit=limit,
         offset=offset,
     )

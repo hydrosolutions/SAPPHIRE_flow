@@ -6,9 +6,13 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.domain import InputQualityFlag
 from sapphire_flow.types.enums import (
+    AccessTokenRole,
     EnsembleRepresentation,
     ForecastStatus,
+    InputQualityCategory,
+    InputQualityLevel,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
@@ -16,6 +20,7 @@ from sapphire_flow.types.enums import (
     StationStatus,
 )
 from sapphire_flow.types.ids import (
+    AccessTokenId,
     ForecastId,
     ModelId,
     StationId,
@@ -29,6 +34,19 @@ from tests.conftest import (
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
+
+
+def _set_principal(role: AccessTokenRole, station_ids: frozenset[StationId]) -> None:
+    from sapphire_flow.api import app
+    from sapphire_flow.api.security import Principal, require_principal
+
+    app.dependency_overrides[require_principal] = lambda: Principal(
+        token_id=AccessTokenId(uuid4()),
+        role=role,
+        tenant_id=None,
+        station_ids=station_ids,
+    )
+
 
 _EPOCH = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 
@@ -358,3 +376,112 @@ class TestListForecasts:
         body = resp.json()
         assert body["items"] == []
         assert body["total"] == 0
+
+
+class TestListForecastsInputQuality:
+    """Plan 242 T1c / OD-2: input_quality + input_quality_flags are visible
+    to every authenticated role (no role-filtering), a legacy row with no
+    assessment serialises as null (not silently dropped, not FULL), and the
+    degraded_only filter returns exactly the assessed-degraded set."""
+
+    _FLAGS = (
+        InputQualityFlag(
+            category=InputQualityCategory.OBSERVATION,
+            level=InputQualityLevel.DEGRADED,
+            detail="Observations 48.0h stale (threshold: 24.0h)",
+        ),
+    )
+
+    def test_degraded_forecast_visible_to_admin_and_consumer(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        import dataclasses
+
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        fc = dataclasses.replace(
+            _make_operational_forecast(station_id=station.id, rng=random.Random(2)),
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=self._FLAGS,
+        )
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        for role, station_ids in (
+            (AccessTokenRole.ADMIN, frozenset()),
+            (AccessTokenRole.CONSUMER, frozenset({station.id})),
+        ):
+            _set_principal(role, station_ids)
+            resp = client.get(
+                f"/api/v1/stations/{station.id}/forecasts",
+                params={
+                    "start": "2024-12-31T00:00:00Z",
+                    "end": "2025-01-02T00:00:00Z",
+                },
+            )
+            assert resp.status_code == 200, role
+            item = resp.json()["items"][0]
+            assert item["input_quality"] == "degraded", role
+            assert item["input_quality_flags"] == [
+                {
+                    "category": "observation",
+                    "level": "degraded",
+                    "detail": "Observations 48.0h stale (threshold: 24.0h)",
+                }
+            ], role
+
+    def test_legacy_forecast_serialises_input_quality_as_null(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        fc = _make_operational_forecast(station_id=station.id, rng=random.Random(2))
+        assert fc.input_quality is None
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/forecasts",
+            params={
+                "start": "2024-12-31T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+            },
+        )
+        assert resp.status_code == 200
+        item = resp.json()["items"][0]
+        assert item["input_quality"] is None
+        assert item["input_quality_flags"] is None
+
+    def test_degraded_only_filter_excludes_unknown_and_full(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        import dataclasses
+
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+
+        unknown = _make_operational_forecast(
+            station_id=station.id, rng=random.Random(2)
+        )
+        full = dataclasses.replace(
+            _make_operational_forecast(station_id=station.id, rng=random.Random(3)),
+            input_quality=InputQualityLevel.FULL,
+        )
+        degraded = dataclasses.replace(
+            _make_operational_forecast(station_id=station.id, rng=random.Random(4)),
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=self._FLAGS,
+        )
+        for fc in (unknown, full, degraded):
+            fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/forecasts",
+            params={
+                "start": "2024-12-31T00:00:00Z",
+                "end": "2025-01-02T00:00:00Z",
+                "degraded_only": True,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["id"] == str(degraded.id)

@@ -12,11 +12,13 @@ import sqlalchemy as sa
 from sapphire_flow.db.metadata import forecast_values, forecasts
 from sapphire_flow.exceptions import ConflictError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
-from sapphire_flow.types.domain import QcFlag
+from sapphire_flow.types.domain import InputQualityFlag, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
+    InputQualityCategory,
+    InputQualityLevel,
     NwpCycleSource,
     QcStatus,
     WarmUpSource,
@@ -89,6 +91,23 @@ class PgForecastStore:
                         }
                         for f in forecast.qc_flags
                     ],
+                    input_quality=(
+                        forecast.input_quality.value
+                        if forecast.input_quality is not None
+                        else None
+                    ),
+                    input_quality_flags=(
+                        [
+                            {
+                                "category": f.category.value,
+                                "level": f.level.value,
+                                "detail": f.detail,
+                            }
+                            for f in forecast.input_quality_flags
+                        ]
+                        if forecast.input_quality is not None
+                        else None
+                    ),
                     combination_strategy=forecast.combination_strategy,
                     source_model_ids=(
                         [str(mid) for mid in forecast.source_model_ids]
@@ -204,6 +223,7 @@ class PgForecastStore:
         *,
         model_id: ModelId | None = None,
         parameter: str | None = None,
+        degraded_only: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ForecastSummaryRow], int]:
@@ -216,6 +236,14 @@ class PgForecastStore:
             filters.append(forecasts.c.model_id == model_id)
         if parameter is not None:
             filters.append(forecasts.c.parameter == parameter)
+        if degraded_only:
+            # Plan 242 T1c / OD-2: an unknown (NULL) input_quality is never
+            # reported as degraded — this IN excludes both NULL and 'full'.
+            filters.append(
+                forecasts.c.input_quality.in_(
+                    [InputQualityLevel.PARTIAL.value, InputQualityLevel.DEGRADED.value]
+                )
+            )
 
         where = sa.and_(*filters)
 
@@ -291,6 +319,18 @@ def _build_value_rows(forecast: OperationalForecast) -> list[dict]:  # type: ign
             }
         )
     return rows
+
+
+def _parse_input_quality_flags(raw: object) -> tuple[InputQualityFlag, ...]:
+    items: list[dict[str, object]] = raw or []  # type: ignore[assignment]
+    return tuple(
+        InputQualityFlag(
+            category=InputQualityCategory(f["category"]),
+            level=InputQualityLevel(f["level"]),
+            detail=f["detail"],  # type: ignore[arg-type]
+        )
+        for f in items
+    )
 
 
 def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
@@ -388,6 +428,14 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
             )
             for f in (header["qc_flags"] or [])
         ),
+        input_quality=(
+            InputQualityLevel(header["input_quality"])
+            if header.get("input_quality") is not None
+            else None
+        ),
+        input_quality_flags=_parse_input_quality_flags(
+            header.get("input_quality_flags")
+        ),
         combination_strategy=header.get("combination_strategy"),
         source_model_ids=(
             [ModelId(mid) for mid in header["source_model_ids"]]
@@ -414,4 +462,10 @@ def _row_to_summary(row: sa.engine.row.RowMapping) -> ForecastSummaryRow:
         qc_status=QcStatus(row["qc_status"]),
         nwp_cycle_source=NwpCycleSource(row["nwp_cycle_source"]),
         created_at=utc_from_row(row["created_at"]),
+        input_quality=(
+            InputQualityLevel(row["input_quality"])
+            if row.get("input_quality") is not None
+            else None
+        ),
+        input_quality_flags=_parse_input_quality_flags(row.get("input_quality_flags")),
     )

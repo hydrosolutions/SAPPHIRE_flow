@@ -724,7 +724,7 @@ class ForecastQualityChecker(Protocol):
 
 Module: `protocols/stores.py`
 
-**Flow 1 integration note** — Step 1.10: Forecast output QC. Runs `ForecastQualityChecker.check()` on each ensemble. Aggregate `QC_FAILED` raises `SanityCheckFailure` (flow tries fallback model). `QC_PASSED` or `QC_SUSPECT` results are stored on the `OperationalForecast`. For hindcasts, `QC_FAILED` flags the hindcast but does not trigger fallback.
+**Flow 1 integration note** — Step 1.10: Forecast output QC. Runs `ForecastQualityChecker.check()` on each ensemble. Aggregate `QC_FAILED` raises `SanityCheckFailure` (flow tries fallback model). `QC_PASSED` or `QC_SUSPECT` results are stored on the `OperationalForecast`. For hindcasts, `QC_FAILED` flags the hindcast but does not trigger fallback. **Exception (Plan 242 T2a, OD-1):** a combined (`_pooled`/`_bma`) forecast that fails QC is STORED marked `QC_FAILED` rather than routed to fallback -- it has no next candidate to fall through to, so dropping it would forfeit the evidence of what was rejected and why.
 
 ### SeasonDefinition
 
@@ -1774,7 +1774,7 @@ class OperationalForecast:
     updated_at: UtcDatetime
     qc_status: QcStatus = QcStatus.RAW            # aggregate forecast QC status
     qc_flags: tuple[QcFlag, ...] = ()              # individual rule results
-    input_quality: InputQualityLevel = InputQualityLevel.FULL
+    input_quality: InputQualityLevel | None = None  # None = unknown (no assessment recorded -- legacy row, Plan 242 T1a/T1b); never defaults to FULL
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
     combination_strategy: str | None = None        # NULL for individual; "pooled"|"bma"|"consensus" for combined
     source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
@@ -2586,6 +2586,17 @@ class ForecastStore(Protocol):
         status: ForecastStatus | None = None,
         parameter: str | None = None,
     ) -> list[OperationalForecast]: ...
+    def fetch_forecast_summaries(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        model_id: ModelId | None = None,
+        parameter: str | None = None,
+        degraded_only: bool = False,  # Plan 242 T1c/OD-2 -- PARTIAL/DEGRADED only, unknown (NULL) never matches
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ForecastSummaryRow], int]: ...
     def fetch_latest_uncombined_issued_at(
         self, cutoff: UtcDatetime
     ) -> UtcDatetime | None: ...
