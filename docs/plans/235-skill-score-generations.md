@@ -163,17 +163,31 @@ exception for it, and keeps the INSERT-only boundary intact.
 **The locking test must run as `sapphire_worker`, not the superuser** — the privilege boundary is
 the thing under test, and today's fixtures would pass either way.
 
-### D2d — name the concurrency primitive (second review)
+### D2d — a losing recompute is WRITTEN AND IGNORED, never refused (owner-settled 2026-09-04)
 
-D2b commits to compare-and-set publication but names no enforcement mechanism, and the plan's own
-constraints rule out the usual ones: `SELECT … FOR UPDATE` needs the UPDATE privilege D2c declines,
-and distributed locking is a Non-goal. Under READ COMMITTED two writers can both pass the check and
-both insert.
+Two recomputes can overlap — a scheduled run and a manual one, or a slow run that started earlier
+finishing after a quicker one. **Both publications are accepted and stored. Correctness comes
+entirely from the read side: readers select the newest eligible generation (D2b), so a superseded
+one is never served.**
 
-**Pick one and say which**: a SERIALIZABLE transaction with retry-on-`40001` (compatible with
-INSERT-only), or state plainly that the write-time reject is advisory and read-time "newest
-generation wins" is the sole correctness guarantee — then word the exit gate to match. Do not
-assert a rejection the code does not enforce.
+**There is no write-time rejection.** The plan previously promised one and nothing enforced it:
+`SELECT … FOR UPDATE` needs the UPDATE privilege D2c deliberately declines, distributed locking is
+a Non-goal, and under READ COMMITTED two writers both pass a naive check and both insert. Rather
+than add a stricter transaction mode plus retry handling to buy a tidier table, this plan makes the
+read rule the single correctness guarantee — which it has to be regardless.
+
+**Consequences, stated so nobody is surprised:**
+
+- A losing generation persists, unread. It is not an error and does not fail the run.
+- Overlap is therefore **invisible unless looked for**, so publication must log the generation
+  identity and its as-of bound at INFO — that log is the only way to notice a collision after the
+  fact.
+- `concurrency_limit=1` on the standalone deployments stays as defence in depth, not as the
+  mechanism.
+
+**Exit gate must match**: assert that after two overlapping publications **both rows exist** and
+**readers return only the newer**. Do not assert a rejection — the earlier wording asserted
+behaviour the code will not have.
 
 ### D3 — supersession is atomic, and covers diagrams
 
@@ -320,6 +334,8 @@ publication contract (D2b), so whoever executes Plan 228's D3 can see the rules.
 
 - A real-PostgreSQL test that runs a recompute **twice** over unchanged hindcasts with changed
   observations, proving the corrected result both survives and becomes the one that is read.
+- A real-PostgreSQL test that **two overlapping publications both persist** and readers return only
+  the newer (D2d). Do **not** assert that either write is rejected — none is.
 - A real-PostgreSQL test that a **partial** generation — some partitions failing — leaves the
   previous publication intact and visible. This is the gate the first review found missing; without
   it a half-replaced 115,000-row recompute passes.
