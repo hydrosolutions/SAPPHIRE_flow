@@ -126,41 +126,69 @@ The record is read by the analysis and is posted verbatim as the Healthchecks pi
 Do not restructure `rows`/`members`/`parameters` to mean "both channels"; that silently changes the
 meaning of 12 historical records.
 
-## Open questions the owner owns
+## Owner decisions
 
-- **Q1 (blocks T2):** if T1 cannot ground the snow units against a reference, do we (a) store raw
-  Gateway values with `unit="unknown"` and a provenance note, (b) store nothing and file a Gateway
-  issue, or (c) pause the plan? **Recommendation: (b)** — consistent with the FI/adherence rule that
-  we fix the contract rather than paper over it.
-- **Q2:** confirm the D4 severity table, in particular that a snow-only gap does **not** page.
-- **Q3:** all three variables (`hs`/`rof`/`swe`) or only the two believed subscribed (`hs`+`rof`)?
-  The sweep returned all three, so subscription is not the limiter it was once assumed to be.
+- **Q1 — THE ONLY ONE STILL OPEN.** If T1 cannot ground the snow units against a reference, do we
+  **(b) store nothing and file a Gateway issue**, or **(c) pause the plan**? Recommendation: (b).
+  *(Option (a), "store raw values tagged unit=unknown with a provenance note", is CUT. Independent
+  review 2026-09-04: neither `WeatherForecastRecord` nor the `weather_forecasts` table has a unit or
+  provenance field (`types/weather.py:27-40`, `db/metadata.py:757-783`), so (a) needs exactly the
+  schema work this plan forbids. If units cannot be grounded, store nothing.)*
+- **Q2 — RESOLVED; the table stands.** A snow-only gap must NOT page, an IFS gap must. Production
+  already treats `snow_unavailable` as degradation affecting only snow-fed models
+  (`flows/run_forecast_cycle.py:249-254,1563-1566`) and the wrapper pages on any non-zero IFS result.
+  **Refinement:** for the usual `source_data_missing` case the task returns BEFORE attempting snow
+  (`flows/run_forecast_cycle.py:1324-1340`) — record that as *IFS missing / snow not attempted* and
+  page for IFS. **Do not add a second fetch just to populate a table row.**
+- **Q3 — RESOLVED: all three** (`hs`, `rof`, `swe`), matching the standing probe's `_SNOW_VARS`
+  (`scripts/recap_probe_loop.py:86-88`).
 
 ## Phases
 
-### T1 — ground the units and measure the shape (read-only, no storing)
+### T1 — ground the units from data we are ALREADY collecting (read-only)
 
-Extend the throwaway sweep into `scripts/` as a real probe run against 12300 for `hs`/`rof`/`swe`:
-record value ranges, row counts, step spacing, horizon, and null/member structure. Compare magnitudes
-against an independent reference for the basin to ground D1. **Output is a measurement note in this
-plan, not code that stores anything.** Settles D1 and D3.
+**Do NOT build a probe — one exists.** The standing gateway probe already requests `hs`/`rof`/`swe`
+every 3 hours and records rows, coverage, step spacing and provenance
+(`scripts/recap_probe_loop.py:381-419,112-128`). That instrumentation landed after this plan was
+drafted; the earlier "extend the sweep into `scripts/`" instruction is obsolete and is CUT.
 
-### T2 — fetch + store the snow channel (gated on Q1)
+What it does NOT record is **value ranges, null structure, or authoritative units** — which is
+exactly D1. So T1 is:
 
-`scripts/nepal_forcing_run.py`: call `fetch_snow_forecast` after the IFS fetch, store via the same
-`WeatherForecastStore`, apply the D4 severity table, extend the JSONL additively per D5. Set the
-`convert` factors established in T1.
+1. Analyse the accumulated probe JSONL for availability and shape (rows, spacing, horizon, coverage).
+2. **One bounded read-only fetch** against a known-served cycle for magnitudes and null structure,
+   compared against an authoritative reference to ground the units.
+
+**Output is a measurement note in this plan, not code that stores anything.** Settles D1 and D3.
+
+### T2 — turn the snow channel on (gated on Q1)
+
+**One argument, not a new fetch-and-store path.** `scripts/nepal_forcing_run.py` already calls
+`_fetch_nwp_task.fn` and simply omits `required_snow` (`scripts/nepal_forcing_run.py:266-273`). That
+task already fetches via `fetch_snow_forecast`, converts to records, stores them, contains snow-only
+failures and returns `snow_unavailable` when given an explicit requirements map
+(`flows/run_forecast_cycle.py:1558-1650`). **Pass the fixed 12300 map for the three snow variables
+into the existing task.** Do not write a parallel fetch or store.
+
+Then: apply the D4 severity table, extend the JSONL additively per D5, and set the `convert` factors
+established in T1 (or, per Q1(b), store nothing).
 
 ### T3 — tests
 
 Red-first. Cover: snow-missing-while-IFS-ok ⇒ `ok=true`/exit 0 (the D4 regression guard);
 IFS-missing ⇒ exit 1 unchanged; JSONL keeps every legacy key; `member_id IS NULL` rows upsert
-idempotently under the natural-key index (re-run stores no duplicates).
+idempotently under the natural-key index.
+
+**Also mandatory:** `tests/unit/adapters/test_recap_gateway_variables.py:37-40` explicitly asserts all
+three snow converters remain `None`. Setting them makes that test fail — it must be updated in the
+same change, not discovered by CI.
 
 ### T4 — docs
 
-`docs/operations/nepal-forcing-runbook.md`: the snow channel, the D2 divergence, the D4 table, the
-new JSONL keys, and per-channel healthy-record shapes.
+Three files, not one. `docs/operations/nepal-forcing-runbook.md` (the snow channel, the D2
+divergence, the D4 table, the new JSONL keys) **plus** `docs/v0-scope.md:217,225` and
+`docs/operations/recap-gateway-runbook.md:216-230`, both of which currently state that snow units are
+unresolved and would otherwise be left saying something untrue.
 
 ```json
 {
