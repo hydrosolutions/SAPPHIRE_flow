@@ -134,128 +134,93 @@ question below).
 
 ## Tasks
 
-**T1 — The fetch yields a complete, unambiguous dataset, or a named failure.**
+### T1 — the fetch yields a complete, unambiguous dataset, or a named failure
+**Outcome:** a duplicated STAC asset can no longer enter the parse twice, two different assets can no
+longer collide on one local filename, and an incomplete cycle fails with a named error instead of
+returning a NaN-filled dataset that is stored as real data.
+**In:** `src/sapphire_flow/adapters/meteoswiss_nwp.py` (`_fetch_grib_files`, `_download_asset`,
+`_combine_cfgrib_datasets`/`_parse_grib_files`), `tests/unit/adapters/test_meteoswiss_nwp.py`.
+Three coupled parts of one change:
+(1) **De-duplicate on `netloc` + `path`** of the `href`, query stripped — not the raw signed `href`
+(its query carries a per-request signature; do **not** justify this by expiry, which the repo's probe
+records as fixed at item creation, `docs/research/063-meteoswiss-stac-probe.md:141-155`), not the
+basename (two different assets could share one), not the asset key (cross-item uniqueness is never
+enforced, `:153-161`). Preserve first-seen order; emit one WARNING naming how many duplicates were
+dropped and which steps/variables.
+(2) **Make the destination collision-proof** — a short digest of `netloc`+`path` inserted **before**
+the `.grib2` suffix. Keep the flat layout and existing filename tokens: consumers assume flat files
+whose names carry cycle/step/variable/variant (`tests/unit/adapters/test_meteoswiss_nwp.py:1020-1032`,
+`scripts/063_e2e_verify.py:81-91`). A digest is collision-*resistant*, not injective — acceptable only
+as belt-and-braces behind part 1's exact-identity dedup.
+(3) **Assert the full expected `(valid_time` x `member)` grid per parameter — both checks mandatory.**
+(i) observed `valid_time` set equals the expected set implied by the requested window
+(`window_end = cycle_time + 120 h`, `:704-709`) and cadence — derive it, do **not** hardcode `121`
+(that is the empirical value from three healthy 484-file cycles; thread the window through if the
+combining code cannot see it); fail naming the missing steps. (ii) within every present `valid_time`,
+no `(parameter, member)` cell may be wholly NaN; fail naming the missing members and times.
+⛔ **(ii) is not optional:** if only the `ctrl` **or** only the `perturb` file is missing for a step,
+the other still supplies that `valid_time`, so (i) passes while `join="outer"` NaN-fills the absent
+members and the 21-member check still succeeds (`:301-350,979-994`) — the observed production shape,
+since the 09-02T18 and 09-03T18 duplicates were `perturb`-only.
+Skip the assertion when `max_files` is set and log why: it is an asset-count cutoff with no temporal
+boundary (`:789-885`), so there is no requested-step set to intersect. Production never sets it —
+default `None` (`:375`), flow passes `None` (`run_forecast_cycle.py:345`), `config.toml:413` commented
+out — and a test must assert that, so the exemption cannot silently become the norm.
+**Out:** retrying, re-fetching, pagination changes, the byte/file caps, the age guard,
+`_combine_cfgrib_datasets`' member contract, and how gaps are marked downstream (`is_gap` is Plan
+235/236 — T1 fails before a record is built).
+**Pre-change:** `_fetch_grib_files` appends every asset with no de-duplication (`:816`);
+`_download_asset` names files by basename alone (`:887-906`); there is no completeness check anywhere
+(the only `min` is `_MIN_ENSEMBLE_MEMBERS`, which NaN-fill satisfies).
+**Verification:** `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py` — (a) a listing repeating
+items across **both** `PARAM_GROUPS` and containing at least one non-duplicated valid_time (a single
+duplicated time returns before cross-time alignment and would not reproduce the fault): no duplicate
+paths, WARNING names the drops, parse succeeds; (b1) a listing missing entire steps: error names the
+missing steps, no record produced; (b2) a listing missing only `perturb` for present steps: error
+names the missing members — the case (i) alone would wrongly pass; (c) two different URL paths sharing
+a basename land in two files. ⛔ (a), (b1) and (b2) must be proven RED against the pre-change code;
+the alignment error is re-surfaced as a generic `AdapterError` (`:961-977`), so (a) asserts on that or
+the debug record, not raw pandas text.
 
-*Scope (in) — three parts of one change:*
+### T2 — the NWP-fetch abort must not report COMPLETED
+**Outcome:** Prefect stops reporting a zero-forecast NWP abort as a successful run, so it agrees with
+the watchdog that already calls the same event critical.
+**In:** `src/sapphire_flow/flows/run_forecast_cycle.py`, `tests/unit/flows/test_run_forecast_cycle.py`.
+Raise (or set a failed state) at the **flow** level, **after** the zero-forecast CRITICAL record is
+written (`:2669-2680`). ⛔ "Re-raise" is not available at the task site: `_fetch_nwp_task` has already
+swallowed the exception into a returned outcome (`:1340-1349`), and raising inside the task would make
+`.result()` fail before the existing emitter runs. Confirm exactly one freshness/CRITICAL record and
+that the end-of-cycle emitter (`:3612-3618`) is not double-run.
+**Out:** new alert channels, new health metrics, retry policy, and the other zero-output paths — no
+operational stations (`:2384-2403`) and ordinary end-of-cycle zero storage (`:3612-3658`) — which
+still return normally.
+**Pre-change:** the flow returns `ForecastCycleResult(health=FAILED)` *normally* (`:2667-2691`) — a
+domain-level FAILED inside a Prefect COMPLETED. No retry is configured, so failing does not trigger a
+re-fetch.
+**Verification:** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py` — the abort path does not
+end successfully **and** the CRITICAL record is written exactly once. ⛔ RED first.
 
-1. **De-duplicate on a collision-safe identity.** Key on the **URL path of the `href` with the query
-   string removed** — i.e. **`netloc` + `path`, not `path` alone**: two different hosts can serve
-   the same path, so path-only is not collision-safe. Not the raw signed `href` (its query carries a
-   per-request signature; note the repo's probe records the *expiry* as fixed at item creation, so
-   do not justify this by expiry — `docs/research/063-meteoswiss-stac-probe.md:141-155`), not the
-   basename (two different assets could share one), and not the asset key (cross-item uniqueness is
-   never enforced, `:153-161`). Preserve first-seen order. Emit one WARNING naming how many
-   duplicates were dropped and which steps/variables they were.
-2. **Make the download destination injective.** `_download_asset` names the local file from the
-   basename alone (`:887-906`), so two *different* URL paths sharing a basename silently overwrite.
-   Derive the destination so that two different `netloc`+`path` values cannot collide — e.g. a short
-   digest of `netloc`+`path` inserted **before** the `.grib2` suffix.
-   ⚠️ **Preserve the flat `*.grib2` layout and the existing filename tokens.** Checked-in consumers
-   assume flat files whose names carry the cycle/step/variable/variant tokens
-   (`tests/unit/adapters/test_meteoswiss_nwp.py:1020-1032`, `scripts/063_e2e_verify.py:81-91`), so
-   nested subdirectories, or a digest placed after the suffix, would break them. A digest is
-   collision-*resistant*, not injective; that is acceptable here only because the disambiguation is
-   belt-and-braces behind part 1's exact-identity de-duplication. **Prefer this to a fatal collision guard:** an
-   earlier revision proposed raising, but catalogue-wide basename uniqueness is unproven (the
-   evidence is one probe URL and six fixtures), so raising could turn a legitimate listing into a
-   whole-cycle abort — the very outcome this plan exists to prevent. Making collisions *impossible*
-   needs no such assumption.
-3. **Assert completeness against the EXPECTED step grid — not against NaNs in what arrived.**
-   🔴 An earlier revision specified "no `(valid_time, member)` slice may be wholly NaN". **That does
-   not work**, and a review round proved why: `_combine_cfgrib_datasets` builds `by_valid_time`
-   *exclusively from the files that arrived* (`meteoswiss_nwp.py:293-350`), so a step missing from
-   **every** file never enters the coordinate at all and no NaN slice exists to find. It would pass
-   cleanly on the 302-file cycle — the exact case it was added for — and return a silently shortened
-   dataset. Withdrawn.
+### T3 — forecast-production freshness alerts once per incident, not every 30 minutes
+**Outcome:** one zero-forecast incident spanning many ticks produces exactly one critical alert and
+exactly one `RECOVERED`, instead of eight pages.
+**In:** `src/sapphire_flow/ops/watchdog.py`, `tests/unit/ops/test_watchdog.py`. Reuse the existing
+"alert once" policy (`:13-18`, `_backup_notification_kind:1132`) rather than writing a second
+mechanism. Its delivery-retry behaviour must be preserved — "alert once" must mean once *delivered*,
+not once *attempted*.
+**Out:** the health, BAFU-forecast and BAFU-observation checks (their 5-min probe cadence makes the
+current hysteresis correct — do **not** change them); new channels; thresholds; what counts as a
+zero-forecast cycle; escalation on consecutive misses.
+**Pre-change:** forecast-production freshness uses the 6th-consecutive-failure hysteresis
+(`watchdog.py:8-11`), calibrated for a 5-minute probe and applied to a 6-hourly batch, so it alerts on
+ticks 1, 6, 12, … while nothing can change between them.
+**Verification:** `uv run pytest tests/unit/ops/test_watchdog.py` — several consecutive zero-forecast
+ticks yield exactly one alert plus one on recovery; a second test asserts the health/BAFU checks still
+alert on the 6th consecutive failure. ⛔ RED first.
 
-   Instead: assert over the **full expected `(valid_time` x `member)` grid, per parameter** — not
-   over `valid_time` alone, and **both checks are mandatory**:
-
-   - **(i) step coverage** — the observed `valid_time` set must equal the expected set implied by the
-     requested window and cadence; fail naming the missing steps and their count.
-   - **(ii) member coverage** — within every present `valid_time`, no `(parameter, member)` cell may
-     be wholly NaN; fail naming the missing members and times.
-
-   🔴 **(ii) is NOT optional, and an earlier revision that made it "secondary" was wrong.** Step
-   coverage alone does not prove member completeness: if only the `ctrl` **or** only the `perturb`
-   file is missing for a step, the other still contributes that `valid_time`, so (i) passes while
-   `join="outer"` NaN-fills the absent members and the global 21-member check still succeeds
-   (`meteoswiss_nwp.py:301-350,979-994`). That is exactly the observed production shape — the
-   2026-09-02T18 and 2026-09-03T18 duplicates were **`perturb`-only** — so (i) alone would let the
-   majority case through and store NaN as real data.
-
-   *Deriving "expected":* take it from the window the walk actually requests
-   (`window_end = cycle_time + 120 h`, `meteoswiss_nwp.py:704-709`) and the cadence, rather than a
-   literal `121` in the assertion — 121 is the empirical value confirmed by three healthy cycles at
-   exactly 484 files, not an independently sourced constant, and hardcoding it would silently
-   mis-fire if MeteoSwiss ever changes cadence or horizon. If the combining code cannot see the
-   requested window, thread it in rather than re-deriving it there.
-
-   ⚠️ **The `max_files` smoke path.** `tests/integration/live/test_meteoswiss_nwp_live.py:66-77,89-120`
-   deliberately fetches only a handful of files, so a full-grid assertion would fail it by design.
-
-   **Decision — REVERSED from the previous revision, and here is why.** That revision chose to
-   "scope the check to the steps actually requested (window grid intersected with `max_files`
-   truncation)" and rejected an exemption as creating a silent no-op. A review round showed the
-   chosen option is **not implementable**: `max_files` is an *asset-count* cutoff that stops after
-   the Nth downloaded asset in catalogue order (`meteoswiss_nwp.py:789-885`); it defines and retains
-   **no temporal boundary**, so there is no unambiguous "requested step set" to intersect with, and
-   inferring one from the files that arrived is circular — it could never detect an omitted step.
-
-   **So: skip the completeness assertion when `max_files` is set, and log at WARNING that it was
-   skipped and why.** The no-op objection does not apply in production: `max_files` defaults to
-   `None` (`:375`), the flow passes `None` explicitly (`run_forecast_cycle.py:345`), and the shipped
-   `config.toml` leaves it commented out (`:413`). Add a test asserting the production path leaves it
-   unset, so the exemption cannot silently become the norm.
-
-*Scope (out):* retrying, re-fetching, changing pagination, the byte/file caps, the age guard,
-`_combine_cfgrib_datasets`' member contract, and any change to how gaps are marked downstream
-(`is_gap` belongs to Plan 235/236 — T1 fails before a record is built rather than marking one).
-
-*Exit:* a fetch handed duplicated assets returns the distinct set and parses; a fetch of an
-incomplete cycle fails with a named error — **both** when whole steps are missing (naming them)
-**and** when only the `ctrl` or only the `perturb` files are missing for present steps (naming the
-missing members) — instead of returning a shortened or NaN-filled dataset; the assertion is skipped
-only when `max_files` is set, which the production path never does; two different
-`netloc`+`path` values sharing a basename land in two different files; the flat `*.grib2` layout and
-filename tokens are unchanged, and `scripts/063_e2e_verify.py` still parses them; the `max_files`
-live smoke path still passes.
-
-*Verification:* `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py -q`, with three tests:
-
-- **(a)** a faked listing repeating items across **both** `PARAM_GROUPS` **and containing at least
-  one non-duplicated valid_time** — a single duplicated time returns before cross-time alignment and
-  would not reproduce the fault. Assert no duplicate paths, the WARNING names the drops, and the
-  parse succeeds.
-- **(b)** two incomplete shapes, both RED first: **(b1)** a listing missing **entire steps** —
-  assert the error names the missing steps; **(b2)** a listing missing only the `perturb` files for
-  some present steps — assert the error names the missing **members**. (b2) is the production shape
-  and is the case that step-coverage-alone would wrongly pass. In both, assert **no** record is
-  produced.
-- **(c)** two different URL paths sharing a basename — assert two distinct local files.
-
-**RED first** for (a) and (b) against today's code. Note the alignment error is caught and
-re-surfaced as a generic `AdapterError` (`:961-977`), so (a) must assert against the debug record or
-the `AdapterError` message, not the raw pandas text.
-
-**T2 — The NWP-fetch abort must not report COMPLETED.**
-*Scope (in):* today `_fetch_nwp_task` converts the adapter exception into a **returned outcome**
-(`run_forecast_cycle.py:1340-1349`) and the flow then returns `ForecastCycleResult(health=FAILED)`
-*normally* (`:2667-2691`) — a domain-level FAILED inside a Prefect COMPLETED. The flow must instead
-reach a non-successful terminal state. **"Re-raise" is not literally available at the task site** —
-the exception is already swallowed there, and raising inside the task would make `.result()` fail
-before the existing emitter runs. Raise (or set a failed state) at the flow level **after** the
-zero-forecast CRITICAL record is written (`:2669-2680`), which the watchdog probes independently of
-Prefect state (`ops/watchdog.py:1996-2024`). Confirm exactly one freshness/CRITICAL record is
-emitted and that the end-of-cycle emitter (`:3612-3618`) is not double-run.
-*Scope (out):* new alert channels, new health metrics, retry policy, and the other zero-output paths
-— no operational stations (`:2384-2403`) and ordinary end-of-cycle zero storage (`:3612-3658`) —
-which still return normally and are **not** in scope.
-*Exit:* the NWP-fetch abort yields a non-successful terminal state; exactly one CRITICAL record; no
-new alert.
-*Verification:* `uv run pytest tests/unit/flows/test_run_forecast_cycle.py -q` — a test asserting the
-abort path does not end successfully **and** that the CRITICAL record is written exactly once.
-**RED first.**
+🚀 **T3 deploys differently from T1/T2.** The watchdog runs as a **host process** under launchd
+(`uv run python -m sapphire_flow.ops.watchdog`,
+`scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist`), not in a container — it ships by pulling
+the host checkout on the mini, **not** by rebuilding the image. T1/T2 ship in the image.
 
 ## The re-alert question — DECIDED 2026-09-04 (now T3)
 
@@ -320,9 +285,17 @@ the image**. T1/T2 ship in the image. Do not assume one deploy covers both.
 
 ## Exit gates
 
-- `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/ops/test_watchdog.py -q` passes, with the RED-first tests above proven red against the pre-change code.
-- `uv run ruff check` and `uv run ruff format --check` clean on changed files.
+```bash
+uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py tests/unit/flows/test_run_forecast_cycle.py tests/unit/ops/test_watchdog.py
+uv run ruff check src/sapphire_flow/adapters/meteoswiss_nwp.py src/sapphire_flow/flows/run_forecast_cycle.py src/sapphire_flow/ops/watchdog.py
+uv run ruff format --check src/sapphire_flow/adapters/meteoswiss_nwp.py src/sapphire_flow/flows/run_forecast_cycle.py src/sapphire_flow/ops/watchdog.py
+uv run pytest tests/unit
+```
+
+- Every RED-first test above is proven red against the pre-change code, and green after.
 - `uv run pyright` no worse than the recorded ratchet baseline.
+- The flat `*.grib2` layout and filename tokens are unchanged; `scripts/063_e2e_verify.py` still parses them.
+- The `max_files` live smoke path still passes, and a test asserts production leaves `max_files` unset.
 
 ## Dependency graph
 
