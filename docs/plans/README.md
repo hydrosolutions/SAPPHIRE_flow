@@ -127,6 +127,15 @@ exit criteria — Plan 212 owns that deeper screening.
   does not recover DHM's flag; that needs an API change, tracked in the DHM data-format
   questionnaire § 5. Scoping must settle cadence metadata, the materialisation bound,
   retention on null rows, and whether this overlaps `pipeline_health`.
+- **244** — The Forecast Lab should show a rejected combination — `DRAFT, unreviewed` —
+  follow-on from 242's OD-1a. A combined forecast that fails QC is stored by 242 and
+  deliberately hidden from the Forecast Lab, because surfacing it means adding two
+  fields to a **published, strict snapshot format** (`additionalProperties: false`,
+  eight permitted fields) and therefore a v2→v3 transition across the eight files that
+  stamp or check `forecast-lab-snapshot/v2`. Split out so a versioned external-format
+  change does not ride on a persistence fix. Three open owner decisions: whether v3
+  replaces or coexists with v2, whether the new fields are required, and what
+  `available` should mean for a rejected forecast. Depends on 242 landing first.
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
   alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).

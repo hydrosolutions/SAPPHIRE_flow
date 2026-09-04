@@ -107,6 +107,17 @@ which is an open interface question with them
   or outside the no-data early return; settle inclusive/exclusive fetch-window semantics; and test
   both an entirely silent feed and a late arrival at a timestamp already marked.
 
+- **⛔ A clean empty poll is not a failed fetch — decide this before any marker is written.** The
+  domain already separates them: `RawObservation` carries a `failure_cause`
+  (`types/observation.py:75,93`), the adapter treats `NO_DATA`, malformed responses and other
+  acquisition errors as failed outcomes (`adapters/hydro_scraper.py:345,559`), and the ingest flow
+  records failed station IDs before it takes the empty-result path
+  (`flows/ingest_observations.py:650,658`). Without an explicit rule, a collector or upstream outage
+  would manufacture a run of gap markers — the system inventing data loss that did not occur, which
+  is worse than the silence it set out to record. Scope: whether markers are written only for clean
+  successful polls, what happens on a partially failed batch, and the intended semantics of
+  `NO_DATA`. Test both.
+
 - **The bound on materialisation** — within the ingest window being processed, never an unbounded
   backfill over history.
 - **A retention position on null rows**, including what happens to a station silent for months.

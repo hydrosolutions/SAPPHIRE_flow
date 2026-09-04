@@ -207,8 +207,8 @@ first-class; the questionnaire is what would make it explicable.
 
 **Scope consequence: the producer is Plan 243, not a phase here.** This plan is about signals that are
 computed and then dropped at the store boundary. The `MISSING` producer is a different shape of work —
-it *creates* a signal that does not exist today, and needs an expected-cadence field on `stations` and
-a migration, a gap-materialisation step in the ingest window, a bound on how far back materialisation
+it *creates* a signal that does not exist today, and needs expected-schedule metadata whose shape is
+Plan 243's to design (it is explicitly not merely a cadence) plus a migration, a gap-materialisation step in the ingest window, a bound on how far back materialisation
 reaches, and a retention position on null rows. That is a plan, not a task, and this plan said so
 before the decision was taken. What stays here is Phase 3: making `wmo.md` state the truth in the
 interval before Plan 243 lands.
@@ -247,10 +247,28 @@ owner-approved exception to existing behaviour, not an oversight: station execut
 assignment failure on `QC_FAILED` (`services/run_station_forecast.py:484-517`), group execution
 returns no forecast (`services/run_group_forecast.py:274-305`), and the spec routes a failed station
 forecast to fallback rather than storage (`docs/spec/types-and-protocols.md:705-726`). The exception
-is justified by what the combination is *for*: it exists to compare models in the Forecast Lab, and a
-silently dropped row leaves a gap with no record of what was rejected or why. Unlike a member model,
-a failed combination has no next candidate to fall through to, so dropping it forfeits the evidence
-rather than substituting for it. T2a records the rule and locks it with a test.
+is justified by what the combination is *for*: it exists to compare models, and a silently dropped
+row leaves no record of what was rejected or why. Unlike a member model, a failed combination has no
+next candidate to fall through to, so dropping it forfeits the evidence rather than substituting for
+it. T2a records the rule and locks it with a test.
+
+**OD-1a — refined 2026-09-04, after review established what surfacing would cost.** The stored
+failed combination is **excluded from the Forecast Lab, not shown there**. Surfacing it requires
+adding `qc_status` and `qc_flags` to the Lab's published snapshot format, whose combined-forecast
+objects are strict (`additionalProperties: false`, eight permitted fields —
+`docs/spec/forecast-lab-snapshot-v2.schema.json`), so it would mean a v3 transition across the eight
+files that stamp or check `forecast-lab-snapshot/v2`: `cli/export_forecast_lab.py`,
+`api/forecast_lab_schemas.py`, `api/routes/forecast_lab.py`, the schema file,
+`docs/spec/forecast-lab-snapshot.md`, `tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json`,
+`tests/unit/services/forecast_lab/test_snapshot.py` and `docs/plans/204-...`. That is a versioned
+external-format change riding on a persistence fix, so it becomes **Plan 244** and this plan
+excludes the row instead.
+
+⛔ **Exclusion must be explicit, not incidental.** The Lab treats every renderable row as available
+(`services/forecast_lab/snapshot.py:453-504`) and fetches a matching combination without consulting
+QC (`services/forecast_lab/db_sources.py:184-204`), so doing nothing would make a failed combination
+appear there as an ordinary healthy forecast — worse than absent. The record lives in the database
+until Plan 244 surfaces it.
 
 **OD-2 — input-quality level AND its flags are visible to every authenticated role.** Plan 023
 required the threshold-bearing flag details to be role-filtered once authorization existed
@@ -287,7 +305,7 @@ exit gate 2 forbids. `docs/standards/cicd.md:186` requires nullable, not default
 
 **Pre-change:** `uv run python -c "from sapphire_flow.db.metadata import forecasts; print([c.name for c in forecasts.columns])"` prints a list containing neither `input_quality` nor `input_quality_flags`, and `grep -rl input_quality alembic/versions/` is empty.
 
-**Verification:** `uv run pytest tests/unit/db/test_alembic_head_release_b.py tests/integration/db/test_migration_<rev>_input_quality.py`, where `<rev>` is the next free revision on the implementation branch (`0053` at the time of writing; `_RELEASE_B_HEAD` is `0052`) — the revision number is chosen against the branch at implementation time — not fixed here, since it has drifted twice already — and the migration's `down_revision`, its test filename and `_RELEASE_B_HEAD` are updated together; the head-pin test passes with the new revision, and the new migration's own upgrade/downgrade test runs against real PostgreSQL per `docs/v0-scope.md:434-446`.
+**Verification:** `uv run pytest tests/unit/db/test_alembic_head_release_b.py tests/integration/db/test_migration_input_quality.py` — a revision-independent filename, deliberately, so the command stays executable while the revision itself is chosen at implementation time — the revision number is chosen against the branch at implementation time — not fixed here, since it drifted three times during review — and the migration's `down_revision` and `_RELEASE_B_HEAD` (`tests/unit/db/test_alembic_head_release_b.py:67`, assertions from `:105`) are updated together; the head-pin test passes with the new revision; the columns are nullable with no server default; a row inserted before the migration survives it with `NULL` in both columns; and downgrade removes both, and the new migration's own upgrade/downgrade test runs against real PostgreSQL per `docs/v0-scope.md:434-446`.
 
 ### T1b — write and read the pair
 
@@ -349,13 +367,11 @@ datum map, as used at `services/run_station_forecast.py:484-505` — without the
 metres-above-sea-level values run against the `-2..20 m` bounds
 (`config/forecast_qc_rules.py:149-176`) and fail falsely, reintroducing the Plan 101 defect.
 
-**The Forecast Lab surface OD-1 was chosen for.** OD-1 is justified by the Lab preserving what was
-rejected and why, but the Lab fetches a matching combination without consulting QC
-(`services/forecast_lab/db_sources.py:184-204`), treats every renderable row as available
-(`services/forecast_lab/snapshot.py:453-504`), and its schema carries neither `qc_status` nor
-`qc_flags` (`api/forecast_lab_schemas.py:313-327`). Storing a failed combination without this is a
-decision that does not achieve its own stated purpose: it would appear in the Lab as an ordinary
-available forecast. Keep it available, and surface its status and flags.
+**Excluding the failed combination from the Forecast Lab (OD-1a).** The Lab's combined-forecast
+selection must skip a `QC_FAILED` combination — `services/forecast_lab/db_sources.py:184-204`, which
+currently fetches a matching combination without consulting QC. This is a **filter, not a schema
+change**: no field is added and the snapshot format stays at v2, so nothing in
+`api/forecast_lab_schemas.py` or the published schema moves. Surfacing it is Plan 244.
 
 Docs: `docs/spec/types-and-protocols.md:727`, which currently reads that an aggregate `QC_FAILED`
 raises `SanityCheckFailure` and the flow tries a fallback model, while only `QC_PASSED` or
@@ -375,7 +391,7 @@ an alert input at all — alerting re-pools member ensembles independently
 
 **Pre-change:** `SELECT model_id, qc_status, count(*) FROM forecasts WHERE model_id='_pooled' GROUP BY 1,2` returns only `raw` rows (30 on the mini at 2026-09-02), including cycles where a contributing member was flagged `qc_suspect`.
 
-**Verification:** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py tests/unit/services/test_forecast_combination.py tests/unit/services/forecast_lab/` — a combination over ensembles that trip a real forecast QC rule is stored `QC_FAILED` with flags (OD-1, locking the exception); one over clean members is stored `QC_PASSED`; water-level combinations are tested with a datum present and absent; no stored combination row can carry `qc_status='raw'` from either call site; and a failed combination appears in the Forecast Lab **visibly marked failed**, not as an ordinary available forecast.
+**Verification:** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py tests/unit/services/test_forecast_combination.py tests/unit/services/forecast_lab/test_snapshot.py` — a combination over ensembles that trip a real forecast QC rule is stored `QC_FAILED` with flags (OD-1, locking the exception); one over clean members is stored `QC_PASSED`; water-level combinations are tested with a datum present and absent; no stored combination row can carry `qc_status='raw'` from either call site; a `QC_FAILED` combination is **absent** from the Lab snapshot rather than present-and-available (OD-1a); and the emitted snapshot still validates against the unchanged v2 schema.
 
 ### T2b — the combination inherits its contributors' input quality
 
@@ -404,10 +420,10 @@ synthesises them, cites the measurement, and points at Plan 243.
 `:2232`, `:2240`), which states MISSING rows are "set during gap detection in the observation ingest
 pipeline" — the claim that would route Plan 243's implementer wrongly; and
 `docs/architecture-context.md:400`, which asserts a QC-failed filter on the alert path that does not
-exist; and `docs/plans/README.md:100-127`, whose entries for **both** plans still say `MISSING` is
-never produced in operational ingest, name the calculated-station path as the sole producer, and
-claim `pipeline_health` already meets the need. The index is an active-plan document and carries the
-same no-stale-docs obligation (`docs/workflow.md:392-396`). The corrected wording must **not** claim `pipeline_health` already provides per-station
+exist; and `docs/plans/README.md:100-127`, whose entries for both plans were corrected in this plan's own
+authoring and must be **verified as still correct and preserved**, not rewritten again. The index is
+an active-plan document carrying the same no-stale-docs obligation
+(`docs/workflow.md:392-396`). The corrected wording must **not** claim `pipeline_health` already provides per-station
 freshness: its records are collector-level and run-level
 (`flows/collect_bafu_observations.py:160-199`, `flows/ingest_observations.py:175-240`), distinct from
 the per-station `OBSERVATION_FRESHNESS` check (`types/enums.py:193-217`).
@@ -422,10 +438,15 @@ all prerequisites for Plan 243. Pre-announcing Plan 243's design.
 ### T4a — relabel every unevidenced compliance row
 
 **Outcome:** every "Addressed in v0" row in `wmo.md` § 5 either cites the test or query establishing
-it with a date, or is relabelled **specified, not verified**. Runs immediately; depends on nothing.
+it with a date, or is relabelled **specified, not verified**. Depends on T3a, which rewrites the
+`MISSING` row this task then audits.
 
 **In:** `docs/standards/wmo.md` § 5, both tables, including the stale WIGOS row (`wigos_id` populated
-on 0 of 148 stations).
+on 0 of 148 stations). The final row inventory must also **add the two rows D-D found holding and
+promised**, with their evidence: the QC flag vocabulary mapping onto WMO-168's good / suspect /
+erroneous / missing (`types/enums.py` `QcStatus`) and the automated range and temporal-consistency
+checks (`services/qc.py:50`, `:225`). A promise in a design section that no task delivers is not
+implementation-accountable (`docs/workflow.md:129`).
 
 **Out:** re-auditing the WMO publication inventory in § 1-3; the catch-efficiency position
 (`wmo.md:78-100`), which is current and well-evidenced. Flipping any row to verified — that is T4c.
@@ -460,7 +481,7 @@ assertion is at `:1852-1853` and belongs to T1b.)
 
 **Outcome:** the degraded-input row moves to verified with its evidence once Phase 1 has landed; the
 missing-marker row stays **specified, not verified** until Plan 243 lands; and a rule prevents the
-recurrence. Depends on T1c.
+recurrence. Depends on T1c and T4a.
 
 **In:** `docs/standards/wmo.md` § 5 (the two rows) plus one paragraph stating that a compliance row
 moves to *Addressed* only on evidence from the running system or a named test — never on a plan's
@@ -494,7 +515,7 @@ Five conditions hold in addition to the commands above:
    Replacing one false confident answer with another is not a fix.
 3. **`wmo.md` § 5 contains no row this plan has not either verified or relabelled**, and
    `architecture-context.md:90`, `:110`, `:114`, `:400`, `:1852-1853`, `:2208`,
-   `docs/spec/types-and-protocols.md:727` and the Plan 242/241 entries in `docs/plans/README.md`
+   `docs/spec/types-and-protocols.md:727` and the Plan 242/243 entries in `docs/plans/README.md`
    are corrected.
 4. **The pooled-forecast tests use a real QC-tripping ensemble**, not a mocked checker verdict, cover
    both call sites, and cover water level with and without a station datum.
