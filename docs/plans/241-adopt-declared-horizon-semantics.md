@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-04
 revised: 2026-09-04
 plan: 241
@@ -14,7 +14,7 @@ source: Measured 2026-09-04 against aquacast main (5460f898), the pinned revisio
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY.** Owner confirmed 2026-09-04, after an independent cross-check found the adapter gap.
 
 ## ⛔ Proportionality
 
