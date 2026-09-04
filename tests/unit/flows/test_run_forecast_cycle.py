@@ -31,6 +31,7 @@ from sapphire_flow.exceptions import (
     BudgetExceededError,
     ConfigurationError,
     ExtractionError,
+    ForecastCycleAbortedError,
     StoreError,
 )
 from sapphire_flow.flows.run_forecast_cycle import (
@@ -4141,7 +4142,8 @@ enabled = false
         """The Plan 100 blackout shape: NWP fetch fails hard and the cycle
         aborts before Phase B. Zero forecasts stored — must still be
         CRITICAL, not silently skipped because the abort path returns
-        early."""
+        early. Plan 237 T2: the abort must also not report COMPLETED to
+        Prefect -- the flow raises AFTER writing the one CRITICAL record."""
         sid = StationId(uuid4())
         station_store = FakeStationStore()
         obs_store = FakeObservationStore()
@@ -4165,28 +4167,27 @@ enabled = false
             forcing_store,
         )
 
-        result = run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=forecast_store,
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=alert_store,
-            pipeline_health_store=pipeline_health_store,
-            baseline_store=baseline_store,
-            basin_store=basin_store,
-            forcing_store=forcing_store,
-            adapter=_RaisingAdapter(RuntimeError("simulated NWP fetch failure")),
-            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
-            config=_make_config(),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-        )
+        with pytest.raises(ForecastCycleAbortedError, match="NWP fetch failed"):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=_RaisingAdapter(RuntimeError("simulated NWP fetch failure")),
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
 
-        assert result.health is ForecastCycleHealth.FAILED
-        assert result.forecasts_stored == 0
         records = pipeline_health_store.fetch_recent(
             PipelineCheckType.FORECAST_FRESHNESS
         )
@@ -4226,34 +4227,34 @@ enabled = false
             forcing_store,
         )
 
-        result = run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=forecast_store,
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=alert_store,
-            pipeline_health_store=pipeline_health_store,
-            baseline_store=baseline_store,
-            basin_store=basin_store,
-            forcing_store=forcing_store,
-            adapter=_RaisingAdapter(
-                BudgetExceededError(
-                    "GRIB file count exceeded: 501 > 500",
-                    kind="file_count",
-                    observed=501,
-                    limit=500,
-                )
-            ),
-            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
-            config=_make_config(),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-        )
+        with pytest.raises(ForecastCycleAbortedError):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=_RaisingAdapter(
+                    BudgetExceededError(
+                        "GRIB file count exceeded: 501 > 500",
+                        kind="file_count",
+                        observed=501,
+                        limit=500,
+                    )
+                ),
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
 
-        assert result.health is ForecastCycleHealth.FAILED
         records = pipeline_health_store.fetch_recent(
             PipelineCheckType.FORECAST_FRESHNESS
         )
@@ -4295,25 +4296,33 @@ enabled = false
             "?AWSAccessKeyId=SECRET_KEY_ID&Signature=SECRET_SIG&Expires=9999999999"
         )
 
-        run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=forecast_store,
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=alert_store,
-            pipeline_health_store=pipeline_health_store,
-            baseline_store=baseline_store,
-            basin_store=basin_store,
-            forcing_store=forcing_store,
-            adapter=_RaisingAdapter(leaking),
-            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
-            config=_make_config(),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-        )
+        with pytest.raises(ForecastCycleAbortedError) as exc_info:
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=_RaisingAdapter(leaking),
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        # The raised exception's message must ALSO never leak the secret
+        # URL -- it is built from the sanitised `reason`, never str(exc).
+        raised_message = str(exc_info.value)
+        assert "AWSAccessKeyId" not in raised_message
+        assert "SECRET" not in raised_message
+        assert "https://" not in raised_message
 
         records = pipeline_health_store.fetch_recent(
             PipelineCheckType.FORECAST_FRESHNESS
@@ -5789,28 +5798,26 @@ enabled = false
             def fetch_forecasts(self, *args: object, **kwargs: object) -> object:
                 raise RuntimeError("NWP API unavailable")
 
-        result = run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=forecast_store,
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=FakeAlertStore(),
-            baseline_store=baseline_store,
-            basin_store=basin_store,
-            forcing_store=forcing_store,
-            adapter=_BrokenAdapter(),
-            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
-            config=_make_config(),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-        )
+        with pytest.raises(ForecastCycleAbortedError, match="NWP fetch failed"):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=FakeAlertStore(),
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=_BrokenAdapter(),
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
 
-        assert result.stations_attempted == 0
-        assert result.forecasts_stored == 0
-        assert "NWP fetch failed" in result.errors
         assert len(forecast_store._forecasts) == 0
 
     def test_empty_stations(self) -> None:
@@ -6296,28 +6303,27 @@ enabled = false
         adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
         grid_extractor = FakeGridExtractor(exception=ExtractionError("test"))
 
-        result = run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=forecast_store,
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=FakeAlertStore(),
-            baseline_store=FakeClimBaselineStore(),
-            basin_store=basin_store,
-            forcing_store=forcing_store,
-            adapter=adapter,
-            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
-            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-            grid_store=FakeNwpGridStore(),
-            grid_extractor=grid_extractor,
-        )
-
-        assert "NWP fetch failed" in result.errors
+        with pytest.raises(ForecastCycleAbortedError, match="NWP fetch failed"):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=adapter,
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+                grid_store=FakeNwpGridStore(),
+                grid_extractor=grid_extractor,
+            )
 
     def test_gridded_nwp_archive_failure_non_fatal(self) -> None:
         sid = StationId(uuid4())

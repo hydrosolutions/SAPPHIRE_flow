@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -11,18 +11,17 @@ import xarray as xr
 
 from sapphire_flow.adapters.meteoswiss_nwp import (
     MeteoSwissNwpAdapter,
+    _assert_cycle_complete,
     _combine_cfgrib_datasets,
     _compute_wind_speed,
     _convert_units,
     _deaccumulate_precipitation,
+    _expected_valid_times,
     convert_raw_dataset,
 )
-from sapphire_flow.exceptions import NoCycleAvailableError
+from sapphire_flow.exceptions import AdapterError, NoCycleAvailableError
 from sapphire_flow.protocols.adapters import WeatherForecastSource
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestDeaccumulatePrecipitation:
@@ -1717,3 +1716,398 @@ class TestShippedCycleMinAgeGuard:
         assert resolution.cycle_time == previous
         assert resolution.fallback_used is True
         assert resolution.fallback_reason == "too_recent"
+
+
+# ---------------------------------------------------------------------------
+# Plan 237 T1 — dedup on collision-safe identity, collision-proof destination
+# naming, and a completeness assertion so an incomplete cycle fails loudly
+# instead of returning a NaN-filled dataset that gets stored as real data.
+# ---------------------------------------------------------------------------
+
+_REAL_FIXTURE_DIR = (
+    Path(__file__).parent.parent.parent
+    / "fixtures"
+    / "meteoswiss_nwp"
+    / "icon_ch2_eps_202604231200"
+)
+_REAL_CYCLE = ensure_utc(datetime(2026, 4, 23, 12, 0, tzinfo=UTC))
+
+
+def _real_fixture_path(stac_token: str, step: int, variant: str) -> Path:
+    return (
+        _REAL_FIXTURE_DIR
+        / f"icon-ch2-eps-202604231200-{step}-{stac_token}-{variant}.grib2"
+    )
+
+
+def _skip_unless_real_fixtures() -> None:
+    if not _REAL_FIXTURE_DIR.glob("*.grib2"):
+        pytest.skip(f"real fixtures not found at {_REAL_FIXTURE_DIR}")
+
+
+def _real_fixture_item(
+    stac_token: str, step: int, variant: str, *, query: str
+) -> dict[str, object]:
+    # A real MeteoSwiss STAC item shape: one asset, a presigned href whose
+    # QUERY carries the per-request signature (Plan 237 T1: dedup must key
+    # on netloc+path with the query stripped, never the raw href).
+    file_name = f"icon-ch2-eps-202604231200-{step}-{stac_token}-{variant}.grib2"
+    return {
+        "id": f"04232026-1200-{step}-{stac_token}-{variant}-{query}",
+        "properties": {"forecast:reference_datetime": "2026-04-23T12:00:00Z"},
+        "assets": {
+            file_name: {
+                "type": "application/grib",
+                "href": f"https://rgw.cscs.ch/bucket/{file_name}?{query}",
+                "roles": ["data"],
+            }
+        },
+    }
+
+
+def _real_fixture_handler(features: list[dict[str, object]]) -> object:
+    """MockTransport handler serving `_make_page(features)` for `/items`,
+    and the ACTUAL fixture bytes for asset downloads matched by basename —
+    so `_parse_grib_files` really opens the file via cfgrib, exercising the
+    exact xarray semantics production hits (Plan 237's "measured" claims
+    were reproduced this way, not through the byte-magic fakes the rest of
+    this file uses elsewhere)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        q = str(request.url)
+        if "/items" in q:
+            return httpx.Response(200, json=_make_page(features))
+        file_name = request.url.path.rsplit("/", 1)[-1]
+        fixture_path = _REAL_FIXTURE_DIR / file_name
+        if fixture_path.exists():
+            return httpx.Response(200, content=fixture_path.read_bytes())
+        return httpx.Response(404)
+
+    return handler
+
+
+class TestExpectedValidTimes:
+    def test_hourly_cadence_across_window(self) -> None:
+        cycle = ensure_utc(datetime(2026, 4, 23, 12, 0, tzinfo=UTC))
+        window_end = cycle + timedelta(hours=3)
+        times = _expected_valid_times(cycle, window_end)
+        assert len(times) == 4
+        assert times[0] == np.datetime64(datetime(2026, 4, 23, 12, 0), "ns")
+        assert times[-1] == np.datetime64(datetime(2026, 4, 23, 15, 0), "ns")
+
+    def test_full_horizon_derives_121_not_hardcoded(self) -> None:
+        # The empirical 121-step / 484-file figure must be a CONSEQUENCE of
+        # the window, not a literal baked into the function.
+        cycle = ensure_utc(datetime(2026, 4, 23, 12, 0, tzinfo=UTC))
+        window_end = cycle + timedelta(hours=120)
+        assert len(_expected_valid_times(cycle, window_end)) == 121
+
+
+class TestAssertCycleComplete:
+    """Direct unit tests of the completeness predicate against SYNTHETIC
+    per-file datasets (`_per_file_ds` + `_combine_cfgrib_datasets` +
+    `convert_raw_dataset`) — no cfgrib/real GRIB needed to exercise the
+    NaN-grid logic itself; the real-fixture tests below drive it end to
+    end through `_parse_grib_files`."""
+
+    @staticmethod
+    def _dataset(entries: list[tuple[int, int, str]]) -> xr.Dataset:
+        # entries: (member, step_hours, var)
+        per_file = [_per_file_ds(member=m, step_hours=s, var=v) for m, s, v in entries]
+        combined = _combine_cfgrib_datasets(per_file)
+        return convert_raw_dataset(combined)
+
+    def test_complete_grid_does_not_raise(self) -> None:
+        entries = [(m, s, "tp") for m in range(2) for s in (0, 3)]
+        ds = self._dataset(entries)
+        expected = [
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns"),
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns") + np.timedelta64(3, "h"),
+        ]
+        _assert_cycle_complete(ds, expected)  # must not raise
+
+    def test_missing_step_names_it(self) -> None:
+        entries = [(m, 0, "tp") for m in range(2)]
+        ds = self._dataset(entries)
+        expected = [
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns"),
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns") + np.timedelta64(3, "h"),
+        ]
+        with pytest.raises(AdapterError, match="missing valid_time step"):
+            _assert_cycle_complete(ds, expected)
+
+    def test_missing_member_at_a_present_step_names_it(self) -> None:
+        # Step 0 has both members; step 3 has ONLY member 0 — the join="outer"
+        # NaN-fill case (i) alone would miss (member 1 wholly NaN at step 3).
+        entries = [(0, 0, "tp"), (1, 0, "tp"), (0, 3, "tp")]
+        ds = self._dataset(entries)
+        expected = [
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns"),
+            np.datetime64(datetime(2026, 4, 23, 0, 0), "ns") + np.timedelta64(3, "h"),
+        ]
+        with pytest.raises(AdapterError, match="wholly missing"):
+            _assert_cycle_complete(ds, expected)
+
+
+class TestFetchGribFilesDuplicateAssetDedup:
+    """`_fetch_grib_files` de-dupes on (netloc, path) with the query
+    stripped — the presigned signature must never defeat the dedup."""
+
+    def test_duplicate_query_signature_is_deduped_and_warned(
+        self, tmp_path: Path
+    ) -> None:
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        first = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        # Same asset, RE-LISTED with a different presigned query — the
+        # shape a STAC pagination re-list produces.
+        second = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        second["id"] = f"relisted-duplicate-{first['id']}"
+        first_href = next(iter(first["assets"].values()))["href"]  # type: ignore[index]
+        assert "?" in first_href
+        base_href = first_href.split("?", 1)[0]
+        for asset in second["assets"].values():  # type: ignore[union-attr]
+            asset["href"] = f"{base_href}?AWSAccessKeyId=y2&Signature=z2&Expires=1"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if "/items" in q:
+                return httpx.Response(200, json=_make_page([first, second]))
+            return httpx.Response(200, content=b"GRIB" + b"\x00" * 50)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        assert len(files) == 1
+        warnings = [
+            e for e in captured if e.get("event") == "nwp.duplicate_assets_dropped"
+        ]
+        assert len(warnings) == 1
+        assert warnings[0]["dropped_count"] == 1
+        assert warnings[0]["log_level"] == "warning"
+
+    def test_different_asset_sharing_a_basename_is_not_deduped(
+        self, tmp_path: Path
+    ) -> None:
+        # Two genuinely DIFFERENT assets (different path) that happen to
+        # share a basename must both be kept — dedup keys on the full path,
+        # not the basename.
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        item_a = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        item_b = _make_item("t_2m", ref_dt="2026-04-19T12:00:00Z")
+        for asset in item_a["assets"].values():  # type: ignore[union-attr]
+            asset["href"] = "https://rgw.cscs.ch/bucket/dir-a/shared-name.grib2?sig=1"
+        for asset in item_b["assets"].values():  # type: ignore[union-attr]
+            asset["href"] = "https://rgw.cscs.ch/bucket/dir-b/shared-name.grib2?sig=2"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if "/items" in q:
+                return httpx.Response(200, json=_make_page([item_a, item_b]))
+            return httpx.Response(200, content=b"GRIB" + b"\x00" * 50)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        assert len(files) == 2
+        assert files[0] != files[1]
+        assert files[0].name != files[1].name
+        assert [
+            e for e in captured if e.get("event") == "nwp.duplicate_assets_dropped"
+        ] == []
+
+
+class TestDownloadAssetCollisionProofDestination:
+    """`_download_asset` part 2: two different URL paths sharing one
+    basename must land in two distinct files, never overwrite one
+    another — this is the belt-and-braces behind part 1's dedup."""
+
+    def test_two_paths_sharing_a_basename_land_in_two_files(
+        self, tmp_path: Path
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"GRIB" + str(request.url).encode())
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+
+        dest_a = adapter._download_asset(
+            "https://rgw.cscs.ch/bucket/dir-a/name.grib2?sig=1", "k", scratch
+        )
+        dest_b = adapter._download_asset(
+            "https://rgw.cscs.ch/bucket/dir-b/name.grib2?sig=2", "k", scratch
+        )
+
+        assert dest_a != dest_b
+        assert dest_a.exists() and dest_b.exists()
+        assert dest_a.name.endswith(".grib2")
+        assert dest_b.name.endswith(".grib2")
+        assert dest_a.read_bytes() != dest_b.read_bytes()
+
+
+class TestParseGribFilesRealDuplicateAndCompleteness:
+    """T1 verification (a)/(b1)/(b2), end to end through
+    `_fetch_grib_files` + `_parse_grib_files`, against REAL ICON-CH2-EPS
+    fixtures (see `tests/fixtures/meteoswiss_nwp/README.md`). These tests
+    must be RED against the pre-change code:
+
+    (a) is RED because `_fetch_grib_files` appends every asset with no
+        de-duplication, so a duplicated step-0 file is opened twice by
+        cfgrib and `_combine_cfgrib_datasets`'s final valid_time concat
+        (join="outer") tries to reindex a `number` axis that itself
+        contains duplicate values — the EXACT production error
+        (`cannot reindex or align along dimension 'number' ... duplicate
+        values`) — for BOTH `PARAM_GROUPS`, so `_parse_grib_files` ends up
+        with zero parseable groups and raises `AdapterError`.
+    (b1)/(b2) are RED because there is no completeness check anywhere
+        pre-change; a short cycle parses "successfully" with the missing
+        steps/members silently NaN-filled instead of raising.
+    """
+
+    def test_duplicate_across_both_param_groups_deduped_and_parses(
+        self, tmp_path: Path
+    ) -> None:
+        features = [
+            _real_fixture_item("tot_prec", 0, "ctrl", query="sig=1"),
+            _real_fixture_item("tot_prec", 0, "ctrl", query="sig=2"),  # duplicate
+            _real_fixture_item("tot_prec", 0, "perturb", query="sig=1"),
+            _real_fixture_item("t_2m", 0, "ctrl", query="sig=1"),
+            _real_fixture_item("t_2m", 0, "ctrl", query="sig=2"),  # duplicate
+            _real_fixture_item("t_2m", 0, "perturb", query="sig=1"),
+            # A non-duplicated valid_time — required so the final
+            # cross-time concat (where the fault actually manifests) runs.
+            _real_fixture_item("tot_prec", 1, "ctrl", query="sig=1"),
+            _real_fixture_item("t_2m", 1, "ctrl", query="sig=1"),
+        ]
+        adapter = _make_adapter(
+            httpx.MockTransport(_real_fixture_handler(features)),  # type: ignore[arg-type]
+            tmp_path,
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(_REAL_CYCLE)
+
+        assert len(files) == len(set(files)) == 6
+        warnings = [
+            e for e in captured if e.get("event") == "nwp.duplicate_assets_dropped"
+        ]
+        assert len(warnings) == 1
+        assert warnings[0]["dropped_count"] == 2
+
+        # No completeness window threaded here — this test isolates dedup;
+        # (b1)/(b2) below isolate the completeness assertion.
+        ds = adapter._parse_grib_files(files)
+        assert "precipitation" in ds.data_vars
+        assert "temperature" in ds.data_vars
+        assert ds.sizes["valid_time"] == 2
+
+    def test_missing_entire_step_names_it(self, tmp_path: Path) -> None:
+        adapter = _make_adapter(
+            httpx.MockTransport(lambda _req: httpx.Response(404)),  # type: ignore[arg-type]
+            tmp_path,
+        )
+        files = [
+            _real_fixture_path("tot_prec", 0, "ctrl"),
+            _real_fixture_path("tot_prec", 0, "perturb"),
+            _real_fixture_path("t_2m", 0, "ctrl"),
+            _real_fixture_path("t_2m", 0, "perturb"),
+        ]
+        with pytest.raises(AdapterError, match="missing valid_time step"):
+            adapter._parse_grib_files(
+                files,
+                cycle_time=_REAL_CYCLE,
+                window_end=_REAL_CYCLE + timedelta(hours=1),
+            )
+
+    def test_missing_perturb_only_at_a_present_step_names_it(
+        self, tmp_path: Path
+    ) -> None:
+        # Step 0 is a full 21-member cycle; step 1 has ONLY the ctrl file
+        # (no perturb) — exactly the production shape (09-02T18/09-03T18:
+        # duplicates/gaps were perturb-only). Check (i) alone would pass
+        # (step 1 IS present, contributed by ctrl); check (ii) must catch
+        # the wholly-NaN member 1..20 slots that join="outer" produced.
+        adapter = _make_adapter(
+            httpx.MockTransport(lambda _req: httpx.Response(404)),  # type: ignore[arg-type]
+            tmp_path,
+        )
+        files = [
+            _real_fixture_path("tot_prec", 0, "ctrl"),
+            _real_fixture_path("tot_prec", 0, "perturb"),
+            _real_fixture_path("t_2m", 0, "ctrl"),
+            _real_fixture_path("t_2m", 0, "perturb"),
+            _real_fixture_path("tot_prec", 1, "ctrl"),
+            _real_fixture_path("t_2m", 1, "ctrl"),
+        ]
+        with pytest.raises(AdapterError, match="wholly missing"):
+            adapter._parse_grib_files(
+                files,
+                cycle_time=_REAL_CYCLE,
+                window_end=_REAL_CYCLE + timedelta(hours=1),
+            )
+
+    def test_complete_cycle_with_window_threaded_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        # Control: step 0 alone IS complete (both variants, 21 members) —
+        # the completeness assertion must not fire on a genuinely full
+        # window.
+        adapter = _make_adapter(
+            httpx.MockTransport(lambda _req: httpx.Response(404)),  # type: ignore[arg-type]
+            tmp_path,
+        )
+        files = [
+            _real_fixture_path("tot_prec", 0, "ctrl"),
+            _real_fixture_path("tot_prec", 0, "perturb"),
+            _real_fixture_path("t_2m", 0, "ctrl"),
+            _real_fixture_path("t_2m", 0, "perturb"),
+        ]
+        ds = adapter._parse_grib_files(
+            files, cycle_time=_REAL_CYCLE, window_end=_REAL_CYCLE
+        )
+        assert ds.sizes["member"] == 21
+
+
+class TestParseGribFilesCompletenessSkippedWithMaxFiles:
+    """The `max_files` scope-limiter has no temporal boundary (Plan 237
+    T1) — the completeness assertion must be skipped, and say why, rather
+    than misfire on a deliberately-truncated smoke-test fetch."""
+
+    def test_max_files_set_skips_completeness_and_logs_reason(
+        self, tmp_path: Path
+    ) -> None:
+        client = httpx.Client(
+            transport=httpx.MockTransport(lambda _req: httpx.Response(404)),
+            base_url="https://dummy",
+        )
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=client,
+            disk_guard_enabled=False,
+            max_files=2,
+        )
+        # 21 members present (clears `_MIN_ENSEMBLE_MEMBERS`) but only ONE
+        # of the 121 expected steps — would fail completeness check (i) if
+        # it ran.
+        files = [
+            _real_fixture_path("tot_prec", 0, "ctrl"),
+            _real_fixture_path("tot_prec", 0, "perturb"),
+            _real_fixture_path("t_2m", 0, "ctrl"),
+            _real_fixture_path("t_2m", 0, "perturb"),
+        ]
+        with structlog.testing.capture_logs() as captured:
+            ds = adapter._parse_grib_files(
+                files,
+                cycle_time=_REAL_CYCLE,
+                window_end=_REAL_CYCLE + timedelta(hours=120),
+            )
+        assert ds is not None
+        skipped = [
+            e for e in captured if e.get("event") == "nwp.completeness_check_skipped"
+        ]
+        assert len(skipped) == 1
+        assert skipped[0]["max_files"] == 2

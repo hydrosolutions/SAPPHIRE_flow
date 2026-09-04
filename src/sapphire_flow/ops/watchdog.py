@@ -5,10 +5,11 @@ BAFU forecast collector's freshness heartbeat on every invocation
 (scheduled by launchd every 5 min — see
 `scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist`).
 
-Hysteresis (health + both BAFU freshness checks + forecast-production
-freshness): alerts on the first failure, then only on every 6th
-consecutive failure (~30 min cadence at 5 min intervals), and once more
-when the service recovers.
+Hysteresis (health + both BAFU freshness checks): alerts on the first
+failure, then only on every 6th consecutive failure (~30 min cadence at
+5 min intervals), and once more when the service recovers. Calibrated
+for these checks' 5-min probe cadence, where the condition can genuinely
+change between alerts.
 
 Backup staleness (Plan 162 T4) uses a DIFFERENT, dedicated "alert
 once" policy — not the 6th-failure hysteresis above: exactly one
@@ -16,6 +17,15 @@ alert on the first stale tick, silence for as long as it stays stale,
 and exactly one recovery alert — see ``_backup_notification_kind``.
 A notification that fails delivery is retried every subsequent tick
 (regardless of the condition) until it is actually posted.
+
+Forecast-production freshness (Plan 116, cadence changed by Plan 237 T3)
+uses the SAME "alert once" policy as backup staleness above (see
+``_forecast_freshness_notification_kind``), not the 6th-failure
+hysteresis — that hysteresis is calibrated for a 5 min probe, but this
+check ages a 6-hourly forecast cycle, where nothing can change between
+ticks inside one cycle. Applying the 5-min-calibrated cadence there
+re-fired every ~30 min for a single incident (15 Slack alerts in one
+day, measured 2026-09-03/04).
 
 State is kept in ``~/.sapphire-watchdog-state.json``.
 
@@ -47,9 +57,10 @@ silent-success failure (green flow, dark product) that neither the API
 health probe nor the two BAFU checks above can see. This is a SEPARATE
 contract from `ForecastCycleHealth` — the emitting flow does not degrade
 `health` for a freshness loss, and this watchdog block does not consult
-`health` at all, only the dedicated heartbeat record. Same shape as the
-BAFU blocks (found/stale/degraded -> fail, hysteresis via
-`should_alert_health`), but with a DEDICATED probe and result type
+`health` at all, only the dedicated heartbeat record. Found/stale/critical
+-> fail like the BAFU blocks, but the ALERT CADENCE is the backup-staleness
+"alert once" policy (Plan 237 T3), not `should_alert_health` -- see the
+module docstring above. DEDICATED probe and result type
 (`probe_forecast_freshness`/`ForecastFreshnessResult`, not
 `probe_bafu_freshness`/`BafuFreshnessResult`): the BAFU checks age by
 `checked_at` (collector run time), while forecast freshness must age by
@@ -261,6 +272,18 @@ LaunchdProbeNotificationKind = Literal["unreadable", "readable"]
 # per-label verdict — latched separately so "the monitor stopped
 # monitoring" can never present as "no agents failing".
 
+ForecastFreshnessNotificationKind = Literal["stale", "critical", "recovered"]
+# Plan 237 T3: forecast-production freshness switches from
+# `should_alert_health`'s 6th-consecutive-failure hysteresis to the SAME
+# "alert once, then only on recovery" shape as `BackupNotificationKind`
+# above — the 30 min hysteresis cadence was calibrated for a 5 min probe
+# where the condition can genuinely change between alerts; applied to a
+# 6-hourly forecast cycle it re-fires on ticks 1, 6, 12, … while nothing
+# can have changed. Three values (not two, like `BackupNotificationKind`)
+# because forecast freshness has two DISTINCT failure sub-reasons (stale
+# heartbeat vs. a CRITICAL zero-forecast record) that render different
+# alert text — see `_forecast_freshness_notification_kind`.
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WatchdogState:
@@ -275,9 +298,20 @@ class WatchdogState:
     last_backup_alert_iso: str | None = None
     consecutive_bafu_failures: int = 0
     consecutive_bafu_obs_failures: int = 0
-    # Plan 116: forecast-production freshness hysteresis, same shape as the
-    # two BAFU counters above.
+    # Plan 116: forecast-production freshness -- was a hysteresis counter
+    # feeding `should_alert_health`; Plan 237 T3 repurposes it to feed
+    # `was_fail` for `_forecast_freshness_notification_kind` instead (same
+    # role `consecutive_backup_stale_failures` plays for
+    # `_backup_notification_kind`), so it stays > 0 for the ENTIRE failing
+    # streak rather than resetting the alert cadence every 6 ticks.
     consecutive_forecast_freshness_failures: int = 0
+    # Plan 237 T3: a forecast-freshness notification owed but not yet
+    # DELIVERED -- same role as `backup_notification_pending`. Retried
+    # every tick until delivery succeeds, so a recovery alert lost to a
+    # failed Slack post is not lost permanently.
+    forecast_freshness_notification_pending: (
+        ForecastFreshnessNotificationKind | None
+    ) = None
     # Plan 162 T4: backup-staleness hysteresis, mirroring
     # consecutive_health_failures — the pre-Plan-162 backup block alerted on
     # EVERY stale tick (~288/day at 5 min intervals), absorbing Plan 161 T3.
@@ -370,6 +404,16 @@ class WatchdogState:
             if launchd_probe_pending_raw in ("unreadable", "readable")
             else None
         )
+        forecast_freshness_pending_raw = raw.get(
+            "forecast_freshness_notification_pending"
+        )
+        forecast_freshness_notification_pending: (
+            ForecastFreshnessNotificationKind | None
+        ) = (
+            forecast_freshness_pending_raw
+            if forecast_freshness_pending_raw in ("stale", "critical", "recovered")
+            else None
+        )
         legacy_alert_iso = raw.get("last_backup_alert_iso")
         stale_failures_raw = raw.get("consecutive_backup_stale_failures")
         if stale_failures_raw is None:
@@ -405,6 +449,11 @@ class WatchdogState:
             consecutive_forecast_freshness_failures=int(
                 raw.get("consecutive_forecast_freshness_failures", 0)
             ),
+            # Backward compatible with state files written before Plan 237
+            # T3's alert-once policy: absent key defaults to None.
+            forecast_freshness_notification_pending=(
+                forecast_freshness_notification_pending
+            ),
             # Backward compatible with state files written before Plan 194's
             # wrong-device check: absent key defaults to 0/None.
             consecutive_backup_device_unverified_ticks=int(
@@ -435,6 +484,9 @@ class WatchdogState:
             "backup_notification_pending": self.backup_notification_pending,
             "consecutive_forecast_freshness_failures": (
                 self.consecutive_forecast_freshness_failures
+            ),
+            "forecast_freshness_notification_pending": (
+                self.forecast_freshness_notification_pending
             ),
             "consecutive_backup_device_unverified_ticks": (
                 self.consecutive_backup_device_unverified_ticks
@@ -1152,6 +1204,42 @@ def _backup_notification_kind(
     if is_stale and not was_stale:
         return "stale"
     if was_stale and not is_stale:
+        return "recovered"
+    return None
+
+
+def _forecast_freshness_notification_kind(
+    *,
+    was_fail: bool,
+    is_stale: bool,
+    is_critical: bool,
+    pending: ForecastFreshnessNotificationKind | None,
+) -> ForecastFreshnessNotificationKind | None:
+    """Plan 237 T3: same shape as `_backup_notification_kind` -- "alert
+    once, then only on recovery" -- in place of `should_alert_health`'s
+    6th-consecutive-failure hysteresis, which is calibrated for a 5 min
+    probe and re-fires every ~30 min against a 6-hourly forecast cycle
+    where nothing can have changed between ticks.
+
+    Two failure sub-reasons (`is_stale` / `is_critical`) render DIFFERENT
+    alert text, unlike the single-condition backup case -- `is_stale`
+    takes priority when both are true, matching the `elif` order `run_once`
+    already uses to choose which alert to format. A failure that changes
+    sub-reason WITHOUT ever recovering (e.g. stale -> critical) is still
+    one ongoing incident and must not re-alert -- only a genuine recovery
+    (`was_fail and not is_fail`) or a still-undelivered `pending`
+    notification (recomputed from the CURRENT condition, never resent
+    stale, same reasoning as `_backup_notification_kind`) produces a kind.
+    """
+    is_fail = is_stale or is_critical
+    current_kind: ForecastFreshnessNotificationKind = (
+        "stale" if is_stale else "critical"
+    )
+    if pending is not None:
+        return current_kind if is_fail else "recovered"
+    if is_fail and not was_fail:
+        return current_kind
+    if was_fail and not is_fail:
         return "recovered"
     return None
 
@@ -2039,17 +2127,29 @@ def run_once(
         prev_failures=state.consecutive_forecast_freshness_failures,
     )
 
-    forecast_freshness_alert_now = should_alert_health(
-        state.consecutive_forecast_freshness_failures,
-        current_ok=not forecast_freshness_fail,
-        current_fail=forecast_freshness_fail,
+    # Plan 237 T3: "alert once, then only on recovery" -- NOT
+    # `should_alert_health`'s hysteresis, which re-fires every 6th
+    # consecutive failure (~30 min at 5 min ticks against a 6-hourly
+    # forecast cycle, where nothing can have changed between ticks). Same
+    # shape as backup staleness (`_backup_notification_kind` above):
+    # `_forecast_freshness_notification_kind` decides purely from the
+    # CURRENT condition vs. the condition on entry to this tick, recomputed
+    # fresh whenever a notification is still `pending` from a failed
+    # delivery.
+    forecast_freshness_was_fail = state.consecutive_forecast_freshness_failures > 0
+    forecast_freshness_pending = state.forecast_freshness_notification_pending
+    forecast_freshness_notification_kind = _forecast_freshness_notification_kind(
+        was_fail=forecast_freshness_was_fail,
+        is_stale=forecast_freshness_stale,
+        is_critical=forecast_freshness_critical,
+        pending=forecast_freshness_pending,
     )
 
-    if forecast_freshness_alert_now:
-        if not forecast_freshness_fail:
+    if forecast_freshness_notification_kind is not None:
+        if forecast_freshness_notification_kind == "recovered":
             message = _format_forecast_freshness_recovery_alert(hostname=host, now=now)
             log.info("watchdog.forecast_freshness_recovery_alert", message=message)
-        elif forecast_freshness_stale:
+        elif forecast_freshness_notification_kind == "stale":
             message = _format_forecast_freshness_stale_alert(
                 hostname=host, now=now, result=forecast_freshness_result
             )
@@ -2059,11 +2159,31 @@ def run_once(
                 hostname=host, now=now, result=forecast_freshness_result
             )
             log.warning("watchdog.forecast_freshness_critical_alert", message=message)
+
         if webhook:
             posted = _safe_slack_post(slack_poster, webhook, message)
             log.info("watchdog.slack_post_attempted", posted=posted)
+            state = replace(
+                state,
+                forecast_freshness_notification_pending=(
+                    None if posted else forecast_freshness_notification_kind
+                ),
+            )
+        elif forecast_freshness_pending is not None:
+            # A previous delivery attempt failed and is awaiting retry; the
+            # webhook merely being absent/unreadable right now must not be
+            # treated as a successful delivery (same reasoning as the
+            # backup-staleness block above).
+            log.info("watchdog.slack_skipped_pending_retry_deferred")
+            state = replace(
+                state,
+                forecast_freshness_notification_pending=(
+                    forecast_freshness_notification_kind
+                ),
+            )
         else:
             log.info("watchdog.slack_skipped_log_only")
+            state = replace(state, forecast_freshness_notification_pending=None)
 
     if forecast_freshness_fail:
         state = replace(

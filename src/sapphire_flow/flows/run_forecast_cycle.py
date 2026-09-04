@@ -39,6 +39,7 @@ from sapphire_flow.exceptions import (
     ConfigurationError,
     DiskHardLimitError,
     DiskSoftLimitError,
+    ForecastCycleAbortedError,
     NoCycleAvailableError,
     StoreError,
 )
@@ -2665,29 +2666,31 @@ def run_forecast_cycle_flow(
                         base_path=config.nwp_grid_archive_base_path,
                     )
             if nwp_outcome is None or nwp_outcome.fetch_failure_reason is not None:
-                log.error("forecast_cycle.nwp_fetch_failed_aborting")
+                abort_reason = (
+                    nwp_outcome.fetch_failure_reason
+                    if nwp_outcome is not None
+                    else None
+                )
+                log.error(
+                    "forecast_cycle.nwp_fetch_failed_aborting", reason=abort_reason
+                )
                 _emit_forecast_freshness_record(
                     pipeline_health_store,
                     cycle_time_param=cycle_time,
                     resolved_cycle_time=resolved_cycle_time,
                     forecasts_stored=0,
                     checked_at=clock(),
-                    reason=(
-                        nwp_outcome.fetch_failure_reason
-                        if nwp_outcome is not None
-                        else None
-                    ),
+                    reason=abort_reason,
                 )
-                return ForecastCycleResult(
-                    cycle_time=resolved_cycle_time,
-                    health=ForecastCycleHealth.FAILED,
-                    stations_attempted=0,
-                    stations_succeeded=0,
-                    stations_failed=0,
-                    forecasts_stored=0,
-                    alerts_checked=False,
-                    duration_ms=round((time.perf_counter() - flow_t0) * 1000, 1),
-                    errors=("NWP fetch failed",),
+                # Plan 237 T2: raise (not return) so Prefect reports this
+                # run as FAILED rather than COMPLETED, agreeing with the
+                # watchdog that already treats the CRITICAL record just
+                # written above as critical. Must come AFTER the record
+                # write above, never before. No retry is configured on
+                # this flow, so raising does not trigger a re-fetch.
+                raise ForecastCycleAbortedError(
+                    "NWP fetch failed: cycle aborted with zero forecasts "
+                    f"(reason={abort_reason!r})"
                 )
 
         # Collect Step 1.6 result (we don't block on this — just use it for logging)

@@ -2,6 +2,7 @@
 # pyright: reportUnknownArgumentType=false
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import shutil
 import time
@@ -28,6 +29,8 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.station import StationWeatherSource
@@ -80,6 +83,16 @@ _ASSET_SIZE_ESTIMATE_BYTES: int = 2 * 1024 * 1024  # 2 MB fallback
 # unexplained, so the true ceiling is unknown.
 _MAX_FILE_COUNT: int = 2000
 _GRIB_MAGIC: bytes = b"GRIB"
+
+# Plan 237 T1: the requested-window horizon and step cadence, factored out
+# of the inline `timedelta(hours=120)` in `_fetch_grib_files` so the
+# completeness assertion in `_parse_grib_files` can derive the expected
+# `valid_time` set from the SAME window rather than a hardcoded step count.
+# 121 (0..120 inclusive at 1 h cadence) is the empirical file count from
+# three healthy 484-file cycles (Plan 237 measured evidence) -- a
+# consequence of these two constants, never hardcoded directly.
+_FORECAST_HORIZON_HOURS: int = 120
+_FORECAST_STEP_HOURS: int = 1
 
 # Pagination cap for _fetch_grib_files's 120 h-window walk.
 # Plan 067 T1.f measured 552 pages for the 4-cycle overlap at MeteoSwiss's
@@ -348,6 +361,73 @@ def _combine_cfgrib_datasets(per_file: list[xr.Dataset]) -> xr.Dataset:
         data_vars="all",
         join="outer",
     )
+
+
+def _expected_valid_times(
+    cycle_time: UtcDatetime, window_end: UtcDatetime
+) -> list[np.datetime64]:
+    """Hourly-cadence `valid_time`s spanning `[cycle_time, window_end]`.
+
+    Derived from the REQUESTED window (Plan 237 T1) -- 121 steps at 120 h is
+    the empirical consequence of `_FORECAST_HORIZON_HOURS`/
+    `_FORECAST_STEP_HOURS`, never a hardcoded count here.
+    """
+    total_hours = round((window_end - cycle_time).total_seconds() / 3600)
+    base = np.datetime64(cycle_time.replace(tzinfo=None), "ns")
+    return [
+        base + np.timedelta64(h, "h")
+        for h in range(0, total_hours + 1, _FORECAST_STEP_HOURS)
+    ]
+
+
+def _assert_cycle_complete(
+    ds: xr.Dataset, expected_valid_times: Sequence[np.datetime64]
+) -> None:
+    """Fail loudly rather than silently store a NaN-filled partial cycle
+    (Plan 237 T1 -- "Why de-duplication ALONE makes things worse").
+
+    Two mandatory checks:
+    (i) the observed `valid_time` set equals the expected set implied by
+        the requested window -- names the missing steps.
+    (ii) within every PRESENT `valid_time`, no `(parameter, member)` cell
+         may be wholly NaN -- names the missing members/times.
+    (ii) is not optional: `_combine_cfgrib_datasets` concatenates with
+    `join="outer"`, so a step missing only `ctrl` or only `perturb` still
+    satisfies (i) (the OTHER variant supplied that `valid_time`) while the
+    absent members are NaN-filled, not dropped -- the observed production
+    shape (Plan 237: 09-02T18 and 09-03T18 duplicates were `perturb`-only).
+    """
+    observed = {
+        np.datetime64(v, "ns") for v in np.atleast_1d(ds.coords["valid_time"].values)
+    }
+    expected = set(expected_valid_times)
+    missing_times = sorted(expected - observed)
+    if missing_times:
+        raise AdapterError(
+            "NWP cycle incomplete: missing valid_time step(s) "
+            f"{[str(t) for t in missing_times]} "
+            f"(expected {len(expected)} steps, found {len(observed)})"
+        )
+
+    spatial_dims = tuple(d for d in ds.dims if d not in ("member", "valid_time"))
+    for var_name, da in ds.data_vars.items():
+        if "member" not in da.dims or "valid_time" not in da.dims:
+            continue
+        reduce_dims = tuple(d for d in spatial_dims if d in da.dims)
+        collapsed = da.isnull().all(dim=reduce_dims) if reduce_dims else da.isnull()
+        all_nan = collapsed.transpose("valid_time", "member")
+        if bool(all_nan.any()):
+            times = all_nan.coords["valid_time"].values
+            members = all_nan.coords["member"].values
+            missing_cells = sorted(
+                f"valid_time={times[i]} member={members[j]}"
+                for i, j in np.argwhere(all_nan.values)
+            )
+            raise AdapterError(
+                f"NWP cycle incomplete: {var_name!r} is wholly missing for "
+                f"{len(missing_cells)} (valid_time, member) cell(s) after "
+                f"outer-join alignment, e.g. {missing_cells[:10]}"
+            )
 
 
 class MeteoSwissNwpAdapter:
@@ -662,7 +742,11 @@ class MeteoSwissNwpAdapter:
         # On SUCCESS nothing is removed (record_fixtures needs the downloaded GRIBs).
         try:
             grib_files = self._fetch_grib_files(resolved_cycle, scratch_dir)
-            ds = self._parse_grib_files(grib_files)
+            ds = self._parse_grib_files(
+                grib_files,
+                cycle_time=resolved_cycle,
+                window_end=resolved_cycle + timedelta(hours=_FORECAST_HORIZON_HOURS),
+            )
             duration_ms = int((time.perf_counter() - t0) * 1000)
             log.info(
                 "nwp.fetch_completed",
@@ -701,7 +785,7 @@ class MeteoSwissNwpAdapter:
         target_ref_dt = cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         allow_tokens: list[str] = [row[0] for row in self.PARAM_GROUPS]
 
-        window_end = cycle_time + timedelta(hours=120)
+        window_end = cycle_time + timedelta(hours=_FORECAST_HORIZON_HOURS)
         datetime_q = f"{cycle_time:%Y-%m-%dT%H:%M:%SZ}/{window_end:%Y-%m-%dT%H:%M:%SZ}"
         url: str = (
             f"{self._stac_base_url}/collections/{self._stac_collection}/items"
@@ -718,6 +802,17 @@ class MeteoSwissNwpAdapter:
         grib_files: list[Path] = []
         accumulated_bytes = 0
         page_count = 0
+        # Plan 237 T1 part 1: de-duplicate on the asset's collision-safe
+        # identity (`netloc` + `path`, query stripped) -- NOT the raw signed
+        # `href` (its query carries a per-request signature), the basename
+        # (two different assets could share one), or the asset key
+        # (cross-item uniqueness is never enforced). A duplicated STAC
+        # listing must not enter the parse twice (see "Why de-duplication
+        # ALONE makes things worse" -- this alone does not make the cycle
+        # safe; `_assert_cycle_complete` in `_parse_grib_files` is the other
+        # half). First-seen order preserved by only ever appending.
+        seen_asset_identities: set[tuple[str, str]] = set()
+        dropped_duplicate_labels: list[str] = []
         # Count of items whose forecast:reference_datetime matched the
         # target cycle (before the variable allowlist filter) — the
         # observability signal for how big this cycle's slice of the
@@ -789,6 +884,18 @@ class MeteoSwissNwpAdapter:
                 for asset_key, asset in item.get("assets", {}).items():
                     if not _is_grib_asset(asset_key, asset):
                         continue
+                    href = str(asset.get("href", ""))
+                    parsed_href = urlparse(href)
+                    asset_identity = (parsed_href.netloc, parsed_href.path)
+                    if asset_identity in seen_asset_identities:
+                        dropped_duplicate_labels.append(f"{item_id}/{asset_key}")
+                        log.debug(
+                            "nwp.duplicate_asset_dropped",
+                            item_id=item_id,
+                            asset_key=asset_key,
+                        )
+                        continue
+                    seen_asset_identities.add(asset_identity)
                     asset_size = asset.get("size")
                     bytes_add = (
                         int(asset_size)
@@ -810,7 +917,6 @@ class MeteoSwissNwpAdapter:
                             observed=accumulated_bytes + bytes_add,
                             limit=self._max_download_bytes,
                         )
-                    href = str(asset.get("href", ""))
                     file_path = self._download_asset(href, asset_key, scratch_dir)
                     _verify_grib_magic(file_path)
                     grib_files.append(file_path)
@@ -860,6 +966,13 @@ class MeteoSwissNwpAdapter:
                 max_files_cap=self._max_files,
                 cycle_time=str(cycle_time),
             )
+        if dropped_duplicate_labels:
+            log.warning(
+                "nwp.duplicate_assets_dropped",
+                dropped_count=len(dropped_duplicate_labels),
+                dropped=dropped_duplicate_labels,
+                cycle_time=str(cycle_time),
+            )
         if not grib_files and not max_files_reached:
             raise AdapterError(
                 f"No matching GRIB2 files for cycle_time={cycle_time.isoformat()} "
@@ -887,9 +1000,25 @@ class MeteoSwissNwpAdapter:
     def _download_asset(self, href: str, asset_key: str, scratch_dir: Path) -> Path:
         if not href.startswith("https://"):
             raise AdapterError(f"Refusing non-HTTPS asset URL: {href!r}")
-        url_path = urlparse(href).path
+        parsed_href = urlparse(href)
+        url_path = parsed_href.path
         file_name = url_path.rsplit("/", 1)[-1] or f"{asset_key}.grib2"
         file_name = Path(file_name).name
+        # Plan 237 T1 part 2: make the destination collision-proof. Two
+        # DIFFERENT assets can share one basename -- MeteoSwiss encodes
+        # cycle/step/variable/variant in the name, but cross-item basename
+        # uniqueness is never enforced. Insert a short digest of the
+        # collision-safe identity (`netloc` + `path`, no signed query)
+        # before the suffix, so two different assets never overwrite one
+        # file on disk. Belt-and-braces behind part 1's exact-identity
+        # dedup: a digest is collision-*resistant*, not injective. Keep the
+        # existing filename tokens intact -- consumers assume flat files
+        # whose names carry cycle/step/variable/variant.
+        digest = hashlib.sha256(
+            f"{parsed_href.netloc}{parsed_href.path}".encode()
+        ).hexdigest()[:10]
+        stem, sep, suffix = file_name.partition(".grib2")
+        file_name = f"{stem}-{digest}{sep}{suffix}"
         dest = scratch_dir / file_name
         if not dest.resolve().is_relative_to(scratch_dir.resolve()):
             raise AdapterError(f"Path traversal in asset href: {href!r}")
@@ -905,7 +1034,13 @@ class MeteoSwissNwpAdapter:
             raise AdapterError(f"Download failed for {href}: {exc}") from exc
         return dest
 
-    def _parse_grib_files(self, grib_files: list[Path]) -> xr.Dataset:
+    def _parse_grib_files(
+        self,
+        grib_files: list[Path],
+        *,
+        cycle_time: UtcDatetime | None = None,
+        window_end: UtcDatetime | None = None,
+    ) -> xr.Dataset:
         # MeteoSwiss ICON-CH2-EPS publishes one GRIB message per file (one
         # member × one step × one variable × one 2D grid). `xr.open_mfdataset`
         # with combine="nested"/concat_dim="valid_time" is not the right tool:
@@ -992,5 +1127,22 @@ class MeteoSwissNwpAdapter:
                     found=n_members,
                     expected=21,
                 )
+
+        # Plan 237 T1 part 3: assert completeness so an incomplete cycle
+        # fails with a named error instead of returning a NaN-filled
+        # dataset that gets stored as real data. Skipped only when
+        # `max_files` scopes the fetch to an asset-count cutoff with no
+        # temporal boundary -- there is then no requested-step set to
+        # intersect. Production never sets `max_files` (default None).
+        if self._max_files is not None:
+            log.info(
+                "nwp.completeness_check_skipped",
+                reason="max_files set: no temporal window to assert against",
+                max_files=self._max_files,
+            )
+        elif cycle_time is not None and window_end is not None:
+            _assert_cycle_complete(
+                merged, _expected_valid_times(cycle_time, window_end)
+            )
 
         return merged
