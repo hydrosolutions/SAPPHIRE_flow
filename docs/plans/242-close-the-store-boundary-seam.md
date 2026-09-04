@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-03
 plan: 242
 title: Quality signals that are computed and then dropped at the store boundary
@@ -13,7 +13,7 @@ source: 2026-09-02/03 — a live audit of the mac-mini (0.1.833) against `docs/s
 
 ## Status
 
-**DRAFT — not reviewed.** Every defect below was measured against the running staging deployment
+**READY — owner confirmed 2026-09-04.** Every defect below was measured against the running staging deployment
 (SAPPHIRE Flow 0.1.833) on 2026-09-02 and 2026-09-03, not inferred from reading code. The measured
 evidence is quoted inline so a reviewer can re-run it.
 
