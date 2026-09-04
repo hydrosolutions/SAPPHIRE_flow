@@ -22,6 +22,43 @@ uses the append-only path, no UPDATE grant) and D2d (a losing recompute is writt
 owner accepted that in exchange for not spending another round. They are the two sections an
 implementer should read most carefully.
 
+## Implementation status (2026-09-04)
+
+Implemented on `feat/plan-235-skill-generations`, held at PR. T1–T5 done; full design record in
+`docs/decisions/plan-235-skill-generations.md`. Summary:
+
+- **T1** — `skill_generations` table (migration 0053) + nullable `generation_id` on
+  `skill_scores`/`skill_diagrams`, deliberately NOT a foreign key (see the decision record's "why").
+  Two new partial indexes per table split by `generation_id IS NULL` vs `IS NOT NULL`; 0052's `< 2`
+  legacy index untouched.
+- **T2** — `store.skill_store.latest_generation_predicate` is the one rule all nine readers apply,
+  including the three raw-SQL API readers (`api/routes/models.py` — `model_detail` scores/diagrams,
+  `model_skill_chart_json`; `api/routes/stations.py` — station-detail skill summary).
+- **T3** — `hindcast_run_id`/`hindcast_run_ids` are required (no default) on
+  `compute_skills_task`/`flow` and the new `compute_combined_skills_task`/`flow` signature;
+  `PgHindcastStore.fetch_hindcasts_by_station` gained a per-model `hindcast_run_ids` filter.
+  Station onboarding's own `fetch_hindcasts` call (`services/onboarding.py`) was ALSO fixed
+  opportunistically (the plan marks it explicitly non-blocking; done anyway, contained to two
+  closures plus their two call sites in `services/model_onboarding.py::onboard_model`).
+- **T4** — completeness gate = "publish is the last write": `PgSkillStore.publish_generation` is a
+  single atomic `INSERT`, called only after every score/diagram write for a generation has already
+  succeeded. No multi-statement transaction needed despite production's `AUTOCOMMIT` connection.
+- **T5** — this decision record, `docs/spec/database-schema.md`, `docs/spec/types-and-protocols.md`,
+  `docs/touchpoint-maps.md`, and `docs/handover/data-flows.md` (D4 diagram retention) all updated.
+
+All exit gates green: recompute-survives, overlapping-publications, partial-generation, run-id-
+required, migration upgrade, NULL-generation-uniqueness, all nine readers, `pytest tests/unit`. See
+the decision record's "Evidence" section for the exact test names.
+
+**Fixer round (2026-09-04)**: two independent reviews (including a Codex pass over the diff) found
+4 blockers and 5 majors — rebased onto current `main` (version collision); the diagram forcing-type
+scope bug (a real-forcing-type generation never displaced a baseline diagram); `hindcast_run_ids={}`
+silently falling back to unscoped; a missing flow-level completeness-gate test; the BMA CV diagram
+identity collision; publication certifying silently-dropped rows; `published_at` not being the
+publication instant; `HindcastStore`'s Protocol not updated; D1 retry stability not actually being
+retry-stable; and station onboarding writing an invisible baseline. All resolved — see the decision
+record's "Fixer round (2026-09-04)" section for the full list and the tests that lock each one.
+
 ## ⛔ BINDING ON THIS PLAN **AND ON ITS REVIEW** — read before changing anything
 
 ### 1. Do not over-engineer
@@ -356,3 +393,76 @@ publication contract (D2b), so whoever executes Plan 228's D3 can see the rules.
 
 Plan 228's D3 becomes executable: mark ~115,000 scores superseded and recompute, as one operation
 that either lands completely or changes nothing.
+
+## ⛔ PER-RUN SCOPE (2026-09-04) — FOUR blockers + two majors. Nothing else.
+
+Three rounds landed the implementation (3 commits, migration 0053). The review then stalled at
+4 blockers + 3 majors. **Fix exactly the items below. Do not re-open settled decisions, do not
+refactor beyond what these require, and do not touch anything owned by Plans 226/229/230/234.**
+
+**Three of the four blockers are the SAME failure: the completeness gate does not detect
+incompleteness.** That is the one thing this plan exists to provide. A gate that reports "complete"
+when it is not is worse than no gate — Plan 228's D3 would mark 114,987 rows and publish a partial
+replacement believing it whole.
+
+### 1. 🔴 Dropped inputs never reach the counter
+
+`partition_by_time_step_and_phase` catches `ConfigurationError` and continues
+(`services/skill/service.py:196,203`), silently discarding a malformed or internally
+mixed-phase hindcast. `cohorts_missing` (`flows/compute_skills.py:248,273`) counts only cohorts that
+survived, so a valid **subset** publishes as complete.
+
+Return partition diagnostics including the rejected count, or compare partitioned against fetched.
+**Any rejected input must block publication or fail loudly.**
+
+### 2. 🔴 The combined gate counts attempts, not outputs
+
+`cohorts_combined` increments *before* computation (`flows/compute_skills.py:513`), and pooled/BMA
+can legitimately return `([], [])` yet still count as success
+(`services/skill/combined_skill.py:82,176`). It also accepts **any** cohort with two models where
+three were requested — A+B and B+C both "satisfy" A/B/C.
+
+Require each cohort's model keys to equal the **requested set**, and increment only after non-empty
+output.
+
+### 3. 🔴 A retry republishes attempt 1's rows
+
+Attempt 1 can store rows then fail before publication; `ON CONFLICT DO NOTHING`
+(`store/skill_store.py:235`) keeps them, so on retry `count_generation_rows()` sees the expected
+count and publishes stale or mixed rows. **This is D2b's input-identity requirement unmet** — a
+changed retry input must write under a different generation.
+
+Bind the task to an immutable observation/hindcast snapshot, or derive identity from an invocation
+nonce plus an input fingerprint.
+
+### 4. 🔴 The migration breaks one-release rollback
+
+New indexes permit duplicate natural keys across generations
+(`alembic/versions/0053_...py:171`), but the previous image's readers are generation-unaware, so a
+rollback after publishing serves **mixed** generations — against `docs/standards/cicd.md:184`.
+
+**Two-release rollout**: ship the additive schema plus generation-aware readers first with
+generation-tagged writes disabled; enable them only once the rollback image is generation-aware.
+State the two releases explicitly in the plan.
+
+### Also fix — two majors
+
+- **Onboarding can publish partial generations** and returns normally on an insert-count mismatch,
+  so `onboard_model()` never records `FAILED_SKILL` (`services/onboarding.py:224,261,278`,
+  `services/model_onboarding.py:1575`). Apply the same whole-generation accounting; raise on empty
+  cohorts or count mismatch.
+- **Diagram selection collapses forcing scopes** — generation scope includes `forcing_type` but the
+  predicate drops it because `SkillDiagram` has no such field (`store/skill_store.py:86,101`), so
+  two diagram generations differing only by forcing compete.
+
+### Deferred to a follow-up, NOT this run
+
+Plan 046's staging runbook (`docs/plans/046-...:144`) no longer matches the required flow
+signatures — it runs `run-hindcast` without a run id and `compute-skills` without
+`hindcast_run_id`. Real, and a doc-only fix; record it, do not let it widen this run.
+
+### Exit gate
+
+`uv run pytest tests/unit` green, reporting **pytest's own** exit status. The privilege test must
+run as **`sapphire_worker`**, not the container superuser — that boundary is the thing under test.
+Do not touch the mac-mini.
