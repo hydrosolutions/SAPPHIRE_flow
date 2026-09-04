@@ -14,6 +14,8 @@ source: 2026-09-02 workflow review — status and tagging instructions conflict,
 Superseded by Plan 242, which preserves the durable readiness/status rules but
 replaces confirmation-mode workflow policy with owner-run prompt passes.
 
+Note: the remainder of this document is retained as historical context and may reference tooling that no longer exists in the repository.
+
 ## Problem
 
 The durable policy and utilities disagree before either orchestration workflow starts:
