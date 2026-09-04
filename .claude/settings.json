@@ -1,9 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Edit(sapphire-flow-*-codex-review.md)",
-      "Bash(./scripts/codex-review.sh sapphire-flow-plan-:*)",
-      "Bash(./scripts/codex-review.sh sapphire-flow-implement-:*)"
+      "Bash(git fetch origin main)"
     ],
     "deny": [
       "Bash(rm -rf:*)",

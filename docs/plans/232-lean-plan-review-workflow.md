@@ -1,5 +1,5 @@
 ---
-status: READY
+status: SUPERSEDED
 created: 2026-09-02
 plan: 232
 title: Replace iterative plan-review loops with one review and one confirmation
@@ -10,6 +10,9 @@ source: 2026-09-02 workflow audit, repeated review escalation on small plans, an
 ---
 
 # Plan 232 — one plan review, one owner decision, one confirmation
+
+Superseded by Plan 242 after PR #247 dogfood showed that the executable mechanics
+were over-engineered. Retained as design history; `docs/workflow.md` is current.
 
 ## Problem
 

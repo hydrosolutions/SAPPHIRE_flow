@@ -39,7 +39,6 @@ _CURATED_SCRIPTS = frozenset(
 _EXCLUDED_NAMES = frozenset(
     {
         "bootstrap-mac-mini.sh",
-        "codex-review.sh",
         "check_readiness.py",
         "regenerate_icon_grid_asset.py",
         "audit_distribution_shift.py",

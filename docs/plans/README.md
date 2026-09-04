@@ -230,7 +230,7 @@ exit criteria — Plan 212 owns that deeper screening.
 - **145** — Future-snow forecast forcing wiring — `DRAFT` — carved from 139 W7, then **SPLIT** (2026-07-23). The
   FUTURE channel: `fetch_snow_forecast` (zero callers → broadcast no-op) scoped + wired into the cycle → store →
   broadcast WITH snow-scoped degradation, + the aggregation fix (`swe`/`snow_depth` MEAN, `snowmelt` **SUM**). No
-  blocker; unblocks 144. Needs a confirming `/plan`.
+  blocker; unblocks 144. Needs independent Claude and Codex reviews before READY.
 - **146** — Antecedent (past) snow reanalysis channel — `DRAFT` — the SPLIT-off load-bearing half: a supported
   `ForcingSource` for `recap_snow_reanalysis` + a **dedicated recap-reanalysis ingest flow/schedule** (the
   blocker — no production caller today) + read-side hybrid snow tier so stored snow reaches `past_dynamic` in
@@ -370,16 +370,11 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — developer workflow (C)
 
-- **231** — Workflow policy coherence — `READY` — make DRAFT/READY authority, plan-status vocabulary,
-  YAML-only readiness, archived status diagnostics, and tagging policy agree. Deliberately leaves
-  workflow JavaScript to 232/233 instead of testing behavior that those plans immediately replace.
-- **232** — Lean plan review — `READY` — replace the autonomous five-round planner/reviewer loop with
-  one read-only Claude+Codex default review, explicit owner dispositions, and one delta confirmation.
-  Uses existing task IDs as the evidence ledger and removes the Sonnet-only duplicate. Depends on 231;
-  blocks 233.
-- **233** — Task-evidenced implementation — `READY` — implement bounded manifest transport,
-  per-task evidence, one Claude+Codex review pair, explicit owner dispositions, and at most one
-  confirmed repair. Depends on 232.
+- **231 / 232 / 233** — `SUPERSEDED` by 242 after PR #247 dogfood showed their
+  manifests, fingerprints, evidence schemas, and confirmation mechanics made the
+  workflows slower and less reliable.
+- **242** — Plain workflow prompts — `READY` — remove automated plan and
+  implementation engines; keep three small prompts and owner-run review passes.
 
 ## Deferred
 

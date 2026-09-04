@@ -1,5 +1,5 @@
 ---
-status: READY
+status: SUPERSEDED
 created: 2026-09-02
 plan: 233
 title: Make implementation completion task-evidenced and bounded
@@ -10,6 +10,9 @@ source: 2026-09-02 workflow audit; selected design principles from hydrosolution
 ---
 
 # Plan 233 — “done” means every task has independent evidence
+
+Superseded by Plan 242 after PR #247 dogfood showed that the executable mechanics
+were over-engineered. Retained as design history; `docs/workflow.md` is current.
 
 ## Problem
 
