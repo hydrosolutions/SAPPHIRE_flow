@@ -97,6 +97,36 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
+- **242** — Quality signals dropped at the store boundary — `DRAFT, unreviewed` —
+  three defects of one class, all measured on the mini (0.1.833) 2026-09-02/03: the
+  per-forecast **input-quality assessment is computed and never persisted** (no DB
+  column, no API field, reads back as `FULL` for every forecast — Plan 023's
+  unfinished half, and the WMO-1072/QMF-H commitment `wmo.md:171` records as
+  *Addressed in v0*); the **`_pooled` combination forecast is stored unchecked**
+  (`forecast_combination.py:404` hard-codes `qc_status=RAW` — all 30 pooled rows
+  since combination was enabled 2026-08-27); and **no gauged feed synthesises a
+  `MISSING` row for a timestamp that never arrived** (0 rows live; two producers exist —
+  calculated-station derivation, reached from ingest but dormant with no calculated
+  stations, and an offline research script — but neither covers sensor silence).
+  Carries an **owner decision**, since taken, to build that producer and a fourth task re-verifying `wmo.md` § 5, which asserted
+  two of these as closed. Plan 023 was archived by a pure file-move commit while
+  still `status: READY`, which is how the drift stayed invisible. **Decision taken
+  2026-09-03: build the producer — DHM's API will deliver unmarked gaps, which was
+  the stated flip condition. It is Plan 243, not a phase here; what stays in 242 is
+  making `wmo.md` truthful in the interval.**
+- **243** — Explicit gap markers for feeds that deliver unmarked absences — `DRAFT,
+  STUB — not scoped` — gives operational ingest the ability to write a `MISSING` row
+  for an expected-but-absent observation. `QcStatus.MISSING` is defined and enforced
+  twice (domain invariant + DB check constraint); 0 rows live, the two existing
+  producers both cover unusable *components*, not sensor silence, and nothing records
+  an expected reporting schedule per station and parameter to make "expected"
+  meaningful. `pipeline_health` does NOT close this — its records are collector- and
+  run-level, not per-station freshness. Driven by DHM, whose DMS flags a value `Erroneous`
+  and then withholds it from the API, so an absence arrives with no marker.
+  ⛔ A `MISSING` row records *that* a value was expected and absent, never *why* — it
+  does not recover DHM's flag; that needs an API change, tracked in the DHM data-format
+  questionnaire § 5. Scoping must settle cadence metadata, the materialisation bound,
+  retention on null rows, and whether this overlaps `pipeline_health`.
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
   alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).
