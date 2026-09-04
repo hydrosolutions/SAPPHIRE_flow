@@ -97,7 +97,7 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
-- **242** — Quality signals dropped at the store boundary — `DRAFT, unreviewed` —
+- **242** — Quality signals dropped at the store boundary — `READY, implemented (hold-at-PR)` —
   three defects of one class, all measured on the mini (0.1.833) 2026-09-02/03: the
   per-forecast **input-quality assessment is computed and never persisted** (no DB
   column, no API field, reads back as `FULL` for every forecast — Plan 023's

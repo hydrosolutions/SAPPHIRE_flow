@@ -56,7 +56,11 @@ from sapphire_flow.services.track_assembly import assemble_assignment_inputs
 from sapphire_flow.services.track_resolution import commit_track, resolve_candidate
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
+from sapphire_flow.types.domain import (
+    ForecastQcRuleParams,
+    ForecastQcRuleSet,
+    StationThreshold,
+)
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     AlertEligibility,
@@ -74,6 +78,7 @@ from sapphire_flow.types.enums import (
     NwpCycleSource,
     PipelineCheckType,
     PipelineHealthStatus,
+    QcStatus,
     SpatialRepresentation,
     StationKind,
     StationStatus,
@@ -9800,3 +9805,276 @@ class TestT8bHeterogeneousStation:
         assert len(stored) == 1
         assert stored[0].model_id == model_id
         assert stored[0].ensemble.forecast_horizon_steps == 10
+
+
+# --- Plan 242 T2a / exit gate 4: the pooled combination is quality-controlled
+# from BOTH `build_combined_forecasts` call sites in `run_forecast_cycle_flow`
+# (the per-track arm at ~:2929 and the legacy arm at ~:3254), with a REAL
+# QC-tripping ensemble rather than a mocked checker verdict. ---
+
+
+def _discharge_range_qc_rules(
+    *,
+    time_step: timedelta,
+    value_min: float = 0.0,
+    value_max: float = 1000.0,
+) -> ForecastQcRuleSet:
+    """A REAL `range_check` rule — the rule id, threshold names and
+    per-`time_step` scoping `config/forecast_qc_rules.py:149-176` declares
+    in production (which carries one row per rule per step, 86400s and
+    3600s), not a mocked checker verdict."""
+    return ForecastQcRuleSet(
+        version="1.0",
+        rules=(
+            ForecastQcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0",
+                parameter="discharge",
+                time_step=time_step,
+                thresholds={"value_min": value_min, "value_max": value_max},
+            ),
+        ),
+    )
+
+
+class _ConstantDischargeFakeModel(_SmallFakeModel):
+    """Emits ``value`` on every ``stride``-th step of the hourly grid.
+
+    ``stride > 1`` gives a contributor whose GRID is coarser than its
+    declared hourly ``time_step`` — the shape Plan 222 D6 names, where the
+    pooled intersection is uniformly coarsened and
+    ``build_combined_forecasts`` rebuilds the combination on the step the
+    surviving grid actually has (2h here). That is what makes a
+    flow-level QC_FAILED combination reachable at all: rules are selected
+    by ``(parameter, time_step)`` (``ForecastQcRuleSet.rules_for``), and
+    ``_run_single_model`` DROPS any model whose own ensemble fails QC
+    (``run_station_forecast.py:505-517``), so a contributor that tripped
+    the same rule at its own step would never reach the combination —
+    a combination is only ever failable on a rule its members were not
+    checked against."""
+
+    def __init__(self, *, value: float, stride: int = 1, n_members: int = 5) -> None:
+        self._value = value
+        self._stride = stride
+        self._n_members = n_members
+
+    def predict(self, artifact, inputs, rng, prior_state=None):  # type: ignore[no-untyped-def]
+        rows = [
+            {"valid_time": vt, "member_id": m, "value": self._value}
+            for step in range(1, inputs.forecast_horizon_steps + 1)
+            if step % self._stride == 0
+            for vt in [
+                ensure_utc(
+                    datetime.fromtimestamp(
+                        inputs.issue_time.timestamp()
+                        + step * inputs.time_step.total_seconds(),
+                        tz=UTC,
+                    )
+                )
+            ]
+            for m in range(self._n_members)
+        ]
+        df = pl.DataFrame(rows).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        ens = ForecastEnsemble.from_members(
+            station_id=inputs.station_id,
+            issued_at=inputs.issue_time,
+            parameter="discharge",
+            units="m³/s",
+            time_step=inputs.time_step,
+            values=df,
+        )
+        return ({"discharge": ens}, b"fake_state")
+
+
+_COMBINED_STEP = timedelta(hours=2)
+_COMBINED_VALUE = 900.0
+
+
+def _seed_pooled_two_model_station(
+    stores: dict[str, object], *, seed_nwp: bool
+) -> tuple[StationId, ModelId, ModelId]:
+    """One station, two ACTIVE assignments — the minimum a pooled
+    combination needs (``_MIN_POOLED_CONTRIBUTORS``)."""
+    sid = StationId(uuid4())
+    model_id_a = ModelId("fake_model_a")
+    model_id_b = ModelId("fake_model_b")
+
+    _build_station_and_stores(
+        sid,
+        model_id_a,
+        stores["station_store"],  # type: ignore[arg-type]
+        stores["obs_store"],  # type: ignore[arg-type]
+        stores["nwp_store"],  # type: ignore[arg-type]
+        stores["artifact_store"],  # type: ignore[arg-type]
+        stores["forcing_store"],  # type: ignore[arg-type]
+        seed_nwp=seed_nwp,
+    )
+    stores["station_store"].store_model_assignment(  # type: ignore[attr-defined]
+        ModelAssignment(
+            station_id=sid,
+            model_id=model_id_b,
+            time_step=timedelta(hours=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=2,
+            created_at=_NOW,
+        )
+    )
+    stores["artifact_store"].store_artifact(  # type: ignore[attr-defined]
+        model_id=model_id_b,
+        artifact_bytes=b"fake_artifact_b",
+        training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+        training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+        trained_at=_NOW,
+        station_id=sid,
+        status=ModelArtifactStatus.ACTIVE,
+    )
+    return sid, model_id_a, model_id_b
+
+
+def _pooled_models(model_id_a: ModelId, model_id_b: ModelId) -> dict:
+    """Two contributors on the SAME value and the SAME hourly declared
+    step, differing only in grid density, so the pooled intersection is a
+    uniform 2-hourly grid carrying that one value."""
+    return {
+        model_id_a: _ConstantDischargeFakeModel(value=_COMBINED_VALUE, stride=1),
+        model_id_b: _ConstantDischargeFakeModel(value=_COMBINED_VALUE, stride=2),
+    }
+
+
+def _stored_combination(stores: dict[str, object]) -> OperationalForecast:
+    stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+    combined = [fc for fc in stored if fc.combination_strategy == "pooled"]
+    assert len(combined) == 1, (
+        f"expected exactly one stored pooled combination, got {len(combined)}"
+    )
+    return combined[0]
+
+
+class TestPooledCombinationQualityControlLegacyRoute:
+    """Plan 242 T2a — the LEGACY (non-candidate-aware adapter) arm's
+    `build_combined_forecasts` call site. Exit gate 4."""
+
+    def _run(self, qc_rules: ForecastQcRuleSet) -> dict[str, object]:
+        stores = _make_full_stores()
+        _sid, model_id_a, model_id_b = _seed_pooled_two_model_station(
+            stores, seed_nwp=True
+        )
+        with (
+            patch(
+                "sapphire_flow.services.run_station_forecast.run_all_station_forecasts",
+                wraps=run_all_station_forecasts,
+            ) as legacy_spy,
+            patch(
+                "sapphire_flow.services.run_station_forecast."
+                "run_all_station_forecasts_per_track",
+                wraps=run_all_station_forecasts_per_track,
+            ) as per_track_spy,
+        ):
+            result = _run_cycle_with_stores(
+                stores,
+                adapter=FakeWeatherForecastSource(result={}),
+                models=_pooled_models(model_id_a, model_id_b),
+                config=_make_config(
+                    forecast_combination_strategy=ModelCombinationStrategy.POOLED
+                ),
+                qc_rules=qc_rules,
+            )
+        # Without this the test could silently exercise the OTHER call site.
+        legacy_spy.assert_called_once()
+        per_track_spy.assert_not_called()
+        assert result.stations_succeeded == 1
+        return stores
+
+    def test_combination_over_clean_members_is_stored_qc_passed(self) -> None:
+        """The 900 m³/s combination sits inside the 0..1000 bounds: the
+        stored row carries the checker's real verdict, never the
+        `QcStatus.RAW` literal this task removed."""
+        stores = self._run(
+            _discharge_range_qc_rules(
+                time_step=_COMBINED_STEP, value_min=0.0, value_max=1000.0
+            )
+        )
+
+        combination = _stored_combination(stores)
+        assert combination.qc_status == QcStatus.QC_PASSED
+        assert combination.qc_flags == ()
+
+    def test_combination_tripping_range_check_is_stored_marked_qc_failed(self) -> None:
+        """OD-1: the 900 m³/s combination breaches the 0..100 bounds, so it
+        is STORED marked QC_FAILED with the `range_check` flag — not
+        dropped, and not stored as passed. Fails if this call site stops
+        forwarding the cycle's QC rules."""
+        stores = self._run(
+            _discharge_range_qc_rules(
+                time_step=_COMBINED_STEP, value_min=0.0, value_max=100.0
+            )
+        )
+
+        combination = _stored_combination(stores)
+        assert combination.qc_status == QcStatus.QC_FAILED
+        assert [flag.rule_id for flag in combination.qc_flags] == ["range_check"]
+
+
+class TestPooledCombinationQualityControlPerTrackRoute:
+    """Plan 242 T2a — the PER-TRACK (candidate-aware adapter, Plan 151 T8b)
+    arm's `build_combined_forecasts` call site. Exit gate 4."""
+
+    def _run(self, qc_rules: ForecastQcRuleSet) -> dict[str, object]:
+        stores = _make_full_stores()
+        sid, model_id_a, model_id_b = _seed_pooled_two_model_station(
+            stores, seed_nwp=False
+        )
+        source = _FakeCandidateAwareSource(
+            results_by_cycle={_NOW: {sid: _point_forecast_result(_NOW)}}
+        )
+        with (
+            patch(
+                "sapphire_flow.services.run_station_forecast."
+                "run_all_station_forecasts_per_track",
+                wraps=run_all_station_forecasts_per_track,
+            ) as per_track_spy,
+            patch(
+                "sapphire_flow.services.run_station_forecast.run_all_station_forecasts",
+                wraps=run_all_station_forecasts,
+            ) as legacy_spy,
+        ):
+            result = _run_cycle_with_stores(
+                stores,
+                adapter=source,
+                models=_pooled_models(model_id_a, model_id_b),
+                config=_make_config(
+                    forecast_combination_strategy=ModelCombinationStrategy.POOLED
+                ),
+                qc_rules=qc_rules,
+            )
+        # Without this the test could silently exercise the OTHER call site.
+        per_track_spy.assert_called_once()
+        legacy_spy.assert_not_called()
+        assert result.stations_succeeded == 1
+        return stores
+
+    def test_combination_over_clean_members_is_stored_qc_passed(self) -> None:
+        stores = self._run(
+            _discharge_range_qc_rules(
+                time_step=_COMBINED_STEP, value_min=0.0, value_max=1000.0
+            )
+        )
+
+        combination = _stored_combination(stores)
+        assert combination.qc_status == QcStatus.QC_PASSED
+        assert combination.qc_flags == ()
+
+    def test_combination_tripping_range_check_is_stored_marked_qc_failed(self) -> None:
+        """OD-1, on the per-track arm: stored, marked QC_FAILED, flagged."""
+        stores = self._run(
+            _discharge_range_qc_rules(
+                time_step=_COMBINED_STEP, value_min=0.0, value_max=100.0
+            )
+        )
+
+        combination = _stored_combination(stores)
+        assert combination.qc_status == QcStatus.QC_FAILED
+        assert [flag.rule_id for flag in combination.qc_flags] == ["range_check"]

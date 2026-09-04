@@ -175,7 +175,10 @@ for model in group_scoped_models:
 for model in station_scoped_models:
     station_results = forecast_station.map(inputs)  # each loads its own artifact
 
-# Step 1.10: Forecast QC — filter QC-failed forecasts before Phase C
+# Step 1.10: Forecast QC — per-assignment; QC_FAILED is handled at the assignment
+    # (station -> next model, group -> dropped, combined -> stored marked failed).
+    # NOTE: there is no separate QC filter at the Phase C entry point; that gate
+    # partitions by AlertEligibility alone (Plan 242 T3a corrected this claim).
 # rule_set, overrides, baselines batch pre-fetched at flow start
 for station_id, model_ensembles in all_ensembles.items():
     for model_id, param_ensembles in list(model_ensembles.items()):

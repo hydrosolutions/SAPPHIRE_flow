@@ -178,11 +178,13 @@ whenever this section is touched.
 
 #### Verified against the running system
 
+*"Verified" means a named runnable command or a recorded live query, not a source citation. Rows evidenced by a test cite the exact `pytest` node; rows evidenced by a measurement quote the query and the date it was run. A row that has neither belongs in the section below, not here.*
+
 | Gap | WMO reference | Evidence | Verified |
 |-----|--------------|----------|----------|
-| **Sharpness metric** | WMO-1364 (sharpness dimension) | Mean prediction interval width (P10–P90, P25–P75), mean ensemble range, computed per lead time: `services/skill/metrics.py:107-117`, emitted at `services/skill/service.py:448-455`. | 2026-09-02 (D-D) |
-| **QC flag vocabulary** | WMO-168 Vol I | `QcStatus` (`types/enums.py`) maps cleanly onto WMO-168's good / suspect / erroneous / missing, plus `RAW` as a pre-check state. | 2026-09-02 (D-D) |
-| **Automated range + temporal-consistency checks** | WMO-168 Vol I | `_apply_range_check` and `_apply_rate_of_change` (`services/qc.py:50`, `:71`), run by `Stage1QualityChecker` (`services/qc.py:225`) against every ingested observation. | 2026-09-02 (D-D) |
+| **Sharpness metric** | WMO-1364 (sharpness dimension) | Mean prediction interval width (P10–P90, P25–P75), mean ensemble range, computed per lead time: `services/skill/metrics.py:107-117`, emitted at `services/skill/service.py:448-455`. Runnable: `uv run pytest tests/unit/services/skill/test_metrics.py tests/unit/services/skill/test_service.py`. | 2026-09-04 |
+| **QC flag vocabulary** | WMO-168 Vol I | `QcStatus` (`types/enums.py`) maps cleanly onto WMO-168's good / suspect / erroneous / missing, plus `RAW` as a pre-check state; the aggregation is exercised by `aggregate_qc_status()`. Runnable: `uv run pytest tests/unit/types/test_domain.py`. | 2026-09-04 |
+| **Automated range + temporal-consistency checks** | WMO-168 Vol I | `_apply_range_check` and `_apply_rate_of_change` (`services/qc.py:50`, `:71`), run by `Stage1QualityChecker` (`services/qc.py:225`) against every ingested observation. Runnable: `uv run pytest tests/unit/services/test_qc.py`. | 2026-09-04 |
 | **Forecasters informed when forecast produced under degraded input conditions** | WMO-1072, QMF-H | `InputQualityLevel`/`InputQualityFlag` persisted on `forecasts` (migration `0053`) and read back by value, not by dataclass default (`store/forecast_store.py`, `tests/integration/store/test_forecast_store.py`); exposed on both the list and detail API responses to every authenticated role (`api/schemas.py` `ForecastSummary`, `api/routes/api_forecasts.py`, `tests/unit/api/`) — Plan 242 Phase 1 (T1a–T1c), closing Plan 023's unfinished half. | 2026-09-04 (Plan 242 T4c) |
 
 #### Specified, not verified

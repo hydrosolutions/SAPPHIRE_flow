@@ -2591,6 +2591,7 @@ class ForecastStore(Protocol):
         station_id: StationId,
         start: UtcDatetime,
         end: UtcDatetime,
+        *,
         model_id: ModelId | None = None,
         parameter: str | None = None,
         degraded_only: bool = False,  # Plan 242 T1c/OD-2 -- PARTIAL/DEGRADED only, unknown (NULL) never matches

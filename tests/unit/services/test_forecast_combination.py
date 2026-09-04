@@ -1179,6 +1179,62 @@ class TestBuildCombinedForecastsQualityControl:
         assert len(forecasts) == 1
         assert forecasts[0].qc_status == QcStatus.QC_PASSED
 
+    def test_water_level_datum_present_out_of_range_values_fail_range_check(
+        self,
+    ) -> None:
+        """The datum-present case must prove the rule still RUNS, not only
+        that valid shifted values pass: an implementation that skipped
+        `range_check` for every water_level combination -- datum present or
+        absent -- passes the clean-shift test above. Here the DATUM-RELATIVE
+        values (101.0..105.0) sit outside the -2..20 m bounds
+        (`config/forecast_qc_rules.py:149-176`), so the combination must be
+        QC_FAILED with a `range_check` flag."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2)]
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        datum = 450.0
+        # Raw masl values whose datum-relative counterparts (101.0..105.0)
+        # are far above the 20 m upper bound -- a real stage this gauge
+        # could never reach, not a masl/relative mix-up.
+        above_bounds = 100.0
+        ens_a = replace(
+            ens_a,
+            values=ens_a.values.with_columns(pl.col("value") + datum + above_bounds),
+        )
+        ens_b = replace(
+            ens_b,
+            values=ens_b.values.with_columns(pl.col("value") + datum + above_bounds),
+        )
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a, "water_level"),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b, "water_level"),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_water_level_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            water_level_datum_masl=datum,
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].qc_status == QcStatus.QC_FAILED
+        assert [f.rule_id for f in forecasts[0].qc_flags] == ["range_check"]
+
     def test_water_level_datum_absent_skips_the_datum_dependent_rule(self) -> None:
         """No datum on file: `forecast_skipped_rules` skips `range_check`
         for water_level rather than running it against meaningless raw

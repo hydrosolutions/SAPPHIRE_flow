@@ -57,7 +57,7 @@ Runs on a sub-hourly schedule (approximately every 30 minutes). For each DHM sta
    - Frozen sensor detection (identical value repeated over N intervals)
    - Spike detection (single-interval outlier that reverts)
    - Gross outlier detection (beyond historical climatological envelope)
-4. Flags each observation: `qc_passed`, `qc_suspect`, or `qc_failed`. A `missing` marker is inserted if an expected observation was not received.
+4. Flags each observation: `qc_passed`, `qc_suspect`, or `qc_failed`. A `missing` marker exists in the vocabulary for an expected-but-not-received observation, but **no gauged feed synthesises one today** — a silent sensor currently leaves no row at all. Producing them is scoped in Plan 243.
 5. Derives discharge from water level using the active rating curve (once rating curves are loaded).
 6. Checks observed values against flood thresholds in real time and raises observation-based alerts. Alerts can be queried via API.
 
