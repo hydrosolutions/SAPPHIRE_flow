@@ -2,7 +2,7 @@
 status: READY
 created: 2026-09-04
 plan: 240
-title: M-A12 — screen GraphCast precipitation against the DHM gauges, JJAS 2022-2025
+title: M-A12 — screen GraphCast precipitation against the DHM gauges, JJAS 2022-2025 (v1 2022-2024, v3 2025)
 scope: Retrieve GraphCast 00Z 6-hourly accumulated precipitation over the study box at four leads, extract to the 26 gauge points, and run the ALREADY-TRACKED Plan 238 estimator. NOT a new statistic, NOT a new framework, NOT AIFS, NOT runoff.
 depends_on: [238]
 source: AIWP Model Reforecasts (AWS Open Data, noaa-oar-mlwp-data); Codex plan review 2026-09-04
@@ -73,11 +73,17 @@ hindcasts would carry ERA5 **training leakage** and better-than-operational init
   (`scripts/dhm_precip/tigge_ifs.py:467`). ⚠️ Leaving interpolation unspecified can materially change
   mountain precipitation, and an operator difference would masquerade as a model difference.
 
-- **D6 — Same seasons AND same actual support.** The IFS comparison is **recomputed on the same four
-  seasons** (passing `2022 2023 2024 2025` makes `build_cells` recompute each station's wet-window
-  quantile from only those windows, `:416`). 🔴 **And** because gaps are tolerated, confirm GraphCast
-  and IFS share the **same actual `(station, season)` cell set** before ranking. ⛔ Do not rank on
-  different support.
+- **D6 — Same seasons, same support, AND ⚠️ SAME MODEL VERSION.** The IFS comparison is recomputed on
+  the seasons being scored (`build_cells` recomputes each station's wet-window quantile from only the
+  retained windows, `ifs_event_timing.py:416`), and GraphCast and IFS must share the **same actual
+  `(station, season)` cell set** before ranking.
+  🔴 **REVISED 2026-09-04, measured:** the archive changes model **mid-record**. A 2024-09-30 file
+  declares `version=1_2023-10-14`; a 2025-06-01 file declares `version=3_2025-02-20`, with
+  `model_name` also changing case and `model_version` disappearing. Everything physical is identical
+  (units `m`, `6-hr accumulated precipitation`, shape, grid, step, GFS init). ⇒ **v1 covers 2022-2024
+  and v3 covers 2025, and the two are NEVER pooled.** The identity pin tracks **`version`** — the field
+  that carries model identity — normalises `model_name` case, and no longer pins the absent
+  `model_version`.
 
 - **D7 — Report the initialisation confound.** GraphCast here is **GFS-initialised**; IFS control is
   ECMWF-initialised. ⇒ This answers *"which archived operational product scores higher against these
@@ -121,10 +127,17 @@ support of both products is asserted identical before any ranking.
 
 ## Exit gates
 
-- GraphCast and IFS increments reported on the **same four seasons and identical station-season
-  support**, through the **unchanged** Plan 238 estimator.
-- The pinned archive variant, the units conversion, the point operator and the initialisation confound
-  are all stated in the report.
+- GraphCast and IFS increments reported **per model-version group** — v1 on 2022-2024, v3 on 2025 —
+  each on identical `(station, season)` support, through the **unchanged** Plan 238 estimator.
+  ⛔ The two groups are never pooled.
+- 🔴 **The headline is each group's skill RELATIVE TO IFS on its own seasons**, not the raw GraphCast
+  numbers, because IFS experiences the same weather.
+- 🔴 **No claim of model improvement or regression is supportable**, and the report must say so:
+  v3 has `n = 1` season, so model version is confounded with **year**, with **sample size**
+  (367 events vs 1037), and — measured — with **station composition**, the 2025 group's 21 stations
+  being a strict subset of v1's 26.
+- The pinned archive variant, the units conversion, the point operator and the GFS-vs-ECMWF
+  initialisation confound are stated in the report.
 - ⛔ No new statistic and no estimator change.
 
 ```bash
