@@ -45,8 +45,11 @@ A complete ICON-CH2-EPS cycle is **484 files**: 121 hourly steps (0…120) x 2 a
 | 2026-09-04T00 | — | — | — | — | ok |
 | 2026-09-04T06 | — | — | — | — | ok |
 
-**4 of 11 scheduled cycles (~36 %)** produced zero forecasts (2026-09-01T18 also failed; its counts
-fell outside the retained log window). Every failure shows the same error, and in every measured
+**4 of the 9 cycles listed or attributable above produced zero forecasts (~44 %)** — the six rows
+between 2026-09-02T12 and 2026-09-04T06, plus 2026-09-01T18 (which also failed; its counts fell
+outside the retained log window) and the two 09-04 rows whose file counts were not captured but
+which completed normally. An earlier revision said "4 of 11 (~36 %)"; the denominator was not
+reconstructible from the evidence shown, so it is restated here against only what is listed. Every failure shows the same error, and in every measured
 case the duplicates span **both** `PARAM_GROUPS`:
 
 ```
@@ -128,31 +131,56 @@ question below).
 *Scope (in) — three parts of one change:*
 
 1. **De-duplicate on a collision-safe identity.** Key on the **URL path of the `href` with the query
-   string removed** (`urlparse(href).path`) — *not* the raw signed `href` (its signature differs
-   between listings), *not* the basename (two different assets could share one), and *not* the asset
-   key (cross-item uniqueness is never enforced, `:153-161`). Preserve first-seen order. Emit one
-   WARNING naming how many duplicates were dropped and which steps/variables they were.
+   string removed** — i.e. **`netloc` + `path`, not `path` alone**: two different hosts can serve
+   the same path, so path-only is not collision-safe. Not the raw signed `href` (its query carries a
+   per-request signature; note the repo's probe records the *expiry* as fixed at item creation, so
+   do not justify this by expiry — `docs/research/063-meteoswiss-stac-probe.md:141-155`), not the
+   basename (two different assets could share one), and not the asset key (cross-item uniqueness is
+   never enforced, `:153-161`). Preserve first-seen order. Emit one WARNING naming how many
+   duplicates were dropped and which steps/variables they were.
 2. **Make the download destination injective.** `_download_asset` names the local file from the
    basename alone (`:887-906`), so two *different* URL paths sharing a basename silently overwrite.
-   Derive the destination from enough of the URL path to be injective — extra path segments, or a
-   short digest of the full path appended to the name. **Prefer this to a fatal collision guard:** an
+   Derive the destination so that two different `netloc`+`path` values cannot collide — e.g. a short
+   digest of `netloc`+`path` inserted **before** the `.grib2` suffix.
+   ⚠️ **Preserve the flat `*.grib2` layout and the existing filename tokens.** Checked-in consumers
+   assume flat files whose names carry the cycle/step/variable/variant tokens
+   (`tests/unit/adapters/test_meteoswiss_nwp.py:1020-1032`, `scripts/063_e2e_verify.py:81-91`), so
+   nested subdirectories, or a digest placed after the suffix, would break them. A digest is
+   collision-*resistant*, not injective; that is acceptable here only because the disambiguation is
+   belt-and-braces behind part 1's exact-identity de-duplication. **Prefer this to a fatal collision guard:** an
    earlier revision proposed raising, but catalogue-wide basename uniqueness is unproven (the
    evidence is one probe URL and six fixtures), so raising could turn a legitimate listing into a
    whole-cycle abort — the very outcome this plan exists to prevent. Making collisions *impossible*
    needs no such assumption.
-3. **Assert completeness after combining.** After `_combine_cfgrib_datasets`, fail with a named
-   error if the result is short: no `(valid_time, member)` slice for a parameter may be wholly NaN,
-   which is exactly what `join="outer"` produces for absent files. The error must report how many
-   slices are missing and at which valid_times, so an incomplete cycle becomes *diagnosable* rather
-   than silently stored.
+3. **Assert completeness against the EXPECTED step grid — not against NaNs in what arrived.**
+   🔴 An earlier revision specified "no `(valid_time, member)` slice may be wholly NaN". **That does
+   not work**, and a review round proved why: `_combine_cfgrib_datasets` builds `by_valid_time`
+   *exclusively from the files that arrived* (`meteoswiss_nwp.py:293-350`), so a step missing from
+   **every** file never enters the coordinate at all and no NaN slice exists to find. It would pass
+   cleanly on the 302-file cycle — the exact case it was added for — and return a silently shortened
+   dataset. Withdrawn.
+
+   Instead: compare the combined dataset's `valid_time` coordinate against the **expected** set
+   implied by the requested window (cycle → +120 h hourly, i.e. 121 steps) and by `PARAM_GROUPS`,
+   and fail with a named error naming the **missing steps** and their count. A NaN check may be kept
+   as a secondary assertion, but the primary condition must be *expected vs observed*, because
+   absence is the failure mode actually seen in production.
+
+   ⚠️ **The `max_files` smoke path must stay green.** `tests/integration/live/test_meteoswiss_nwp_live.py:66-77,89-120`
+   deliberately fetches only a handful of files, so a bare 121-step assertion would fail it by
+   design. Scope the check to the steps the fetch actually *requested* (or exempt it explicitly when
+   `max_files` is set) — and state which, rather than leaving the implementer to choose.
 
 *Scope (out):* retrying, re-fetching, changing pagination, the byte/file caps, the age guard,
 `_combine_cfgrib_datasets`' member contract, and any change to how gaps are marked downstream
 (`is_gap` belongs to Plan 235/236 — T1 fails before a record is built rather than marking one).
 
 *Exit:* a fetch handed duplicated assets returns the distinct set and parses; a fetch of an
-incomplete cycle fails with a named, counted error instead of producing NaN-filled records; two
-different URL paths sharing a basename land in two different files.
+incomplete cycle — **including one missing whole steps, not merely members** — fails with a named
+error naming the missing steps, instead of returning a shortened dataset; two different
+`netloc`+`path` values sharing a basename land in two different files; the flat `*.grib2` layout and
+filename tokens are unchanged, and `scripts/063_e2e_verify.py` still parses them; the `max_files`
+live smoke path still passes.
 
 *Verification:* `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py -q`, with three tests:
 
@@ -160,8 +188,9 @@ different URL paths sharing a basename land in two different files.
   one non-duplicated valid_time** — a single duplicated time returns before cross-time alignment and
   would not reproduce the fault. Assert no duplicate paths, the WARNING names the drops, and the
   parse succeeds.
-- **(b)** a listing missing files for some steps — assert the named completeness error, and that
-  **no** record is produced.
+- **(b)** a listing missing **entire steps** (not just members within a present step) — assert the
+  named completeness error names the missing steps, and that **no** record is produced. This is the
+  case the withdrawn NaN-only condition would have passed.
 - **(c)** two different URL paths sharing a basename — assert two distinct local files.
 
 **RED first** for (a) and (b) against today's code. Note the alignment error is caught and
