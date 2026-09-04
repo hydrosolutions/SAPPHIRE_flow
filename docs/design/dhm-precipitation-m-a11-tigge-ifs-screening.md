@@ -476,17 +476,39 @@ plus its attribution sidecar. Single-season `--year 2025` alone still reproduces
 
 ---
 
-## 🔴 M-A11c — event timing vs climatological phase (2026-09-03, CORRECTED 2026-09-03 after review)
+## 🔴 M-A11c — event timing vs climatological phase (2026-09-03, REPRODUCIBLE 2026-09-04 — Plan 238)
 
 ⚠️ **Read this before quoting any number above in a runoff-forecasting context.** Everything earlier in
 this document measures the **climatological mean diurnal-cycle phase** — a season-long average over
 *all* hours. **Runoff responds to individual storms, not average days.**
 
-🔴 **This section was published with wrong rates and has been corrected.** An independent Codex review
-(2026-09-03) found **four defects** in the first version. The **qualitative** conclusion survived; **every
-absolute rate changed**. The figures below are the reviewer's recomputation with all four fixed.
+🔴 **This section was published with wrong rates, corrected 2026-09-03, and then found to carry TWO
+disagreeing sets of numbers with no way to tell which was right.** Plan 238 (2026-09-04) removes the
+non-reproducible set, freezes the convention that produces the other, and binds every figure below to
+`scripts/dhm_precip/ifs_event_timing.py` (`tests/unit/scripts/test_m_a11c_document_binding.py` — editing
+either this section's figures or a module default fails that test).
 
-### The four defects (first version, now corrected)
+### Historical note — two disagreeing recomputations (2026-09-03), now removed
+
+The section originally published a reviewer's manual recomputation of four scratch-script defects
+(gauge-window off-by-one, a phase sign bug, a wrong D+1 lead label, and a miscomputed "within ±6 h"
+span). When the fixes were promoted into the tracked `ifs_event_timing.py` module (PR #249), its rerun
+reproduced two of the three rate rows but **not** the third (`missed`), and the skill increments agreed
+at only one of four windows. Neither set could be declared right: the reviewer's recomputation was not
+reproducible from anything in the repo, and the module's `missed` rate was itself convention-dependent —
+a small change in `--miss-fraction` closed the entire gap to the reviewer's figure, which is what made
+the disagreement uninformative rather than a located defect. Keeping both numbers in a live result
+preserved ambiguity, not evidence.
+
+⇒ **Plan 238 removed the reviewer's recomputation entirely** and instead (a) froze the complete
+convention (search window, event quantile, decluster interval, miss fraction, lead set, init hour, null
+shifts, amplitude gate, season tuple, `min_wet_windows`, `min_candidates` — every knob that decides which
+stations and events are retained), (b) publishes observed, null and increment **together**, never the
+increment alone and never an absolute rate alone, and (c) pins the SHA-256 of every consumed input, so
+the same convention on different bytes fails loudly instead of silently drifting. See PR #249 for the
+prior text if the disagreement itself is ever relevant again.
+
+### The four defects the module fixes (first version, corrected 2026-09-03)
 
 1. **Gauge window off-by-one** — both scratch scripts assigned an observation stamped 06Z to the window
    ending 12Z. The convention is `(h−6, h]`; `tigge_gauge_timing.py:136` implements it correctly, so
@@ -499,55 +521,66 @@ absolute rate changed**. The figures below are the reviewer's recomputation with
    correct 6-hour window" was **simply wrong**. Exact-window agreement is `offset == 0`.
 
 Also confirmed: the reconciliation used raw sums per clock position where the tracked M-A6 estimator
-divides each clock hour by **its own observation count** (median effect 0.10 h, max 2.59 h — small, but
-one high-band signed median moved ~5 h by crossing a circular branch).
+divides each clock hour by **its own observation count** — a small effect that does not change the
+conclusion below (established separately for M-A6/M-A9/M-A11; not requoted here, see D2).
 
-### Corrected results — scored against a no-skill null
+### Reproducible results
 
 The null circularly shifts IFS by whole days **within season**, preserving its own diurnal climatology
-and destroying only day-to-day correspondence.
+and destroying only day-to-day correspondence. The block below is `format_report()`'s exact output —
+`tests/unit/scripts/test_m_a11c_document_binding.py` regenerates it from the frozen defaults and fails
+closed if this block and that output ever disagree, in either direction.
 
-| statistic | observed | null | |
-|---|---|---|---|
-| **exact same 6-h window** | **0.175** | **0.095** | the honest "right window" number |
-| within ±6 h (prev/same/next) | 0.434 | 0.314 (0.299–0.327) | |
-| events **missed** | 0.209 | 0.350 (0.317–0.381) | |
-| signed median offset | 0 | 0 | ⛔ **carries no information** |
-| **skill increment** (within ±6 h) | **+0.110, +0.120, +0.127, +0.119** at ±12/24/36/48 h | | **window-independent** |
+<!-- m-a11c-report:start -->
+```text
+lead set (6, 12, 18, 24) from 00Z — first 24 h of one 00Z run (⛔ not the published D+1)
+published D+1 for comparison: (24, 30, 36, 42) + most-recent-init dedup
+26 stations, 139 station-seasons, event = gauge 6-h total ≥ q0.90 of its station's wet windows, declustered 24 h
+null = whole-day circular shift within season, 10 draws (7, 11, 13, 17, 19, 23, 29, 31, -9, -15)
 
-⛔ **Do not quote an event-timing IQR** — it tracks the search window (12→12, 24→18, 36→30, 48→42 h).
-⚠️ The **missed** rate depends on search width and on an arbitrary gauge-scale threshold applied to
-IFS; it is **not** a window-independent detection probability.
+frozen convention (D3):
+  seasons=(2020, 2021, 2022, 2023, 2024, 2025) min_wet_windows=30 min_candidates=3 miss_fraction=0.5 min_amplitude=0.05
 
-🔴 **Partial reproduction by the tracked module (2026-09-03).** The scratch scripts were promoted to
-`scripts/dhm_precip/ifs_event_timing.py` with all four defects fixed by *reusing* the tracked
-implementations. Running it (26 stations, 139 station-seasons, 2,110 events) reproduces the first two
-rows and the null's exact-window rate, and does **not** reproduce the third:
+consumed input digests, sha256 (D7):
+  data/dhm_precip/combined_precipitation_37_stations.xlsx  8dc57e4364ef788b022779a42df86918200d1c8dc723948f22657bc70ff98f57
+  data/dhm_precip/tigge/points/tigge_station_series_jjas2020.parquet  160ec7a348889a9fcc90fef70dc2c329d63bc5d62ffb43e45f2cc329992d7914
+  data/dhm_precip/tigge/points/tigge_station_series_jjas2021.parquet  7d5fa36f0bd8847550fef7fab174e699bd80c2f26d489b1af20c96bddd9bc1ce
+  data/dhm_precip/tigge/points/tigge_station_series_jjas2022.parquet  acf8985ade9f73aae946e3e9f5f62bd59bb90dd53cd333a50517b58f023cfb3b
+  data/dhm_precip/tigge/points/tigge_station_series_jjas2023.parquet  3942ba0d7063c22dc24303bcbcb3847c07e3cea39bb37ae55670e144d380b315
+  data/dhm_precip/tigge/points/tigge_station_series_jjas2024.parquet  89a410b6c5ac69025c4fa78c3b7242fe4d843a94db2a5899cd54f0ec1209524c
+  data/dhm_precip/tigge/points/tigge_station_series_jjas2025.parquet  f5b06fcb3cd8d79fb3bbfa0da97e24e01b85a8cd80e240e8efc9086cb419b22e
 
-| statistic | reviewer's recomputation | tracked module | |
-|---|---|---|---|
-| exact same 6-h window | 0.175 / null 0.095 | **0.179 / null 0.095 (0.081–0.105)** | ✅ reproduced |
-| within ±6 h | 0.434 / null 0.314 (0.299–0.327) | **0.442 / null 0.309 (0.295–0.321)** | ✅ reproduced |
-| events **missed** | 0.209 / null 0.350 (0.317–0.381) | **0.248 / null 0.400 (0.363–0.429)** | ⛔ **not reproduced** |
-| skill increment (within ±6 h) | +0.110, +0.120, +0.127, +0.119 | **+0.130, +0.133, +0.134, +0.118** | ⚠️ agrees only at ±48 h |
+uncertainty: n = 6 seasons — no reliable inferential interval is available (D4). The ±window spread below is parameter sensitivity, not uncertainty.
 
-⛔ **Which is right is not settled**, and the difference is not a defect that has been located. Two
-things are known. (a) The **missed** row is the one row the section already declares
-convention-dependent; at `--miss-fraction 0.45` rather than the scratch scripts' `0.5` the tracked
-module returns 0.216 / null 0.361 (0.325–0.389), i.e. both figures land on the reviewer's — so five
-hundredths of an arbitrary threshold account for the whole gap, which is the point, not an excuse. (b) The **skill increment** gap closes as the search window widens and is
-sensitive to the null's shift set (a short shift leaves storm persistence in the null, raising it and
-lowering the increment most at ±12 h). ⇒ Read **only** the qualitative claim below — a modest,
-roughly window-independent increment of order **+0.12** — and ⛔ do not quote the absolute missed rate
-or a single-window skill figure to three decimals until an uncertainty analysis exists.
+  ⛔ 'exact' and '±6 h' are fractions of MATCHED events; 'missed' is a fraction of ALL events searched.
+  ⚠️ IQR is censored at the search window and 'missed' depends on --miss-fraction; neither is window-independent.
+
+  window  events  matched     statistic   observed     null mean (min–max)  increment
+   ±12 h    2110     1353  exact window      0.299     0.192 (0.171–0.211)     +0.106
+                            within ±6 h      0.715     0.585 (0.551–0.616)     +0.130
+                                 missed      0.359     0.536 (0.506–0.556)     -0.177
+   ±24 h    2110     1586  exact window      0.179     0.095 (0.081–0.105)     +0.084
+                            within ±6 h      0.442     0.309 (0.295–0.321)     +0.133
+                                 missed      0.248     0.400 (0.363–0.429)     -0.151
+   ±36 h    2110     1707  exact window      0.146     0.071 (0.060–0.080)     +0.075
+                            within ±6 h      0.350     0.215 (0.199–0.227)     +0.134
+                                 missed      0.191     0.318 (0.282–0.344)     -0.127
+   ±48 h    2110     1818  exact window      0.115     0.052 (0.043–0.057)     +0.063
+                            within ±6 h      0.283     0.165 (0.144–0.177)     +0.118
+                                 missed      0.138     0.258 (0.226–0.282)     -0.120
+```
+<!-- m-a11c-report:end -->
+
+🔴 ⛔ **The `missed` fraction must never be described as a window-independent detection probability** —
+it is conditional on `--miss-fraction`, an arbitrary gauge-scale threshold applied to IFS (D1).
 
 ### What this supports
 
 **IFS carries modest day-to-day event association above a whole-day-shift baseline** — the skill
-increment is the one quantity stable across every window tested. ⛔ It is **not** adequate on its own for
-sub-daily **peak** timing in a fast-responding catchment, and ⛔ "IFS is unsuitable" **overstates** it.
-Suitability is a relation between this spread and the **catchment concentration time**, not a property of
-IFS.
+increment is the one quantity stable across every window tested (the increment column in the table
+above, roughly window-independent). ⛔ It is **not** adequate on its own for sub-daily **peak** timing in
+a fast-responding catchment, and ⛔ "IFS is unsuitable" **overstates** it. Suitability is a relation
+between this spread and the **catchment concentration time**, not a property of IFS.
 
 ### 🔴 What this does NOT support — and two problems in M-A11/M-A11b above
 
@@ -563,17 +596,18 @@ IFS.
   physical sign cannot.
 - 🔴 **The "±3 h resolution bound" is not a statistical uncertainty bound.** A harmonic fit returns
   sub-bin phase; noise and aliasing can move it by more or less than 3 h. ⛔ It cannot be used to declare
-  an estimate "resolved from zero" without a block/bootstrap analysis — which has not been run.
+  an estimate "resolved from zero" without a block/bootstrap analysis — which has not been run (D4: none
+  is available, and none is being added).
 - **Four samples/day CAN identify harmonic 1** (harmonic 2 is Nyquist and orthogonal, so the gauge
   bimodality does not alias into it). But higher **odd** harmonics do alias, and with no hourly IFS that
   is unmeasurable ⇒ the **underlying hourly physical phase is not identifiable from this data.** The
   ~+2.5 h offset between 6-hourly-window and hourly gauge phase is the **group delay of a box sum** and
   cancels when both products are treated identically.
-- 🔴 **The "frequent small amounts drive the climatology" reconciliation is REFUTED.** Splitting each
+- 🔴 **The "frequent small amounts drive the climatology" reconciliation is REFUTED** — splitting each
   product at q0.90 of its own wet 6-h totals, the LARGE subset does **not** approach zero under any
-  matched-estimator variant (|offset| LARGE 3.83–5.43 h depending on estimator). ⚠️ That split also does
-  **not compare the same storms** — gauge-LARGE and IFS-LARGE can select wholly different dates — so it
-  could not have established the claim either way. ⛔ Do not report the exact reconciliation figures.
+  matched-estimator variant. ⚠️ That split also does **not compare the same storms** — gauge-LARGE and
+  IFS-LARGE can select wholly different dates — so it could not have established the claim either way.
+  ⛔ Do not report the exact reconciliation figures (owner-stopped 2026-09-03; not reopened by Plan 238).
 
 ### Smallest defensible claims from this data
 
@@ -592,12 +626,13 @@ DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
   uv run python -m scripts.dhm_precip.ifs_event_timing
 ```
 
-Prints the observed/null table above for each of ±12/24/36/48 h plus the climatological phase
-displacement on the same pairing. Read-only; writes nothing. Needs
-`data/dhm_precip/tigge/points/tigge_station_series_jjas<year>.parquet` for every season
-(`tigge_ifs --year <y>`). Every knob is a flag — `--search-window-h`, `--event-quantile`,
-`--decluster-h`, `--miss-fraction`, `--leads`, `--init-hour`, `--null-shift-days`, `--min-amplitude`,
-`--seasons` — with the published values as defaults.
+Prints the frozen convention, the SHA-256 of every consumed input, and the observed/null/increment table
+above for each of ±12/24/36/48 h, then the climatological phase displacement on the same pairing.
+Read-only; writes nothing. Needs `data/dhm_precip/tigge/points/tigge_station_series_jjas<year>.parquet`
+for every season (`tigge_ifs --year <y>`). Every knob is a flag — `--search-window-h`,
+`--event-quantile`, `--decluster-h`, `--miss-fraction`, `--leads`, `--init-hour`, `--null-shift-days`,
+`--min-amplitude`, `--seasons` — with the published values as defaults. `min_wet_windows` and
+`min_candidates` have **no** CLI flag (D3): changing either is a reviewed commit, not a CLI habit.
 
 ⛔ `--leads` defaults to `6 12 18 24` from the 00Z run: the **first 24 h of one initialisation**, which
 is **not** the published D+1 (`24 30 36 42`, most-recent-init deduplicated). Never quote a number from
@@ -605,10 +640,12 @@ this module as a D+1 figure.
 
 ### Provenance
 
-Reviewed by Codex 2026-09-03 (verdict NEEDS-CHANGES; four defects, all folded here). The measurement is
-now tracked as `scripts/dhm_precip/ifs_event_timing.py`, with each defect fixed by reusing the tracked
-implementation — `tigge_gauge_timing._gauge_window_lookup` for the `(h−6, h]` windows,
-`tigge_gauge_timing.estimate_station_phase` (hence `diurnal_phase.harmonic_phase_h`, M-A6's own
-normalisation and the R ≥ 0.05 gate) for phase — and covered by
-`tests/unit/scripts/test_ifs_event_timing.py`. ⚠️ Its rerun reproduces two of the three rate rows; see
-the partial-reproduction table above before quoting any absolute rate.
+Reviewed by Codex 2026-09-03 (verdict NEEDS-CHANGES; four defects, all folded here) and again 2026-09-04
+(Plan 238; seven findings, all folded — D1 weakened, D4 replaced, D7 added, one false claim removed). The
+measurement is tracked as `scripts/dhm_precip/ifs_event_timing.py`, with each of the four original
+defects fixed by reusing the tracked implementation — `tigge_gauge_timing._gauge_window_lookup` for the
+`(h−6, h]` windows, `tigge_gauge_timing.estimate_station_phase` (hence `diurnal_phase.harmonic_phase_h`,
+M-A6's own normalisation and the R ≥ 0.05 gate) for phase — and covered by
+`tests/unit/scripts/test_ifs_event_timing.py`. The block above is bound to that module's output by
+`tests/unit/scripts/test_m_a11c_document_binding.py` (Plan 238 T2): perturbing either this section or a
+module default fails it.
