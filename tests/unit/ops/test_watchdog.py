@@ -3754,6 +3754,145 @@ class TestRunOnceForecastFreshness:
         assert state.consecutive_forecast_freshness_failures == 0
         assert slack.calls == []
 
+    def test_alert_once_survives_past_the_health_hysteresis_sixth_tick(
+        self, tmp_path: Path
+    ) -> None:
+        """Plan 237 T3, red-first: reusing `should_alert_health` for
+        forecast-production freshness re-fires on the 6th consecutive
+        failure (and every 6th after that) -- not truly "alert once".
+        RED against that reuse: after `ALERT_REPEAT_EVERY + 2` consecutive
+        critical ticks, a SECOND alert would have fired at the 6th tick
+        (per `ALERT_REPEAT_EVERY`), so `total_calls` would be 2, not 1.
+        This is the exact production shape: 15 Slack alerts in one day for
+        a single zero-forecast incident (2026-09-03/04)."""
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        total_calls = 0
+        for _ in range(ALERT_REPEAT_EVERY + 2):
+            slack = _SlackRecorder()
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_ok_probe,
+                slack_poster=slack,
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                forecast_freshness_probe=_forecast_freshness_critical_probe,
+                backup_device_verifier=lambda _: True,
+                launchd_probe=_launchd_ok_probe,
+            )
+            total_calls += len(slack.calls)
+
+        assert total_calls == 1
+
+        # And exactly one RECOVERED alert once the condition clears — not
+        # zero (swallowed) and not the stale "critical" text.
+        slack = _SlackRecorder()
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            forecast_freshness_probe=_forecast_freshness_ok_probe,
+            backup_device_verifier=lambda _: True,
+            launchd_probe=_launchd_ok_probe,
+        )
+        assert state.consecutive_forecast_freshness_failures == 0
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "forecast production RECOVERED" in msg
+
+
+class TestRunOnceHealthHysteresisUnchangedByForecastFreshnessCadence:
+    """Plan 237 T3 carve-out: the health/BAFU checks keep the 6th-
+    consecutive-failure `should_alert_health` cadence unchanged — only
+    forecast-production freshness moves to "alert once"."""
+
+    def test_health_check_still_alerts_on_first_and_sixth_consecutive_failure(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        total_calls = 0
+        for _ in range(ALERT_REPEAT_EVERY):
+            slack = _SlackRecorder()
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_fail_probe,
+                slack_poster=slack,
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                forecast_freshness_probe=_forecast_freshness_ok_probe,
+                backup_device_verifier=lambda _: True,
+                launchd_probe=_launchd_ok_probe,
+            )
+            total_calls += len(slack.calls)
+
+        # Tick 1 (first failure) and tick `ALERT_REPEAT_EVERY` (6th
+        # consecutive failure) both alert -- the hysteresis this plan does
+        # NOT touch for the health/BAFU checks.
+        assert total_calls == 2
+
+    def test_bafu_check_still_alerts_on_first_and_sixth_consecutive_failure(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+
+        total_calls = 0
+        for _ in range(ALERT_REPEAT_EVERY):
+            slack = _SlackRecorder()
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_ok_probe,
+                slack_poster=slack,
+                bafu_probe=_bafu_stale_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                forecast_freshness_probe=_forecast_freshness_ok_probe,
+                backup_device_verifier=lambda _: True,
+                launchd_probe=_launchd_ok_probe,
+            )
+            total_calls += len(slack.calls)
+
+        assert total_calls == 2
+
+
+class TestWatchdogStateForecastFreshnessNotificationBackwardCompat:
+    """Plan 237 T3 — the new `forecast_freshness_notification_pending`
+    field, same round-trip/backward-compat shape as the other "alert once"
+    policies' pending fields in this file."""
+
+    def test_roundtrip_includes_new_field(self, tmp_path: Path) -> None:
+        path = tmp_path / "state.json"
+        original = WatchdogState(
+            consecutive_forecast_freshness_failures=2,
+            forecast_freshness_notification_pending="critical",
+        )
+        original.dump(path)
+        loaded = WatchdogState.load(path)
+        assert loaded == original
+
+    def test_state_written_before_this_plan_defaults_to_none(
+        self, tmp_path: Path
+    ) -> None:
+        p = tmp_path / "old_state.json"
+        p.write_text(
+            '{"consecutive_health_failures": 0, '
+            '"consecutive_forecast_freshness_failures": 1}'
+        )
+        s = WatchdogState.load(p)
+        assert s.forecast_freshness_notification_pending is None
+        assert s.consecutive_forecast_freshness_failures == 1
+
 
 class TestWatchdogStateBackupNotificationBackwardCompat:
     """Plan 162 T4 — the new hysteresis + pending-notification fields, and
