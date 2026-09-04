@@ -180,6 +180,52 @@ def validate_time_step_cadence(
         )
 
 
+def missing_expected_buckets(
+    df: pl.DataFrame,
+    column: str,
+    *,
+    anchor: UtcDatetime,
+    time_step: timedelta,
+    steps: int,
+    future: bool = False,
+) -> list[UtcDatetime]:
+    """Which time slots this input needs but does not have (Plan 239 T0).
+
+    The question is membership, never spacing. Every earlier attempt measured
+    the spacing of the rows we happened to hold — median, then minimum, then
+    the gaps between whatever survived filtering — and each was refuted,
+    because spacing is a proxy for the real question: *is every slot this input
+    will read actually present?*
+
+    Slots are anchored on the UTC-calendar grid via ``floor_to_time_step``:
+      past   -> {anchor - k*time_step : k = 0 .. steps-1}
+      future -> {anchor + k*time_step : k = 1 .. steps}
+
+    Existence only. Whether a present slot holds a usable value is `max_nan`'s
+    job, already gated per variable per frame by the FI adapter.
+
+    Returns the missing slots, oldest first — empty means we can serve this
+    input. `steps <= 0` means the model declares nothing here, so nothing can
+    be missing (that is `NwpRainfallRunoff`, which declares no past forcing).
+    """
+    if steps <= 0:
+        return []
+    base = floor_to_time_step(anchor, time_step)
+    expected = (
+        [ensure_utc(base + k * time_step) for k in range(1, steps + 1)]
+        if future
+        else [ensure_utc(base - k * time_step) for k in range(steps - 1, -1, -1)]
+    )
+    if column not in df.columns:
+        return expected
+    present = {
+        ensure_utc(ts)
+        for ts, val in zip(df["timestamp"].to_list(), df[column].to_list(), strict=True)
+        if val is not None
+    }
+    return [slot for slot in expected if slot not in present]
+
+
 def floor_to_time_step(instant: UtcDatetime, time_step: timedelta) -> UtcDatetime:
     """The UTC-calendar bucket boundary at or before ``instant`` (Plan 228
     D4): buckets are whole multiples of ``time_step`` since the Unix epoch
