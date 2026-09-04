@@ -160,11 +160,21 @@ question below).
    cleanly on the 302-file cycle — the exact case it was added for — and return a silently shortened
    dataset. Withdrawn.
 
-   Instead: compare the combined dataset's `valid_time` coordinate against the **expected** set
-   implied by the requested window (cycle → +120 h hourly, i.e. 121 steps) and by `PARAM_GROUPS`,
-   and fail with a named error naming the **missing steps** and their count. A NaN check may be kept
-   as a secondary assertion, but the primary condition must be *expected vs observed*, because
-   absence is the failure mode actually seen in production.
+   Instead: assert over the **full expected `(valid_time` x `member)` grid, per parameter** — not
+   over `valid_time` alone, and **both checks are mandatory**:
+
+   - **(i) step coverage** — the observed `valid_time` set must equal the expected set implied by the
+     requested window and cadence; fail naming the missing steps and their count.
+   - **(ii) member coverage** — within every present `valid_time`, no `(parameter, member)` cell may
+     be wholly NaN; fail naming the missing members and times.
+
+   🔴 **(ii) is NOT optional, and an earlier revision that made it "secondary" was wrong.** Step
+   coverage alone does not prove member completeness: if only the `ctrl` **or** only the `perturb`
+   file is missing for a step, the other still contributes that `valid_time`, so (i) passes while
+   `join="outer"` NaN-fills the absent members and the global 21-member check still succeeds
+   (`meteoswiss_nwp.py:301-350,979-994`). That is exactly the observed production shape — the
+   2026-09-02T18 and 2026-09-03T18 duplicates were **`perturb`-only** — so (i) alone would let the
+   majority case through and store NaN as real data.
 
    *Deriving "expected":* take it from the window the walk actually requests
    (`window_end = cycle_time + 120 h`, `meteoswiss_nwp.py:704-709`) and the cadence, rather than a
@@ -173,21 +183,32 @@ question below).
    mis-fire if MeteoSwiss ever changes cadence or horizon. If the combining code cannot see the
    requested window, thread it in rather than re-deriving it there.
 
-   ⚠️ **The `max_files` smoke path must stay green.** `tests/integration/live/test_meteoswiss_nwp_live.py:66-77,89-120`
-   deliberately fetches only a handful of files, so a bare full-grid assertion would fail it by
-   design. **Decision, so the implementer does not have to make it:** scope the check to the steps
-   the fetch actually **requested** — i.e. the intersection of the window grid with any `max_files`
-   truncation — rather than exempting the check when `max_files` is set. Scoping keeps the assertion
-   live on every path including the smoke test; an exemption would create a configuration in which
-   the check silently does nothing.
+   ⚠️ **The `max_files` smoke path.** `tests/integration/live/test_meteoswiss_nwp_live.py:66-77,89-120`
+   deliberately fetches only a handful of files, so a full-grid assertion would fail it by design.
+
+   **Decision — REVERSED from the previous revision, and here is why.** That revision chose to
+   "scope the check to the steps actually requested (window grid intersected with `max_files`
+   truncation)" and rejected an exemption as creating a silent no-op. A review round showed the
+   chosen option is **not implementable**: `max_files` is an *asset-count* cutoff that stops after
+   the Nth downloaded asset in catalogue order (`meteoswiss_nwp.py:789-885`); it defines and retains
+   **no temporal boundary**, so there is no unambiguous "requested step set" to intersect with, and
+   inferring one from the files that arrived is circular — it could never detect an omitted step.
+
+   **So: skip the completeness assertion when `max_files` is set, and log at WARNING that it was
+   skipped and why.** The no-op objection does not apply in production: `max_files` defaults to
+   `None` (`:375`), the flow passes `None` explicitly (`run_forecast_cycle.py:345`), and the shipped
+   `config.toml` leaves it commented out (`:413`). Add a test asserting the production path leaves it
+   unset, so the exemption cannot silently become the norm.
 
 *Scope (out):* retrying, re-fetching, changing pagination, the byte/file caps, the age guard,
 `_combine_cfgrib_datasets`' member contract, and any change to how gaps are marked downstream
 (`is_gap` belongs to Plan 235/236 — T1 fails before a record is built rather than marking one).
 
 *Exit:* a fetch handed duplicated assets returns the distinct set and parses; a fetch of an
-incomplete cycle — **including one missing whole steps, not merely members** — fails with a named
-error naming the missing steps, instead of returning a shortened dataset; two different
+incomplete cycle fails with a named error — **both** when whole steps are missing (naming them)
+**and** when only the `ctrl` or only the `perturb` files are missing for present steps (naming the
+missing members) — instead of returning a shortened or NaN-filled dataset; the assertion is skipped
+only when `max_files` is set, which the production path never does; two different
 `netloc`+`path` values sharing a basename land in two different files; the flat `*.grib2` layout and
 filename tokens are unchanged, and `scripts/063_e2e_verify.py` still parses them; the `max_files`
 live smoke path still passes.
@@ -198,9 +219,11 @@ live smoke path still passes.
   one non-duplicated valid_time** — a single duplicated time returns before cross-time alignment and
   would not reproduce the fault. Assert no duplicate paths, the WARNING names the drops, and the
   parse succeeds.
-- **(b)** a listing missing **entire steps** (not just members within a present step) — assert the
-  named completeness error names the missing steps, and that **no** record is produced. This is the
-  case the withdrawn NaN-only condition would have passed.
+- **(b)** two incomplete shapes, both RED first: **(b1)** a listing missing **entire steps** —
+  assert the error names the missing steps; **(b2)** a listing missing only the `perturb` files for
+  some present steps — assert the error names the missing **members**. (b2) is the production shape
+  and is the case that step-coverage-alone would wrongly pass. In both, assert **no** record is
+  produced.
 - **(c)** two different URL paths sharing a basename — assert two distinct local files.
 
 **RED first** for (a) and (b) against today's code. Note the alignment error is caught and
