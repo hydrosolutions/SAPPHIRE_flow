@@ -44,82 +44,110 @@ to 0.216 on a **0.05 change in an arbitrary threshold**.
 
 ## Decisions
 
-- **D1 — Report ONLY null-relative increments. ⛔ No absolute rates.** Measured: the miss threshold
-  moving 0.50 → 0.45 shifts the absolute rate 0.248 → 0.216, but the **observed−null increment barely
-  moves** (−0.152 → −0.145). The same held for the skill increment across four search windows.
-  ⇒ **An increment over the stated null is the reportable quantity; an absolute rate is not.**
-  This is the plan's central rule and every other decision follows it.
+⚠️ **Revised 2026-09-04 after an independent Codex review returned NEEDS-CHANGES.** Its seven findings
+are folded below; three decisions were **weakened**, one was **replaced**, and one factual claim was
+**removed as false**.
 
-- **D2 — The document's numbers are GENERATED, never transcribed.** The module emits the figures; the
-  document carries the module's output. ⇒ A test asserts the numbers in § M-A11c **equal** the
-  module's output for the frozen defaults, and **fails** if either drifts. ⚠️ This is the
-  assert-before-render pattern that already works on this track (the IFS figure asserts 54/54 cells
-  before drawing). ⛔ Do not invent a doc-generation framework — an assertion over a small parsed
-  table is sufficient.
+- **D1 — The null-relative increment is the HEADLINE quantity; it is never published alone.**
+  ⚠️ *Weakened from "absolute rates are never reportable".* The threshold perturbation shows the missed
+  rate is conditional on `miss_fraction`; it does **not** establish that absolute rates are generally
+  unreportable — and the module uses **different denominators** (exact and within-±6 h are fractions of
+  *matched* events; missed is a fraction of *all searched* events), so a blanket rule would suppress
+  information a hydrologist needs. ⇒ **Publish observed, null, increment, the matched/searched counts,
+  and the frozen convention, together.** 🔴 ⛔ The missed fraction must **never** be described as a
+  window-independent detection probability.
 
-- **D3 — ONE frozen convention, stated in the module.** Search window, event quantile, decluster
-  interval, miss fraction, lead set, init hour, null shifts and amplitude gate become **documented
-  frozen defaults**. ⛔ Changing one is a reviewed commit, not a CLI habit. The module already exposes
-  them as flags; this pins the published values.
+- **D2 — The document's figures are MACHINE-CHECKED against the module's output.**
+  ⚠️ *Wording corrected:* a parsed table is **machine-checked transcription**, not generation. ⇒ Either
+  keep transcription and say so, or have the module render **one delimited block** the document
+  includes. The assertion must key on stable headings, row labels and numeric cells, ignore emphasis
+  and whitespace, and **fail closed with a distinct error** on a parse failure.
+  🔴 **It must also bind the CONVENTION block, not only the displayed results** — changing a default can
+  leave rounded numbers unchanged, so table equality alone cannot prove that editing a default fails.
+  ⛔ No document-generation framework.
 
-- **D4 — Attach uncertainty or state that there is none.** 🔴 The independent review established the
-  **±3 h figure is a sampling interval, NOT a statistical uncertainty bound**, and that no cell is
-  "resolved from zero" without a bootstrap — which has never been run. ⇒ Add a **season-block
-  bootstrap** (resample the 6 JJAS seasons with replacement) around each reported increment and
-  publish an interval. ⛔ Six blocks is few; if the interval is uninformative, **say so** rather than
-  substituting a per-window bootstrap that ignores autocorrelation.
+- **D3 — ONE frozen convention, complete and stated in the module.** Search window, event quantile,
+  decluster interval, miss fraction, lead set, init hour, null shifts, amplitude gate — **and the three
+  the first draft omitted: the season tuple, `min_wet_windows`, and `min_candidates`**
+  (`scripts/dhm_precip/ifs_event_timing.py:93-109`, `:351-357`), which directly govern which stations
+  and events are retained. ⛔ Changing one is a reviewed commit, not a CLI habit.
 
-- **D5 — Remove the non-reproducible figures from the document.** The reviewer's recomputation cannot
-  be regenerated from anything in the repo. ⇒ Keep a short historical note that an independent review
-  produced different absolute rates and that this is **why absolutes are no longer reported**;
-  ⛔ do not keep the numbers themselves, which would only invite mis-citation.
+- **D4 — ⛔ NO bootstrap interval. State that no reliable uncertainty estimate exists.**
+  🔴 *Replaced outright.* **Six seasons are too few to present a resampled percentile range as an
+  inferential interval**, and a naïve cell-resample would not bootstrap the whole estimator: event
+  thresholds are computed from wet windows **pooled across seasons before events are measured**, so a
+  valid resample must recompute thresholds inside every draw — exactly the apparatus this plan exists to
+  avoid. ⇒ Publish `n = 6 seasons`, state plainly that **no reliable inferential interval is available**,
+  and — only if a compact variability anchor is wanted — report the **descriptive range of the six
+  season-specific estimates**. ⚠️ The ±12/24/36/48 h spread is **parameter sensitivity, not uncertainty**.
+
+- **D5 — Remove the non-reproducible figures; keep a dated historical note.** The reviewer's
+  recomputation cannot be regenerated from anything in the repo, and keeping two disagreeing sets in a
+  live scientific result preserves ambiguity rather than evidence. ⇒ Keep a dated note naming the
+  disagreement and pointing at the prior revision/PR, ⛔ **without the obsolete figures themselves**.
+  The note explains **why the conventions were frozen and why observed/null/increment are now reported
+  together** — not "why absolutes are no longer reported" (D1 no longer says that).
 
 - **D6 — Nothing here changes M-A11/M-A11b's published offsets.** Their two recorded limits (the
-  `[−18,+6)` branch is not rotation-equivariant; the ±3 h figure is not an uncertainty bound) stay as
-  written. ⛔ This plan does not re-estimate the climatological phase.
+  `[−18,+6)` branch is not rotation-equivariant; the ±3 h figure is a sampling interval, not an
+  uncertainty bound) stay as written. ⛔ This plan does not re-estimate the climatological phase.
+
+- **D7 — 🔴 PIN THE CONSUMED INPUTS.** *(new — the largest reproducibility hole.)* The gauge workbook is
+  SHA-256 pinned, but the **six TIGGE point files are merely found and read**; everything under `data/`
+  is gitignored and the attribution sidecars carry **no content hashes**. ⇒ The same filename can address
+  different bytes on another machine, so the published numbers are **not reproducible even with frozen
+  defaults**. ⇒ The module must **emit the SHA-256 of every consumed input** into its report, and the
+  binding of D2 must cover them.
 
 ## Tasks
 
-### T1 — freeze the convention and report increments only (depends: nothing)
-**In:** D1, D3 — pin the published defaults in the module; change the report to emit
-**observed, null, and increment** for each statistic, with the absolute rates marked non-reportable.
-**Out:** any new statistic; any change to the estimator itself.
-**Verify:** the increment for each statistic moves by less than its bootstrap interval when the miss
-fraction is perturbed 0.50 → 0.45, while the absolute rate moves measurably. ⛔ Prove it by running
-both.
+### T1 — freeze the complete convention; report observed, null and increment together
+**Outcome:** the module's report carries, for every statistic, observed + null + increment + matched
+and searched counts + the full frozen convention + the SHA-256 of every consumed input (D1, D3, D7).
+**In:** `scripts/dhm_precip/ifs_event_timing.py`, `tests/unit/scripts/test_ifs_event_timing.py`.
+**Out:** any new statistic; any change to the estimator; any resampling.
+**Verification:** `uv run pytest tests/unit/scripts/test_ifs_event_timing.py` — new nodes assert the
+report schema (every field present), the serialized defaults, and that the emitted input digests match
+`shasum -a 256` of the six TIGGE parquet files and the workbook.
+⚠️ **Acceptance uses the ALREADY-MEASURED two-run values on checksum-pinned inputs** — exact-window
+0.179 / null 0.095, within ±6 h 0.442 / null 0.309, missed 0.248 / null 0.400, increments +0.130 /
++0.133 / +0.134 / +0.118 at ±12/24/36/48 h. ⛔ Not "moves measurably", ⛔ not an interval used as its own
+tolerance — both were unfalsifiable.
+**Pre-change:** today the report omits null counts, the three defaults of D3, and all input digests; the
+new nodes fail against `origin/main`.
 
-### T2 — season-block bootstrap (depends: T1)
-**In:** D4 — resample the six JJAS seasons with replacement around each reported increment.
-**Out:** any other resampling scheme; any per-window bootstrap.
-**Verify:** the interval is reported for every published increment, and the module states the block
-unit and the number of blocks (6) beside it. ⛔ If an interval spans zero, that must be printed, not
-smoothed.
-
-### T3 — bind the document to the module (depends: T1, T2)
-**In:** D2, D5 — regenerate § M-A11c from the module's output; delete the non-reproducible figures,
-keeping the historical note; add the test that asserts the document's table equals the module's output.
-**Out:** any change to M-A11/M-A11b's own sections beyond what D6 already records.
-**Verify:** editing either the document's table or a module default **fails the test**. ⛔ Prove each
-direction by reverting.
+### T2 — bind every published event-timing RESULT in § M-A11c to the module
+**Outcome:** editing either the document's figures or a module default fails a test.
+**In:** `docs/design/dhm-precipitation-m-a11-tigge-ifs-screening.md` § M-A11c; the binding test.
+**Out:** M-A11/M-A11b's own sections beyond D6; any other document.
+**Verification:** the binding test parses § M-A11c and compares against the module's output; ⛔ it must
+cover **result figures in PROSE as well as the table** — normalisation effects, IQRs, event counts,
+threshold sensitivity and reconciliation ranges are currently prose and would otherwise escape the
+binding. Either bind them or delete them. **Prove both directions by reverting**: perturb a table cell,
+then a module default, and confirm each fails.
+**Pre-change:** no test references the document today; both edits pass silently.
 
 ```json
 {
   "phases": [
     {"id": "phase-1", "tasks": ["T1"], "parallel": false},
-    {"id": "phase-2", "tasks": ["T2"], "parallel": false, "depends_on": ["phase-1"]},
-    {"id": "phase-3", "tasks": ["T3"], "parallel": false, "depends_on": ["phase-2"]}
+    {"id": "phase-2", "tasks": ["T2"], "parallel": false, "depends_on": ["phase-1"]}
   ]
 }
 ```
 
 ## Exit
 
-Every number in § M-A11c is produced by `scripts/dhm_precip/ifs_event_timing.py` under a frozen,
-documented convention, carries a season-block interval, and is **asserted by a test** that fails if
-document or code drifts. ⛔ No absolute rate is published; only increments over a stated null.
+**Every published event-timing RESULT** in § M-A11c is produced by
+`scripts/dhm_precip/ifs_event_timing.py` under a complete frozen convention, over inputs pinned by
+SHA-256, reported as observed + null + increment with its counts, and asserted by a test that fails if
+document or code drifts. ⚠️ *"Result", not "number"* — dates, lead definitions, thresholds and code
+references are also numbers and are not measured results. ⛔ **No uncertainty interval is published**;
+the report states `n = 6 seasons` and that none is available.
 
 ## Non-goals
 
-Re-estimating the climatological phase (D6) · the diurnal-bimodality line (owner-stopped) · the
-IMERG bias-correction design (WRONG-SHAPE) · any new data or retrieval · a doc-generation framework ·
-basin-average verification, which needs gateway data we cannot access at point level.
+Re-estimating the climatological phase (D6) · the diurnal-bimodality line (owner-stopped 2026-09-03) ·
+the IMERG bias-correction design (WRONG-SHAPE) · any new data or retrieval · a doc-generation framework ·
+**any bootstrap or resampling** (D4) · basin-average verification, which needs gateway data with no
+point-level access.
