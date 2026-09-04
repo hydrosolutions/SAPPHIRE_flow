@@ -86,6 +86,15 @@ CARAVAN_ALIAS: Final[dict[str, str]] = {
     "soil_water_content": "swc_pc_syr",
     "karst_fraction": "kar_pc_sse",
     "irrigated_fraction": "ire_pc_sse",
+    # Added 2026-09-04 for `cmal_small`, which declares 78 statics (see
+    # docs/reference/cmal-small-static-features.md). Independently confirmed:
+    # the repo's own feature catalog defines both as extents relative to basin
+    # area, and the pinned aquacast revision maps these exact codes to these
+    # exact canonical names. NOTE the values are PERCENT (0-100), not 0-1 —
+    # aquacast's `*_fraction` naming is misleading, and nothing in this pipeline
+    # rescales them.
+    "forest_fraction": "for_pc_sse",
+    "permafrost_fraction": "prm_pc_sse",
 }
 
 
