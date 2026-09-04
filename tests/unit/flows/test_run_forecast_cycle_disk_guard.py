@@ -23,7 +23,13 @@ from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 from uuid import uuid4
 
-from sapphire_flow.exceptions import DiskHardLimitError, DiskSoftLimitError
+import pytest
+
+from sapphire_flow.exceptions import (
+    DiskHardLimitError,
+    DiskSoftLimitError,
+    ForecastCycleAbortedError,
+)
 from sapphire_flow.flows.run_forecast_cycle import run_forecast_cycle_flow
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
@@ -324,9 +330,17 @@ class TestDiskSoftLimitFlowLevel:
 
 
 class TestDiskHardLimitFlowLevel:
-    """DiskHardLimitError from the adapter → flow returns FAILED."""
+    """DiskHardLimitError from the adapter → the flow ABORTS (Plan 237 T2).
 
-    def test_hard_breach_flow_health_is_failed(self) -> None:
+    Until Plan 237 the flow returned `ForecastCycleResult(health=FAILED)`. A hard
+    breach routes through the NWP abort by design (the DiskHardLimitError handler
+    returns None precisely so the nwp_outcome-is-None branch fires), and that
+    branch now raises so Prefect stops reporting a zero-forecast cycle COMPLETED.
+    The CRITICAL DISK_USAGE record is still emitted BEFORE the abort, so the
+    disk alert is unaffected — that is asserted below.
+    """
+
+    def test_hard_breach_aborts_instead_of_returning(self) -> None:
         sid = StationId(uuid4())
         station_store = FakeStationStore()
         obs_store = FakeObservationStore()
@@ -349,27 +363,34 @@ class TestDiskHardLimitFlowLevel:
             forcing_store,
         )
 
-        result = run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=forecast_store,
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=alert_store,
-            pipeline_health_store=pipeline_health_store,
-            baseline_store=baseline_store,
-            basin_store=basin_store,
-            forcing_store=forcing_store,
-            adapter=_HardDiskAdapter(),
-            models={_MODEL_ID: _NativeFakeModel()},  # type: ignore[dict-item]
-            config=_make_config(),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-        )
+        with pytest.raises(ForecastCycleAbortedError):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=_HardDiskAdapter(),
+                models={_MODEL_ID: _NativeFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
 
-        assert result.health is ForecastCycleHealth.FAILED
+        # Plan 237 T2: a hard disk breach deliberately routes through the NWP
+        # abort (`_fetch_nwp_task` returns None -> the nwp_outcome-is-None branch
+        # fires; see the DiskHardLimitError handler's own comment), and that
+        # branch now RAISES instead of returning health=FAILED so Prefect stops
+        # reporting a zero-forecast cycle as COMPLETED. The domain signal moves
+        # from a return value to the exception; the CRITICAL disk record below is
+        # unchanged and is still emitted BEFORE the raise, so no alert is lost.
 
     def test_hard_breach_emits_critical_disk_usage_record(self) -> None:
         sid = StationId(uuid4())
@@ -394,25 +415,26 @@ class TestDiskHardLimitFlowLevel:
             forcing_store,
         )
 
-        run_forecast_cycle_flow(
-            station_store=station_store,
-            obs_store=obs_store,
-            weather_forecast_store=nwp_store,
-            forecast_store=forecast_store,
-            model_state_store=state_store,
-            artifact_store=artifact_store,
-            alert_store=alert_store,
-            pipeline_health_store=pipeline_health_store,
-            baseline_store=baseline_store,
-            basin_store=basin_store,
-            forcing_store=forcing_store,
-            adapter=_HardDiskAdapter(),
-            models={_MODEL_ID: _NativeFakeModel()},  # type: ignore[dict-item]
-            config=_make_config(),
-            qc_rules=_empty_qc_rules(),
-            clock=_clock,
-            rng=random.Random(42),
-        )
+        with pytest.raises(ForecastCycleAbortedError):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=_HardDiskAdapter(),
+                models={_MODEL_ID: _NativeFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
 
         records = pipeline_health_store._records
         disk_records = [
