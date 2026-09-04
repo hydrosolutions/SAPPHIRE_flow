@@ -2,8 +2,8 @@
 status: DRAFT
 created: 2026-09-04
 plan: 239
-title: Deliver the declared time step (both directions), and make skill scores state their basis
-scope: Guarantee every model receives the time step it DECLARED — aggregate when data is finer, fail loudly when it is coarser (currently silent) — across hindcast and training; and make skill scores state what they actually rest on (n<30 marked, eval period = the span actually used). Two small guards against silently-wrong numbers. No new subsystem, no change to how skill is computed.
+title: Deliver each model its declared resolution (specify first — 3 attempts refuted), and make skill scores state their basis
+scope: Aggregate observations AND forcings to each model declared resolution across hindcast, training and operational; when we cannot reach it, record "cannot run this model here" and continue. The REQUIREMENT is settled, the MECHANISM is not — three attempts were refuted by independent review, so T0 specifies the check before any further code. T2 (skill scores state their basis: n<30 marked, eval period = span actually used) is independent and buildable now.
 depends_on: [228]
 blocks: []
 source: 2026-09-04 — a scoped onboarding trial (nwp_rainfall_runoff, 2020-2026) surfaced both: forcing is never cadence-checked, and 23.5% of the run's 67,326 skill scores rest on n<30 while their eval_period claims 6.7 years
@@ -13,7 +13,7 @@ source: 2026-09-04 — a scoped onboarding trial (nwp_rainfall_runoff, 2020-2026
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**DRAFT.** Was READY; returned to DRAFT 2026-09-04 after three refuted implementation attempts — T0 (specify the check) is now a prerequisite. T2 is independent and buildable.
 
 ## ⛔ DO NOT OVER-ENGINEER — binding on this plan AND on every reviewer
 
@@ -28,56 +28,78 @@ data-quality framework, not a coverage subsystem, not a rework of skill computat
    redesigning recompute identity (Plan 235) are all § Deferred.
 5. **Adding length is a cost. Prefer deleting to adding.**
 
-## D1 — hindcast FORCING is never resampled or cadence-checked
+## The rule (owner, 2026-09-04) — this governs everything below
 
-Plan 228 (`46467336`) fixed exactly this for **observations**: `obs_df` is now put through
-`resample_to_time_step` with a `validate_time_step_cadence` backstop, because a model's
-`lookback_steps` count of raw ~10-minute rows was being read as that many days.
+> We get observation and weather-forecast data at different resolutions. Models define their own
+> resolutions. **We have to aggregate our observations and forcings to the resolutions the models
+> require.** If we cannot deliver a resolution — e.g. a model declares 2 min, our observations are
+> 10 min and our forcings hourly — **we have to acknowledge that we cannot run that model.**
 
-**The forcing path got neither.** In `services/hindcast.py`, `forcing_df` is built by
-`_raw_forcing_to_dataframe`, None-checked, defaulted when absent, then filtered into
-`past_dynamic`/`future_dynamic` — and nothing else. It is never resampled and never validated.
+Two consequences that the rest of this plan follows from:
 
-**Measured, not assumed (2026-09-04):** this is currently HARMLESS, because every forcing series in
-the live DB is natively daily — one clock time (`00:00:00`) per source, and exactly ONE active
-reanalysis binding per station (`meteoswiss_open_data_reanalysis`, 147 stations), so the retired
-`camels-ch` rows are never co-mingled. The 2020-2026 trial confirmed the output end:
-`hindcast_forecasts.time_step_seconds = 86400` for all 152,130 rows, with 1,134 consecutive
-`hindcast_step` gaps of exactly one day.
+1. **Aggregation to the declared step is SAP3's job, for BOTH observations and forcings.** Plan 228
+   did it for observations. Forcings are not exempt, and the in-code comments claiming
+   `past_dynamic` "legitimately carries a finer, unresampled cadence"
+   (`services/training_data.py`, `services/operational_inputs.py`) describe the DEFECT, not a design.
+   They should be corrected, not honoured.
+2. **"Cannot deliver the resolution" is a NORMAL, EXPECTED OUTCOME — not a crash.** When our data is
+   coarser than the model declares, the correct behaviour is to record *this model cannot be run
+   here, and why*, and carry on with the others. Not an exception that aborts a multi-station run,
+   and emphatically not a silent pass-through.
 
-**It stops being harmless the moment sub-daily forcing arrives.** ERA5-Land is **hourly** (the probe
-returns 24 rows/day) and is the intended past-forcing source for Nepal/12300. At that point hindcast
-consumes 24 rows where it believes it has one day — the identical bug class Plan 228 just fixed, with
-no backstop to catch it.
+## D1 — deliver each model its declared resolution (NOT YET SPECIFIED — 3 failed attempts)
 
-**The fix is symmetry with Plan 228, not new machinery:** put `forcing_df` through the same
-`resample_to_time_step` + `validate_time_step_cadence` pair, with the same
-`resolved_aggregation_methods` (precipitation SUM, temperature MEAN — already correct in
-`_V0_AGGREGATION_FALLBACK`). **The backstop matters more than the resample**: it must fail LOUDLY
-rather than silently ship raw rows.
+**Status: the REQUIREMENT is settled (see the rule above); the MECHANISM is not.** Three
+implementation attempts were each refuted by independent review, every one passing my own tests
+first. Do not attempt a fourth without specifying the check.
 
-### D1b — the rule is "deliver the DECLARED step", and it fails in BOTH directions
+### What is actually wrong today
 
-**Owner correction (2026-09-04): not every model is daily.** Some declare sub-daily steps, so the
-requirement is not "aggregate to daily" — it is **give each model exactly the cadence it declared**.
-That has two failure directions, and only one of them is currently handled.
+`services/hindcast.py` builds `forcing_df`, None-checks it, defaults it, splits it into
+past/future — and never brings it to the model's declared step. `services/training_data.py` copies
+raw forcing into `past_dynamic`. `services/operational_inputs.py` does the same. All three then file
+the result under the declared `time_step` (the FI keys `dynamic` as
+`dict[timedelta, SpatialInputSpec]`), asserting a resolution the data may not have.
 
-**Downsampling (data finer than the model) works.** Hourly forcing → daily model aggregates
-correctly, precipitation summed and temperature averaged.
+**Two in-code comments assert this is legitimate** — `services/training_data.py` and
+`services/operational_inputs.py` both say `past_dynamic` "legitimately carries a finer, unresampled
+cadence". **Per the owner rule those comments describe the DEFECT and must be corrected**, not
+honoured. (I briefly accepted one and reported the premise as wrong. It was not.)
 
-**Upsampling (data COARSER than the model) fails SILENTLY — verified 2026-09-04:**
+### The three mechanisms that FAILED, and why — do not retry these
 
-    5 DAILY rows, model declares time_step = 1 hour
-      -> resample_to_time_step returns 5 ROWS, unchanged, no error, no warning
-      -> a 5-day span at hourly cadence should be ~120 rows
+| attempt | idea | refuted by |
+|---|---|---|
+| 1 | reject when the **median** input gap is coarser than the step | false-POSITIVE: gaps 36h/12h/36h give a 36h median, yet these bucket into four clean daily rows |
+| 2 | reject when the **minimum** input gap is coarser | false-NEGATIVE: one 1h pair inside otherwise-daily data makes the minimum 1h, admitting it for an hourly model |
+| 3 | aggregate, then run `validate_time_step_cadence` on the result | it checks only gaps **between rows present** and returns early below 2 rows — so an hourly model with daily data, scoped to a 2h window, leaves ONE row, passes, and the daily frame is still delivered. A missing FIRST or LAST bucket is invisible for the same reason |
 
-`group_by_dynamic(every="1h")` on daily input simply puts each daily row in its own hourly bucket.
-The model then receives 5 rows spaced 24 h apart and treats them as 5 consecutive hours — it believes
-it has 5 hours of history when it has 5 days. **This is the exact mirror of the Plan 228 bug** (which
-read raw 10-minute rows as days), and it is live for any sub-daily model the moment one is assigned.
+**The lesson: 1 and 2 tried to PREDICT deliverability from input statistics; 3 checked the wrong
+property of the output.** All three passed local testing and were caught only by independent review.
 
-**Upsampling must fail loudly.** Coarse data cannot be invented into fine data, so there is no
-correct silent behaviour — the only options are refuse, or fabricate. Refuse.
+### What the check must actually be
+
+1. **Compare against the EXPECTED BUCKET SET.** The question is "does every slot the model will read
+   exist across the consumed window?" — not any gap statistic, and not the existing validator, which
+   answers a different question and is correctly scoped to `past_targets`.
+2. **The window is PER FEATURE CLASS, not one window.** `NwpRainfallRunoff` is future-forcing-only
+   (`_n_lags = 0`); its lookback is TARGET history. Validating its forcing from `lookback_start`
+   inspects rows it never reads, so a missing unconsumed row at `issue_time` falsely skips a step
+   whose future forcing is complete. Past-forcing, future-forcing and targets each have their own
+   consumed window, and models declare them separately.
+3. **It must cover hindcast, training AND operational** — all three bypass today.
+4. **⚠️ The operational path needs particular care:** `_aggregate_nwp_records_to_time_step` is called
+   both for model input AND by `reduced_daily_step_times`, which feeds
+   `track_resolution.resolve_candidate`'s completeness check. That check is DESIGNED to notice
+   missing coverage and walk back; raising there escapes `resolve_candidate`, sits outside
+   `run_forecast_cycle`'s fatal set, and aborts the whole cycle. Guard the model-input caller only.
+
+### Confirmed GOOD (keep from the abandoned branch)
+
+Containment is right and reviewed: a resolution failure skips that hindcast step, the station runner
+records a failed step and continues, and group hindcast drops only that station-step. The
+`declared_lookback_steps=None` fallback is sensible; both production callers supply the declaration.
+`deliver_at_time_step` should be **deleted** — it ended with no production caller.
 
 ## D2 — skill scores do not say what they rest on
 
@@ -108,35 +130,38 @@ consumer decide.
 - **Q3 — YES, the training path is in scope**, on the same basis as hindcast: verify its
   `resample_to_time_step` call sites and give it the same both-directions guard.
 
-## Phases
 
-### T1 — deliver the declared step, in both directions (D1 + D1b)
-`services/hindcast.py`: route `forcing_df` through `resample_to_time_step` +
-`validate_time_step_cadence`, mirroring the `obs_df` block Plan 228 added. **Add an upsample guard in
-`resample_to_time_step` itself** (it is the shared seam — hindcast, training and the operational path
-all call it): when the data's detected cadence is COARSER than the requested `time_step`, raise
-rather than return the coarse frame. Red-first tests both ways: hourly forcing into a daily model
-aggregates correctly; daily forcing into an hourly model FAILS LOUDLY instead of silently returning
-5 rows for a 5-day span.
+### T0 — SPECIFY the resolution check (BLOCKS T1; do not skip)
 
-### T1b — the same audit for training (Q3)
-Verify every `resample_to_time_step` call site in `services/training_data.py` actually applies the
-model's declared step. The upsample guard in T1 protects them all once it lands; T1b is confirming
-there is no path that bypasses the helper entirely.
+Write the check down before writing code: the expected-bucket-set comparison, the per-feature-class
+consumed windows (past-forcing / future-forcing / targets), and the behaviour when a model declares a
+resolution we cannot serve. Three implementations were refuted without this; the fourth should not
+start until D1 § "What the check must actually be" is a specification rather than a direction.
+**Exit: a reviewer can predict the outcome for every row of D1's failure table from the spec alone.**
 
-### T2 — skill basis honesty (D2, gated on Q1/Q2)
-Minimum-sample marker per Q1; `eval_period_*` semantics per Q2. Tests: a 1-sample score is
-distinguishable from a 400-sample one without reading the raw table; a window with a data hole
-reports its covered span, not its requested span.
+### T1 — apply it to hindcast, training and operational (gated on T0)
+
+All three bypass today. Correct the two in-code comments calling finer unresampled `past_dynamic`
+legitimate. Guard the operational MODEL-INPUT caller only — never `reduced_daily_step_times`, whose
+completeness check must keep degrading. Red-first tests must include **every row of D1's failure
+table**, so no rejected mechanism can be reintroduced.
+
+### T2 — skill basis honesty (D2) — INDEPENDENT of T0/T1, buildable now
+
+Mark scores with `sample_size < 30` (retained, never suppressed) and make `eval_period_*` the span
+the score was actually calculated from. Shares no mechanism with the resolution work and is not
+blocked by it.
 
 ### T3 — docs
-`docs/standards/wmo.md` or the skill section: what a score's `sample_size` and eval window mean, and
-that a low-n score is retained-but-marked rather than suppressed.
+
+What a score's `sample_size` and eval window mean, and that a low-n score is retained-but-marked.
+Add the resolution rule itself once T1 lands.
 
 ```json
 {
   "phases": [
-    {"id": "T1", "parallel": true,  "depends_on": []},
+    {"id": "T0", "parallel": false, "depends_on": []},
+    {"id": "T1", "parallel": false, "depends_on": ["T0"]},
     {"id": "T2", "parallel": true,  "depends_on": []},
     {"id": "T3", "parallel": false, "depends_on": ["T1", "T2"]}
   ]
@@ -145,12 +170,20 @@ that a low-n score is retained-but-marked rather than suppressed.
 
 ## Exit gates
 
-1. Hourly forcing into a daily model AGGREGATES correctly; daily forcing into an hourly model FAILS
-   LOUDLY. The existing daily path is unchanged — `time_step_seconds = 86400` still holds on a re-run.
-   No `resample_to_time_step` call site can silently hand a model a cadence it did not declare.
-2. A low-n score is distinguishable from a well-supported one without inspecting the table.
-3. A scoring window containing a data hole reports its covered span.
-4. Unit suite green.
+1. **T0**: the resolution check is specified precisely enough that a reviewer can predict its verdict
+   for every row of D1's failure table without reading code.
+2. **T1**: hindcast, training and operational all deliver the declared resolution or record "cannot
+   run this model here" with a reason; the run continues either way. The operational completeness
+   path still degrades and walks back — it must NOT raise. Tests cover every refuted mechanism.
+3. **T2**: a low-n score is distinguishable from a well-supported one without inspecting the table,
+   and a scoring window containing a data hole reports its covered span.
+4. Unit suite green; no in-code comment still calls finer unresampled `past_dynamic` legitimate.
+
+## Implementation history — read before attempting T1
+
+Branch `feat/plan-239-declared-time-step` (unpushed, superseded) carried three refuted attempts and
+**three independent review rounds, each finding real defects my own tests had passed**. It is kept
+only as the record in D1's failure table. Do not resume it; T0 first.
 
 ## Deferred (explicitly not this plan)
 
