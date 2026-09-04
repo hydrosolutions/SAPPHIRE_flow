@@ -161,6 +161,37 @@ exactly D1. So T1 is:
 
 **Output is a measurement note in this plan, not code that stores anything.** Settles D1 and D3.
 
+### T1 RESULT — measured 2026-09-04: **HRU 12300 CANNOT ground the snow units**
+
+Read-only fetches against the live Gateway, own measurement:
+
+| window | `hs` max | `swe` max | `rof` max |
+|---|---|---|---|
+| forecast, run 2026-09-03 (241 rows/var) | **0.0000** | **0.0000** | 1.7582 |
+| reanalysis, 2026-02-01..03-15, mid-WINTER (1032 rows/var) | **0.0006** | **0.1378** | 1.4171 |
+
+**This basin has effectively no snow in any season** — snow depth peaks at 0.0006 in the middle of
+winter. Whether that is 0.0006 m or 0.0006 cm cannot be distinguished from zero, so **no magnitude
+comparison against a reference can settle the units here.** The owner's expectation (hs in metres,
+`swe`/`rof` in mm) is plausible and unrefuted, but 12300 CANNOT confirm it, and our canonical unit
+for `snow_depth` is **cm** (`adapters/recap_gateway.py`) — so an m↔cm mix-up is a 100× error that
+this basin would never reveal.
+
+**Consequences:**
+
+1. **T1's grounding cannot be completed from 12300.** Not a scheduling problem — the data does not
+   contain the signal.
+2. **Storing snow for 12300 would be harmless but USELESS** — near-zero values whose units we cannot
+   verify. It would also let a future reader assume the units were settled because data exists.
+3. **The unit question MUST be settled before any snowy basin uses this channel** (Nepal v1). A 100×
+   error is invisible at 12300 and catastrophic at a Himalayan basin.
+
+**Q1 is therefore live and narrowed further.** Grounding by magnitude comparison is off the table for
+this basin. The remaining routes: **(i) ask the Gateway team for the authoritative units** — cheapest,
+and there is already an open thread with them; **(ii) ground against a different, genuinely snowy HRU
+if one is subscribed** — the polygon binding is 12300-only today; **(iii) Q1(b), store nothing.**
+**Recommendation: (i), and until it is answered, (iii).**
+
 ### T2 — turn the snow channel on (gated on Q1)
 
 **One argument, not a new fetch-and-store path.** `scripts/nepal_forcing_run.py` already calls
