@@ -14,6 +14,8 @@ source: 2026-09-02 workflow audit; selected design principles from hydrosolution
 Superseded by Plan 242 after PR #247 dogfood showed that the executable mechanics
 were over-engineered. Retained as design history; `docs/workflow.md` is current.
 
+Note: the remainder of this document is historical and may reference workflow tooling that no longer exists in the repository.
+
 ## Problem
 
 The current `.claude/workflows/implement.js` has useful safety gates, but its completion and repair
