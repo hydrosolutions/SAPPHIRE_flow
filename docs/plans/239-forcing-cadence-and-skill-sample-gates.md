@@ -84,7 +84,7 @@ property of the output.** All three passed local testing and were caught only by
    answers a different question and is correctly scoped to `past_targets`.
    **Confirmed by independent plan review (2026-09-04): this is the right property, and NO simpler
    complete check already exists.** `_validate_continuous_window`
-   (`models/nwp_regression.py:659`) already demonstrates the approach — but only inside one model,
+   (`models/nwp_regression.py:621`) already demonstrates the approach — but only inside one model,
    using that feature's own lookback. `assess_future_coverage` (`services/nwp_coverage.py:128`)
    counts rows without checking their expected timestamps, and `_station_complete`
    (`services/track_resolution.py:143`) checks members share a timestamp set without comparing it to
@@ -93,7 +93,7 @@ property of the output.** All three passed local testing and were caught only by
    `SeasonalPrecipRunoffRegression` declares 7 target steps, **45** precipitation steps and **14**
    temperature steps (`models/nwp_regression.py:752,765`), all in the same past-forcing class, and
    the adapter collapses them into a single maximum `lookback_steps` of 45
-   (`adapters/forecast_interface.py:656,707`). A class-wide 45-day expected set would reject a model
+   (`adapters/forecast_interface.py:659,707`). A class-wide 45-day expected set would reject a model
    whose temperature is complete over the 14 days it actually reads.
    Separately, `NwpRainfallRunoff` is future-forcing-only (`_n_lags = 0`), so its lookback is TARGET
    history: validating its forcing from `lookback_start` inspects rows it never reads.
@@ -163,6 +163,75 @@ predicts all three of those rows correctly and still fails the Seasonal case.
 
 Follow `docs/workflow.md`'s task shape for a non-trivial task: outcome, bounded in/out scope, exact
 verification, and pre-change evidence.
+
+## T0 DELIVERABLE — the resolution check, specified (2026-09-04)
+
+### Outcome
+
+One predicate: **can we serve this model, at this issue time, from the data we hold?** Answered per
+DECLARED INPUT SERIES, not per frame and not per feature class.
+
+### The check
+
+For each declared input series — name `V`, temporality, lookback/horizon `L`, and the model's
+declared `time_step` `S`, at issue time `T`:
+
+1. **Anchor.** `T0 := floor_to_time_step(T, S)` (`services/training_data.py`, already exists and is
+   UTC-calendar aligned).
+2. **Expected bucket set.**
+   * `past_known` (targets AND past forcing): `{ T0 - k*S : k = 0 .. L-1 }`
+   * `future_known`: `{ T0 + k*S : k = 1 .. H }` where `H` is the model's `forecast_horizon_steps`
+3. **Delivered set.** The timestamps present for **column `V`** in the aggregated frame for that
+   temporality.
+4. **Verdict.** `SERVE` iff `expected ⊆ delivered`. Otherwise `CANNOT SERVE`, naming `V` and the
+   missing buckets.
+
+### Three things this deliberately does NOT do
+
+* **No gap statistics.** Not the median, not the minimum, not any summary of spacing. All three
+  refuted attempts were spacing measures; membership in the expected set is the property.
+* **No NaN judgement.** Bucket EXISTENCE only. `max_nan` is already gated per variable per frame by
+  `_variables_over_nan_tolerance` (`adapters/forecast_interface.py`) and stays there.
+* **No new component.** `floor_to_time_step` exists; the expected-set idea already exists inside one
+  model (`models/nwp_regression.py:621`). This makes it uniform, it does not invent it.
+
+### Why per-SERIES and not per-frame
+
+`SeasonalPrecipRunoffRegression` declares **7** target steps, **45** precipitation steps and **14**
+temperature steps (`models/nwp_regression.py:92,103,106`), and the adapter collapses them to a single
+`lookback_steps = max(...) = 45` (`adapters/forecast_interface.py:659`). A frame-wide 45-bucket
+expectation rejects a model whose temperature is complete over the 14 buckets it actually reads.
+
+### VERDICT TABLE — checkable without reading code
+
+`S` = 1 day and `T0` = 2026-01-10 unless stated. "wrongly X" marks what a refuted mechanism did.
+
+| # | model / series | data held | expected set | verdict | refuted mechanism |
+|---|---|---|---|---|---|
+| 1 | any, daily, L=4 | stamps 01-07 00:00, 01-08 12:00, 01-09 00:00, 01-10 12:00 | 01-07..01-10 | **SERVE** — all four buckets occupied | median gap 36h wrongly REJECTED |
+| 2 | any, **hourly**, L=4 | daily rows 01-07..01-10 plus one extra at 01-08 01:00 | 4 hourly buckets ending T0 | **CANNOT SERVE** | minimum gap 1h wrongly SERVED |
+| 3 | any, **hourly**, L=2 | daily rows through T0 | 2 hourly buckets ending T0 | **CANNOT SERVE** | aggregate-then-validate wrongly SERVED (one row left, validator returns early) |
+| 4 | any, daily, L=5 | 01-06..01-10 present except **01-06** (the FIRST expected bucket) | 01-06..01-10 | **CANNOT SERVE** | aggregate-then-validate wrongly SERVED (edge bucket invisible) |
+| 5 | any, daily, L=5 | 01-06..01-10 present except 01-08 (interior) | 01-06..01-10 | **CANNOT SERVE** | — (all three caught this) |
+| 6 | **`NwpRainfallRunoff`** past forcing | past forcing row at `T0` MISSING; future forcing complete to `H` | past forcing: **∅** (declares none — `_n_lags = 0`; its only past_known is the TARGET, lookback 1) | **SERVE** | validating forcing from `lookback_start` would wrongly REJECT |
+| 7 | **`SeasonalPrecipRunoffRegression`** temperature | temperature present for the 14 buckets ending `T0`, ABSENT for days 15–45 | 14 buckets ending `T0` | **SERVE** | a class-wide 45-bucket set would wrongly REJECT |
+| 8 | **`SeasonalPrecipRunoffRegression`** precipitation | precipitation missing on one day inside its 45 | 45 buckets ending `T0` | **CANNOT SERVE** — names precipitation | — |
+| 9 | any, daily, L=1 | hourly data, complete for that day | 1 daily bucket | **SERVE** — aggregated (precip SUM, temp MEAN) | — |
+| 10 | any, daily, L=3 | no data at all for `V` | 3 buckets | **CANNOT SERVE** | — |
+
+Rows 1–5 are the refuted mechanisms; **6 and 7 are the two a per-feature-class spec would still get
+wrong**, which is why they are mandatory.
+
+### Verification
+
+`uv run pytest tests/unit/services/ -k resolution` — one red-first test per row, each asserting the
+verdict AND, on `CANNOT SERVE`, the series named and buckets reported. A test must fail against a
+per-feature-class implementation (rows 6, 7) and against each refuted mechanism (rows 1–4).
+
+### Pre-change evidence
+
+`hindcast_forecasts.time_step_seconds = 86400` for all 715,103 rows currently stored, with 1,134
+consecutive one-day gaps — today's daily path must still produce exactly that after T1.
 
 ### T1 — apply it to hindcast, training and operational (gated on T0)
 
