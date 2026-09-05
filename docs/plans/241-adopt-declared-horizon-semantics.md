@@ -1,10 +1,10 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-09-04
 revised: 2026-09-05
 plan: 241
 title: Consume the horizon declaration we asked FI for — the adapter currently drops it
-scope: Make the model's own AT_MOST/min_future_steps declaration reach resolve_required_steps. It dies at the FI adapter boundary today, so rung 1 can never fire on ANY FI version. Bump the coupled aquacast+FI pins, propagate the field through ForecastInterfaceAdapter into ModelDataRequirements, then retire the interim provider table. T4/T5 then make a one-step forecast — which T2/T3 newly make REACHABLE — actually correct to store and to pool. NO cmal_small onboarding here.
+scope: Make the model's own AT_MOST/min_future_steps declaration reach resolve_required_steps. It dies at the FI adapter boundary today, so rung 1 can never fire on ANY FI version. Bump the coupled aquacast+FI pins, propagate the field through ForecastInterfaceAdapter into ModelDataRequirements, then retire the interim provider table. T4 then makes a one-step forecast — which T2/T3 newly make REACHABLE — correct to STORE, adding forecasts.time_step_seconds nullable-first. NO cmal_small onboarding here.
 depends_on: []
 blocks: []
 source: Measured 2026-09-04 against aquacast main (5460f898), the pinned revision (1937794c), and an independent review that found the adapter gap
@@ -17,36 +17,49 @@ source: Measured 2026-09-04 against aquacast main (5460f898), the pinned revisio
 **READY (T1-T3).** Owner confirmed 2026-09-04, after an independent cross-check found the adapter
 gap. T1-T3 are implemented and green.
 
-**T4/T5 added 2026-09-05, AWAITING THE OWNER'S READY.** They exist because an independent review of
-the implemented T1-T3 diff returned NO — not safe to open as a PR — on defects this plan makes
-live. T4 is partly implemented already (the migration, the store change and the validation, plus a
-constraint-parity fix); its backfill and its tests are NOT yet what this revision requires. T5 is
-not implemented at all. See the proportionality note for why they belong here rather than in a
-follow-on.
+**T4 added 2026-09-05, AWAITING THE OWNER'S READY — hence `status: PARTIAL`, not `READY`.** T1-T3
+landed; T4 needs renewed owner approval before it may be executed.
+
+T4 exists because an independent review of the implemented T1-T3 diff returned NO — not safe to
+open as a PR — on a defect this plan makes live. A pre-implementation review of the T4/T5 amendment
+then returned NO in turn, with three blockers; this revision folds them:
+
+- the `NOT NULL` migration violated `docs/standards/cicd.md`'s one-version compatibility rule ->
+  T4 is now NULLABLE-FIRST, and needs no backfill at all;
+- the computed backfill proposed to replace the unmeasured constant could not be made correct ->
+  removed, with the reasoning recorded;
+- a proposed T5 was unreachable from this plan -> removed;
+- database claims were to be proven by a unit run -> moved to `tests/integration` against real
+  Postgres.
+
+T4 is PARTLY implemented on `feat/plan-241-horizon-semantics` in its FIRST, now-superseded shape
+(`NOT NULL` + `86400` server default). ⛔ That implementation must be revised to match this
+revision before it is reviewed again — the committed migration is not what this plan now asks for.
 
 ## ⛔ Proportionality
 
-**Five tasks, strictly sequential.** Do not add: `cmal_small` onboarding (a separate plan this
+**Four tasks, strictly sequential.** Do not add: `cmal_small` onboarding (a separate plan this
 unblocks), other dependency bumps that happen to be available, or any change to what
 `ModelDataRequirements` means beyond carrying the declared fields.
 
-### 🔴 Why this grew from three tasks to five — read before judging the scope
+### 🔴 Why this grew from three tasks to four — read before judging the scope
 
-The original three tasks were correct and are unchanged. T4 and T5 were added on 2026-09-05
-because **T2/T3 make a one-step forecast reachable for the first time**, and two defects that were
-harmless while every forecast had >= 2 steps become live the moment it is:
+The original three tasks were correct and are unchanged. T4 was added on 2026-09-05
+because **T2/T3 make a one-step forecast reachable for the first time**, and one defect that was
+harmless while every forecast had >= 2 steps becomes live the moment it is: the store never
+persisted the ensemble's cadence, it INFERRED it from the gap between timestamps and fabricated one
+hour when there was only one (T4).
 
-- the store never persisted the ensemble's cadence, it INFERRED it from the gap between
-  timestamps and fabricated one hour when there was only one (T4);
-- the pooled-forecast persistence boundary silently DISCARDS any single-timestamp result (T5).
+Landing T1-T3 alone would therefore ship a known-live defect — a one-step forecast stored with a
+fabricated hourly cadence. **That is the argument for extending this plan rather than deferring:**
+the defect is made live by this plan, so it belongs to it. It was found by independent review of
+the T1-T3 diff, not by scope drift.
 
-Landing T1-T3 alone would therefore ship a known-live defect: a one-step forecast would be stored
-with a fabricated hourly cadence, and its pooled counterpart would vanish with only a warning.
-**That is the argument for extending this plan rather than deferring** — the defects are made live
-by this plan, so they belong to it. Both were found by independent review of the T1-T3 diff, not
-by scope drift.
+A proposed T5 (the pooled one-step guard) was added and then REMOVED by the next review round, which
+showed it is unreachable from this plan. See the removal note after T4 — the analysis is kept, the
+work is not.
 
-⛔ This is the ONLY sanctioned extension. Anything else found along the way gets its own plan.
+⛔ T4 is the ONLY sanctioned extension. Anything else found along the way gets its own plan.
 
 ## The correction that reshaped this plan
 
@@ -177,99 +190,122 @@ its true step rather than a fabricated hour.
 **The defect.** `PgForecastStore` never persisted `ForecastEnsemble.time_step` — a value known at
 construction time — and derived it on read from the gap between `valid_time`s, defaulting to
 `timedelta(hours=1)` when there was only one step. A one-step DAILY forecast round-tripped as
-HOURLY, and the API and Forecast Lab published the fabricated cadence as truth. Latent while the
-multi-step floor guaranteed >= 2 timestamps; live as soon as T2/T3 land.
+HOURLY, and the API and Forecast Lab published the fabricated cadence as truth.
 
-**This is the SAME defect Plan 228 fixed for hindcasts in revision `0050`** — which fixed
-`hindcast_forecasts` only and left the operational `forecasts` table untouched. T4 mirrors it.
+**Pre-change (evidence, and how it fails today):** construct a one-step daily `ForecastEnsemble`,
+store it through `PgForecastStore`, read it back, and assert `time_step == timedelta(days=1)`. On
+current code the readback returns `timedelta(hours=1)` — the fabricated value, not a missing
+attribute. That is the RED, and it is a behaviour failure rather than a symbol error.
 
-**In:** a new `alembic/versions/0053_forecasts_time_step.py` (`time_step_seconds`, Integer, NOT
-NULL, positive check constraint); `db/metadata.py` (the SAME constraint, declared table-level and
-NAMED — see below); `store/forecast_store.py` (writer persists the ensemble's own step; reader
-takes the column as authoritative and the gap-inference is DELETED, not merely guarded);
-`types/model.py` (`ModelDataRequirements.__post_init__` rejects an incoherent horizon declaration —
-a semantics value other than `exact`/`at_most`, a floor without `at_most`, or a floor < 1;
-`resolve_required_steps` treats any non-boolean int as a floor, so a `0` would quietly have meant
-"require nothing").
+**This is the SAME defect Plan 228 fixed for hindcasts in revision `0050`**, which fixed
+`hindcast_forecasts` only and left the operational `forecasts` table untouched.
 
-**⛔ THE BACKFILL MUST BE COMPUTED PER ROW, NOT A CONSTANT.** The first implementation stamped
-every existing row `86400` on the reasoning that all six operational models are daily-stepped.
-**That was asserted from the model list, never measured** — the staging host is off-LAN and the
-one query that would settle it could not be run. Meanwhile a non-daily forecast is a fully
-supported and heavily exercised shape in this repo (the shared ensemble fixture in
-`tests/conftest.py` is HOURLY; ~95 non-daily `time_step` constructions across the suite), and
-`time_step` originates from `var_output.metadata.timedelta` with FI's `dynamic` dict keyed by
-timedelta — so nothing structurally forbids a sub-daily operational model.
+#### 🔴 NULLABLE-FIRST — this task was redesigned after review; do not restore the first shape
 
-Derive each row's step from the actual spacing of its own `forecast_values.valid_time`s. Fall back
-to the `86400` server default ONLY where no delta is derivable — a single-timestamp row, which by
-construction should not exist before this plan. A computed backfill is correct whether or not
-non-daily rows exist, and removes the dependency on a measurement that cannot be taken.
+The first implementation added the column `NOT NULL` with a `server_default` of `86400`, stamping
+every existing row "daily". **Two independent problems, both blocking:**
 
-🔴 **Record, do not fix:** `0050` used the same constant for `hindcast_forecasts`. If non-daily
-hindcast rows exist, `0050` already mislabelled them. That is a separate plan.
+1. **It violates a mandatory repo standard.** `docs/standards/cicd.md` (§Rollback) requires
+   migrations to be backwards-compatible for one version — *"additive only: new columns nullable,
+   no destructive changes in a single release"* — so the previous image tag can run against the new
+   schema during the migration window. `station_weather_sources.role` (Plan 115a/115c) is the
+   worked precedent: add nullable with a NULL-tolerant check, tighten in a LATER release.
+2. **The backfill value was never measured.** `86400` was asserted from the model list. The staging
+   host was off-LAN on 2026-09-05 and the settling query could not be run, while a non-daily
+   forecast is a fully supported and heavily exercised shape (the shared ensemble fixture in
+   `tests/conftest.py` is HOURLY; ~95 non-daily `time_step` constructions across the suite).
 
-🔴 **Migration/metadata parity is part of the task, not an afterthought.** `metadata.py` must
-declare the check constraint table-level and NAMED, matching what `0053` creates and what
-`0050`/`hindcast_forecasts` already does. There is no `naming_convention` on this `MetaData`, so an
-unnamed column-level constraint emits an anonymous `CHECK` that Postgres auto-names
-`forecasts_time_step_seconds_check` — whereupon the migration's own downgrade, which drops by the
-explicit name, FAILS against any `create_all`-built schema, and autogenerate sees a permanent
-phantom diff. **This is the drift class revision `0051` exists to repair.**
+**A computed backfill was considered and REJECTED as unnecessary.** It cannot be made reliably
+correct here anyway — `forecast_values` holds one row per member (or quantile) per `valid_time`, so
+a naive gap query double-counts; an intersection may be non-uniform; and a single-timestamp row has
+no derivable delta at all, so any value invented for it is fabrication in a new costume.
 
-**Out:** the pooled persistence boundary (T5); any change to what a cadence MEANS; fixing `0050`.
+**Nullable-first removes the need for a backfill entirely, and this is the load-bearing argument:**
 
-**Verification:** `uv run pytest tests/unit`, with tests that did not exist in the first
-implementation — a review finding in their own right:
-- a ONE-STEP forecast round-trips with its declared step (the defect itself, RED first);
-- a non-daily MULTI-step forecast round-trips unchanged;
-- the computed backfill assigns the true step to a pre-existing non-daily row;
-- metadata/migration parity — the constraint name emitted from `metadata.py` EQUALS the one `0053`
-  creates (assert on the emitted DDL, not on the source text);
-- `downgrade()` runs clean.
+> Gap-inference is CORRECT for every row that already exists. A one-step forecast was
+> unreachable before T2/T3 — the multi-step floor guaranteed >= 2 timestamps — so every
+> pre-migration row has a derivable, and correct, spacing. The fabricated-hour branch is
+> exactly the case that could not occur.
 
-### T5 — let a one-step pooled forecast persist
+So: leave existing rows `NULL` and let the reader fall back to inference for them, which is right
+by construction; populate the column for every row written from now on; and let a LATER release
+backfill and tighten to `NOT NULL` once the rollback window has closed. During that window an old
+image writes `NULL`, which the reader handles, and an old image cannot write a one-step forecast
+because one-step requires this very release.
 
-**Outcome:** a station's pooled/BMA forecast exists whenever its per-model forecasts do. Today a
-single-timestamp pooled result is silently discarded with only a warning, so after T2/T3 a one-step
-forecast would be stored and alerted on while its pooled counterpart vanished.
+**In:**
+- `alembic/versions/0053_forecasts_time_step.py` — `time_step_seconds`, Integer, **NULLABLE**, no
+  `server_default`, with a **NULL-tolerant named** check constraint
+  (`time_step_seconds IS NULL OR time_step_seconds > 0`).
+- `db/metadata.py` — the same column and the same constraint, declared **table-level and NAMED**.
+  🔴 There is no `naming_convention` on this `MetaData`, so an unnamed column-level constraint
+  emits an anonymous `CHECK` that Postgres auto-names `forecasts_time_step_seconds_check` —
+  whereupon the migration's own downgrade, which drops by the explicit name, FAILS against any
+  `create_all`-built schema and autogenerate sees a permanent phantom diff. **This is the drift
+  class revision `0051` exists to repair.**
+- `store/forecast_store.py` — the writer persists the ensemble's own step; the reader takes the
+  column as authoritative **when present** and falls back to the existing gap-inference only when
+  it is `NULL`. The fabricated `timedelta(hours=1)` branch is DELETED: a `NULL` row always has
+  >= 2 timestamps, so inference always succeeds.
+- `types/model.py` — `ModelDataRequirements.__post_init__` rejects an incoherent horizon
+  declaration (a semantics value other than `exact`/`at_most`, a floor without `at_most`, or a
+  floor < 1). `resolve_required_steps` treats any non-boolean int as a floor, so a `0` would
+  quietly have meant "require nothing".
+  **Pre-change:** `ModelDataRequirements(declared_min_future_steps=0, ...)` constructs today and
+  silently disables the floor; after the change it raises.
 
-**In:** `services/forecast_combination.py`, the persistence boundary only.
+**Out:** any data backfill; tightening to `NOT NULL` (a later release, its own plan); fixing
+`0050`; the pooled persistence boundary (removed from this plan — see below).
 
-**🔴 The precise finding — a first reading of it was wrong, so state it exactly.** The guard is
-TWO checks with DIFFERENT justifications, and only one is obsolete:
+🔴 **Record, do not fix:** `0050` added `hindcast_forecasts.time_step_seconds` as `NOT NULL` with
+the same unmeasured `86400` constant. It carries both defects named above — the standard violation
+and the unverified stamp. Out of scope here; it needs its own plan.
 
-1. `forecast_horizon_steps < _MIN_PERSISTED_TIMESTAMPS` (= 2). Its comment names its sole rationale
-   as the store fabricating a one-hour step for a single-timestamp forecast. **T4 removes that
-   fabrication, so this floor's stated reason is gone.**
-2. `_derive_uniform_time_step(ensemble) is None` -> skip. **This one SURVIVES T4** and must be
-   kept: it carries a second, independent rationale — a uniformly COARSENED intersection (every
-   contributor losing the same interior timestamps) leaves `ensemble.time_step` at the ref
-   contributor's stale DECLARED step. The code already repairs exactly that, one line later, with
-   `replace(ensemble, time_step=derived_time_step)`.
+**Verification.**
+`uv run pytest tests/unit` for behaviour that does not need a database:
+- a one-step daily forecast round-trips with `time_step == 1 day` (RED first, failing with the
+  fabricated `1 hour` — see Pre-change above);
+- a non-daily multi-step forecast round-trips unchanged;
+- a reader given a `NULL` column value still infers correctly from >= 2 timestamps;
+- the incoherent-declaration rejections.
 
-⛔ **Deleting check 1 alone accomplishes NOTHING.** `_derive_uniform_time_step` builds its delta set
-from consecutive pairs, so a single timestamp yields an EMPTY set, returns `None`, and check 2
-drops the forecast regardless. Both must be handled together or the task is a no-op that looks
-like a fix.
+`uv run pytest tests/integration` for anything that is a claim about the DATABASE — ⛔ a unit run
+cannot establish migration behaviour, and `tests/integration/db/test_migration_0052_partial_index.py`
+is the precedent for doing this against real Postgres:
+- `upgrade()` then `downgrade()` runs clean;
+- the constraint NAME created by `0053` equals the one emitted from `metadata.py` — asserted on
+  **emitted DDL / the live catalogue**, never on source text;
+- a pre-existing row survives the upgrade with `NULL` and reads back with its inferred step.
 
-**Mechanism:** handle the single-timestamp case explicitly — persist it using `ensemble.time_step`,
-the declared step carried from the ref contributor, which is the only cadence information that
-exists for one timestamp and which T4 now stores faithfully. Keep refusing genuinely non-uniform
-grids, and keep the coarsened-grid repair.
+## ⛔ REMOVED FROM THIS PLAN — the pooled one-step guard (was T5)
 
-**⚠️ Open question, for the pre-implementation review to settle:** for a one-step pooled forecast
-there is no observed spacing to validate the ref contributor's declared step against. Is persisting
-it correct, or should a pooled result whose contributors DISAGREE on their declared step be refused
-instead? Do not implement past this question — answer it first.
+A previous revision added a T5 to stop `build_combined_forecasts` discarding single-timestamp
+pooled forecasts. **Review established it is not reachable from this plan, and it has been dropped.**
 
-**Out:** the pooled combination maths; the skill path — `services/skill/combined_skill.py` calls
-`combine_ensembles_pooled` too and a single hindcast step is normal there, so the floor belongs
-ONLY at this persistence boundary and must not migrate into the shared helper.
+`cmal_pool_pt` — the only model T3 makes horizon-relaxable, and so the only way this plan could
+produce a one-step forecast — is `ArtifactScope.GROUP` (`models/aquacast/_shim.py:566`), and
+**GROUP dispatch never combines**: combination is STATION / Phase B only
+(`docs/touchpoint-maps.md:376`). The pooled persistence boundary is therefore never reached by
+anything this plan changes.
 
-**Verification:** `uv run pytest tests/unit` — a one-step pooled forecast is persisted with its
-declared step (RED first against the current skip); a genuinely non-uniform grid is still refused;
-the coarsened-grid repair still fires and still corrects the label.
+The guard is still worth understanding when it does become reachable, so record the analysis rather
+than lose it — a first reading of it was WRONG:
+
+- `forecast_horizon_steps < _MIN_PERSISTED_TIMESTAMPS` (= 2): its comment names its sole rationale
+  as the store fabricating a one-hour step. T4 removes that rationale.
+- `_derive_uniform_time_step(...) is None` -> skip: this **survives** T4, carrying an independent
+  rationale — a uniformly COARSENED intersection leaves `ensemble.time_step` at the ref
+  contributor's stale DECLARED step, which the code repairs one line later via
+  `replace(ensemble, time_step=derived_time_step)`.
+- ⛔ Deleting the count floor ALONE is a no-op that looks like a fix: a single timestamp yields an
+  empty delta set, so the uniformity check drops the forecast regardless.
+- ⚠️ And an unresolved design question: for one timestamp there is no observed spacing, so the
+  persisted cadence would come from whichever contributor is iterated first
+  (`services/forecast_combination.py:136-166`) — order-dependent unless one-step contributors are
+  required to AGREE on their declared step.
+
+**This belongs to whichever plan first onboards a STATION-scoped relaxable model** — `cmal_small`
+being the immediate candidate. It is a latent defect this plan does not create and cannot trigger.
 
 ## Also in scope — one documentation fix
 
@@ -303,10 +339,10 @@ uv run python -c "import forecast_interface as fi; assert fi.__version__ == '0.1
 - `uv run pyright` no worse than the recorded ratchet baseline.
 - T3 either deletes the interim table or records the measured reason it stays.
 - `docs/fi-issues/002` records its resolution and the capability-vs-usefulness distinction.
-- T4's backfill is COMPUTED per row; no constant is stamped over rows whose real cadence is
-  derivable, and metadata/migration constraint-name parity is asserted on emitted DDL.
-- T5 handles the single-timestamp case and the uniformity check TOGETHER; a one-step pooled
-  forecast is persisted, a non-uniform grid is still refused.
+- T4's column is NULLABLE with a NULL-tolerant named constraint, carries NO data backfill, and
+  leaves no `timedelta(hours=1)` fabrication anywhere in the reader.
+- Migration behaviour (upgrade, downgrade, constraint-name parity, a surviving NULL row) is proven
+  in `tests/integration` against real Postgres — NOT asserted from a unit run.
 - ⛔ Every claim about the live database is MEASURED or explicitly marked unmeasured. The staging
   host was off-LAN on 2026-09-05; nothing in T4 may depend on an unverified assertion about what
   rows exist.
@@ -320,8 +356,7 @@ uv run python -c "import forecast_interface as fi; assert fi.__version__ == '0.1
     {"id": "T1", "depends_on": [], "parallel": false},
     {"id": "T2", "depends_on": ["T1"], "parallel": false},
     {"id": "T3", "depends_on": ["T2"], "parallel": false},
-    {"id": "T4", "depends_on": ["T3"], "parallel": false},
-    {"id": "T5", "depends_on": ["T4"], "parallel": false}
+    {"id": "T4", "depends_on": ["T3"], "parallel": false}
   ]
 }
 ```
