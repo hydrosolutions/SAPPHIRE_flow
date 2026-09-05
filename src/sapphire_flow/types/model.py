@@ -318,6 +318,27 @@ class ModelDataRequirements:
                 "declared_aggregations must not declare conflicting methods "
                 f"for the same parameter: {sorted(names)}"
             )
+        # Plan 241 T4 (independent review, minor): an incoherent horizon
+        # declaration must be unrepresentable rather than silently resolved.
+        # `resolve_required_steps` accepts any non-boolean int as a floor, so a
+        # 0 or negative value would quietly mean "require nothing".
+        if self.declared_horizon_semantics not in (None, "exact", "at_most"):
+            raise ValueError(
+                "declared_horizon_semantics must be 'exact', 'at_most' or None, "
+                f"got {self.declared_horizon_semantics!r}"
+            )
+        if self.declared_min_future_steps is not None:
+            if self.declared_horizon_semantics != "at_most":
+                raise ValueError(
+                    "declared_min_future_steps is only meaningful with "
+                    "declared_horizon_semantics='at_most', got "
+                    f"{self.declared_horizon_semantics!r}"
+                )
+            if self.declared_min_future_steps < 1:
+                raise ValueError(
+                    "declared_min_future_steps must be ≥ 1, got "
+                    f"{self.declared_min_future_steps}"
+                )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

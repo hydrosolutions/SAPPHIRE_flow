@@ -1098,6 +1098,17 @@ forecasts = sa.Table(
     sa.Column("combination_strategy", sa.Text, nullable=True),
     sa.Column("source_model_ids", JSONB, nullable=True),
     sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False),
+    # Plan 241 T4 (mirrors Plan 228's 0050 for `hindcast_forecasts`): the
+    # ensemble's OWN time step, set at construction. Read authoritatively —
+    # never re-inferred from the gap between `valid_time`s, which cannot be
+    # done at all for a ONE-STEP forecast and used to fabricate 1 hour.
+    sa.Column(
+        "time_step_seconds",
+        sa.Integer,
+        sa.CheckConstraint("time_step_seconds > 0"),
+        nullable=False,
+        server_default="86400",
+    ),
     sa.Column("nwp_cycle_reference_time", sa.DateTime(timezone=True), nullable=True),
     sa.Column(
         "nwp_cycle_source",

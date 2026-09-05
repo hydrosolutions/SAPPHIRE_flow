@@ -63,6 +63,7 @@ class PgForecastStore:
                     model_id=forecast.model_id,
                     model_artifact_id=forecast.model_artifact_id,
                     issued_at=forecast.issued_at,
+                    time_step_seconds=int(forecast.ensemble.time_step.total_seconds()),
                     nwp_cycle_reference_time=forecast.nwp_cycle_reference_time,
                     nwp_cycle_source=forecast.nwp_cycle_source.value,
                     representation=forecast.representation.value,
@@ -324,12 +325,12 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
             pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
         )
 
-    valid_times = df["valid_time"].sort().unique().sort()
-    time_step = (
-        timedelta(seconds=int(valid_times[1].timestamp() - valid_times[0].timestamp()))
-        if len(valid_times) >= 2
-        else timedelta(hours=1)
-    )
+    # Plan 241 T4: the stored value is AUTHORITATIVE. It replaces gap-inference
+    # entirely — inference is impossible for a ONE-STEP forecast (there is no
+    # gap) and the old fallback fabricated 1 hour, which is silently wrong for a
+    # one-step DAILY forecast and was then reported as truth by the API and the
+    # Forecast Lab export. Mirrors `PgHindcastStore` after Plan 228 / rev 0050.
+    time_step = timedelta(seconds=header["time_step_seconds"])
 
     station_id = StationId(header["station_id"])
     issued_at = utc_from_row(header["issued_at"])
