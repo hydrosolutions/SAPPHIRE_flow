@@ -1,10 +1,10 @@
 ---
 status: READY
 created: 2026-09-04
-revised: 2026-09-04
+revised: 2026-09-05
 plan: 241
 title: Consume the horizon declaration we asked FI for — the adapter currently drops it
-scope: Make the model's own AT_MOST/min_future_steps declaration reach resolve_required_steps. It dies at the FI adapter boundary today, so rung 1 can never fire on ANY FI version. Bump the coupled aquacast+FI pins, propagate the field through ForecastInterfaceAdapter into ModelDataRequirements, then retire the interim provider table. NO cmal_small onboarding here.
+scope: Make the model's own AT_MOST/min_future_steps declaration reach resolve_required_steps. It dies at the FI adapter boundary today, so rung 1 can never fire on ANY FI version. Bump the coupled aquacast+FI pins, propagate the field through ForecastInterfaceAdapter into ModelDataRequirements, then retire the interim provider table. T4/T5 then make a one-step forecast — which T2/T3 newly make REACHABLE — actually correct to store and to pool. NO cmal_small onboarding here.
 depends_on: []
 blocks: []
 source: Measured 2026-09-04 against aquacast main (5460f898), the pinned revision (1937794c), and an independent review that found the adapter gap
@@ -14,13 +14,39 @@ source: Measured 2026-09-04 against aquacast main (5460f898), the pinned revisio
 
 ## Status
 
-**READY.** Owner confirmed 2026-09-04, after an independent cross-check found the adapter gap.
+**READY (T1-T3).** Owner confirmed 2026-09-04, after an independent cross-check found the adapter
+gap. T1-T3 are implemented and green.
+
+**T4/T5 added 2026-09-05, AWAITING THE OWNER'S READY.** They exist because an independent review of
+the implemented T1-T3 diff returned NO — not safe to open as a PR — on defects this plan makes
+live. T4 is partly implemented already (the migration, the store change and the validation, plus a
+constraint-parity fix); its backfill and its tests are NOT yet what this revision requires. T5 is
+not implemented at all. See the proportionality note for why they belong here rather than in a
+follow-on.
 
 ## ⛔ Proportionality
 
-**Three tasks, strictly sequential.** Do not add: `cmal_small` onboarding (a separate plan this
+**Five tasks, strictly sequential.** Do not add: `cmal_small` onboarding (a separate plan this
 unblocks), other dependency bumps that happen to be available, or any change to what
 `ModelDataRequirements` means beyond carrying the declared fields.
+
+### 🔴 Why this grew from three tasks to five — read before judging the scope
+
+The original three tasks were correct and are unchanged. T4 and T5 were added on 2026-09-05
+because **T2/T3 make a one-step forecast reachable for the first time**, and two defects that were
+harmless while every forecast had >= 2 steps become live the moment it is:
+
+- the store never persisted the ensemble's cadence, it INFERRED it from the gap between
+  timestamps and fabricated one hour when there was only one (T4);
+- the pooled-forecast persistence boundary silently DISCARDS any single-timestamp result (T5).
+
+Landing T1-T3 alone would therefore ship a known-live defect: a one-step forecast would be stored
+with a fabricated hourly cadence, and its pooled counterpart would vanish with only a warning.
+**That is the argument for extending this plan rather than deferring** — the defects are made live
+by this plan, so they belong to it. Both were found by independent review of the T1-T3 diff, not
+by scope drift.
+
+⛔ This is the ONLY sanctioned extension. Anything else found along the way gets its own plan.
 
 ## The correction that reshaped this plan
 
@@ -143,6 +169,108 @@ works today. Hence T3 depends on T2, not merely on T1.
 discovered requirement resolves via `source="model_at_most"`. If it resolves `EXACT` or undeclared,
 the deletion does NOT happen and the finding is recorded here instead.
 
+### T4 — persist the ensemble cadence instead of inferring it
+
+**Outcome:** a forecast's cadence is STORED with it, and a one-step forecast round-trips carrying
+its true step rather than a fabricated hour.
+
+**The defect.** `PgForecastStore` never persisted `ForecastEnsemble.time_step` — a value known at
+construction time — and derived it on read from the gap between `valid_time`s, defaulting to
+`timedelta(hours=1)` when there was only one step. A one-step DAILY forecast round-tripped as
+HOURLY, and the API and Forecast Lab published the fabricated cadence as truth. Latent while the
+multi-step floor guaranteed >= 2 timestamps; live as soon as T2/T3 land.
+
+**This is the SAME defect Plan 228 fixed for hindcasts in revision `0050`** — which fixed
+`hindcast_forecasts` only and left the operational `forecasts` table untouched. T4 mirrors it.
+
+**In:** a new `alembic/versions/0053_forecasts_time_step.py` (`time_step_seconds`, Integer, NOT
+NULL, positive check constraint); `db/metadata.py` (the SAME constraint, declared table-level and
+NAMED — see below); `store/forecast_store.py` (writer persists the ensemble's own step; reader
+takes the column as authoritative and the gap-inference is DELETED, not merely guarded);
+`types/model.py` (`ModelDataRequirements.__post_init__` rejects an incoherent horizon declaration —
+a semantics value other than `exact`/`at_most`, a floor without `at_most`, or a floor < 1;
+`resolve_required_steps` treats any non-boolean int as a floor, so a `0` would quietly have meant
+"require nothing").
+
+**⛔ THE BACKFILL MUST BE COMPUTED PER ROW, NOT A CONSTANT.** The first implementation stamped
+every existing row `86400` on the reasoning that all six operational models are daily-stepped.
+**That was asserted from the model list, never measured** — the staging host is off-LAN and the
+one query that would settle it could not be run. Meanwhile a non-daily forecast is a fully
+supported and heavily exercised shape in this repo (the shared ensemble fixture in
+`tests/conftest.py` is HOURLY; ~95 non-daily `time_step` constructions across the suite), and
+`time_step` originates from `var_output.metadata.timedelta` with FI's `dynamic` dict keyed by
+timedelta — so nothing structurally forbids a sub-daily operational model.
+
+Derive each row's step from the actual spacing of its own `forecast_values.valid_time`s. Fall back
+to the `86400` server default ONLY where no delta is derivable — a single-timestamp row, which by
+construction should not exist before this plan. A computed backfill is correct whether or not
+non-daily rows exist, and removes the dependency on a measurement that cannot be taken.
+
+🔴 **Record, do not fix:** `0050` used the same constant for `hindcast_forecasts`. If non-daily
+hindcast rows exist, `0050` already mislabelled them. That is a separate plan.
+
+🔴 **Migration/metadata parity is part of the task, not an afterthought.** `metadata.py` must
+declare the check constraint table-level and NAMED, matching what `0053` creates and what
+`0050`/`hindcast_forecasts` already does. There is no `naming_convention` on this `MetaData`, so an
+unnamed column-level constraint emits an anonymous `CHECK` that Postgres auto-names
+`forecasts_time_step_seconds_check` — whereupon the migration's own downgrade, which drops by the
+explicit name, FAILS against any `create_all`-built schema, and autogenerate sees a permanent
+phantom diff. **This is the drift class revision `0051` exists to repair.**
+
+**Out:** the pooled persistence boundary (T5); any change to what a cadence MEANS; fixing `0050`.
+
+**Verification:** `uv run pytest tests/unit`, with tests that did not exist in the first
+implementation — a review finding in their own right:
+- a ONE-STEP forecast round-trips with its declared step (the defect itself, RED first);
+- a non-daily MULTI-step forecast round-trips unchanged;
+- the computed backfill assigns the true step to a pre-existing non-daily row;
+- metadata/migration parity — the constraint name emitted from `metadata.py` EQUALS the one `0053`
+  creates (assert on the emitted DDL, not on the source text);
+- `downgrade()` runs clean.
+
+### T5 — let a one-step pooled forecast persist
+
+**Outcome:** a station's pooled/BMA forecast exists whenever its per-model forecasts do. Today a
+single-timestamp pooled result is silently discarded with only a warning, so after T2/T3 a one-step
+forecast would be stored and alerted on while its pooled counterpart vanished.
+
+**In:** `services/forecast_combination.py`, the persistence boundary only.
+
+**🔴 The precise finding — a first reading of it was wrong, so state it exactly.** The guard is
+TWO checks with DIFFERENT justifications, and only one is obsolete:
+
+1. `forecast_horizon_steps < _MIN_PERSISTED_TIMESTAMPS` (= 2). Its comment names its sole rationale
+   as the store fabricating a one-hour step for a single-timestamp forecast. **T4 removes that
+   fabrication, so this floor's stated reason is gone.**
+2. `_derive_uniform_time_step(ensemble) is None` -> skip. **This one SURVIVES T4** and must be
+   kept: it carries a second, independent rationale — a uniformly COARSENED intersection (every
+   contributor losing the same interior timestamps) leaves `ensemble.time_step` at the ref
+   contributor's stale DECLARED step. The code already repairs exactly that, one line later, with
+   `replace(ensemble, time_step=derived_time_step)`.
+
+⛔ **Deleting check 1 alone accomplishes NOTHING.** `_derive_uniform_time_step` builds its delta set
+from consecutive pairs, so a single timestamp yields an EMPTY set, returns `None`, and check 2
+drops the forecast regardless. Both must be handled together or the task is a no-op that looks
+like a fix.
+
+**Mechanism:** handle the single-timestamp case explicitly — persist it using `ensemble.time_step`,
+the declared step carried from the ref contributor, which is the only cadence information that
+exists for one timestamp and which T4 now stores faithfully. Keep refusing genuinely non-uniform
+grids, and keep the coarsened-grid repair.
+
+**⚠️ Open question, for the pre-implementation review to settle:** for a one-step pooled forecast
+there is no observed spacing to validate the ref contributor's declared step against. Is persisting
+it correct, or should a pooled result whose contributors DISAGREE on their declared step be refused
+instead? Do not implement past this question — answer it first.
+
+**Out:** the pooled combination maths; the skill path — `services/skill/combined_skill.py` calls
+`combine_ensembles_pooled` too and a single hindcast step is normal there, so the floor belongs
+ONLY at this persistence boundary and must not migrate into the shared helper.
+
+**Verification:** `uv run pytest tests/unit` — a one-step pooled forecast is persisted with its
+declared step (RED first against the current skip); a genuinely non-uniform grid is still refused;
+the coarsened-grid repair still fires and still corrects the label.
+
 ## Also in scope — one documentation fix
 
 `docs/fi-issues/002-future-steps-at-most-semantics.md` must record its own resolution: fixed in FI
@@ -175,6 +303,13 @@ uv run python -c "import forecast_interface as fi; assert fi.__version__ == '0.1
 - `uv run pyright` no worse than the recorded ratchet baseline.
 - T3 either deletes the interim table or records the measured reason it stays.
 - `docs/fi-issues/002` records its resolution and the capability-vs-usefulness distinction.
+- T4's backfill is COMPUTED per row; no constant is stamped over rows whose real cadence is
+  derivable, and metadata/migration constraint-name parity is asserted on emitted DDL.
+- T5 handles the single-timestamp case and the uniformity check TOGETHER; a one-step pooled
+  forecast is persisted, a non-uniform grid is still refused.
+- ⛔ Every claim about the live database is MEASURED or explicitly marked unmeasured. The staging
+  host was off-LAN on 2026-09-05; nothing in T4 may depend on an unverified assertion about what
+  rows exist.
 
 ## Dependency graph
 
@@ -184,7 +319,9 @@ uv run python -c "import forecast_interface as fi; assert fi.__version__ == '0.1
   "tasks": [
     {"id": "T1", "depends_on": [], "parallel": false},
     {"id": "T2", "depends_on": ["T1"], "parallel": false},
-    {"id": "T3", "depends_on": ["T2"], "parallel": false}
+    {"id": "T3", "depends_on": ["T2"], "parallel": false},
+    {"id": "T4", "depends_on": ["T3"], "parallel": false},
+    {"id": "T5", "depends_on": ["T4"], "parallel": false}
   ]
 }
 ```
