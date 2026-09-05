@@ -77,9 +77,21 @@ among European hydrological services precisely to avoid the 23/25-hour problem. 
 summer the Swiss "day" ends at 01:00 local rather than midnight, a documented one-hour displacement
 that introduces no assumption and fabricates no data.
 
-⚠️ **Changing Switzerland's boundary from UTC midnight to 23:00Z is NOT free** — see OD-7. The
-existing Swiss artifacts were trained on UTC calendar days, so this is a retraining decision, not a
-config change. It may be right to leave Switzerland at phase 0 until a retrain is due. **Open.**
+⚠️ **Changing Switzerland's boundary from UTC midnight to 23:00Z requires retraining, and the owner
+has accepted that (2026-09-05).** The existing Swiss artifacts were trained on UTC calendar days;
+under OD-7 an artifact is only valid for the cut it was trained on, so every Swiss daily artifact
+must be retrained against 23:00Z days before the new boundary goes live. Three consequences follow,
+and none of them belong to this plan:
+
+- **Retraining is a deployment activity, not a task here.** This plan makes the boundary declarable;
+  it does not retrain anything. Sequencing the retrain belongs with Plan 226, which already owns
+  daily-model anchoring.
+- **Skill scores computed against UTC-day observations become invalid for the retrained artifacts**,
+  since the scored quantity changes. That intersects Plan 235's generation model — a recompute, not a
+  silent overwrite.
+- **Until the retrain lands, Switzerland stays at phase 0.** The declaration and the retrain must go
+  live together; a config flip alone would feed 23:00Z days to artifacts trained on midnight days,
+  which is exactly the substitution OD-7 says the model cannot detect.
 
 ⛔ **A DST-observing zone has no uniform civil-day grid at all.** Measured: Zurich civil days run 23,
 24 or 25 hours (29 Mar 2026 is 23:00Z→22:00Z = 23 h; 25 Oct is 22:00Z→23:00Z = 25 h). A "day" that is
