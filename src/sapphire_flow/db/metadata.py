@@ -1105,7 +1105,6 @@ forecasts = sa.Table(
     sa.Column(
         "time_step_seconds",
         sa.Integer,
-        sa.CheckConstraint("time_step_seconds > 0"),
         nullable=False,
         server_default="86400",
     ),
@@ -1166,6 +1165,15 @@ forecasts = sa.Table(
         ["station_id", "rating_curve_id"],
         ["rating_curves.station_id", "rating_curves.id"],
         name="fk_forecasts_rating_curve_station",
+    ),
+    # Named table-level, matching migration 0053 AND the 0050/hindcast_forecasts
+    # precedent below. An unnamed column-level CheckConstraint would let a
+    # create_all schema and a migrated schema disagree on the constraint NAME
+    # (there is no naming_convention on this MetaData), which is the drift class
+    # revision 0051 exists to repair.
+    sa.CheckConstraint(
+        "time_step_seconds > 0",
+        name="ck_forecasts_time_step_seconds_positive",
     ),
 )
 
