@@ -66,9 +66,20 @@ observations are interpolated — the benign direction. Concretely:
 
 | Product | Grid | As UTC |
 |---|---|---|
-| Nepal daily | `(86400 s, 64800 s)` | 18:00Z → 18:00Z |
+| Nepal daily | `(86400 s, phase from OD-3)` | see OD-3 — pending DHM's answer |
 | Nepal sub-daily | `(3600 s, 0)` | UTC hours, matching forcing exactly |
-| Swiss daily | `(86400 s, 0)` | 00:00Z → 00:00Z, unchanged |
+| Swiss daily | `(86400 s, 82800 s)` | 23:00Z → 23:00Z — a fixed UTC+1 day, NOT UTC midnight |
+
+**Every deployment declares a fixed offset; there is no "UTC default" special case.** Switzerland's
+is UTC+1 year-round (23:00Z), not DST-following and not UTC midnight — every day is exactly 24 h, the
+boundary never moves, and it sits within an hour of civil midnight all year. This is common practice
+among European hydrological services precisely to avoid the 23/25-hour problem. The honest cost: in
+summer the Swiss "day" ends at 01:00 local rather than midnight, a documented one-hour displacement
+that introduces no assumption and fabricates no data.
+
+⚠️ **Changing Switzerland's boundary from UTC midnight to 23:00Z is NOT free** — see OD-7. The
+existing Swiss artifacts were trained on UTC calendar days, so this is a retraining decision, not a
+config change. It may be right to leave Switzerland at phase 0 until a retrain is due. **Open.**
 
 ⛔ **A DST-observing zone has no uniform civil-day grid at all.** Measured: Zurich civil days run 23,
 24 or 25 hours (29 Mar 2026 is 23:00Z→22:00Z = 23 h; 25 Oct is 22:00Z→23:00Z = 25 h). A "day" that is
@@ -77,7 +88,32 @@ not 86400 s is not a step, so no amount of phase bookkeeping rescues it. Nepal h
 why the phase is declared per deployment and never derived from a timezone: derivation would give
 18:15 for Nepal (ignoring OD-3) and something broken for Switzerland.
 
-**OD-3 — a daily bucket is whole UTC hours: 18:00Z→18:00Z, not the exact civil 18:15Z.** The forcing
+**OD-3 — a daily bucket is whole UTC hours. WHICH whole hour is an open question for DHM, and the
+answer may remove the compromise entirely.**
+
+The original reasoning assumed the boundary is local midnight, which lands at 18:15Z and forces a
+15-minute rounding. **That assumption may be wrong.** In Nepal, any local clock time at `:45` past
+the hour maps to an *exact* whole UTC hour:
+
+| Local | UTC |
+|---|---|
+| 00:45 NPT | 19:00Z |
+| 06:45 NPT | 01:00Z |
+| **08:45 NPT** | **03:00Z** |
+| 09:45 NPT | 04:00Z |
+
+So if DHM's conventional observation or rainfall day begins at a `:45` local time, we get an exact
+whole-hour bucket with **no rounding, no displacement and no compromise**. Precedent makes this
+likely: **India's Met Department defines its rainfall day as 08:30–08:30 IST**, and IST is UTC+5:30 —
+also a non-whole-hour zone — which maps to exactly 03:00Z. A national service with the same class of
+problem already solved it by anchoring to a local clock time that lands cleanly. South Asian services
+commonly use an 08:30 or 08:45 observation day.
+
+**Therefore: ask DHM what their conventional observation/rainfall day boundary is (T7), and adopt it
+if it maps to a whole UTC hour.** The rounding below is the FALLBACK, used only if their boundary is
+local midnight or otherwise lands mid-hour.
+
+**Fallback if the boundary is local midnight: 18:00Z→18:00Z, not the exact civil 18:15Z.** The forcing
 is hourly, so an exact civil day would require apportioning one hourly precipitation accumulation
 across the boundary **every single day**, under an assumption of uniform rainfall within that hour —
 the least safe assumption available for convective rain. The whole-hour bucket introduces **no
@@ -85,6 +121,32 @@ assumption at all**: every value is used as delivered. The cost is a documented 
 displacement (a Nepali "day" runs 00:45–23:45 local), which is 0.6% of the day and is stated on the
 label rather than discovered. The shift is uniform, so consecutive days partition the timeline
 exactly — no gaps, no overlaps, no drift, no value counted twice.
+
+**OD-7 — models are timezone-agnostic, which is precisely why the CUT must match.** Models consume
+time steps and know nothing about zones; the modeller supplies steps. That is not a reason the
+boundary is unimportant — it is the reason it is dangerous. Training data cut at midnight UTC and
+operational data cut at 18:00Z are both "daily totals" to the model, but they are **different
+physical quantities**, and nothing in the model can detect the substitution. The responsibility sits
+entirely with us.
+
+This is also how Plan 228 D4 reconciles. D4 says *"every path aggregates onto UTC calendar buckets;
+nothing aligns to a forecast's own timestamp"*, and its reasoning is entirely about a **moving**
+anchor — the first implementation lined buckets up with `issue_time`, so a 06:00 hindcast consumed
+rolling 06:00–06:00 means while training used calendar days. A fixed, declared, deployment-wide
+boundary does not reintroduce that: it is the same instant every day, forever. **D4's invariant
+survives; only the word "UTC" narrows.** T8 amends it to "one fixed declared boundary per deployment,
+never the forecast's own clock", which preserves every reason D4 gives.
+
+⛔ **The binding constraint is that training and operation must use the SAME cut.** Changing a
+deployment's boundary after its artifacts are trained invalidates them. For Nepal this is free today
+(no artifacts trained). For Switzerland it is not — see the warning in OD-2.
+
+**OD-8 — Delft-FEWS reaches the same split, which is mild evidence we are on a trodden path.** FEWS
+stores internally in GMT, attaches a time-zone attribute per series, and — for *equidistant* series —
+configures **fixed offsets** (`GMT+1`) rather than DST-observing zone names, reserving DST-aware
+zones for display. That is the same fixed-offset-for-data, DST-for-display split arrived at here
+independently. *Confidence: from knowledge of FEWS, not verified against its documentation; treat as
+a starting point, not a citation.*
 
 **OD-4 — forecast `valid_time` is period-ending**, consistent with OD-1. The daily bucket above is
 stamped `18:00Z` on its closing day. The tempting alternative — stamping "the date it is about",
@@ -287,6 +349,43 @@ bundled with the audit that found it.
 
 **Verification:** N/A — audit task. Every adapter appears with a cited source for its convention, or is explicitly marked unresolved.
 
+### T7 — put the observation-day question to DHM
+
+**Outcome:** DHM's conventional observation/rainfall day boundary is asked for explicitly, so OD-3
+can adopt an exact whole-hour bucket instead of the rounding fallback.
+
+**In:** `docs/requirements/dhm-data-formats-questions.md` (§ 5, QC & corrections, or § 1 scope). Two
+questions, not one: the conventional day boundary in local time, AND a request for **15-minute data
+on `:00/:15/:30/:45` marks** — noting that 10-minute data is worse than 15 for Nepali targets because
+10 does not divide the 345-minute offset and 15 does. Cite the India 08:30 IST precedent so the
+question reads as a familiar convention rather than an unusual demand.
+
+**Out:** re-rendering the `.docx`, and any adapter work. Answering on DHM's behalf, or assuming local
+midnight if they do not answer — an unanswered question leaves OD-3 on its documented fallback.
+
+**Pre-change:** N/A — requirements task. `grep -n "rainfall day\|observation day\|day boundary" docs/requirements/dhm-data-formats-questions.md` returns nothing; the questionnaire covers timestamps and timezone but never asks where their day starts.
+
+**Verification:** N/A — requirements task. Both questions appear with the precedent cited.
+
+### T8 — amend Plan 228 D4 to say what it means
+
+**Outcome:** D4 reads "one fixed declared boundary per deployment, never the forecast's own clock"
+rather than "UTC calendar buckets", with a dated note recording why the narrowing was wrong and
+pointing here.
+
+**In:** `docs/plans/228-hindcast-and-skill-on-wrong-data.md` § D4 (`:121-147`). The amendment must
+preserve every reason D4 gives — the moving-anchor prohibition, exactly N complete buckets, and
+aligning-and-extending the fetch bounds rather than filtering after the fact. Only the word "UTC"
+changes. Depends on T1.
+
+**Out:** re-opening D1-D3, the shipped P1/P2 fix, or anything Plan 228 assigns to Plan 234 or Plan
+235. D4 explicitly forbids re-opening itself (`228:245`), so this amendment is scoped to the single
+word the owner has now settled, and says so in the note.
+
+**Pre-change:** N/A — documentation task amending a settled decision. Today `228:123` reads "Every path aggregates onto UTC calendar buckets", which forbids a Nepali daily grid and therefore forbids daily forecasts for any region not on UTC.
+
+**Verification:** N/A — documentation task. The amended D4 still forbids a moving anchor, and the dated note names this plan.
+
 ## Exit gates
 
 ```bash
@@ -315,7 +414,9 @@ Four conditions hold in addition:
     {"id": "T3", "phase": 2, "depends_on": ["T2"]},
     {"id": "T4", "phase": 2, "depends_on": ["T2", "T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T2"]},
-    {"id": "T6", "phase": 1, "depends_on": ["T1"]}
+    {"id": "T6", "phase": 1, "depends_on": ["T1"]},
+    {"id": "T7", "phase": 1, "depends_on": []},
+    {"id": "T8", "phase": 1, "depends_on": ["T1"]}
   ]
 }
 ```
