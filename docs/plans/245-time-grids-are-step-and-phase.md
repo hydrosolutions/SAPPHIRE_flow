@@ -320,11 +320,17 @@ rounding civil midnight (18:15Z) down to the whole hour, **and** SnowMapper's ow
 which uses a solar offset of `round(centroid_lon/15)` = **UTC+6 for Nepal — whose midnight is exactly
 18:00Z**.
 
-⛔ **New risk the corroboration exposes.** If DHM answers T7 with a conventional day at, say, 08:45 NPT
-(cleanly 03:00Z), our daily aggregation would then **disagree with SnowMapper's**, whose SWE and
-runoff feed our hydrology — two "daily" quantities cut on different boundaries inside one forecast,
-which OD-7 says no model can detect. T7 must therefore ask DHM *and* settle it with the snow
-modeller, not just adopt whichever answer arrives first.
+**No cross-system conflict — corrected 2026-09-07.** An earlier draft warned that adopting a DHM
+boundary other than 18:00Z would put us at odds with SnowMapper. That was wrong. **We receive
+SnowMapper data as hourly UTC on the top of the hour and aggregate it ourselves**; the UTC+6 solar
+shift is their *dashboard's* presentation layer, not our input. So there is no boundary to reconcile
+with them — the UTC+6 coincidence remains an interesting corroboration of 18:00Z and nothing more.
+The same holds for any UTC-delivered source.
+
+**The requirement is therefore configurability, not a particular value (owner, 2026-09-07).**
+Whatever DHM names as their reference is what we adopt. 18:00Z is the default until they answer; the
+design must not hard-code it anywhere, and T4's rejection of an undeclared deployment is what keeps
+that honest.
 
 **OD-11 — Switzerland must DECLARE phase zero; absence is not a default.** The draft verified that an
 undeclared deployment silently defaults to 0, which contradicts this plan's own fail-closed rule.
@@ -414,20 +420,20 @@ confirmed, converted, or flagged unresolved.
 
 ### T7 — put the boundary question to DHM and to the snow modeller
 
-**Outcome:** the conventional observation-day boundary is asked of DHM, AND reconciled with
-SnowMapper's UTC+6 aggregation, so the two do not disagree inside one forecast.
+**Outcome:** the conventional observation-day boundary is asked of DHM, so the provisional 18:00Z
+default can be replaced by their actual reference.
 
 **In:** `docs/requirements/dhm-data-formats-questions.md`. Three questions: the conventional day
 boundary in local time; a request for **15-minute data on `:00/:15/:30/:45`** (10-minute is worse for
 Nepali targets, since 10 does not divide the 345-minute offset and 15 does); and confirmation of
-period convention per parameter. Cite the India 08:30 IST precedent. Separately, agree the daily
-boundary with the snow modeller per OD-3's risk.
+period convention per parameter. Cite the India 08:30 IST precedent — it makes the question read as a
+familiar convention rather than an unusual demand.
 
 **Out:** re-rendering the `.docx`; assuming an answer. Unanswered leaves OD-3 on its provisional value.
 
 **Pre-change:** N/A — requirements task. `grep -n "rainfall day\|observation day\|day boundary" docs/requirements/dhm-data-formats-questions.md` returns nothing.
 
-**Verification:** N/A — requirements task. All three questions appear, and the SnowMapper reconciliation is recorded.
+**Verification:** N/A — requirements task. All three questions appear with the precedent cited.
 
 ### T8 — supersede Plan 228 D4
 
