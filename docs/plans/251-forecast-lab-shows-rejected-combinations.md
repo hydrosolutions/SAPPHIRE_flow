@@ -1,26 +1,26 @@
 ---
 status: DRAFT
 created: 2026-09-04
-plan: 244
+plan: 251
 title: The Forecast Lab should show a rejected combination, not hide it
-scope: Add quality status and flags to the combined-forecast objects in the Forecast Lab snapshot format, which requires a v2 to v3 transition across every producer and checker of the version string. Explicitly NOT the storage of a failed combination (Plan 246 T2a), NOT any change to QC rules, NOT the member-model objects.
-depends_on: [246]
+scope: Add quality status and flags to the combined-forecast objects in the Forecast Lab snapshot format, which requires a v2 to v3 transition across every producer and checker of the version string. Explicitly NOT the storage of a failed combination (Plan 253 T2a), NOT any change to QC rules, NOT the member-model objects.
+depends_on: [253]
 blocks: []
-source: 2026-09-04 — owner decision OD-1a in Plan 246, taken once review established the cost of surfacing
+source: 2026-09-04 — owner decision OD-1a in Plan 253, taken once review established the cost of surfacing
 ---
 
-# Plan 244 — the Forecast Lab should show a rejected combination
+# Plan 251 — the Forecast Lab should show a rejected combination
 
 ## Status
 
-**DRAFT — not reviewed.** Split out of Plan 246 on 2026-09-04 by owner decision, so that a versioned
+**DRAFT — not reviewed.** Split out of Plan 253 on 2026-09-04 by owner decision, so that a versioned
 external-format change does not ride on a persistence fix.
 
 ## Why this exists
 
-Plan 246 makes a combined (`_pooled`) forecast that fails QC **stored, marked failed** rather than
+Plan 253 makes a combined (`_pooled`) forecast that fails QC **stored, marked failed** rather than
 dropped (OD-1), on the reasoning that the combination exists to compare models and a dropped row
-leaves no record of what was rejected. Plan 246 then has to **exclude that row from the Forecast
+leaves no record of what was rejected. Plan 253 then has to **exclude that row from the Forecast
 Lab** (OD-1a), because surfacing it costs more than that plan should carry.
 
 So the record exists in the database and is invisible in the surface built to read it. This plan
@@ -64,7 +64,7 @@ in eight places:
 
 ## Non-goals
 
-- Storing the failed combination — that is Plan 246 T2a and must land first.
+- Storing the failed combination — that is Plan 253 T2a and must land first.
 - Any change to QC rules, thresholds, or which combinations fail.
 - The member-model snapshot objects; only the combined objects gain the fields.
 - Surfacing input quality in the Lab. Related seam, different signal, not this plan.
@@ -103,15 +103,15 @@ to fail when they drift apart. Depends on T1.
 
 ### T3 — stop excluding the rejected combination
 
-**Outcome:** a `QC_FAILED` combination appears in the Lab, visibly marked failed, and Plan 246's
+**Outcome:** a `QC_FAILED` combination appears in the Lab, visibly marked failed, and Plan 253's
 exclusion filter is removed rather than left dormant.
 
-**In:** `services/forecast_lab/db_sources.py:184-204` (the exclusion Plan 246 T2a adds) and the
+**In:** `services/forecast_lab/db_sources.py:184-204` (the exclusion Plan 253 T2a adds) and the
 availability logic at `services/forecast_lab/snapshot.py:453-504`, per D3. Depends on T2.
 
 **Out:** re-litigating OD-1. The row is stored; this task only decides how it is shown.
 
-**Pre-change:** with Plan 246 landed, a snapshot built over a cycle whose combination failed QC contains no combined entry for it at all.
+**Pre-change:** with Plan 253 landed, a snapshot built over a cycle whose combination failed QC contains no combined entry for it at all.
 
 **Verification:** `uv run pytest tests/unit/services/forecast_lab/test_snapshot.py` — a failed combination is present, carries its `qc_status` and flags, and is distinguishable from a passing one by a consumer reading only the snapshot.
 
@@ -121,14 +121,14 @@ availability logic at `services/forecast_lab/snapshot.py:453-504`, per D3. Depen
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py --inspect-json docs/plans/244-forecast-lab-shows-rejected-combinations.md
+uv run python scripts/check_readiness.py docs/plans/251-forecast-lab-shows-rejected-combinations.md
 ```
 
 Two conditions hold in addition:
 
 1. **No producer stamps a version that disagrees with the committed schema.** The sync tests are the
    mechanism; they must be run, not merely present.
-2. **Plan 246 has landed first.** Surfacing a row that is not yet stored would test nothing.
+2. **Plan 253 has landed first.** Surfacing a row that is not yet stored would test nothing.
 
 ## Dependency graph
 

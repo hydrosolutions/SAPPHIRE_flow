@@ -1,36 +1,36 @@
 ---
 status: DRAFT
 created: 2026-09-05
-plan: 247
+plan: 254
 title: Phase-aware execution — seven call sites, the fetch-bound helpers, and the Swiss rollout
-scope: Make every assembly path honour a declared `TimeGrid` rather than assuming phase zero, carry resampling provenance so degradation is reportable, record each artifact's training grid so a mismatch fails closed, and sequence the Swiss retrain and cutover. Explicitly NOT the conventions or types (Plan 245), NOT Plan 226's anchoring, NOT Plan 234's aggregation declaration, NOT the Forecast Lab v3 format (Plan 244).
-depends_on: [245, 234]
+scope: Make every assembly path honour a declared `TimeGrid` rather than assuming phase zero, carry resampling provenance so degradation is reportable, record each artifact's training grid so a mismatch fails closed, and sequence the Swiss retrain and cutover. Explicitly NOT the conventions or types (Plan 252), NOT Plan 226's anchoring, NOT Plan 234's aggregation declaration, NOT the Forecast Lab v3 format (Plan 251).
+depends_on: [252, 234]
 blocks: []
-source: 2026-09-05 — split from Plan 245 after a review returned 20 blockers, most of them integration and contract failures rather than defects in the time-zone reasoning
+source: 2026-09-05 — split from Plan 252 after a review returned 20 blockers, most of them integration and contract failures rather than defects in the time-zone reasoning
 ---
 
-# Plan 247 — phase-aware execution
+# Plan 254 — phase-aware execution
 
 ## Status
 
 **DRAFT — not reviewed, and deliberately not yet fully scoped.** Several tasks below name a decision
-that must be taken before they can be written as contracts. This plan exists so that Plan 245's
+that must be taken before they can be written as contracts. This plan exists so that Plan 252's
 conventions have a named destination and the review's structural blockers are not lost.
 
-## Why this is separate from Plan 245
+## Why this is separate from Plan 252
 
-Plan 245 declares what a time grid is and what conventions bind it. It changes almost no behaviour.
+Plan 252 declares what a time grid is and what conventions bind it. It changes almost no behaviour.
 This plan changes behaviour on **every** assembly path, retrains the Swiss artifacts, and cuts over a
 live deployment. Reviewing those together produced 20 blockers, most of which were about this half.
 
-**Nothing here may land before Plan 245**, and OD-9's parity precondition binds: a fixed non-zero
+**Nothing here may land before Plan 252**, and OD-9's parity precondition binds: a fixed non-zero
 phase preserves Plan 228 D4's invariant **only once training, operational assembly, scoring, NWP
 handling, fetch bounds and artifacts all use the same declared grid**. Until then, phase zero remains
 correct, and a partial rollout is worse than none.
 
 ## What the review established
 
-**The resampler has seven production call sites, not three.** Plan 245's draft said three, and said
+**The resampler has seven production call sites, not three.** Plan 252's draft said three, and said
 T4 was "a parameter change":
 
 | Call site | |
@@ -48,14 +48,14 @@ protect. Polars also labels bucket **starts** by default (`training_data.py:299`
 completeness check assumes start labels by adding one step (`skill/service.py:261`), so
 period-ending labelling is a behavioural change to both.
 
-**The degradation channel does not reach.** Plan 245 assumed Plan 246's `InputQualityFlag` could
+**The degradation channel does not reach.** Plan 252 assumed Plan 253's `InputQualityFlag` could
 carry resampling provenance. It cannot as it stands: `assess_input_quality` emits only observation
 staleness, NWP age and warm-up flags; only `OperationalForecast` persists the pair;
-`HindcastForecast` has no such fields and Plan 246 explicitly excluded hindcasts; and the resampler
+`HindcastForecast` has no such fields and Plan 253 explicitly excluded hindcasts; and the resampler
 returns a bare DataFrame with nowhere to put provenance.
 
 **Artifacts record no training grid** (`db/metadata.py:907`), so nothing can fail closed against a
-phase-mismatched artifact — which is precisely the silent substitution Plan 245 OD-7 says a model
+phase-mismatched artifact — which is precisely the silent substitution Plan 252 OD-7 says a model
 cannot detect.
 
 **Downstream UTC-day assumptions were found in at least four more places**: Forecast Lab
@@ -75,7 +75,7 @@ period-ending labels (`services/operational_inputs.py:225`).
   obvious shape, but training, hindcast and skill cannot reuse operational persistence without new
   contracts. Decide per consumer whether degradation is persisted, logged, or gates the run.
 - **D3 — does the no-imputation contract stand?** `docs/touchpoint-maps.md:228` says missing
-  operational values are **gated, never interpolated**. Plan 245 OD-6 interpolates. One of them must
+  operational values are **gated, never interpolated**. Plan 252 OD-6 interpolates. One of them must
   formally supersede the other; today they contradict.
 - **D4 — Swiss cutover shape.** Atomic flip, or per-station migration? Artifacts, hindcasts and skill
   generations must move together, and a config flip alone would feed 23:00Z days to midnight-trained
@@ -83,10 +83,10 @@ period-ending labels (`services/operational_inputs.py:225`).
 
 ## Non-goals
 
-- Plan 245's conventions, types and CF ingest.
+- Plan 252's conventions, types and CF ingest.
 - Plan 226's daily-model anchoring, and Plan 234's aggregation declaration — this plan **consumes**
   both.
-- The Forecast Lab v3 format change, which Plan 244 already owns; interval bounds must fold into
+- The Forecast Lab v3 format change, which Plan 251 already owns; interval bounds must fold into
   that single version transition rather than opening a second one.
 - Re-opening Plan 228 D1-D3 or its shipped P1/P2 fix.
 
@@ -104,7 +104,7 @@ whether an upstream ForecastInterface issue is required.
 **Out:** any code change. The decisions exist so they are made once, in the open, rather than inside
 an implementation diff.
 
-**Pre-change:** N/A — decision task. The four decisions are recorded as open above, and D3 is a live contradiction between `touchpoint-maps.md:228` and Plan 245 OD-6.
+**Pre-change:** N/A — decision task. The four decisions are recorded as open above, and D3 is a live contradiction between `touchpoint-maps.md:228` and Plan 252 OD-6.
 
 **Verification:** N/A — decision task. Each answer cites the code or contract it rests on, and D1 either files the FI issue or records why none is needed.
 
@@ -146,7 +146,7 @@ assuming phase zero, and the downstream UTC-day assumptions are corrected.
 filter at `services/operational_inputs.py:225` whose meaning changes under period-ending labels.
 Depends on T3.
 
-**Out:** the Forecast Lab format change (Plan 244). The Swiss cutover (T6).
+**Out:** the Forecast Lab format change (Plan 251). The Swiss cutover (T6).
 
 **Pre-change:** each call site passes a bare `time_step`; `grep -n "resample_to_time_step" -r src/` shows seven sites and no grid is threaded to any of them.
 
@@ -162,7 +162,7 @@ and the activation and prediction gates. Depends on T3.
 
 **Out:** retraining anything (T6).
 
-**Pre-change:** `grep -n "time_grid\\|grid_phase" src/sapphire_flow/db/metadata.py` returns nothing for artifacts, so an artifact trained on midnight days can be activated against an 18:00Z deployment with nothing detecting it — Plan 245 OD-7's silent substitution.
+**Pre-change:** `grep -n "time_grid\\|grid_phase" src/sapphire_flow/db/metadata.py` returns nothing for artifacts, so an artifact trained on midnight days can be activated against an 18:00Z deployment with nothing detecting it — Plan 252 OD-7's silent substitution.
 
 **Verification:** `uv run pytest tests/unit/services/test_model_registry.py tests/integration/db/` — an artifact whose recorded grid differs from the deployment's is refused at activation with a typed error, and the refusal is locked by a test.
 
@@ -189,7 +189,7 @@ since 226 is anchoring-only and states the UTC-midnight NWP grid remains authori
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py --inspect-json docs/plans/247-phase-aware-execution.md
+uv run python scripts/check_readiness.py docs/plans/254-phase-aware-execution.md
 ```
 
 Five conditions hold in addition:
@@ -200,7 +200,7 @@ Five conditions hold in addition:
    assembly, scoring, NWP, fetch bounds and artifacts on one declared grid, or none of them.
 3. **No silent upsampling.** The refusal is locked by a test, not only the success path.
 4. **A grid-mismatched artifact is refused**, not used.
-5. **Plan 245 has landed**, and Plan 234's declaration is available to consume.
+5. **Plan 252 has landed**, and Plan 234's declaration is available to consume.
 
 ## Dependency graph
 

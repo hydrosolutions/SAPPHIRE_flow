@@ -237,7 +237,7 @@ class PgForecastStore:
         if parameter is not None:
             filters.append(forecasts.c.parameter == parameter)
         if degraded_only:
-            # Plan 246 T1c / OD-2: an unknown (NULL) input_quality is never
+            # Plan 253 T1c / OD-2: an unknown (NULL) input_quality is never
             # reported as degraded — this IN excludes both NULL and 'full'.
             filters.append(
                 forecasts.c.input_quality.in_(

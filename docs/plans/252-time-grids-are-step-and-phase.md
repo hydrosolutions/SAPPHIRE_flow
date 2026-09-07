@@ -1,15 +1,15 @@
 ---
 status: DRAFT
 created: 2026-09-04
-plan: 245
+plan: 252
 title: A time grid is a step AND a phase — and interval data is period-ending
-scope: CONVENTIONS AND TYPES ONLY. Adopt CF `cell_methods` as the temporal-support type, narrow period-ending to interval-valued data, define `TimeGrid(step, phase)`, declare the operational boundary per deployment, read CF attributes at ingest, and supersede Plan 228 D4. Explicitly NOT the phase-aware execution across the seven resampler call sites, the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 247. NOT Plan 226's anchoring, NOT Plan 234's aggregation threading.
+scope: CONVENTIONS AND TYPES ONLY. Adopt CF `cell_methods` as the temporal-support type, narrow period-ending to interval-valued data, define `TimeGrid(step, phase)`, declare the operational boundary per deployment, read CF attributes at ingest, and supersede Plan 228 D4. Explicitly NOT the phase-aware execution across the seven resampler call sites, the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT Plan 226's anchoring, NOT Plan 234's aggregation threading.
 depends_on: []
-blocks: [247]
-source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 246; investigation showed the codebase treats a time step as a scalar throughout
+blocks: [254]
+source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 253; investigation showed the codebase treats a time step as a scalar throughout
 ---
 
-# Plan 245 — a time grid is a step and a phase
+# Plan 252 — a time grid is a step and a phase
 
 ## Status
 
@@ -182,7 +182,7 @@ future-proofs OD-3: moving to exact civil days later would need no consumer chan
 | Target finer than the source's median spacing | **Refuse.** Three readings a day cannot become 24 hourly values; that is invention, not interpolation |
 
 The method is determined by the parameter, never by the caller. Degradation is reported through the
-existing `InputQualityFlag` channel, which Plan 246 made persistent and API-visible — no second
+existing `InputQualityFlag` channel, which Plan 253 made persistent and API-visible — no second
 mechanism.
 
 **Why 15 minutes is the threshold, and why phase matters more than length.** Measured straddling
@@ -233,7 +233,7 @@ accumulated precipitation.
 
 **Fail closed.** An undeclared phase, or a grid mismatch with no declared conversion, refuses. It does
 not guess, and it does not fall back to matching on step alone — which would be exactly the
-nearest-match trap Plan 246's review identified as *dimensionally wrong*: a rate-of-change threshold
+nearest-match trap Plan 253's review identified as *dimensionally wrong*: a rate-of-change threshold
 per 10 minutes is not that threshold per day.
 
 **For Nepal specifically:** forcing stays hourly UTC as delivered. NPT-hourly observations keep phase
@@ -249,7 +249,7 @@ This is deliberately the *convention and the type*, not the consumers:
   same defect family — a grid whose phase was never declared — but 226 owns the daily-model fix.
 - **Plan 234** threads each channel's declared aggregation method end to end. This plan supplies the
   rule that says *when* a resample is required; 234 supplies *how* it is performed.
-- **Plan 246** found the fail-closed hole in QC rule lookup. The principle is identical and should be
+- **Plan 253** found the fail-closed hole in QC rule lookup. The principle is identical and should be
   stated once, here, rather than rediscovered per subsystem.
 
 ## Non-goals
@@ -287,7 +287,7 @@ must amend D4's **complete** rationale, invariant, implementation record, the de
 touchpoint map and the locking tests — and must state that a fixed non-zero phase preserves D4 only
 once training, operational assembly, scoring, NWP handling, fetch bounds **and artifacts** all use the
 same declared grid. Until that parity holds, phase-zero remains correct. The execution half is
-Plan 247.
+Plan 254.
 
 **OD-10 — CF `cell_methods` is the temporal-support type (2026-09-05).** The review's blocker was that
 nothing distinguishes instantaneous from interval data, so the interpolation rules were not
@@ -357,7 +357,7 @@ and `docs/spec/types-and-protocols.md`. Must carry the OD-10 table, the NPT work
 statement that period convention and phase are independent, and that a DST-observing zone has no
 uniform civil-day grid.
 
-**Out:** any code change; the adapter audit (T6); anything in Plan 247.
+**Out:** any code change; the adapter audit (T6); anything in Plan 254.
 
 **Pre-change:** N/A — documentation task. `grep -rn "period-ending\|cell_methods" docs/conventions.md` returns nothing; the convention lives only in `docs/design/dhm-precipitation-milestones.md:119` and a code comment.
 
@@ -373,7 +373,7 @@ representation rather than duplicating it.
 `services/skill/service.py:110` where phase is already validated and persisted. Depends on T1.
 
 **Out:** deriving phase from an IANA timezone — never offered, since derivation reintroduces DST.
-Threading it through call sites (Plan 247).
+Threading it through call sites (Plan 254).
 
 **Pre-change:** `uv run python -c "from sapphire_flow.types.domain import TimeGrid"` fails with ImportError, while `grep -n "phase" services/skill/service.py` shows a second, incompatible representation already in use.
 
@@ -386,7 +386,7 @@ metadata, so temporal support is a fact we hold rather than one we assume.
 
 **In:** the recap extraction path and `ParameterDefinition` (`types/domain.py:36`). Depends on T2.
 
-**Out:** acting on the value — that is Plan 247. Changing `AggregationMethod`.
+**Out:** acting on the value — that is Plan 254. Changing `AggregationMethod`.
 
 **Pre-change:** `grep -rn "cell_methods\|\.attrs" src/sapphire_flow/adapters/` returns nothing; the attribute is present in every upstream file and discarded at our boundary.
 
@@ -447,7 +447,7 @@ zero remains correct until training, assembly, scoring, NWP, fetch bounds and ar
 declared grid. Depends on T1.
 
 **Out:** re-opening D1-D3, the shipped P1/P2 fix, or anything 228 assigns to Plan 234/235. Changing
-any phase-zero behaviour — that is Plan 247.
+any phase-zero behaviour — that is Plan 254.
 
 **Pre-change:** N/A — documentation task superseding a settled decision. `228:123` reads "Every path aggregates onto UTC calendar buckets", which forbids daily forecasts for any region not on UTC.
 
@@ -459,7 +459,7 @@ any phase-zero behaviour — that is Plan 247.
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py --inspect-json docs/plans/245-time-grids-are-step-and-phase.md
+uv run python scripts/check_readiness.py docs/plans/252-time-grids-are-step-and-phase.md
 ```
 
 Four conditions hold in addition:

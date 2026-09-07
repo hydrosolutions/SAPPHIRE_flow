@@ -97,7 +97,7 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
-- **246** — Quality signals dropped at the store boundary — `READY, implemented (hold-at-PR)` —
+- **253** — Quality signals dropped at the store boundary — `READY, implemented (hold-at-PR)` —
   three defects of one class, all measured on the mini (0.1.833) 2026-09-02/03: the
   per-forecast **input-quality assessment is computed and never persisted** (no DB
   column, no API field, reads back as `FULL` for every forecast — Plan 023's
@@ -112,9 +112,9 @@ exit criteria — Plan 212 owns that deeper screening.
   two of these as closed. Plan 023 was archived by a pure file-move commit while
   still `status: READY`, which is how the drift stayed invisible. **Decision taken
   2026-09-03: build the producer — DHM's API will deliver unmarked gaps, which was
-  the stated flip condition. It is Plan 243, not a phase here; what stays in 242 is
+  the stated flip condition. It is Plan 250, not a phase here; what stays in 253 is
   making `wmo.md` truthful in the interval.**
-- **243** — Explicit gap markers for feeds that deliver unmarked absences — `DRAFT,
+- **250** — Explicit gap markers for feeds that deliver unmarked absences — `DRAFT,
   STUB — not scoped` — gives operational ingest the ability to write a `MISSING` row
   for an expected-but-absent observation. `QcStatus.MISSING` is defined and enforced
   twice (domain invariant + DB check constraint); 0 rows live, the two existing
@@ -127,16 +127,16 @@ exit criteria — Plan 212 owns that deeper screening.
   does not recover DHM's flag; that needs an API change, tracked in the DHM data-format
   questionnaire § 5. Scoping must settle cadence metadata, the materialisation bound,
   retention on null rows, and whether this overlaps `pipeline_health`.
-- **244** — The Forecast Lab should show a rejected combination — `DRAFT, unreviewed` —
-  follow-on from 242's OD-1a. A combined forecast that fails QC is stored by 242 and
+- **251** — The Forecast Lab should show a rejected combination — `DRAFT, unreviewed` —
+  follow-on from 253's OD-1a. A combined forecast that fails QC is stored by 253 and
   deliberately hidden from the Forecast Lab, because surfacing it means adding two
   fields to a **published, strict snapshot format** (`additionalProperties: false`,
   eight permitted fields) and therefore a v2→v3 transition across the eight files that
   stamp or check `forecast-lab-snapshot/v2`. Split out so a versioned external-format
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
-  `available` should mean for a rejected forecast. Depends on 242 landing first.
-- **245** — A time grid is a step AND a phase — `DRAFT, unreviewed` — **conventions
+  `available` should mean for a rejected forecast. Depends on 253 landing first.
+- **252** — A time grid is a step AND a phase — `DRAFT, unreviewed` — **conventions
   and types only** after a review returned 26 findings (20 blockers) and forced a
   split. Nepal Time is UTC+05:45, so hourly NPT and hourly UTC grids never share a
   timestamp; converting to UTC relabels instants without moving them onto a grid and
@@ -148,10 +148,10 @@ exit criteria — Plan 212 owns that deeper screening.
   disposition. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
   and, independently, by SnowMapper's UTC+6 solar day. ⛔ If DHM names a different
   boundary we would disagree with SnowMapper, whose SWE and runoff feed our hydrology.
-- **247** — Phase-aware execution — `DRAFT, not fully scoped` — the behavioural half.
+- **254** — Phase-aware execution — `DRAFT, not fully scoped` — the behavioural half.
   The resampler has **seven** call sites, not three, and `floor_to_time_step` /
   `aligned_lookback_bounds` are separately phase-zero, so changing the bucketing alone
-  would lose Plan 228 D4's exactly-N-complete-buckets guarantee. Plan 246's
+  would lose Plan 228 D4's exactly-N-complete-buckets guarantee. Plan 253's
   input-quality channel cannot carry resampling provenance (hindcasts were excluded
   from it). Artifacts record no training grid, so a phase-mismatched artifact cannot
   fail closed. Carries the Swiss retrain and cutover, which no plan currently owns —

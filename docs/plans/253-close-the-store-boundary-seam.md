@@ -1,15 +1,15 @@
 ---
 status: READY
 created: 2026-09-03
-plan: 246
+plan: 253
 title: Quality signals that are computed and then dropped at the store boundary
-scope: Persist and serve the input-quality assessment Plan 023 specified; quality-control the pooled combination forecast; state the `MISSING` claim truthfully until its producer lands; and re-verify the WMO compliance table against the running system. Explicitly NOT the `MISSING` producer itself (owner decided 2026-09-03 to build it — that is Plan 243), NOT the historical water-level QC gap, NOT Stage 2 QC, NOT any new QC rule.
+scope: Persist and serve the input-quality assessment Plan 023 specified; quality-control the pooled combination forecast; state the `MISSING` claim truthfully until its producer lands; and re-verify the WMO compliance table against the running system. Explicitly NOT the `MISSING` producer itself (owner decided 2026-09-03 to build it — that is Plan 250), NOT the historical water-level QC gap, NOT Stage 2 QC, NOT any new QC rule.
 depends_on: []
-blocks: [243]
+blocks: [250]
 source: 2026-09-02/03 — a live audit of the mac-mini (0.1.833) against `docs/standards/wmo.md`, prompted by a DHM counterpart discussion
 ---
 
-# Plan 246 — closing the store-boundary seam
+# Plan 253 — closing the store-boundary seam
 
 ## Status
 
@@ -19,20 +19,20 @@ evidence is quoted inline so a reviewer can re-run it.
 
 ## Review scope — read this before reviewing
 
-**This review covers Plan 246 AND Plan 243 together**
-(`docs/plans/243-explicit-gap-markers-for-unmarked-feeds.md`). They were split on 2026-09-03 from a
-single owner decision and are meaningless apart: 242 records the decision and relabels the
-documentation; 243 is the work that decision authorises. The review workflow takes one plan path, so
+**This review covers Plan 253 AND Plan 250 together**
+(`docs/plans/250-explicit-gap-markers-for-unmarked-feeds.md`). They were split on 2026-09-03 from a
+single owner decision and are meaningless apart: 253 records the decision and relabels the
+documentation; 250 is the work that decision authorises. The review workflow takes one plan path, so
 the joint scope is declared here.
 
 Assess them differently, because they are at different stages:
 
-- **Plan 246 — full review.** Design, proportionality, task contracts, verification, exit gates,
+- **Plan 253 — full review.** Design, proportionality, task contracts, verification, exit gates,
   readiness. This is the plan that could reach `READY`.
-- **Plan 243 — premise and completeness of its scoping checklist ONLY.** It is a deliberate stub,
+- **Plan 250 — premise and completeness of its scoping checklist ONLY.** It is a deliberate stub,
   marked do-not-implement, with no design, phases, tasks or gates. **Do not report its missing design
   as a finding — that absence is intentional and stated.** The questions worth answering about it are:
-  is its stated premise accurate; is the split between 242 and 243 drawn in the right place; and does
+  is its stated premise accurate; is the split between 253 and 250 drawn in the right place; and does
   its "what scoping must cover" list omit a dimension that would be expensive to discover later.
 
 `riskClass: high` — this plan carries a migration on the operational `forecasts` table, an
@@ -114,7 +114,7 @@ The vocabulary is real and defended: `QcStatus.MISSING` exists, the domain type 
 same as a check constraint, `(qc_status = 'missing') = (value IS NULL)` (`db/metadata.py:543`).
 
 **The precise claim, corrected in review.** An earlier draft said "nothing in operational ingest
-ever writes one". That is false, and the correction matters because it changes what Plan 243 has to
+ever writes one". That is false, and the correction matters because it changes what Plan 250 has to
 build. Two producers exist:
 
 - `services/component_derivation.py:116`, the calculated-station derivation path — and it *is*
@@ -123,7 +123,7 @@ build. Two producers exist:
   calculated stations.
 - `scripts/dhm_precip/observations.py:61-90`, an offline research producer.
 
-The true gap is narrower and is what Plan 243 owns: **no direct gauged-feed path synthesises a row
+The true gap is narrower and is what Plan 250 owns: **no direct gauged-feed path synthesises a row
 for a timestamp that was expected and did not arrive.** Derivation emits `MISSING` when a *component*
 is unusable; nothing emits it when a sensor simply goes silent.
 
@@ -134,11 +134,11 @@ stations on this deployment, so the sole producer has no live caller here either
 There is also a structural reason it cannot currently work: nothing records a station's expected
 reporting **schedule**, per station *and* per parameter (`types/station.py:42-45` already carries
 several measured parameters per station), so nothing can distinguish *expected but not received*
-from *not expected*. How that schedule is represented and stored is Plan 243's to design, not this
+from *not expected*. How that schedule is represented and stored is Plan 250's to design, not this
 plan's to prescribe. `docs/standards/wmo.md:169` nevertheless records this as *Addressed in v0*:
 *"Expected-but-not-received observations are represented as explicit gap markers."*
 
-**Decision taken 2026-09-03 — see § Decision. The producer will be built, and it is Plan 243, not
+**Decision taken 2026-09-03 — see § Decision. The producer will be built, and it is Plan 250, not
 a task here.** What remains in this plan is making `wmo.md` tell the truth in the meantime.
 
 ### D-D — the WMO compliance table asserts outcomes that were specified, not verified
@@ -205,13 +205,13 @@ serve the value together with its flag, which is an open interface question with
 (`docs/requirements/dhm-data-formats-questions.md` § 5). The marker makes the absence countable and
 first-class; the questionnaire is what would make it explicable.
 
-**Scope consequence: the producer is Plan 243, not a phase here.** This plan is about signals that are
+**Scope consequence: the producer is Plan 250, not a phase here.** This plan is about signals that are
 computed and then dropped at the store boundary. The `MISSING` producer is a different shape of work —
 it *creates* a signal that does not exist today, and needs expected-schedule metadata whose shape is
-Plan 243's to design (it is explicitly not merely a cadence) plus a migration, a gap-materialisation step in the ingest window, a bound on how far back materialisation
+Plan 250's to design (it is explicitly not merely a cadence) plus a migration, a gap-materialisation step in the ingest window, a bound on how far back materialisation
 reaches, and a retention position on null rows. That is a plan, not a task, and this plan said so
 before the decision was taken. What stays here is Phase 3: making `wmo.md` state the truth in the
-interval before Plan 243 lands.
+interval before Plan 250 lands.
 
 ## Non-goals
 
@@ -261,14 +261,14 @@ files that stamp or check `forecast-lab-snapshot/v2`: `cli/export_forecast_lab.p
 `api/forecast_lab_schemas.py`, `api/routes/forecast_lab.py`, the schema file,
 `docs/spec/forecast-lab-snapshot.md`, `tests/fixtures/forecast_lab/forecast_lab_snapshot_example.json`,
 `tests/unit/services/forecast_lab/test_snapshot.py` and `docs/plans/204-...`. That is a versioned
-external-format change riding on a persistence fix, so it becomes **Plan 244** and this plan
+external-format change riding on a persistence fix, so it becomes **Plan 251** and this plan
 excludes the row instead.
 
 ⛔ **Exclusion must be explicit, not incidental.** The Lab treats every renderable row as available
 (`services/forecast_lab/snapshot.py:453-504`) and fetches a matching combination without consulting
 QC (`services/forecast_lab/db_sources.py:184-204`), so doing nothing would make a failed combination
 appear there as an ordinary healthy forecast — worse than absent. The record lives in the database
-until Plan 244 surfaces it.
+until Plan 251 surfaces it.
 
 **OD-2 — input-quality level AND its flags are visible to every authenticated role.** Plan 023
 required the threshold-bearing flag details to be role-filtered once authorization existed
@@ -371,7 +371,7 @@ metres-above-sea-level values run against the `-2..20 m` bounds
 selection must skip a `QC_FAILED` combination — `services/forecast_lab/db_sources.py:184-204`, which
 currently fetches a matching combination without consulting QC. This is a **filter, not a schema
 change**: no field is added and the snapshot format stays at v2, so nothing in
-`api/forecast_lab_schemas.py` or the published schema moves. Surfacing it is Plan 244.
+`api/forecast_lab_schemas.py` or the published schema moves. Surfacing it is Plan 251.
 
 Docs: `docs/spec/types-and-protocols.md:727`, which currently reads that an aggregate `QC_FAILED`
 raises `SanityCheckFailure` and the flow tries a fallback model, while only `QC_PASSED` or
@@ -414,11 +414,11 @@ per parameter and excludes missing or non-`MEMBERS` ensembles
 ### T3a — state the `MISSING` claim truthfully
 
 **Outcome:** every doc claiming operational gap markers exist says instead that no gauged feed
-synthesises them, cites the measurement, and points at Plan 243.
+synthesises them, cites the measurement, and points at Plan 250.
 
 **In:** `docs/standards/wmo.md:169`; `docs/architecture-context.md:2208` (and the schema comments at
 `:2232`, `:2240`), which states MISSING rows are "set during gap detection in the observation ingest
-pipeline" — the claim that would route Plan 243's implementer wrongly; and
+pipeline" — the claim that would route Plan 250's implementer wrongly; and
 `docs/architecture-context.md:400`, which asserts a QC-failed filter on the alert path that does not
 exist; and `docs/plans/README.md:100-127`, whose entries for both plans were corrected in this plan's own
 authoring and must be **verified as still correct and preserved**, not rewritten again. The index is
@@ -429,7 +429,7 @@ freshness: its records are collector-level and run-level
 the per-station `OBSERVATION_FRESHNESS` check (`types/enums.py:193-217`).
 
 **Out:** deleting `QcStatus.MISSING`, its invariant, or its check constraint — all load-bearing and
-all prerequisites for Plan 243. Pre-announcing Plan 243's design.
+all prerequisites for Plan 250. Pre-announcing Plan 250's design.
 
 **Pre-change:** N/A — documentation task. The measurement it records is D-C's: `SELECT count(*) FROM observations WHERE qc_status='missing'` returns 0.
 
@@ -480,7 +480,7 @@ assertion is at `:1852-1853` and belongs to T1b.)
 ### T4c — flip the two rows that Phase 1 earns, and add the standing rule
 
 **Outcome:** the degraded-input row moves to verified with its evidence once Phase 1 has landed; the
-missing-marker row stays **specified, not verified** until Plan 243 lands; and a rule prevents the
+missing-marker row stays **specified, not verified** until Plan 250 lands; and a rule prevents the
 recurrence. Depends on T1c and T4a.
 
 **In:** `docs/standards/wmo.md` § 5 (the two rows) plus one paragraph stating that a compliance row
@@ -503,7 +503,7 @@ cheap.
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py --inspect-json docs/plans/246-close-the-store-boundary-seam.md
+uv run python scripts/check_readiness.py docs/plans/253-close-the-store-boundary-seam.md
 ```
 
 Five conditions hold in addition to the commands above:
@@ -515,11 +515,11 @@ Five conditions hold in addition to the commands above:
    Replacing one false confident answer with another is not a fix.
 3. **`wmo.md` § 5 contains no row this plan has not either verified or relabelled**, and
    `architecture-context.md:90`, `:110`, `:114`, `:400`, `:1852-1853`, `:2208`,
-   `docs/spec/types-and-protocols.md:727` and the Plan 246/243 entries in `docs/plans/README.md`
+   `docs/spec/types-and-protocols.md:727` and the Plan 253/250 entries in `docs/plans/README.md`
    are corrected.
 4. **The pooled-forecast tests use a real QC-tripping ensemble**, not a mocked checker verdict, cover
    both call sites, and cover water level with and without a station datum.
-5. **Plan 243 exists at `status: DRAFT` and is listed in `docs/plans/README.md`.**
+5. **Plan 250 exists at `status: DRAFT` and is listed in `docs/plans/README.md`.**
 
 ## Dependency graph
 

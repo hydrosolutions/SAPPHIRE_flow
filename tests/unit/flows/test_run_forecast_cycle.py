@@ -213,7 +213,7 @@ def _empty_qc_rules() -> ForecastQcRuleSet:
 def _hourly_discharge_qc_rules_covering_the_step() -> ForecastQcRuleSet:
     """A rule set that COVERS the hourly step without constraining values.
 
-    Since the Plan 246 review fix, `build_combined_forecasts` refuses to
+    Since the Plan 253 review fix, `build_combined_forecasts` refuses to
     persist a combination whose `(parameter, time_step)` selects no rules
     at all — `worst_qc_status([])` would otherwise report an unchecked
     combination as QC_PASSED. `_empty_qc_rules()` therefore now means
@@ -9843,12 +9843,12 @@ class TestT8bHeterogeneousStation:
         assert stored[0].ensemble.forecast_horizon_steps == 10
 
 
-# --- Plan 246 T2a / exit gate 4: the pooled combination is quality-controlled
+# --- Plan 253 T2a / exit gate 4: the pooled combination is quality-controlled
 # from BOTH `build_combined_forecasts` call sites in `run_forecast_cycle_flow`
 # (the per-track arm at ~:2929 and the legacy arm at ~:3254), with a REAL
 # QC-tripping ensemble rather than a mocked checker verdict.
 #
-# SCOPE (Plan 246 review): the two classes below INJECT a `range_check` rule
+# SCOPE (Plan 253 review): the two classes below INJECT a `range_check` rule
 # at the 2-hour step the pooled intersection lands on. That injection is what
 # makes a QC-failing combination reachable at all (see
 # `_ConstantDischargeFakeModel`), and it is legitimate coverage of the QC
@@ -10018,7 +10018,7 @@ def _stored_combination(stores: dict[str, object]) -> OperationalForecast:
 
 
 class TestPooledCombinationQualityControlLegacyRoute:
-    """Plan 246 T2a — the LEGACY (non-candidate-aware adapter) arm's
+    """Plan 253 T2a — the LEGACY (non-candidate-aware adapter) arm's
     `build_combined_forecasts` call site. Exit gate 4."""
 
     def _run(self, qc_rules: ForecastQcRuleSet) -> dict[str, object]:
@@ -10083,7 +10083,7 @@ class TestPooledCombinationQualityControlLegacyRoute:
 
 
 class TestPooledCombinationQualityControlPerTrackRoute:
-    """Plan 246 T2a — the PER-TRACK (candidate-aware adapter, Plan 151 T8b)
+    """Plan 253 T2a — the PER-TRACK (candidate-aware adapter, Plan 151 T8b)
     arm's `build_combined_forecasts` call site. Exit gate 4."""
 
     def _run(self, qc_rules: ForecastQcRuleSet) -> dict[str, object]:
@@ -10144,7 +10144,7 @@ class TestPooledCombinationQualityControlPerTrackRoute:
         assert [flag.rule_id for flag in combination.qc_flags] == ["range_check"]
 
 
-# --- Plan 246 review (fail closed): a combination whose (parameter,
+# --- Plan 253 review (fail closed): a combination whose (parameter,
 # time_step) selects ZERO rules from the rule set actually shipped is not
 # persisted. The two classes above deliberately INJECT a 2-hour rule so the
 # QC wiring is reachable at the coarsened step; that injection is also what

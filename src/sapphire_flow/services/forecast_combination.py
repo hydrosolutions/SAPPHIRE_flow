@@ -319,7 +319,7 @@ def _qc_combined_ensemble(
     baselines: list[ClimBaseline],
     water_level_datum_masl: float | None,
 ) -> tuple[QcStatus, tuple[QcFlag, ...]]:
-    """Plan 246 T2a — the SAME rules and datum handling the member path
+    """Plan 253 T2a — the SAME rules and datum handling the member path
     applies (`run_station_forecast.py`), reused rather than reimplemented,
     so a `_pooled`/`_bma` combination is quality-controlled on identical
     terms to the ensembles it was built from. Without the datum shift, raw
@@ -351,7 +351,7 @@ def _contributor_input_quality(
     *,
     weights: dict[ModelId, float] | None,
 ) -> tuple[InputQualityLevel, tuple[InputQualityFlag, ...]]:
-    """Plan 246 T2b — the aggregate input quality of the models that
+    """Plan 253 T2b — the aggregate input quality of the models that
     actually contributed to THIS parameter, mirroring the eligibility
     `combine_ensembles_pooled`/`combine_ensembles_bma` apply (MEMBERS
     representation, and BMA's weight > 0) so a model excluded from a given
@@ -472,7 +472,7 @@ def build_combined_forecasts(
         # post-persistence reload agree.
         if derived_time_step != ensemble.time_step:
             ensemble = replace(ensemble, time_step=derived_time_step)
-        # Plan 246 review (fail closed) — QC rules are selected by EXACT
+        # Plan 253 review (fail closed) — QC rules are selected by EXACT
         # `(parameter, time_step)` (`ForecastQcRuleSet.rules_for`), and
         # production declares forecast QC rules at 3600 s and 86400 s ONLY
         # (`config/forecast_qc_rules.py`). A combination rebuilt on a

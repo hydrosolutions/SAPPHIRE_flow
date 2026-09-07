@@ -1,19 +1,19 @@
 ---
 status: DRAFT
 created: 2026-09-03
-plan: 243
+plan: 250
 title: Explicit gap markers for feeds that deliver unmarked absences
 scope: STUB — not yet scoped. Give operational ingest the ability to record an expected-but-absent observation as a `MISSING` row, so a silent feed is a countable fact rather than an inference from missing rows. Driven by DHM's API, which withholds values its own QC has flagged and delivers an unmarked gap.
-depends_on: [246]
+depends_on: [253]
 blocks: []
-source: 2026-09-03 — owner decision recorded in Plan 246 § Decision
+source: 2026-09-03 — owner decision recorded in Plan 253 § Decision
 ---
 
-# Plan 243 — explicit gap markers for feeds that deliver unmarked absences
+# Plan 250 — explicit gap markers for feeds that deliver unmarked absences
 
 ## Status
 
-**STUB — DRAFT, not scoped, not reviewed.** Created so that Plan 246's decision has somewhere to
+**STUB — DRAFT, not scoped, not reviewed.** Created so that Plan 253's decision has somewhere to
 live. It records why this work exists and what it must cover; it does not yet contain a design,
 phases, tasks or exit gates. **Do not implement from this file.**
 
@@ -36,7 +36,7 @@ There is a structural reason it cannot work today: the `stations` table carries 
 cadence, so nothing in the system can distinguish *expected but not received* from *not expected*.
 
 `docs/standards/wmo.md:169` nevertheless records this as an *Addressed in v0* gap against
-WMO-168 Vol I. Plan 246 relabels that claim; this plan is what would make it true.
+WMO-168 Vol I. Plan 253 relabels that claim; this plan is what would make it true.
 
 ## What decided it
 
@@ -51,7 +51,7 @@ or ages, and distinct from the `OBSERVATION_FRESHNESS` check it was mistaken for
 Management System flags a bad value `Erroneous` and then withholds it from the API, so what arrives is
 an absence with no marker, indistinguishable from a telemetry outage or from a station that never
 reported that parameter. That is the consumer the marker exists for. Full reasoning, including why
-this is the low-risk option, is in `docs/plans/246-close-the-store-boundary-seam.md` § Decision — it is
+this is the low-risk option, is in `docs/plans/253-close-the-store-boundary-seam.md` § Decision — it is
 not repeated here.
 
 ## ⛔ What this must not be mistaken for
@@ -137,7 +137,7 @@ which is an open interface question with them
   `ModelFailure`** — an FI `ModelFailure` is only converted after `predict()` returns (`:394`), which
   a gated station never reaches); coverage checks behind `AssignmentFailureCause.INSUFFICIENT_COVERAGE`;
   observation-staleness, which feeds `assess_input_quality` and therefore loops straight back into
-  Plan 246's newly persisted `input_quality`; hindcast forcing; skill sample size; and Forecast Lab.
+  Plan 253's newly persisted `input_quality`; hindcast forcing; skill sample size; and Forecast Lab.
   For each path, confirm whether a materialised null is seen as present-but-NaN or as absent.
 - **Whether `pipeline_health` and gap rows now overlap**, and if so which is authoritative for what.
   Two mechanisms recording station silence is defensible; two mechanisms disagreeing is not.

@@ -275,7 +275,7 @@ def list_forecasts(
         False,
         description=(
             "Return only forecasts assessed PARTIAL or DEGRADED input "
-            "quality (Plan 246 OD-2). Forecasts with no assessment "
+            "quality (Plan 253 OD-2). Forecasts with no assessment "
             "recorded (unknown) are never included."
         ),
     ),

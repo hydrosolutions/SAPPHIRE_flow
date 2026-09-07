@@ -379,7 +379,7 @@ class TestListForecasts:
 
 
 class TestListForecastsInputQuality:
-    """Plan 246 T1c / OD-2: input_quality + input_quality_flags are visible
+    """Plan 253 T1c / OD-2: input_quality + input_quality_flags are visible
     to every authenticated role (no role-filtering), a legacy row with no
     assessment serialises as null (not silently dropped, not FULL), and the
     degraded_only filter returns exactly the assessed-degraded set."""

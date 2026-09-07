@@ -77,10 +77,10 @@ def _discharge_range_qc_rules(
 ) -> ForecastQcRuleSet:
     """A REAL forecast QC rule (`range_check`), the same rule
     `config/forecast_qc_rules.py` declares in production — not a mocked
-    checker verdict (Plan 246 exit gate 4).
+    checker verdict (Plan 253 exit gate 4).
 
     Every test whose combination is EXPECTED to persist must pass a rule
-    set that covers the step that combination lands on: since the Plan 246
+    set that covers the step that combination lands on: since the Plan 253
     review fix, `build_combined_forecasts` refuses to persist a combination
     whose `(parameter, time_step)` selects no rules at all, because
     `worst_qc_status([])` would otherwise report an unchecked combination
@@ -1064,7 +1064,7 @@ class TestBuildCombinedForecastsUniformSpacing:
 
 
 class TestBuildCombinedForecastsProductionQcRuleCoverage:
-    """Plan 246 review (fail closed) — with the rule set the deployment
+    """Plan 253 review (fail closed) — with the rule set the deployment
     actually ships, not an injected one.
 
     `ForecastQcRuleSet.rules_for` matches `time_step` by EQUALITY and
@@ -1165,7 +1165,7 @@ class TestBuildCombinedForecastsProductionQcRuleCoverage:
 
 
 class TestBuildCombinedForecastsQualityControl:
-    """Plan 246 T2a — the combined ensemble is quality-controlled on the
+    """Plan 253 T2a — the combined ensemble is quality-controlled on the
     SAME rules and datum handling as its members, from every call site
     that stores one; a QC_FAILED combination is stored marked failed
     (OD-1), never dropped."""
@@ -1428,7 +1428,7 @@ class TestBuildCombinedForecastsQualityControl:
 
 
 class TestBuildCombinedForecastsInputQuality:
-    """Plan 246 T2b — the combination reports the aggregate input quality
+    """Plan 253 T2b — the combination reports the aggregate input quality
     of the models that actually contributed to THAT parameter."""
 
     def test_full_plus_degraded_contributor_yields_degraded(self) -> None:

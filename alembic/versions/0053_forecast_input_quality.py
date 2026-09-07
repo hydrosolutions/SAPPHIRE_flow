@@ -1,4 +1,4 @@
-"""forecasts.input_quality + input_quality_flags columns (Plan 246 T1a)
+"""forecasts.input_quality + input_quality_flags columns (Plan 253 T1a)
 
 Revision ID: 0053
 Revises: 0052

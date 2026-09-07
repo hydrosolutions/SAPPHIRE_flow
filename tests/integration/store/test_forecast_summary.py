@@ -357,7 +357,7 @@ class TestFetchSummariesEmpty:
 
 
 class TestFetchSummariesInputQuality:
-    """Plan 246 T1c — proven against the real SQL predicate, not only the
+    """Plan 253 T1c — proven against the real SQL predicate, not only the
     fake: degraded_only returns exactly the assessed PARTIAL/DEGRADED set,
     and never an unknown (NULL) row."""
 

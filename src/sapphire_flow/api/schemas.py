@@ -97,7 +97,7 @@ class ForecastSummary(BaseModel):
     qc_status: str
     nwp_cycle_source: str
     created_at: datetime
-    # Plan 246 T1c / OD-2: visible to every authenticated role, no
+    # Plan 253 T1c / OD-2: visible to every authenticated role, no
     # role-filtering — supersedes 023:128-143 (docs/standards/security.md).
     # null = unknown (no assessment recorded, e.g. a legacy row); this is
     # distinct from an assessed forecast with zero flags ([]).
