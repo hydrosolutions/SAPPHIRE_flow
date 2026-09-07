@@ -67,9 +67,16 @@ class RecapVariable:
     """One SAP3 canonical weather parameter mapped to its Recap source names.
 
     `convert` applies the grounded source→canonical unit conversion at the adapter
-    boundary. `convert is None` is the deliberate sentinel for the snow variables
-    (`hs`/`rof`/`swe`): their Gateway source-unit magnitudes are UNCONFIRMED, so no
-    factor is committed in Plan 081 — that is a Plan 082 live-smoke item.
+    boundary. `convert is None` means "source unit UNGROUNDED — do not trust the
+    magnitude"; no variable in this table is on that sentinel any more. The snow
+    factors were committed by Plan 219 once the snow modeller's specification
+    (2026-09-07) confirmed `swe` mm, `hs` m and `rof` mm.
+
+    The Gateway sends NO units for any variable (measured 2026-09-07: every
+    response is value/`source`/`source_run`, nothing else), and by contract it
+    applies no transformation beyond the basin average — so each entry's source
+    unit is exactly what the UPSTREAM source publishes, and the authority is that
+    source's documentation. See Plan 243.
     """
 
     canonical: str
@@ -83,7 +90,8 @@ class RecapVariable:
 # SAP3-owned Recap variable catalog. Separate, never-merged structure from
 # MeteoSwiss `PARAM_GROUPS` (a Swiss STAC/cfgrib extraction allowlist). Precip and
 # temperature carry grounded conversions; snow names are confirmed but their
-# magnitude factors are deferred to Plan 082 (`convert=None`).
+# snow factors are committed as of Plan 219 (units from the modeller's spec);
+# no variable here is left on the ungrounded `convert=None` sentinel.
 RECAP_VARIABLES: dict[str, RecapVariable] = {
     "precipitation": RecapVariable(
         canonical="precipitation",
@@ -104,11 +112,13 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         unit="cm",
         snow_name="hs",
         # Plan 219: Gateway serves `hs` in METRES; our canonical unit is cm.
-        # OWNER-SUPPLIED, NOT MEASURED — HRU 12300 has effectively no snow in
-        # any season (depth peaks at 0.0006 in mid-winter reanalysis), so no
-        # magnitude comparison can confirm it there. An m/cm mix-up is a 100x
-        # error that 12300 would never reveal. CONFIRM WITH THE GATEWAY TEAM
-        # BEFORE ANY SNOWY BASIN USES THIS CHANNEL.
+        # CONFIRMED 2026-09-07 by the snow modeller's specification — every
+        # NetCDF variable carries CF `units` (swe: mm, hs: m, rof: mm) and
+        # `cell_methods` (time: point for the SWE/depth states, time: sum for
+        # runoff). Our aggregation matches that too (states MEAN, snowmelt SUM).
+        # Residual risk: whether the Gateway's parquet extraction preserves the
+        # source attribute is not visible from our side — these factors assume
+        # it serves the source units unchanged.
         convert=_metres_to_cm,
     ),
     "snowmelt": RecapVariable(
@@ -117,7 +127,7 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         snow_name="rof",
         # Plan 219: Gateway serves `rof` in mm, matching our canonical unit —
         # identity, stated explicitly so it is no longer the "ungrounded"
-        # sentinel. Owner-supplied; see `snow_depth` for the caveat.
+        # sentinel. CONFIRMED by the modeller's spec; see `snow_depth`.
         convert=_identity,
     ),
     "swe": RecapVariable(
@@ -126,7 +136,7 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         snow_name="swe",
         # Plan 219: Gateway serves `swe` in mm, matching our canonical unit —
         # identity, stated explicitly so it is no longer the "ungrounded"
-        # sentinel. Owner-supplied; see `snow_depth` for the caveat.
+        # sentinel. CONFIRMED by the modeller's spec; see `snow_depth`.
         convert=_identity,
     ),
 }

@@ -128,12 +128,14 @@ meaning of 12 historical records.
 
 ## Owner decisions
 
-- **Q1 — THE ONLY ONE STILL OPEN.** If T1 cannot ground the snow units against a reference, do we
-  **(b) store nothing and file a Gateway issue**, or **(c) pause the plan**? Recommendation: (b).
-  *(Option (a), "store raw values tagged unit=unknown with a provenance note", is CUT. Independent
-  review 2026-09-04: neither `WeatherForecastRecord` nor the `weather_forecasts` table has a unit or
-  provenance field (`types/weather.py:27-40`, `db/metadata.py:757-783`), so (a) needs exactly the
-  schema work this plan forbids. If units cannot be grounded, store nothing.)*
+- **Q1 — RESOLVED 2026-09-07 by the snow modeller's specification.** No fallback needed: every source
+  NetCDF carries CF `units` (`swe: mm`, `hs: m`, `rof: mm`) and `cell_methods` (`time: point` for the
+  SWE/depth states, `time: sum` for runoff — `rof` is the hourly increment, daily total = sum of 24).
+  **Our deployed converters and our aggregation BOTH match that spec**, so the values shipped in
+  Plan 219 are correct as implemented, not merely plausible. Time axes are UTC throughout.
+  **Residual risk (narrowed, not closed):** whether the Gateway's parquet extraction preserves the
+  source `units` attribute end-to-end is not visible from our side; the modeller flagged the same
+  point. Our factors assume the Gateway serves the source units unchanged.
 - **Q2 — RESOLVED; the table stands.** A snow-only gap must NOT page, an IFS gap must. Production
   already treats `snow_unavailable` as degradation affecting only snow-fed models
   (`flows/run_forecast_cycle.py:249-254,1563-1566`) and the wrapper pages on any non-zero IFS result.
