@@ -289,6 +289,21 @@ class ModelDataRequirements:
     # `services/training_data.py::resolved_aggregation_methods`). A `tuple`-
     # of-pairs `frozenset`, not a `dict`, to keep this dataclass hashable.
     declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()
+    # Plan 241 T2: the model's OWN horizon declaration (FI >= 0.1.20
+    # `FutureKnownVariable.horizon_semantics` / `min_future_steps`), captured by
+    # the FI adapter so `services/horizon_semantics.py` can honour it. Without
+    # this the declaration dies at the adapter boundary — the adapter consumes
+    # `input_requirement` internally and never re-exposes it, so rung 1 could
+    # never fire for ANY FI-discovered model, on ANY FI version.
+    #
+    # `"exact"` means the model explicitly requires its full horizon; `"at_most"`
+    # means fewer steps are acceptable, with `declared_min_future_steps` the
+    # binding floor. `None` means the model declares nothing (FI < 0.1.20, a
+    # native model, or a model that simply did not say) — preserving today's
+    # strict default. Plain `str`/`int` rather than the FI enum so this dataclass
+    # stays hashable and free of an FI import.
+    declared_horizon_semantics: str | None = None
+    declared_min_future_steps: int | None = None
 
     def __post_init__(self) -> None:
         if self.lookback_steps < 1:
@@ -303,6 +318,27 @@ class ModelDataRequirements:
                 "declared_aggregations must not declare conflicting methods "
                 f"for the same parameter: {sorted(names)}"
             )
+        # Plan 241 T4 (independent review, minor): an incoherent horizon
+        # declaration must be unrepresentable rather than silently resolved.
+        # `resolve_required_steps` accepts any non-boolean int as a floor, so a
+        # 0 or negative value would quietly mean "require nothing".
+        if self.declared_horizon_semantics not in (None, "exact", "at_most"):
+            raise ValueError(
+                "declared_horizon_semantics must be 'exact', 'at_most' or None, "
+                f"got {self.declared_horizon_semantics!r}"
+            )
+        if self.declared_min_future_steps is not None:
+            if self.declared_horizon_semantics != "at_most":
+                raise ValueError(
+                    "declared_min_future_steps is only meaningful with "
+                    "declared_horizon_semantics='at_most', got "
+                    f"{self.declared_horizon_semantics!r}"
+                )
+            if self.declared_min_future_steps < 1:
+                raise ValueError(
+                    "declared_min_future_steps must be ≥ 1, got "
+                    f"{self.declared_min_future_steps}"
+                )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

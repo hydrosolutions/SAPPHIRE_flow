@@ -9,7 +9,6 @@ from uuid import UUID, uuid4
 import polars as pl
 from structlog.testing import capture_logs
 
-import sapphire_flow.services.horizon_semantics as horizon_semantics
 import sapphire_flow.services.run_station_forecast as rsf_module
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import ModelOutputError
@@ -50,7 +49,6 @@ from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import FakeModelArtifactStore, FakeModelStateStore
 
 if TYPE_CHECKING:
-    import pytest
     from pytest import MonkeyPatch
 
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
@@ -1001,7 +999,12 @@ class _ShortHorizonNwpModel:
     predicts. ensemble_mode=SINGLE so ``_run_single_model`` calls predict directly.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        declared_horizon_semantics: str | None = None,
+        declared_min_future_steps: int | None = None,
+    ) -> None:
         from sapphire_flow.types.enums import (
             ArtifactScope,
             EnsembleMode,
@@ -1011,6 +1014,8 @@ class _ShortHorizonNwpModel:
 
         self.artifact_scope = ArtifactScope.STATION
         self.data_requirements = ModelDataRequirements(
+            declared_horizon_semantics=declared_horizon_semantics,
+            declared_min_future_steps=declared_min_future_steps,
             target_parameters=frozenset({"discharge"}),
             past_dynamic_features=frozenset(),
             future_dynamic_features=frozenset({"precipitation", "temperature"}),
@@ -1103,7 +1108,13 @@ class TestNwpCoverageGuard:
     _NWP_ID = ModelId("nwp_regression")
     _NATIVE_ID = ModelId("persistence_fallback")
 
-    def _run_all(self, future_rows: int) -> MultiModelForecastResult:
+    def _run_all(
+        self,
+        future_rows: int,
+        *,
+        declared_horizon_semantics: str | None = None,
+        declared_min_future_steps: int | None = None,
+    ) -> MultiModelForecastResult:
         store = FakeModelArtifactStore()
         _seed_artifact(store, self._NWP_ID)
         _seed_artifact(store, self._NATIVE_ID)
@@ -1116,7 +1127,10 @@ class TestNwpCoverageGuard:
                 _make_assignment(self._NATIVE_ID, priority=2),
             ],
             models={
-                self._NWP_ID: _ShortHorizonNwpModel(),  # type: ignore[dict-item]
+                self._NWP_ID: _ShortHorizonNwpModel(  # type: ignore[dict-item]
+                    declared_horizon_semantics=declared_horizon_semantics,
+                    declared_min_future_steps=declared_min_future_steps,
+                ),
                 self._NATIVE_ID: FakeStationForecastModel(),  # type: ignore[dict-item]
             },
             artifact_store=store,
@@ -1147,37 +1161,30 @@ class TestNwpCoverageGuard:
         native = result.results[self._NATIVE_ID]
         assert native.ensembles["discharge"].forecast_horizon_steps == 5
 
-    def test_an_opted_in_model_runs_on_a_short_frame(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Plan 159 T0d at the REAL seam, not just the helper: the SAME 1-row frame
-        that is skipped above must now be accepted, because the provider opt-in says
-        this model's declared horizon is a ceiling. Patching our own config table is
-        legitimate here — what must never be faked is the entry point itself."""
-        monkeypatch.setattr(
-            horizon_semantics.__name__ + ".HORIZON_CEILING_FLOORS",
-            {self._NWP_ID: 1},
-            raising=True,
+    def test_a_model_declaring_at_most_runs_on_a_short_frame(self) -> None:
+        """Plan 241 T3 at the REAL seam: the SAME 1-row frame that is skipped above is
+        accepted when the MODEL declares its horizon is a ceiling. Until Plan 241 this
+        was expressed by a provider-side opt-in table, which existed only because the
+        declaration could not reach the resolver; the table is gone and the model now
+        says it itself."""
+        result = self._run_all(
+            future_rows=1,
+            declared_horizon_semantics="at_most",
+            declared_min_future_steps=1,
         )
-
-        result = self._run_all(future_rows=1)
 
         assert self._NWP_ID in result.results
         assert self._NWP_ID not in result.failed_models
         assert result.primary_model_id == self._NWP_ID
 
-    def test_an_opt_in_below_the_available_rows_still_refuses(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The opt-in is a FLOOR, not "anything goes": a frame shorter than the floor
-        is still refused, so truncation stays bounded."""
-        monkeypatch.setattr(
-            horizon_semantics.__name__ + ".HORIZON_CEILING_FLOORS",
-            {self._NWP_ID: 3},
-            raising=True,
+    def test_a_declared_floor_below_the_available_rows_still_refuses(self) -> None:
+        """`min_future_steps` is a FLOOR, not "anything goes": a frame shorter than the
+        declared floor is still refused, so truncation stays bounded."""
+        result = self._run_all(
+            future_rows=1,
+            declared_horizon_semantics="at_most",
+            declared_min_future_steps=3,
         )
-
-        result = self._run_all(future_rows=1)
 
         assert self._NWP_ID not in result.results
         assert self._NWP_ID in result.failed_models

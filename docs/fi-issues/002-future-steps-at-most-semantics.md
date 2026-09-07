@@ -1,6 +1,9 @@
 # FI issue draft — `FutureKnownVariable.future_steps` cannot express "at most N"
 
-**Status:** DRAFT, ready to file at `hydrosolutions/ForecastInterface`.
+**Status:** ✅ **RESOLVED — shipped in ForecastInterface v0.1.20, consumed by SAP3 2026-09-04.**
+Adopt by: pinning FI `>= v0.1.20` *and* an aquacast revision that pins the same (they are coupled —
+see Plan 241 T1), then propagating the declaration through `ForecastInterfaceAdapter` (Plan 241 T2).
+Originally filed as: DRAFT, ready to file at `hydrosolutions/ForecastInterface`.
 **Raised by:** SAPPHIRE Flow (SAP3), 2026-08-13.
 **Related:** `hydrosolutions/ForecastInterface#4` (direct exceedance probability) — same pattern: a
 contract gap that both sides are currently working around in prose.
@@ -96,3 +99,45 @@ Any provider whose NWP horizon is shorter than a model's training horizon must e
 the model or guess at its tolerance. For SAP3 specifically this blocks operational forecasting for
 Swiss stations, where ICON's 120 h is a hard ceiling and no 15-day source is available for the
 region.
+
+---
+
+## Resolution (2026-09-04)
+
+**FI v0.1.20 shipped exactly the proposed contract** — `HorizonSemantics.{EXACT, AT_MOST}`,
+`horizon_semantics` defaulting to `EXACT`, and `min_future_steps` alongside, at variable level.
+aquacast adopted it in `aquacast/operational/requirement.py`, declaring
+`AT_MOST if relaxable else EXACT` from `horizon_fixed_reason` — i.e. from `_relax_horizon`, the
+model-side knowledge this issue said was "invisible to consumers". Property 1 (default `EXACT`, so no
+provider starts truncating silently after an upgrade) holds and was verified before adoption.
+
+### 🔴 Property 2 did not survive contact, and the correction is ours
+
+This issue argued `min_future_steps` mattered because *"a 15-day model may be useless at 1 day.
+Without a floor, each provider invents its own."* aquacast declares **1** and states that this is the
+**architectural** floor — what the weights can serve — and that *"whether a 1-step lead is worth
+ACTING on is the consumer's call"*.
+
+**We asked for a usefulness floor and received a capability floor, and aquacast is right.** A model
+serving many consumers cannot know whether a short lead is actionable; that depends on the station,
+the decision it feeds and the operator. This issue asserted "may be useless at 1 day" without saying
+*whose* judgement that is — and it is ours.
+
+So `min_future_steps` does **not** save a provider from choosing its own operational minimum. It only
+says the model will not error. SAP3's owner decision (Plan 241) is to **take the capability floor as
+declared** and add no operational minimum, accepting that a very short forecast will be produced
+where one is currently refused.
+
+### 🪤 The default is a trap for the consumer
+
+Because `horizon_semantics` **defaults** to `EXACT`, reading the value alone cannot distinguish
+"declared EXACT" from "declared nothing" — every model looks explicitly strict. SAP3 distinguishes
+them with pydantic's `model_fields_set` (`adapters/forecast_interface.py`). A consumer that misses
+this will silently make every model strict.
+
+### What kept this open for weeks
+
+Nothing technical. The contract was fixed upstream and adopted by aquacast, while SAP3 stayed on an
+old pinned revision — and **this document carried no "resolved in vX, adopt by doing Y" marker**, so
+nobody re-checked. Any future FI issue should name the version to watch for and the adoption steps,
+as the Status block above now does.

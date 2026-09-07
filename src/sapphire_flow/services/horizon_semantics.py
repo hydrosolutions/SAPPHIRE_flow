@@ -1,26 +1,32 @@
-"""Plan 159 T0d — INTERIM: how many future steps a model actually requires.
+"""How many future steps a model actually requires.
 
-A model declares `future_steps`, but the ForecastInterface could not say whether that
-number is a **floor** ("fewer is an error") or a **ceiling** ("fewer is acceptable and
-yields a shorter forecast"). FI v0.1.20 fixes that with
-`FutureKnownVariable.horizon_semantics`; until a model declares it, a provider has to
-choose, and choosing "ceiling" for everyone would hand a strictly-15-day model a 5-day
-input and get a plausible-but-wrong forecast back.
+A model declares `future_steps`, but that number alone cannot say whether it is a
+**floor** ("fewer is an error") or a **ceiling** ("fewer is acceptable and yields a
+shorter forecast"). FI v0.1.20 added `FutureKnownVariable.horizon_semantics` +
+`min_future_steps` so a model can say which it means — the contract gap SAP3 raised in
+`docs/fi-issues/002-future-steps-at-most-semantics.md`.
 
-So resolution runs in this order, and **the interim rung disappears on its own**:
+Resolution:
 
 1. **The model's own declaration wins.** `horizon_semantics=AT_MOST` -> use its
-   `min_future_steps`. Read defensively, because FI v0.1.19 has no such field.
-2. **Otherwise the provider opt-in** (`HORIZON_CEILING_FLOORS`, `types/ids.py`), logged
-   at WARNING on every use. That log is the retirement signal: when it stops appearing,
-   the table can be deleted.
-3. **Otherwise strict** — the declared number, unchanged, which is every model that
-   opts into nothing.
+   `min_future_steps`; an explicit `EXACT` -> strict.
+2. **Otherwise strict** — the declared number, unchanged. A model that says nothing is
+   never silently truncated.
 
-**This module is DELETE-ON-ARRIVAL.** It exists because `cmal_pool_PT` declares
-`future_steps=15` while its architecture accepts fewer, and the maintainer who can add
-the declaration is away. When aquacast declares `AT_MOST`, rung 2 stops firing — delete
-`HORIZON_CEILING_FLOORS` and this module's opt-in branch. Do not grow it.
+⚠️ **"Declared" means the model SET the field, not that the field has a value.** FI
+>= 0.1.20 DEFAULTS `horizon_semantics` to `EXACT`, so reading the value alone would make
+every model look explicitly strict. The FI adapter distinguishes them via pydantic's
+`model_fields_set` and projects the result onto `ModelDataRequirements`
+(`adapters/forecast_interface.py`); this module reads that projection first, because
+an FI-discovered model is wrapped in an adapter that does not re-expose
+`input_requirement`.
+
+*History (Plan 241).* An interim provider opt-in table (`HORIZON_CEILING_FLOORS`)
+used to sit between rungs 1 and 2, because the declaration could not reach this code
+at all: the adapter dropped it, so rung 1 could never fire on any FI version. Both the
+table and that rung were deleted once the declaration actually arrived —
+`cmal_pool_pt` now resolves via `model_at_most`. Do not reintroduce a provider-side
+table; if a model needs a different horizon contract, fix the declaration upstream.
 """
 
 from __future__ import annotations
@@ -29,8 +35,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import structlog
-
-from sapphire_flow.types.ids import HORIZON_CEILING_FLOORS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sapphire_flow.types.ids import ModelId
@@ -50,7 +54,7 @@ class RequiredSteps:
 
     steps: int
     declared_steps: int
-    source: str  # "declared" | "model_at_most" | "provider_opt_in"
+    source: str  # "declared" | "model_at_most"
 
     @property
     def is_truncated(self) -> bool:
@@ -82,6 +86,22 @@ def _model_declared_floor(model: object) -> int | object | None:
     unreadable means "not declared", never a crash — this runs inside the forecast
     cycle, where an exception would take down the whole group.
     """
+    # Plan 241 T2: an FI-discovered model is wrapped in `ForecastInterfaceAdapter`,
+    # which consumes `input_requirement` internally and never re-exposes it — so the
+    # walk below finds nothing and rung 1 could never fire. The adapter now projects
+    # the resolved declaration onto `ModelDataRequirements`; prefer that when present.
+    projected = getattr(model, "data_requirements", None)
+    declared = getattr(projected, "declared_horizon_semantics", None)
+    if declared == _AT_MOST:
+        floor = getattr(projected, "declared_min_future_steps", None)
+        if isinstance(floor, int) and not isinstance(floor, bool):
+            return floor
+        return None
+    if declared is not None:
+        # An explicit EXACT: strict, and the provider opt-in must not be consulted.
+        return _DECLARED_EXACT
+
+    # Native (non-adapter) models may expose the FI requirement directly.
     requirement = getattr(model, "input_requirement", None)
     dynamic: Any = getattr(requirement, "dynamic", None)
     if not isinstance(dynamic, dict):
@@ -120,8 +140,6 @@ def resolve_required_steps(
     model: object,
     model_id: ModelId,
     declared_steps: int,
-    *,
-    opt_in: dict[Any, int] | None = None,
 ) -> RequiredSteps:
     """Resolve the future-step requirement for one model. See the module docstring."""
     model_floor = _model_declared_floor(model)
@@ -134,28 +152,6 @@ def resolve_required_steps(
             steps=min(model_floor, declared_steps),
             declared_steps=declared_steps,
             source="model_at_most",
-        )
-
-    table = HORIZON_CEILING_FLOORS if opt_in is None else opt_in
-    provider_floor = table.get(model_id)
-    if provider_floor is not None:
-        log.warning(
-            # INTERIM path (Plan 159 T0d). Its absence from the logs is the signal
-            # that HORIZON_CEILING_FLOORS can be deleted.
-            "horizon.provider_ceiling_opt_in",
-            model_id=str(model_id),
-            declared_steps=declared_steps,
-            required_steps=provider_floor,
-            detail=(
-                "model declares no horizon_semantics; treating its declared horizon "
-                "as a CEILING via the provider opt-in. Retire this entry once the "
-                "model declares AT_MOST (ForecastInterface >= v0.1.20)."
-            ),
-        )
-        return RequiredSteps(
-            steps=min(provider_floor, declared_steps),
-            declared_steps=declared_steps,
-            source="provider_opt_in",
         )
 
     return RequiredSteps(

@@ -1098,6 +1098,15 @@ forecasts = sa.Table(
     sa.Column("combination_strategy", sa.Text, nullable=True),
     sa.Column("source_model_ids", JSONB, nullable=True),
     sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False),
+    # Plan 241 T4 (mirrors Plan 228's 0050 for `hindcast_forecasts`): the
+    # ensemble's OWN time step, set at construction. Read authoritatively —
+    # never re-inferred from the gap between `valid_time`s, which cannot be
+    # done at all for a ONE-STEP forecast and used to fabricate 1 hour.
+    # Plan 241 T4 — NULLABLE-FIRST (see alembic 0053). No server default and no
+    # backfill: existing rows stay NULL and the reader infers their cadence as it
+    # always has, while every new row carries its declared step. Tightening to
+    # NOT NULL is a later release, per cicd.md's one-version compatibility rule.
+    sa.Column("time_step_seconds", sa.Integer, nullable=True),
     sa.Column("nwp_cycle_reference_time", sa.DateTime(timezone=True), nullable=True),
     sa.Column(
         "nwp_cycle_source",
@@ -1155,6 +1164,15 @@ forecasts = sa.Table(
         ["station_id", "rating_curve_id"],
         ["rating_curves.station_id", "rating_curves.id"],
         name="fk_forecasts_rating_curve_station",
+    ),
+    # Named table-level, matching migration 0053 AND the 0050/hindcast_forecasts
+    # precedent below. An unnamed column-level CheckConstraint would let a
+    # create_all schema and a migrated schema disagree on the constraint NAME
+    # (there is no naming_convention on this MetaData), which is the drift class
+    # revision 0051 exists to repair.
+    sa.CheckConstraint(
+        "time_step_seconds IS NULL OR time_step_seconds > 0",
+        name="ck_forecasts_time_step_seconds_positive",
     ),
 )
 
