@@ -192,10 +192,16 @@ construction time — and derived it on read from the gap between `valid_time`s,
 `timedelta(hours=1)` when there was only one step. A one-step DAILY forecast round-tripped as
 HOURLY, and the API and Forecast Lab published the fabricated cadence as truth.
 
-**Pre-change (evidence, and how it fails today):** construct a one-step daily `ForecastEnsemble`,
-store it through `PgForecastStore`, read it back, and assert `time_step == timedelta(days=1)`. On
-current code the readback returns `timedelta(hours=1)` — the fabricated value, not a missing
-attribute. That is the RED, and it is a behaviour failure rather than a symbol error.
+**Pre-change (evidence, and how it fails):** construct a one-step daily `ForecastEnsemble`, store
+it through `PgForecastStore`, read it back, assert `time_step == timedelta(days=1)`; the readback
+returns `timedelta(hours=1)` — a fabricated value, not a missing attribute.
+
+⛔ **The RED must be demonstrated against `main` (a20e38b3), NOT against this branch.** T4's first
+shape is already committed here, so the writer already stores the step and the reader already
+returns it — the test is GREEN on `feat/plan-241-horizon-semantics` and proves nothing if run in
+place. Verify the red on a clean `main` checkout (or `git stash` the store change), record the
+observed `1:00:00`, and only then re-apply. A green test presented as a red is exactly the trap
+this repo has been bitten by before.
 
 **This is the SAME defect Plan 228 fixed for hindcasts in revision `0050`**, which fixed
 `hindcast_forecasts` only and left the operational `forecasts` table untouched.
@@ -220,18 +226,49 @@ correct here anyway — `forecast_values` holds one row per member (or quantile)
 a naive gap query double-counts; an intersection may be non-uniform; and a single-timestamp row has
 no derivable delta at all, so any value invented for it is fabrication in a new costume.
 
-**Nullable-first removes the need for a backfill entirely, and this is the load-bearing argument:**
+**Nullable-first removes the need for a backfill entirely:** leave existing rows `NULL` and let the
+reader keep inferring for them; populate the column for every row written from now on; tighten in a
+LATER release once the rollback window has closed.
 
-> Gap-inference is CORRECT for every row that already exists. A one-step forecast was
-> unreachable before T2/T3 — the multi-step floor guaranteed >= 2 timestamps — so every
-> pre-migration row has a derivable, and correct, spacing. The fabricated-hour branch is
-> exactly the case that could not occur.
+#### 🔴 The legacy path KEEPS its fallback — do not delete it
 
-So: leave existing rows `NULL` and let the reader fall back to inference for them, which is right
-by construction; populate the column for every row written from now on; and let a LATER release
-backfill and tighten to `NOT NULL` once the rollback window has closed. During that window an old
-image writes `NULL`, which the reader handles, and an old image cannot write a one-step forecast
-because one-step requires this very release.
+A previous revision of this task argued that gap-inference is correct for every existing row
+because *"a one-step forecast was unreachable before T2/T3"*, and on that basis deleted the
+`timedelta(hours=1)` branch outright. **That premise is FALSE, and two independent reviews agree.**
+
+Nothing at the storage boundary ever enforced a two-step minimum. `ForecastEnsemble.from_members` /
+`from_quantiles` require a non-empty frame and >= 1 member and nothing more
+(`types/ensemble.py`), `PgForecastStore` has no such guard on write, and in the whole pre-change
+store the only `>= 2` is the reader's own inference (`main:store/forecast_store.py:330`). The
+multi-step floor is a property of the RESOLVER, not an invariant of the table — so every path that
+builds an ensemble directly (replay and recording tools, imports, the Forecast Lab, tests that
+write to a real database, manual insertion) bypasses it entirely. The `else` branch exists because
+whoever wrote it treated a one-timestamp forecast as reachable.
+
+⛔ **Deleting that branch trades a wrong NUMBER for a failed READ** — `valid_times[1]` raises
+`IndexError` on a previously readable row — and stakes it on a database that could not be queried.
+That is strictly worse than the defect being fixed.
+
+**So the reader keeps exactly the behaviour it has today whenever the column is `NULL`**, including
+the one-hour fallback, now behind a WARNING log naming the forecast id. Legacy rows therefore
+behave precisely as they do now — fabrication and all — while every row written after this release
+carries its true cadence and never reaches that branch. No behaviour change for old data, full
+correctness for new, and no crash risk resting on an unverifiable premise.
+
+⚠️ Note this consciously leaves legacy one-timestamp and non-uniform rows reporting the same value
+they report today. Correcting them is the deferred tightening's problem, not this release's, and it
+needs the live-data measurement this plan could not take.
+
+#### ⚠️ Rollback-window skew, both directions
+
+`cicd.md`'s rule is about the OLD image running against the NEW schema, and nullable-first
+satisfies it: an old writer omits the column, the row is `NULL`, and the new reader infers. **But
+the reverse skew is real and must be stated:** if the deployment is rolled back, an OLD reader
+ignores `time_step_seconds` entirely and re-derives from the gaps — so a one-step daily row written
+by the new image reads back as hourly under the rolled-back image. Rollback is already
+restore-from-backup plus the previous image tag (`docs/standards/cicd.md` §Rollback), so such a row
+would normally not survive the restore; the exposure is real but bounded, and it disappears at
+tightening. Recorded so nobody rediscovers it during an incident.
 
 **In:**
 - `alembic/versions/0053_forecasts_time_step.py` — `time_step_seconds`, Integer, **NULLABLE**, no
@@ -244,9 +281,9 @@ because one-step requires this very release.
   `create_all`-built schema and autogenerate sees a permanent phantom diff. **This is the drift
   class revision `0051` exists to repair.**
 - `store/forecast_store.py` — the writer persists the ensemble's own step; the reader takes the
-  column as authoritative **when present** and falls back to the existing gap-inference only when
-  it is `NULL`. The fabricated `timedelta(hours=1)` branch is DELETED: a `NULL` row always has
-  >= 2 timestamps, so inference always succeeds.
+  column as authoritative **when present**, and when it is `NULL` keeps TODAY'S behaviour verbatim
+  — gap-inference, including the one-hour fallback for a single timestamp — now behind a WARNING
+  log naming the forecast id. ⛔ That branch is retained, NOT deleted; see above for why.
 - `types/model.py` — `ModelDataRequirements.__post_init__` rejects an incoherent horizon
   declaration (a semantics value other than `exact`/`at_most`, a floor without `at_most`, or a
   floor < 1). `resolve_required_steps` treats any non-boolean int as a floor, so a `0` would
@@ -254,20 +291,34 @@ because one-step requires this very release.
   **Pre-change:** `ModelDataRequirements(declared_min_future_steps=0, ...)` constructs today and
   silently disables the floor; after the change it raises.
 
-**Out:** any data backfill; tightening to `NOT NULL` (a later release, its own plan); fixing
-`0050`; the pooled persistence boundary (removed from this plan — see below).
+**Out:** any data backfill; tightening to `NOT NULL`; fixing `0050`; the pooled persistence
+boundary (removed from this plan — see below).
+
+📌 **The deferred tightening needs a named follow-on, not a promise.** The cited 115a/115c
+precedent works because `115c` is a real plan with a number. This one is not yet written. It must
+decide what a truthful tightening does with rows whose cadence is genuinely UNDERIVABLE — a legacy
+single-timestamp row has no spacing to recover, so `NOT NULL` can only be reached by inventing a
+value or by deleting/quarantining those rows. ⛔ Do not close this plan while that follow-on is
+unwritten; record it as an explicit debt with the measurement it needs (the live-DB cadence
+census that could not be run on 2026-09-05).
 
 🔴 **Record, do not fix:** `0050` added `hindcast_forecasts.time_step_seconds` as `NOT NULL` with
 the same unmeasured `86400` constant. It carries both defects named above — the standard violation
 and the unverified stamp. Out of scope here; it needs its own plan.
 
 **Verification.**
-`uv run pytest tests/unit` for behaviour that does not need a database:
-- a one-step daily forecast round-trips with `time_step == 1 day` (RED first, failing with the
-  fabricated `1 hour` — see Pre-change above);
+`uv run pytest tests/unit` — only what genuinely needs no database:
+- the incoherent-declaration rejections on `ModelDataRequirements`.
+
+`uv run pytest tests/integration` — ⛔ every claim about STORING or READING a forecast is a
+database claim and belongs here, alongside the existing suite
+(`tests/integration/store/test_forecast_store.py`), not in a unit run:
+- a one-step daily forecast round-trips with `time_step == 1 day` (RED first against `main` — see
+  Pre-change above);
 - a non-daily multi-step forecast round-trips unchanged;
-- a reader given a `NULL` column value still infers correctly from >= 2 timestamps;
-- the incoherent-declaration rejections.
+- a row whose column is `NULL` still infers correctly from >= 2 timestamps;
+- a row whose column is `NULL` with exactly ONE timestamp still returns today's one-hour value and
+  logs the warning — the regression guard for the branch this task deliberately keeps.
 
 `uv run pytest tests/integration` for anything that is a claim about the DATABASE — ⛔ a unit run
 cannot establish migration behaviour, and `tests/integration/db/test_migration_0052_partial_index.py`
@@ -339,8 +390,11 @@ uv run python -c "import forecast_interface as fi; assert fi.__version__ == '0.1
 - `uv run pyright` no worse than the recorded ratchet baseline.
 - T3 either deletes the interim table or records the measured reason it stays.
 - `docs/fi-issues/002` records its resolution and the capability-vs-usefulness distinction.
-- T4's column is NULLABLE with a NULL-tolerant named constraint, carries NO data backfill, and
-  leaves no `timedelta(hours=1)` fabrication anywhere in the reader.
+- T4's column is NULLABLE with a NULL-tolerant named constraint and carries NO data backfill; the
+  reader's legacy `NULL` path is UNCHANGED in behaviour (one-hour fallback retained, now logged).
+- ⛔ The one-step RED was observed against `main`, not against this branch, and the observed
+  pre-change value is recorded in the task.
+- The deferred `NOT NULL` tightening has a named follow-on plan, or this plan does not close.
 - Migration behaviour (upgrade, downgrade, constraint-name parity, a surviving NULL row) is proven
   in `tests/integration` against real Postgres — NOT asserted from a unit run.
 - ⛔ Every claim about the live database is MEASURED or explicitly marked unmeasured. The staging
