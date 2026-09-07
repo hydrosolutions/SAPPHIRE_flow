@@ -11,6 +11,7 @@ import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import hindcast_forecasts, hindcast_values
+from sapphire_flow.exceptions import StoreError
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -180,6 +181,26 @@ class PgHindcastStore:
             fid = header["id"]
             rows_for_id = values_by_id.get(fid, [])
             if not rows_for_id:
+                # Independent-review fixer round (blocker): a header with
+                # zero value rows is data CORRUPTION (a crashed write, or
+                # an out-of-band delete) — always true, but only
+                # OBSERVABLE as a gap when the caller asked for a SPECIFIC
+                # `hindcast_run_id`. An unscoped fetch cannot tell "this
+                # step legitimately has no hindcast" from "this step's
+                # hindcast was silently dropped here", so it keeps logging
+                # and skipping; a caller that named an exact run gets a
+                # loud failure instead of a quietly incomplete result the
+                # completeness gate (`flows.compute_skills`) never sees,
+                # since this drop happens upstream of every cohort/rejected
+                # -count accounting there.
+                if hindcast_run_id is not None:
+                    raise StoreError(
+                        f"hindcast_forecasts row {fid} for station "
+                        f"{station_id}, model {model_id}, run "
+                        f"{hindcast_run_id} has no hindcast_values rows — "
+                        "an orphan header cannot be silently excluded from "
+                        "a run-scoped fetch."
+                    )
                 log.warning(
                     "hindcast.orphan_header_skipped",
                     hindcast_forecast_id=fid,
@@ -219,7 +240,28 @@ class PgHindcastStore:
         parameter: str,
         period_start: UtcDatetime,
         period_end: UtcDatetime,
+        hindcast_run_ids: dict[ModelId, UUID] | None = None,
     ) -> dict[ModelId, list[HindcastForecast]]:
+        """Plan 235 T3: `hindcast_run_ids` scopes each combined model to ONE
+        of its own hindcast runs (models are combined pairwise, each on its
+        own schedule — a single shared run id cannot express that). Omitting
+        it (`None`) fetches every run in the window, unscoped — the defect
+        the plan's "trap for Plan 226" section names: a recompute that omits
+        per-model run ids can publish both an old and a newly-anchored
+        cohort inside one generation. `compute_combined_skills_task`
+        requires it.
+
+        Fixer round (blocker): an explicitly EMPTY mapping (`{}`) must NOT
+        be treated the same as omitting the argument. `if hindcast_run_ids:`
+        is falsy for both `None` and `{}`, so a caller that is REQUIRED to
+        pass a mapping (per T3) but passes an empty one used to silently
+        fall through to the unscoped, un-filtered fetch this parameter
+        exists to prevent — mixing anchored and unanchored cohorts under
+        one generation exactly like the omitted-argument case. An empty
+        mapping names zero models, so it can only ever match zero rows.
+        """
+        if hindcast_run_ids is not None and not hindcast_run_ids:
+            return {}
         q = sa.select(hindcast_forecasts).where(
             sa.and_(
                 hindcast_forecasts.c.station_id == station_id,
@@ -228,6 +270,18 @@ class PgHindcastStore:
                 hindcast_forecasts.c.hindcast_step < period_end,
             )
         )
+        if hindcast_run_ids is not None:
+            q = q.where(
+                sa.or_(
+                    *(
+                        sa.and_(
+                            hindcast_forecasts.c.model_id == model_id,
+                            hindcast_forecasts.c.hindcast_run_id == run_id,
+                        )
+                        for model_id, run_id in hindcast_run_ids.items()
+                    )
+                )
+            )
         header_rows = self._conn.execute(q).mappings().all()
         if not header_rows:
             return {}
@@ -248,6 +302,21 @@ class PgHindcastStore:
             fid = header["id"]
             rows_for_id = values_by_id.get(fid, [])
             if not rows_for_id:
+                # Independent-review fixer round (blocker): see the
+                # identical note in `fetch_hindcasts` — an orphan header
+                # silently dropped here happens BEFORE any caller's
+                # rejected-hindcast completeness accounting can see it, so
+                # a run-scoped request (a real `hindcast_run_ids` mapping,
+                # required by every production caller of this method per
+                # T3) must fail loudly rather than quietly under-report.
+                if hindcast_run_ids is not None:
+                    raise StoreError(
+                        f"hindcast_forecasts row {fid} for station "
+                        f"{station_id}, model {header['model_id']}, run "
+                        f"{header['hindcast_run_id']} has no "
+                        "hindcast_values rows — an orphan header cannot be "
+                        "silently excluded from a run-scoped fetch."
+                    )
                 log.warning(
                     "hindcast.orphan_header_skipped",
                     hindcast_forecast_id=fid,

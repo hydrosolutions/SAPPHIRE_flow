@@ -112,6 +112,29 @@ class DeploymentConfig(BaseModel):
     enable_pipeline_alerts: bool = False
     threshold_check_mode: Literal["raw", "published", "both"] = "raw"
 
+    # Plan 235 per-run scope (blocker #4), independent-review fixer round
+    # (blocker: "generation-tagged writes enabled by default violates the
+    # two-release rollout"): the two-release rollout the migration 0054
+    # review demanded. Schema (skill_generations, generation-aware indexes)
+    # and every generation-AWARE reader (T2) ship together in THIS release;
+    # this flag governs only the WRITE side — whether
+    # `flows.compute_skills`/`services.onboarding` tag rows with a
+    # generation and publish one, or keep writing the pre-235 baseline
+    # shape (`generation_id=NULL`, no `skill_generations` row). Defaults
+    # **False** — Release A ships generation-aware readers and schema with
+    # writes UNCHANGED; every caller that omits this field (including a
+    # bare `deployment_config=None`, see the matching `getattr(...,
+    # False)` fallbacks in `flows/compute_skills.py` and
+    # `services/onboarding.py`) gets the pre-235 baseline shape. An
+    # operator only flips this to `true` for Release B, in a separately
+    # reviewed change, once every rollback image in the fleet is already
+    # generation-aware — so a rollback during the rollout window always
+    # lands on an image that already understands the rows on disk, never a
+    # mix it cannot interpret (`docs/standards/cicd.md`'s one-release
+    # rollback rule). See `tests/unit/config/test_deployment.py::
+    # TestEnableSkillGenerationsDefault` for the Release-A locking test.
+    enable_skill_generations: bool = False
+
     # Plan 115b4 §5D (Release A): default flipped "single" -> "hybrid".
     # "single" reads a station's ONE nwp_source binding directly and can no
     # longer see MeteoSwiss's per-product source tags (RhiresD/RprelimD/...) —

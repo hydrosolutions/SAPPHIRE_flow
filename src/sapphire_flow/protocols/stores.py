@@ -270,7 +270,14 @@ class HindcastStore(Protocol):
         parameter: str,
         period_start: UtcDatetime,
         period_end: UtcDatetime,
+        hindcast_run_ids: dict[ModelId, UUID] | None = None,
     ) -> dict[ModelId, list[HindcastForecast]]:
+        """`hindcast_run_ids` scopes each combined model to ONE of its own
+        hindcast runs (Plan 235 T3). `None` fetches every run in the window,
+        unscoped; an explicitly EMPTY mapping matches zero rows — it must
+        NOT be treated as `None` (Plan 235 fixer round, blocker). See
+        `store.hindcast_store.PgHindcastStore.fetch_hindcasts_by_station`.
+        """
         raise NotImplementedError
 
 
@@ -372,10 +379,16 @@ class AlertStore(Protocol):
 
 @runtime_checkable
 class SkillStore(Protocol):
-    def store_skill_scores(self, scores: list[SkillScore]) -> None:
+    def store_skill_scores(self, scores: list[SkillScore]) -> int:
+        """Returns the number of rows actually inserted — may be less than
+        `len(scores)` when `ON CONFLICT DO NOTHING` drops a natural-key
+        collision. Callers reconcile this against the expected count
+        before publishing a generation (Plan 235 fixer round, major).
+        """
         raise NotImplementedError
 
-    def store_skill_diagrams(self, diagrams: list[SkillDiagram]) -> None:
+    def store_skill_diagrams(self, diagrams: list[SkillDiagram]) -> int:
+        """See `store_skill_scores` — same accurate-rowcount contract."""
         raise NotImplementedError
 
     def fetch_latest_scores(
@@ -420,6 +433,34 @@ class SkillStore(Protocol):
         end: UtcDatetime,
         parameter: str | None = None,
     ) -> int:
+        raise NotImplementedError
+
+    def publish_generation(
+        self,
+        *,
+        generation_id: UUID,
+        station_id: StationId,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId | None,
+        parameter: str,
+        skill_source: SkillSource,
+        forcing_type: ForcingType | None,
+        computation_version: int,
+        published_at: UtcDatetime,
+        score_count: int,
+        diagram_count: int,
+    ) -> None:
+        """Plan 235 D3/D2c — the atomic, INSERT-only publication that makes
+        a generation's scores/diagrams current. See
+        `store.skill_store.PgSkillStore.publish_generation`.
+        """
+        raise NotImplementedError
+
+    def count_generation_rows(self, generation_id: UUID) -> tuple[int, int]:
+        """Returns (score_count, diagram_count) actually persisted under
+        `generation_id`. See
+        `store.skill_store.PgSkillStore.count_generation_rows`.
+        """
         raise NotImplementedError
 
 

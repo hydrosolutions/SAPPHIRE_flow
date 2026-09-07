@@ -16,6 +16,7 @@ from sapphire_flow.db.metadata import (
     models,
     stations,
 )
+from sapphire_flow.exceptions import StoreError
 from sapphire_flow.store.hindcast_store import PgHindcastStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import QcFlag
@@ -171,6 +172,23 @@ def _make_hindcast(
         ensemble=ensemble,
         created_at=created_at if created_at is not None else _T0,
     )
+
+
+class TestPgHindcastStoreProtocolConformance:
+    """Plan 235 fixer round (major, structural-conformance coverage):
+    `compute_combined_skills_task`'s `hindcast_store` is now typed
+    `HindcastStore | None` (a real, non-TYPE_CHECKING import — see
+    `flows/compute_skills.py`) so static checking can catch an
+    incompatible conformer; lock the REAL implementation against that same
+    Protocol (the fakes are already locked in `tests/fakes/test_fakes.py`).
+    """
+
+    def test_pg_hindcast_store_conforms_to_protocol(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.protocols.stores import HindcastStore
+
+        assert isinstance(PgHindcastStore(db_connection), HindcastStore)
 
 
 class TestStoreAndFetch:
@@ -504,6 +522,49 @@ class TestFetchHindcastsByStation:
         )
 
         assert result == {}
+
+    def test_empty_run_ids_mapping_matches_nothing_unlike_omitted(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 235 fixer round (blocker): `if hindcast_run_ids:` was falsy
+        for BOTH `None` (omitted — deliberately unscoped) and `{}`
+        (explicitly empty), so a caller REQUIRED to pass a mapping but
+        passing an empty one silently got the unscoped fetch instead of
+        zero matches — mixing an anchored and an unanchored cohort under
+        one generation exactly like the omitted-argument trap this
+        parameter exists to close.
+        """
+        sid = _seed_station(db_connection)
+        mid_a = _seed_model(db_connection)
+        mid_b = _seed_model(db_connection)
+        aid_a = _seed_artifact(db_connection, mid_a, sid)
+        aid_b = _seed_artifact(db_connection, mid_b, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        step = _utc(2025, 3, 1)
+        store.store_hindcast(_make_hindcast(sid, mid_a, aid_a, hindcast_step=step))
+        store.store_hindcast(_make_hindcast(sid, mid_b, aid_b, hindcast_step=step))
+
+        # Omitted (`None`) — the deliberately unscoped path — matches both.
+        unscoped = store.fetch_hindcasts_by_station(
+            sid, "discharge", _utc(2025, 2, 28), _utc(2025, 3, 2)
+        )
+        assert set(unscoped.keys()) == {mid_a, mid_b}
+
+        # Explicitly empty — names zero models, must match zero rows.
+        empty_mapping = store.fetch_hindcasts_by_station(
+            sid,
+            "discharge",
+            _utc(2025, 2, 28),
+            _utc(2025, 3, 2),
+            hindcast_run_ids={},
+        )
+        assert empty_mapping == {}, (
+            "an explicitly empty hindcast_run_ids mapping must match "
+            "nothing, never fall back to the same unscoped fetch as None"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -953,6 +1014,111 @@ class TestFetchHindcastsOrphanSkip:
         assert len(warning_events) == 1
         assert str(warning_events[0].get("station_id")) == str(sid)
         assert str(warning_events[0].get("hindcast_forecast_id")) == str(orphan_id)
+
+
+class TestFetchHindcastsOrphanHeaderInScopedRunRaises:
+    """Independent-review fixer round (blocker): an orphan header silently
+    dropped (``TestFetchHindcastsOrphanSkip`` above) happens BEFORE any
+    caller's rejected-input completeness accounting (Plan 235 per-run
+    scope, blocker #1) can see it. Every production caller of these two
+    fetches now names a SPECIFIC run (T3: ``hindcast_run_id``/
+    ``hindcast_run_ids`` is REQUIRED on `compute_skills_task`/
+    `compute_combined_skills_task`), so for THAT case an orphan header must
+    raise loudly instead of quietly shrinking the result — covering both
+    the single-model fetch and the combined (`fetch_hindcasts_by_station`)
+    fetch.
+    """
+
+    def test_fetch_hindcasts_raises_for_orphan_header_in_the_requested_run(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+
+        # A VALID hindcast under the requested run...
+        store.store_hindcast(
+            _make_hindcast(
+                sid, mid, aid, hindcast_step=_utc(2025, 10, 1), hindcast_run_id=run_id
+            )
+        )
+        # ...plus an orphan header (no hindcast_values) under the SAME
+        # requested run — a header the caller explicitly asked for.
+        orphan_id = HindcastForecastId(uuid4())
+        db_connection.execute(
+            sa.insert(hindcast_forecasts).values(
+                id=orphan_id,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                hindcast_step=_utc(2025, 10, 2),
+                forcing_type=ForcingType.NWP_ARCHIVE.value,
+                representation=EnsembleRepresentation.MEMBERS.value,
+                hindcast_run_id=run_id,
+                parameter="discharge",
+                units="m³/s",
+                created_at=_T0,
+                qc_status="raw",
+                qc_flags=[],
+            )
+        )
+
+        with pytest.raises(StoreError, match=str(orphan_id)):
+            store.fetch_hindcasts(
+                sid,
+                mid,
+                _utc(2025, 9, 30),
+                _utc(2025, 10, 3),
+                hindcast_run_id=run_id,
+            )
+
+    def test_fetch_hindcasts_by_station_raises_for_orphan_header_in_a_requested_run(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+
+        store.store_hindcast(
+            _make_hindcast(
+                sid, mid, aid, hindcast_step=_utc(2025, 11, 1), hindcast_run_id=run_id
+            )
+        )
+        orphan_id = HindcastForecastId(uuid4())
+        db_connection.execute(
+            sa.insert(hindcast_forecasts).values(
+                id=orphan_id,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                hindcast_step=_utc(2025, 11, 2),
+                forcing_type=ForcingType.NWP_ARCHIVE.value,
+                representation=EnsembleRepresentation.MEMBERS.value,
+                hindcast_run_id=run_id,
+                parameter="discharge",
+                units="m³/s",
+                created_at=_T0,
+                qc_status="raw",
+                qc_flags=[],
+            )
+        )
+
+        with pytest.raises(StoreError, match=str(orphan_id)):
+            store.fetch_hindcasts_by_station(
+                sid,
+                "discharge",
+                _utc(2025, 10, 31),
+                _utc(2025, 11, 3),
+                hindcast_run_ids={mid: run_id},
+            )
 
 
 # ---------------------------------------------------------------------------

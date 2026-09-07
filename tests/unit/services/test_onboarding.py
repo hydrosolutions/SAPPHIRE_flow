@@ -1639,3 +1639,429 @@ class TestMakeSkillFnMixedCadence:
         # 24h lead. Both must be present.
         assert any(h <= 3 for h in lead_time_hours)
         assert 24 in lead_time_hours
+
+
+class TestMakeSkillFnPublishesGeneration:
+    """Plan 235 fixer round (major): `_make_skill_fn`'s `_compute_skill`
+    used to write only baseline (`generation_id=None`) scores and never
+    call `publish_generation`. Per `latest_generation_predicate`
+    (`store/skill_store.py`), once ANY generation is ever published for a
+    (station, model, parameter, skill_source, forcing_type) scope, EVERY
+    baseline row for that same scope becomes permanently invisible to
+    every reader — silently. This reproduces exactly that: a generation
+    already exists for the scope (from an earlier, unrelated recompute)
+    BEFORE station onboarding runs its own `_compute_skill`.
+    """
+
+    def test_onboarding_scores_remain_visible_when_a_generation_already_exists(
+        self,
+    ) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.onboarding import _make_skill_fn
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import (
+            EnsembleRepresentation,
+            ForcingType,
+            SkillSource,
+        )
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import (
+            ArtifactId,
+            HindcastForecastId,
+            ObservationId,
+        )
+        from sapphire_flow.types.observation import Observation
+        from sapphire_flow.types.training import TrainingUnit
+
+        sid = StationId(uuid4())
+        mid = ModelId("test_generation_visibility_model")
+        aid = ArtifactId(uuid4())
+
+        hindcast_store = FakeHindcastStore()
+        obs_store = FakeObservationStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        for i in range(3):
+            step = ensure_utc(datetime(2020, 1, i + 1, tzinfo=UTC))
+            vt = ensure_utc(step + timedelta(hours=1))
+            df = pl.DataFrame(
+                [
+                    {"valid_time": vt, "member_id": m, "value": 10.0 + m}
+                    for m in range(3)
+                ]
+            ).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+            ensemble = ForecastEnsemble.from_members(
+                station_id=sid,
+                issued_at=step,
+                parameter="discharge",
+                units="m³/s",
+                time_step=timedelta(hours=1),
+                values=df,
+            )
+            hindcast_store.store_hindcast(
+                HindcastForecast(
+                    id=HindcastForecastId(uuid4()),
+                    station_id=sid,
+                    model_id=mid,
+                    model_artifact_id=aid,
+                    hindcast_step=step,
+                    forcing_type=ForcingType.REANALYSIS,
+                    representation=EnsembleRepresentation.MEMBERS,
+                    hindcast_run_id=uuid4(),
+                    ensemble=ensemble,
+                    created_at=step,
+                )
+            )
+            obs_store.store_observations(
+                [
+                    Observation(
+                        id=ObservationId(uuid4()),
+                        station_id=sid,
+                        timestamp=vt,
+                        parameter="discharge",
+                        value=10.5,
+                        source=ObservationSource.MEASURED,
+                        rating_curve_id=None,
+                        rating_curve_correction_version=None,
+                        qc_status=QcStatus.QC_PASSED,
+                        qc_flags=[],
+                        qc_rule_version=None,
+                        created_at=step,
+                    )
+                ]
+            )
+
+        # A generation ALREADY exists for this exact scope — as if an
+        # earlier `compute_skills_task` recompute had already run. Under
+        # the bug, this alone is enough to hide every future baseline
+        # write to the same scope, forever.
+        skill_store.publish_generation(
+            generation_id=uuid4(),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            computation_version=2,
+            published_at=ensure_utc(datetime(2020, 6, 1, tzinfo=UTC)),
+            score_count=1,
+            diagram_count=0,
+        )
+
+        unit = TrainingUnit(
+            model_id=mid,
+            station_id=sid,
+            group_id=None,
+            station_ids=frozenset({sid}),
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2020, 1, 4, tzinfo=UTC)),
+            time_step=timedelta(hours=1),
+        )
+
+        compute_skill = _make_skill_fn()
+        compute_skill(
+            unit=unit,
+            model_id=mid,
+            artifact_id=aid,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            flow_regime_store=flow_regime_store,
+            config=make_deployment_config(enable_skill_generations=True),
+        )
+
+        scores = skill_store.fetch_latest_scores(sid, mid, parameter="discharge")
+        assert len(scores) > 0, (
+            "onboarding's own scores must be visible even though a "
+            "generation already existed for this scope BEFORE onboarding "
+            "ran — onboarding must publish its own generation, not write "
+            "an invisible baseline"
+        )
+
+
+class TestMakeSkillFnRaisesOnPartialGeneration:
+    """Plan 235 per-run scope (major #1): `_compute_skill` used to log an
+    error and `return` (a silent no-op) whenever ANY cohort produced
+    nothing, or whenever the store's insert count did not match what was
+    expected — `onboard_model()` never learned anything went wrong and
+    never recorded `FAILED_SKILL`. Unlike `flows.compute_skills`'s
+    recurring recompute (which degrades quietly so a previously COMPLETE
+    generation stays visible), onboarding has no earlier generation to
+    fall back to: an incomplete FIRST generation must surface as a raised
+    error, not silence.
+    """
+
+    def test_one_empty_cohort_raises_skill_generation_incomplete(self) -> None:
+        import polars as pl
+
+        from sapphire_flow.exceptions import SkillGenerationIncompleteError
+        from sapphire_flow.services.onboarding import _make_skill_fn
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import (
+            ArtifactId,
+            HindcastForecastId,
+            ObservationId,
+        )
+        from sapphire_flow.types.observation import Observation
+        from sapphire_flow.types.training import TrainingUnit
+
+        sid = StationId(uuid4())
+        mid = ModelId("test_partial_generation_model")
+        aid = ArtifactId(uuid4())
+
+        hindcast_store = FakeHindcastStore()
+        obs_store = FakeObservationStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        # HOURLY-cadence hindcasts WITH matching observations — this
+        # cohort scores successfully.
+        for i in range(3):
+            step = ensure_utc(datetime(2020, 1, 1, i, tzinfo=UTC))
+            vt = ensure_utc(step + timedelta(hours=1))
+            df = pl.DataFrame(
+                [
+                    {"valid_time": vt, "member_id": m, "value": 10.0 + m}
+                    for m in range(3)
+                ]
+            ).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+            ensemble = ForecastEnsemble.from_members(
+                station_id=sid,
+                issued_at=step,
+                parameter="discharge",
+                units="m³/s",
+                time_step=timedelta(hours=1),
+                values=df,
+            )
+            hindcast_store.store_hindcast(
+                HindcastForecast(
+                    id=HindcastForecastId(uuid4()),
+                    station_id=sid,
+                    model_id=mid,
+                    model_artifact_id=aid,
+                    hindcast_step=step,
+                    forcing_type=ForcingType.REANALYSIS,
+                    representation=EnsembleRepresentation.MEMBERS,
+                    hindcast_run_id=uuid4(),
+                    ensemble=ensemble,
+                    created_at=step,
+                )
+            )
+            obs_store.store_observations(
+                [
+                    Observation(
+                        id=ObservationId(uuid4()),
+                        station_id=sid,
+                        timestamp=vt,
+                        parameter="discharge",
+                        value=10.5,
+                        source=ObservationSource.MEASURED,
+                        rating_curve_id=None,
+                        rating_curve_correction_version=None,
+                        qc_status=QcStatus.QC_PASSED,
+                        qc_flags=[],
+                        qc_rule_version=None,
+                        created_at=step,
+                    )
+                ]
+            )
+
+        # A DAILY-cadence hindcast for the SAME station/model — a SEPARATE
+        # cohort — with NO matching observations stored at all, so
+        # `compute_skill_for_station` returns `([], [])` for it (a silent
+        # per-cohort gap, exactly what the completeness gate must catch).
+        daily_step = ensure_utc(datetime(2020, 2, 1, tzinfo=UTC))
+        daily_vt = ensure_utc(daily_step + timedelta(days=1))
+        daily_df = pl.DataFrame(
+            [
+                {"valid_time": daily_vt, "member_id": m, "value": 20.0 + m}
+                for m in range(3)
+            ]
+        ).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        daily_ensemble = ForecastEnsemble.from_members(
+            station_id=sid,
+            issued_at=daily_step,
+            parameter="discharge",
+            units="m³/s",
+            time_step=timedelta(days=1),
+            values=daily_df,
+        )
+        hindcast_store.store_hindcast(
+            HindcastForecast(
+                id=HindcastForecastId(uuid4()),
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                hindcast_step=daily_step,
+                forcing_type=ForcingType.REANALYSIS,
+                representation=EnsembleRepresentation.MEMBERS,
+                hindcast_run_id=uuid4(),
+                ensemble=daily_ensemble,
+                created_at=daily_step,
+            )
+        )
+        # Deliberately no `obs_store.store_observations(...)` call for the
+        # daily cohort's valid_time.
+
+        unit = TrainingUnit(
+            model_id=mid,
+            station_id=sid,
+            group_id=None,
+            station_ids=frozenset({sid}),
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2020, 3, 1, tzinfo=UTC)),
+            time_step=timedelta(hours=1),
+        )
+
+        compute_skill = _make_skill_fn()
+
+        with pytest.raises(SkillGenerationIncompleteError):
+            compute_skill(
+                unit=unit,
+                model_id=mid,
+                artifact_id=aid,
+                hindcast_store=hindcast_store,
+                obs_store=obs_store,
+                skill_store=skill_store,
+                flow_regime_store=flow_regime_store,
+                config=None,
+            )
+
+        assert skill_store.fetch_latest_scores(sid, mid, parameter="discharge") == [], (
+            "a partial generation (one cohort scored, one produced "
+            "nothing) must never become visible — the raise must happen "
+            "before publication"
+        )
+
+
+class TestSkillGenerationsCanBeDisabledForRollout:
+    """Plan 235 per-run scope (blocker #4): the two-release rollout —
+    `DeploymentConfig.enable_skill_generations=False` must keep onboarding
+    on the pre-235 shape (baseline rows, no `skill_generations` publish),
+    so a rollback mid-rollout reads exactly what it always has.
+    """
+
+    def test_disabled_writes_baseline_rows_and_does_not_publish(self) -> None:
+        import polars as pl
+
+        from sapphire_flow.services.onboarding import _make_skill_fn
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import (
+            ArtifactId,
+            HindcastForecastId,
+            ObservationId,
+        )
+        from sapphire_flow.types.observation import Observation
+        from sapphire_flow.types.training import TrainingUnit
+
+        sid = StationId(uuid4())
+        mid = ModelId("test_generations_disabled_model")
+        aid = ArtifactId(uuid4())
+
+        hindcast_store = FakeHindcastStore()
+        obs_store = FakeObservationStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        for i in range(3):
+            step = ensure_utc(datetime(2020, 1, i + 1, tzinfo=UTC))
+            vt = ensure_utc(step + timedelta(hours=1))
+            df = pl.DataFrame(
+                [
+                    {"valid_time": vt, "member_id": m, "value": 10.0 + m}
+                    for m in range(3)
+                ]
+            ).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+            ensemble = ForecastEnsemble.from_members(
+                station_id=sid,
+                issued_at=step,
+                parameter="discharge",
+                units="m³/s",
+                time_step=timedelta(hours=1),
+                values=df,
+            )
+            hindcast_store.store_hindcast(
+                HindcastForecast(
+                    id=HindcastForecastId(uuid4()),
+                    station_id=sid,
+                    model_id=mid,
+                    model_artifact_id=aid,
+                    hindcast_step=step,
+                    forcing_type=ForcingType.REANALYSIS,
+                    representation=EnsembleRepresentation.MEMBERS,
+                    hindcast_run_id=uuid4(),
+                    ensemble=ensemble,
+                    created_at=step,
+                )
+            )
+            obs_store.store_observations(
+                [
+                    Observation(
+                        id=ObservationId(uuid4()),
+                        station_id=sid,
+                        timestamp=vt,
+                        parameter="discharge",
+                        value=10.5,
+                        source=ObservationSource.MEASURED,
+                        rating_curve_id=None,
+                        rating_curve_correction_version=None,
+                        qc_status=QcStatus.QC_PASSED,
+                        qc_flags=[],
+                        qc_rule_version=None,
+                        created_at=step,
+                    )
+                ]
+            )
+
+        unit = TrainingUnit(
+            model_id=mid,
+            station_id=sid,
+            group_id=None,
+            station_ids=frozenset({sid}),
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2020, 1, 4, tzinfo=UTC)),
+            time_step=timedelta(hours=1),
+        )
+
+        compute_skill = _make_skill_fn()
+        config = make_deployment_config(enable_skill_generations=False)
+        compute_skill(
+            unit=unit,
+            model_id=mid,
+            artifact_id=aid,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            flow_regime_store=flow_regime_store,
+            config=config,
+        )
+
+        scores = skill_store.fetch_latest_scores(sid, mid, parameter="discharge")
+        assert len(scores) > 0, "scores must still be written on the legacy path"
+        assert all(s.generation_id is None for s in scores), (
+            "with generations disabled, onboarding must write baseline "
+            "(generation_id=NULL) rows — the pre-235 shape"
+        )
+        assert not skill_store._generations, (  # noqa: SLF001 — the point under test IS that nothing was published
+            "with generations disabled, onboarding must never publish a "
+            "skill_generations row"
+        )

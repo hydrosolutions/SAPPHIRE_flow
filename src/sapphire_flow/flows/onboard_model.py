@@ -1140,6 +1140,12 @@ def onboard_model_flow(
                 for sid in station_ids_for_skill
                 for param in sorted(target_parameters)
             ]
+            # Plan 235 fixer round (major, D1 retry stability): see
+            # `flows/train_models.py`'s identical fan-out — mint one
+            # generation id per (station, parameter) pair before the
+            # fan-out so a retry of any one mapped task replays with its
+            # own already-bound id.
+            generation_ids = [uuid4() for _ in skill_pairs]
             futures = compute_skills_task.map(
                 station_id=[sid for sid, _ in skill_pairs],
                 model_id=unmapped(unit.model_id),
@@ -1153,6 +1159,7 @@ def onboard_model_flow(
                 flow_regime_store=unmapped(flow_regime_store),
                 deployment_config=unmapped(deployment_config),
                 clock=unmapped(clock),
+                generation_id=generation_ids,
             )
             [f.result() for f in futures]
 

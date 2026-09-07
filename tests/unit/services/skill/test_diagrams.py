@@ -51,11 +51,18 @@ class TestComputeRocCurve:
         observed = rng.uniform(0, 20, 60)
         result = compute_roc_curve(ensemble, observed, threshold=10.0)
 
-        assert set(result.keys()) == {"false_alarm_rate", "hit_rate", "thresholds"}
+        assert set(result.keys()) == {
+            "false_alarm_rate",
+            "hit_rate",
+            "thresholds",
+            "n_events",
+            "n_non_events",
+        }
         n = len(result["thresholds"])
         assert len(result["false_alarm_rate"]) == n
         assert len(result["hit_rate"]) == n
         assert n > 1
+        assert result["n_events"] + result["n_non_events"] == 60
 
     def test_roc_thresholds_in_range(self) -> None:
         rng = np.random.default_rng(4)
@@ -65,6 +72,18 @@ class TestComputeRocCurve:
         thresholds = result["thresholds"]
         assert min(thresholds) >= 0.0
         assert max(thresholds) <= 1.0
+
+    def test_roc_denominators_count_events_and_non_events(self) -> None:
+        """Fixer round (major): `n_events`/`n_non_events` must reflect the
+        ACTUAL observed-above-threshold split, not just sum to the sample
+        count — `combined_skill._merge_diagram_data` weights a multi-fold
+        ROC merge by these, so a wrong split would silently mis-weight the
+        merged curve."""
+        observed = np.array([20.0, 20.0, 5.0, 5.0, 5.0])
+        ensemble = np.full((5, 3), 15.0)
+        result = compute_roc_curve(ensemble, observed, threshold=10.0)
+        assert result["n_events"] == 2
+        assert result["n_non_events"] == 3
 
 
 class TestComputeRankHistogram:

@@ -361,6 +361,7 @@ erDiagram
         INT sample_size
         BOOLEAN is_stale "default FALSE"
         TIMESTAMPTZ created_at
+        UUID generation_id "NULL — Plan 235; NOT a FK, see skill_generations note"
     }
 
     skill_diagrams {
@@ -377,6 +378,29 @@ erDiagram
         TEXT diagram_type "reliability | roc | rank_histogram"
         TEXT threshold_level "NULL"
         JSONB data
+        TIMESTAMPTZ created_at
+        UUID generation_id "NULL — Plan 235; NOT a FK, see skill_generations note"
+    }
+
+    %% Plan 235: skill_generations is the append-only publication ledger —
+    %% a row here is the ONLY thing that makes a generation's skill_scores/
+    %% skill_diagrams rows current (store.skill_store.latest_generation_predicate).
+    %% generation_id above is deliberately NOT a foreign key to this table:
+    %% score/diagram rows are written WHILE their generation is still being
+    %% computed, before the ledger row exists (the ledger row is inserted
+    %% LAST, once every expected write has already succeeded).
+    skill_generations {
+        UUID id PK
+        UUID station_id FK
+        TEXT model_id FK
+        UUID model_artifact_id "NULL — Plan 235 fixer round; NOT a FK, see model_artifacts note"
+        TEXT parameter
+        TEXT skill_source
+        TEXT forcing_type "NULL"
+        INT computation_version
+        TIMESTAMPTZ published_at
+        INT score_count
+        INT diagram_count
         TIMESTAMPTZ created_at
     }
 
@@ -397,6 +421,7 @@ erDiagram
     stations ||--o{ skill_diagrams : "station_id"
     model_artifacts ||--o{ skill_diagrams : "model_artifact_id"
     flow_regime_configs ||--o{ skill_diagrams : "flow_regime_config_id"
+    stations ||--o{ skill_generations : "station_id"
     stations ||--o{ flow_regime_configs : "station_id"
 
     %% ──────────────────────────────────────────────
@@ -916,6 +941,7 @@ erDiagram
         INT sample_size
         BOOLEAN is_stale "default FALSE"
         TIMESTAMPTZ created_at
+        UUID generation_id "NULL — Plan 235; NOT a FK, see skill_generations note"
     }
 
     skill_diagrams {
@@ -932,6 +958,24 @@ erDiagram
         TEXT diagram_type "reliability | roc | rank_histogram"
         TEXT threshold_level "NULL"
         JSONB data
+        TIMESTAMPTZ created_at
+        UUID generation_id "NULL — Plan 235; NOT a FK, see skill_generations note"
+    }
+
+    %% Plan 235: skill_generations is the append-only publication ledger —
+    %% see the identical note in the SKILL DOMAIN section above.
+    skill_generations {
+        UUID id PK
+        UUID station_id FK
+        TEXT model_id FK
+        UUID model_artifact_id "NULL — Plan 235 fixer round; NOT a FK, see model_artifacts note"
+        TEXT parameter
+        TEXT skill_source
+        TEXT forcing_type "NULL"
+        INT computation_version
+        TIMESTAMPTZ published_at
+        INT score_count
+        INT diagram_count
         TIMESTAMPTZ created_at
     }
 
@@ -952,6 +996,7 @@ erDiagram
     stations ||--o{ skill_diagrams : "station_id"
     model_artifacts ||--o{ skill_diagrams : "model_artifact_id"
     flow_regime_configs ||--o{ skill_diagrams : "flow_regime_config_id"
+    stations ||--o{ skill_generations : "station_id"
     stations ||--o{ flow_regime_configs : "station_id"
 
     %% ──────────────────────────────────────────────
@@ -1071,7 +1116,7 @@ erDiagram
     stations ||--o{ access_token_stations : "station_id"
 ```
 
-### Full table inventory (36 tables)
+### Full table inventory (37 tables)
 
 Plan 120 (basin/static package importer, Nepal v1) additively adds
 `basin_static_packages`, `basin_versions`, and `model_artifact_basin_versions`
@@ -1082,7 +1127,19 @@ Plan 120 (basin/static package importer, Nepal v1) additively adds
 additively adds `audit_log` — also already live in v0 (as an unused
 append-only substrate; see the v0 table inventory note above), listed under
 the AUTH DOMAIN entities below alongside the still-deferred `users` /
-`access_tokens` / `refresh_tokens`.
+`access_tokens` / `refresh_tokens`. Plan 235 additively adds
+`skill_generations` — the append-only publication ledger a generation
+identity needs (D1/D3): a row there is the ONLY thing that makes a
+generation's `skill_scores`/`skill_diagrams` rows current
+(`store.skill_store.latest_generation_predicate`). `skill_scores`/
+`skill_diagrams` also gain a nullable `generation_id` column each
+(migration 0054) — deliberately NOT a foreign key to `skill_generations.id`,
+since a score/diagram row is written while its generation is still being
+computed, before the ledger row exists. `skill_generations` also carries a
+nullable `model_artifact_id` (fixer round, blocker), NULL-safe compared in
+`latest_generation_predicate`'s scope matching — without it, a generation
+minted for a candidate artifact under evaluation could outrank and hide the
+STILL-ACTIVE artifact's generation for the same model.
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|
@@ -1112,6 +1169,7 @@ the AUTH DOMAIN entities below alongside the still-deferred `users` /
 | 21 | `forecast_adjustments` | UUID | no | Forecast |
 | 22 | `skill_scores` | UUID | no | Skill |
 | 23 | `skill_diagrams` | UUID | no | Skill |
+| 23a | `skill_generations` | UUID | no | Skill (REALIZED, Plan 235, migration 0054) |
 | 24 | `flow_regime_configs` | UUID | no | Skill |
 | 25 | `alerts` | UUID | no | Ops |
 | 26 | `pipeline_health` | BIGSERIAL | no | Ops |
