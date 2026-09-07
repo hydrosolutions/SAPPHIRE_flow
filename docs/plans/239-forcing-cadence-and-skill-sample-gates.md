@@ -173,34 +173,33 @@ DECLARED INPUT SERIES, not per frame and not per feature class.
 
 ### The check
 
-For each declared input series — name `V`, temporality, lookback/horizon `L`, and the model's
-declared `time_step` `S`, at issue time `T`:
+**One membership test; three ways to build the set it tests against.** The predicate is always the
+same — *is every slot this input will read present?* — but WHERE that set comes from differs by
+caller, and that is what the previous version got wrong by assuming a single anchor+count shape.
 
-1. **Anchor.** `T0 := floor_to_time_step(T, S)` (`services/training_data.py`, already exists and is
-   UTC-calendar aligned).
-2. **Expected bucket set.**
-   * `past_known` (targets AND past forcing): `{ T0 - k*S : k = 0 .. L-1 }`
-   * `future_known`: `{ T0 + k*S : k = 1 .. H }` where `H` is the model's `forecast_horizon_steps`
-3. **Delivered set.** The timestamps present for **column `V`** in the aggregated frame for that
-   temporality.
-4. **Verdict.** `SERVE` iff `expected ⊆ delivered`. Otherwise `CANNOT SERVE`, naming `V` and the
-   missing buckets.
+Given the model's declared `time_step` `S`, and `T0 := floor_to_time_step(T, S)`:
 
-### Three things this deliberately does NOT do
+| caller | expected set | why |
+|---|---|---|
+| **past** (targets and past forcing), lookback `L` | `{T0 - k*S : k = 1..L}` | Buckets are LEFT-LABELLED, so `T0` is the bucket currently IN PROGRESS. Existing complete-lookback bounds deliberately cover `[T0-L*S, T0)`. **Including `T0` demands an incomplete bucket and falsely refuses.** |
+| **future**, horizon `H` | `T == T0` → `{T0 + k*S : k = 0..H-1}`; otherwise `{T0 + k*S : k = 1..H}` | When the issue instant sits exactly on a boundary the whole `T0` bucket is future data and existing aggregation RETAINS it. Starting unconditionally at `T0+S` then demands one bucket too far. |
+| **training** | the timestamps ACTUALLY CONSUMED — the target timestamp set the forcing is joined onto | Training has **no issue time**; it joins forcing onto whatever target timestamps exist. No anchor-and-horizon describes that: targets at Jan 1 and Jan 3 consume exactly those two, while anchoring at Jan 1 would wrongly demand Jan 2. |
 
-* **No gap statistics.** Not the median, not the minimum, not any summary of spacing. All three
-  refuted attempts were spacing measures; membership in the expected set is the property.
-* **No NaN judgement.** Bucket EXISTENCE only. `max_nan` is already gated per variable per frame by
-  `_variables_over_nan_tolerance` (`adapters/forecast_interface.py`) and stays there.
-* **No new component.** `floor_to_time_step` exists; the expected-set idea already exists inside one
-  model (`models/nwp_regression.py:621`). This makes it uniform, it does not invent it.
+So the core takes an **explicit expected set**; `past`/`future` are two small helpers that compute one,
+and training passes its consumed timestamps directly. That is the smallest shape covering all three,
+and it removes the "one predicate" claim that was false.
 
-### Why per-SERIES and not per-frame
+### Delivered set, and what this does NOT judge
 
-`SeasonalPrecipRunoffRegression` declares **7** target steps, **45** precipitation steps and **14**
-temperature steps (`models/nwp_regression.py:92,103,106`), and the adapter collapses them to a single
-`lookback_steps = max(...) = 45` (`adapters/forecast_interface.py:659`). A frame-wide 45-bucket
-expectation rejects a model whose temperature is complete over the 14 buckets it actually reads.
+The delivered set is **the timestamps present for that column** — membership only.
+
+**Nulls count as PRESENT.** Whether a slot's value is usable is `max_nan`'s job, already gated per
+variable per frame by the FI adapter, which counts nulls and NaNs alike. An earlier version excluded
+null-valued rows here, which both contradicted this rule and made null and NaN behave differently.
+
+### Verdict
+
+`SERVE` iff `expected ⊆ delivered`. Otherwise `CANNOT SERVE`, naming the input and the missing slots.
 
 ### VERDICT TABLE — checkable without reading code
 
@@ -214,6 +213,9 @@ expectation rejects a model whose temperature is complete over the 14 buckets it
 | 4 | any, daily, L=5 | 01-06..01-10 present except **01-06** (the FIRST expected bucket) | 01-06..01-10 | **CANNOT SERVE** | aggregate-then-validate wrongly SERVED (edge bucket invisible) |
 | 5 | any, daily, L=5 | 01-06..01-10 present except 01-08 (interior) | 01-06..01-10 | **CANNOT SERVE** | — (all three caught this) |
 | 6 | **`NwpRainfallRunoff`** past forcing | past forcing row at `T0` MISSING; future forcing complete to `H` | past forcing: **∅** (declares none — `_n_lags = 0`; its only past_known is the TARGET, lookback 1) | **SERVE** | validating forcing from `lookback_start` would wrongly REJECT |
+| 11 | any, daily, `L=2`, `T = 2026-01-10 06:00Z` | complete buckets 01-08 and 01-09 | 01-08, 01-09 — **NOT 01-10**, which is still in progress | **SERVE** | an expected set including `T0` wrongly REFUSED |
+| 12 | any, daily, `H=2`, `T = 2026-01-10 00:00Z` (exactly on a boundary) | buckets 01-10 and 01-11 | 01-10, 01-11 — starts AT `T0` because the issue instant is aligned | **SERVE** | always starting at `T0+S` wrongly demanded 01-12 |
+| 13 | **training**, targets at 01-01 and 01-03 only | forcing present at exactly those two | {01-01, 01-03} — the consumed set, no anchor | **SERVE** | an anchor+horizon rule wrongly demanded 01-02 |
 | 7 | **`SeasonalPrecipRunoffRegression`** temperature | temperature present for the 14 buckets ending `T0`, ABSENT for days 15–45 | 14 buckets ending `T0` | **SERVE** | a class-wide 45-bucket set would wrongly REJECT |
 | 8 | **`SeasonalPrecipRunoffRegression`** precipitation | precipitation missing on one day inside its 45 | 45 buckets ending `T0` | **CANNOT SERVE** — names precipitation | — |
 | 9 | any, daily, L=1 | hourly data, complete for that day | 1 daily bucket | **SERVE** — aggregated (precip SUM, temp MEAN) | — |
@@ -224,9 +226,11 @@ wrong**, which is why they are mandatory.
 
 ### Verification
 
-`uv run pytest tests/unit/services/ -k resolution` — one red-first test per row, each asserting the
+`uv run pytest tests/unit/services/test_training_data.py -k MissingExpectedBuckets` — one test per row, each asserting the
 verdict AND, on `CANNOT SERVE`, the series named and buckets reported. A test must fail against a
-per-feature-class implementation (rows 6, 7) and against each refuted mechanism (rows 1–4).
+per-feature-class implementation (rows 6, 7), against each refuted mechanism (rows 1–4), and against
+the boundary errors this review caught (rows 11–13). **Rows 1 and 9 must run through AGGREGATION**,
+not be fed pre-bucketed data — an earlier version claimed to cover them and did not.
 
 ### Pre-change evidence
 
