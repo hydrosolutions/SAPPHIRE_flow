@@ -1,7 +1,7 @@
 ---
 status: READY
 created: 2026-09-03
-plan: 242
+plan: 246
 title: Quality signals that are computed and then dropped at the store boundary
 scope: Persist and serve the input-quality assessment Plan 023 specified; quality-control the pooled combination forecast; state the `MISSING` claim truthfully until its producer lands; and re-verify the WMO compliance table against the running system. Explicitly NOT the `MISSING` producer itself (owner decided 2026-09-03 to build it — that is Plan 243), NOT the historical water-level QC gap, NOT Stage 2 QC, NOT any new QC rule.
 depends_on: []
@@ -9,7 +9,7 @@ blocks: [243]
 source: 2026-09-02/03 — a live audit of the mac-mini (0.1.833) against `docs/standards/wmo.md`, prompted by a DHM counterpart discussion
 ---
 
-# Plan 242 — closing the store-boundary seam
+# Plan 246 — closing the store-boundary seam
 
 ## Status
 
@@ -19,7 +19,7 @@ evidence is quoted inline so a reviewer can re-run it.
 
 ## Review scope — read this before reviewing
 
-**This review covers Plan 242 AND Plan 243 together**
+**This review covers Plan 246 AND Plan 243 together**
 (`docs/plans/243-explicit-gap-markers-for-unmarked-feeds.md`). They were split on 2026-09-03 from a
 single owner decision and are meaningless apart: 242 records the decision and relabels the
 documentation; 243 is the work that decision authorises. The review workflow takes one plan path, so
@@ -27,7 +27,7 @@ the joint scope is declared here.
 
 Assess them differently, because they are at different stages:
 
-- **Plan 242 — full review.** Design, proportionality, task contracts, verification, exit gates,
+- **Plan 246 — full review.** Design, proportionality, task contracts, verification, exit gates,
   readiness. This is the plan that could reach `READY`.
 - **Plan 243 — premise and completeness of its scoping checklist ONLY.** It is a deliberate stub,
   marked do-not-implement, with no design, phases, tasks or gates. **Do not report its missing design
@@ -503,7 +503,7 @@ cheap.
 uv run ruff format --check src/ tests/ && uv run ruff check src/ tests/
 uv run pyright src/
 uv run pytest
-uv run python scripts/check_readiness.py --inspect-json docs/plans/242-close-the-store-boundary-seam.md
+uv run python scripts/check_readiness.py --inspect-json docs/plans/246-close-the-store-boundary-seam.md
 ```
 
 Five conditions hold in addition to the commands above:
@@ -515,7 +515,7 @@ Five conditions hold in addition to the commands above:
    Replacing one false confident answer with another is not a fix.
 3. **`wmo.md` § 5 contains no row this plan has not either verified or relabelled**, and
    `architecture-context.md:90`, `:110`, `:114`, `:400`, `:1852-1853`, `:2208`,
-   `docs/spec/types-and-protocols.md:727` and the Plan 242/243 entries in `docs/plans/README.md`
+   `docs/spec/types-and-protocols.md:727` and the Plan 246/243 entries in `docs/plans/README.md`
    are corrected.
 4. **The pooled-forecast tests use a real QC-tripping ensemble**, not a mocked checker verdict, cover
    both call sites, and cover water level with and without a station datum.

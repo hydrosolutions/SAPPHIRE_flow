@@ -19,7 +19,7 @@ source: Measured on the mac mini 2026-09-03/04 after 15 Slack alerts in one day;
 ## ⛔ Proportionality — two tasks
 
 **Do not add:** retry-on-failure, a re-fetch path, STAC pagination rework, **new** alert channels, a
-general gap-marking overhaul (that is Plans 242/243 territory), or a fourth task.
+general gap-marking overhaul (that is Plans 246/243 territory), or a fourth task.
 
 ⚠️ **T3 was added 2026-09-04, after this plan reached READY.** Revisions 1-4 said "no third task"
 and "no alert-channel work", and four review rounds were conducted under that constraint. The owner
@@ -168,7 +168,7 @@ default `None` (`:375`), flow passes `None` (`run_forecast_cycle.py:345`), `conf
 out — and a test must assert that, so the exemption cannot silently become the norm.
 **Out:** retrying, re-fetching, pagination changes, the byte/file caps, the age guard,
 `_combine_cfgrib_datasets`' member contract, and how gaps are marked downstream (`is_gap` is Plan
-242/243 — T1 fails before a record is built).
+246/243 — T1 fails before a record is built).
 **Pre-change:** `_fetch_grib_files` appends every asset with no de-duplication (`:816`);
 `_download_asset` names files by basename alone (`:887-906`); there is no completeness check anywhere
 (the only `min` is `_MIN_ENSEMBLE_MEMBERS`, which NaN-fill satisfies).
@@ -279,7 +279,7 @@ the image**. T1/T2 ship in the image. Do not assume one deploy covers both.
   cron instant the candidates are ~0 and ~360 min old, so any guard in (0, 360) decides identically —
   an existing parametrised test proves it (`tests/unit/adapters/test_meteoswiss_nwp.py:1685-1719`).
 - `converters.py:119` hardcodes `is_gap=False` for every record. T1 sidesteps it by failing earlier;
-  the underlying gap-marking gap belongs to Plans 242/243.
+  the underlying gap-marking gap belongs to Plans 246/243.
 - This adapter has been broken by upstream ICON schema drift before (Plan 160); the
   `ctrl=0 / perturb=1..20` contract lives only in a docstring (`:259-272`).
 

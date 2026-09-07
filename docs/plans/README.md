@@ -97,7 +97,7 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
-- **242** — Quality signals dropped at the store boundary — `READY, implemented (hold-at-PR)` —
+- **246** — Quality signals dropped at the store boundary — `READY, implemented (hold-at-PR)` —
   three defects of one class, all measured on the mini (0.1.833) 2026-09-02/03: the
   per-forecast **input-quality assessment is computed and never persisted** (no DB
   column, no API field, reads back as `FULL` for every forecast — Plan 023's
@@ -136,21 +136,28 @@ exit criteria — Plan 212 owns that deeper screening.
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 242 landing first.
-- **245** — A time grid is a step AND a phase — `DRAFT, unreviewed` — Nepal Time is
-  UTC+05:45, so an hourly NPT grid and an hourly UTC grid **never share a timestamp**
-  (Nepali `HH:00` = UTC `:15`; a Nepali day runs 18:15 → 18:15 UTC). Converting to UTC
-  does not fix it — conversion relabels instants, it does not move them onto a grid,
-  and afterwards the offset is invisible because everything is nominally UTC. The code
-  treats a time step as a scalar everywhere (`rules_for` matches by equality,
-  `native_step_seconds` is read off the first pair), and `stations.timezone` is carried
-  through four layers and **never read to make a decision**. Declares `TimeGrid(step,
-  phase)`, forbids implicit alignment, and requires a declared resample rather than a
-  shift. **Owner decision: every input series is expected PERIOD-ENDING** — ratifying
-  what M-D3 established for DHM and ERA5-Land, but stating it where an adapter author
-  reads rather than in a research design doc. ⛔ Period convention and timezone phase
-  are independent; conflating them stacks a silent 1-hour error on the 45-minute one.
-  Convention and type only: daily-model anchoring stays Plan 226, aggregation threading
-  stays Plan 234.
+- **245** — A time grid is a step AND a phase — `DRAFT, unreviewed` — **conventions
+  and types only** after a review returned 26 findings (20 blockers) and forced a
+  split. Nepal Time is UTC+05:45, so hourly NPT and hourly UTC grids never share a
+  timestamp; converting to UTC relabels instants without moving them onto a grid and
+  makes the offset invisible. Adopts **CF `cell_methods`** as the temporal-support
+  type — `time: point` vs `time: sum` — which our upstream files already carry and our
+  adapters discard entirely. Narrows period-ending to interval data (a stage reading
+  is a point, not an interval). Declares `TimeGrid(step, phase)`, a per-deployment
+  boundary that no deployment may default into, and **supersedes Plan 228 D4** by owner
+  disposition. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
+  and, independently, by SnowMapper's UTC+6 solar day. ⛔ If DHM names a different
+  boundary we would disagree with SnowMapper, whose SWE and runoff feed our hydrology.
+- **247** — Phase-aware execution — `DRAFT, not fully scoped` — the behavioural half.
+  The resampler has **seven** call sites, not three, and `floor_to_time_step` /
+  `aligned_lookback_bounds` are separately phase-zero, so changing the bucketing alone
+  would lose Plan 228 D4's exactly-N-complete-buckets guarantee. Plan 246's
+  input-quality channel cannot carry resampling provenance (hindcasts were excluded
+  from it). Artifacts record no training grid, so a phase-mismatched artifact cannot
+  fail closed. Carries the Swiss retrain and cutover, which no plan currently owns —
+  226 is anchoring-only and 235 points at 228's recompute. Four open decisions first,
+  including whether phase belongs to the FI contract (which would need an upstream
+  issue, not a SAP3 workaround).
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
   alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).
