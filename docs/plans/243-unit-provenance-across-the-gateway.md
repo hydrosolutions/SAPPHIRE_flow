@@ -66,10 +66,6 @@ A unit error is **silent, plausible-looking, and permanent**:
 That collapses most of this plan. A spatial average does not change units, so **the authority for
 every variable is its UPSTREAM SOURCE**, not the Gateway and not a measurement we have to invent.
 
-**Corroborated:** the first IFS `tp` value measured on 2026-09-07 was `1.144e-05`. In metres that is
-0.011 mm over a 3-hourly step — ordinary light precipitation. In millimetres it would be 1.1e-05 mm,
-which is not a real quantity. Consistent with raw ECMWF units passing straight through.
-
 **This is our CONTRACT with the Gateway** (owner, 2026-09-07) — not an assumption awaiting
 confirmation. Basin-averaging is the only operation it performs on a value, so upstream units reach
 us intact by agreement.
@@ -77,7 +73,8 @@ us intact by agreement.
 **What remains true even so:** a contract breach would be SILENT. If a transformation were ever
 introduced — a unit normalisation, an accumulation-to-rate conversion — every assumption here would
 break and nothing in the response would show it, because the response carries no units to contradict
-us. That is an argument for detection (§ D3), **not** a doubt about the contract.
+us. That is a reason the units pass-through (§ D3) matters, **not** a doubt about the contract — and
+it is why a magnitude-based alarm was considered and then cut: it could not tell the two apart.
 
 ## D1 — a register of the assumed unit and its AUTHORITY
 
@@ -103,26 +100,15 @@ publishes both as ACCUMULATED J/m², not instantaneous W/m²** — a distinction
 mistake this plan exists to prevent, so it is recorded here even though ingesting them is out of
 scope.
 
-## D3 — make a silent change DETECTABLE, cheaply
-
-Since the Gateway sends no metadata, detection can only be **magnitude-based**: a plausibility range
-per canonical variable, alarming when a series sits far outside it. Daily precipitation of 5e-05 mm
-means metres arrived where millimetres were expected.
-
-**Deliberately crude, and it must NOT block ingest** — an alarm, not a gate.
-
-⚠️ **Two blind spots, stated rather than engineered around:** an all-zero series (snow at 12300)
-passes any range; and two candidate units differing by a factor near 1 are not separable by magnitude.
-
-## D4 — upstream: the units pass-through is already asked for
+## D3 — upstream: the units pass-through is already asked for
 
 **✅ Units pass-through: ASKED, and in progress** (owner, 2026-09-07). The Gateway has been asked to
 preserve the source `units` attribute through extraction; the work is under way on their side.
 
-**This changes what D3 is for.** Once units arrive in the response, checking becomes DIRECT — compare
-the declared unit against what we assumed — and the magnitude alarm becomes redundant. **So D3 is a
-BRIDGE, not a destination: keep it cheap, and expect to retire it.** Do not build anything for D3
-that would be painful to delete.
+**This is the real fix.** Once units arrive in the response, checking becomes DIRECT — compare the
+declared unit against what we assumed. A magnitude-based alarm was considered as a stopgap and **cut
+on review**: the probe sees RAW Gateway values, so a "metres where millimetres expected" rule would
+flag CORRECT data, and the pass-through would make it obsolete before it shipped.
 
 *(No second ask. The no-transformation guarantee is our contract, not an open question.)*
 
@@ -134,47 +120,49 @@ check the declared unit instead. T2 exists only for the window in which we recei
 - **Q1:** where does the register live — extra fields beside `unit`/`convert` in the adapter table
   (smaller), or a doc table (more readable, drifts more easily)? **Recommendation: the adapter
   table**, since it is what the code reads.
-- **Q2:** does the plausibility alarm belong in the ingest path, or in the standing Gateway probe
-  (which already runs every 3 h and stores nothing)? **Recommendation: the probe** — it cannot break
-  ingest there, and it already has the data.
-- *(Q3 on scope is CLOSED: the five ingested variables. `ssr`/`str` are recorded as a trap in D2, not
+- *(Q2 on where an alarm lives is GONE — there is no alarm. Q3 on scope is CLOSED: the five ingested variables. `ssr`/`str` are recorded as a trap in D2, not
   taken on.)*
 
 ## Phases
 
-### T1 — write the register (D1)
-Record D1's table where the code can see it, with the authority beside each converter. **Citation,
-not investigation** — the owner's premise settles every authority. Include D2's radiation warning for
-whoever adds `ssr`/`str`.
+### T1 — write the register, and retire the statements it contradicts
 
-### T2 — plausibility alarm (D3, gated on Q2) — **SKIP IF the Gateway's units pass-through lands first**
-One expected range per canonical variable; alarm on a series far outside it. Never blocks ingest.
-Tests: a metres-where-mm-expected series alarms; an all-zero series does NOT alarm (documented blind
-spot, asserted so it is not mistaken for coverage).
+Record D1's table where the code reads it, with the authority beside each converter. **Citation, not
+investigation** — the contract settles every authority. Include D2's `ssr`/`str` warning for whoever
+adds radiation.
 
-### T3 — docs
-The register, and the fact that the Gateway carries no units — the reason any of this exists.
+**Then delete the statements that are now false.** These survived Plan 219's update, which fixed the
+per-variable comments but not the surrounding prose:
+
+* `adapters/recap_gateway.py:71-72` — "their Gateway source-unit magnitudes are UNCONFIRMED, so no
+  factor is committed in Plan 081 — that is a Plan 082 live-smoke item."
+* `adapters/recap_gateway.py:86` — "magnitude factors are deferred to Plan 082 (`convert=None`)."
+
+*(The "owner-supplied, not measured" caveats in `v0-scope.md`, the recap-gateway runbook and the
+nepal-forcing runbook were already retired by PR #256; verify rather than assume.)*
+
+**One task. No second phase.**
 
 ```json
 {
   "phases": [
-    {"id": "T1", "parallel": false, "depends_on": []},
-    {"id": "T2", "parallel": false, "depends_on": ["T1"]},
-    {"id": "T3", "parallel": false, "depends_on": ["T1", "T2"]}
+    {"id": "T1", "parallel": false, "depends_on": []}
   ]
 }
 ```
 
 ## Exit gates
 
-1. Every ingested variable has a recorded assumed unit AND a named authority; anything without one is
-   explicitly marked unknown.
-2. A metres-where-millimetres-expected series raises an alarm in a test, and ingest still completes.
-3. The all-zero blind spot is asserted by a test, so it is documented behaviour rather than a gap.
+1. Every ingested variable has a recorded assumed source unit, canonical unit, converter and **named
+   authority**, sitting where the code reads it.
+2. No statement anywhere still says snow units are unconfirmed or that factors are deferred.
 
 ## Deferred (explicitly not this plan)
 
 A unit column on `weather_forecasts` or `WeatherForecastRecord`; a `Quantity`/dimensional type;
 dimensional analysis; converting historical rows (impossible in place — see § Why this is not merely
-tidy-up); unit handling for non-Gateway sources (MeteoSwiss, BAFU, CAMELS-CH); and blocking ingest on
-a plausibility failure.
+tidy-up); unit handling for non-Gateway sources (MeteoSwiss, BAFU, CAMELS-CH); blocking ingest on a plausibility
+failure; and **any magnitude-based plausibility alarm at all** — cut on review (2026-09-07): the probe
+sees RAW Gateway values, so a "metres where mm expected" rule would flag CORRECT data (conversion
+happens later in the adapter), and the units pass-through already under way makes magnitude inference
+obsolete before it could ship.

@@ -67,9 +67,16 @@ class RecapVariable:
     """One SAP3 canonical weather parameter mapped to its Recap source names.
 
     `convert` applies the grounded source→canonical unit conversion at the adapter
-    boundary. `convert is None` is the deliberate sentinel for the snow variables
-    (`hs`/`rof`/`swe`): their Gateway source-unit magnitudes are UNCONFIRMED, so no
-    factor is committed in Plan 081 — that is a Plan 082 live-smoke item.
+    boundary. `convert is None` means "source unit UNGROUNDED — do not trust the
+    magnitude"; no variable in this table is on that sentinel any more. The snow
+    factors were committed by Plan 219 once the snow modeller's specification
+    (2026-09-07) confirmed `swe` mm, `hs` m and `rof` mm.
+
+    The Gateway sends NO units for any variable (measured 2026-09-07: every
+    response is value/`source`/`source_run`, nothing else), and by contract it
+    applies no transformation beyond the basin average — so each entry's source
+    unit is exactly what the UPSTREAM source publishes, and the authority is that
+    source's documentation. See Plan 243.
     """
 
     canonical: str
@@ -83,7 +90,8 @@ class RecapVariable:
 # SAP3-owned Recap variable catalog. Separate, never-merged structure from
 # MeteoSwiss `PARAM_GROUPS` (a Swiss STAC/cfgrib extraction allowlist). Precip and
 # temperature carry grounded conversions; snow names are confirmed but their
-# magnitude factors are deferred to Plan 082 (`convert=None`).
+# snow factors are committed as of Plan 219 (units from the modeller's spec);
+# no variable here is left on the ungrounded `convert=None` sentinel.
 RECAP_VARIABLES: dict[str, RecapVariable] = {
     "precipitation": RecapVariable(
         canonical="precipitation",
