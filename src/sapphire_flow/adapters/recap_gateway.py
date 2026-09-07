@@ -64,38 +64,53 @@ def _identity(value: float) -> float:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RecapVariable:
-    """One SAP3 canonical weather parameter mapped to its Recap source names.
-
-    `convert` applies the grounded source→canonical unit conversion at the adapter
-    boundary. `convert is None` means "source unit UNGROUNDED — do not trust the
-    magnitude"; no variable in this table is on that sentinel any more. The snow
-    factors were committed by Plan 219 once the snow modeller's specification
-    (2026-09-07) confirmed `swe` mm, `hs` m and `rof` mm.
+    """One SAP3 canonical weather parameter, and the unit register for it.
 
     The Gateway sends NO units for any variable (measured 2026-09-07: every
     response is value/`source`/`source_run`, nothing else), and by contract it
-    applies no transformation beyond the basin average — so each entry's source
-    unit is exactly what the UPSTREAM source publishes, and the authority is that
-    source's documentation. See Plan 243.
+    applies no transformation beyond the basin average. A spatial average does
+    not change units, so the source unit is exactly what the UPSTREAM source
+    publishes and `authority` names the document that settles it. See Plan 243.
+
+    `source_unit` -> `unit` is what `convert` performs; the three fields must be
+    read together, and `authority` is why they are what they are. A unit error
+    here is SILENT (the values are numbers of the right shape) and is NOT
+    repairable by re-running: the store ignores repeats and `value` is not part
+    of the natural key, so corrected rows are dropped.
+
+    `convert is None` means "source unit UNGROUNDED — do not trust the
+    magnitude". No variable in this table is on that sentinel.
     """
 
     canonical: str
     unit: str
+    source_unit: str
+    authority: str
     era5_name: str | None = None
     ifs_name: str | None = None
     snow_name: str | None = None
     convert: Callable[[float], float] | None = None
 
 
-# SAP3-owned Recap variable catalog. Separate, never-merged structure from
-# MeteoSwiss `PARAM_GROUPS` (a Swiss STAC/cfgrib extraction allowlist). Precip and
-# temperature carry grounded conversions; snow names are confirmed but their
-# snow factors are committed as of Plan 219 (units from the modeller's spec);
-# no variable here is left on the ungrounded `convert=None` sentinel.
+# SAP3-owned Recap variable catalog, and the Plan 243 unit register: every entry
+# records the unit we ASSUME the source publishes, the canonical unit we store,
+# the converter between them, and the named authority for that assumption.
+# Separate, never-merged structure from MeteoSwiss `PARAM_GROUPS` (a Swiss
+# STAC/cfgrib extraction allowlist).
+#
+# ⚠ BEFORE ADDING RADIATION (Plan 243 D2): ECMWF publishes `ssr`/`str` as
+# ACCUMULATED J/m², NOT instantaneous W/m². Both are already in the standing
+# 12300 probe and are the obvious next additions — adding them on the assumption
+# of W/m² is exactly the silent, unrepairable error this register exists to
+# prevent. Settle the accumulation first, the same way `rof` was settled as an
+# hourly increment rather than a rate.
 RECAP_VARIABLES: dict[str, RecapVariable] = {
     "precipitation": RecapVariable(
         canonical="precipitation",
         unit="mm",
+        source_unit="m",
+        authority="ECMWF parameter documentation"
+        " (IFS `tp`, ERA5-Land `total_precipitation`)",
         era5_name="total_precipitation",
         ifs_name="tp",
         convert=_metres_to_mm,
@@ -103,6 +118,9 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
     "temperature": RecapVariable(
         canonical="temperature",
         unit="°C",
+        source_unit="K",
+        authority="ECMWF parameter documentation"
+        " (IFS `2t`, ERA5-Land `2m_temperature`)",
         era5_name="2m_temperature",
         ifs_name="2t",
         convert=_kelvin_to_celsius,
@@ -110,33 +128,32 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
     "snow_depth": RecapVariable(
         canonical="snow_depth",
         unit="cm",
+        source_unit="m",
+        authority="snow modeller's specification, 2026-09-07"
+        " (CF `units` on the source NetCDF)",
         snow_name="hs",
-        # Plan 219: Gateway serves `hs` in METRES; our canonical unit is cm.
-        # CONFIRMED 2026-09-07 by the snow modeller's specification — every
-        # NetCDF variable carries CF `units` (swe: mm, hs: m, rof: mm) and
-        # `cell_methods` (time: point for the SWE/depth states, time: sum for
-        # runoff). Our aggregation matches that too (states MEAN, snowmelt SUM).
-        # Residual risk: whether the Gateway's parquet extraction preserves the
-        # source attribute is not visible from our side — these factors assume
-        # it serves the source units unchanged.
         convert=_metres_to_cm,
     ),
     "snowmelt": RecapVariable(
         canonical="snowmelt",
         unit="mm",
+        # CF `cell_methods: time: sum` — `rof` is the HOURLY INCREMENT, not a
+        # rate; a daily total is the sum of 24. Our SUM aggregation matches.
+        source_unit="mm",
+        authority="snow modeller's specification, 2026-09-07"
+        " (CF `units` on the source NetCDF)",
         snow_name="rof",
-        # Plan 219: Gateway serves `rof` in mm, matching our canonical unit —
-        # identity, stated explicitly so it is no longer the "ungrounded"
-        # sentinel. CONFIRMED by the modeller's spec; see `snow_depth`.
         convert=_identity,
     ),
     "swe": RecapVariable(
         canonical="swe",
         unit="mm",
+        # CF `cell_methods: time: point` — a STATE, not an accumulation. Our
+        # MEAN aggregation matches.
+        source_unit="mm",
+        authority="snow modeller's specification, 2026-09-07"
+        " (CF `units` on the source NetCDF)",
         snow_name="swe",
-        # Plan 219: Gateway serves `swe` in mm, matching our canonical unit —
-        # identity, stated explicitly so it is no longer the "ungrounded"
-        # sentinel. CONFIRMED by the modeller's spec; see `snow_depth`.
         convert=_identity,
     ),
 }

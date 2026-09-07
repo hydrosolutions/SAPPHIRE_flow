@@ -9,6 +9,7 @@ import pytest
 import structlog
 
 from sapphire_flow.adapters.recap_gateway import (
+    RECAP_VARIABLES,
     EcmwfApiLike,
     GatewayHruName,
     GatewayPolygonName,
@@ -2873,3 +2874,53 @@ class TestFetchRequirementAuthUncontained:
                 [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
                 _CYCLE,
             )
+
+
+class TestUnitRegister:
+    """Plan 243: every ingested variable declares its assumed source unit and a
+    NAMED authority for that assumption.
+
+    The Gateway sends no units at all, so nothing in a response can contradict
+    us. A unit error is silent AND unrepairable — the store ignores repeats and
+    `value` is not part of the natural key, so corrected rows are dropped. These
+    tests are the only thing that fails when a variable is added without settling
+    its unit, or when a converter is changed away from its declared pair.
+    """
+
+    def test_every_variable_declares_a_source_unit_and_an_authority(self) -> None:
+        for name, variable in RECAP_VARIABLES.items():
+            assert variable.source_unit.strip(), f"{name}: no assumed source unit"
+            assert variable.authority.strip(), f"{name}: no named authority"
+            assert variable.unit.strip(), f"{name}: no canonical unit"
+            assert variable.convert is not None, f"{name}: ungrounded convert sentinel"
+
+    def test_the_register_matches_the_authorities_it_cites(self) -> None:
+        # Pinned so a silent edit to a factor or a unit string fails here rather
+        # than in the stored values, where it cannot be undone.
+        assert {
+            name: (v.source_unit, v.unit) for name, v in RECAP_VARIABLES.items()
+        } == {
+            "precipitation": ("m", "mm"),
+            "temperature": ("K", "°C"),
+            "snow_depth": ("m", "cm"),
+            "snowmelt": ("mm", "mm"),
+            "swe": ("mm", "mm"),
+        }
+
+    def test_each_converter_performs_its_declared_source_to_canonical_step(
+        self,
+    ) -> None:
+        # One worked value per variable: the converter must actually implement
+        # the source_unit -> unit step the register claims for it.
+        expected = {
+            "precipitation": (0.001, 1.0),  # 1 mm of rain, published in metres
+            "temperature": (273.15, 0.0),  # freezing
+            "snow_depth": (0.5, 50.0),  # half a metre of snow
+            "snowmelt": (3.0, 3.0),  # identity
+            "swe": (3.0, 3.0),  # identity
+        }
+        assert set(expected) == set(RECAP_VARIABLES)
+        for name, (raw, canonical) in expected.items():
+            convert = RECAP_VARIABLES[name].convert
+            assert convert is not None
+            assert convert(raw) == pytest.approx(canonical), name
