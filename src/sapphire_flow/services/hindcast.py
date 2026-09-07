@@ -23,6 +23,7 @@ from sapphire_flow.services.caravan_statics import (
 )
 from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
+    floor_to_time_step,
     resample_to_time_step,
     resolved_aggregation_methods,
     validate_time_step_cadence,
@@ -162,7 +163,15 @@ def _assemble_hindcast_inputs(
     declared_lookback_steps: int | None = None,
     aggregation_methods: dict[str, AggregationMethod] | None = None,
 ) -> StationModelInputs | None:
-    lookback_start = ensure_utc(issue_time - lookback_steps * time_step)
+    # Plan 239 T1a review (blocker): forcing was selected over the NAIVE
+    # `issue_time - lookback * step` window while `past_targets` used the
+    # aligned one. At a 06Z daily issue that makes the oldest forcing bucket
+    # partial — a fraction of a day resampled and presented as a whole one,
+    # which is exactly the defect Plan 228 D4 fixed for observations.
+    forcing_start = floor_to_time_step(issue_time, time_step) - (
+        lookback_steps * time_step
+    )
+    forcing_start = ensure_utc(forcing_start)
     # +1 because the fetch end is exclusive
     horizon_end = ensure_utc(issue_time + (forecast_horizon_steps + 1) * time_step)
 
@@ -171,7 +180,7 @@ def _assemble_hindcast_inputs(
         r
         for r in all_forcing
         if r.station_id in station_ids
-        and lookback_start <= r.valid_time < horizon_end
+        and forcing_start <= r.valid_time < horizon_end
         and r.parameter in required_features
     ]
 
@@ -272,16 +281,37 @@ def _assemble_hindcast_inputs(
 
     # Split forcing into past (≤ issue_time) and future (> issue_time).
     # Reanalysis serves as teacher forcing in hindcast (v0-scope §A13).
-    past_dynamic = forcing_df.filter(pl.col("timestamp") <= issue_time)
-    # Plan 239 T1: resample to the model's DECLARED step — the hindcast is
-    # what skill scores are computed from, so a resolution mismatch here makes
-    # every score describe a model that was never run that way.
+    # Plan 239 T1a: split on BUCKET boundaries, not on the raw instant, and
+    # resample BOTH halves to the declared step. The hindcast is what every
+    # skill score is computed from, so a resolution mismatch here makes the
+    # score describe a model that was never run that way.
+    #
+    # T0's expected-set table: the past set is the buckets STRICTLY BEFORE
+    # `T0 = floor(issue_time)` — `T0` itself is the bucket in progress, and a
+    # `<= issue_time` split put it in the PAST half at every aligned issue
+    # time (review blocker). The future set starts AT `T0` when the issue
+    # instant is exactly on a boundary (the whole bucket is future data), and
+    # at `T0 + step` otherwise — rows inside a partly-elapsed `T0` belong to
+    # neither half and are correctly dropped.
+    bucket_start = floor_to_time_step(issue_time, time_step)
+    first_future = (
+        bucket_start
+        if ensure_utc(issue_time) == bucket_start
+        else ensure_utc(bucket_start + time_step)
+    )
     past_dynamic = resample_to_time_step(
-        past_dynamic,
+        forcing_df.filter(pl.col("timestamp") < bucket_start),
         time_step,
         aggregation_methods=aggregation_methods,
     )
-    future_dynamic = forcing_df.filter(pl.col("timestamp") > issue_time)
+    # Resampled TOO: leaving it raw while the past half is daily would deliver
+    # one frame at two resolutions — an inconsistency this change would have
+    # introduced rather than found.
+    future_dynamic = resample_to_time_step(
+        forcing_df.filter(pl.col("timestamp") >= first_future),
+        time_step,
+        aggregation_methods=aggregation_methods,
+    )
 
     station_data = StationInputData(
         past_targets=obs_df,

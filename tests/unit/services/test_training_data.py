@@ -1528,3 +1528,76 @@ class TestTrainingResamplesPastDynamicToDeclaredTimeStep:
         assert gaps <= {time_step}, (
             f"training past_dynamic arrived at {gaps}, not the declared {time_step}"
         )
+        # Review (minor): the gap-set assertion is VACUOUS on an empty or
+        # single-row frame. Pin the count too — five days of hourly forcing
+        # must become exactly five daily buckets, not one and not none.
+        assert len(stamps) == 5, f"expected 5 daily buckets, got {len(stamps)}"
+        assert stamps[0] == ensure_utc(_START)
+
+
+class TestSumAggregationPreservesAbsence:
+    """Plan 239 T1a review (major): a bucket with NO observed value must stay
+    absent, not become a fabricated zero.
+
+    Polars `sum()` over an all-null group returns 0.0. Forcing frames pivot
+    several variables onto shared timestamps, so a day carrying temperature
+    rows but no precipitation rows resampled to `precipitation = 0.0` — which
+    is indistinguishable from "it did not rain", and invisible to the FI
+    `max_nan` gate, because a fabricated zero is neither null nor NaN.
+
+    Found by independent review of the T1a change, which had newly applied
+    this resample to forcing and so widened the blast radius of the defect.
+    """
+
+    @staticmethod
+    def _frame() -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(datetime(2026, 1, 1, h, tzinfo=UTC)) for h in range(3)
+                ]
+                + [ensure_utc(datetime(2026, 1, 2, h, tzinfo=UTC)) for h in range(3)],
+                # Jan 2 has NO precipitation reading at all.
+                "precipitation": [1.0, 2.0, 3.0, None, None, None],
+                "temperature": [10.0, 11.0, 12.0, 20.0, 21.0, 22.0],
+            }
+        )
+
+    def test_a_day_with_no_reading_stays_null_it_does_not_become_dry(self) -> None:
+        out = resample_to_time_step(
+            self._frame(),
+            timedelta(days=1),
+            aggregation_methods={
+                "precipitation": AggregationMethod.SUM,
+                "temperature": AggregationMethod.MEAN,
+            },
+        )
+        jan2 = out.filter(
+            pl.col("timestamp") == ensure_utc(datetime(2026, 1, 2, tzinfo=UTC))
+        )
+        assert jan2["precipitation"][0] is None, (
+            "a day with no precipitation reading resampled to a fabricated "
+            "zero — a data outage became a dry day"
+        )
+        # The day is still present, and its OTHER variable is intact: absence
+        # is per-variable, not a dropped row.
+        assert jan2["temperature"][0] == pytest.approx(21.0)
+
+    def test_a_genuinely_dry_day_is_still_zero_not_null(self) -> None:
+        # The other direction, which the fix must not break: real zeros are
+        # real. Without this, "preserve absence" could be implemented as
+        # "treat zero as missing" and both tests could not pass at once.
+        dry = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(datetime(2026, 1, 3, h, tzinfo=UTC)) for h in range(3)
+                ],
+                "precipitation": [0.0, 0.0, 0.0],
+            }
+        )
+        out = resample_to_time_step(
+            dry,
+            timedelta(days=1),
+            aggregation_methods={"precipitation": AggregationMethod.SUM},
+        )
+        assert out["precipitation"][0] == pytest.approx(0.0)

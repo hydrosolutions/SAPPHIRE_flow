@@ -344,7 +344,19 @@ def resample_to_time_step(
             )
             method = AggregationMethod.MEAN
         if method == AggregationMethod.SUM:
-            agg_exprs.append(pl.col(col).sum())
+            # Plan 239 T1a review (major): polars `sum()` of an ALL-NULL group
+            # returns 0.0, not null. Forcing frames pivot several variables
+            # onto shared timestamps, so a day carrying temperature rows but
+            # no precipitation rows would resample to `precipitation = 0.0` —
+            # indistinguishable from "it did not rain", and invisible to the
+            # FI `max_nan` gate, which counts nulls and NaNs and sees neither.
+            # A bucket with no observed value must stay ABSENT, not become dry.
+            agg_exprs.append(
+                pl.when(pl.col(col).is_not_null().any())
+                .then(pl.col(col).sum())
+                .otherwise(None)
+                .alias(col)
+            )
         elif method == AggregationMethod.MAX:
             agg_exprs.append(pl.col(col).max())
         else:

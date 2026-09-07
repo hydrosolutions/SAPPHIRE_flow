@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
+from sapphire_flow.services.training_data import floor_to_time_step
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
@@ -1209,7 +1210,17 @@ class TestFutureForcingFetched:
             future = inputs.data.future_dynamic
             assert not future.is_empty(), "future_dynamic is empty"
             assert {"precipitation", "temperature"} <= set(future.columns)
-            assert (future["timestamp"] > inputs.issue_time).all()
+            # Plan 239 T1a: the future half is now split on BUCKET boundaries
+            # and resampled, so this asserts the T0 rule rather than the raw
+            # instant. `issue_time` here is exactly on a boundary, and T0's
+            # verdict table (row 12) is explicit that the bucket STARTING at
+            # an aligned issue time is future data — "always starting at
+            # T0 + step" is a mechanism that table refutes by name. The old
+            # `> issue_time` assertion encoded exactly that refuted rule; kept
+            # as `>=` against the bucket, which still forbids any past leakage.
+            bucket = floor_to_time_step(inputs.issue_time, timedelta(days=1))
+            assert (future["timestamp"] >= bucket).all()
+            assert (future["timestamp"] >= inputs.issue_time).all()
 
 
 class TestGroupHindcastUsesGroupModelInputs:
@@ -1747,11 +1758,17 @@ class TestHindcastResamplesPastDynamicToDeclaredTimeStep:
     """Plan 239 T1: the SAME defect Plan 228 fixed for `past_targets` was
     still live for `past_dynamic`.
 
-    Hindcast split raw forcing at `issue_time` and handed the past half
-    straight through — while the FUTURE half went through
-    `resample_to_time_step`. So a daily model's hindcast read hourly forcing
-    history and daily forcing forecasts, and every skill score computed from
-    that hindcast describes a model that was never run that way.
+    Hindcast split raw forcing at `issue_time` and handed BOTH halves straight
+    through, unresampled. (An earlier version of this docstring said the future
+    half was already resampled — that was wrong, and the review caught it: the
+    resampled future half is true of `training_data.py`, not of hindcast.) So a
+    daily model's hindcast read hourly forcing, and every skill score computed
+    from that hindcast describes a model that was never run that way.
+
+    Both halves are now split on BUCKET boundaries and resampled — leaving the
+    future half raw while the past half became daily would have delivered one
+    frame at two resolutions, an inconsistency this change would have created
+    rather than found.
     """
 
     def test_past_dynamic_spans_the_declared_step_not_raw_cadence(self) -> None:
@@ -1807,3 +1824,10 @@ class TestHindcastResamplesPastDynamicToDeclaredTimeStep:
         assert gaps <= {time_step}, (
             f"hindcast past_dynamic arrived at {gaps}, not the declared {time_step}"
         )
+        # Review (minor): a gap-set assertion alone is VACUOUS on an empty or
+        # single-row frame — the empty set is a subset of anything. Pin the
+        # actual buckets: exactly `lookback_steps` of them, ending at the last
+        # COMPLETE bucket before issue_time, never issue_time's own.
+        assert stamps == [
+            ensure_utc(issue_time - k * time_step) for k in range(lookback_steps, 0, -1)
+        ]
