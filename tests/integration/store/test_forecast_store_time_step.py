@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import sqlalchemy as sa
+import structlog
 
 from sapphire_flow.db.metadata import forecasts
 from sapphire_flow.store.forecast_store import PgForecastStore
@@ -80,6 +81,13 @@ class TestStoredCadenceIsAuthoritative:
         fetched = store.fetch_forecast(fc.id)
         assert fetched is not None
         assert fetched.ensemble.time_step == timedelta(days=1)
+
+        # The COLUMN itself must hold it — a round-trip alone would also pass if
+        # the reader were still inferring, which is the whole defect.
+        stored = db_connection.execute(
+            sa.select(forecasts.c.time_step_seconds).where(forecasts.c.id == fc.id)
+        ).scalar_one()
+        assert stored == 86400
 
     def test_non_daily_multi_step_forecast_round_trips_unchanged(
         self, db_connection: sa.Connection
@@ -148,6 +156,18 @@ class TestLegacyNullRowsKeepTodaysBehaviour:
         ensemble = _ensemble(sid, n_steps=1, time_step=timedelta(days=1))
         store, fid = self._store_then_null_the_cadence(db_connection, ensemble)
 
-        fetched = store.fetch_forecast(fid)  # type: ignore[arg-type]
+        with structlog.testing.capture_logs() as captured:
+            fetched = store.fetch_forecast(fid)  # type: ignore[arg-type]
         assert fetched is not None
         assert fetched.ensemble.time_step == timedelta(hours=1)
+
+        # The fabrication must be VISIBLE, not silent — that is the only thing
+        # separating this retained branch from the defect it descends from.
+        events = [
+            e
+            for e in captured
+            if e.get("event") == "forecast.legacy_time_step_fabricated"
+        ]
+        assert len(events) == 1, f"expected one warning, got {captured}"
+        assert events[0]["log_level"] == "warning"
+        assert events[0]["fabricated_time_step_seconds"] == 3600

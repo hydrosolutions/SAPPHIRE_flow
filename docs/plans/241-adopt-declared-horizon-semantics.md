@@ -192,7 +192,7 @@ construction time — and derived it on read from the gap between `valid_time`s,
 `timedelta(hours=1)` when there was only one step. A one-step DAILY forecast round-tripped as
 HOURLY, and the API and Forecast Lab published the fabricated cadence as truth.
 
-**Pre-change (evidence, and how it fails):** construct a one-step daily `ForecastEnsemble`, store
+**Pre-change:** construct a one-step daily `ForecastEnsemble`, store
 it through `PgForecastStore`, read it back, assert `time_step == timedelta(days=1)`; the readback
 returns `timedelta(hours=1)` — a fabricated value, not a missing attribute.
 
@@ -294,9 +294,10 @@ tightening. Recorded so nobody rediscovers it during an incident.
 **Out:** any data backfill; tightening to `NOT NULL`; fixing `0050`; the pooled persistence
 boundary (removed from this plan — see below).
 
-📌 **The deferred tightening needs a named follow-on, not a promise.** The cited 115a/115c
-precedent works because `115c` is a real plan with a number. This one is not yet written. It must
-decide what a truthful tightening does with rows whose cadence is genuinely UNDERIVABLE — a legacy
+📌 **The deferred tightening is Plan 248** (`docs/plans/248-tighten-forecast-cadence-column.md`,
+DRAFT, created 2026-09-07) — a named follow-on, as the 115a/115c precedent requires, not a promise.
+It carries the measured census and must decide what a truthful tightening does with rows whose
+cadence is genuinely UNDERIVABLE — a legacy
 single-timestamp row has no spacing to recover, so `NOT NULL` can only be reached by inventing a
 value or by deleting/quarantining those rows. ⛔ Do not close this plan while that follow-on is
 unwritten; record it as an explicit debt with the measurement it needs (the live-DB cadence
@@ -306,7 +307,7 @@ census that could not be run on 2026-09-05).
 the same unmeasured `86400` constant. It carries both defects named above — the standard violation
 and the unverified stamp. Out of scope here; it needs its own plan.
 
-**Verification.**
+**Verification:**
 `uv run pytest tests/unit` — only what genuinely needs no database:
 - the incoherent-declaration rejections on `ModelDataRequirements`.
 
@@ -394,7 +395,7 @@ uv run python -c "import forecast_interface as fi; assert fi.__version__ == '0.1
   reader's legacy `NULL` path is UNCHANGED in behaviour (one-hour fallback retained, now logged).
 - ⛔ The one-step RED was observed against `main`, not against this branch, and the observed
   pre-change value is recorded in the task.
-- The deferred `NOT NULL` tightening has a named follow-on plan, or this plan does not close.
+- The deferred `NOT NULL` tightening has a named follow-on plan — **Plan 248**, created.
 - Migration behaviour (upgrade, downgrade, constraint-name parity, a surviving NULL row) is proven
   in `tests/integration` against real Postgres — NOT asserted from a unit run.
 - ⛔ Every claim about the live database is MEASURED or explicitly marked unmeasured. The staging

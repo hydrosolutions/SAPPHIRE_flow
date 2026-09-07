@@ -197,9 +197,21 @@ class TestMigration0053:
                 sa.text("UPDATE forecasts SET time_step_seconds = NULL WHERE id = :i"),
                 {"i": fid},
             )
-        with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+        # ⛔ Test the PREDICATE, not just the name. A constraint written
+        # `<> 0` or `IS NOT NULL` would pass a name check and a zero check while
+        # still admitting a negative cadence.
+        for bad in (0, -1, -86400):
+            with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
+                conn.execute(
+                    sa.text(
+                        "UPDATE forecasts SET time_step_seconds = :v WHERE id = :i"
+                    ),
+                    {"v": bad, "i": fid},
+                )
+
+        with engine.begin() as conn:  # a positive cadence is accepted
             conn.execute(
-                sa.text("UPDATE forecasts SET time_step_seconds = 0 WHERE id = :i"),
+                sa.text("UPDATE forecasts SET time_step_seconds = 86400 WHERE id = :i"),
                 {"i": fid},
             )
 
