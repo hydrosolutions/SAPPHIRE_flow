@@ -1,8 +1,12 @@
 """forecasts.input_quality + input_quality_flags columns (Plan 253 T1a)
 
-Revision ID: 0053
-Revises: 0052
+Revision ID: 0054
+Revises: 0053
 Create Date: 2026-09-04
+
+Rebased on merge: authored as 0053 chaining onto 0052, but origin/main landed its own
+0053 (forecasts.time_step_seconds, Plan 241 T4) onto 0052 in parallel. Two heads is a
+broken chain, so this moved to 0054 and now chains onto main's 0053.
 
 `services/input_quality.py` assesses, for every operational forecast,
 whether it ran on stale observations, an aged warm-up state, or an old NWP

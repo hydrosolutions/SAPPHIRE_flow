@@ -281,7 +281,7 @@ the same prerequisite being dropped again.
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:378-390`): its own verification
+Every code task carries the Task Exit Gate (`docs/workflow.md:198`): its own verification
 command, `uv run ruff check src/ tests/`, `uv run ruff format --check src/ tests/`,
 `uv run pyright src/`, `uv run pytest`, and affected docs updated in the same change.
 

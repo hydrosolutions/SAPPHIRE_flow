@@ -71,7 +71,7 @@ in eight places:
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:378-390`).
+Every code task carries the Task Exit Gate (`docs/workflow.md:198`).
 
 ### T1 — decide and record the version strategy
 

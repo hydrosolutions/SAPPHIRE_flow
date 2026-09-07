@@ -1,13 +1,21 @@
 """Plan 253 T1a — LOCKED upgrade/downgrade acceptance test for migration
-0053's ``forecasts.input_quality`` / ``input_quality_flags`` columns.
+0054's ``forecasts.input_quality`` / ``input_quality_flags`` columns.
 
 Real Alembic upgrade against a throwaway PostGIS container (mirrors
 ``tests/integration/db/test_migration_0052_partial_index.py``). A row
-inserted at the pre-0053 schema shape must survive the upgrade with `NULL`
+inserted at the pre-0054 schema shape must survive the upgrade with `NULL`
 in both new columns — not the `InputQualityLevel.FULL` default a server
 default would silently substitute (the exact failure this migration's
 docstring, and this plan's exit gate 2, forbid). Downgrade must remove both
 columns and leave the row otherwise intact.
+
+REVISION CHAIN (post-rebase). This migration was authored as `0053` while
+`origin/main` independently landed its own `0053_forecasts_time_step.py`
+(Plan 241 T4, `forecasts.time_step_seconds`); both chained onto `0052`. On
+merge ours was rebased to revision `0054`, down_revision `0053`. So the
+pre-input-quality schema shape is revision **0053**, not `0052`, and the
+downgrade target is **0053** — downgrading to `0052` would tear out main's
+independent migration and prove nothing about ours.
 """
 
 from __future__ import annotations
@@ -30,17 +38,24 @@ if TYPE_CHECKING:
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
+# The revision immediately BELOW this migration: main's Plan 241 T4
+# `forecasts.time_step_seconds`. Seeding the legacy row here (not at 0052)
+# is what makes the row genuinely pre-input-quality without also unwinding
+# an unrelated migration.
+_PRE_REVISION = "0053"
+_REVISION = "0054"
+
 
 @pytest.fixture
 def migration_engine() -> Iterator[tuple[sa.Engine, str]]:
     """Throwaway PostGIS container so a real Alembic upgrade/downgrade can
-    run 0053 against a seeded legacy row without disturbing the shared
+    run 0054 against a seeded legacy row without disturbing the shared
     session engine (migrated to head once)."""
     with PostgresContainer(
         image="postgis/postgis:16-3.4",
         username="test",
         password="test",
-        dbname="sapphire_migration_0053_test",
+        dbname="sapphire_migration_0054_test",
     ) as postgres:
         url = postgres.get_connection_url().replace("+psycopg2", "+psycopg")
         prior = os.environ.get("DATABASE_URL")
@@ -64,13 +79,25 @@ def _alembic_cfg(url: str) -> object:
     return cfg
 
 
+def _forecasts_columns(conn: sa.Connection) -> set[str]:
+    return {
+        row[0]
+        for row in conn.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'forecasts'"
+            )
+        )
+    }
+
+
 def _seed_station(conn: sa.Connection) -> uuid.UUID:
-    station = make_station_config(rng=random.Random(53))
+    station = make_station_config(rng=random.Random(54))
     PgStationStore(conn).store_station(station)
     return station.id
 
 
-def _seed_model(conn: sa.Connection, model_id: str = "test_model_0053") -> str:
+def _seed_model(conn: sa.Connection, model_id: str = "test_model_0054") -> str:
     conn.execute(
         sa.text(
             "INSERT INTO models (id, display_name, artifact_scope, description) "
@@ -84,8 +111,8 @@ def _seed_model(conn: sa.Connection, model_id: str = "test_model_0053") -> str:
 def _insert_legacy_forecast(
     conn: sa.Connection, *, station_id: uuid.UUID, model_id: str
 ) -> uuid.UUID:
-    """Raw INSERT at the pre-0053 schema shape — neither `input_quality` nor
-    `input_quality_flags` exists yet at revision 0052."""
+    """Raw INSERT at the pre-0054 schema shape — neither `input_quality` nor
+    `input_quality_flags` exists yet at revision 0053."""
     forecast_id = uuid.uuid4()
     conn.execute(
         sa.text(
@@ -105,7 +132,7 @@ def _insert_legacy_forecast(
     return forecast_id
 
 
-class TestMigration0053InputQuality:
+class TestMigration0054InputQuality:
     def test_upgrade_leaves_legacy_row_null_not_full(
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
@@ -113,9 +140,14 @@ class TestMigration0053InputQuality:
 
         engine, url = migration_engine
         cfg = _alembic_cfg(url)
-        command.upgrade(cfg, "0052")
+        command.upgrade(cfg, _PRE_REVISION)
 
         with engine.begin() as conn:
+            # The row is genuinely legacy only if the columns do not exist yet.
+            pre_columns = _forecasts_columns(conn)
+            assert "input_quality" not in pre_columns
+            assert "input_quality_flags" not in pre_columns
+
             station_id = _seed_station(conn)
             model_id = _seed_model(conn)
             forecast_id = _insert_legacy_forecast(
@@ -123,7 +155,7 @@ class TestMigration0053InputQuality:
             )
 
         # Must not raise — nullable, no server default.
-        command.upgrade(cfg, "0053")
+        command.upgrade(cfg, _REVISION)
 
         with engine.connect() as conn:
             row = conn.execute(
@@ -171,7 +203,7 @@ class TestMigration0053InputQuality:
                 f"{name} must have no server default, found {r.column_default!r}"
             )
 
-    def test_downgrade_removes_both_columns(
+    def test_downgrade_to_0053_removes_both_columns_and_keeps_time_step(
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
         from alembic import command
@@ -187,18 +219,13 @@ class TestMigration0053InputQuality:
                 conn, station_id=station_id, model_id=model_id
             )
 
-        command.downgrade(cfg, "0052")
+        # 0054 -> 0053 ONLY. Downgrading to 0052 would also tear out main's
+        # independent Plan 241 T4 migration, which this revision merely
+        # chains onto and must leave untouched.
+        command.downgrade(cfg, _PRE_REVISION)
 
         with engine.connect() as conn:
-            columns = {
-                row[0]
-                for row in conn.execute(
-                    sa.text(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name = 'forecasts'"
-                    )
-                )
-            }
+            columns = _forecasts_columns(conn)
             (surviving_id,) = conn.execute(
                 sa.text("SELECT id FROM forecasts WHERE id = :id"),
                 {"id": forecast_id},
@@ -206,6 +233,11 @@ class TestMigration0053InputQuality:
 
         assert "input_quality" not in columns
         assert "input_quality_flags" not in columns
+        assert "time_step_seconds" in columns, (
+            "downgrading 0054 must leave main's independent 0053 migration "
+            "(forecasts.time_step_seconds) in place — this revision only "
+            "chains onto it"
+        )
         assert surviving_id == forecast_id
 
         # Round-trip: re-upgrade must succeed.
