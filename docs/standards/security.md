@@ -288,7 +288,7 @@ Role-to-endpoint mapping. Enforced via FastAPI dependency injection (`Depends(re
 
 **API consumer scope filtering**: A `✓` for an API consumer means the endpoint is accessible, not that the consumer sees all data. Responses are filtered server-side by the token's `scope` (see `access_tokens.scope` in architecture-context.md § Authentication schemas). A consumer scoped to specific stations receives only those stations from `GET /api/v1/stations`, only their forecasts, observations, and alerts. Requests for out-of-scope station IDs return 404. Human roles (org admin through forecaster) are unscoped — they see all data.
 
-### Input-quality visibility (Plan 242 OD-2 — supersedes Plan 023:128-143)
+### Input-quality visibility (Plan 246 OD-2 — supersedes Plan 023:128-143)
 
 Plan 023 required the threshold-bearing `input_quality`/`input_quality_flags` detail to be
 role-filtered once authorization existed, on the assumption a `forecaster`/`operator` role would

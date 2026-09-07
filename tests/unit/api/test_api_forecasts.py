@@ -228,7 +228,7 @@ class TestGetForecast:
 
 
 class TestForecastDetailInputQuality:
-    """Plan 242 T1c: the detail serializer is separate from ForecastSummary
+    """Plan 246 T1c: the detail serializer is separate from ForecastSummary
     and builds its response explicitly — it does NOT inherit the fields for
     free, so it needs the same wiring proven independently here."""
 

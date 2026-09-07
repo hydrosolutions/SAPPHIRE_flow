@@ -9,6 +9,9 @@ from uuid import UUID, uuid4
 import polars as pl
 import pytest
 
+from sapphire_flow.config.forecast_qc_rules import (
+    _default_swiss_forecast_qc_rules,  # pyright: ignore[reportPrivateUsage]
+)
 from sapphire_flow.services.forecast_combination import (
     _BMA_TARGET_MEMBERS,
     build_combined_forecasts,
@@ -67,11 +70,23 @@ def _empty_qc_rules() -> ForecastQcRuleSet:
 
 
 def _discharge_range_qc_rules(
-    *, value_min: float = 0.0, value_max: float = 1000.0
+    *,
+    value_min: float = 0.0,
+    value_max: float = 1000.0,
+    time_step: timedelta = timedelta(hours=1),
 ) -> ForecastQcRuleSet:
     """A REAL forecast QC rule (`range_check`), the same rule
     `config/forecast_qc_rules.py` declares in production — not a mocked
-    checker verdict (Plan 242 exit gate 4)."""
+    checker verdict (Plan 246 exit gate 4).
+
+    Every test whose combination is EXPECTED to persist must pass a rule
+    set that covers the step that combination lands on: since the Plan 246
+    review fix, `build_combined_forecasts` refuses to persist a combination
+    whose `(parameter, time_step)` selects no rules at all, because
+    `worst_qc_status([])` would otherwise report an unchecked combination
+    as QC_PASSED. `_empty_qc_rules()` therefore now means "nothing is
+    publishable", and only tests that return before QC still use it.
+    """
     return ForecastQcRuleSet(
         version="1.0",
         rules=(
@@ -79,7 +94,7 @@ def _discharge_range_qc_rules(
                 rule_id="range_check",
                 rule_version="1.0",
                 parameter="discharge",
-                time_step=timedelta(hours=1),
+                time_step=time_step,
                 thresholds={"value_min": value_min, "value_max": value_max},
             ),
         ),
@@ -816,7 +831,7 @@ class TestCombineEnsemblesPooledGridAlignment:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
         )
@@ -839,7 +854,7 @@ class TestBuildCombinedForecasts:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
         )
@@ -908,7 +923,7 @@ class TestBuildCombinedForecasts:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
             weights={_MODEL_A: 0.7, _MODEL_B: 0.3},
@@ -992,7 +1007,7 @@ class TestBuildCombinedForecastsUniformSpacing:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
         )
@@ -1039,7 +1054,7 @@ class TestBuildCombinedForecastsUniformSpacing:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(time_step=timedelta(hours=2)),
             qc_overrides=[],
             baselines=[],
         )
@@ -1048,8 +1063,109 @@ class TestBuildCombinedForecastsUniformSpacing:
         assert forecasts[0].ensemble.time_step == timedelta(hours=2)
 
 
+class TestBuildCombinedForecastsProductionQcRuleCoverage:
+    """Plan 246 review (fail closed) — with the rule set the deployment
+    actually ships, not an injected one.
+
+    `ForecastQcRuleSet.rules_for` matches `time_step` by EQUALITY and
+    production declares forecast QC rules at 3600 s and 86400 s only
+    (`config/forecast_qc_rules.py`), so a combination rebuilt on a derived
+    step outside that pair selects zero rules, produces zero flags, and
+    `worst_qc_status([])` returns QC_PASSED. Injecting a rule at the
+    derived step — what the other classes here do, legitimately, to reach
+    the QC wiring — is exactly what conceals that."""
+
+    def test_production_has_no_rule_at_a_coarsened_two_hour_step(self) -> None:
+        production = _default_swiss_forecast_qc_rules()
+
+        assert production.rules_for("discharge", timedelta(hours=2)) == ()
+        assert production.rules_for("discharge", timedelta(hours=1)) != ()
+
+    def test_coarsened_step_combination_is_not_returned_for_storage(self) -> None:
+        """Both contributors are declared hourly but present only at t1,
+        t3, t5, so the combination is rebuilt on a 2-hour step. Production
+        cannot check it, so it must not be published as checked."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 3, 5)]
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(
+                    _MODEL_A,
+                    _members_ensemble_at(
+                        model_id=_MODEL_A, valid_times=vts, n_members=5
+                    ),
+                ),
+                _MODEL_B: _result_with_ensemble(
+                    _MODEL_B,
+                    _members_ensemble_at(
+                        model_id=_MODEL_B, valid_times=vts, n_members=5
+                    ),
+                ),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_default_swiss_forecast_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert forecasts == [], (
+            "an unchecked 2-hour combination was returned with qc_status="
+            f"{[fc.qc_status for fc in forecasts]}"
+        )
+
+    def test_hourly_step_combination_is_checked_and_returned(self) -> None:
+        """The guard is not a blanket refusal: the same contributors on a
+        grid whose derived step production DOES cover are checked on the
+        real production rules and returned for storage."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3)]
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(
+                    _MODEL_A,
+                    _members_ensemble_at(
+                        model_id=_MODEL_A, valid_times=vts, n_members=5
+                    ),
+                ),
+                _MODEL_B: _result_with_ensemble(
+                    _MODEL_B,
+                    _members_ensemble_at(
+                        model_id=_MODEL_B, valid_times=vts, n_members=5
+                    ),
+                ),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_default_swiss_forecast_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].ensemble.time_step == timedelta(hours=1)
+        assert forecasts[0].qc_status == QcStatus.QC_PASSED
+        assert forecasts[0].qc_flags == ()
+
+
 class TestBuildCombinedForecastsQualityControl:
-    """Plan 242 T2a — the combined ensemble is quality-controlled on the
+    """Plan 246 T2a — the combined ensemble is quality-controlled on the
     SAME rules and datum handling as its members, from every call site
     that stores one; a QC_FAILED combination is stored marked failed
     (OD-1), never dropped."""
@@ -1312,7 +1428,7 @@ class TestBuildCombinedForecastsQualityControl:
 
 
 class TestBuildCombinedForecastsInputQuality:
-    """Plan 242 T2b — the combination reports the aggregate input quality
+    """Plan 246 T2b — the combination reports the aggregate input quality
     of the models that actually contributed to THAT parameter."""
 
     def test_full_plus_degraded_contributor_yields_degraded(self) -> None:
@@ -1356,7 +1472,7 @@ class TestBuildCombinedForecastsInputQuality:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
         )
@@ -1399,7 +1515,7 @@ class TestBuildCombinedForecastsInputQuality:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
         )
@@ -1468,7 +1584,7 @@ class TestBuildCombinedForecastsInputQuality:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
         )
@@ -1543,7 +1659,7 @@ class TestBuildCombinedForecastsInputQuality:
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
             qc_checker=_qc_checker(),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_discharge_range_qc_rules(),
             qc_overrides=[],
             baselines=[],
         )

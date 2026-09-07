@@ -63,7 +63,7 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # (time_step_seconds/phase_offset_seconds on skill_scores/skill_diagrams,
 # widening both natural-key indexes so two (time_step, phase) cohorts never
 # collide under ON CONFLICT DO NOTHING) onto 0051 — advancing the pinned
-# head to 0052. Plan 242 T1a then chained 0053 (forecasts.input_quality +
+# head to 0052. Plan 246 T1a then chained 0053 (forecasts.input_quality +
 # input_quality_flags, both nullable, no server default — Plan 023's
 # unfinished half) onto 0052 — advancing the pinned head to 0053.
 _RELEASE_B_HEAD = "0053"

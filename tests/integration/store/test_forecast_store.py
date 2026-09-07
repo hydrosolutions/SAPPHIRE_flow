@@ -259,7 +259,7 @@ class TestStoreAndFetchForecast:
 
 
 class TestInputQualityRoundTrip:
-    """Plan 242 T1b — the input-quality pair must round-trip by VALUE, not
+    """Plan 246 T1b — the input-quality pair must round-trip by VALUE, not
     merely be present. Before this task the read path never set the field,
     so a DEGRADED-with-flags forecast silently read back as
     ``InputQualityLevel.FULL`` with an empty flag tuple — a plausible

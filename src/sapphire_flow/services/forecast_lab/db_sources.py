@@ -206,7 +206,7 @@ def fetch_combined_forecast_for_cycle(
     candidates = stores.forecast_store.fetch_forecasts_for_cycle(
         publication_cycle_time, station_id, _DISCHARGE_PARAMETER
     )
-    # Plan 242 T2a / OD-1a: a QC_FAILED combination is stored (OD-1 --
+    # Plan 246 T2a / OD-1a: a QC_FAILED combination is stored (OD-1 --
     # evidence of what was rejected and why) but must never be served here
     # as an ordinary available forecast. This is a filter, not a schema
     # change: the snapshot format stays at v2 (Plan 244 is what would

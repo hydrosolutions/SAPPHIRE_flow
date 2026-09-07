@@ -319,7 +319,7 @@ def _qc_combined_ensemble(
     baselines: list[ClimBaseline],
     water_level_datum_masl: float | None,
 ) -> tuple[QcStatus, tuple[QcFlag, ...]]:
-    """Plan 242 T2a — the SAME rules and datum handling the member path
+    """Plan 246 T2a — the SAME rules and datum handling the member path
     applies (`run_station_forecast.py`), reused rather than reimplemented,
     so a `_pooled`/`_bma` combination is quality-controlled on identical
     terms to the ensembles it was built from. Without the datum shift, raw
@@ -351,7 +351,7 @@ def _contributor_input_quality(
     *,
     weights: dict[ModelId, float] | None,
 ) -> tuple[InputQualityLevel, tuple[InputQualityFlag, ...]]:
-    """Plan 242 T2b — the aggregate input quality of the models that
+    """Plan 246 T2b — the aggregate input quality of the models that
     actually contributed to THIS parameter, mirroring the eligibility
     `combine_ensembles_pooled`/`combine_ensembles_bma` apply (MEMBERS
     representation, and BMA's weight > 0) so a model excluded from a given
@@ -472,6 +472,30 @@ def build_combined_forecasts(
         # post-persistence reload agree.
         if derived_time_step != ensemble.time_step:
             ensemble = replace(ensemble, time_step=derived_time_step)
+        # Plan 246 review (fail closed) — QC rules are selected by EXACT
+        # `(parameter, time_step)` (`ForecastQcRuleSet.rules_for`), and
+        # production declares forecast QC rules at 3600 s and 86400 s ONLY
+        # (`config/forecast_qc_rules.py`). A combination rebuilt on a
+        # derived step no rule covers — the uniformly coarsened 2-hourly
+        # intersection the block above exists to relabel is exactly that —
+        # therefore selects zero rules, produces zero flags, and
+        # `worst_qc_status([])` returns `QC_PASSED`
+        # (`run_station_forecast.py`): an UNCHECKED combination published
+        # as one that was checked and passed. Skip it, on the same terms as
+        # the two floors above skip a grid that cannot be published
+        # honestly. Storing it as RAW instead would re-conflate "never
+        # checked" with "checked, nothing to report" — the very confusion
+        # this task removes. Member-model ensembles are unaffected: this
+        # floor sits at the COMBINATION persistence boundary only, and a
+        # member runs at its assignment's declared step.
+        if not qc_rules.rules_for(ensemble.parameter, ensemble.time_step):
+            log.warning(
+                "forecast_combination.no_qc_rules_for_step_not_persisted",
+                parameter=param,
+                station_id=str(station_id),
+                time_step_seconds=ensemble.time_step.total_seconds(),
+            )
+            continue
 
         qc_status, qc_flags = _qc_combined_ensemble(
             ensemble,

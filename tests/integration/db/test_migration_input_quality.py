@@ -1,4 +1,4 @@
-"""Plan 242 T1a — LOCKED upgrade/downgrade acceptance test for migration
+"""Plan 246 T1a — LOCKED upgrade/downgrade acceptance test for migration
 0053's ``forecasts.input_quality`` / ``input_quality_flags`` columns.
 
 Real Alembic upgrade against a throwaway PostGIS container (mirrors

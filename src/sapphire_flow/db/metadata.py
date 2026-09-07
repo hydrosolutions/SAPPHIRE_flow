@@ -1146,7 +1146,7 @@ forecasts = sa.Table(
         server_default="raw",
     ),
     sa.Column("qc_flags", JSONB, nullable=False, server_default="[]"),
-    # Plan 242 T1a: nullable, NO server default. NULL means "no assessment
+    # Plan 246 T1a: nullable, NO server default. NULL means "no assessment
     # recorded" (legacy row, or migration 0053 not yet backfilled — it never
     # is) and must read back as unknown, not as InputQualityLevel.FULL. See
     # migration 0053's docstring for why a default would be the exact

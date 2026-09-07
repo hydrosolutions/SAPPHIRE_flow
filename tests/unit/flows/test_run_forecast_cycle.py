@@ -26,6 +26,9 @@ from sapphire_flow.adapters.recap_gateway import (
     RecapTransientError,
 )
 from sapphire_flow.config.deployment import DeploymentConfig
+from sapphire_flow.config.forecast_qc_rules import (
+    _default_swiss_forecast_qc_rules,  # pyright: ignore[reportPrivateUsage]
+)
 from sapphire_flow.exceptions import (
     AdapterError,
     BudgetExceededError,
@@ -205,6 +208,32 @@ def _make_alerting_config() -> DeploymentConfig:
 
 def _empty_qc_rules() -> ForecastQcRuleSet:
     return ForecastQcRuleSet(version="1.0", rules=())
+
+
+def _hourly_discharge_qc_rules_covering_the_step() -> ForecastQcRuleSet:
+    """A rule set that COVERS the hourly step without constraining values.
+
+    Since the Plan 246 review fix, `build_combined_forecasts` refuses to
+    persist a combination whose `(parameter, time_step)` selects no rules
+    at all — `worst_qc_status([])` would otherwise report an unchecked
+    combination as QC_PASSED. `_empty_qc_rules()` therefore now means
+    "no combination is publishable", so a test that asserts a combination
+    IS stored has to supply rules for the step it lands on. The bounds are
+    deliberately wide: these tests are about routing and storage, not
+    about QC verdicts, and a narrow bound would also drop the CONTRIBUTORS
+    (`_run_single_model` fails a model whose own ensemble fails QC)."""
+    return ForecastQcRuleSet(
+        version="1.0",
+        rules=(
+            ForecastQcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0",
+                parameter="discharge",
+                time_step=timedelta(hours=1),
+                thresholds={"value_min": -1e9, "value_max": 1e9},
+            ),
+        ),
+    )
 
 
 def _write_forecast_cycle_config(
@@ -5953,7 +5982,7 @@ enabled = false
             config=_make_config(
                 forecast_combination_strategy=ModelCombinationStrategy.POOLED
             ),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
             clock=_clock,
             rng=random.Random(42),
         )
@@ -8231,7 +8260,7 @@ class TestForecastCycleRatingCurveBinding:
             config=_make_config(
                 forecast_combination_strategy=ModelCombinationStrategy.POOLED
             ),
-            qc_rules=_empty_qc_rules(),
+            qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
             clock=_clock,
             rng=random.Random(42),
             rating_curve_store=rating_curve_store,
@@ -9093,6 +9122,7 @@ class TestT8bStationExceptionContainment:
                 config=_make_config(
                     forecast_combination_strategy=ModelCombinationStrategy.POOLED
                 ),
+                qc_rules=_hourly_discharge_qc_rules_covering_the_step(),
             )
 
         # The crash in ONE station's combination arm must not propagate out
@@ -9813,10 +9843,22 @@ class TestT8bHeterogeneousStation:
         assert stored[0].ensemble.forecast_horizon_steps == 10
 
 
-# --- Plan 242 T2a / exit gate 4: the pooled combination is quality-controlled
+# --- Plan 246 T2a / exit gate 4: the pooled combination is quality-controlled
 # from BOTH `build_combined_forecasts` call sites in `run_forecast_cycle_flow`
 # (the per-track arm at ~:2929 and the legacy arm at ~:3254), with a REAL
-# QC-tripping ensemble rather than a mocked checker verdict. ---
+# QC-tripping ensemble rather than a mocked checker verdict.
+#
+# SCOPE (Plan 246 review): the two classes below INJECT a `range_check` rule
+# at the 2-hour step the pooled intersection lands on. That injection is what
+# makes a QC-failing combination reachable at all (see
+# `_ConstantDischargeFakeModel`), and it is legitimate coverage of the QC
+# WIRING — that both call sites forward the cycle's rules, and that a failing
+# combination is stored marked failed rather than dropped (OD-1). It is NOT
+# evidence about the coarsened-step path under the rules the deployment
+# actually ships: production declares forecast QC rules at 3600 s and 86400 s
+# only, so a 2-hour combination selects nothing there. That case is covered
+# separately, against `_default_swiss_forecast_qc_rules()`, by
+# `TestPooledCombinationUnderProductionQcRules` at the end of this file. ---
 
 
 def _discharge_range_qc_rules(
@@ -9859,14 +9901,30 @@ class _ConstantDischargeFakeModel(_SmallFakeModel):
     a combination is only ever failable on a rule its members were not
     checked against."""
 
-    def __init__(self, *, value: float, stride: int = 1, n_members: int = 5) -> None:
+    def __init__(
+        self,
+        *,
+        value: float,
+        stride: int = 1,
+        n_members: int = 5,
+        member_spread: float = 0.0,
+    ) -> None:
         self._value = value
         self._stride = stride
         self._n_members = n_members
+        # `member_spread > 0` separates the members so the PRODUCTION
+        # `flat_ensemble` rule (tolerance 0.001) does not fire on an
+        # ensemble whose members are all identical — needed only where a
+        # test runs the real rule set rather than a bespoke range rule.
+        self._member_spread = member_spread
 
     def predict(self, artifact, inputs, rng, prior_state=None):  # type: ignore[no-untyped-def]
         rows = [
-            {"valid_time": vt, "member_id": m, "value": self._value}
+            {
+                "valid_time": vt,
+                "member_id": m,
+                "value": self._value + m * self._member_spread,
+            }
             for step in range(1, inputs.forecast_horizon_steps + 1)
             if step % self._stride == 0
             for vt in [
@@ -9960,7 +10018,7 @@ def _stored_combination(stores: dict[str, object]) -> OperationalForecast:
 
 
 class TestPooledCombinationQualityControlLegacyRoute:
-    """Plan 242 T2a — the LEGACY (non-candidate-aware adapter) arm's
+    """Plan 246 T2a — the LEGACY (non-candidate-aware adapter) arm's
     `build_combined_forecasts` call site. Exit gate 4."""
 
     def _run(self, qc_rules: ForecastQcRuleSet) -> dict[str, object]:
@@ -10025,7 +10083,7 @@ class TestPooledCombinationQualityControlLegacyRoute:
 
 
 class TestPooledCombinationQualityControlPerTrackRoute:
-    """Plan 242 T2a — the PER-TRACK (candidate-aware adapter, Plan 151 T8b)
+    """Plan 246 T2a — the PER-TRACK (candidate-aware adapter, Plan 151 T8b)
     arm's `build_combined_forecasts` call site. Exit gate 4."""
 
     def _run(self, qc_rules: ForecastQcRuleSet) -> dict[str, object]:
@@ -10084,3 +10142,107 @@ class TestPooledCombinationQualityControlPerTrackRoute:
         combination = _stored_combination(stores)
         assert combination.qc_status == QcStatus.QC_FAILED
         assert [flag.rule_id for flag in combination.qc_flags] == ["range_check"]
+
+
+# --- Plan 246 review (fail closed): a combination whose (parameter,
+# time_step) selects ZERO rules from the rule set actually shipped is not
+# persisted. The two classes above deliberately INJECT a 2-hour rule so the
+# QC wiring is reachable at the coarsened step; that injection is also what
+# hides the production hole, because production declares forecast QC rules
+# at 3600 s and 86400 s only. These tests use the PRODUCTION rule set. ---
+
+
+_PRODUCTION_SAFE_VALUE = 900.0
+_PRODUCTION_MEMBER_SPREAD = 10.0
+
+
+def _production_pooled_models(
+    model_id_a: ModelId, model_id_b: ModelId, *, stride_b: int
+) -> dict:
+    """Two contributors, both declared hourly, spread enough that no
+    production rule fires on either of them individually (so both survive
+    `_run_single_model`'s own QC drop and reach the combination).
+
+    ``stride_b=1`` -> the pooled intersection is the full hourly grid, a
+    step production HAS rules for. ``stride_b=2`` -> the intersection is
+    uniformly coarsened to 2 h, a step production has NO rules for. Nothing
+    else differs between the two cases."""
+    return {
+        model_id_a: _ConstantDischargeFakeModel(
+            value=_PRODUCTION_SAFE_VALUE,
+            stride=1,
+            member_spread=_PRODUCTION_MEMBER_SPREAD,
+        ),
+        model_id_b: _ConstantDischargeFakeModel(
+            value=_PRODUCTION_SAFE_VALUE,
+            stride=stride_b,
+            member_spread=_PRODUCTION_MEMBER_SPREAD,
+        ),
+    }
+
+
+def _run_production_rules_pooled_cycle(*, stride_b: int) -> dict[str, object]:
+    stores = _make_full_stores()
+    _sid, model_id_a, model_id_b = _seed_pooled_two_model_station(stores, seed_nwp=True)
+    result = _run_cycle_with_stores(
+        stores,
+        adapter=FakeWeatherForecastSource(result={}),
+        models=_production_pooled_models(model_id_a, model_id_b, stride_b=stride_b),
+        config=_make_config(
+            forecast_combination_strategy=ModelCombinationStrategy.POOLED
+        ),
+        qc_rules=_default_swiss_forecast_qc_rules(),
+    )
+    assert result.stations_succeeded == 1
+    return stores
+
+
+def _stored_combinations(stores: dict[str, object]) -> list[OperationalForecast]:
+    stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+    return [fc for fc in stored if fc.combination_strategy == "pooled"]
+
+
+class TestPooledCombinationUnderProductionQcRules:
+    """The rule set the deployment actually ships, not an injected one."""
+
+    def test_production_declares_no_rules_at_the_coarsened_step(self) -> None:
+        """The premise the two tests below rest on, asserted directly so
+        they cannot silently stop testing anything if production ever
+        gains a 2-hour rule row."""
+        production = _default_swiss_forecast_qc_rules()
+
+        assert production.rules_for("discharge", timedelta(hours=2)) == ()
+        assert production.rules_for("discharge", timedelta(hours=1)) != ()
+        assert production.rules_for("discharge", timedelta(days=1)) != ()
+
+    def test_coarsened_step_combination_is_not_stored_as_qc_passed(self) -> None:
+        """The false pass this guard closes. The pooled intersection is
+        uniformly coarsened to 2 h and rebuilt on that step; production
+        selects ZERO rules there, so the checker returns zero flags and
+        `worst_qc_status([])` would report QC_PASSED — an unchecked
+        combination published as a checked one. Nothing may be stored."""
+        stores = _run_production_rules_pooled_cycle(stride_b=2)
+
+        combinations = _stored_combinations(stores)
+        assert combinations == [], (
+            "a combination on a step production has no QC rules for was "
+            f"persisted with qc_status="
+            f"{[c.qc_status for c in combinations]}"
+        )
+        # The cycle really did run two contributors to completion — the
+        # skip is scoped to the combination, not a station-wide failure.
+        stored = list(stores["forecast_store"]._forecasts.values())  # type: ignore[attr-defined]
+        assert len([fc for fc in stored if fc.combination_strategy is None]) == 2
+
+    def test_hourly_step_combination_is_still_checked_and_stored(self) -> None:
+        """Not a blanket refusal: the same two contributors on a grid whose
+        derived step production DOES declare rules for are checked on those
+        real rules and stored."""
+        stores = _run_production_rules_pooled_cycle(stride_b=1)
+
+        combinations = _stored_combinations(stores)
+        assert len(combinations) == 1
+        combination = combinations[0]
+        assert combination.ensemble.time_step == timedelta(hours=1)
+        assert combination.qc_status == QcStatus.QC_PASSED
+        assert combination.qc_flags == ()

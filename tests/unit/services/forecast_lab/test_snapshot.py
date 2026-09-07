@@ -1303,7 +1303,7 @@ class TestCombinedForecastPositivePath:
 
 
 class TestCombinedForecastQcFailedExcluded:
-    """Plan 242 OD-1a — a `_pooled`/`_bma` row stored `QC_FAILED` is
+    """Plan 246 OD-1a — a `_pooled`/`_bma` row stored `QC_FAILED` is
     STORED (OD-1: evidence of what was rejected and why) but must be
     ABSENT from the Lab snapshot, not present-and-available. This is a
     filter at the fetch boundary (`db_sources.py`), not a schema change --
