@@ -375,6 +375,13 @@ exit criteria — Plan 212 owns that deeper screening.
   workflows slower and less reliable.
 - **242** — Plain workflow prompts — `READY` — remove automated plan and
   implementation engines; keep three small prompts and owner-run review passes.
+- **241** — Adopt the declared horizon semantics — `READY` — the FI adapter
+  dropped a model's `AT_MOST`/`min_future_steps` declaration, so the resolver
+  could never see it; T4 then persists a forecast's cadence, which T2/T3 make
+  reachable. PR #258.
+- **248** — Backfill and tighten `forecasts.time_step_seconds` — `DRAFT` —
+  BLOCKED: the column does not exist in staging until 241 deploys, and the
+  disposition of the 69 non-uniform rows depends on 252/254.
 
 ## Deferred
 
