@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-07
 plan: 248
 title: Backfill and tighten forecasts.time_step_seconds — the half Plan 241 deliberately deferred
-scope: Finish the two-release column tightening Plan 241 T4 started. Backfill the MEASURED uniform-daily rows, decide what a truthful cadence is for rows that have none, then tighten the column to NOT NULL. Explicitly NOT the phase/interleaving defect (Plans 245/247), NOT any change to how a cadence is derived at write time.
+scope: Finish the two-release column tightening Plan 241 T4 started. Backfill the MEASURED uniform-daily rows, decide what a truthful cadence is for rows that have none, then tighten the column to NOT NULL. Explicitly NOT the phase/interleaving defect (Plans 252/254), NOT any change to how a cadence is derived at write time.
 depends_on: [241]
 blocks: []
 source: 2026-09-07 — required by Plan 241's own exit gate ("the deferred NOT NULL tightening has a named follow-on plan, or this plan does not close"), and by a live measurement of the staging database taken the same day
@@ -63,14 +63,14 @@ deleting the rows, or quarantining them — and inventing one is the defect Plan
 (microsecond-bearing `valid_time`s from `climatology_fallback`, `persistence_fallback`,
 `linear_regression_daily` and `_pooled`). They stay uniform in isolation — a constant offset
 preserves the gap — and only collide when pooled across contributors on different phases. **Plans
-245 (a time grid is a step AND a phase) and 247 (phase-aware execution) already own that**; this
+252 (a time grid is a step AND a phase) and 254 (phase-aware execution) already own that**; this
 plan must not duplicate them, and should probably WAIT for them, since what they decide determines
 whether these 69 rows get repaired or discarded.
 
 ## ⛔ Do not start before
 
 1. Plan 241 is merged AND deployed — the column is absent in staging today.
-2. The 245/247 direction is settled, or T2 is explicitly carved out as independent of it.
+2. The 252/254 direction is settled, or T2 is explicitly carved out as independent of it.
 
 ## Tasks
 
@@ -88,9 +88,9 @@ target count of 6388, and a post-update assertion that no non-uniform row was st
 ### T2 — decide what a truthful cadence is for a row that has none
 **Outcome:** a recorded owner decision for the 69 rows: repair, quarantine, or delete.
 **In:** this plan document.
-**Out:** any code change; the phase defect itself (Plans 245/247).
+**Out:** any code change; the phase defect itself (Plans 252/254).
 **Pre-change:** N/A — decision task, no behaviour to fail.
-**Verification:** the decision and its rationale are written here, naming which of 245/247 it
+**Verification:** the decision and its rationale are written here, naming which of 252/254 it
 depends on.
 
 ### T3 — tighten the column, and retire the legacy branch

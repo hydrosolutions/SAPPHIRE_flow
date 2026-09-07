@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-07
 plan: 243
 title: Units across the Gateway boundary — we receive none, so every unit we use is an unchecked assumption
@@ -13,7 +13,8 @@ source: 2026-09-07 — owner asked whether we get units from the Gateway for all
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**READY — owner approved 2026-09-07.** Q1 resolved as recommended: the register lives in the
+adapter table, beside the `unit`/`convert` fields the code already reads.
 
 ## ⛔ DO NOT OVER-ENGINEER — binding on this plan AND on every reviewer
 

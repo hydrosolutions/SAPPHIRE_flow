@@ -59,9 +59,16 @@ exit criteria — Plan 212 owns that deeper screening.
 - **138** (BAFU precip+temp+runoff regression) — its own body says "**T1 is PARTIAL, not done**". Archiving it would hide outstanding work.
 - **035** (rating-curve provenance) — contradictory: the header says implementation begins at v1, yet `tests/unit/services/test_rating_conversion.py` and a `0035` migration downgrade test already exist. Needs a decision, not a status flip.
 - **162** (robust database backup) — the work looks shipped, but `tests/unit/ops/test_restore_rehearsal.py:10` cites its path in a docstring. Moving it dangles that reference, and editing a test file is a code change belonging in a PR.
-- **201**, **206** — COMPLETE (merged #220/#222) but not moved: `.github/workflows/integration-nightly.yml:144` cites Plan 201's path.
 
 ## Recently merged (v1 operational hardening — implemented via WF2, independently reviewed)
+
+- **201 / 206 / 219 — ARCHIVED 2026-09-07.** 201 (sequential unit-suite isolation, #220) and 206
+  (`cicd.md` drift, #222) had been held back only because `integration-nightly.yml:144` cited 201's
+  path; that citation now points into `archive/`, so both moved. 219 (snow channel for the 12300
+  feed, #255/#256) is merged, deployed and verified live — 723 snow records on the first scheduled
+  run, units and aggregation confirmed against the snow modeller's CF metadata. Its two open
+  findings — HRU 12300 is blind to a snow-unit error, and the Gateway strips CF metadata — carry
+  forward to Plan 243, not to the archive.
 
 - **184 / 193 / 205 / 209** — **DHM precipitation research arc (M-A6 → M-A9) — MERGED (#211, #212,
   #213, #215, #218), ARCHIVED.** Gauge vs ERA5-Land, temporal characterisation, elevation and regime
@@ -414,6 +421,13 @@ exit criteria — Plan 212 owns that deeper screening.
   workflows slower and less reliable.
 - **242** — Plain workflow prompts — `READY` — remove automated plan and
   implementation engines; keep three small prompts and owner-run review passes.
+- **241** — Adopt the declared horizon semantics — `READY` — the FI adapter
+  dropped a model's `AT_MOST`/`min_future_steps` declaration, so the resolver
+  could never see it; T4 then persists a forecast's cadence, which T2/T3 make
+  reachable. PR #258.
+- **248** — Backfill and tighten `forecasts.time_step_seconds` — `DRAFT` —
+  BLOCKED: the column does not exist in staging until 241 deploys, and the
+  disposition of the 69 non-uniform rows depends on 252/254.
 
 ## Deferred
 

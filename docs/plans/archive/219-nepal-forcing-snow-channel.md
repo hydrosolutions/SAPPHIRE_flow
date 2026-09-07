@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: COMPLETE
 created: 2026-08-31
 plan: 219
 title: Add the snow channel to the 12300 operational fetch test
@@ -13,7 +13,18 @@ source: 2026-08-31 — owner asked to cover snow in the operational fetch test a
 
 ## Status
 
-**DRAFT.** Not for implementation until the owner confirms.
+**COMPLETE — merged and deployed 2026-09-04.** PR #255 wired the snow channel into the 12300 feed;
+PR #256 recorded the snow modeller's CF metadata, which confirmed both the assumed units
+(`swe` mm, `hs` m, `rof` mm) and the assumed aggregation (`rof` is an hourly increment, summed to a
+daily total; `swe`/`hs` are point states). Live on the mac mini: 723 snow records stored on the first
+scheduled run, all three variables present.
+
+Two findings from the plan's own measurement carry forward and are NOT closed by this plan:
+
+* **HRU 12300 cannot ground the snow units** — snow depth is flat 0.0000 there in every season, so
+  the one basin the feed watches would not reveal a unit error. Owned by Plan 243.
+* **The Gateway strips the CF metadata** the modeller's source NetCDFs carry. A pass-through has been
+  requested upstream and is reportedly in progress. Also owned by Plan 243.
 
 ## ⛔ DO NOT OVER-ENGINEER — a binding constraint on this plan AND on every reviewer of it
 
