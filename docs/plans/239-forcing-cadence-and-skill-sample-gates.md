@@ -237,7 +237,40 @@ not be fed pre-bucketed data — an earlier version claimed to cover them and di
 `hindcast_forecasts.time_step_seconds = 86400` for all 715,103 rows currently stored, with 1,134
 consecutive one-day gaps — today's daily path must still produce exactly that after T1.
 
-### T1 — apply it to hindcast, training and operational (gated on T0)
+### T1 — SPLIT into T1a and T1b (owner decision, 2026-09-07)
+
+The owner chose to ship these SEPARATELY. T1a changes what models are FED
+(forecast values move); T1b changes whether they RUN AT ALL (some forecasts
+stop being produced). Bundled, a surprising change after deployment has two
+possible causes and no way to tell them apart. Split, each lands observable on
+its own. Cost: one extra review round, accepted deliberately.
+
+#### T1a — deliver past forcing at the declared step — **DONE** (2026-09-07)
+
+All four assemblers resample `past_dynamic` to the model's declared `time_step`
+using its own declared per-variable aggregation, over the SAME aligned
+complete-bucket window `past_targets` has used since Plan 228:
+`operational_inputs.py`, `track_assembly.py` (independent — fixing only the
+first leaves this production route broken), `hindcast.py`, `training_data.py`.
+
+Red-first and re-verified: each of the four tests was watched failing before
+its fix, and each fix was then RE-REVERTED to confirm the test catches it. Two
+of the four first failed for a SETUP reason (starved of data — indistinguishable
+from a real red at a glance); both fixtures were corrected so the failure proves
+the cadence defect and nothing else.
+
+Independent evidence the replacement is complete: ruff reported the old naive
+`lookback_start` as UNUSED in both `operational_inputs.py` and
+`track_assembly.py` afterwards. Nothing else consumed it.
+
+The three in-code comments and two docs calling the mismatch "legitimate" are
+retracted — that claim is why this survived earlier review.
+
+**What T1a does NOT do:** a model with holes in its history still runs. It now
+runs on correctly-spaced data with holes in it. Refusing is T1b's job.
+
+#### T1b — the gate (NEXT CHANGE, not this one)
+
 
 All three bypass today. Correct the two in-code comments calling finer unresampled `past_dynamic`
 legitimate. Red-first tests must include **every row of D1's failure table plus T0's two model

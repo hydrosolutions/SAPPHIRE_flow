@@ -159,10 +159,15 @@ gates.
   `resample_to_time_step` (+ `validate_time_step_cadence`, a hard backstop) on
   `past_targets` before delivery — a model's `lookback_steps` count of rows must
   span its declared `time_step`, exactly as the operational path already
-  delivered. `past_dynamic`/`future_dynamic` remain hindcast's own
-  independent, unresampled assembly — this parity is scoped to `past_targets`
-  only (see the D1 note below for why a blanket check would misfire on
-  `past_dynamic`). **Plan 228 D4**: the fetch bounds feeding that resample are
+  delivered. **Plan 239 T1 (2026-09-07): `past_dynamic` is resampled too**, in
+  all four assemblers (`operational_inputs.py`, `track_assembly.py`,
+  `hindcast.py`, `training_data.py`), to the model's declared step and its own
+  declared per-variable aggregation. The earlier text here said `past_dynamic`
+  was legitimately left unresampled; that was the defect, not an exemption —
+  a daily model read hourly forcing, and a model could be TRAINED at one
+  resolution and RUN at another. `future_dynamic` was already resampled on the
+  operational and training paths, so the two halves of one frame could arrive
+  at different resolutions. **Plan 228 D4**: the fetch bounds feeding that resample are
   `aligned_lookback_bounds` (`services/training_data.py`) — ALIGNED to
   UTC-calendar `time_step` boundaries and EXTENDED so `lookback_steps` buckets
   are all COMPLETE, never a naive `issue_time - lookback_steps * time_step`
