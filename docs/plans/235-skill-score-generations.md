@@ -364,6 +364,25 @@ INSERT-only-privilege constraints here.
 Record the retention decision (D4, documentation only, explicitly covering diagrams) and the
 publication contract (D2b), so whoever executes Plan 228's D3 can see the rules.
 
+## Consumer pre-commitment — resolve currency UPSTREAM (map repo, 2026-09-07)
+
+The SAPPHIRE-flow-map consumer does not read skill scores today and is not asking for them. But
+they pre-committed a constraint that binds this plan if skill data ever enters
+`forecast-lab-snapshot/v2`, and the reasoning is sound enough to record now:
+
+> *"If the contract exposes raw rows, the map becomes a tenth reader with a fourth definition,
+> written by people who do not own the semantics. A pre-filtered value, or an explicit generation
+> identifier we are told to pass back, both work. Raw rows plus a filtering rule in prose does not."*
+
+**Rule for any future export of skill data: publish an already-selected value, or an explicit
+generation identifier the consumer echoes back — never raw rows plus prose.** This plan's own D2
+table is the evidence for why: nine in-repo readers already hold three incompatible definitions of
+"current". Exporting the ambiguity would propagate it outside the repository, where we could not
+fix it.
+
+Not in this plan's scope — no skill data is exported today. Recorded so the constraint is not
+rediscovered later.
+
 ## Non-goals
 
 - Plan 228's shipped fix; anchoring (226); FI aggregation (234).
