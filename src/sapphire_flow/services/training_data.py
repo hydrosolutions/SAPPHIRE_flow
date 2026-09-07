@@ -17,6 +17,8 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AggregationMethod, QcStatus, StaticNaming
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
@@ -180,49 +182,53 @@ def validate_time_step_cadence(
         )
 
 
-def missing_expected_buckets(
-    df: pl.DataFrame,
-    column: str,
-    *,
-    anchor: UtcDatetime,
-    time_step: timedelta,
-    steps: int,
-    future: bool = False,
+def expected_past_buckets(
+    anchor: UtcDatetime, time_step: timedelta, lookback: int
 ) -> list[UtcDatetime]:
-    """Which time slots this input needs but does not have (Plan 239 T0).
+    """The `lookback` complete buckets BEFORE `anchor`.
 
-    The question is membership, never spacing. Every earlier attempt measured
-    the spacing of the rows we happened to hold — median, then minimum, then
-    the gaps between whatever survived filtering — and each was refuted,
-    because spacing is a proxy for the real question: *is every slot this input
-    will read actually present?*
-
-    Slots are anchored on the UTC-calendar grid via ``floor_to_time_step``:
-      past   -> {anchor - k*time_step : k = 0 .. steps-1}
-      future -> {anchor + k*time_step : k = 1 .. steps}
-
-    Existence only. Whether a present slot holds a usable value is `max_nan`'s
-    job, already gated per variable per frame by the FI adapter.
-
-    Returns the missing slots, oldest first — empty means we can serve this
-    input. `steps <= 0` means the model declares nothing here, so nothing can
-    be missing (that is `NwpRainfallRunoff`, which declares no past forcing).
+    Buckets are left-labelled, so `floor(anchor)` is the bucket currently IN
+    PROGRESS — demanding it refuses perfectly good data. Matches the existing
+    complete-lookback bounds, which cover ``[T0 - lookback*S, T0)``.
     """
-    if steps <= 0:
-        return []
     base = floor_to_time_step(anchor, time_step)
-    expected = (
-        [ensure_utc(base + k * time_step) for k in range(1, steps + 1)]
-        if future
-        else [ensure_utc(base - k * time_step) for k in range(steps - 1, -1, -1)]
-    )
-    if column not in df.columns:
-        return expected
-    present = {
-        ensure_utc(ts)
-        for ts, val in zip(df["timestamp"].to_list(), df[column].to_list(), strict=True)
-        if val is not None
-    }
+    return [ensure_utc(base - k * time_step) for k in range(lookback, 0, -1)]
+
+
+def expected_future_buckets(
+    anchor: UtcDatetime, time_step: timedelta, horizon: int
+) -> list[UtcDatetime]:
+    """The `horizon` buckets AFTER `anchor`.
+
+    When `anchor` sits exactly on a bucket boundary the whole `T0` bucket is
+    future data — existing aggregation retains it — so the set starts AT `T0`.
+    Off a boundary, `T0` is partly past and the set starts at `T0 + S`.
+    """
+    base = floor_to_time_step(anchor, time_step)
+    first = 0 if ensure_utc(anchor) == base else 1
+    return [ensure_utc(base + k * time_step) for k in range(first, first + horizon)]
+
+
+def missing_buckets(
+    df: pl.DataFrame, column: str, expected: Sequence[UtcDatetime]
+) -> list[UtcDatetime]:
+    """Which of `expected` are absent for `column` — the whole resolution check.
+
+    Membership only. A slot is PRESENT if its timestamp appears; whether the
+    value is usable is `max_nan`'s job, already gated per variable per frame by
+    the FI adapter (which counts nulls and NaNs alike). Judging values here
+    would both duplicate that gate and make null and NaN behave differently.
+
+    `expected` is passed in rather than derived, because the three callers build
+    it differently: past uses `expected_past_buckets`, future
+    `expected_future_buckets`, and TRAINING has no issue time at all — it joins
+    forcing onto whatever target timestamps exist, so it passes those directly.
+    """
+    if not expected:
+        return []
+    present: set[UtcDatetime] = set()
+    if column in df.columns:
+        present = {ensure_utc(cast("datetime", ts)) for ts in df["timestamp"].to_list()}
     return [slot for slot in expected if slot not in present]
 
 

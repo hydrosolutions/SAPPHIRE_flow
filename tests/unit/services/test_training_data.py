@@ -13,8 +13,10 @@ from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
     assemble_group_training_data,
     assemble_station_training_data,
+    expected_future_buckets,
+    expected_past_buckets,
     floor_to_time_step,
-    missing_expected_buckets,
+    missing_buckets,
     resample_to_time_step,
     validate_time_step_cadence,
 )
@@ -1343,10 +1345,7 @@ class TestAlignedLookbackBounds:
 class TestMissingExpectedBuckets:
     """Plan 239 T0: every row of the plan's verdict table.
 
-    The question is membership — is every slot this input reads present? — never
-    spacing. Three earlier attempts measured spacing (median, minimum, gaps
-    between surviving rows) and each was refuted. These lock the table so none
-    of them can return.
+    Membership — is every slot this input reads present? — never spacing.
     """
 
     ANCHOR = datetime(2026, 1, 10, tzinfo=UTC)
@@ -1356,79 +1355,114 @@ class TestMissingExpectedBuckets:
     def _frame(self, stamps: list[datetime]) -> pl.DataFrame:
         return pl.DataFrame({"timestamp": stamps, "v": [1.0] * len(stamps)})
 
-    def _missing(self, stamps, steps, *, step=None, future=False):
-        return missing_expected_buckets(
+    def _past(self, stamps, lookback, *, step=None, anchor=None):
+        step = step or self.DAY
+        return missing_buckets(
             self._frame(stamps),
             "v",
-            anchor=self.ANCHOR,
-            time_step=step or self.DAY,
-            steps=steps,
-            future=future,
+            expected_past_buckets(anchor or self.ANCHOR, step, lookback),
         )
 
-    def test_all_slots_present_serves(self) -> None:
-        stamps = [self.ANCHOR - k * self.DAY for k in range(5)]
-        assert self._missing(stamps, 5) == []
+    # --- the past window: T0 is IN PROGRESS and must NOT be demanded ---------
 
-    def test_interior_missing_slot_is_reported(self) -> None:
-        stamps = [self.ANCHOR - k * self.DAY for k in (0, 1, 3, 4)]
-        assert len(self._missing(stamps, 5)) == 1
+    def test_past_window_excludes_the_in_progress_bucket(self) -> None:
+        """Review caught this: issue 06:00, lookback 2, complete buckets 01-08
+        and 01-09. Demanding 01-10 (still forming) falsely refuses."""
+        stamps = [datetime(2026, 1, 8, tzinfo=UTC), datetime(2026, 1, 9, tzinfo=UTC)]
+        assert self._past(stamps, 2, anchor=datetime(2026, 1, 10, 6, tzinfo=UTC)) == []
 
-    def test_missing_first_slot_is_reported(self) -> None:
-        """The edge case a spacing check cannot see: every surviving gap is
-        one day, so spacing looks perfect while the oldest slot is absent."""
-        stamps = [self.ANCHOR - k * self.DAY for k in range(4)]
-        missing = self._missing(stamps, 5)
-        assert missing == [self.ANCHOR - 4 * self.DAY]
+    def test_past_window_reports_a_missing_slot(self) -> None:
+        stamps = [datetime(2026, 1, 8, tzinfo=UTC)]
+        missing = self._past(stamps, 2, anchor=datetime(2026, 1, 10, 6, tzinfo=UTC))
+        assert missing == [datetime(2026, 1, 9, tzinfo=UTC)]
 
-    def test_coarse_data_cannot_serve_a_finer_model(self) -> None:
+    def test_past_missing_first_slot_is_seen(self) -> None:
+        """No spacing check can see this: every surviving gap is one day."""
+        stamps = [self.ANCHOR - k * self.DAY for k in (1, 2, 3)]
+        assert self._past(stamps, 4) != []
+
+    def test_past_coarse_data_cannot_serve_a_finer_model(self) -> None:
         stamps = [self.ANCHOR - k * self.DAY for k in range(3)]
-        assert self._missing(stamps, 2, step=self.HOUR) != []
+        assert self._past(stamps, 2, step=self.HOUR) != []
 
-    def test_a_lone_fine_pair_does_not_make_coarse_data_serviceable(self) -> None:
-        """Killed the minimum-spacing attempt: one hourly pair inside daily
-        data made the minimum gap one hour."""
+    def test_past_a_lone_fine_pair_does_not_rescue_coarse_data(self) -> None:
         stamps = [
             self.ANCHOR - 3 * self.DAY,
             self.ANCHOR - 2 * self.DAY,
             self.ANCHOR - 2 * self.DAY + self.HOUR,
             self.ANCHOR,
         ]
-        assert self._missing(stamps, 4, step=self.HOUR) != []
-
-    def test_declaring_nothing_can_never_be_missing_anything(self) -> None:
-        """The weather-only model declares no past forcing at all, so a missing
-        past forcing row it never reads must not stop it running."""
-        assert self._missing([self.ANCHOR - self.DAY], 0) == []
+        assert self._past(stamps, 4, step=self.HOUR) != []
 
     def test_each_input_is_judged_on_its_own_window(self) -> None:
-        """Temperature needs 14 slots while precipitation needs 45 in the same
-        model. Temperature complete over its own 14 must serve, even though the
-        larger number is what downstream code carries."""
-        stamps = [self.ANCHOR - k * self.DAY for k in range(14)]
-        assert self._missing(stamps, 14) == []
-        assert len(self._missing(stamps, 45)) == 31
+        """Temperature needs 14 slots while precipitation needs 45 in the SAME
+        model. Temperature complete over its own 14 must serve."""
+        stamps = [self.ANCHOR - k * self.DAY for k in range(1, 15)]
+        assert self._past(stamps, 14) == []
+        assert len(self._past(stamps, 45)) == 31
 
-    def test_absent_column_reports_every_slot(self) -> None:
-        empty = pl.DataFrame({"timestamp": [self.ANCHOR], "other": [1.0]})
-        missing = missing_expected_buckets(
-            empty, "v", anchor=self.ANCHOR, time_step=self.DAY, steps=3
-        )
-        assert len(missing) == 3
+    # --- the future window: aligned issue time keeps the T0 bucket ----------
 
-    def test_null_values_do_not_count_as_present(self) -> None:
+    def test_future_starts_at_t0_when_the_issue_time_is_aligned(self) -> None:
+        """Review caught this: issue exactly midnight, horizon 2, buckets 01-10
+        and 01-11 present. Starting at T0+S wrongly demanded 01-12."""
+        stamps = [datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 1, 11, tzinfo=UTC)]
+        expected = expected_future_buckets(self.ANCHOR, self.DAY, 2)
+        assert missing_buckets(self._frame(stamps), "v", expected) == []
+
+    def test_future_starts_after_t0_when_the_issue_time_is_not_aligned(self) -> None:
+        anchor = datetime(2026, 1, 10, 6, tzinfo=UTC)
+        stamps = [datetime(2026, 1, 11, tzinfo=UTC), datetime(2026, 1, 12, tzinfo=UTC)]
+        expected = expected_future_buckets(anchor, self.DAY, 2)
+        assert missing_buckets(self._frame(stamps), "v", expected) == []
+
+    # --- training: no issue time, the consumed set IS the expectation -------
+
+    def test_training_uses_the_consumed_timestamps_not_an_anchor(self) -> None:
+        """Review caught this: targets at 01-01 and 01-03 consume exactly those.
+        An anchor-and-horizon rule wrongly demanded 01-02."""
+        consumed = [datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)]
+        assert missing_buckets(self._frame(consumed), "v", consumed) == []
+
+    # --- what this does NOT judge -------------------------------------------
+
+    def test_a_null_value_still_counts_as_present(self) -> None:
+        """Values are `max_nan`'s job, not this check's — and it counts nulls
+        and NaNs alike, so judging nulls here would disagree with it."""
         df = pl.DataFrame(
             {
-                "timestamp": [self.ANCHOR - k * self.DAY for k in range(3)],
+                "timestamp": [self.ANCHOR - k * self.DAY for k in (1, 2, 3)],
                 "v": [1.0, None, 1.0],
             }
         )
-        missing = missing_expected_buckets(
-            df, "v", anchor=self.ANCHOR, time_step=self.DAY, steps=3
-        )
-        assert missing == [self.ANCHOR - self.DAY]
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 3)
+        assert missing_buckets(df, "v", expected) == []
 
-    def test_future_slots_are_counted_forward(self) -> None:
-        stamps = [self.ANCHOR + k * self.DAY for k in (1, 2, 3)]
-        assert self._missing(stamps, 3, future=True) == []
-        assert self._missing([self.ANCHOR + self.DAY], 3, future=True) != []
+    def test_absent_column_reports_every_slot(self) -> None:
+        df = pl.DataFrame({"timestamp": [self.ANCHOR], "other": [1.0]})
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 3)
+        assert len(missing_buckets(df, "v", expected)) == 3
+
+    # --- through AGGREGATION, as the table requires -------------------------
+
+    def test_irregular_stamps_serve_after_aggregation(self) -> None:
+        """Table row 1, run through aggregation as it must be: gaps of
+        36h/12h/36h still fill four consecutive daily slots."""
+        irregular = self._frame(
+            [
+                datetime(2026, 1, 6, 0, tzinfo=UTC),
+                datetime(2026, 1, 7, 12, tzinfo=UTC),
+                datetime(2026, 1, 8, 0, tzinfo=UTC),
+                datetime(2026, 1, 9, 12, tzinfo=UTC),
+            ]
+        )
+        agg = resample_to_time_step(irregular, self.DAY)
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 4)
+        assert missing_buckets(agg, "v", expected) == []
+
+    def test_hourly_data_serves_a_daily_model_after_aggregation(self) -> None:
+        """Table row 9, run through aggregation."""
+        hourly = self._frame([datetime(2026, 1, 9, h, tzinfo=UTC) for h in range(24)])
+        agg = resample_to_time_step(hourly, self.DAY)
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 1)
+        assert missing_buckets(agg, "v", expected) == []
