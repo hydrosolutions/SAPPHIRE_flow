@@ -29,27 +29,33 @@ currently records enough to know that.
 relabels instants; it does not move them onto a grid. After conversion one series still sits on `:00`
 and the other on `:15` — and the offset is now *invisible*, because everything is nominally UTC.
 
-## ⭐ It is not a Nepal problem in waiting — it is already in Swiss production data
+## ⭐ It is not a Nepal problem in waiting — phased grids are already in the Swiss STAGING data
 
-Measured on the staging database 2026-09-07 (read-only), while implementing Plan 241. The argument
-above is made from NPT arithmetic; this is the same defect, already present, with no Nepal
-involvement at all.
+Measured read-only against the **staging** database (the mac-mini deployment) on 2026-09-07, while
+implementing Plan 241. ⚠️ Staging, not a production system — but it runs the real Swiss pipeline on
+real feeds, so the grids it produces are the ones the code produces. The argument above is made from
+NPT arithmetic; this is the same defect already present, with no Nepal involvement.
 
 | | |
 |---|---|
 | forecasts stored | 6457 |
-| **carrying a non-zero PHASE** (sub-second `valid_time` components) | **4182 (65%)** |
-| non-uniform grids | 69 |
-| of those, produced by `_pooled` | **69 — every one** |
+| carrying a sub-second `valid_time` component | 4182 (65%) |
+| — of those, **uniformly** spaced (one constant phase) | **4113** |
+| — of those, **non-uniform** (multiple interleaved phases) | **69 — every `_pooled` row ever stored** |
 
-The phase comes from four models — `climatology_fallback` (2637), `persistence_fallback` (961),
-`linear_regression_daily` (515) and `_pooled` (69) — and looks clock-derived rather than
-grid-aligned. **In isolation each is invisible**: a constant offset preserves the gap, so every one
-of those 4182 forecasts reports a clean 86400-second step and passes any check that looks only at
-the step. This is precisely the plan's thesis — a step alone does not identify a grid.
+The offsets come from four models — `climatology_fallback` (2637), `persistence_fallback` (961),
+`linear_regression_daily` (515) and `_pooled` (69). They *look* clock-derived rather than
+grid-aligned; stated as an inference, not a measurement, though the mechanism is visible in the
+code — the cycle resolves an omitted reference time from an unrounded wall clock
+(`flows/run_forecast_cycle.py`).
 
-It becomes visible when two phases meet. A sampled pooled forecast is not one series with a blemish
-but **two interleaved daily series**:
+**The 4113 uniform ones are this plan's thesis with evidence attached.** A constant offset preserves
+the gap between consecutive timestamps, so each reports a clean 86400-second step and passes any
+check that inspects only the step. The phase is invisible — until two differently-phased series
+meet.
+
+**The 69 are what happens when they do.** A sampled pooled forecast is not one grid with a blemish
+but two interleaved daily series:
 
 ```
 2026-09-05 00:00:00+00
@@ -58,16 +64,10 @@ but **two interleaved daily series**:
 2026-09-06 06:00:02.858976+00          <- 21602 s, then 64798 s, repeating
 ```
 
-Consequences worth carrying into the design:
-
-- Every pooled forecast ever stored is affected — 69 of 69, not a subset. Combining across
-  mismatched phases is the normal case here, not an edge case.
-- Those rows read back with a cadence of ~6 hours rather than daily, because the reader takes the
-  first gap it finds.
-- ⚠️ **Unexplained and NOT investigated here**: pooled forecasts stopped entirely on 2026-09-05 —
-  zero for three days while 1334 forecasts/day continued. Combination is not running at all (no
-  `forecast_combination.*` events in 26 h of logs), so this is not the uniformity guard rejecting
-  them. Flagged, cause unestablished; it may or may not be related.
+⛔ These 69 do **not** have "a phase" in this plan's sense — phase is a property of ONE uniform grid,
+and these carry two. They are the failure mode, not an instance of the pattern. Because their stored
+cadence is NULL (every measured row predates alembic `0053`) the legacy reader takes the FIRST gap,
+so they read back at roughly six hours rather than daily.
 
 Sanity checks run alongside the census: no forecast headers without values, no NULL `valid_time`s,
 no duplicate `(forecast, valid_time, member)` rows, no multi-parameter forecasts.
@@ -78,9 +78,11 @@ no duplicate `(forecast, valid_time, member)` rows, no multi-parameter forecasts
   (`types/domain.py:160-166`); `services/forecast_combination.py:458` derives one uniform step. Two
   series can both report `3600` and share no instant.
   📌 **Updated 2026-09-07 by Plan 241 (#258):** `store/forecast_store.py` no longer derives
-  `native_step_seconds` from the first pair for rows written since alembic `0053` — the cadence is
-  now PERSISTED. That fixes the step, **not the phase**, and the derivation survives for
-  pre-`0053` rows, which is every row measured above. The scalar-step critique stands in full.
+  `native_step_seconds` from the first pair **for a row with a persisted, non-NULL cadence** — new
+  writes store `ensemble.time_step` directly. Note `0053` is nullable-first with no backfill, so a
+  row written AFTER the migration by an older image is still NULL; the criterion is the stored
+  value, not the migration date. That fixes the step, **not the phase**, and the derivation survives
+  for every NULL row, which is every row measured above. The scalar-step critique stands in full.
 - **`stations.timezone` is inert.** It is declared as an IANA zone (`Asia/Kathmandu`,
   `Europe/Zurich`), carried faithfully from `config/onboarding.py:131` to `store/station_store.py:136`
   to `api/routes/api_stations.py:220` — and **never read to make a decision**. The metadata slot
