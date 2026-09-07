@@ -171,3 +171,7 @@ class TestLegacyNullRowsKeepTodaysBehaviour:
         assert len(events) == 1, f"expected one warning, got {captured}"
         assert events[0]["log_level"] == "warning"
         assert events[0]["fabricated_time_step_seconds"] == 3600
+        # The plan requires the warning to NAME the row, otherwise it is
+        # unactionable: an operator cannot find which forecast was fabricated.
+        assert events[0]["forecast_id"] == str(fid)
+        assert events[0]["station_id"] == str(sid)
