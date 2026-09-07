@@ -53,6 +53,15 @@ def _kelvin_to_celsius(value: float) -> float:
     return value - 273.15
 
 
+def _metres_to_cm(value: float) -> float:
+    return value * 100.0
+
+
+def _identity(value: float) -> float:
+    """Source unit already equals the canonical unit — grounded, not unknown."""
+    return value
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RecapVariable:
     """One SAP3 canonical weather parameter mapped to its Recap source names.
@@ -94,19 +103,31 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         canonical="snow_depth",
         unit="cm",
         snow_name="hs",
-        convert=None,
+        # Plan 219: Gateway serves `hs` in METRES; our canonical unit is cm.
+        # OWNER-SUPPLIED, NOT MEASURED — HRU 12300 has effectively no snow in
+        # any season (depth peaks at 0.0006 in mid-winter reanalysis), so no
+        # magnitude comparison can confirm it there. An m/cm mix-up is a 100x
+        # error that 12300 would never reveal. CONFIRM WITH THE GATEWAY TEAM
+        # BEFORE ANY SNOWY BASIN USES THIS CHANNEL.
+        convert=_metres_to_cm,
     ),
     "snowmelt": RecapVariable(
         canonical="snowmelt",
         unit="mm",
         snow_name="rof",
-        convert=None,
+        # Plan 219: Gateway serves `rof` in mm, matching our canonical unit —
+        # identity, stated explicitly so it is no longer the "ungrounded"
+        # sentinel. Owner-supplied; see `snow_depth` for the caveat.
+        convert=_identity,
     ),
     "swe": RecapVariable(
         canonical="swe",
         unit="mm",
         snow_name="swe",
-        convert=None,
+        # Plan 219: Gateway serves `swe` in mm, matching our canonical unit —
+        # identity, stated explicitly so it is no longer the "ungrounded"
+        # sentinel. Owner-supplied; see `snow_depth` for the caveat.
+        convert=_identity,
     ),
 }
 

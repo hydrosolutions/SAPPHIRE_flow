@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-27
 plan: 203
 title: Forecast-cycle scaling to the full BAFU set (148 stations) — measure the two costs that actually grow
@@ -14,7 +14,7 @@ note: The filename keeps its original `-to-100-stations` slug so existing refere
 
 ## Status
 
-**READY.** Owner confirmed 2026-09-02.
+**COMPLETE 2026-09-04.** T1 measured in production; T2 decided — target met, plan closed.
 
 ## ⛔ Proportionality — this plan MEASURES, it does not optimise
 
@@ -268,6 +268,23 @@ within ~4 min of the bar before any unmeasured term is counted, so neither branc
 T2 must wait for T1 rather than pre-judging.
 *Exit:* an owner decision recorded here as a line of its own beginning `T2 DECISION:`, naming which
 verdict T1 returned and what the owner chose.
+
+### T2 DECISION — recorded 2026-09-04
+
+T2 DECISION: accept the unquantified remainder and CLOSE. T1 returned INCONCLUSIVE; the owner accepts that rather than commissioning a second measurement of the rest of the per-station path.
+
+**Measured in production** (148 stations, not a projection): full end-to-end cycles of **25.5 and
+26.7 min** against the 30-minute bar — target met with ~11 % margin, ~10 % duty cycle against the
+6-hour cadence. Extraction is linear at **7.78 s/station** (the plan projected 6.48, so 20 %
+optimistic), 1151.6 s at n=148.
+
+**Accepted explicitly:** the ~3.3 min of margin is thin, and the per-station work T1 did not measure
+(input assembly, artifact load, FI adapter, ensemble fan-out, QC, persistence) sits inside it,
+unquantified. If station or model count grows materially, revisit rather than assume this still holds.
+
+**Carried forward:** the zarr/replay path is **~14x faster** than production (0.55 vs 7.78 s/station),
+so any future scaling measurement MUST use the GRIB path — a replay-path number is not evidence about
+production.
 *Verification:* `uv run python -c "import pathlib,re,sys; t=pathlib.Path('docs/plans/203-forecast-cycle-scaling-to-100-stations.md').read_text(); v=re.findall(r'(?m)^T1 VERDICT: (?:DECISIVE|INCONCLUSIVE)$', t); d=re.findall(r'(?m)^T2 DECISION: \S', t); sys.exit(0 if len(v)==1 and len(d)==1 else 1)"`
 — matches **line-anchored**, so the same strings appearing in prose above do not count. Passes only
 once T1 has recorded exactly one verdict line **and** T2 has recorded exactly one decision line,

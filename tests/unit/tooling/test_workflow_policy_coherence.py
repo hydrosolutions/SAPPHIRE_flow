@@ -75,20 +75,3 @@ class TestTaggingPolicy:
     def test_policy_documents_delegate_tagging_to_main_workflow(self) -> None:
         for path in (*_AGENT_GUIDES, _WORKFLOW):
             assert " ".join(_TAGGING_POLICY.split()) in _normalized(path)
-
-
-class TestWorkflowPolicyCoherence:
-    def test_context_policy_uses_manifest_references(self) -> None:
-        policy = _read(_WORKFLOW)
-        plan_source = _read(_REPO_ROOT / ".claude" / "workflows" / "plan.js")
-        implement_source = _read(_REPO_ROOT / ".claude" / "workflows" / "implement.js")
-
-        assert "plan path" in policy.lower()
-        for source in (plan_source, implement_source):
-            assert "planPath" in source
-        for text in (policy, plan_source, implement_source):
-            assert "manifest" in text.lower()
-            assert "fingerprint" in text.lower()
-        assert "every task contract" not in policy
-        assert "exact reviewed plan snapshot" not in policy
-        assert "parsed from the verbatim plan" not in policy

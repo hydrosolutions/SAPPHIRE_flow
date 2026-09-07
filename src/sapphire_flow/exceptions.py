@@ -174,3 +174,13 @@ class TenantIsolationError(SapphireError):
     BEFORE the write happens (no domain-state change); the rejection is
     additionally recorded as a persisted ``audit_log`` event by the caller
     (see ``services/write_principal.py::enforce_tenant_isolation``)."""
+
+
+class ForecastCycleAbortedError(SapphireError):
+    """Plan 237 T2: the NWP fetch produced zero forecasts and the cycle
+    aborted before Phase B. Raised at the FLOW level (never at the task
+    site -- ``_fetch_nwp_task`` has already swallowed the underlying
+    exception into a returned outcome) so Prefect reports the run as
+    failed rather than COMPLETED, agreeing with the watchdog that already
+    calls this event critical. Raised AFTER the forced-CRITICAL freshness
+    record is written, never before."""

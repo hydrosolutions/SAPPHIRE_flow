@@ -221,3 +221,29 @@ class TestEmit:
 class TestExitCodes:
     def test_codes_are_distinct(self) -> None:
         assert {nfr.EXIT_OK, nfr.EXIT_RUN_FAILED, nfr.EXIT_CONFIG} == {0, 1, 2}
+
+
+class TestSnowSeverity:
+    """Plan 219 D4: a snow-only gap is RECORDED, never PAGED.
+
+    This feed exists for IFS operating evidence; snow is an additional
+    observation on top. Clearing `ok` for a snow gap would page the dead-man as
+    loudly as a total IFS outage, and a monitor that cries wolf stops being
+    believed — the same reasoning that kept the IFS path paging.
+    """
+
+    def test_snow_variables_are_all_three(self) -> None:
+        assert frozenset({"snow_depth", "snowmelt", "swe"}) == nfr._SNOW_VARIABLES
+
+    def test_a_snow_gap_does_not_clear_ok(self) -> None:
+        """The regression guard: `ok` is decided by `classify` on the IFS rows
+        alone. Snow degradation is recorded alongside it, never folded into it."""
+        stored = {"rows": 8568, "horizon_days": 14.75}
+        ok, reason = nfr.classify(stored)
+        assert ok is True
+        assert reason is None
+
+    def test_an_ifs_failure_still_fails(self) -> None:
+        ok, reason = nfr.classify({"rows": 0, "horizon_days": 14.75})
+        assert ok is False
+        assert reason == "no_rows_stored"

@@ -949,11 +949,14 @@ class TestReanalysisConversion:
     def test_snow_provenance_and_passthrough(self) -> None:
         rows, ecmwf, snow = self._run(["snow_depth"])
         assert rows
-        # snow_depth must dispatch the snow `hs` variable; the keyed fake returns 5.0
-        # only for that key (convert is None -> passthrough).
+        # snow_depth must dispatch the snow `hs` variable; the keyed fake returns
+        # 5.0 only for that key. Plan 219 grounded the units: `hs` arrives in
+        # METRES and our canonical unit is cm, so 5.0 m -> 500.0 cm. This is the
+        # SHARED converter, so the reanalysis path converts too — that blast
+        # radius is real and intended, not an accident of the forecast change.
         assert [c["variable"] for c in snow.calls] == ["hs"]
         assert {r.source for r in rows} == {"recap_snow_reanalysis"}
-        assert {r.value for r in rows} == {5.0}
+        assert {r.value for r in rows} == {500.0}
         assert ecmwf.calls == []
 
     def test_deterministic_member_none(self) -> None:
@@ -1674,7 +1677,8 @@ class TestReanalysisLeakageGuard:
         )
 
         assert len(rows) == 1
-        assert rows[0].value == 1.0
+        # Plan 219: `hs` is metres -> cm, so a raw 1.0 stores as 100.0.
+        assert rows[0].value == 100.0
 
     def test_era5_land_admitted_ifs_forecast_fill_dropped(self) -> None:
         index = pd.DatetimeIndex(
@@ -1891,7 +1895,8 @@ class TestSnowReanalysisFetch:
         )
 
         assert len(result.rows) == 1
-        assert result.rows[0].value == 1.0
+        # Plan 219: `hs` is metres -> cm, so a raw 1.0 stores as 100.0.
+        assert result.rows[0].value == 100.0
         assert result.rows[0].source == "recap_snow_reanalysis"
 
     def test_variables_allowlist_restricts_attempted_set(self) -> None:

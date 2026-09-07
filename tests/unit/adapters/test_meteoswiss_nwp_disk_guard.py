@@ -247,7 +247,10 @@ class TestScratchCleanupOnFailure:
 
         parse_called = []
 
-        def _boom_parse(_files: object) -> object:
+        def _boom_parse(_files: object, **_kwargs: object) -> object:
+            # Plan 237 T1 added keyword args (cycle_time/window_end) so the
+            # completeness assertion can derive its expected step grid; accept
+            # and ignore them here — this double only proves scratch cleanup.
             parse_called.append(True)
             raise ValueError("simulated parse failure")
 
