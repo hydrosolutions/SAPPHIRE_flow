@@ -713,7 +713,9 @@ class ForecastInterfaceAdapter:
             # model that works today. Pydantic's `model_fields_set` carries only
             # what the caller actually passed, which is the one reliable way to
             # tell "declared EXACT" from "did not declare".
-            _fields_set = getattr(_future_variable, "model_fields_set", frozenset())
+            _fields_set: frozenset[str] = getattr(
+                _future_variable, "model_fields_set", frozenset[str]()
+            )
             if "horizon_semantics" not in _fields_set:
                 declared_horizon_semantics = None
                 declared_min_future_steps = None
