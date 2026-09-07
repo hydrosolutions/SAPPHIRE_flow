@@ -27,6 +27,7 @@ import pytest
 from sapphire_flow.api.forecast_lab_schemas import (
     BafuForecastAvailableSchema,
     CombinedForecastAvailableSchema,
+    CombinedForecastEntry,
     CombinedForecastMembersSchema,
     CombinedForecastQuantilesSchema,
     CombinedForecastUnavailableSchema,
@@ -1302,6 +1303,37 @@ class TestCombinedForecastPositivePath:
         assert not hasattr(combined, "quantile_level_count")
 
 
+def _combined_forecast_entry_with_qc(qc_status: QcStatus) -> CombinedForecastEntry:
+    """Builds a one-station snapshot whose only `_pooled` row carries
+    `qc_status`, and returns that station's combined-forecast entry."""
+    station = make_station_config(code="2009")
+    station_store = FakeStationStore()
+    station_store.store_station(station)
+    ensemble = _members_ensemble(
+        station.id, issued_at=_EPOCH, rng=random.Random(3), n_members=8
+    )
+    forecast_store = FakeForecastStore()
+    forecast_store.store_forecast(
+        _combined_forecast(
+            station_id=station.id,
+            model_id=POOLED_MODEL_ID,
+            ensemble=ensemble,
+            issued_at=_EPOCH,
+            combination_strategy="pooled",
+            source_model_ids=[ModelId("nwp_regression")],
+            qc_status=qc_status,
+        )
+    )
+    snapshot = build_snapshot(
+        _stores(station_store=station_store, forecast_store=forecast_store),
+        stations=[station],
+        archive_base_path=None,
+        combination_strategy=ModelCombinationStrategy.POOLED,
+        clock=_frozen_clock(),
+    )
+    return snapshot.stations[0].combined_forecast
+
+
 class TestCombinedForecastQcFailedExcluded:
     """Plan 253 OD-1a — a `_pooled`/`_bma` row stored `QC_FAILED` is
     STORED (OD-1: evidence of what was rejected and why) but must be
@@ -1372,6 +1404,25 @@ class TestCombinedForecastQcFailedExcluded:
         )
 
         combined = snapshot.stations[0].combined_forecast
+        assert isinstance(combined, CombinedForecastAvailableSchema)
+        assert combined.available is True
+
+    def test_qc_suspect_combination_remains_available(self) -> None:
+        """OD-1a excludes `QC_FAILED` specifically -- not "everything that
+        is not QC_PASSED". A `QC_SUSPECT` combination is flagged but
+        usable, so it must still render as an available forecast."""
+        combined = _combined_forecast_entry_with_qc(QcStatus.QC_SUSPECT)
+
+        assert isinstance(combined, CombinedForecastAvailableSchema)
+        assert combined.available is True
+
+    def test_legacy_raw_combination_remains_available(self) -> None:
+        """Rows written before T2a removed the hard-coded
+        `QcStatus.RAW` (`forecast_combination.py:404`) predate the QC gate
+        and were never assessed -- they must not be retroactively
+        suppressed by an "only QC_PASSED renders" predicate."""
+        combined = _combined_forecast_entry_with_qc(QcStatus.RAW)
+
         assert isinstance(combined, CombinedForecastAvailableSchema)
         assert combined.available is True
 
