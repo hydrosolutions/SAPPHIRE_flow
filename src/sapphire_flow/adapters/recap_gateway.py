@@ -104,11 +104,13 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         unit="cm",
         snow_name="hs",
         # Plan 219: Gateway serves `hs` in METRES; our canonical unit is cm.
-        # OWNER-SUPPLIED, NOT MEASURED — HRU 12300 has effectively no snow in
-        # any season (depth peaks at 0.0006 in mid-winter reanalysis), so no
-        # magnitude comparison can confirm it there. An m/cm mix-up is a 100x
-        # error that 12300 would never reveal. CONFIRM WITH THE GATEWAY TEAM
-        # BEFORE ANY SNOWY BASIN USES THIS CHANNEL.
+        # CONFIRMED 2026-09-07 by the snow modeller's specification — every
+        # NetCDF variable carries CF `units` (swe: mm, hs: m, rof: mm) and
+        # `cell_methods` (time: point for the SWE/depth states, time: sum for
+        # runoff). Our aggregation matches that too (states MEAN, snowmelt SUM).
+        # Residual risk: whether the Gateway's parquet extraction preserves the
+        # source attribute is not visible from our side — these factors assume
+        # it serves the source units unchanged.
         convert=_metres_to_cm,
     ),
     "snowmelt": RecapVariable(
@@ -117,7 +119,7 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         snow_name="rof",
         # Plan 219: Gateway serves `rof` in mm, matching our canonical unit —
         # identity, stated explicitly so it is no longer the "ungrounded"
-        # sentinel. Owner-supplied; see `snow_depth` for the caveat.
+        # sentinel. CONFIRMED by the modeller's spec; see `snow_depth`.
         convert=_identity,
     ),
     "swe": RecapVariable(
@@ -126,7 +128,7 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         snow_name="swe",
         # Plan 219: Gateway serves `swe` in mm, matching our canonical unit —
         # identity, stated explicitly so it is no longer the "ungrounded"
-        # sentinel. Owner-supplied; see `snow_depth` for the caveat.
+        # sentinel. CONFIRMED by the modeller's spec; see `snow_depth`.
         convert=_identity,
     ),
 }
