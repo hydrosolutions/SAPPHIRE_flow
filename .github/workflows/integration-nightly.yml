@@ -141,5 +141,5 @@ jobs:
       # push; wiring the
       # aquacast credential into this workflow too would be an unrelated
       # expansion of a plan whose own proportionality constraint rules that
-      # out (see docs/plans/201-unit-suite-isolation-defect.md).
+      # out (see docs/plans/archive/201-unit-suite-isolation-defect.md).
       - run: uv run pytest tests/unit/ -q

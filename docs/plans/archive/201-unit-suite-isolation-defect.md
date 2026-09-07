@@ -72,7 +72,7 @@ Re-verified against `main` after Plan 207 merged, since that PR changed `ci.yml`
 - **No collision with Plan 207:** T3 layer 2 adds a step to the `unit` job; 207 changed
   `build-image-and-scan`.
 
-**Plan 206 depends on this plan and cannot see it.** `docs/plans/206-cicd-standard-matches-the-workflows.md`
+**Plan 206 depends on this plan and cannot see it.** `docs/plans/archive/206-cicd-standard-matches-the-workflows.md`
 deliberately leaves the unit-suite row (`cicd.md:503`) to T3 and states that **if Plan 201 is dropped,
 that row must be re-filed**. So T3's doc-sync must correct `cicd.md:503`, or 206 lands with a knowingly
 stale row.
