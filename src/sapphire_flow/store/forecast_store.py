@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import polars as pl
 import sqlalchemy as sa
+import structlog
 
 from sapphire_flow.db.metadata import forecast_values, forecasts
 from sapphire_flow.exceptions import ConflictError
@@ -30,6 +31,8 @@ from sapphire_flow.types.ids import (
     RatingCurveId,
     StationId,
 )
+
+log = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -325,12 +328,41 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
             pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
         )
 
-    # Plan 241 T4: the stored value is AUTHORITATIVE. It replaces gap-inference
-    # entirely — inference is impossible for a ONE-STEP forecast (there is no
-    # gap) and the old fallback fabricated 1 hour, which is silently wrong for a
-    # one-step DAILY forecast and was then reported as truth by the API and the
-    # Forecast Lab export. Mirrors `PgHindcastStore` after Plan 228 / rev 0050.
-    time_step = timedelta(seconds=header["time_step_seconds"])
+    # Plan 241 T4 — the stored value is AUTHORITATIVE when present. Every row
+    # written since revision 0053 carries the cadence its ensemble declared, so
+    # the gap-inference below is never reached for new data.
+    #
+    # 🔴 The LEGACY path is retained deliberately; do NOT "simplify" it away.
+    # 0053 is nullable-first and performs no backfill, so pre-migration rows
+    # have `time_step_seconds IS NULL` and must keep reading exactly as they did
+    # before this change — including the fabricated one-hour fallback for a
+    # single-timestamp row. An earlier revision of Plan 241 proposed deleting
+    # that fallback, on the premise that a one-step forecast was unreachable
+    # before the horizon work. THAT PREMISE IS FALSE: nothing at the storage
+    # boundary ever enforced a two-step minimum (`ForecastEnsemble.from_members`
+    # requires only a non-empty frame and >= 1 member, and there is no
+    # write-side guard here), and it was measured against main — a one-step
+    # forecast stores and reads back fine, at the fabricated 1:00:00. Deleting
+    # the branch would turn a wrong NUMBER into an IndexError on a row that
+    # reads today.
+    stored_time_step_seconds = header["time_step_seconds"]
+    if stored_time_step_seconds is not None:
+        time_step = timedelta(seconds=stored_time_step_seconds)
+    else:
+        valid_times = df["valid_time"].sort().unique().sort()
+        if len(valid_times) >= 2:
+            time_step = timedelta(
+                seconds=int(valid_times[1].timestamp() - valid_times[0].timestamp())
+            )
+        else:
+            time_step = timedelta(hours=1)
+            log.warning(
+                "forecast.legacy_time_step_fabricated",
+                forecast_id=str(header["id"]),
+                station_id=str(header["station_id"]),
+                reason="pre-0053 row with a single valid_time and no stored cadence",
+                fabricated_time_step_seconds=int(time_step.total_seconds()),
+            )
 
     station_id = StationId(header["station_id"])
     issued_at = utc_from_row(header["issued_at"])

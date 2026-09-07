@@ -1,5 +1,5 @@
 ---
-status: PARTIAL
+status: READY
 created: 2026-09-04
 revised: 2026-09-05
 plan: 241
@@ -17,8 +17,8 @@ source: Measured 2026-09-04 against aquacast main (5460f898), the pinned revisio
 **READY (T1-T3).** Owner confirmed 2026-09-04, after an independent cross-check found the adapter
 gap. T1-T3 are implemented and green.
 
-**T4 added 2026-09-05, AWAITING THE OWNER'S READY — hence `status: PARTIAL`, not `READY`.** T1-T3
-landed; T4 needs renewed owner approval before it may be executed.
+**T4 approved by the owner 2026-09-07 — `status: READY`.** T1-T3 landed; T4 was held at `PARTIAL`
+through three review rounds and is now authorised to execute.
 
 T4 exists because an independent review of the implemented T1-T3 diff returned NO — not safe to
 open as a PR — on a defect this plan makes live. A pre-implementation review of the T4/T5 amendment
