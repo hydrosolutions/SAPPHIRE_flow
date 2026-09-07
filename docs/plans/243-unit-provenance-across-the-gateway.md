@@ -70,10 +70,14 @@ every variable is its UPSTREAM SOURCE**, not the Gateway and not a measurement w
 0.011 mm over a 3-hourly step — ordinary light precipitation. In millimetres it would be 1.1e-05 mm,
 which is not a real quantity. Consistent with raw ECMWF units passing straight through.
 
-**⚠️ This premise is what everything below rests on.** It is stated by the owner and corroborated by
-magnitude, not confirmed by the Gateway team. If the Gateway ever adds a transformation — a unit
-normalisation, an accumulation-to-rate conversion — every assumption here silently breaks, and
-nothing in the response would show it. **Worth one line of written confirmation** (§ D4).
+**This is our CONTRACT with the Gateway** (owner, 2026-09-07) — not an assumption awaiting
+confirmation. Basin-averaging is the only operation it performs on a value, so upstream units reach
+us intact by agreement.
+
+**What remains true even so:** a contract breach would be SILENT. If a transformation were ever
+introduced — a unit normalisation, an accumulation-to-rate conversion — every assumption here would
+break and nothing in the response would show it, because the response carries no units to contradict
+us. That is an argument for detection (§ D3), **not** a doubt about the contract.
 
 ## D1 — a register of the assumed unit and its AUTHORITY
 
@@ -110,17 +114,17 @@ means metres arrived where millimetres were expected.
 ⚠️ **Two blind spots, stated rather than engineered around:** an all-zero series (snow at 12300)
 passes any range; and two candidate units differing by a factor near 1 are not separable by magnitude.
 
-## D4 — upstream: one ask ALREADY MADE, one still worth making
+## D4 — upstream: the units pass-through is already asked for
 
-1. **✅ Units pass-through: ASKED, and in progress** (owner, 2026-09-07). The Gateway has been asked
-   to preserve the source `units` attribute through extraction; the work is under way on their side.
-   **This changes what D3 is for.** Once units arrive in the response, checking becomes DIRECT —
-   compare the declared unit against what we assumed — and the magnitude alarm becomes redundant.
-   **So D3 is a BRIDGE, not a destination: keep it cheap, and expect to retire it.** Do not build
-   anything for D3 that would be painful to delete.
-2. **Still worth asking: confirm the premise** — that the Gateway applies no transformation beyond
-   the basin average. Everything in D1 rests on it, and today it is corroborated by magnitude rather
-   than confirmed. One sentence in the same thread.
+**✅ Units pass-through: ASKED, and in progress** (owner, 2026-09-07). The Gateway has been asked to
+preserve the source `units` attribute through extraction; the work is under way on their side.
+
+**This changes what D3 is for.** Once units arrive in the response, checking becomes DIRECT — compare
+the declared unit against what we assumed — and the magnitude alarm becomes redundant. **So D3 is a
+BRIDGE, not a destination: keep it cheap, and expect to retire it.** Do not build anything for D3
+that would be painful to delete.
+
+*(No second ask. The no-transformation guarantee is our contract, not an open question.)*
 
 **Sequencing consequence:** if the pass-through lands before T2 starts, **skip T2 entirely** and
 check the declared unit instead. T2 exists only for the window in which we receive no metadata.
