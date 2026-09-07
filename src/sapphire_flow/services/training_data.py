@@ -148,10 +148,12 @@ def validate_time_step_cadence(
     resampling omission (a new caller, a refactor) fail loudly instead of
     silently, at the one point both paths already call through.
 
-    Deliberately scoped to ``past_targets`` callers only — ``past_dynamic``
-    legitimately carries a finer, unresampled cadence than the model's
-    ``time_step`` in the operational path (e.g. hourly reanalysis feeding a
-    daily model), so a blanket check would misfire there.
+    Scoped to ``past_targets`` callers. It once read that ``past_dynamic``
+    "legitimately carries a finer, unresampled cadence" — that was the DEFECT
+    being described, not an exemption (Plan 239 T1): a daily model fed hourly
+    reanalysis silently read 24x its declared resolution. Every assembler now
+    resamples ``past_dynamic`` too; this backstop stays on ``past_targets``
+    only because that is where both paths already call through.
 
     Checks **every** adjacent gap, not the median (Plan 228 review fixer
     round): a median-of-N check passes an isolated missing bucket (e.g.
@@ -537,6 +539,15 @@ def assemble_station_training_data(
     # future-known forcing (e.g. NWP precip/temp) is delivered into future_dynamic,
     # timestamp-aligned to past_targets. The discharge target stays in past_targets.
     past_dynamic_df = _select_feature_columns(forcing_df, past_features)
+    # Plan 239 T1: resample past forcing to the model's DECLARED step. The
+    # future half below has always been resampled (`_future_dynamic_from_
+    # forcing`); the past half was handed through raw, so a daily model
+    # trained on hourly reanalysis learned from 24x the rows it declared —
+    # and then met daily data in production. Same call, same declared
+    # per-variable aggregation, as `past_targets` immediately above.
+    past_dynamic_df = resample_to_time_step(
+        past_dynamic_df, time_step, aggregation_methods=aggregation_methods
+    )
     future_dynamic_df = _future_dynamic_from_forcing(
         forcing_df=forcing_df,
         future_features=future_features,

@@ -1466,3 +1466,65 @@ class TestMissingExpectedBuckets:
         agg = resample_to_time_step(hourly, self.DAY)
         expected = expected_past_buckets(self.ANCHOR, self.DAY, 1)
         assert missing_buckets(agg, "v", expected) == []
+
+
+class TestTrainingResamplesPastDynamicToDeclaredTimeStep:
+    """Plan 239 T1: training's past forcing must arrive at the DECLARED step.
+
+    The FUTURE half already went through `_future_dynamic_from_forcing`, which
+    resamples. The PAST half was selected straight off the raw frame. So a
+    daily model could be TRAINED on hourly forcing history and then meet daily
+    history in production — the two halves of the same frame at different
+    resolutions, silently.
+    """
+
+    def test_past_dynamic_matches_the_declared_step(self) -> None:
+        model = FakeStationForecastModel()
+        station_id = _sid()
+        time_step = timedelta(days=1)
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        station_store.store_station(make_station_config(station_id=station_id))
+        station_store.store_weather_source(_weather_source(station_id))
+        obs_store.store_observations(
+            make_observations(
+                n=5 * 24,
+                station_id=station_id,
+                start=_START,
+                interval=timedelta(hours=1),
+                rng=random.Random(4242),
+            )
+        )
+        # HOURLY forcing over five days.
+        forcing_records = [
+            make_raw_historical_forcing(
+                station_id=station_id,
+                parameter=parameter,
+                valid_time=ensure_utc(_START + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(5 * 24)
+            for parameter in ("precipitation", "temperature")
+        ]
+
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=model,
+            period_start=_START,
+            period_end=ensure_utc(_START + timedelta(days=5)),
+            time_step=time_step,
+            forcing_source=FakeWeatherReanalysisSource(forcing_records),
+            obs_store=obs_store,
+            basin_store=FakeBasinStore(),
+            station_store=station_store,
+        )
+
+        assert result is not None
+        stamps = sorted(
+            ensure_utc(ts) for ts in result.past_dynamic["timestamp"].to_list()
+        )
+        gaps = {b - a for a, b in zip(stamps, stamps[1:], strict=False)}
+        assert gaps <= {time_step}, (
+            f"training past_dynamic arrived at {gaps}, not the declared {time_step}"
+        )

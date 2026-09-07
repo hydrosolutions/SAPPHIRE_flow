@@ -1741,3 +1741,69 @@ class TestHindcastValidatesOnlyTheDeclaredLookbackWindow:
         )
         tail = inputs.data.past_targets.sort("timestamp").tail(declared_lookback_steps)
         assert tail.height == declared_lookback_steps
+
+
+class TestHindcastResamplesPastDynamicToDeclaredTimeStep:
+    """Plan 239 T1: the SAME defect Plan 228 fixed for `past_targets` was
+    still live for `past_dynamic`.
+
+    Hindcast split raw forcing at `issue_time` and handed the past half
+    straight through — while the FUTURE half went through
+    `resample_to_time_step`. So a daily model's hindcast read hourly forcing
+    history and daily forcing forecasts, and every skill score computed from
+    that hindcast describes a model that was never run that way.
+    """
+
+    def test_past_dynamic_spans_the_declared_step_not_raw_cadence(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        lookback_steps = 7
+        issue_time = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+
+        data_start = ensure_utc(issue_time - timedelta(days=12))
+        observations = make_observations(
+            n=12 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+        # HOURLY forcing across the same window — the cadence a real
+        # reanalysis serves.
+        forcing = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter="precipitation",
+                valid_time=ensure_utc(data_start + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(12 * 24)
+        ]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=["precipitation"],
+            all_forcing=forcing,
+            all_observations=observations,
+            # Required: the assembler filters forcing by the station ids its
+            # weather sources name. With none, every row is dropped and the
+            # test would fail for a setup reason, not the cadence defect.
+            weather_sources=[_make_weather_source(sid)],
+            static_attributes=None,
+        )
+
+        assert inputs is not None
+        past_dynamic = inputs.data.past_dynamic
+        assert not past_dynamic.is_empty()
+        stamps = sorted(ensure_utc(ts) for ts in past_dynamic["timestamp"].to_list())
+        gaps = {b - a for a, b in zip(stamps, stamps[1:], strict=False)}
+        assert gaps <= {time_step}, (
+            f"hindcast past_dynamic arrived at {gaps}, not the declared {time_step}"
+        )

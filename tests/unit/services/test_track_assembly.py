@@ -20,6 +20,8 @@ from sapphire_flow.types.enums import (
     ForcingRoute,
     NwpCycleSource,
     SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
 )
 from sapphire_flow.types.forcing_track import (
     AssignmentKey,
@@ -35,7 +37,12 @@ from sapphire_flow.types.forcing_track import (
 from sapphire_flow.types.ids import ModelId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.weather import WeatherForecastRecord
-from tests.conftest import make_observation, make_observations, make_station_config
+from tests.conftest import (
+    make_observation,
+    make_observations,
+    make_raw_historical_forcing,
+    make_station_config,
+)
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_stores import (
     FakeBasinStore,
@@ -617,3 +624,70 @@ def test_freshness_reflects_the_partial_bucket_not_the_aligned_window() -> None:
         "from the aligned/truncated past_targets window instead of the "
         "latest raw observation"
     )
+
+
+def test_past_dynamic_is_resampled_to_the_declared_step_on_the_per_track_path() -> None:
+    """Plan 239 T1: this path delivers `past_dynamic` INDEPENDENTLY of
+    `operational_inputs.py`, so fixing only that module would leave this
+    production route handing a daily model hourly forcing. Mirrors
+    `test_operational_inputs.py::TestPastDynamicHonoursDeclaredResolution`.
+    """
+    from sapphire_flow.types.station import StationWeatherSource
+
+    obs_store, station_store, basin_store, reanalysis = _stores()
+    station_store.store_weather_source(
+        StationWeatherSource(
+            station_id=_STATION,
+            nwp_source="era5_land",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+    )
+    requirements = ModelDataRequirements(
+        target_parameters=frozenset(),
+        past_dynamic_features=frozenset({"precipitation"}),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),  # DAILY
+        lookback_steps=2,
+        forecast_horizon_steps=1,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+    # HOURLY reanalysis, spanning the whole aligned lookback window.
+    reanalysis.set_records(
+        [
+            make_raw_historical_forcing(
+                station_id=_STATION,
+                parameter="precipitation",
+                valid_time=ensure_utc(_ISSUE - timedelta(days=3) + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(3 * 24)
+        ]
+    )
+
+    result = assemble_assignment_inputs(
+        station_id=_STATION,
+        model_id=_MODEL,
+        model=_FakeModel(requirements),  # type: ignore[arg-type]
+        projection=NoForcingRequired(assignment=AssignmentKey((_STATION, _MODEL))),
+        track_outcome=None,
+        issue_time=_ISSUE,
+        obs_store=obs_store,  # type: ignore[arg-type]
+        station_store=station_store,  # type: ignore[arg-type]
+        basin_store=basin_store,  # type: ignore[arg-type]
+        forcing_source=reanalysis,  # type: ignore[arg-type]
+        clock=_clock,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(result, ReadyContext)
+    past_dynamic = result.inputs.data.past_dynamic
+    assert not past_dynamic.is_empty()
+    stamps = sorted(ensure_utc(ts) for ts in past_dynamic["timestamp"].to_list())
+    gaps = {b - a for a, b in zip(stamps, stamps[1:], strict=False)}
+    assert gaps <= {_STEP}, (
+        f"per-track past_dynamic arrived at {gaps}, not the declared {_STEP}"
+    )
+    assert len(stamps) == requirements.lookback_steps

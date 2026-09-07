@@ -273,6 +273,14 @@ def _assemble_hindcast_inputs(
     # Split forcing into past (≤ issue_time) and future (> issue_time).
     # Reanalysis serves as teacher forcing in hindcast (v0-scope §A13).
     past_dynamic = forcing_df.filter(pl.col("timestamp") <= issue_time)
+    # Plan 239 T1: resample to the model's DECLARED step — the hindcast is
+    # what skill scores are computed from, so a resolution mismatch here makes
+    # every score describe a model that was never run that way.
+    past_dynamic = resample_to_time_step(
+        past_dynamic,
+        time_step,
+        aggregation_methods=aggregation_methods,
+    )
     future_dynamic = forcing_df.filter(pl.col("timestamp") > issue_time)
 
     station_data = StationInputData(
