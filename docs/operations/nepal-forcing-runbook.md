@@ -164,12 +164,17 @@ a row.
 stay comparable: `snow_requested` (the three variables) and `snow_unavailable` (bool), plus
 `snow_degraded_reason` when snow is absent. `rows`/`members`/`parameters` remain IFS-shaped.
 
-**⚠️ Units are owner-supplied, not measured.** `hs` metres → cm (×100); `rof`/`swe` mm → mm
-(identity). HRU 12300 has effectively no snow in any season — depth peaks at 0.0006 in mid-winter
-reanalysis — so no magnitude comparison could confirm them here. **Confirm with the Gateway team
-before any snowy basin relies on these numbers.** A later factor change will NOT correct rows already
-stored: the store ignores repeats and `value` is not part of the natural key, so re-running cannot
-overwrite them.
+**Units and aggregation CONFIRMED (2026-09-07)** by the snow modeller's specification: every source
+NetCDF carries CF metadata — `swe: mm`, `hs: m`, `rof: mm` — plus `cell_methods`, with `rof` an
+**hourly increment** (daily total = sum of 24) and SWE/depth **instantaneous states**. Our converters
+(`hs` m→cm, `rof`/`swe` identity) and our aggregation (states MEAN, snowmelt SUM) both match. Time
+axes are UTC throughout.
+
+**Residual risk, narrowed:** the source files carry the units, but whether the Gateway's parquet
+extraction preserves that attribute end-to-end is not visible from our side — the modeller raised the
+same point. Our factors assume the Gateway serves the source units unchanged. Note a later factor
+change would still NOT correct rows already stored: the store ignores repeats and `value` is not part
+of the natural key, so a re-run cannot overwrite them.
 
 **The converters are shared**, so the snow *reanalysis* path converts too — that blast radius is
 intended, not incidental.
