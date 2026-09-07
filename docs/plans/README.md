@@ -62,6 +62,13 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Recently merged (v1 operational hardening — implemented via WF2, independently reviewed)
 
+- **243 — ARCHIVED 2026-09-07, same day it was drafted, approved and merged (#262).** The Gateway
+  sends NO units, for any variable, on any endpoint (measured). Every variable now records its
+  assumed source unit and the named authority for it, beside the converter the code already reads,
+  plus the radiation trap (`ssr`/`str` are accumulated J/m², not W/m²) for whoever adds them next.
+  **It makes a unit error attributable, not detectable** — detection needs the pass-through requested
+  upstream, or a basin with snow in it. HRU 12300 has none.
+
 - **201 / 206 / 219 — ARCHIVED 2026-09-07.** 201 (sequential unit-suite isolation, #220) and 206
   (`cicd.md` drift, #222) had been held back only because `integration-nightly.yml:144` cited 201's
   path; that citation now points into `archive/`, so both moved. 219 (snow channel for the 12300
