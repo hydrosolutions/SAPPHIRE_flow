@@ -669,6 +669,13 @@ def train_models_flow(
             for sid in station_ids_for_skill
             for param in sorted(target_parameters)
         ]
+        # Plan 235 fixer round (major, D1 retry stability): mint ONE
+        # generation id per (station, parameter) pair HERE, before the
+        # fan-out, rather than leaving each mapped task instance's own
+        # `None` default to mint one internally — a Prefect retry of any
+        # ONE mapped task replays with its own already-bound id instead of
+        # minting a fresh one on every retry.
+        generation_ids = [uuid4() for _ in skill_pairs]
         futures = compute_skills_task.map(
             station_id=[sid for sid, _ in skill_pairs],
             model_id=unmapped(unit.model_id),
@@ -682,6 +689,7 @@ def train_models_flow(
             flow_regime_store=unmapped(flow_regime_store),
             deployment_config=unmapped(deployment_config),
             clock=unmapped(clock),
+            generation_id=generation_ids,
         )
         skill_results = [f.result() for f in futures]
         skill_computed = any(scores for scores, _ in skill_results)

@@ -12,7 +12,7 @@ from sapphire_flow.services.skill.combined_skill import (
     compute_combined_skill,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.domain import SeasonDefinition
+from sapphire_flow.types.domain import SeasonDefinition, StationThreshold
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForcingType,
@@ -20,6 +20,7 @@ from sapphire_flow.types.enums import (
     ObservationSource,
     QcStatus,
     SkillSource,
+    ThresholdSource,
 )
 from sapphire_flow.types.ids import (
     BMA_MODEL_ID,
@@ -116,6 +117,20 @@ def _make_observation(
         qc_flags=[],
         qc_rule_version=None,
         created_at=_EPOCH,
+    )
+
+
+def _make_threshold(
+    *, station_id: StationId, danger_level: str = "moderate"
+) -> StationThreshold:
+    return StationThreshold(
+        station_id=station_id,
+        danger_level=danger_level,
+        parameter="discharge",
+        value=10.5,
+        source=ThresholdSource.AUTHORITY,
+        created_at=_EPOCH,
+        updated_at=_EPOCH,
     )
 
 
@@ -725,6 +740,102 @@ class TestBmaCrossValidation:
         assert all(s.model_id == BMA_MODEL_ID for s in scores)
 
 
+class TestBmaCrossValidationRequiresBothFolds:
+    """Independent-review fixer round (blocker): a BMA cohort with only ONE
+    successful cross-validation fold is not a validated two-fold average —
+    it is a single held-out evaluation. ``_scores_for_fold`` can legitimately
+    return ``([], [])`` on its own (e.g. no usable BMA weights from that
+    fold's training half); the OTHER fold's real result must not be
+    published alone as if cross-validation had succeeded, because the flow
+    level completeness gate (``compute_skills.compute_combined_skills_task``)
+    only refuses to publish when this function itself reports nothing.
+    """
+
+    def test_one_incomplete_fold_yields_no_scores_or_diagrams(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        station_id: StationId,
+        model_a: ModelId,
+        model_b: ModelId,
+        artifact_id_a: ArtifactId,
+        artifact_id_b: ArtifactId,
+        clock: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        from sapphire_flow.services.skill import combined_skill
+
+        # Same shape as the passing `TestBmaCrossValidation` tests above —
+        # left alone, both folds would succeed.
+        steps = [_utc(2025, 1, i + 1) for i in range(10)]
+        hindcasts_a = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_a,
+                artifact_id=artifact_id_a,
+                hindcast_step=s,
+                n_steps=1,
+                value=10.0,
+            )
+            for s in steps
+        ]
+        hindcasts_b = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_b,
+                artifact_id=artifact_id_b,
+                hindcast_step=s,
+                n_steps=1,
+                value=12.0,
+            )
+            for s in steps
+        ]
+        observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(
+                    datetime.fromtimestamp(s.timestamp() + 3600, tz=UTC)
+                ),
+                value=11.0,
+            )
+            for s in steps
+        ]
+
+        # Force exactly the FIRST fold's training step to come back with no
+        # usable BMA weights (as a degenerate/insufficient training split
+        # would), while the second fold computes real weights normally.
+        real_compute_bma_weights = combined_skill.compute_bma_weights
+        calls = {"n": 0}
+
+        def _first_call_has_no_weights(**kwargs: object) -> dict[ModelId, float]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {}
+            return real_compute_bma_weights(**kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(
+            combined_skill, "compute_bma_weights", _first_call_has_no_weights
+        )
+
+        scores, diagrams = compute_bma_skill_cross_validated(
+            station_id=station_id,
+            parameter="discharge",
+            hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid4,
+            skill_store=None,
+        )
+
+        assert calls["n"] == 2, "both folds must have attempted weight computation"
+        assert scores == []
+        assert diagrams == []
+
+
 class TestBmaCrossValidationObservationBounds:
     """Plan 228 review fixer round (blocker): ``_obs_for_steps`` used to
     truncate observations to ``[min(hindcast_step), max(hindcast_step)]`` —
@@ -807,4 +918,247 @@ class TestBmaCrossValidationObservationBounds:
         )
         assert all(s.sample_size >= 1 for s in scores), (
             "a skill score was computed with zero matched observations"
+        )
+
+
+class TestBmaCrossValidationDiagramMerge:
+    """Plan 235 fixer round (major): `compute_bma_skill_cross_validated`'s
+    two CV folds independently produce a diagram at the SAME natural key
+    (same station/model/parameter/skill_source/diagram_type/threshold_level
+    /lead_time_hours, same `generation_id`) — fold 1 evaluates half_2, fold
+    2 evaluates half_1. The old `fold1_diagrams + fold2_diagrams`
+    concatenation returned both, so `store_skill_diagrams`'s
+    `ON CONFLICT DO NOTHING` silently dropped one of every colliding pair
+    while `diagram_count` still counted both as published.
+    """
+
+    def test_merged_diagrams_have_no_duplicate_natural_keys(
+        self,
+        station_id: StationId,
+        model_a: ModelId,
+        model_b: ModelId,
+        artifact_id_a: ArtifactId,
+        artifact_id_b: ArtifactId,
+        clock: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        steps = [_utc(2025, 1, i + 1) for i in range(8)]
+        hindcasts_a = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_a,
+                artifact_id=artifact_id_a,
+                hindcast_step=s,
+                n_steps=1,
+                value=10.0,
+            )
+            for s in steps
+        ]
+        hindcasts_b = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_b,
+                artifact_id=artifact_id_b,
+                hindcast_step=s,
+                n_steps=1,
+                value=12.0,
+            )
+            for s in steps
+        ]
+        observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(
+                    datetime.fromtimestamp(s.timestamp() + 3600, tz=UTC)
+                ),
+                value=11.0,
+            )
+            for s in steps
+        ]
+
+        _, diagrams = compute_bma_skill_cross_validated(
+            station_id=station_id,
+            parameter="discharge",
+            hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
+            observations=observations,
+            thresholds=[_make_threshold(station_id=station_id)],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid4,
+            skill_store=None,
+        )
+
+        assert len(diagrams) > 0
+        natural_keys = [
+            (
+                d.model_id,
+                d.model_artifact_id,
+                d.parameter,
+                d.skill_source,
+                d.computation_version,
+                d.lead_time_hours,
+                d.season,
+                d.flow_regime,
+                d.diagram_type,
+                d.threshold_level,
+                d.time_step_seconds,
+                d.phase_offset_seconds,
+            )
+            for d in diagrams
+        ]
+        assert len(natural_keys) == len(set(natural_keys)), (
+            "two diagrams share an identical natural key — a real store "
+            "would drop one of them via ON CONFLICT DO NOTHING while this "
+            "count still reports both as published"
+        )
+        # Confirms the two folds' data were actually MERGED, not just
+        # deduplicated by dropping one — a rank_histogram's counts sum to
+        # the number of (obs, ensemble) pairs evaluated across BOTH folds
+        # together, not just one fold's half.
+        rank_histograms = [d for d in diagrams if d.diagram_type == "rank_histogram"]
+        assert rank_histograms
+        for rh in rank_histograms:
+            assert sum(rh.data["counts"]) == len(steps), (
+                "merged rank_histogram counts must cover every evaluated "
+                "step across both CV folds, not just one fold's half"
+            )
+
+
+def _make_roc_diagram(
+    *,
+    station_id: StationId,
+    model_id: ModelId,
+    hit_rate: list[float],
+    false_alarm_rate: list[float],
+    n_events: int,
+    n_non_events: int,
+    eval_period_start: UtcDatetime,
+    eval_period_end: UtcDatetime,
+) -> object:
+    from sapphire_flow.types.skill import SkillDiagram
+
+    return SkillDiagram(
+        id=_uuid(),
+        station_id=station_id,
+        model_id=model_id,
+        parameter="discharge",
+        model_artifact_id=None,
+        skill_source=SkillSource.HINDCAST_REANALYSIS,
+        computation_version=2,
+        lead_time_hours=24,
+        season=None,
+        flow_regime=None,
+        flow_regime_config_id=None,
+        diagram_type="roc",
+        threshold_level=None,
+        data={
+            "thresholds": [0.0, 0.5, 1.0],
+            "hit_rate": hit_rate,
+            "false_alarm_rate": false_alarm_rate,
+            "n_events": n_events,
+            "n_non_events": n_non_events,
+        },
+        eval_period_start=eval_period_start,
+        eval_period_end=eval_period_end,
+        created_at=eval_period_end,
+    )
+
+
+class TestMergeFoldDiagramsRocWeighting:
+    """Fixer round (major): `_merge_diagram_data`'s "roc" branch used to
+    average `hit_rate`/`false_alarm_rate` across folds UNWEIGHTED
+    (`_nanmean`), even though each fold's rate is a ratio over its OWN
+    event/non-event count (`services.skill.diagrams.compute_roc_curve`) —
+    giving a fold with 3 events the same say as a fold with 300. It must
+    weight by each fold's `n_events`/`n_non_events` instead.
+    """
+
+    def test_roc_merge_weights_by_event_count_not_equal_average(self) -> None:
+        from sapphire_flow.services.skill.combined_skill import _merge_fold_diagrams
+
+        sid = StationId(_uuid())
+        mid = ModelId("test")
+        t0 = _utc(2025, 1, 1)
+        t1 = _utc(2025, 1, 8)
+        t2 = _utc(2025, 1, 15)
+
+        # Fold 1: tiny evaluation window, 1 event, hit_rate=0.0.
+        fold1 = _make_roc_diagram(
+            station_id=sid,
+            model_id=mid,
+            hit_rate=[0.0, 0.0, 0.0],
+            false_alarm_rate=[1.0, 0.5, 0.0],
+            n_events=1,
+            n_non_events=9,
+            eval_period_start=t0,
+            eval_period_end=t1,
+        )
+        # Fold 2: large evaluation window, 99 events, hit_rate=1.0.
+        fold2 = _make_roc_diagram(
+            station_id=sid,
+            model_id=mid,
+            hit_rate=[1.0, 1.0, 1.0],
+            false_alarm_rate=[1.0, 0.5, 0.0],
+            n_events=99,
+            n_non_events=1,
+            eval_period_start=t1,
+            eval_period_end=t2,
+        )
+
+        merged = _merge_fold_diagrams([fold1], [fold2])  # type: ignore[list-item]
+        assert len(merged) == 1
+        merged_hit_rate = merged[0].data["hit_rate"]
+
+        # An UNWEIGHTED average would give 0.5 at every threshold. Weighted
+        # by event count (1 vs 99), the merged rate must sit much closer to
+        # fold 2's 1.0 than to the midpoint.
+        assert all(h > 0.9 for h in merged_hit_rate), (
+            f"expected hit_rate weighted toward the 99-event fold, got "
+            f"{merged_hit_rate} (an unweighted average would be 0.5)"
+        )
+
+    def test_merged_diagram_eval_period_spans_both_folds(self) -> None:
+        """Fixer round (major): `replace(first, data=...)` kept only fold
+        1's `eval_period_start`/`eval_period_end`, even though the merged
+        data spans both folds' evaluation windows."""
+        from sapphire_flow.services.skill.combined_skill import _merge_fold_diagrams
+
+        sid = StationId(_uuid())
+        mid = ModelId("test")
+        t0 = _utc(2025, 1, 1)
+        t1 = _utc(2025, 1, 8)
+        t2 = _utc(2025, 1, 15)
+
+        fold1 = _make_roc_diagram(
+            station_id=sid,
+            model_id=mid,
+            hit_rate=[0.5, 0.5, 0.5],
+            false_alarm_rate=[0.5, 0.5, 0.5],
+            n_events=10,
+            n_non_events=10,
+            eval_period_start=t0,
+            eval_period_end=t1,
+        )
+        fold2 = _make_roc_diagram(
+            station_id=sid,
+            model_id=mid,
+            hit_rate=[0.5, 0.5, 0.5],
+            false_alarm_rate=[0.5, 0.5, 0.5],
+            n_events=10,
+            n_non_events=10,
+            eval_period_start=t1,
+            eval_period_end=t2,
+        )
+
+        merged = _merge_fold_diagrams([fold1], [fold2])  # type: ignore[list-item]
+        assert len(merged) == 1
+        assert merged[0].eval_period_start == t0, (
+            "merged eval_period_start must be the EARLIEST of both folds"
+        )
+        assert merged[0].eval_period_end == t2, (
+            "merged eval_period_end must be the LATEST of both folds, not "
+            "fold 1's alone"
         )

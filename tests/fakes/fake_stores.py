@@ -427,13 +427,23 @@ class FakeHindcastStore:
         parameter: str,
         period_start: UtcDatetime,
         period_end: UtcDatetime,
+        hindcast_run_ids: dict[ModelId, UUID] | None = None,
     ) -> dict[ModelId, list[HindcastForecast]]:
+        # Plan 235 fixer round (blocker): mirrors `PgHindcastStore` — an
+        # explicitly EMPTY mapping names zero models and must match zero
+        # rows, never fall back to "no filter" the way `None` does.
+        if hindcast_run_ids is not None and not hindcast_run_ids:
+            return {}
         result: dict[ModelId, list[HindcastForecast]] = {}
         for h in self._hindcasts.values():
             if (
                 h.station_id == station_id
                 and h.ensemble.parameter == parameter
                 and period_start <= h.hindcast_step < period_end
+                and (
+                    hindcast_run_ids is None
+                    or h.hindcast_run_id == hindcast_run_ids.get(h.model_id)
+                )
             ):
                 result.setdefault(h.model_id, []).append(h)
         return result
@@ -598,16 +608,329 @@ class FakeAlertStore:
         ]
 
 
+class _FakeGeneration:
+    __slots__ = (
+        "id",
+        "station_id",
+        "model_id",
+        "model_artifact_id",
+        "parameter",
+        "skill_source",
+        "forcing_type",
+        "computation_version",
+        "published_at",
+    )
+
+    def __init__(
+        self,
+        *,
+        id: UUID,  # noqa: A002
+        station_id: StationId,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId | None,
+        parameter: str,
+        skill_source: SkillSource,
+        forcing_type: ForcingType | None,
+        computation_version: int,
+        published_at: UtcDatetime,
+    ) -> None:
+        self.id = id
+        self.station_id = station_id
+        self.model_id = model_id
+        self.model_artifact_id = model_artifact_id
+        self.parameter = parameter
+        self.skill_source = skill_source
+        self.forcing_type = forcing_type
+        self.computation_version = computation_version
+        self.published_at = published_at
+
+    def scope_key(self, *, include_forcing_type: bool = True) -> tuple[object, ...]:
+        """Fixer round (major): takes `include_forcing_type` so a DIAGRAM
+        caller can drop forcing_type from BOTH sides of the comparison —
+        `skill_diagrams` carries no `forcing_type` column at all (mirrors
+        `store.skill_store.latest_generation_predicate`'s
+        `scope_includes_forcing_type` guard). The previous fixed-shape key
+        always included the generation's REAL forcing_type, which a
+        diagram caller could only ever compare against a forced constant
+        `None` on its own side — never equal, so a published REANALYSIS
+        generation could never supersede a baseline diagram.
+        """
+        base = (
+            self.station_id,
+            self.model_id,
+            self.model_artifact_id,
+            self.parameter,
+            self.skill_source,
+        )
+        return (*base, self.forcing_type) if include_forcing_type else base
+
+    def rank(self) -> tuple[object, ...]:
+        return (self.computation_version, self.published_at, self.id)
+
+
 class FakeSkillStore:
+    """Plan 235 D2 — mirrors `store.skill_store.latest_generation_predicate`
+    in Python: a row is current iff its generation is the highest-ranked
+    (D2b#1: version, then published_at, then id) PUBLISHED generation for
+    its (station, model, artifact, parameter, skill_source, forcing_type)
+    scope AND no baseline row in that scope sits at a STRICTLY HIGHER
+    computation_version (D2b#1 applies to baselines too — version is read
+    first); or — for a baseline (`generation_id is None`) row — no OTHER
+    baseline row at that scope outranks it by `computation_version` (T1:
+    pre-235 data can legitimately hold baseline rows at more than one
+    version) AND no generation at that scope sits at a computation_version
+    >= this row's own (fixer round, blocker: a generation only ever
+    displaces a baseline at the SAME or a HIGHER version, never a lower
+    one — D2b#1 "version first").
+    """
+
     def __init__(self) -> None:
         self._scores: list[SkillScore] = []
         self._diagrams: list[SkillDiagram] = []
+        self._generations: list[_FakeGeneration] = []
+        self._score_keys: set[tuple[object, ...]] = set()
+        self._diagram_keys: set[tuple[object, ...]] = set()
 
-    def store_skill_scores(self, scores: list[SkillScore]) -> None:
-        self._scores.extend(scores)
+    @staticmethod
+    def _score_natural_key(s: SkillScore) -> tuple[object, ...]:
+        """Mirrors `uq_skill_scores_natural_key(_generation)` in
+        `db/metadata.py` — the columns `PgSkillStore.store_skill_scores`'s
+        real `ON CONFLICT DO NOTHING` collides on."""
+        return (
+            s.station_id,
+            s.model_id,
+            s.model_artifact_id,
+            s.parameter,
+            s.skill_source,
+            s.forcing_type,
+            s.computation_version,
+            s.lead_time_hours,
+            s.season,
+            s.flow_regime,
+            s.metric,
+            s.time_step_seconds,
+            s.phase_offset_seconds,
+            s.generation_id,
+        )
 
-    def store_skill_diagrams(self, diagrams: list[SkillDiagram]) -> None:
-        self._diagrams.extend(diagrams)
+    @staticmethod
+    def _diagram_natural_key(d: SkillDiagram) -> tuple[object, ...]:
+        """Mirrors `uq_skill_diagrams_natural_key(_generation)`."""
+        return (
+            d.station_id,
+            d.model_id,
+            d.model_artifact_id,
+            d.parameter,
+            d.skill_source,
+            d.computation_version,
+            d.lead_time_hours,
+            d.season,
+            d.flow_regime,
+            d.diagram_type,
+            d.threshold_level,
+            d.time_step_seconds,
+            d.phase_offset_seconds,
+            d.generation_id,
+        )
+
+    def store_skill_scores(self, scores: list[SkillScore]) -> int:
+        """Returns the count ACTUALLY inserted, mirroring
+        `PgSkillStore.store_skill_scores` — a row whose natural key
+        collides with one already stored is silently dropped, exactly like
+        real `ON CONFLICT DO NOTHING` (Plan 235 fixer round, major)."""
+        inserted = 0
+        for s in scores:
+            key = self._score_natural_key(s)
+            if key in self._score_keys:
+                continue
+            self._score_keys.add(key)
+            self._scores.append(s)
+            inserted += 1
+        return inserted
+
+    def store_skill_diagrams(self, diagrams: list[SkillDiagram]) -> int:
+        """See `store_skill_scores` — same accurate-rowcount contract."""
+        inserted = 0
+        for d in diagrams:
+            key = self._diagram_natural_key(d)
+            if key in self._diagram_keys:
+                continue
+            self._diagram_keys.add(key)
+            self._diagrams.append(d)
+            inserted += 1
+        return inserted
+
+    def publish_generation(
+        self,
+        *,
+        generation_id: UUID,
+        station_id: StationId,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId | None,
+        parameter: str,
+        skill_source: SkillSource,
+        forcing_type: ForcingType | None,
+        computation_version: int,
+        published_at: UtcDatetime,
+        score_count: int,  # noqa: ARG002 — diagnostic only, matches PgSkillStore's signature
+        diagram_count: int,  # noqa: ARG002
+    ) -> None:
+        self._generations.append(
+            _FakeGeneration(
+                id=generation_id,
+                station_id=station_id,
+                model_id=model_id,
+                model_artifact_id=model_artifact_id,
+                parameter=parameter,
+                skill_source=skill_source,
+                forcing_type=forcing_type,
+                computation_version=computation_version,
+                published_at=published_at,
+            )
+        )
+
+    def count_generation_rows(self, generation_id: UUID) -> tuple[int, int]:
+        """See `store.skill_store.PgSkillStore.count_generation_rows` —
+        the TOTAL count for `generation_id` regardless of which
+        `store_skill_scores`/`store_skill_diagrams` call persisted it,
+        which is what lets a retry-safe caller (`flows.compute_skills`)
+        tell "already fully persisted from an earlier attempt" apart from
+        a genuine gap.
+        """
+        score_count = sum(1 for s in self._scores if s.generation_id == generation_id)
+        diagram_count = sum(
+            1 for d in self._diagrams if d.generation_id == generation_id
+        )
+        return score_count, diagram_count
+
+    def _scope_key(
+        self,
+        *,
+        station_id: StationId,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId | None,
+        parameter: str,
+        skill_source: SkillSource,
+        forcing_type: ForcingType | None,
+        include_forcing_type: bool = True,
+    ) -> tuple[object, ...]:
+        """Fixer round (blocker): `model_artifact_id` is part of scope
+        identity — mirrors `store.skill_store.latest_generation_predicate`'s
+        `_artifact_id_expr` — otherwise a generation minted for one
+        artifact (e.g. a candidate under retraining evaluation) would rank
+        against and could supersede the STILL-ACTIVE artifact's generation
+        for the same model. `include_forcing_type=False` drops forcing_type
+        from the key for diagram callers (see `_FakeGeneration.scope_key`).
+        """
+        base = (station_id, model_id, model_artifact_id, parameter, skill_source)
+        return (*base, forcing_type) if include_forcing_type else base
+
+    def _is_current(
+        self,
+        *,
+        station_id: StationId,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId | None,
+        parameter: str,
+        skill_source: SkillSource,
+        forcing_type: ForcingType | None,
+        generation_id: UUID | None,
+        computation_version: int,
+        peers: Sequence[SkillScore] | Sequence[SkillDiagram],
+        peer_forcing_type: object,
+        include_forcing_type: bool = True,
+    ) -> bool:
+        """`peers` is the SAME table this row came from (`self._scores` for
+        a `SkillScore`, `self._diagrams` for a `SkillDiagram`) — mirrors the
+        real predicate's self-join, which never mixes the two tables.
+        `peer_forcing_type` is a callable extracting a peer's forcing_type
+        (`SkillDiagram` has none, so diagram callers pass a constant
+        `lambda _: None`).
+        """
+        scope = self._scope_key(
+            station_id=station_id,
+            model_id=model_id,
+            model_artifact_id=model_artifact_id,
+            parameter=parameter,
+            skill_source=skill_source,
+            forcing_type=forcing_type,
+            include_forcing_type=include_forcing_type,
+        )
+
+        def _peer_scope(p: SkillScore | SkillDiagram) -> tuple[object, ...]:
+            return self._scope_key(
+                station_id=p.station_id,
+                model_id=p.model_id,
+                model_artifact_id=p.model_artifact_id,
+                parameter=p.parameter,
+                skill_source=p.skill_source,
+                forcing_type=peer_forcing_type(p),
+                include_forcing_type=include_forcing_type,
+            )
+
+        # Fixer round (blocker, D2b#1 "version first"): a baseline row at a
+        # STRICTLY HIGHER computation_version than the scope's other rows
+        # outranks any generation there, regardless of the generation's own
+        # rank among generations — mirrors `latest_generation_predicate`'s
+        # `baseline_outranks_generation`/`no_generation_at_or_above_version_
+        # for_scope`.
+        max_baseline_version = max(
+            (
+                p.computation_version
+                for p in peers
+                if p.generation_id is None and _peer_scope(p) == scope
+            ),
+            default=None,
+        )
+        if generation_id is not None:
+            # Per-run-scope fixer round (major): look up `self_gen` among
+            # ALL generations by id — never among `scoped_generations`
+            # (filtered by THIS ROW's own, possibly forcing-LESS, scope) —
+            # then rank it against OTHER generations sharing ITS OWN scope,
+            # ALWAYS including forcing type (a `_FakeGeneration` always
+            # carries a real one, regardless of whether the ROW TYPE being
+            # evaluated tracks it). Filtering `scoped_generations` by the
+            # row's forcing-less scope let two generations differing ONLY
+            # by forcing type compete for the same diagram scope instead of
+            # ranking independently — mirrors `store.skill_store.
+            # latest_generation_predicate`'s identical per-run-scope fix.
+            self_gen = next(
+                (g for g in self._generations if g.id == generation_id), None
+            )
+            if self_gen is None:
+                return False
+            if (
+                max_baseline_version is not None
+                and max_baseline_version > self_gen.computation_version
+            ):
+                return False
+            competing_generations = [
+                g
+                for g in self._generations
+                if g.scope_key(include_forcing_type=True)
+                == self_gen.scope_key(include_forcing_type=True)
+            ]
+            return self_gen.rank() == max(g.rank() for g in competing_generations)
+
+        scoped_generations = [
+            g
+            for g in self._generations
+            if g.scope_key(include_forcing_type=include_forcing_type) == scope
+        ]
+        # Baseline row: displaced by a generation at the SAME or a HIGHER
+        # computation_version (never a lower one).
+        if any(
+            g.computation_version >= computation_version for g in scoped_generations
+        ):
+            return False
+        return computation_version == max(
+            (
+                p.computation_version
+                for p in peers
+                if p.generation_id is None and _peer_scope(p) == scope
+            ),
+            default=computation_version,
+        )
 
     def fetch_latest_scores(
         self,
@@ -624,10 +947,22 @@ class FakeSkillStore:
             and (skill_source is None or s.skill_source == skill_source)
             and (parameter is None or s.parameter == parameter)
         ]
-        if not matches:
-            return []
-        max_ver = max(s.computation_version for s in matches)
-        return [s for s in matches if s.computation_version == max_ver]
+        return [
+            s
+            for s in matches
+            if self._is_current(
+                station_id=s.station_id,
+                model_id=s.model_id,
+                model_artifact_id=s.model_artifact_id,
+                parameter=s.parameter,
+                skill_source=s.skill_source,
+                forcing_type=s.forcing_type,
+                generation_id=s.generation_id,
+                computation_version=s.computation_version,
+                peers=self._scores,
+                peer_forcing_type=lambda p: p.forcing_type,
+            )
+        ]
 
     def fetch_latest_diagrams(
         self,
@@ -644,10 +979,23 @@ class FakeSkillStore:
             and (diagram_type is None or d.diagram_type == diagram_type)
             and (parameter is None or d.parameter == parameter)
         ]
-        if not matches:
-            return []
-        max_ver = max(d.computation_version for d in matches)
-        return [d for d in matches if d.computation_version == max_ver]
+        return [
+            d
+            for d in matches
+            if self._is_current(
+                station_id=d.station_id,
+                model_id=d.model_id,
+                model_artifact_id=d.model_artifact_id,
+                parameter=d.parameter,
+                skill_source=d.skill_source,
+                forcing_type=None,
+                generation_id=d.generation_id,
+                computation_version=d.computation_version,
+                peers=self._diagrams,
+                peer_forcing_type=lambda _p: None,
+                include_forcing_type=False,
+            )
+        ]
 
     def fetch_scores_by_regime(
         self,
@@ -656,13 +1004,29 @@ class FakeSkillStore:
         flow_regime: FlowRegime,
         parameter: str | None = None,
     ) -> list[SkillScore]:
-        return [
+        matches = [
             s
             for s in self._scores
             if s.station_id == station_id
             and s.model_id == model_id
             and s.flow_regime == flow_regime
             and (parameter is None or s.parameter == parameter)
+        ]
+        return [
+            s
+            for s in matches
+            if self._is_current(
+                station_id=s.station_id,
+                model_id=s.model_id,
+                model_artifact_id=s.model_artifact_id,
+                parameter=s.parameter,
+                skill_source=s.skill_source,
+                forcing_type=s.forcing_type,
+                generation_id=s.generation_id,
+                computation_version=s.computation_version,
+                peers=self._scores,
+                peer_forcing_type=lambda p: p.forcing_type,
+            )
         ]
 
     def fetch_skill_scores(
@@ -671,12 +1035,28 @@ class FakeSkillStore:
         model_artifact_id: ArtifactId,
         parameter: str | None = None,
     ) -> tuple[SkillScore, ...]:
-        return tuple(
+        matches = [
             s
             for s in self._scores
             if s.model_id == model_id
             and s.model_artifact_id == model_artifact_id
             and (parameter is None or s.parameter == parameter)
+        ]
+        return tuple(
+            s
+            for s in matches
+            if self._is_current(
+                station_id=s.station_id,
+                model_id=s.model_id,
+                model_artifact_id=s.model_artifact_id,
+                parameter=s.parameter,
+                skill_source=s.skill_source,
+                forcing_type=s.forcing_type,
+                generation_id=s.generation_id,
+                computation_version=s.computation_version,
+                peers=self._scores,
+                peer_forcing_type=lambda p: p.forcing_type,
+            )
         )
 
     def mark_stale(

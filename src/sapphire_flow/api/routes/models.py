@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import get_reflected
+from sapphire_flow.store.skill_store import latest_generation_predicate
 
 router = APIRouter(tags=["models"])
 
@@ -122,13 +123,20 @@ def model_detail(
             active_artifact_id = a["id"]
             break
 
+    generations_table = reflected.tables.get("skill_generations")
+
     skill_scores: list[dict[str, Any]] = []
     skill_table = reflected.tables.get("skill_scores")
     if skill_table is not None and active_artifact_id:
         raw = (
             conn.execute(
                 sa.select(skill_table)
-                .where(skill_table.c.model_artifact_id == active_artifact_id)
+                .where(
+                    skill_table.c.model_artifact_id == active_artifact_id,
+                    # Plan 235 D2 reader 6: was unfiltered — served every
+                    # generation ever computed for this artifact at once.
+                    latest_generation_predicate(skill_table, generations_table),
+                )
                 .order_by(skill_table.c.lead_time_hours, skill_table.c.metric)
             )
             .mappings()
@@ -143,7 +151,9 @@ def model_detail(
         raw = (
             conn.execute(
                 sa.select(diagram_table).where(
-                    diagram_table.c.model_artifact_id == active_artifact_id
+                    diagram_table.c.model_artifact_id == active_artifact_id,
+                    # Plan 235 D2 reader 7: was unfiltered.
+                    latest_generation_predicate(diagram_table, generations_table),
                 )
             )
             .mappings()
@@ -177,6 +187,7 @@ def model_skill_chart_json(
     skill_table = reflected.tables.get("skill_scores")
     if skill_table is None:
         return JSONResponse({"series": []})
+    generations_table = reflected.tables.get("skill_generations")
 
     # Resolve artifact_id — default to active artifact
     if not artifact_id:
@@ -210,7 +221,11 @@ def model_skill_chart_json(
             .where(
                 sa.and_(
                     skill_table.c.model_artifact_id == artifact_id,
-                    skill_table.c.freshness == "current",
+                    # Plan 235 D2 reader 9: `freshness == "current"` was a
+                    # THIRD, independent "what is current" rule (D2) —
+                    # replaced with the same generation predicate every
+                    # other reader now uses.
+                    latest_generation_predicate(skill_table, generations_table),
                 )
             )
             .order_by(

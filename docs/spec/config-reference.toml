@@ -86,6 +86,15 @@ infer_missing_thresholds = false      # v1+ only
 min_skill_samples = 100               # minimum forecast-observation pairs
 min_skill_seasons = 2                 # must cover wet + dry
 
+# --- Skill generations (Plan 235 per-run scope, blocker #4; tightened by
+#     the independent-review fixer round) ---
+# Source: types-and-protocols.md § DeploymentConfig
+# Two-release rollout gate — default FALSE (Release A: additive schema +
+# generation-aware readers ship with writes still tagged NULL/legacy). Set
+# true ONLY for Release B, once every instance in the fleet (including
+# every rollback target) runs a generation-aware image.
+enable_skill_generations = false
+
 # --- Display ---
 # Source: types-and-protocols.md § DeploymentConfig
 default_display_timezone = "Europe/Zurich"

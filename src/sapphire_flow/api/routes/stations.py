@@ -15,6 +15,7 @@ from sapphire_flow.api.model_visibility import (
     station_has_active_floor,
 )
 from sapphire_flow.api.routes.tables import get_reflected
+from sapphire_flow.store.skill_store import latest_generation_predicate
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import ModelId, StationId
 
@@ -358,10 +359,11 @@ def station_detail(
                 "max_step": mx.strftime("%Y-%m-%d") if mx else None,
             }
 
-    # Skill summary (current freshness, grouped by metric)
+    # Skill summary (newest generation, grouped by metric)
     skill_summary: list[dict[str, object]] = []
     sk_table = reflected.tables.get("skill_scores")
     if sk_table is not None:
+        generations_table = reflected.tables.get("skill_generations")
         sk_rows = (
             conn.execute(
                 sa.select(
@@ -372,7 +374,11 @@ def station_detail(
                 .where(
                     sa.and_(
                         sk_table.c.station_id == station_id,
-                        sk_table.c.freshness == "current",
+                        # Plan 235 D2 reader 8: `freshness == "current"` was
+                        # a separate, incompatible "what is current" rule —
+                        # replaced with the same generation predicate every
+                        # other reader now uses.
+                        latest_generation_predicate(sk_table, generations_table),
                     )
                 )
                 .group_by(sk_table.c.metric)

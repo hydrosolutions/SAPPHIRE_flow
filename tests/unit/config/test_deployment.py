@@ -41,6 +41,41 @@ class TestModelCombinationStrategyConfig:
         assert config.enable_pipeline_alerts is False
 
 
+class TestEnableSkillGenerationsDefault:
+    """Plan 235 independent-review fixer round (blocker): the two-release
+    rollout requires generation-tagged writes to stay OFF for Release A.
+    `DeploymentConfig`'s own field default is the backstop for every caller
+    that omits the key — a bare `DeploymentConfig(...)`, a bare
+    `deployment_config=None`, AND the actual shipped `config.toml`, which
+    (correctly) never mentions this key at all. If any of these three ever
+    default to `True` again, Release A would silently start emitting
+    generation-tagged writes before every rollback image understands them.
+    """
+
+    def test_bare_config_defaults_to_disabled(self) -> None:
+        config = make_deployment_config()
+        assert config.enable_skill_generations is False
+
+    def test_minimal_toml_without_the_key_loads_disabled(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(_MINIMAL_TOML)
+        config = load_config(cfg_file)
+        assert config.enable_skill_generations is False
+
+    def test_shipped_config_toml_does_not_opt_into_release_b(self) -> None:
+        """The repo's actual deployed `config.toml` must not itself flip
+        this on — Release B is a separately reviewed change, not something
+        that ships by omission alongside this plan's schema/reader work.
+        """
+        repo_root = Path(__file__).resolve().parents[3]
+        shipped_config = repo_root / "config.toml"
+        assert shipped_config.is_file(), (
+            f"expected the shipped deployment config at {shipped_config}"
+        )
+        config = load_config(shipped_config)
+        assert config.enable_skill_generations is False
+
+
 _MINIMAL_TOML = """\
 max_retention_days = 3650
 """
