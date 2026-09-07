@@ -1887,22 +1887,43 @@ class TestHindcastFutureFrameIsExactlyTheDeclaredHorizon:
         assert inputs is not None
         return inputs.data.future_dynamic
 
+    @staticmethod
+    def _sorted(future: object) -> list[tuple[object, float]]:
+        """(bucket, precipitation total) pairs, ascending.
+
+        The fixture seeds hourly precipitation of 1.0, so a COMPLETE daily
+        bucket sums to exactly 24.0. Round-3 review (minor): asserting only the
+        timestamps does NOT verify "no partial trailing bucket" — a bucket
+        built from six hours carries the SAME label as a whole one. The sum is
+        what distinguishes them, so it is what these tests assert.
+        """
+        rows = sorted(
+            zip(
+                future["timestamp"].to_list(),  # type: ignore[index]
+                future["precipitation"].to_list(),  # type: ignore[index]
+                strict=True,
+            ),
+            key=lambda r: r[0],
+        )
+        return [(ensure_utc(ts), value) for ts, value in rows]
+
     def test_aligned_issue_time_gets_exactly_the_horizon_not_one_more(self) -> None:
         issue = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
-        future = self._run(issue, horizon=2)
-        stamps = sorted(ensure_utc(ts) for ts in future["timestamp"].to_list())
         # T0 row 12: an aligned issue instant makes the T0 bucket future data,
         # so the set starts AT T0 — and stops after exactly `horizon` buckets.
-        assert stamps == [issue, ensure_utc(issue + timedelta(days=1))]
+        assert self._sorted(self._run(issue, horizon=2)) == [
+            (issue, pytest.approx(24.0)),
+            (ensure_utc(issue + timedelta(days=1)), pytest.approx(24.0)),
+        ]
 
     def test_non_midnight_issue_time_has_no_partial_trailing_bucket(self) -> None:
         issue = ensure_utc(datetime(2022, 1, 15, 6, tzinfo=UTC))
-        future = self._run(issue, horizon=2)
-        stamps = sorted(ensure_utc(ts) for ts in future["timestamp"].to_list())
         day = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
         # Off a boundary the T0 bucket is partly elapsed, so the future set
-        # starts at T0 + step. Two buckets, both whole.
-        assert stamps == [
-            ensure_utc(day + timedelta(days=1)),
-            ensure_utc(day + timedelta(days=2)),
+        # starts at T0 + step. Two buckets, and BOTH WHOLE — 24.0 each. A
+        # 6-of-24-hour trailing bucket would sum to 6.0 while keeping its
+        # label, which is exactly the defect round 2 found.
+        assert self._sorted(self._run(issue, horizon=2)) == [
+            (ensure_utc(day + timedelta(days=1)), pytest.approx(24.0)),
+            (ensure_utc(day + timedelta(days=2)), pytest.approx(24.0)),
         ]
