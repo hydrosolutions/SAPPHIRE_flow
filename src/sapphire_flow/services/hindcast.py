@@ -307,8 +307,20 @@ def _assemble_hindcast_inputs(
     # Resampled TOO: leaving it raw while the past half is daily would deliver
     # one frame at two resolutions — an inconsistency this change would have
     # introduced rather than found.
+    #
+    # Round-2 review (blocker): bound the END on the BUCKET as well. The fetch
+    # window is `issue_time + (H+1) * step` (exclusive), which once the first
+    # future bucket moved to `T0` delivered H+1 buckets, not H — an extra
+    # forecast lead in every stored hindcast, since `NwpRegression` forecasts
+    # every row it is given. Off-boundary it was worse: the trailing bucket was
+    # built from a fraction of a day (measured: 6 hours of 24 at a 06Z issue)
+    # and labelled a whole one — the same partial-bucket defect this plan
+    # exists to remove, reintroduced on the future side.
+    future_end = ensure_utc(first_future + forecast_horizon_steps * time_step)
     future_dynamic = resample_to_time_step(
-        forcing_df.filter(pl.col("timestamp") >= first_future),
+        forcing_df.filter(
+            (pl.col("timestamp") >= first_future) & (pl.col("timestamp") < future_end)
+        ),
         time_step,
         aggregation_methods=aggregation_methods,
     )

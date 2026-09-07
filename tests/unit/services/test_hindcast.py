@@ -1831,3 +1831,78 @@ class TestHindcastResamplesPastDynamicToDeclaredTimeStep:
         assert stamps == [
             ensure_utc(issue_time - k * time_step) for k in range(lookback_steps, 0, -1)
         ]
+
+
+class TestHindcastFutureFrameIsExactlyTheDeclaredHorizon:
+    """Round-2 review (blocker): the future frame must carry EXACTLY
+    `forecast_horizon_steps` COMPLETE buckets.
+
+    The fetch window ends at `issue_time + (H+1) * step`. Once T1a moved the
+    first future bucket to `T0` at an aligned issue time, that delivered H+1
+    buckets — an extra forecast lead in every stored hindcast, because
+    `NwpRegression` forecasts every row it is handed. At a non-midnight issue
+    it was worse: the trailing bucket was built from 6 of 24 hours and labelled
+    a whole day.
+
+    No test asserted the COUNT, which is why the round-1 fold introduced this
+    and only an independent reviewer saw it.
+    """
+
+    @staticmethod
+    def _run(issue_time: UtcDatetime, horizon: int):  # type: ignore[no-untyped-def]
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        data_start = ensure_utc(issue_time - timedelta(days=10))
+        observations = make_observations(
+            n=10 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+        forcing = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter="precipitation",
+                valid_time=ensure_utc(data_start + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(20 * 24)
+        ]
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=3,
+            time_step=time_step,
+            forecast_horizon_steps=horizon,
+            required_features=["precipitation"],
+            all_forcing=forcing,
+            all_observations=observations,
+            weather_sources=[_make_weather_source(sid)],
+            static_attributes=None,
+        )
+        assert inputs is not None
+        return inputs.data.future_dynamic
+
+    def test_aligned_issue_time_gets_exactly_the_horizon_not_one_more(self) -> None:
+        issue = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+        future = self._run(issue, horizon=2)
+        stamps = sorted(ensure_utc(ts) for ts in future["timestamp"].to_list())
+        # T0 row 12: an aligned issue instant makes the T0 bucket future data,
+        # so the set starts AT T0 — and stops after exactly `horizon` buckets.
+        assert stamps == [issue, ensure_utc(issue + timedelta(days=1))]
+
+    def test_non_midnight_issue_time_has_no_partial_trailing_bucket(self) -> None:
+        issue = ensure_utc(datetime(2022, 1, 15, 6, tzinfo=UTC))
+        future = self._run(issue, horizon=2)
+        stamps = sorted(ensure_utc(ts) for ts in future["timestamp"].to_list())
+        day = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+        # Off a boundary the T0 bucket is partly elapsed, so the future set
+        # starts at T0 + step. Two buckets, both whole.
+        assert stamps == [
+            ensure_utc(day + timedelta(days=1)),
+            ensure_utc(day + timedelta(days=2)),
+        ]

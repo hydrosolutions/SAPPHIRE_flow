@@ -203,23 +203,23 @@ null-valued rows here, which both contradicted this rule and made null and NaN b
 
 ### VERDICT TABLE — checkable without reading code
 
-`S` = 1 day and `T0` = 2026-01-10 unless stated. "wrongly X" marks what a refuted mechanism did.
+`S` = 1 day and `T0` = 2026-01-10 unless stated. **Every PAST row's expected set ends at 01-09, not 01-10** — `T0` is the bucket in progress and is excluded by the rule above. Round-2 review (major): this table was published a bucket LATE, contradicting both the rule and the tests that implement it (the tests were right). Corrected 2026-09-07. "wrongly X" marks what a refuted mechanism did.
 
 | # | model / series | data held | expected set | verdict | refuted mechanism |
 |---|---|---|---|---|---|
-| 1 | any, daily, L=4 | stamps 01-07 00:00, 01-08 12:00, 01-09 00:00, 01-10 12:00 | 01-07..01-10 | **SERVE** — all four buckets occupied | median gap 36h wrongly REJECTED |
-| 2 | any, **hourly**, L=4 | daily rows 01-07..01-10 plus one extra at 01-08 01:00 | 4 hourly buckets ending T0 | **CANNOT SERVE** | minimum gap 1h wrongly SERVED |
-| 3 | any, **hourly**, L=2 | daily rows through T0 | 2 hourly buckets ending T0 | **CANNOT SERVE** | aggregate-then-validate wrongly SERVED (one row left, validator returns early) |
-| 4 | any, daily, L=5 | 01-06..01-10 present except **01-06** (the FIRST expected bucket) | 01-06..01-10 | **CANNOT SERVE** | aggregate-then-validate wrongly SERVED (edge bucket invisible) |
-| 5 | any, daily, L=5 | 01-06..01-10 present except 01-08 (interior) | 01-06..01-10 | **CANNOT SERVE** | — (all three caught this) |
+| 1 | any, daily, L=4 | stamps 01-06 00:00, 01-07 12:00, 01-08 00:00, 01-09 12:00 | 01-06..01-09 | **SERVE** — all four buckets occupied | median gap 36h wrongly REJECTED |
+| 2 | any, **hourly**, L=4 | daily rows 01-06..01-09 plus one extra at 01-08 01:00 | the 4 hourly buckets BEFORE T0 | **CANNOT SERVE** | minimum gap 1h wrongly SERVED |
+| 3 | any, **hourly**, L=2 | daily rows up to T0 | the 2 hourly buckets BEFORE T0 | **CANNOT SERVE** | aggregate-then-validate wrongly SERVED (one row left, validator returns early) |
+| 4 | any, daily, L=5 | 01-05..01-09 present except **01-05** (the FIRST expected bucket) | 01-05..01-09 | **CANNOT SERVE** | aggregate-then-validate wrongly SERVED (edge bucket invisible) |
+| 5 | any, daily, L=5 | 01-05..01-09 present except 01-07 (interior) | 01-05..01-09 | **CANNOT SERVE** | — (all three caught this) |
 | 6 | **`NwpRainfallRunoff`** past forcing | past forcing row at `T0` MISSING; future forcing complete to `H` | past forcing: **∅** (declares none — `_n_lags = 0`; its only past_known is the TARGET, lookback 1) | **SERVE** | validating forcing from `lookback_start` would wrongly REJECT |
 | 11 | any, daily, `L=2`, `T = 2026-01-10 06:00Z` | complete buckets 01-08 and 01-09 | 01-08, 01-09 — **NOT 01-10**, which is still in progress | **SERVE** | an expected set including `T0` wrongly REFUSED |
 | 12 | any, daily, `H=2`, `T = 2026-01-10 00:00Z` (exactly on a boundary) | buckets 01-10 and 01-11 | 01-10, 01-11 — starts AT `T0` because the issue instant is aligned | **SERVE** | always starting at `T0+S` wrongly demanded 01-12 |
 | 13 | **training**, targets at 01-01 and 01-03 only | forcing present at exactly those two | {01-01, 01-03} — the consumed set, no anchor | **SERVE** | an anchor+horizon rule wrongly demanded 01-02 |
-| 7 | **`SeasonalPrecipRunoffRegression`** temperature | temperature present for the 14 buckets ending `T0`, ABSENT for days 15–45 | 14 buckets ending `T0` | **SERVE** | a class-wide 45-bucket set would wrongly REJECT |
-| 8 | **`SeasonalPrecipRunoffRegression`** precipitation | precipitation missing on one day inside its 45 | 45 buckets ending `T0` | **CANNOT SERVE** — names precipitation | — |
-| 9 | any, daily, L=1 | hourly data, complete for that day | 1 daily bucket | **SERVE** — aggregated (precip SUM, temp MEAN) | — |
-| 10 | any, daily, L=3 | no data at all for `V` | 3 buckets | **CANNOT SERVE** | — |
+| 7 | **`SeasonalPrecipRunoffRegression`** temperature | temperature present for the 14 buckets BEFORE `T0`, ABSENT for days 15–45 | the 14 buckets before `T0` | **SERVE** | a class-wide 45-bucket set would wrongly REJECT |
+| 8 | **`SeasonalPrecipRunoffRegression`** precipitation | precipitation missing on one day inside its 45 | the 45 buckets before `T0` | **CANNOT SERVE** — names precipitation | — |
+| 9 | any, daily, L=1 | hourly data, complete for 01-09 | 1 daily bucket: 01-09 | **SERVE** — aggregated (precip SUM, temp MEAN) | — |
+| 10 | any, daily, L=3 | no data at all for `V` | 3 buckets: 01-07..01-09 | **CANNOT SERVE** | — |
 
 Rows 1–5 are the refuted mechanisms; **6 and 7 are the two a per-feature-class spec would still get
 wrong**, which is why they are mandatory.
