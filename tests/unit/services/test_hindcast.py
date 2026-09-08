@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
+from sapphire_flow.services.training_data import floor_to_time_step
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
@@ -1209,7 +1210,17 @@ class TestFutureForcingFetched:
             future = inputs.data.future_dynamic
             assert not future.is_empty(), "future_dynamic is empty"
             assert {"precipitation", "temperature"} <= set(future.columns)
-            assert (future["timestamp"] > inputs.issue_time).all()
+            # Plan 239 T1a: the future half is now split on BUCKET boundaries
+            # and resampled, so this asserts the T0 rule rather than the raw
+            # instant. `issue_time` here is exactly on a boundary, and T0's
+            # verdict table (row 12) is explicit that the bucket STARTING at
+            # an aligned issue time is future data — "always starting at
+            # T0 + step" is a mechanism that table refutes by name. The old
+            # `> issue_time` assertion encoded exactly that refuted rule; kept
+            # as `>=` against the bucket, which still forbids any past leakage.
+            bucket = floor_to_time_step(inputs.issue_time, timedelta(days=1))
+            assert (future["timestamp"] >= bucket).all()
+            assert (future["timestamp"] >= inputs.issue_time).all()
 
 
 class TestGroupHindcastUsesGroupModelInputs:
@@ -1741,3 +1752,178 @@ class TestHindcastValidatesOnlyTheDeclaredLookbackWindow:
         )
         tail = inputs.data.past_targets.sort("timestamp").tail(declared_lookback_steps)
         assert tail.height == declared_lookback_steps
+
+
+class TestHindcastResamplesPastDynamicToDeclaredTimeStep:
+    """Plan 239 T1: the SAME defect Plan 228 fixed for `past_targets` was
+    still live for `past_dynamic`.
+
+    Hindcast split raw forcing at `issue_time` and handed BOTH halves straight
+    through, unresampled. (An earlier version of this docstring said the future
+    half was already resampled — that was wrong, and the review caught it: the
+    resampled future half is true of `training_data.py`, not of hindcast.) So a
+    daily model's hindcast read hourly forcing, and every skill score computed
+    from that hindcast describes a model that was never run that way.
+
+    Both halves are now split on BUCKET boundaries and resampled — leaving the
+    future half raw while the past half became daily would have delivered one
+    frame at two resolutions, an inconsistency this change would have created
+    rather than found.
+    """
+
+    def test_past_dynamic_spans_the_declared_step_not_raw_cadence(self) -> None:
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        lookback_steps = 7
+        issue_time = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+
+        data_start = ensure_utc(issue_time - timedelta(days=12))
+        observations = make_observations(
+            n=12 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+        # HOURLY forcing across the same window — the cadence a real
+        # reanalysis serves.
+        forcing = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter="precipitation",
+                valid_time=ensure_utc(data_start + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(12 * 24)
+        ]
+
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=lookback_steps,
+            time_step=time_step,
+            forecast_horizon_steps=5,
+            required_features=["precipitation"],
+            all_forcing=forcing,
+            all_observations=observations,
+            # Required: the assembler filters forcing by the station ids its
+            # weather sources name. With none, every row is dropped and the
+            # test would fail for a setup reason, not the cadence defect.
+            weather_sources=[_make_weather_source(sid)],
+            static_attributes=None,
+        )
+
+        assert inputs is not None
+        past_dynamic = inputs.data.past_dynamic
+        assert not past_dynamic.is_empty()
+        stamps = sorted(ensure_utc(ts) for ts in past_dynamic["timestamp"].to_list())
+        gaps = {b - a for a, b in zip(stamps, stamps[1:], strict=False)}
+        assert gaps <= {time_step}, (
+            f"hindcast past_dynamic arrived at {gaps}, not the declared {time_step}"
+        )
+        # Review (minor): a gap-set assertion alone is VACUOUS on an empty or
+        # single-row frame — the empty set is a subset of anything. Pin the
+        # actual buckets: exactly `lookback_steps` of them, ending at the last
+        # COMPLETE bucket before issue_time, never issue_time's own.
+        assert stamps == [
+            ensure_utc(issue_time - k * time_step) for k in range(lookback_steps, 0, -1)
+        ]
+
+
+class TestHindcastFutureFrameIsExactlyTheDeclaredHorizon:
+    """Round-2 review (blocker): the future frame must carry EXACTLY
+    `forecast_horizon_steps` COMPLETE buckets.
+
+    The fetch window ends at `issue_time + (H+1) * step`. Once T1a moved the
+    first future bucket to `T0` at an aligned issue time, that delivered H+1
+    buckets — an extra forecast lead in every stored hindcast, because
+    `NwpRegression` forecasts every row it is handed. At a non-midnight issue
+    it was worse: the trailing bucket was built from 6 of 24 hours and labelled
+    a whole day.
+
+    No test asserted the COUNT, which is why the round-1 fold introduced this
+    and only an independent reviewer saw it.
+    """
+
+    @staticmethod
+    def _run(issue_time: UtcDatetime, horizon: int):  # type: ignore[no-untyped-def]
+        from sapphire_flow.services.hindcast import _assemble_hindcast_inputs
+
+        station = make_station_config()
+        sid = station.id
+        time_step = timedelta(hours=24)
+        data_start = ensure_utc(issue_time - timedelta(days=10))
+        observations = make_observations(
+            n=10 * 24 * 6,
+            station_id=sid,
+            parameter="discharge",
+            start=data_start,
+            interval=timedelta(minutes=10),
+        )
+        forcing = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter="precipitation",
+                valid_time=ensure_utc(data_start + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(20 * 24)
+        ]
+        inputs = _assemble_hindcast_inputs(
+            station_id=sid,
+            issue_time=issue_time,
+            lookback_steps=3,
+            time_step=time_step,
+            forecast_horizon_steps=horizon,
+            required_features=["precipitation"],
+            all_forcing=forcing,
+            all_observations=observations,
+            weather_sources=[_make_weather_source(sid)],
+            static_attributes=None,
+        )
+        assert inputs is not None
+        return inputs.data.future_dynamic
+
+    @staticmethod
+    def _sorted(future: object) -> list[tuple[object, float]]:
+        """(bucket, precipitation total) pairs, ascending.
+
+        The fixture seeds hourly precipitation of 1.0, so a COMPLETE daily
+        bucket sums to exactly 24.0. Round-3 review (minor): asserting only the
+        timestamps does NOT verify "no partial trailing bucket" — a bucket
+        built from six hours carries the SAME label as a whole one. The sum is
+        what distinguishes them, so it is what these tests assert.
+        """
+        rows = sorted(
+            zip(
+                future["timestamp"].to_list(),  # type: ignore[index]
+                future["precipitation"].to_list(),  # type: ignore[index]
+                strict=True,
+            ),
+            key=lambda r: r[0],
+        )
+        return [(ensure_utc(ts), value) for ts, value in rows]
+
+    def test_aligned_issue_time_gets_exactly_the_horizon_not_one_more(self) -> None:
+        issue = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+        # T0 row 12: an aligned issue instant makes the T0 bucket future data,
+        # so the set starts AT T0 — and stops after exactly `horizon` buckets.
+        assert self._sorted(self._run(issue, horizon=2)) == [
+            (issue, pytest.approx(24.0)),
+            (ensure_utc(issue + timedelta(days=1)), pytest.approx(24.0)),
+        ]
+
+    def test_non_midnight_issue_time_has_no_partial_trailing_bucket(self) -> None:
+        issue = ensure_utc(datetime(2022, 1, 15, 6, tzinfo=UTC))
+        day = ensure_utc(datetime(2022, 1, 15, tzinfo=UTC))
+        # Off a boundary the T0 bucket is partly elapsed, so the future set
+        # starts at T0 + step. Two buckets, and BOTH WHOLE — 24.0 each. A
+        # 6-of-24-hour trailing bucket would sum to 6.0 while keeping its
+        # label, which is exactly the defect round 2 found.
+        assert self._sorted(self._run(issue, horizon=2)) == [
+            (ensure_utc(day + timedelta(days=1)), pytest.approx(24.0)),
+            (ensure_utc(day + timedelta(days=2)), pytest.approx(24.0)),
+        ]

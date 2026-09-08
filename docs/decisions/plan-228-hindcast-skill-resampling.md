@@ -101,10 +101,18 @@ anchoring to `issue_time` or `valid_time`.**
   a hard backstop, called after every `past_targets` resample in
   `hindcast.py`, `operational_inputs.py`, AND `track_assembly.py` — raises
   `ConfigurationError` if the delivered cadence ever again drifts from the
-  declared `time_step`. Deliberately scoped to `past_targets` only:
-  `past_dynamic` legitimately carries a finer, unresampled cadence than the
-  model's `time_step` in the operational path (e.g. hourly reanalysis feeding
-  a daily model) — a blanket check on it would misfire. **Not** wired into
+  declared `time_step`. Scoped to `past_targets` callers.
+
+  **SUPERSEDED IN PART by Plan 239 T1 (2026-09-07).** This bullet used to say
+  `past_dynamic` "legitimately carries a finer, unresampled cadence ... a
+  blanket check on it would misfire". That rationale was WRONG — it described
+  the defect. A daily model bound to an hourly reanalysis was silently handed
+  24x the rows it declared, in all four assemblers, and in two of them the
+  FUTURE half of the same frame was already resampled. Plan 239 resamples
+  `past_dynamic` everywhere, to the model's declared step and its declared
+  per-variable aggregation. The backstop above remains on `past_targets`
+  only — not because `past_dynamic` is exempt, but because that is the single
+  point all three operational/hindcast paths already call through. **Not** wired into
   `training_data.py`'s own `assemble_station_training_data`, deliberately: a
   real multi-year historical training window legitimately contains gaps a
   hard fail would need to reject rather than train around.

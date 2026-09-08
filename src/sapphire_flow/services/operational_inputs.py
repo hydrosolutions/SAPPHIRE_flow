@@ -560,14 +560,16 @@ def assemble_station_operational_inputs(
         if requirements_override is not None
         else model.data_requirements
     )
-    lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
     # Plan 228 D4: past_targets bounds are ALIGNED to UTC-calendar bucket
     # boundaries and EXTENDED so `reqs.lookback_steps` buckets are all
     # complete — a non-midnight `issue_time` (a 06/12/18Z cycle) otherwise
     # presents the most recent bucket as a full day when it is really a
-    # partial one (measured: 37 rows where a full day is 144). Scoped to
-    # `past_targets` only: `past_dynamic` (below) legitimately carries a
-    # different, unresampled cadence.
+    # partial one (measured: 37 rows where a full day is 144).
+    #
+    # Plan 239 T1: these bounds now serve `past_dynamic` TOO. The earlier
+    # comment here called `past_dynamic`'s different, unresampled cadence
+    # legitimate — it is the defect, not an exemption: a model declaring a
+    # daily step was handed whatever cadence the reanalysis happened to have.
     past_targets_start, past_targets_end = aligned_lookback_bounds(
         issue_time, reqs.lookback_steps, time_step
     )
@@ -677,8 +679,12 @@ def assemble_station_operational_inputs(
         reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
         raw_forcing = forcing_source.fetch_reanalysis(
             station_configs=reanalysis_bindings,
-            start=lookback_start,
-            end=issue_time,
+            # Plan 239 T1: the SAME aligned, complete-bucket window
+            # `past_targets` uses. The naive `lookback_start`/`issue_time`
+            # window has a partial bucket at both ends whenever `issue_time`
+            # is not itself a boundary (any 06/12/18Z cycle for a daily model).
+            start=past_targets_start,
+            end=past_targets_end,
             parameters=past_dynamic_features,
         )
         past_dynamic = raw_forcing_to_dataframe(
@@ -691,6 +697,18 @@ def assemble_station_operational_inputs(
                 issue_time=str(issue_time),
             )
             past_dynamic = pl.DataFrame()
+        else:
+            # Plan 239 T1: resample to the model's DECLARED step, exactly as
+            # `past_targets` has been since Plan 228. Without this a daily model
+            # bound to an hourly reanalysis silently received 24x the rows it
+            # declared — nothing raised, the forecast was simply computed from
+            # the wrong thing. Per-variable aggregation is the model's own
+            # declaration (precip SUM, temperature MEAN, ...), never a guess.
+            past_dynamic = resample_to_time_step(
+                past_dynamic,
+                time_step,
+                aggregation_methods=resolved_aggregation_methods(reqs),
+            )
     else:
         past_dynamic = pl.DataFrame()
 
