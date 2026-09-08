@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-04
 plan: 252
 title: A time grid is a step AND a phase — and interval data is period-ending
-scope: CONVENTIONS AND TYPES ONLY. Adopt CF `cell_methods` as the temporal-support type, narrow period-ending to interval-valued data, define `TimeGrid(step, phase)`, declare the operational boundary per deployment, read CF attributes at ingest, and supersede Plan 228 D4. Explicitly NOT the phase-aware execution across the seven resampler call sites, the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT Plan 226's anchoring, NOT Plan 234's aggregation threading.
+scope: CONVENTIONS AND TYPES ONLY. Adopt CF `cell_methods` as the temporal-support type, narrow period-ending to interval-valued data, define `TimeGrid(step, phase)`, declare the operational boundary per deployment, read CF attributes at ingest, and supersede Plan 228 D4. Explicitly NOT the phase-aware execution across the resampler call sites (TWELVE as of 2026-09-08, not seven — re-inventory, do not cite a count), the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT the daily-model anchoring (Plan 254 T8, absorbed from the superseded Plan 226), NOT Plan 234's aggregation threading.
 depends_on: []
 blocks: [254]
 source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 253; investigation showed the codebase treats a time step as a scalar throughout
@@ -135,7 +135,9 @@ and none of them belong to this plan:
   it does not retrain anything.
 
   🔴 **CORRECTED 2026-09-08 by the time-grid track owner — the retrain belongs to Plan 254 T6, NOT
-  to Plan 226.** The original claim here (that 226 "already owns" the sequencing) was an assumption
+  to Plan 226.** *(Plan 226 was subsequently SUPERSEDED and absorbed into Plan 254 T8, so the
+  question is moot as well as answered; the reasoning is kept because the check that settled it is
+  worth repeating.)* The original claim here (that 226 "already owns" the sequencing) was an assumption
   never checked against 226 itself, and it contradicted `254:182`, which says no plan owns the
   retrain until T6 creates the home. 254 is right. Verified against Plan 226's frontmatter and body,
   not its prose reputation: its `scope` reads *"ANCHORING ONLY"*, its `depends_on` is `[222, 228,
@@ -234,7 +236,8 @@ a starting point, not a citation.*
 **OD-4 — forecast `valid_time` is period-ending**, consistent with OD-1. The daily bucket above is
 stamped `18:00Z` on its closing day. The tempting alternative — stamping "the date it is about",
 e.g. `2026-09-05 00:00Z` — is rejected: that instant is *inside* the window it labels and corresponds
-to no boundary, which is precisely the defect Plan 226 exists to correct.
+to no boundary, which is precisely the defect **Plan 254 T8** exists to correct (absorbed from
+Plan 226, which is now `SUPERSEDED`).
 
 **OD-5 — published data carries explicit interval bounds, not just a stamp.** A consumer receiving
 `2026-09-05 18:00Z` alone must know our rounding rule, our period convention and our timezone
@@ -357,7 +360,8 @@ the Nepali calendar day, not the UTC one.
 
 This is deliberately the *convention and the type*, not the consumers:
 
-- **Plan 226** anchors the daily models' `valid_time` to the calendar day they predict. That is the
+- **Plan 254 T8** (absorbed from Plan 226 on 2026-09-08; 226 is now `SUPERSEDED` and must not be
+  cited as a live owner) anchors the daily models' `valid_time` to the calendar day they predict. That is the
   same defect family — a grid whose phase was never declared — but 226 owns the daily-model fix.
 - **Plan 234** threads each channel's declared aggregation method end to end. This plan supplies the
   rule that says *when* a resample is required; 234 supplies *how* it is performed.
@@ -366,7 +370,7 @@ This is deliberately the *convention and the type*, not the consumers:
 
 ## Non-goals
 
-- The daily-model anchoring fix (Plan 226).
+- The daily-model anchoring fix (**Plan 254 T8**, absorbed from the superseded Plan 226).
 - Threading declared aggregation through the assembly paths (Plan 234).
 - Building any DHM or Nepali adapter.
 - Retrofitting phase onto historical stored rows. New writes declare it; a backfill is a separate
@@ -426,7 +430,11 @@ alongside `units` and `long_name`, int16-packed with CF `scale_factor`.
 |---|---|---|---|
 | `time: point` | instantaneous | **No — a point is not an interval** | linear interpolation, bounded by a maximum gap |
 | `time: sum` | interval accumulation | Yes | overlap apportionment |
-| `time: mean` / `max` | interval statistic | Yes | the declared `AggregationMethod` |
+| `time: mean` / `time: maximum` | interval statistic | Yes | the declared `AggregationMethod` |
+
+⚠️ **The CF token is `maximum`, not `max`** — an earlier revision of this table used the invalid
+token. `max` is our `AggregationMethod` member; `maximum` is the CF cell method. They are not
+interchangeable, and writing the wrong one into a contract would not round-trip.
 
 ⛔ **We currently discard this.** The recap adapter reads no CF attributes; `cell_methods` appears in
 this repo only as a comment (`adapters/era5_land_reanalysis.py:20`) and in an archived plan.

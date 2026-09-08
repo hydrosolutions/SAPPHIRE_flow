@@ -203,8 +203,9 @@ ForecastInterface issue, **not** as a SAP3-side check bolted on here. It does no
 shows declared and measured agreeing for all five models today. Recording it so the next person does
 not "fix" it locally.
 
-✅ **DRAFTED 2026-09-08** — `docs/fi-issues/003-declared-timedelta-is-never-validated.md`, ready to
-file at `hydrosolutions/ForecastInterface`, with a runnable demonstration. It carries a second,
+✅ **FILED 2026-09-08 as [ForecastInterface#9](https://github.com/hydrosolutions/ForecastInterface/issues/9)** —
+drafted at `docs/fi-issues/003-declared-timedelta-is-never-validated.md`, with a reproduction that was
+run as written before filing. It carries a second,
 separable gap found in the same six-line function: `validate_temporal_columns` also accepts
 **timezone-naive** datetimes, because `isinstance(dtype, pl.Datetime)` is true with or without a time
 zone. That one matters directly to the Nepal work — a naive timestamp read as UTC is off by 345

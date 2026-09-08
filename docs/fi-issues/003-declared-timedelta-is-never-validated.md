@@ -1,143 +1,167 @@
 # FI issue draft — a declared `timedelta` is never checked against the timestamps it describes
 
-**Status:** DRAFT, ready to file at `hydrosolutions/ForecastInterface`.
-**Raised by:** SAPPHIRE Flow (SAP3), 2026-09-08, from the time-grid plan family (Plans 252 / 254 /
-248).
-**Related:** `docs/fi-issues/002-future-steps-at-most-semantics.md` — same shape: the contract
-carries a declaration that nothing enforces, and both sides work around it in prose.
+**Status:** ✅ **FILED 2026-09-08 as
+[`hydrosolutions/ForecastInterface#9`](https://github.com/hydrosolutions/ForecastInterface/issues/9).**
+Awaiting maintainer response on the two questions in *What we are asking for*. Per the lesson recorded
+in `002`, watch for the resolving version and record "resolved in vX, adopt by doing Y" here — do not
+leave this file without an adoption marker.
+**Raised by:** SAPPHIRE Flow (SAP3), 2026-09-08, from the time-grid plan family (Plans 252 / 254 / 248).
+**Affected version:** `forecastinterface` **v0.1.20**, commit `ad19597e02f7bbd77b69f6339db3351847fe9791`
+(the revision SAP3 pins). Reproduced on Python 3.12.10, Polars 1.43.2.
+**Related:** `hydrosolutions/ForecastInterface#7` (target temporal semantics) — adjacent, and we think
+complementary; see *Relationship to #7* below. Also `docs/fi-issues/002` (`future_steps` "at most"),
+resolved in v0.1.20.
+**Blocking us?** No. Latent today — see *Severity*.
 
 ---
 
 ## Summary
 
 `VariableMetadata.timedelta` declares a variable's cadence, and `forecast_horizon` and `offset` are
-both **counts of steps of that length** — so the declared `timedelta` is what gives the entire output
-frame its meaning. But FI never checks that the `datetime` column is actually spaced at the declared
-`timedelta`.
+both **counts of steps of that length** (`forecast_interface/output/metadata.py:11`). The declared
+`timedelta` is therefore what gives the whole output frame its meaning.
 
-`validate_temporal_columns` (`forecast_interface/output/_validators.py`) checks column **presence and
-dtype only**:
+FI validates the frame in two ways, and neither of them is the one that matters here:
 
-```python
-TEMPORAL_COLUMNS = ("issue_datetime", "datetime")
+- `validate_temporal_columns` (`forecast_interface/output/_validators.py:18`) checks that
+  `issue_datetime` and `datetime` are **present** and are `pl.Datetime`. Nothing more.
+- `VariableOutput._validate_forecast_horizon` (`.../output/variable_output.py:132`) cross-checks the
+  **row count** against `forecast_horizon`.
 
-def validate_temporal_columns(df: pl.DataFrame) -> None:
-    for col in TEMPORAL_COLUMNS:
-        if col not in df.columns:
-            raise ValueError(f"DataFrame must contain a '{col}' column")
-        if not isinstance(df.schema[col], DATETIME_DTYPE):
-            raise ValueError(f"'{col}' column must be Datetime, got {df.schema[col]}")
-```
+So the number of rows is checked, and their **spacing never is**. The `timedelta` field itself is
+validated only for positivity (`metadata.py`, `_positive_timedelta`). A model may declare `1 day`,
+emit three rows one hour apart, and FI accepts it — because three rows is what a horizon of three
+asks for.
 
-`VariableMetadata` validates that `timedelta` is *positive* (`_positive_timedelta`,
-`forecast_interface/output/metadata.py`) and nothing more. So a model may declare `1 day` and emit
-hourly rows, and FI accepts it.
+## Reproduction
 
-## Demonstration
-
-Run against the currently pinned FI:
+Public API only, against v0.1.20:
 
 ```python
-import polars as pl, datetime as dt
-from forecast_interface.output._validators import validate_temporal_columns
+import datetime as dt
+import polars as pl
+from forecast_interface.common.units import Unit
+from forecast_interface.output.metadata import VariableMetadata
+from forecast_interface.output.variable_output import (
+    DeterministicData, VariableOutput, VariableStatus,
+)
 
-hourly = pl.DataFrame({
-    "issue_datetime": [dt.datetime(2026, 1, 1)] * 3,
-    "datetime": [dt.datetime(2026, 1, 1, h) for h in (0, 1, 2)],
+issue = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
+
+# DECLARE a daily cadence ...
+metadata = VariableMetadata(
+    unit=Unit.M3_PER_S, timedelta=dt.timedelta(days=1), forecast_horizon=3, offset=1,
+)
+# ... then EMIT three rows one hour apart.
+df = pl.DataFrame({
+    "issue_datetime": [issue] * 3,
+    "datetime": [issue + dt.timedelta(hours=h) for h in (1, 2, 3)],
+    "value": [1.0, 2.0, 3.0],
 })
-validate_temporal_columns(hourly)   # accepted, under a declared timedelta of 1 day
+
+vo = VariableOutput(
+    metadata=metadata,
+    deterministic=DeterministicData(data=df),
+    status=VariableStatus.SUCCESS,
+)
+
+print(vo.metadata.timedelta)                                    # 1 day, 0:00:00
+print(vo.deterministic.data["datetime"].diff().drop_nulls().unique().to_list())
+#   [datetime.timedelta(seconds=3600)]   <- one hour
 ```
 
-## Why this matters to a consumer
+No error is raised. The object is valid, self-inconsistent, and reports a cadence its own timestamps
+contradict.
 
-SAP3 reads the declaration and trusts it: `adapters/forecast_interface.py` takes
-`time_step = var_output.metadata.timedelta`, and `store/forecast_store.py` persists
-`int(forecast.ensemble.time_step.total_seconds())` into `forecasts.time_step_seconds`.
+## Why it matters to a consumer
 
-A model that declares one cadence and emits another therefore produces a stored row whose recorded
-step **contradicts its own timestamps** — the timestamps and the step are both in the database,
-agreeing with nothing, and nothing raises.
+SAP3 reads the declaration and trusts it: the adapter takes
+`time_step = var_output.metadata.timedelta` (`adapters/forecast_interface.py:221`) and the store
+persists `int(ensemble.time_step.total_seconds())` into `forecasts.time_step_seconds`
+(`store/forecast_store.py:62`). Running the frame above through our adapter, it is accepted: a stored
+row then records a one-day step whose own timestamps are one hour apart — the two disagree with each
+other in the database, and nothing raises.
 
 To be accurate about where the gap sits: **SAP3 is not unable to notice this — it chooses not to.**
-The adapter holds the metadata and the frame at the same point (`adapters/forecast_interface.py`),
-so it could compare them. We are not asking for a capability we lack; we are asking for the check to
-live at the boundary that owns the declaration, so that it protects every FI consumer rather than
-only the one that wrote its own guard. That is a contract question, which is why it is filed here
-rather than fixed locally (see below).
+The adapter holds the metadata and the frame at the same point, so it could compare them. We would
+rather the check lived at the boundary that owns the declaration, where it protects every FI consumer
+instead of only the one that wrote its own guard. That is a contract question, which is why this is an
+issue rather than a local patch — and it matches how `docs/fi-issues/002` was resolved.
 
-Today's models are well-behaved — SAP3 measured the per-model gap across all five real models on
-staging 2026-09-08 and it is exactly `1 day` for every one, matching what aquacast declares. So this
-is a latent contract gap, not a live incident. We would rather close it while that is true.
+## Severity
 
-## Why we are not fixing this on our side
-
-Per SAP3's own rule (`CLAUDE.md` § ForecastInterface Adherence), a model that does not fit the
-contract is fixed in the model, and a contract that cannot express what is needed is changed
-upstream — never patched around in SAP3. A SAP3-side spacing check would be exactly such a
-workaround: it would catch our own models and no one else's, it would duplicate a validation FI is
-already the right place for, and it would leave every other FI consumer exposed. Hence this issue
-rather than a local guard.
+Latent, not an incident. SAP3 measured the per-model gap across all five models running on staging on
+2026-09-08: it is exactly `1 day` for every one, matching what aquacast declares. Declaration and
+reality agree today. We would rather close the gap while that is still true.
 
 ## Proposed resolution
 
-Validate the declaration against the data at the point where FI already validates the frame — one
-check, in `validate_temporal_columns` or beside it, with access to the variable's `timedelta`:
+Validate the declaration against the data where FI already validates the frame, with access to the
+variable's `timedelta`:
 
-- **the spacing of `datetime` within each `issue_datetime` group equals the declared `timedelta`**;
-- a frame whose spacing is not uniform is rejected, since `forecast_horizon` and `offset` are counts
-  of uniform steps and have no meaning otherwise.
+- the spacing of `datetime` within each `issue_datetime` group equals the declared `timedelta`;
+- non-uniform spacing is rejected, since `forecast_horizon` and `offset` are counts of uniform steps
+  and have no meaning otherwise.
 
-Open questions for co-design, which is why this is an issue and not a PR:
+Open questions, which is why this is an issue and not a PR:
 
-1. **Reject, or warn?** Rejecting is a breaking change for any model currently mis-declaring. A
-   deprecation window that warns first may be the kinder path.
-2. **Where does the check live?** `validate_temporal_columns` does not currently receive the metadata.
-   Passing it in changes that function's signature; a separate `validate_cadence(df, metadata)`
-   called from the same place would not.
-3. **Single-row outputs.** A one-timestamp forecast has no measurable spacing. It should presumably
-   pass rather than fail, but that needs saying explicitly — SAP3 has a matching hazard here (a
-   reader that fabricates a 1-hour cadence for a single-step row, Plan 241).
+1. **Reject, or warn first?** Rejecting is a breaking change for any model currently mis-declaring. A
+   deprecation window may be the kinder path.
+2. **Where does the check live?** `validate_temporal_columns` does not receive the metadata; changing
+   its signature affects callers, whereas a separate `validate_cadence(df, metadata)` called from the
+   same place would not. `_validate_forecast_horizon` already has both and may be the natural home.
+3. **Single-row outputs** have no measurable spacing. They should presumably pass rather than fail,
+   but it is worth stating. SAP3 has a matching hazard here — a reader that fabricated a one-hour
+   cadence for a single-step row (our Plan 241).
 
-## A second, separable gap in the same function
+## A second, separable gap in the same validator
 
-`validate_temporal_columns` also **accepts timezone-naive datetimes**. `isinstance(dtype,
-pl.Datetime)` is true whether or not a time zone is set, so:
+`validate_temporal_columns` also **accepts timezone-naive datetimes**, because
+`isinstance(dtype, pl.Datetime)` is true whether or not a time zone is set. Same construction as
+above, with `dt.datetime(2026, 1, 1)` and no `tzinfo`:
 
-```python
-naive = pl.DataFrame({"issue_datetime": [dt.datetime(2026, 1, 1)],
-                      "datetime":       [dt.datetime(2026, 1, 2)]})
-validate_temporal_columns(naive)   # accepted
+```
+tz-naive frame ACCEPTED; dtype = Datetime(time_unit='us', time_zone=None)
 ```
 
-This is separable from the cadence gap and could be split into its own issue — we raise it here only
-because a fix touches the same six lines.
+This is separable from the cadence gap and can be split into its own issue; we raise it here only
+because a fix touches the same validator. Two reasons it is worth doing:
 
-**It matters to us for a specific reason, and we are NOT currently protected against it.** SAP3 is
-extending to Nepal, where local time is **UTC+05:45**. A naive timestamp silently read as UTC is off
-by 345 minutes — not a rounding error; it lands in the wrong day.
+**The contract already says these are UTC, and the shipped example does not follow it.** FI documents
+both temporal columns as UTC, while its own README example constructs naive datetimes — so the
+convention is stated but neither enforced nor demonstrated.
 
-We have `ensure_utc()`, which *does* reject a naive datetime (`types/datetime.py:7-10`), but it
-guards the **issue time** only. A model's output valid times take a different path
-(`adapters/forecast_interface.py:367-376`), which casts the column to UTC, and the code comment there
-states the behaviour plainly:
+**It is a real exposure for us.** SAP3 is extending to Nepal, where local time is **UTC+05:45**. A
+naive timestamp read as UTC is off by 345 minutes, which **can** land it in the wrong day. We are not
+currently protected: `ensure_utc()` (`types/datetime.py:7-10`) does reject naive datetimes, but it
+guards the **top-level** `ModelOutput.issue_datetime` only. A variable's own valid times take a
+different path (`adapters/forecast_interface.py:367-376`), which casts the column, and the comment
+there states the behaviour plainly:
 
 ```python
 # FI datetimes are UTC by contract; tz-naive values are localized, not shifted.
-return frame.rename({"datetime": "valid_time"}).with_columns(
-    pl.col("valid_time").cast(pl.Datetime("us", "UTC"))
-)
 ```
 
-"UTC by contract" is exactly the assumption this issue is about: the contract says it, and nothing
-checks it. A naive value arriving there is **localized as UTC, not rejected** — so a Nepali-local
-frame would be accepted and silently misdated by 5 h 45 m.
-
-*(An earlier draft of this issue claimed SAP3 was protected on the inbound path. That was wrong, and
-is corrected here rather than quietly removed: it was true of the issue time and not of the values,
-and the distinction is the whole point.)*
+"UTC by contract" is exactly the assumption at issue: the contract says it, and nothing checks it. We
+confirmed a naive midnight stays midnight and simply acquires a UTC label. The frame's own
+`issue_datetime` column is likewise accepted naive and then ignored during conversion.
 
 Suggested resolution: require `pl.Datetime` with a non-null `time_zone`, on the same
 reject-or-deprecate question as above.
+
+## Relationship to #7
+
+Issue #7 says the interface cannot **declare** what a value means over its step — sum, mean, or
+sampled at the stamp. This issue says the declaration that *does* exist, the cadence, is never
+**checked**. Same shape, opposite halves: one is a missing statement, the other an unenforced one.
+
+#7 ends on an open question — whether `AggregationMethod` can express "instantaneous / sampled at the
+stamp", and whether that needs a fourth member. We have just settled the equivalent question on our
+side by adopting the **CF Conventions** vocabulary: `cell_methods` distinguishes `time: point` from
+`time: sum` / `time: mean` / `time: maximum` exactly, it is the standard our upstream NetCDF sources
+already carry, and it separates *what a value is* from *how to aggregate it* — which is the confusion
+#7 is circling. We offer it as a candidate for #7 rather than a new invention, and we are happy to
+write it up there if useful.
 
 ## What we are asking for
 
