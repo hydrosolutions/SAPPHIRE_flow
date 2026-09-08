@@ -13,7 +13,18 @@ source: 2026-09-04 — a scoped onboarding trial (nwp_rainfall_runoff, 2020-2026
 
 ## Status
 
-**READY.** Owner confirmed 2026-09-04 after the T0 specification landed.
+**READY — T0 and T1a DONE and MERGED (#263, 2026-09-08). T1b, T2, T3a, T3b remain.**
+
+T1a shipped separately from T1b by an owner decision: T1a changes what models are FED (forecast
+values move), T1b changes whether they RUN AT ALL. Bundled, a surprise after deployment would have
+had two possible causes and no way to separate them.
+
+**NOT yet deployed to the mac mini.** The mini is at 0.1.884 (main as of `ceb6876f`); #263 landed
+after that. Its behaviour change reaches staging only on the next deploy.
+
+Three independent Codex rounds on T1a — 4 findings, then 2, then 1, every one real. Two were
+defects introduced by the fix for the previous round; the details are in § T1a and the commit
+messages, and are worth reading before starting T1b, which touches the same boundaries.
 
 ## ⛔ DO NOT OVER-ENGINEER — binding on this plan AND on every reviewer
 
