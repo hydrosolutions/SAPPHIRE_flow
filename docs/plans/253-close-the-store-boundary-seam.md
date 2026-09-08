@@ -246,11 +246,21 @@ genuinely empty when measured; a skill run then populated it. `model_artifacts` 
 the same window, so the system was actively training throughout.
 
 **And the conclusion is still that Plan 228's recompute has nothing to act on — for the opposite
-reason to the one originally given.** Verified independently by two peer sessions on 2026-09-08:
-every one of the 139,712 rows carries `computation_version = 2`, with **zero rows below 2**. Plan
-228's recompute is scoped to exactly the sub-2 population. So the scores are not absent; they are
-already correct. The original instinct was right and its stated reason was wrong — which is why the
-reasoning is retained here rather than the conclusion alone.
+reason to the one originally given.** Verified by two peer sessions on 2026-09-08: every one of the
+139,712 rows carries `computation_version = 2`, with **zero rows below 2**, and Plan 228's recompute
+is scoped to exactly the sub-2 population.
+
+The stronger form of that, established in the repo rather than the database: **commit `8f87eb68` —
+Plan 228's own fix — moved `_COMPUTATION_VERSION` from 1 to 2**, so the 2026-09-04 skill run executed
+on already-fixed code. D3's population is therefore empty because **the recompute has already
+happened**, not merely because the labels happen to read 2. That distinction matters: the weaker
+statement invites someone to ask whether the version labels can be trusted; the stronger one closes
+the question.
+
+The original instinct — that a recompute premised on that population might do nothing — was right,
+and its stated reason was wrong. The reasoning is retained here rather than the conclusion alone,
+because a right answer resting on a false premise is one re-measurement away from becoming a wrong
+one.
 
 ⛔ **The lesson, because it will recur.** The original measurement was correct and correctly dated.
 The error was quoting it six days later as if it were current, and building an argument on it. **A
