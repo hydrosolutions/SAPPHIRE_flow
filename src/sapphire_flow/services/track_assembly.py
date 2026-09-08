@@ -36,7 +36,6 @@ from sapphire_flow.services.training_data import (
     resolved_aggregation_methods,
     validate_time_step_cadence,
 )
-from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleMode,
     ForcingRoute,
@@ -257,10 +256,12 @@ def assemble_assignment_inputs(
                 f"{track_outcome!r}"
             )
 
-    lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
-    # Plan 228 D4: see `operational_inputs.py` — past_targets bounds are
-    # ALIGNED and EXTENDED to complete UTC-calendar buckets, never `past_
-    # dynamic`'s unresampled `lookback_start`/`issue_time` window (below).
+    # Plan 228 D4: see `operational_inputs.py` — bounds are ALIGNED and
+    # EXTENDED to complete UTC-calendar buckets.
+    #
+    # Plan 239 T1: they now serve `past_dynamic` TOO. The earlier comment here
+    # contrasted them with `past_dynamic`'s unresampled window as though that
+    # window were correct; it was the defect.
     past_targets_start, past_targets_end = aligned_lookback_bounds(
         issue_time, reqs.lookback_steps, time_step
     )
@@ -347,8 +348,12 @@ def assemble_assignment_inputs(
         reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
         raw_forcing = forcing_source.fetch_reanalysis(
             station_configs=reanalysis_bindings,
-            start=lookback_start,
-            end=issue_time,
+            # Plan 239 T1: the SAME aligned, complete-bucket window
+            # `past_targets` uses — see `operational_inputs.py`. This path
+            # delivers `past_dynamic` independently, so correcting only that
+            # module would leave this production route unchanged.
+            start=past_targets_start,
+            end=past_targets_end,
             parameters=past_dynamic_features,
         )
         past_dynamic = raw_forcing_to_dataframe(
@@ -361,6 +366,14 @@ def assemble_assignment_inputs(
                 issue_time=str(issue_time),
             )
             past_dynamic = pl.DataFrame()
+        else:
+            # Plan 239 T1: resample to the model's DECLARED step, as
+            # `past_targets` has been since Plan 228.
+            past_dynamic = resample_to_time_step(
+                past_dynamic,
+                time_step,
+                aggregation_methods=resolved_aggregation_methods(reqs),
+            )
     else:
         past_dynamic = pl.DataFrame()
 

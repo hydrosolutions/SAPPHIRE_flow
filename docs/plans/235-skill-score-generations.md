@@ -27,7 +27,7 @@ implementer should read most carefully.
 Implemented on `feat/plan-235-skill-generations`, held at PR. T1–T5 done; full design record in
 `docs/decisions/plan-235-skill-generations.md`. Summary:
 
-- **T1** — `skill_generations` table (migration 0053) + nullable `generation_id` on
+- **T1** — `skill_generations` table (migration 0054) + nullable `generation_id` on
   `skill_scores`/`skill_diagrams`, deliberately NOT a foreign key (see the decision record's "why").
   Two new partial indexes per table split by `generation_id IS NULL` vs `IS NOT NULL`; 0052's `< 2`
   legacy index untouched.
@@ -58,6 +58,27 @@ identity collision; publication certifying silently-dropped rows; `published_at`
 publication instant; `HindcastStore`'s Protocol not updated; D1 retry stability not actually being
 retry-stable; and station onboarding writing an invisible baseline. All resolved — see the decision
 record's "Fixer round (2026-09-04)" section for the full list and the tests that lock each one.
+
+**Per-run scope fixer round (2026-09-04)**: a third review found the completeness gate did not
+detect incompleteness in three different ways, plus a migration-rollback gap and two majors — see
+the "⛔ PER-RUN SCOPE" section below for the exact findings. All six resolved in the same PR, still
+held at PR: `partition_by_time_step_and_phase` now returns a rejected-hindcast count every caller
+folds into its completeness gate; the combined-skill gate now requires each cohort's model set to
+equal the FULL requested set and counts only non-empty output, never an attempt; generation identity
+is now content-derived (`resolve_generation_id`, reopening D1's original "no fingerprinting" text —
+see the decision record) so a retry whose recomputed values differ from an earlier orphaned attempt
+no longer collides with its stale rows; `DeploymentConfig.enable_skill_generations` (default `true`)
+gates generation-tagged writes for the two-release rollout the migration needs; onboarding's
+`_compute_skill` now raises `SkillGenerationIncompleteError` instead of silently returning on a
+partial generation; and `latest_generation_predicate`'s diagram scope-vs-scope ranking now decides
+forcing-type inclusion per comparison, not from the outer table, closing the case where two
+diagram-only generations differing solely by forcing type competed for the same scope. See the
+decision record's "Per-run scope fixer round" section for the full list and the tests that lock each
+one.
+
+**Independent-review fixer round (2026-09-04)**: an independent Codex pass over the diff raised
+5 blockers — see the "⛔ INDEPENDENT REVIEW FIXER ROUND" section below and the decision record's
+matching section for the fixes and the tests that lock each one.
 
 ## ⛔ BINDING ON THIS PLAN **AND ON ITS REVIEW** — read before changing anything
 
@@ -415,7 +436,7 @@ that either lands completely or changes nothing.
 
 ## ⛔ PER-RUN SCOPE (2026-09-04) — FOUR blockers + two majors. Nothing else.
 
-Three rounds landed the implementation (3 commits, migration 0053). The review then stalled at
+Three rounds landed the implementation (3 commits, migration 0054). The review then stalled at
 4 blockers + 3 majors. **Fix exactly the items below. Do not re-open settled decisions, do not
 refactor beyond what these require, and do not touch anything owned by Plans 226/229/230/234.**
 
@@ -457,7 +478,7 @@ nonce plus an input fingerprint.
 ### 4. 🔴 The migration breaks one-release rollback
 
 New indexes permit duplicate natural keys across generations
-(`alembic/versions/0053_...py:171`), but the previous image's readers are generation-unaware, so a
+(`alembic/versions/0054_...py:171`), but the previous image's readers are generation-unaware, so a
 rollback after publishing serves **mixed** generations — against `docs/standards/cicd.md:184`.
 
 **Two-release rollout**: ship the additive schema plus generation-aware readers first with
@@ -485,3 +506,39 @@ signatures — it runs `run-hindcast` without a run id and `compute-skills` with
 `uv run pytest tests/unit` green, reporting **pytest's own** exit status. The privilege test must
 run as **`sapphire_worker`**, not the container superuser — that boundary is the thing under test.
 Do not touch the mac-mini.
+
+## ⛔ INDEPENDENT REVIEW FIXER ROUND (2026-09-04) — FIVE blockers. Nothing else.
+
+An independent Codex pass over the diff raised 5 blockers. Fix exactly these. Full detail and the
+tests that lock each one live in the decision record's "Independent-review fixer round" section.
+
+1. **🔴 Generation-tagged writes were enabled by DEFAULT — the two-release rollout blocker #4 above
+   specified was never actually observed.** `enable_skill_generations` (and its `getattr` fallbacks)
+   defaulted `True`, so an unconfigured deployment (`deployment_config=None`, or any config that
+   simply hasn't set the field yet) got Release B behaviour from day one. Fixed to default `False`
+   everywhere (the field, both flow fallbacks, onboarding's fallback, `config-reference.toml`,
+   `types-and-protocols.md`); flip to `True` only in a separately reviewed Release B once every
+   rollback image is generation-aware.
+2. **🔴 The fingerprint omitted persisted semantic content.** `flow_regime_config_id` (both
+   scores and diagrams) and a diagram's own `data` blob were excluded from
+   `compute_generation_fingerprint`, so a retry whose only difference was a corrected diagram or a
+   reconfigured flow-regime boundary re-derived the SAME generation id and lost to `ON CONFLICT DO
+   NOTHING`. Both are now in the digest.
+3. **🔴 A BMA cohort with only ONE successful CV fold published as complete.** One fold legitimately
+   returning `([], [])` let the other fold's single result stand in for the two-fold average.
+   `compute_bma_skill_cross_validated` now requires both folds non-empty before combining; an
+   incomplete fold returns `([], [])`, which the existing cohort-completeness gate already treats as
+   "did not combine."
+4. **🔴 An orphan hindcast header was dropped before the rejected-input counters could see it.**
+   `fetch_hindcasts`/`fetch_hindcasts_by_station` now RAISE `StoreError` on an orphan header when the
+   caller named a specific run (every production caller through the two flow tasks always does,
+   since T3 made the run id(s) required) — an unscoped fetch (onboarding's optional, non-gating call)
+   still logs and skips as before.
+5. **🔴 Release-version collision / missing per-commit bump.** Already rebased onto current `main`
+   before this round; this round's own commit carries its own patch bump.
+
+### Exit gate
+
+`uv run pytest tests/unit` green, reporting **pytest's own** exit status. `uv run pyright` ratchet
+must not regress. The new orphan-header locking tests need a real PostgreSQL connection
+(`tests/integration/store/test_hindcast_store.py`). Do not touch the mac-mini.

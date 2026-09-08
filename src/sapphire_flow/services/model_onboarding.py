@@ -7,7 +7,7 @@ import traceback
 from contextlib import nullcontext
 from datetime import UTC
 from typing import TYPE_CHECKING, Protocol, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import polars as pl
 import structlog
@@ -1528,6 +1528,11 @@ def onboard_model(
             lineage_writer.record(artifact_id, trained_station_ids)  # type: ignore[attr-defined]
 
         # Step 5: Hindcast
+        # Plan 235 T3 (opportunistic fix): ONE run id shared with Step 6's
+        # `compute_skill_fn` below, so the skill leg can scope its own
+        # hindcast fetch to what THIS run just wrote instead of this
+        # station/model's entire training-period history.
+        hindcast_run_id = uuid4()
         hindcast_steps: list = []
         if run_hindcast_fn is not None:
             try:
@@ -1543,6 +1548,7 @@ def onboard_model(
                     basin_store=basin_store,
                     clock=clock,
                     rng=rng,
+                    hindcast_run_id=hindcast_run_id,
                 )
             except Exception as exc:
                 log.error(
@@ -1577,6 +1583,7 @@ def onboard_model(
                     skill_store=skill_store,
                     flow_regime_store=flow_regime_store,
                     config=config,
+                    hindcast_run_id=hindcast_run_id,
                 )
             except Exception as exc:
                 log.error(

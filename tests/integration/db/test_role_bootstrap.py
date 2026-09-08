@@ -763,6 +763,113 @@ class TestApplicationStoresWorkUnderScopedRoles:
         )
 
 
+class TestSkillStoreGenerationPublicationUnderScopedRole:
+    """Plan 235 D2c — LOCKED: `mark_stale` (`store/skill_store.py`) is a
+    real `UPDATE`, and `sapphire_worker` holds `INSERT` only on
+    `skill_scores` (`docker/bootstrap-roles.sql`) — no `UPDATE` grant exists
+    anywhere in the repo, and the decision is to NOT add one. It has zero
+    production callers today; this is the first time it runs as the real
+    scoped role rather than the testcontainer superuser, which is exactly
+    why the gap went unexercised. `publish_generation` is the sanctioned,
+    INSERT-only replacement and must succeed under the SAME role.
+    """
+
+    def test_mark_stale_denied_for_sapphire_worker(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from sapphire_flow.store.skill_store import PgSkillStore
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.ids import StationId
+
+        worker_engine = sa.create_engine(
+            bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        )
+        try:
+            # No station/skill rows need to exist — PostgreSQL checks the
+            # UPDATE privilege before evaluating the WHERE clause, so this
+            # raises InsufficientPrivilege regardless of what (if anything)
+            # would have matched.
+            with (
+                pytest.raises(sa.exc.SQLAlchemyError),
+                worker_engine.connect() as conn,
+            ):
+                PgSkillStore(conn).mark_stale(
+                    StationId(uuid4()),
+                    ensure_utc(datetime(2025, 1, 1, tzinfo=UTC)),
+                    ensure_utc(datetime(2025, 1, 2, tzinfo=UTC)),
+                )
+        finally:
+            worker_engine.dispose()
+
+    def test_publish_generation_succeeds_for_sapphire_worker(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from sapphire_flow.store.skill_store import PgSkillStore
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.enums import SkillSource
+        from sapphire_flow.types.ids import ModelId, StationId
+
+        # `make_station_config`'s default `rng` is fixed-seeded — an
+        # explicit random `station_id` avoids colliding with the
+        # module-scoped `role_harness` DB's other seeded stations (e.g.
+        # `TestApplicationStoresWorkUnderScopedRoles`'s "ROLE-BOOTSTRAP-TEST").
+        station = make_station_config(
+            station_id=StationId(uuid4()), code="ROLE-BOOTSTRAP-GEN-TEST"
+        )
+        model_id = ModelId(f"role-bootstrap-gen-{uuid4().hex[:8]}")
+        with bootstrapped.owner_engine.begin() as conn:
+            PgStationStore(conn).store_station(station)
+            conn.execute(
+                sa.text(
+                    "INSERT INTO models (id, display_name, artifact_scope, "
+                    "description) VALUES (:id, :id, 'station', 'role test')"
+                ),
+                {"id": model_id},
+            )
+
+        worker_engine = sa.create_engine(
+            bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        )
+        try:
+            # AUTOCOMMIT, matching production (`flows/_db.py`'s
+            # `setup_production_stores`) — a plain `.connect()` leaves the
+            # INSERT in an uncommitted implicit transaction that rolls back
+            # on close.
+            with worker_engine.connect().execution_options(
+                isolation_level="AUTOCOMMIT"
+            ) as conn:
+                PgSkillStore(conn).publish_generation(
+                    generation_id=uuid4(),
+                    station_id=station.id,
+                    model_id=model_id,
+                    model_artifact_id=None,
+                    parameter="discharge",
+                    skill_source=SkillSource.HINDCAST_REANALYSIS,
+                    forcing_type=None,
+                    computation_version=2,
+                    published_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+                    score_count=0,
+                    diagram_count=0,
+                )
+        finally:
+            worker_engine.dispose()
+
+        with bootstrapped.owner_engine.connect() as conn:
+            count = conn.execute(
+                sa.text(
+                    "SELECT count(*) FROM skill_generations WHERE station_id = :sid"
+                ),
+                {"sid": str(station.id)},
+            ).scalar_one()
+        assert count == 1
+
+
 class TestPreExistingOverprivilegedRoleConvergesToLeastPriv:
     """The in-place-upgrade convergence contract (Plan 147 Slice D): a role
     that ALREADY exists with escalated attributes + broad grants — left behind

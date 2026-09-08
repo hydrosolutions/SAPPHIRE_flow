@@ -1927,6 +1927,11 @@ class SkillScore:
     # resolved value from `validate_homogeneous_time_step_and_phase`.
     time_step_seconds: int = 86400
     phase_offset_seconds: int | None = None  # UTC-calendar-grid phase offset (µs÷1e6); NULL = no valid_time
+    # Plan 235 D1: the logical-recompute identity. `None` marks a pre-Plan-235
+    # baseline row (deterministic read semantics via `latest_generation_predicate`,
+    # not backfilled). NOT a foreign key to `skill_generations.id` — see that
+    # table's note. Set by `flows.compute_skills`, never by the store.
+    generation_id: UUID | None = None
 ```
 
 ### SkillDiagram
@@ -1954,6 +1959,8 @@ class SkillDiagram:
     # Plan 228 per-run scope: see `SkillScore.time_step_seconds` above.
     time_step_seconds: int = 86400
     phase_offset_seconds: int | None = None
+    # Plan 235 D1: see `SkillScore.generation_id` above.
+    generation_id: UUID | None = None
 ```
 
 Module: `types/skill.py`
@@ -2616,13 +2623,26 @@ class HindcastStore(Protocol):
         self,
         station_id: StationId,
         parameter: str,
-        start: UtcDatetime,
-        end: UtcDatetime,
-        forcing_type: ForcingType | None = None,
+        period_start: UtcDatetime,
+        period_end: UtcDatetime,
+        hindcast_run_ids: dict[ModelId, UUID] | None = None,
     ) -> dict[ModelId, list[HindcastForecast]]: ...
         # Returns all models' hindcasts for a station, grouped by model_id.
         # Used by combined skill computation (step S.4b) to retrieve multi-model hindcasts.
-        # Excludes sentinel/virtual model IDs. None forcing_type = all types.
+        # Excludes sentinel/virtual model IDs.
+        #
+        # Plan 235 T3 (fixer round): `hindcast_run_ids` scopes each combined
+        # model to ONE of its own hindcast runs (models are combined
+        # pairwise, each on its own schedule — a single shared run id
+        # cannot express that). `None` fetches every run in the window,
+        # unscoped — deliberate for a caller with no per-model run
+        # identity. An explicitly EMPTY mapping (`{}`) is NOT the same as
+        # `None` and must match zero rows, never fall back to the unscoped
+        # fetch: a caller required to supply per-model run ids (e.g.
+        # `compute_combined_skills_task`) that passes `{}` must get
+        # nothing, not everything — mixing an anchored and an unanchored
+        # cohort under one generation is exactly the defect this parameter
+        # exists to prevent.
 ```
 
 #### WeatherForecastStore
@@ -2686,8 +2706,15 @@ class AlertStore(Protocol):
 
 ```python
 class SkillStore(Protocol):
-    def store_skill_scores(self, scores: list[SkillScore]) -> None: ...
-    def store_skill_diagrams(self, diagrams: list[SkillDiagram]) -> None: ...
+    def store_skill_scores(self, scores: list[SkillScore]) -> int: ...
+        # Plan 235 fixer round: returns the count ACTUALLY inserted, which
+        # may be < len(scores) — ON CONFLICT DO NOTHING silently drops a
+        # natural-key collision (e.g. two BMA CV folds computing the same
+        # diagnostic under one generation). Callers reconcile this against
+        # the expected count BEFORE publishing a generation (D3's
+        # completeness gate) — see flows.compute_skills.
+    def store_skill_diagrams(self, diagrams: list[SkillDiagram]) -> int: ...
+        # See store_skill_scores — same accurate-rowcount contract.
     def fetch_latest_scores(
         self,
         station_id: StationId,
@@ -2695,7 +2722,12 @@ class SkillStore(Protocol):
         skill_source: SkillSource | None = None,
         parameter: str | None = None,
     ) -> list[SkillScore]: ...
-        # Returns scores for the latest computation_version.
+        # Plan 235 D2/D2b: returns scores for the newest PUBLISHED generation
+        # per (station, model, parameter, skill_source, forcing_type) scope —
+        # precedence is computation_version first, then published_at, then id
+        # (see latest_generation_predicate). A scope with no published
+        # generation falls back to its highest-computation_version baseline
+        # (generation_id IS NULL) rows, unchanged from pre-Plan-235 behaviour.
     def fetch_latest_diagrams(
         self,
         station_id: StationId,
@@ -2727,10 +2759,66 @@ class SkillStore(Protocol):
         end: UtcDatetime,
         parameter: str | None = None,
     ) -> int: ...
-        # Sets freshness=STALE on all skill_scores rows for this station
-        # whose evaluation period overlaps [start, end].
-        # Returns count of rows marked stale.
-        # Used by Flows 11 and 12 when underlying data changes.
+        # ⚠️ Plan 235 D2c — CANNOT run in production: a real UPDATE, and
+        # sapphire_worker holds INSERT only on skill_scores
+        # (docker/bootstrap-roles.sql), deliberately not widened. Kept only
+        # for the tests that lock this constraint
+        # (tests/integration/db/test_role_bootstrap.py). A production "mark
+        # stale" MUST use publish_generation with score_count=diagram_count=0
+        # instead — no UPDATE grant needed at all.
+    def publish_generation(
+        self,
+        *,
+        generation_id: UUID,
+        station_id: StationId,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId | None,   # NULL for combined (POOLED/BMA) scopes
+        parameter: str,
+        skill_source: SkillSource,
+        forcing_type: ForcingType | None,
+        computation_version: int,
+        published_at: UtcDatetime,
+        score_count: int,
+        diagram_count: int,
+    ) -> None: ...
+        # Plan 235 D3/D2c — the ONE atomic, INSERT-only operation that makes
+        # a generation's already-inserted skill_scores/skill_diagrams rows
+        # current. A single INSERT into skill_generations: no partial state
+        # is observable — call this ONLY after every expected score/diagram
+        # write for generation_id has already succeeded (the completeness
+        # gate lives in the caller, flows.compute_skills). Also the
+        # sanctioned replacement for mark_stale (score_count=diagram_count=0
+        # publishes an empty, superseding "tombstone" generation for a
+        # scope). D2d: never rejects a genuinely NEW generation — a second,
+        # overlapping call for the same scope also just inserts; readers
+        # decide which one is newest.
+        #
+        # Fixer round (blocker): model_artifact_id is part of scope
+        # identity, NULL-safe compared — otherwise a generation minted for
+        # a candidate artifact (e.g. under retraining evaluation) could
+        # outrank and hide the STILL-ACTIVE artifact's generation for the
+        # same model, since model_id alone does not distinguish artifacts.
+        #
+        # Fixer round (D1 retry stability): `generation_id` must be minted
+        # ONCE, outside any retrying task, and threaded in as a stable
+        # argument — see flows.compute_skills for where that minting now
+        # happens. A REPLAY of this call under the identical id (a retry of
+        # the SAME task run) is idempotent: it succeeds as a no-op if the
+        # scope-identity fields (including model_artifact_id) match what
+        # was already published under that id, and raises if they don't (an
+        # id collision across two DIFFERENT recomputes, never a legitimate
+        # replay).
+    def count_generation_rows(self, generation_id: UUID) -> tuple[int, int]: ...
+        # Returns (score_count, diagram_count) ACTUALLY persisted under
+        # generation_id, regardless of which store_skill_scores/
+        # store_skill_diagrams call wrote them. Fixer round (blocker, D1
+        # retry stability): a Prefect retry replays with the SAME
+        # generation_id, and its rows collide harmlessly against an earlier
+        # attempt's identical natural key + generation_id — the PER-CALL
+        # inserted count would then read as 0 even though the generation is
+        # fully persisted. A caller (flows.compute_skills._store_skill_
+        # results) reconciles against this TOTAL instead, so a benign retry
+        # can still publish while a genuine gap still raises.
 ```
 
 #### ModelArtifactStore
@@ -4020,6 +4108,20 @@ class DeploymentConfig(BaseModel):
     # --- Skill promotion ---
     min_skill_samples: int = 100               # minimum forecast-observation pairs
     min_skill_seasons: int = 2                 # must cover wet + dry
+
+    # --- Skill generations (Plan 235 per-run scope, blocker #4; tightened by
+    # the independent-review fixer round) ---
+    # Two-release rollout gate: True tags skill_scores/skill_diagrams with a
+    # generation and publishes a skill_generations row (compute_skills_task,
+    # compute_combined_skills_task, services.onboarding._compute_skill).
+    # False keeps the pre-235 baseline shape (generation_id=NULL, no publish)
+    # so a rollback mid-rollout lands on an image that already understands
+    # every row on disk. Default FALSE — Release A ships the additive schema
+    # plus every generation-aware reader with writes UNCHANGED; an operator
+    # flips this to True only for Release B, in a separately reviewed
+    # change, once every rollback image in the fleet is already
+    # generation-aware.
+    enable_skill_generations: bool = False
 
     # --- Display ---
     default_display_timezone: str = "UTC"      # IANA timezone for API/dashboard default

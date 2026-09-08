@@ -563,3 +563,130 @@ class TestFakeSkillStoreParameterFilter:
         water_level = [s for s in all_scores if s.parameter == "water_level"]
         assert discharge[0].freshness == SkillFreshness.STALE
         assert water_level[0].freshness == SkillFreshness.CURRENT
+
+
+class TestFakeSkillStoreFetchScoresByRegime:
+    """Plan 235 fixer round (minor, found independently by two reviewers):
+    `FakeSkillStore.fetch_scores_by_regime` called the new `_is_current`
+    helper without the `peers`/`peer_forcing_type` keyword-only arguments
+    every other caller supplies — a `TypeError` the instant any row
+    matched the station/model/regime filter, since `_is_current` has no
+    defaults for them. `fetch_scores_by_regime` has zero production
+    callers today, but it is a documented reader (D2's table, #3) and the
+    fake is the shared test double for the whole suite.
+    """
+
+    def test_fetch_scores_by_regime_does_not_raise_on_a_matching_row(self) -> None:
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.enums import FlowRegime, SkillFreshness, SkillSource
+        from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+        from sapphire_flow.types.skill import SkillScore
+
+        store = FakeSkillStore()
+        sid = StationId(_fake_uuid())
+        mid = ModelId("test")
+        aid = ArtifactId(_fake_uuid())
+        now = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+
+        score = SkillScore(
+            id=_fake_uuid(),
+            station_id=sid,
+            model_id=mid,
+            parameter="discharge",
+            model_artifact_id=aid,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=None,
+            computation_version=1,
+            computed_at=now,
+            lead_time_hours=24,
+            season=None,
+            flow_regime=FlowRegime.HIGH,
+            flow_regime_config_id=None,
+            metric="crps",
+            score=0.5,
+            sample_size=100,
+            freshness=SkillFreshness.CURRENT,
+            eval_period_start=now,
+            eval_period_end=now,
+            created_at=now,
+        )
+        store.store_skill_scores([score])
+
+        results = store.fetch_scores_by_regime(sid, mid, FlowRegime.HIGH)
+
+        assert [s.id for s in results] == [score.id]
+
+
+class TestFakeSkillStoreDiagramGenerationVisibility:
+    """Plan 235 fixer round (major): `FakeSkillStore._is_current`'s scope
+    matching for a DIAGRAM must ignore forcing_type on BOTH sides of the
+    comparison — mirrors `store.skill_store.latest_generation_predicate`'s
+    `scope_includes_forcing_type` guard (fixed there in this same fixer
+    round). The previous fake still compared the diagram's forced constant
+    `forcing_type=None` against the GENERATION's real (non-null)
+    forcing_type, so `fetch_latest_diagrams` never returned a diagram once
+    ITS OWN generation was published with a real forcing_type — every
+    production caller (`compute_skills_task`, `compute_combined_skills_
+    task`, `services.onboarding._compute_skill`) hardcodes
+    `forcing_type=ForcingType.REANALYSIS`.
+    """
+
+    def test_fetch_latest_diagrams_returns_a_diagram_after_its_own_generation_publishes(
+        self,
+    ) -> None:
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.enums import ForcingType, SkillSource
+        from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+        from sapphire_flow.types.skill import SkillDiagram
+
+        store = FakeSkillStore()
+        sid = StationId(_fake_uuid())
+        mid = ModelId("test")
+        aid = ArtifactId(_fake_uuid())
+        now = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+        gen_id = _fake_uuid()
+
+        diagram = SkillDiagram(
+            id=_fake_uuid(),
+            station_id=sid,
+            model_id=mid,
+            parameter="discharge",
+            model_artifact_id=aid,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            computation_version=2,
+            lead_time_hours=24,
+            season=None,
+            flow_regime=None,
+            flow_regime_config_id=None,
+            diagram_type="roc",
+            threshold_level=None,
+            data={"thresholds": [0.0], "hit_rate": [0.0], "false_alarm_rate": [0.0]},
+            eval_period_start=now,
+            eval_period_end=now,
+            created_at=now,
+            generation_id=gen_id,
+        )
+        store.store_skill_diagrams([diagram])
+        # Every production caller publishes with a REAL, non-null
+        # forcing_type even though diagrams themselves carry none.
+        store.publish_generation(
+            generation_id=gen_id,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            computation_version=2,
+            published_at=now,
+            score_count=0,
+            diagram_count=1,
+        )
+
+        results = store.fetch_latest_diagrams(sid, mid)
+
+        assert [d.id for d in results] == [diagram.id], (
+            "the diagram's own published generation must make it current — "
+            "diagrams are never forcing-scoped, so forcing_type must be "
+            "dropped from BOTH sides of the scope comparison"
+        )

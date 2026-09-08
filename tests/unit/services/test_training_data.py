@@ -13,7 +13,10 @@ from sapphire_flow.services.training_data import (
     aligned_lookback_bounds,
     assemble_group_training_data,
     assemble_station_training_data,
+    expected_future_buckets,
+    expected_past_buckets,
     floor_to_time_step,
+    missing_buckets,
     resample_to_time_step,
     validate_time_step_cadence,
 )
@@ -1337,3 +1340,264 @@ class TestAlignedLookbackBounds:
         start, end = aligned_lookback_bounds(issue_time, 7, timedelta(days=1))
         assert end == issue_time
         assert start == ensure_utc(issue_time - 7 * timedelta(days=1))
+
+
+class TestMissingExpectedBuckets:
+    """Plan 239 T0: every row of the plan's verdict table.
+
+    Membership — is every slot this input reads present? — never spacing.
+    """
+
+    ANCHOR = datetime(2026, 1, 10, tzinfo=UTC)
+    DAY = timedelta(days=1)
+    HOUR = timedelta(hours=1)
+
+    def _frame(self, stamps: list[datetime]) -> pl.DataFrame:
+        return pl.DataFrame({"timestamp": stamps, "v": [1.0] * len(stamps)})
+
+    def _past(self, stamps, lookback, *, step=None, anchor=None):
+        step = step or self.DAY
+        return missing_buckets(
+            self._frame(stamps),
+            "v",
+            expected_past_buckets(anchor or self.ANCHOR, step, lookback),
+        )
+
+    # --- the past window: T0 is IN PROGRESS and must NOT be demanded ---------
+
+    def test_past_window_excludes_the_in_progress_bucket(self) -> None:
+        """Review caught this: issue 06:00, lookback 2, complete buckets 01-08
+        and 01-09. Demanding 01-10 (still forming) falsely refuses."""
+        stamps = [datetime(2026, 1, 8, tzinfo=UTC), datetime(2026, 1, 9, tzinfo=UTC)]
+        assert self._past(stamps, 2, anchor=datetime(2026, 1, 10, 6, tzinfo=UTC)) == []
+
+    def test_past_window_reports_a_missing_slot(self) -> None:
+        stamps = [datetime(2026, 1, 8, tzinfo=UTC)]
+        missing = self._past(stamps, 2, anchor=datetime(2026, 1, 10, 6, tzinfo=UTC))
+        assert missing == [datetime(2026, 1, 9, tzinfo=UTC)]
+
+    def test_past_missing_first_slot_is_seen(self) -> None:
+        """No spacing check can see this: every surviving gap is one day."""
+        stamps = [self.ANCHOR - k * self.DAY for k in (1, 2, 3)]
+        assert self._past(stamps, 4) != []
+
+    def test_past_coarse_data_cannot_serve_a_finer_model(self) -> None:
+        stamps = [self.ANCHOR - k * self.DAY for k in range(3)]
+        assert self._past(stamps, 2, step=self.HOUR) != []
+
+    def test_past_a_lone_fine_pair_does_not_rescue_coarse_data(self) -> None:
+        stamps = [
+            self.ANCHOR - 3 * self.DAY,
+            self.ANCHOR - 2 * self.DAY,
+            self.ANCHOR - 2 * self.DAY + self.HOUR,
+            self.ANCHOR,
+        ]
+        assert self._past(stamps, 4, step=self.HOUR) != []
+
+    def test_each_input_is_judged_on_its_own_window(self) -> None:
+        """Temperature needs 14 slots while precipitation needs 45 in the SAME
+        model. Temperature complete over its own 14 must serve."""
+        stamps = [self.ANCHOR - k * self.DAY for k in range(1, 15)]
+        assert self._past(stamps, 14) == []
+        assert len(self._past(stamps, 45)) == 31
+
+    # --- the future window: aligned issue time keeps the T0 bucket ----------
+
+    def test_future_starts_at_t0_when_the_issue_time_is_aligned(self) -> None:
+        """Review caught this: issue exactly midnight, horizon 2, buckets 01-10
+        and 01-11 present. Starting at T0+S wrongly demanded 01-12."""
+        stamps = [datetime(2026, 1, 10, tzinfo=UTC), datetime(2026, 1, 11, tzinfo=UTC)]
+        expected = expected_future_buckets(self.ANCHOR, self.DAY, 2)
+        assert missing_buckets(self._frame(stamps), "v", expected) == []
+
+    def test_future_starts_after_t0_when_the_issue_time_is_not_aligned(self) -> None:
+        anchor = datetime(2026, 1, 10, 6, tzinfo=UTC)
+        stamps = [datetime(2026, 1, 11, tzinfo=UTC), datetime(2026, 1, 12, tzinfo=UTC)]
+        expected = expected_future_buckets(anchor, self.DAY, 2)
+        assert missing_buckets(self._frame(stamps), "v", expected) == []
+
+    # --- training: no issue time, the consumed set IS the expectation -------
+
+    def test_training_uses_the_consumed_timestamps_not_an_anchor(self) -> None:
+        """Review caught this: targets at 01-01 and 01-03 consume exactly those.
+        An anchor-and-horizon rule wrongly demanded 01-02."""
+        consumed = [datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 3, tzinfo=UTC)]
+        assert missing_buckets(self._frame(consumed), "v", consumed) == []
+
+    # --- what this does NOT judge -------------------------------------------
+
+    def test_a_null_value_still_counts_as_present(self) -> None:
+        """Values are `max_nan`'s job, not this check's — and it counts nulls
+        and NaNs alike, so judging nulls here would disagree with it."""
+        df = pl.DataFrame(
+            {
+                "timestamp": [self.ANCHOR - k * self.DAY for k in (1, 2, 3)],
+                "v": [1.0, None, 1.0],
+            }
+        )
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 3)
+        assert missing_buckets(df, "v", expected) == []
+
+    def test_absent_column_reports_every_slot(self) -> None:
+        df = pl.DataFrame({"timestamp": [self.ANCHOR], "other": [1.0]})
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 3)
+        assert len(missing_buckets(df, "v", expected)) == 3
+
+    # --- through AGGREGATION, as the table requires -------------------------
+
+    def test_irregular_stamps_serve_after_aggregation(self) -> None:
+        """Table row 1, run through aggregation as it must be: gaps of
+        36h/12h/36h still fill four consecutive daily slots."""
+        irregular = self._frame(
+            [
+                datetime(2026, 1, 6, 0, tzinfo=UTC),
+                datetime(2026, 1, 7, 12, tzinfo=UTC),
+                datetime(2026, 1, 8, 0, tzinfo=UTC),
+                datetime(2026, 1, 9, 12, tzinfo=UTC),
+            ]
+        )
+        agg = resample_to_time_step(irregular, self.DAY)
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 4)
+        assert missing_buckets(agg, "v", expected) == []
+
+    def test_hourly_data_serves_a_daily_model_after_aggregation(self) -> None:
+        """Table row 9, run through aggregation."""
+        hourly = self._frame([datetime(2026, 1, 9, h, tzinfo=UTC) for h in range(24)])
+        agg = resample_to_time_step(hourly, self.DAY)
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, 1)
+        assert missing_buckets(agg, "v", expected) == []
+
+
+class TestTrainingResamplesPastDynamicToDeclaredTimeStep:
+    """Plan 239 T1: training's past forcing must arrive at the DECLARED step.
+
+    The FUTURE half already went through `_future_dynamic_from_forcing`, which
+    resamples. The PAST half was selected straight off the raw frame. So a
+    daily model could be TRAINED on hourly forcing history and then meet daily
+    history in production — the two halves of the same frame at different
+    resolutions, silently.
+    """
+
+    def test_past_dynamic_matches_the_declared_step(self) -> None:
+        model = FakeStationForecastModel()
+        station_id = _sid()
+        time_step = timedelta(days=1)
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        station_store.store_station(make_station_config(station_id=station_id))
+        station_store.store_weather_source(_weather_source(station_id))
+        obs_store.store_observations(
+            make_observations(
+                n=5 * 24,
+                station_id=station_id,
+                start=_START,
+                interval=timedelta(hours=1),
+                rng=random.Random(4242),
+            )
+        )
+        # HOURLY forcing over five days.
+        forcing_records = [
+            make_raw_historical_forcing(
+                station_id=station_id,
+                parameter=parameter,
+                valid_time=ensure_utc(_START + timedelta(hours=i)),
+                value=1.0,
+            )
+            for i in range(5 * 24)
+            for parameter in ("precipitation", "temperature")
+        ]
+
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=model,
+            period_start=_START,
+            period_end=ensure_utc(_START + timedelta(days=5)),
+            time_step=time_step,
+            forcing_source=FakeWeatherReanalysisSource(forcing_records),
+            obs_store=obs_store,
+            basin_store=FakeBasinStore(),
+            station_store=station_store,
+        )
+
+        assert result is not None
+        stamps = sorted(
+            ensure_utc(ts) for ts in result.past_dynamic["timestamp"].to_list()
+        )
+        gaps = {b - a for a, b in zip(stamps, stamps[1:], strict=False)}
+        assert gaps <= {time_step}, (
+            f"training past_dynamic arrived at {gaps}, not the declared {time_step}"
+        )
+        # Review (minor): the gap-set assertion is VACUOUS on an empty or
+        # single-row frame. Pin the count too — five days of hourly forcing
+        # must become exactly five daily buckets, not one and not none.
+        assert len(stamps) == 5, f"expected 5 daily buckets, got {len(stamps)}"
+        assert stamps[0] == ensure_utc(_START)
+
+
+class TestSumAggregationPreservesAbsence:
+    """Plan 239 T1a review (major): a bucket with NO observed value must stay
+    absent, not become a fabricated zero.
+
+    Polars `sum()` over an all-null group returns 0.0. Forcing frames pivot
+    several variables onto shared timestamps, so a day carrying temperature
+    rows but no precipitation rows resampled to `precipitation = 0.0` — which
+    is indistinguishable from "it did not rain", and invisible to the FI
+    `max_nan` gate, because a fabricated zero is neither null nor NaN.
+
+    Found by independent review of the T1a change, which had newly applied
+    this resample to forcing and so widened the blast radius of the defect.
+    """
+
+    @staticmethod
+    def _frame() -> pl.DataFrame:
+        return pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(datetime(2026, 1, 1, h, tzinfo=UTC)) for h in range(3)
+                ]
+                + [ensure_utc(datetime(2026, 1, 2, h, tzinfo=UTC)) for h in range(3)],
+                # Jan 2 has NO precipitation reading at all.
+                "precipitation": [1.0, 2.0, 3.0, None, None, None],
+                "temperature": [10.0, 11.0, 12.0, 20.0, 21.0, 22.0],
+            }
+        )
+
+    def test_a_day_with_no_reading_stays_null_it_does_not_become_dry(self) -> None:
+        out = resample_to_time_step(
+            self._frame(),
+            timedelta(days=1),
+            aggregation_methods={
+                "precipitation": AggregationMethod.SUM,
+                "temperature": AggregationMethod.MEAN,
+            },
+        )
+        jan2 = out.filter(
+            pl.col("timestamp") == ensure_utc(datetime(2026, 1, 2, tzinfo=UTC))
+        )
+        assert jan2["precipitation"][0] is None, (
+            "a day with no precipitation reading resampled to a fabricated "
+            "zero — a data outage became a dry day"
+        )
+        # The day is still present, and its OTHER variable is intact: absence
+        # is per-variable, not a dropped row.
+        assert jan2["temperature"][0] == pytest.approx(21.0)
+
+    def test_a_genuinely_dry_day_is_still_zero_not_null(self) -> None:
+        # The other direction, which the fix must not break: real zeros are
+        # real. Without this, "preserve absence" could be implemented as
+        # "treat zero as missing" and both tests could not pass at once.
+        dry = pl.DataFrame(
+            {
+                "timestamp": [
+                    ensure_utc(datetime(2026, 1, 3, h, tzinfo=UTC)) for h in range(3)
+                ],
+                "precipitation": [0.0, 0.0, 0.0],
+            }
+        )
+        out = resample_to_time_step(
+            dry,
+            timedelta(days=1),
+            aggregation_methods={"precipitation": AggregationMethod.SUM},
+        )
+        assert out["precipitation"][0] == pytest.approx(0.0)

@@ -1854,3 +1854,107 @@ class TestSnowReachesPastDynamicViaHybridSourceLive:
         inputs, _ = result
         assert "swe" in inputs.data.past_dynamic.columns
         assert not inputs.data.past_dynamic.is_empty()
+
+
+class TestPastDynamicHonoursDeclaredResolution:
+    """Plan 239 T1: `past_dynamic` must arrive at the model's DECLARED step.
+
+    `past_targets` has been resampled and cadence-checked since Plan 228;
+    `past_dynamic` never was. A daily model bound to an hourly reanalysis
+    therefore received 24x the rows it declared, silently — nothing raises,
+    the forecast is simply computed from the wrong thing. Two in-code comments
+    called that cadence difference legitimate; it is the defect.
+    """
+
+    @staticmethod
+    def _daily_model() -> object:
+        from sapphire_flow.types.enums import ArtifactScope
+
+        class _DailyModel:
+            artifact_scope = ArtifactScope.STATION
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"precipitation", "temperature"}),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({timedelta(days=1)}),
+                lookback_steps=2,
+                forecast_horizon_steps=1,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+            def train(self, *a, **kw):  # type: ignore[no-untyped-def]
+                return b""
+
+            def predict(self, *a, **kw):  # type: ignore[no-untyped-def]
+                return ({}, None)
+
+            def serialize_artifact(self, a):  # type: ignore[no-untyped-def]
+                return b""
+
+            def deserialize_artifact(self, r):  # type: ignore[no-untyped-def]
+                return r
+
+        return _DailyModel()
+
+    def _assemble(self, sid: StationId, reanalysis: object) -> object:
+        from sapphire_flow.types.station import StationWeatherSource
+
+        # 72 hourly observations so past_targets covers both daily buckets —
+        # otherwise a short-lookback warning confounds the cadence assertion.
+        station_store, basin_store, obs_store, nwp_store, state_store, _ = (
+            _make_stores_and_sources(sid, n_obs=72)
+        )
+        # past_dynamic is read through the REANALYSIS-role binding; without it
+        # the frame is empty and the test would fail for a setup reason rather
+        # than for the cadence defect it exists to prove.
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="era5_land",
+                extraction_type=SpatialRepresentation.POINT,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        return assemble_station_operational_inputs(
+            station_id=sid,
+            model=self._daily_model(),
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=reanalysis,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=1,
+            time_step=timedelta(days=1),
+        )
+
+    def test_hourly_forcing_is_delivered_at_the_declared_daily_step(self) -> None:
+        # The defect, stated as a test: the model declares DAILY and the
+        # reanalysis is HOURLY. Before Plan 239 this frame arrived with one row
+        # per hour, so the model silently read 24x its declared resolution.
+        sid = StationId(uuid4())
+        reanalysis = FakeWeatherReanalysisSource()
+        _seed_forcing(reanalysis, sid, ensure_utc(_ISSUE - timedelta(days=3)), n_days=3)
+
+        result = self._assemble(sid, reanalysis)
+
+        assert result is not None
+        inputs, _ = result  # type: ignore[misc]
+        past_dynamic = inputs.data.past_dynamic
+        assert not past_dynamic.is_empty()
+
+        stamps = sorted(ensure_utc(ts) for ts in past_dynamic["timestamp"].to_list())
+        gaps = {b - a for a, b in zip(stamps, stamps[1:], strict=False)}
+        assert gaps <= {timedelta(days=1)}, (
+            f"past_dynamic arrived at {gaps}, not the declared 1-day step"
+        )
+        # Exactly the declared lookback: two complete buckets, and NOT the
+        # in-progress one at floor(issue_time).
+        assert len(stamps) == 2

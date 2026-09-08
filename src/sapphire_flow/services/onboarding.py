@@ -10,7 +10,11 @@ from uuid import uuid4
 
 import structlog
 
-from sapphire_flow.exceptions import ConfigurationError, TenantIsolationError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    SkillGenerationIncompleteError,
+    TenantIsolationError,
+)
 from sapphire_flow.services.baselines import compute_clim_baselines
 from sapphire_flow.services.flow_regime import compute_flow_regime
 from sapphire_flow.services.qc import Stage1QualityChecker
@@ -70,9 +74,11 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
-    from sapphire_flow.types.ids import ModelId, StationId, TenantId
+    from sapphire_flow.types.ids import ArtifactId, ModelId, StationId, TenantId
     from sapphire_flow.types.observation import RawObservation
+    from sapphire_flow.types.skill import SkillDiagram, SkillScore
     from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.training import TrainingUnit
     from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
@@ -83,7 +89,7 @@ _WIDE_END = ensure_utc(datetime(2030, 1, 1, tzinfo=UTC))
 
 def _make_hindcast_fn():  # type: ignore[no-untyped-def]
     """Build the hindcast callback for onboard_model()."""
-    from uuid import uuid4
+    from uuid import UUID, uuid4
 
     from sapphire_flow.services.hindcast import run_station_hindcast
 
@@ -100,7 +106,16 @@ def _make_hindcast_fn():  # type: ignore[no-untyped-def]
         basin_store,
         clock,
         rng,
+        hindcast_run_id: UUID | None = None,
     ):  # type: ignore[no-untyped-def]
+        # Plan 235 T3 (opportunistic fix): `hindcast_run_id` is now accepted
+        # from the caller (`onboard_model`, which mints ONE id shared with
+        # `_compute_skill` below) rather than always minted here — the two
+        # calls must agree on it so the skill leg can scope its own
+        # `fetch_hindcasts` call instead of reading this station/model's
+        # entire history. Defaults to a fresh id for any other caller.
+        if hindcast_run_id is None:
+            hindcast_run_id = uuid4()
         result = artifact_store.fetch_artifact(artifact_id)
         if result is None:
             return []
@@ -122,7 +137,7 @@ def _make_hindcast_fn():  # type: ignore[no-untyped-def]
             basin_store=basin_store,
             clock=clock,
             rng=rng,
-            hindcast_run_id=uuid4(),
+            hindcast_run_id=hindcast_run_id,
         )
 
     return _run_hindcast
@@ -130,36 +145,47 @@ def _make_hindcast_fn():  # type: ignore[no-untyped-def]
 
 def _make_skill_fn():  # type: ignore[no-untyped-def]
     """Build the skill computation callback for onboard_model()."""
-    from uuid import uuid4
+    from uuid import UUID, uuid4
 
     from sapphire_flow.services.skill.service import (
         compute_skill_for_station,
         observation_fetch_bounds,
         partition_by_time_step_and_phase,
+        rebind_generation_id,
+        resolve_generation_id,
+        store_skill_results_or_raise,
     )
     from sapphire_flow.types.enums import ForcingType
 
     def _compute_skill(
         *,
-        unit,
-        model_id,
-        artifact_id,
-        hindcast_store,
-        obs_store,
-        skill_store,
-        flow_regime_store,
-        config,
-    ):  # type: ignore[no-untyped-def]
+        unit: TrainingUnit,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        hindcast_store: HindcastStore,
+        obs_store: ObservationStore,
+        skill_store: SkillStore,
+        flow_regime_store: FlowRegimeConfigStore,
+        config: DeploymentConfig | None,
+        hindcast_run_id: UUID | None = None,
+    ) -> None:
         station_id = unit.station_id
         if station_id is None:
             return  # group-scoped: skip for now
 
-        # Fetch hindcasts for this station/model over training period
+        # Plan 235 T3 (opportunistic fix): scoped to the SAME run
+        # `_run_hindcast` above just wrote, when `onboard_model` supplies
+        # one — was previously always unfiltered (this station/model's
+        # ENTIRE `training_period_start..end` window), reachable if an
+        # earlier onboarding attempt left hindcasts at a different
+        # time_step/phase in the same window. `hindcast_run_id=None`
+        # preserves the old unfiltered behaviour for any other caller.
         hindcasts = hindcast_store.fetch_hindcasts(
             station_id=station_id,
             model_id=model_id,
             start=unit.training_period_start,
             end=unit.training_period_end,
+            hindcast_run_id=hindcast_run_id,
         )
         if not hindcasts:
             return
@@ -188,9 +214,38 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
         # Partition into homogeneous cohorts first and score each
         # separately, so a mismatch degrades to "fewer cohorts scored at
         # onboarding" instead of `FAILED_SKILL` for the whole unit.
-        all_scores = []
-        all_diagrams = []
-        for cohort in partition_by_time_step_and_phase(hindcasts).values():
+        # Plan 235 fixer round (major): station onboarding wrote baseline
+        # (`generation_id=None`) scores/diagrams and never published a
+        # generation for its own scope. Per `latest_generation_predicate`
+        # (`store/skill_store.py`), once ANY generation is ever published
+        # for a (station, model, parameter, skill_source, forcing_type)
+        # scope, baseline rows for that SAME scope become permanently
+        # invisible to every reader — silently, with no error. Mint and
+        # publish a generation here too, exactly like `compute_skills_task`
+        # does, so a re-onboarded artifact's scores are never the ones that
+        # go dark.
+        #
+        # Plan 235 per-run scope (blocker #4, two-release rollout): while
+        # `config.enable_skill_generations` is off, stay on the pre-235
+        # shape entirely — baseline rows, no `skill_generations` publish —
+        # so a rollback to a generation-UNAWARE image still reads exactly
+        # what it always has. See `flows.compute_skills` for the identical
+        # gate on the recurring recompute path.
+        # Defaults to DISABLED — see the identical note in
+        # `flows.compute_skills.compute_skills_task`.
+        generations_enabled = bool(getattr(config, "enable_skill_generations", False))
+        invocation_id = uuid4()
+
+        # Plan 235 per-run scope (blocker #1): `rejected_count` covers
+        # hindcasts silently dropped during partitioning (an internally
+        # mixed-phase hindcast) — folded into the same completeness
+        # accounting as `cohorts_missing` below.
+        cohorts, rejected_count = partition_by_time_step_and_phase(hindcasts)
+
+        all_scores: list[SkillScore] = []
+        all_diagrams: list[SkillDiagram] = []
+        cohorts_missing = 0
+        for cohort in cohorts.values():
             # Fetch observations covering the cohort's own valid times (Plan
             # 228 ALSO FIX #2) — never the training period, which can end
             # before a multi-step horizon's trailing valid_time.
@@ -217,14 +272,69 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
                 clock=lambda: ensure_utc(datetime.now(UTC)),
                 uuid_factory=uuid4,
                 parameter="discharge",
+                generation_id=invocation_id if generations_enabled else None,
             )
+            if not scores and not diagrams:
+                cohorts_missing += 1
             all_scores.extend(scores)
             all_diagrams.extend(diagrams)
 
-        if all_scores:
+        # Plan 235 per-run scope (major #1): a mismatch anywhere in the
+        # whole-generation accounting must FAIL this unit — never return
+        # normally and leave `onboard_model()` believing skill computation
+        # succeeded. Unlike `flows.compute_skills`'s recurring recompute
+        # (which degrades quietly so a previously COMPLETE generation stays
+        # visible), onboarding has no earlier generation to fall back to:
+        # this IS the first one, so incompleteness here must surface as
+        # `FAILED_SKILL`, not silence.
+        if rejected_count or cohorts_missing:
+            raise SkillGenerationIncompleteError(
+                f"station {station_id} model {model_id}: incomplete skill "
+                f"computation — {rejected_count} hindcast(s) rejected during "
+                f"partitioning, {cohorts_missing}/{len(cohorts)} cohort(s) "
+                "produced nothing"
+            )
+
+        if not all_scores and not all_diagrams:
+            return
+
+        if not generations_enabled:
+            # Two-release rollout, Release A: legacy shape only — rows
+            # already carry `generation_id=None` (passed above), so there
+            # is no generation identity to reconcile against; store
+            # directly and stop, exactly like `flows.compute_skills`'s
+            # identical branch.
             skill_store.store_skill_scores(all_scores)
-        if all_diagrams:
             skill_store.store_skill_diagrams(all_diagrams)
+            return
+
+        generation_id = resolve_generation_id(invocation_id, all_scores, all_diagrams)
+        all_scores, all_diagrams = rebind_generation_id(
+            all_scores, all_diagrams, generation_id
+        )
+
+        store_skill_results_or_raise(
+            skill_store, generation_id, all_scores, all_diagrams
+        )
+
+        computation_version: int = (
+            all_scores[0].computation_version
+            if all_scores
+            else all_diagrams[0].computation_version
+        )
+        skill_store.publish_generation(
+            generation_id=generation_id,
+            station_id=station_id,
+            model_id=model_id,
+            model_artifact_id=artifact_id,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            computation_version=computation_version,
+            published_at=ensure_utc(datetime.now(UTC)),
+            score_count=len(all_scores),
+            diagram_count=len(all_diagrams),
+        )
 
     return _compute_skill
 

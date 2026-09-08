@@ -14,6 +14,9 @@ another reviewer.
 - Report only concrete findings, ordered by severity. Give `file:line` or task,
   the violated requirement, and the smallest fix. State any check you could not
   complete.
+- Run Codex as `codex exec --sandbox read-only --skip-git-repo-check "$PROMPT" < /dev/null`
+  in the background; without the redirect it hangs, and a run that never reviewed
+  still exits 0 — so confirm the output holds a verdict.
 
 Do not summarize the source, propose unrelated improvements, fix findings, or start
 another review. Do not rerun the repository-wide suite unless the owner explicitly

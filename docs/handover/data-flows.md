@@ -693,10 +693,12 @@ All time-series data follows a tiered lifecycle: **hot (PostgreSQL) → cold (co
 | Hindcasts | 548 days | Parquet | `max_retention_days` |
 | Historical forcing | Permanent | — | Never |
 | Skill scores | Permanent | — | Never |
+| Skill diagrams | Permanent | — | Never |
+| Skill generations (publication ledger) | Permanent | — | Never |
 | Pipeline health | 30 days | — | 30 days |
 | Resolved alerts | 90 days | — | 90 days |
 
-Skill scores and historical forcing are permanent — they are never tiered or deleted. Observations older than `max_retention_days` are removed from the hot database but remain available in cold Parquet storage for the configured cold-tier lifetime; beyond that, they can be re-ingested from external sources (e.g. DHM archives where available) if required for retraining. In practice, training windows longer than the hot window are served from cold storage and the historical forcing archive, not from the live observations table. Deleting hindcast data beyond retention prevents recomputation from scratch, but stored skill scores remain unaffected. All retention windows are deployment-configurable.
+Skill scores, skill diagrams, the skill-generation publication ledger, and historical forcing are permanent — they are never tiered or deleted. (Plan 235 D4: diagram retention was previously unstated here; it is now declared explicitly, alongside scores, rather than left to be inferred. A full recompute adds roughly one `skill_generations` row per (station, model, artifact, parameter, skill_source, forcing_type) scope touched — negligible next to the ~115,000-row score/diagram growth the same recompute already produces. No pruning machinery exists or is planned for any of these three tables; historical administrative views — e.g. the dashboard's retention/freshness breakdown — stay historical and are deliberately not filtered to the newest generation.) Observations older than `max_retention_days` are removed from the hot database but remain available in cold Parquet storage for the configured cold-tier lifetime; beyond that, they can be re-ingested from external sources (e.g. DHM archives where available) if required for retraining. In practice, training windows longer than the hot window are served from cold storage and the historical forcing archive, not from the live observations table. Deleting hindcast data beyond retention prevents recomputation from scratch, but stored skill scores remain unaffected. All retention windows are deployment-configurable.
 
 Disk utilisation is monitored by Flow 4 step 4.9, with warnings at 80% and critical alerts at 90%. For backup schedule, encryption, and disaster recovery, see `it-operations.md` §7.
 

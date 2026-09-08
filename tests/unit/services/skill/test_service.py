@@ -10,6 +10,7 @@ import structlog.testing
 
 from sapphire_flow.services.skill.service import (
     _COMPUTATION_VERSION,
+    compute_generation_fingerprint,
     compute_skill_for_station,
     validate_homogeneous_time_step_and_phase,
 )
@@ -21,6 +22,7 @@ from sapphire_flow.types.enums import (
     ForcingType,
     ObservationSource,
     QcStatus,
+    SkillFreshness,
     SkillSource,
     ThresholdSource,
 )
@@ -32,7 +34,7 @@ from sapphire_flow.types.ids import (
     StationId,
 )
 from sapphire_flow.types.observation import Observation
-from sapphire_flow.types.skill import FlowRegimeConfig
+from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
 
 _EPOCH = ensure_utc(datetime(2025, 1, 15, 0, 0, tzinfo=UTC))
 _RNG = random.Random(42)
@@ -2090,3 +2092,160 @@ class TestInternallyMixedPhaseWithinOneHindcastRaises:
 
         with pytest.raises(ConfigurationError, match="internally mixed"):
             validate_homogeneous_time_step_and_phase([mixed])
+
+
+def _fingerprint_score(
+    *,
+    station_id: StationId,
+    model_id: ModelId,
+    artifact_id: ArtifactId,
+    score: float = 0.5,
+    flow_regime_config_id: UUID | None = None,
+) -> SkillScore:
+    return SkillScore(
+        id=uuid4(),
+        station_id=station_id,
+        model_id=model_id,
+        parameter="discharge",
+        model_artifact_id=artifact_id,
+        skill_source=SkillSource.HINDCAST_REANALYSIS,
+        forcing_type=ForcingType.REANALYSIS,
+        computation_version=_COMPUTATION_VERSION,
+        computed_at=_EPOCH,
+        lead_time_hours=24,
+        season=None,
+        flow_regime=None,
+        flow_regime_config_id=flow_regime_config_id,
+        metric="nse",
+        score=score,
+        sample_size=10,
+        freshness=SkillFreshness.CURRENT,
+        eval_period_start=_EPOCH,
+        eval_period_end=_EPOCH,
+        created_at=_EPOCH,
+    )
+
+
+def _fingerprint_diagram(
+    *,
+    station_id: StationId,
+    model_id: ModelId,
+    artifact_id: ArtifactId,
+    data: dict,  # type: ignore[type-arg]
+    flow_regime_config_id: UUID | None = None,
+) -> SkillDiagram:
+    return SkillDiagram(
+        id=uuid4(),
+        station_id=station_id,
+        model_id=model_id,
+        parameter="discharge",
+        model_artifact_id=artifact_id,
+        skill_source=SkillSource.HINDCAST_REANALYSIS,
+        computation_version=_COMPUTATION_VERSION,
+        lead_time_hours=24,
+        season=None,
+        flow_regime=None,
+        flow_regime_config_id=flow_regime_config_id,
+        diagram_type="rank_histogram",
+        threshold_level=None,
+        data=data,
+        eval_period_start=_EPOCH,
+        eval_period_end=_EPOCH,
+        created_at=_EPOCH,
+    )
+
+
+class TestComputeGenerationFingerprint:
+    """Independent-review fixer round (blocker): the fingerprint must cover
+    every PERSISTED semantic output field, not only a score's scalar
+    ``score`` value — otherwise a retry whose only difference is a
+    diagram's diagnostic data, or a provenance/config id like
+    ``flow_regime_config_id``, re-derives the SAME generation id and
+    republishes the earlier attempt's stale row under
+    ``ON CONFLICT DO NOTHING`` instead of its own, distinct one.
+    """
+
+    def test_identical_inputs_hash_identically(
+        self, station_id: StationId, model_id: ModelId, artifact_id: ArtifactId
+    ) -> None:
+        score = _fingerprint_score(
+            station_id=station_id, model_id=model_id, artifact_id=artifact_id
+        )
+        diagram = _fingerprint_diagram(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            data={"ranks": [0, 1], "counts": [3, 4]},
+        )
+        assert compute_generation_fingerprint(
+            [score], [diagram]
+        ) == compute_generation_fingerprint([score], [diagram])
+
+    def test_diagram_only_data_change_changes_the_fingerprint(
+        self, station_id: StationId, model_id: ModelId, artifact_id: ArtifactId
+    ) -> None:
+        """A crash-then-retry where every SCORE is bit-identical but a
+        diagram's own diagnostic data corrected (e.g. a recomputed
+        reliability curve) must NOT re-derive the same generation id."""
+        score = _fingerprint_score(
+            station_id=station_id, model_id=model_id, artifact_id=artifact_id
+        )
+        diagram_1 = _fingerprint_diagram(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            data={"ranks": [0, 1], "counts": [3, 4]},
+        )
+        diagram_2 = _fingerprint_diagram(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            data={"ranks": [0, 1], "counts": [3, 999]},
+        )
+        assert compute_generation_fingerprint(
+            [score], [diagram_1]
+        ) != compute_generation_fingerprint([score], [diagram_2])
+
+    def test_score_flow_regime_config_id_change_changes_the_fingerprint(
+        self, station_id: StationId, model_id: ModelId, artifact_id: ArtifactId
+    ) -> None:
+        """A retry re-run under a reconfigured flow-regime boundary is a
+        different computation even when the resulting scalar `score`
+        happens to match — the config id it was produced under is
+        persisted, semantic provenance, not incidental metadata."""
+        score_1 = _fingerprint_score(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            flow_regime_config_id=UUID(int=1),
+        )
+        score_2 = _fingerprint_score(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            flow_regime_config_id=UUID(int=2),
+        )
+        assert compute_generation_fingerprint(
+            [score_1], []
+        ) != compute_generation_fingerprint([score_2], [])
+
+    def test_diagram_flow_regime_config_id_change_changes_the_fingerprint(
+        self, station_id: StationId, model_id: ModelId, artifact_id: ArtifactId
+    ) -> None:
+        diagram_1 = _fingerprint_diagram(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            data={"ranks": [0, 1], "counts": [3, 4]},
+            flow_regime_config_id=UUID(int=1),
+        )
+        diagram_2 = _fingerprint_diagram(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            data={"ranks": [0, 1], "counts": [3, 4]},
+            flow_regime_config_id=UUID(int=2),
+        )
+        assert compute_generation_fingerprint(
+            [], [diagram_1]
+        ) != compute_generation_fingerprint([], [diagram_2])
