@@ -132,7 +132,16 @@ must be retrained against 23:00Z days before the new boundary goes live. Three c
 and none of them belong to this plan:
 
 - **Retraining is a deployment activity, not a task here.** This plan makes the boundary declarable;
-  it does not retrain anything. Sequencing the retrain belongs with Plan 226, which already owns
+  it does not retrain anything.
+
+  🔴 **CORRECTED 2026-09-08 by the time-grid track owner — the retrain belongs to Plan 254 T6, NOT
+  to Plan 226.** The original claim here (that 226 "already owns" the sequencing) was an assumption
+  never checked against 226 itself, and it contradicted `254:182`, which says no plan owns the
+  retrain until T6 creates the home. 254 is right. Verified against Plan 226's frontmatter and body,
+  not its prose reputation: its `scope` reads *"ANCHORING ONLY"*, its `depends_on` is `[222, 228,
+  235]` with no reference to 252 or 254, it excludes *"Backfill, recomputation, or migration of
+  stored forecasts or hindcasts"* twice, and **the words "retrain" and "artifact" do not appear in
+  it at all.** 226 cannot own a retrain it never mentions. What 226 does own, and keeps, is
   daily-model anchoring.
 - **Skill scores computed against UTC-day observations become invalid for the retrained artifacts**,
   since the scored quantity changes. That intersects Plan 235's generation model — a recompute, not a
@@ -140,6 +149,20 @@ and none of them belong to this plan:
 - **Until the retrain lands, Switzerland stays at phase 0.** The declaration and the retrain must go
   live together; a config flip alone would feed 23:00Z days to artifacts trained on midnight days,
   which is exactly the substitution OD-7 says the model cannot detect.
+
+✅ **The feared DOUBLE RETRAIN does not exist — refuted 2026-09-08, same check.** The concern raised
+against this plan was: land 226 first, the models get anchored to midnight and retrained, then move
+to 23:00Z and retrain *again*. It rests on 226 causing a retrain, and **226 causes none** — it
+contains neither the word "retrain" nor "artifact", because it changes how daily output is *labelled*,
+not what the models are trained on. There is therefore exactly one retrain in the whole family:
+Plan 254 T6's, when the boundary actually moves.
+
+That also means **226 needs no change and no re-scoping**, which matters because 226 carries a binding
+Proportionality section — a finding that grows it is worse than one that shrinks it. 226 anchors to
+UTC midnight, and per the bullet above midnight *is* Switzerland's boundary until T6 flips it, so 226
+is anchoring to the grid actually in force and stays correct until then. Ordering 226 before or after
+this plan does not create a second retrain. Sequence them on other grounds if you like; not on this
+one.
 
 ⛔ **A DST-observing zone has no uniform civil-day grid at all.** Measured: Zurich civil days run 23,
 24 or 25 hours (29 Mar 2026 is 23:00Z→22:00Z = 23 h; 25 Oct is 22:00Z→23:00Z = 25 h). A "day" that is

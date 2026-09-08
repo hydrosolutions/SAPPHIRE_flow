@@ -260,6 +260,20 @@ creates one."* Both cannot be true. Whoever owns the time-grid family must settl
 external) → review and READY 252 → 226 anchors ONCE, to the settled boundary → 254 execution plus the
 Swiss retrain.
 
+✅ **ANSWERED 2026-09-08 by the time-grid track owner** (both points, in `252` where the wrong claim
+lived):
+
+1. **Ownership settled — the Swiss retrain is Plan 254 T6's, not Plan 226's.** `254:182` was right and
+   `252:135` was wrong; 252 is corrected. Verified against 226's frontmatter and body rather than its
+   prose reputation: `scope: ANCHORING ONLY`, `depends_on: [222, 228, 235]`, recomputation excluded
+   twice, and **the words "retrain" and "artifact" appear in it zero times.**
+2. ⛔ **The double retrain is REFUTED, not sequenced around.** It presupposes 226 triggering a
+   retrain, and 226 triggers none — it changes how daily output is *labelled*, not what the models
+   train on. There is exactly one retrain in the family (254 T6's). 226 also stays UNCHANGED, which
+   respects its binding Proportionality section. The suggested order is fine, but it is not load-
+   bearing, and 226 need not wait for 252 on these grounds: 252 keeps Switzerland at phase 0 until
+   the retrain lands, so midnight *is* the boundary 226 should anchor to today.
+
 ### 2. ⛔ T2's DEPENDENCY IS VACUOUS — verified against all three plans, not inferred
 
 This plan says the 69 rows "should probably WAIT" for 252/254, because "what they decide determines
