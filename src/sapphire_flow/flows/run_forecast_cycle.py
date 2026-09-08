@@ -2937,6 +2937,11 @@ def run_forecast_cycle_flow(
                             nwp_cycle_source=combined_source,
                             clock=clock,
                             uuid_factory=uuid4,
+                            qc_checker=qc_checker,
+                            qc_rules=qc_rules,
+                            qc_overrides=[],
+                            baselines=all_baselines[sid],
+                            water_level_datum_masl=water_level_datums_masl.get(sid),
                         )
                         if combined_forecasts:
                             for fc in combined_forecasts:
@@ -3262,6 +3267,11 @@ def run_forecast_cycle_flow(
                         nwp_cycle_source=nwp_cycle_source,
                         clock=clock,
                         uuid_factory=uuid4,
+                        qc_checker=qc_checker,
+                        qc_rules=qc_rules,
+                        qc_overrides=[],
+                        baselines=all_baselines[sid],
+                        water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
                     if combined_forecasts:
                         for fc in combined_forecasts:

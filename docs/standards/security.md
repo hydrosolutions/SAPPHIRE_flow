@@ -288,6 +288,18 @@ Role-to-endpoint mapping. Enforced via FastAPI dependency injection (`Depends(re
 
 **API consumer scope filtering**: A `✓` for an API consumer means the endpoint is accessible, not that the consumer sees all data. Responses are filtered server-side by the token's `scope` (see `access_tokens.scope` in architecture-context.md § Authentication schemas). A consumer scoped to specific stations receives only those stations from `GET /api/v1/stations`, only their forecasts, observations, and alerts. Requests for out-of-scope station IDs return 404. Human roles (org admin through forecaster) are unscoped — they see all data.
 
+### Input-quality visibility (Plan 253 OD-2 — supersedes Plan 023:128-143)
+
+Plan 023 required the threshold-bearing `input_quality`/`input_quality_flags` detail to be
+role-filtered once authorization existed, on the assumption a `forecaster`/`operator` role would
+exist to filter *to*. Only `consumer` and `admin` were ever built (v1.0 headless subset above), and
+there is no forecaster/operator role. The owner decided (2026-09-04) the thresholds are not
+sensitive and that a forecaster looking at a degraded forecast needs to see why: `input_quality` and
+`input_quality_flags` are visible, unfiltered, to **every authenticated role** —
+`GET /api/v1/stations/{id}/forecasts` and `GET /api/v1/forecasts/{id}` both expose them to
+`consumer` and `admin` alike. This knowingly supersedes 023:128-143 — record it here so the next
+reader does not mistake the dropped prerequisite for an oversight.
+
 ## Secrets management
 
 Email and SMS notifications are out of scope through v1 (see `docs/handover/data-flows.md`). Alert consumers can poll the API; outbound delivery on the SAPPHIRE side is webhook-only.

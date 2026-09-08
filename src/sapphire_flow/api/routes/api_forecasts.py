@@ -66,6 +66,17 @@ def _to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
         qc_status=f.qc_status.value,
         nwp_cycle_source=f.nwp_cycle_source.value,
         created_at=f.created_at,
+        input_quality=f.input_quality.value if f.input_quality else None,
+        input_quality_flags=[
+            {
+                "category": flag.category.value,
+                "level": flag.level.value,
+                "detail": flag.detail,
+            }
+            for flag in f.input_quality_flags
+        ]
+        if f.input_quality is not None
+        else None,
         model_artifact_id=str(f.model_artifact_id) if f.model_artifact_id else None,
         nwp_cycle_reference_time=f.nwp_cycle_reference_time,
         version=f.version,

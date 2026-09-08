@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -8,27 +9,42 @@ from uuid import UUID, uuid4
 import polars as pl
 import pytest
 
+from sapphire_flow.config.forecast_qc_rules import (
+    _default_swiss_forecast_qc_rules,  # pyright: ignore[reportPrivateUsage]
+)
 from sapphire_flow.services.forecast_combination import (
     _BMA_TARGET_MEMBERS,
     build_combined_forecasts,
     combine_ensembles_bma,
     combine_ensembles_pooled,
 )
+from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.run_station_forecast import (
     MultiModelForecastResult,
     StationForecastResult,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.domain import (
+    ForecastQcRuleParams,
+    ForecastQcRuleSet,
+    InputQualityFlag,
+)
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
+    ForecastStatus,
+    InputQualityCategory,
+    InputQualityLevel,
     ModelCombinationStrategy,
     NwpCycleSource,
+    QcStatus,
 )
+from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import (
     BMA_MODEL_ID,
     POOLED_MODEL_ID,
     ArtifactId,
+    ForecastId,
     ModelId,
     StationId,
 )
@@ -43,6 +59,63 @@ _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
 
 def _clock() -> object:
     return _NOW
+
+
+def _qc_checker() -> ForecastOutputQualityChecker:
+    return ForecastOutputQualityChecker()
+
+
+def _empty_qc_rules() -> ForecastQcRuleSet:
+    return ForecastQcRuleSet(version="1.0", rules=())
+
+
+def _discharge_range_qc_rules(
+    *,
+    value_min: float = 0.0,
+    value_max: float = 1000.0,
+    time_step: timedelta = timedelta(hours=1),
+) -> ForecastQcRuleSet:
+    """A REAL forecast QC rule (`range_check`), the same rule
+    `config/forecast_qc_rules.py` declares in production — not a mocked
+    checker verdict (Plan 253 exit gate 4).
+
+    Every test whose combination is EXPECTED to persist must pass a rule
+    set that covers the step that combination lands on: since the Plan 253
+    review fix, `build_combined_forecasts` refuses to persist a combination
+    whose `(parameter, time_step)` selects no rules at all, because
+    `worst_qc_status([])` would otherwise report an unchecked combination
+    as QC_PASSED. `_empty_qc_rules()` therefore now means "nothing is
+    publishable", and only tests that return before QC still use it.
+    """
+    return ForecastQcRuleSet(
+        version="1.0",
+        rules=(
+            ForecastQcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0",
+                parameter="discharge",
+                time_step=time_step,
+                thresholds={"value_min": value_min, "value_max": value_max},
+            ),
+        ),
+    )
+
+
+def _water_level_range_qc_rules(
+    *, value_min: float = -2.0, value_max: float = 20.0
+) -> ForecastQcRuleSet:
+    return ForecastQcRuleSet(
+        version="1.0",
+        rules=(
+            ForecastQcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0",
+                parameter="water_level",
+                time_step=timedelta(hours=1),
+                thresholds={"value_min": value_min, "value_max": value_max},
+            ),
+        ),
+    )
 
 
 def _uuid_seq() -> object:
@@ -163,14 +236,60 @@ def _members_ensemble_ragged(
     )
 
 
+def _member_forecast(
+    model_id: ModelId,
+    ensemble: ForecastEnsemble,
+    *,
+    input_quality: InputQualityLevel | None,
+    input_quality_flags: tuple[InputQualityFlag, ...] = (),
+) -> OperationalForecast:
+    return OperationalForecast(
+        id=ForecastId(uuid4()),
+        station_id=_STATION,
+        model_id=model_id,
+        model_artifact_id=ArtifactId(uuid4()),
+        issued_at=_NOW,
+        nwp_cycle_reference_time=_NOW,
+        nwp_cycle_source=NwpCycleSource.PRIMARY,
+        representation=ensemble.representation,
+        status=ForecastStatus.RAW,
+        version=1,
+        warm_up_source=None,
+        warm_up_state_age_hours=None,
+        observation_staleness_hours=None,
+        ensemble=ensemble,
+        created_at=_NOW,
+        updated_at=_NOW,
+        input_quality=input_quality,
+        input_quality_flags=input_quality_flags,
+    )
+
+
 def _result_with_ensemble(
-    model_id: ModelId, ensemble: ForecastEnsemble, parameter: str = "discharge"
+    model_id: ModelId,
+    ensemble: ForecastEnsemble,
+    parameter: str = "discharge",
+    *,
+    input_quality: InputQualityLevel | None = None,
+    input_quality_flags: tuple[InputQualityFlag, ...] = (),
 ) -> StationForecastResult:
+    forecasts = (
+        [
+            _member_forecast(
+                model_id,
+                ensemble,
+                input_quality=input_quality,
+                input_quality_flags=input_quality_flags,
+            )
+        ]
+        if input_quality is not None
+        else []
+    )
     return StationForecastResult(
         station_id=_STATION,
         model_id=model_id,
         artifact_id=ArtifactId(uuid4()),
-        forecasts=[],
+        forecasts=forecasts,
         new_state=None,
         ensembles={parameter: ensemble},
     )
@@ -711,6 +830,10 @@ class TestCombineEnsemblesPooledGridAlignment:
             nwp_cycle_source=NwpCycleSource.PRIMARY,
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
         )
 
         assert forecasts == []
@@ -730,6 +853,10 @@ class TestBuildCombinedForecasts:
             nwp_cycle_source=NwpCycleSource.PRIMARY,
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
         )
 
         assert len(forecasts) == 1
@@ -753,6 +880,10 @@ class TestBuildCombinedForecasts:
             nwp_cycle_source=NwpCycleSource.PRIMARY,
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
         )
 
         assert forecasts == []
@@ -770,6 +901,10 @@ class TestBuildCombinedForecasts:
             nwp_cycle_source=NwpCycleSource.PRIMARY,
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
         )
 
         assert forecasts == []
@@ -787,6 +922,10 @@ class TestBuildCombinedForecasts:
             nwp_cycle_source=NwpCycleSource.PRIMARY,
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
             weights={_MODEL_A: 0.7, _MODEL_B: 0.3},
         )
 
@@ -810,6 +949,10 @@ class TestBuildCombinedForecasts:
                 nwp_cycle_source=NwpCycleSource.PRIMARY,
                 clock=_clock,  # type: ignore[arg-type]
                 uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+                qc_checker=_qc_checker(),
+                qc_rules=_empty_qc_rules(),
+                qc_overrides=[],
+                baselines=[],
             )
 
 
@@ -863,6 +1006,10 @@ class TestBuildCombinedForecastsUniformSpacing:
             nwp_cycle_source=NwpCycleSource.PRIMARY,
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
         )
 
         assert forecasts == []
@@ -906,7 +1053,617 @@ class TestBuildCombinedForecastsUniformSpacing:
             nwp_cycle_source=NwpCycleSource.PRIMARY,
             clock=_clock,  # type: ignore[arg-type]
             uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(time_step=timedelta(hours=2)),
+            qc_overrides=[],
+            baselines=[],
         )
 
         assert len(forecasts) == 1
         assert forecasts[0].ensemble.time_step == timedelta(hours=2)
+
+
+class TestBuildCombinedForecastsProductionQcRuleCoverage:
+    """Plan 253 review (fail closed) — with the rule set the deployment
+    actually ships, not an injected one.
+
+    `ForecastQcRuleSet.rules_for` matches `time_step` by EQUALITY and
+    production declares forecast QC rules at 3600 s and 86400 s only
+    (`config/forecast_qc_rules.py`), so a combination rebuilt on a derived
+    step outside that pair selects zero rules, produces zero flags, and
+    `worst_qc_status([])` returns QC_PASSED. Injecting a rule at the
+    derived step — what the other classes here do, legitimately, to reach
+    the QC wiring — is exactly what conceals that."""
+
+    def test_production_has_no_rule_at_a_coarsened_two_hour_step(self) -> None:
+        production = _default_swiss_forecast_qc_rules()
+
+        assert production.rules_for("discharge", timedelta(hours=2)) == ()
+        assert production.rules_for("discharge", timedelta(hours=1)) != ()
+
+    def test_coarsened_step_combination_is_not_returned_for_storage(self) -> None:
+        """Both contributors are declared hourly but present only at t1,
+        t3, t5, so the combination is rebuilt on a 2-hour step. Production
+        cannot check it, so it must not be published as checked."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 3, 5)]
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(
+                    _MODEL_A,
+                    _members_ensemble_at(
+                        model_id=_MODEL_A, valid_times=vts, n_members=5
+                    ),
+                ),
+                _MODEL_B: _result_with_ensemble(
+                    _MODEL_B,
+                    _members_ensemble_at(
+                        model_id=_MODEL_B, valid_times=vts, n_members=5
+                    ),
+                ),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_default_swiss_forecast_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert forecasts == [], (
+            "an unchecked 2-hour combination was returned with qc_status="
+            f"{[fc.qc_status for fc in forecasts]}"
+        )
+
+    def test_hourly_step_combination_is_checked_and_returned(self) -> None:
+        """The guard is not a blanket refusal: the same contributors on a
+        grid whose derived step production DOES cover are checked on the
+        real production rules and returned for storage."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3)]
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(
+                    _MODEL_A,
+                    _members_ensemble_at(
+                        model_id=_MODEL_A, valid_times=vts, n_members=5
+                    ),
+                ),
+                _MODEL_B: _result_with_ensemble(
+                    _MODEL_B,
+                    _members_ensemble_at(
+                        model_id=_MODEL_B, valid_times=vts, n_members=5
+                    ),
+                ),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_default_swiss_forecast_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].ensemble.time_step == timedelta(hours=1)
+        assert forecasts[0].qc_status == QcStatus.QC_PASSED
+        assert forecasts[0].qc_flags == ()
+
+
+class TestBuildCombinedForecastsQualityControl:
+    """Plan 253 T2a — the combined ensemble is quality-controlled on the
+    SAME rules and datum handling as its members, from every call site
+    that stores one; a QC_FAILED combination is stored marked failed
+    (OD-1), never dropped."""
+
+    def test_qc_passed_over_clean_members(self) -> None:
+        result_a = _make_result(_MODEL_A, n_members=5)
+        result_b = _make_result(_MODEL_B, n_members=3)
+        multi = _make_multi({_MODEL_A: result_a, _MODEL_B: result_b})
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(value_min=0.0, value_max=1000.0),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].qc_status == QcStatus.QC_PASSED
+        assert forecasts[0].qc_flags == ()
+
+    def test_qc_failed_stored_marked_failed_not_dropped(self) -> None:
+        """OD-1: a combined forecast that trips a REAL QC rule is STORED,
+        marked QC_FAILED, with flags -- not dropped and not silently
+        passed."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2)]
+        ens_a = _members_ensemble_at(model_id=_MODEL_A, valid_times=vts, n_members=5)
+        ens_b = _members_ensemble_at(model_id=_MODEL_B, valid_times=vts, n_members=5)
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            # member values are 1.0..5.0 per contributor (float(m)+1.0);
+            # pooled median across both is 3.0 -- value_max=2.0 trips
+            # range_check for real (median-based, not per-value).
+            qc_rules=_discharge_range_qc_rules(value_min=0.0, value_max=2.0),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert len(forecasts) == 1
+        fc = forecasts[0]
+        assert fc.qc_status == QcStatus.QC_FAILED
+        assert fc.qc_flags != ()
+        assert fc.status == ForecastStatus.RAW  # stored, not dropped (OD-1)
+
+    def test_no_stored_row_carries_raw_status(self) -> None:
+        """Neither QC_PASSED nor QC_FAILED is ever `RAW` -- the hardcoded
+        literal this task removes."""
+        result_a = _make_result(_MODEL_A, n_members=5)
+        result_b = _make_result(_MODEL_B, n_members=3)
+        multi = _make_multi({_MODEL_A: result_a, _MODEL_B: result_b})
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert all(fc.qc_status != QcStatus.RAW for fc in forecasts)
+
+    def test_water_level_datum_present_avoids_false_range_failure(self) -> None:
+        """Without the datum shift, raw metres-above-sea-level values would
+        fail the -2..20m relative bounds -- the Plan 101 defect this task
+        must not reintroduce."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2)]
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        datum = 450.0
+        ens_a = replace(
+            ens_a, values=ens_a.values.with_columns(pl.col("value") + datum)
+        )
+        ens_b = replace(
+            ens_b, values=ens_b.values.with_columns(pl.col("value") + datum)
+        )
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a, "water_level"),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b, "water_level"),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_water_level_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            water_level_datum_masl=datum,
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].qc_status == QcStatus.QC_PASSED
+
+    def test_water_level_datum_present_out_of_range_values_fail_range_check(
+        self,
+    ) -> None:
+        """The datum-present case must prove the rule still RUNS, and that it
+        runs on DATUM-RELATIVE values -- not only that valid shifted values
+        pass: an implementation that skipped `range_check` for every
+        water_level combination -- datum present or absent -- passes the
+        clean-shift test above. Here the datum-relative values
+        (101.0..105.0) sit outside the -2..20 m bounds
+        (`config/forecast_qc_rules.py:149-176`), so the combination must be
+        QC_FAILED with a `range_check` flag -- and the datum provenance
+        `add_forecast_datum_details` stamps on that flag must show the
+        relative values the rule saw, so a datum-ignoring implementation
+        (which would also fail these raw 551.0..555.0 masl values) cannot
+        pass this test."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2)]
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        datum = 450.0
+        # Raw masl values whose datum-relative counterparts (101.0..105.0)
+        # are far above the 20 m upper bound -- a real stage this gauge
+        # could never reach, not a masl/relative mix-up.
+        above_bounds = 100.0
+        ens_a = replace(
+            ens_a,
+            values=ens_a.values.with_columns(pl.col("value") + datum + above_bounds),
+        )
+        ens_b = replace(
+            ens_b,
+            values=ens_b.values.with_columns(pl.col("value") + datum + above_bounds),
+        )
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a, "water_level"),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b, "water_level"),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_water_level_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            water_level_datum_masl=datum,
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].qc_status == QcStatus.QC_FAILED
+        assert [f.rule_id for f in forecasts[0].qc_flags] == ["range_check"]
+
+        # QC_FAILED plus a `range_check` flag would ALSO be produced by an
+        # implementation that ignored the datum and range-checked the raw
+        # masl values (551.0..555.0, likewise outside -2..20). The datum
+        # provenance `add_forecast_datum_details` appends to the flag detail
+        # is what separates the two: it reports the relative values the rule
+        # actually saw next to the raw ones they came from. Read the fields,
+        # not the whole message, so rewording the flag text stays free.
+        detail = forecasts[0].qc_flags[0].detail
+        assert detail is not None
+        reported = {
+            field: float(value)
+            for field, value in re.findall(
+                r"(raw_min|relative_min|raw_median|relative_median|datum_masl)"
+                r"=(-?\d+(?:\.\d+)?)",
+                detail,
+            )
+        }
+        assert reported == {
+            "raw_min": 551.0,
+            "relative_min": 101.0,
+            "raw_median": 553.0,
+            "relative_median": 103.0,
+            "datum_masl": 450.0,
+        }
+
+    def test_water_level_datum_absent_skips_the_datum_dependent_rule(self) -> None:
+        """No datum on file: `forecast_skipped_rules` skips `range_check`
+        for water_level rather than running it against meaningless raw
+        masl values (the Plan 101 false failure) -- proven by the rule NOT
+        firing despite raw values that would trip it if it ran."""
+        vts = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2)]
+        ens_a = _members_ensemble_at(
+            model_id=_MODEL_A, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        ens_b = _members_ensemble_at(
+            model_id=_MODEL_B, valid_times=vts, n_members=5, parameter="water_level"
+        )
+        datum = 450.0
+        ens_a = replace(
+            ens_a, values=ens_a.values.with_columns(pl.col("value") + datum)
+        )
+        ens_b = replace(
+            ens_b, values=ens_b.values.with_columns(pl.col("value") + datum)
+        )
+        multi = _make_multi(
+            {
+                _MODEL_A: _result_with_ensemble(_MODEL_A, ens_a, "water_level"),
+                _MODEL_B: _result_with_ensemble(_MODEL_B, ens_b, "water_level"),
+            }
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_water_level_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            water_level_datum_masl=None,
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].qc_status == QcStatus.QC_PASSED
+
+
+class TestBuildCombinedForecastsInputQuality:
+    """Plan 253 T2b — the combination reports the aggregate input quality
+    of the models that actually contributed to THAT parameter."""
+
+    def test_full_plus_degraded_contributor_yields_degraded(self) -> None:
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_A,
+        )
+        ens_b = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_B,
+            rng=random.Random(9),
+        )
+        degraded_flag = InputQualityFlag(
+            category=InputQualityCategory.OBSERVATION,
+            level=InputQualityLevel.DEGRADED,
+            detail="Observations 48.0h stale",
+        )
+        result_a = _result_with_ensemble(
+            _MODEL_A, ens_a, input_quality=InputQualityLevel.FULL
+        )
+        result_b = _result_with_ensemble(
+            _MODEL_B,
+            ens_b,
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=(degraded_flag,),
+        )
+        multi = _make_multi({_MODEL_A: result_a, _MODEL_B: result_b})
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert len(forecasts) == 1
+        fc = forecasts[0]
+        assert fc.input_quality == InputQualityLevel.DEGRADED
+        assert degraded_flag in fc.input_quality_flags
+
+    def test_all_full_contributors_yields_full(self) -> None:
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_A,
+        )
+        ens_b = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_B,
+            rng=random.Random(9),
+        )
+        result_a = _result_with_ensemble(
+            _MODEL_A, ens_a, input_quality=InputQualityLevel.FULL
+        )
+        result_b = _result_with_ensemble(
+            _MODEL_B, ens_b, input_quality=InputQualityLevel.FULL
+        )
+        multi = _make_multi({_MODEL_A: result_a, _MODEL_B: result_b})
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].input_quality == InputQualityLevel.FULL
+        assert forecasts[0].input_quality_flags == ()
+
+    def test_degraded_model_absent_from_parameter_does_not_degrade_product(
+        self,
+    ) -> None:
+        """model_b is DEGRADED but contributes only water_level, never
+        discharge -- the discharge product must read FULL, not degraded by
+        a model that never fed it."""
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_A,
+        )
+        ens_c = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_C,
+            rng=random.Random(11),
+        )
+        ens_b_wl = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="water_level",
+            model_id=_MODEL_B,
+            rng=random.Random(12),
+        )
+        degraded_flag = InputQualityFlag(
+            category=InputQualityCategory.NWP,
+            level=InputQualityLevel.DEGRADED,
+            detail="NWP 10.0h stale",
+        )
+        result_a = _result_with_ensemble(
+            _MODEL_A, ens_a, "discharge", input_quality=InputQualityLevel.FULL
+        )
+        result_c = _result_with_ensemble(
+            _MODEL_C, ens_c, "discharge", input_quality=InputQualityLevel.FULL
+        )
+        result_b = _result_with_ensemble(
+            _MODEL_B,
+            ens_b_wl,
+            "water_level",
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=(degraded_flag,),
+        )
+        multi = _make_multi(
+            {_MODEL_A: result_a, _MODEL_B: result_b, _MODEL_C: result_c}
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        # Only "discharge" combines (water_level has a single contributor,
+        # below the 2-contributor pooling floor).
+        assert {fc.ensemble.parameter for fc in forecasts} == {"discharge"}
+        discharge_fc = next(
+            fc for fc in forecasts if fc.ensemble.parameter == "discharge"
+        )
+        assert discharge_fc.input_quality == InputQualityLevel.FULL
+        assert discharge_fc.input_quality_flags == ()
+
+    def test_degraded_model_quantile_represented_does_not_degrade_product(
+        self,
+    ) -> None:
+        """model_b is DEGRADED and DOES contribute a `discharge` ensemble,
+        but as QUANTILES -- excluded from MEMBERS-only pooling, so it must
+        not degrade the discharge product it was never actually pooled
+        into."""
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_A,
+        )
+        ens_c = make_forecast_ensemble(
+            station_id=_STATION,
+            n_members=5,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_C,
+            rng=random.Random(13),
+        )
+        ens_b_quantile = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.QUANTILES,
+            n_steps=10,
+            parameter="discharge",
+            model_id=_MODEL_B,
+            rng=random.Random(14),
+        )
+        degraded_flag = InputQualityFlag(
+            category=InputQualityCategory.WARM_UP,
+            level=InputQualityLevel.DEGRADED,
+            detail="Cold start",
+        )
+        result_a = _result_with_ensemble(
+            _MODEL_A, ens_a, "discharge", input_quality=InputQualityLevel.FULL
+        )
+        result_c = _result_with_ensemble(
+            _MODEL_C, ens_c, "discharge", input_quality=InputQualityLevel.FULL
+        )
+        result_b = _result_with_ensemble(
+            _MODEL_B,
+            ens_b_quantile,
+            "discharge",
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=(degraded_flag,),
+        )
+        multi = _make_multi(
+            {_MODEL_A: result_a, _MODEL_B: result_b, _MODEL_C: result_c}
+        )
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.POOLED,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            qc_checker=_qc_checker(),
+            qc_rules=_discharge_range_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+        )
+
+        assert len(forecasts) == 1
+        assert forecasts[0].input_quality == InputQualityLevel.FULL
+        assert forecasts[0].input_quality_flags == ()

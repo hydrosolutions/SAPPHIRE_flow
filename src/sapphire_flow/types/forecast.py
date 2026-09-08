@@ -64,7 +64,10 @@ class OperationalForecast:
     updated_at: UtcDatetime
     qc_status: QcStatus = QcStatus.RAW
     qc_flags: tuple[QcFlag, ...] = ()
-    input_quality: InputQualityLevel = InputQualityLevel.FULL
+    # None = unknown (no assessment recorded — legacy row, Plan 253 T1a).
+    # Never defaulted to FULL: that would substitute a confident false
+    # answer for "no assessment ran". See migration 0054's docstring.
+    input_quality: InputQualityLevel | None = None
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
     combination_strategy: str | None = None
     source_model_ids: list[ModelId] | None = None

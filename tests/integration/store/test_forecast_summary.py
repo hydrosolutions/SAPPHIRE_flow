@@ -12,9 +12,12 @@ from sapphire_flow.db.metadata import model_artifacts, models
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.domain import InputQualityFlag
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
+    InputQualityCategory,
+    InputQualityLevel,
     NwpCycleSource,
     QcStatus,
 )
@@ -97,6 +100,8 @@ def _make_forecast(
     issued_at: UtcDatetime = _ISSUED_A,
     parameter: str = "discharge",
     rng: random.Random | None = None,
+    input_quality: InputQualityLevel | None = None,
+    input_quality_flags: tuple[InputQualityFlag, ...] = (),
 ) -> OperationalForecast:
     rng = rng or random.Random(42)
     ensemble = make_forecast_ensemble(
@@ -124,6 +129,8 @@ def _make_forecast(
         ensemble=ensemble,
         created_at=_NOW,
         updated_at=_NOW,
+        input_quality=input_quality,
+        input_quality_flags=input_quality_flags,
     )
 
 
@@ -347,3 +354,108 @@ class TestFetchSummariesEmpty:
 
         assert summaries == []
         assert total == 0
+
+
+class TestFetchSummariesInputQuality:
+    """Plan 253 T1c — proven against the real SQL predicate, not only the
+    fake: degraded_only returns exactly the assessed PARTIAL/DEGRADED set,
+    and never an unknown (NULL) row."""
+
+    def test_summary_round_trips_level_and_flags(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        flags = (
+            InputQualityFlag(
+                category=InputQualityCategory.OBSERVATION,
+                level=InputQualityLevel.DEGRADED,
+                detail="Observations 48.0h stale (threshold: 24.0h)",
+            ),
+        )
+        fc = _make_forecast(
+            sid,
+            mid,
+            aid,
+            rng=random.Random(60),
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=flags,
+        )
+        store.store_forecast(fc)
+
+        start = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
+        end = ensure_utc(datetime(2025, 1, 2, 0, tzinfo=UTC))
+        summaries, _total = store.fetch_forecast_summaries(sid, start, end)
+
+        assert summaries[0].input_quality == InputQualityLevel.DEGRADED
+        assert summaries[0].input_quality_flags == flags
+
+    def test_degraded_only_filter_matches_real_sql_predicate(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        t0 = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
+        t1 = ensure_utc(datetime(2025, 1, 1, 1, tzinfo=UTC))
+        t2 = ensure_utc(datetime(2025, 1, 1, 2, tzinfo=UTC))
+        t3 = ensure_utc(datetime(2025, 1, 1, 3, tzinfo=UTC))
+
+        unknown = _make_forecast(sid, mid, aid, issued_at=t0, rng=random.Random(61))
+        full = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=t1,
+            rng=random.Random(62),
+            input_quality=InputQualityLevel.FULL,
+        )
+        partial = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=t2,
+            rng=random.Random(63),
+            input_quality=InputQualityLevel.PARTIAL,
+            input_quality_flags=(
+                InputQualityFlag(
+                    category=InputQualityCategory.NWP,
+                    level=InputQualityLevel.PARTIAL,
+                    detail="NWP 10.0h stale",
+                ),
+            ),
+        )
+        degraded = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=t3,
+            rng=random.Random(64),
+            input_quality=InputQualityLevel.DEGRADED,
+            input_quality_flags=(
+                InputQualityFlag(
+                    category=InputQualityCategory.OBSERVATION,
+                    level=InputQualityLevel.DEGRADED,
+                    detail="Observations 48.0h stale",
+                ),
+            ),
+        )
+        for fc in (unknown, full, partial, degraded):
+            store.store_forecast(fc)
+
+        start = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
+        end = ensure_utc(datetime(2025, 1, 2, 0, tzinfo=UTC))
+        summaries, total = store.fetch_forecast_summaries(
+            sid, start, end, degraded_only=True
+        )
+
+        assert total == 2
+        assert {s.id for s in summaries} == {partial.id, degraded.id}

@@ -34,6 +34,7 @@ from sapphire_flow.types.enums import (
     FlowRegime,
     ForcingType,
     ForecastStatus,
+    InputQualityLevel,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     ObservationSource,
@@ -333,6 +334,7 @@ class FakeForecastStore:
         *,
         model_id: ModelId | None = None,
         parameter: str | None = None,
+        degraded_only: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ForecastSummaryRow], int]:
@@ -348,12 +350,19 @@ class FakeForecastStore:
                 qc_status=f.qc_status,
                 nwp_cycle_source=f.nwp_cycle_source,
                 created_at=f.created_at,
+                input_quality=f.input_quality,
+                input_quality_flags=f.input_quality_flags,
             )
             for f in self._forecasts.values()
             if f.station_id == station_id
             and start <= f.issued_at < end
             and (model_id is None or f.model_id == model_id)
             and (parameter is None or f.ensemble.parameter == parameter)
+            and (
+                not degraded_only
+                or f.input_quality
+                in (InputQualityLevel.PARTIAL, InputQualityLevel.DEGRADED)
+            )
         ]
         matches.sort(key=lambda s: (s.issued_at, s.id), reverse=True)
         total = len(matches)

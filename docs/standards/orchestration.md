@@ -175,22 +175,26 @@ for model in group_scoped_models:
 for model in station_scoped_models:
     station_results = forecast_station.map(inputs)  # each loads its own artifact
 
-# Step 1.10: Forecast QC — filter QC-failed forecasts before Phase C
-# rule_set, overrides, baselines batch pre-fetched at flow start
-for station_id, model_ensembles in all_ensembles.items():
-    for model_id, param_ensembles in list(model_ensembles.items()):
-        for param, ensemble in list(param_ensembles.items()):
-            flags = qc_checker.check(ensemble, rule_set, overrides[station_id], baselines[station_id])
-            status = aggregate_qc_status(flags)
-            if status == QcStatus.QC_FAILED:
-                del all_ensembles[station_id][model_id][param]  # filtered from Phase C
+# Step 1.10: Forecast QC — per-assignment; QC_FAILED is handled at the assignment
+    # (station -> next model, group -> dropped, combined -> stored marked failed).
+    # NOTE: there is no separate QC filter at the Phase C entry point; that gate
+    # partitions by AlertEligibility alone (Plan 253 T3a corrected this claim).
+# rule_set, overrides, baselines batch pre-fetched at flow start.
+# QC runs INSIDE assignment execution, not as a pass over all_ensembles:
+#   station  -> run_station_forecast returns AssignmentFailure(QC_FAILED);
+#               the assignment never yields an ensemble, so nothing reaches
+#               all_ensembles and the flow tries the next model by priority.
+#   group    -> run_group_forecast returns no forecast for that station.
+#   combined -> QC'd in build_combined_forecasts, STORED marked QC_FAILED
+#               (Plan 253 OD-1) and excluded from the Forecast Lab (OD-1a).
+#               The combined product is never an alert input either way.
 
-check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010) — QC-failed ensembles already filtered above
+check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010) — partitions by AlertEligibility ONLY; there is no qc_status predicate here
 ```
 
 **Phase 8 implementation notes for Flow 1:**
 
-- Step 1.7 (`prepare_inputs`) must wire input quality assessment as a sub-step: call `assess_input_quality()` from `services/input_quality.py` and attach the result to the prepared inputs so downstream steps and `forecast.input_quality_assessed` logging have access to it.
+- Step 1.7 (`prepare_inputs`) must wire input quality assessment as a sub-step: call `assess_input_quality()` from `services/input_quality.py` and attach the result to the prepared inputs so downstream steps and `forecast.input_quality_assessed` logging have access to it. **Status (Plan 253 T4b, 2026-09-04):** the assessment call and downstream persistence/API exposure are done (Plan 253 T1a-T1c); the `forecast.input_quality_assessed` logging event itself remains unimplemented (`docs/standards/logging.md` § Canonical forecast cycle events) -- emitting it was out of Plan 253's persist-and-serve scope.
 - Phase 8 must also design season-aware threshold resolution — thresholds in `InputQualityConfig` may need to vary by season (e.g. stricter thresholds during monsoon). See Plan 023 §Season-aware threshold resolution for options and the bounding invariant.
 
 For group-scoped models, the artifact is deserialized once per model (not per station) and passed to all mapped tasks via Prefect's `unmapped()`. This eliminates deserialization overhead without changing the per-station `predict()` contract.

@@ -205,6 +205,7 @@ class ForecastStore(Protocol):
         *,
         model_id: ModelId | None = None,
         parameter: str | None = None,
+        degraded_only: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ForecastSummaryRow], int]:

@@ -57,7 +57,7 @@ Runs on a sub-hourly schedule (approximately every 30 minutes). For each DHM sta
    - Frozen sensor detection (identical value repeated over N intervals)
    - Spike detection (single-interval outlier that reverts)
    - Gross outlier detection (beyond historical climatological envelope)
-4. Flags each observation: `qc_passed`, `qc_suspect`, or `qc_failed`. A `missing` marker is inserted if an expected observation was not received.
+4. Flags each observation: `qc_passed`, `qc_suspect`, or `qc_failed`. A `missing` marker exists in the vocabulary for an expected-but-not-received observation, but **no gauged feed synthesises one today** — a silent sensor currently leaves no row at all. Producing them is scoped in Plan 250.
 5. Derives discharge from water level using the active rating curve (once rating curves are loaded).
 6. Checks observed values against flood thresholds in real time and raises observation-based alerts. Alerts can be queried via API.
 
@@ -479,4 +479,4 @@ For flood thresholds: will these be available via the same API as station metada
 
 Should SAPPHIRE flag each forecast with an input quality indicator (FULL / PARTIAL / DEGRADED) based on observation staleness, NWP cycle age, and warm-up state? Should forecasters be notified when a forecast is produced under degraded input conditions?
 
-Yes to both. SAPPHIRE flags every operational forecast with an `InputQualityLevel` (FULL, PARTIAL, or DEGRADED) and a list of `InputQualityFlag` entries explaining what is degraded and why. The quality level is exposed in the API and displayed in the dashboard. In v0, there is no push notification — quality is visible in the API response and logged. In v1, a forecaster notification will be added when a station's forecast is DEGRADED, using the notification infrastructure (step 1.14).
+Yes to both. SAPPHIRE flags every operational forecast with an `InputQualityLevel` (FULL, PARTIAL, or DEGRADED) and a list of `InputQualityFlag` entries explaining what is degraded and why. The quality level and its flags are persisted on the forecast and exposed in the API (Plan 253 T1a-T1c). **Dashboard display and the `forecast.input_quality_assessed` log event are specified but NOT yet implemented** — the assessment reaches the API, not a screen and not the log. In v0 there is no push notification. In v1, a forecaster notification will be added when a station's forecast is DEGRADED, using the notification infrastructure (step 1.14).

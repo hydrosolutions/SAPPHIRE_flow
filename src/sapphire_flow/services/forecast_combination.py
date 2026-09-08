@@ -7,6 +7,13 @@ import numpy as np
 import polars as pl
 import structlog
 
+from sapphire_flow.services.qc_datum import (
+    add_forecast_datum_details,
+    forecast_skipped_rules,
+    shift_ensemble_for_water_level_datum,
+)
+from sapphire_flow.services.run_station_forecast import worst_qc_status
+from sapphire_flow.types.domain import aggregate_input_quality
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
@@ -28,8 +35,19 @@ if TYPE_CHECKING:
     from datetime import datetime, timedelta
     from uuid import UUID
 
-    from sapphire_flow.services.run_station_forecast import MultiModelForecastResult
+    from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
+    from sapphire_flow.services.run_station_forecast import (
+        MultiModelForecastResult,
+        StationForecastResult,
+    )
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.domain import (
+        ClimBaseline,
+        ForecastQcRuleSet,
+        InputQualityFlag,
+        QcFlag,
+        StationForecastQcOverride,
+    )
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import NwpCycleSource
 
@@ -292,6 +310,71 @@ def _derive_uniform_time_step(ensemble: ForecastEnsemble) -> timedelta | None:
     return next(iter(deltas))
 
 
+def _qc_combined_ensemble(
+    ensemble: ForecastEnsemble,
+    *,
+    qc_checker: ForecastOutputQualityChecker,
+    qc_rules: ForecastQcRuleSet,
+    qc_overrides: list[StationForecastQcOverride],
+    baselines: list[ClimBaseline],
+    water_level_datum_masl: float | None,
+) -> tuple[QcStatus, tuple[QcFlag, ...]]:
+    """Plan 253 T2a — the SAME rules and datum handling the member path
+    applies (`run_station_forecast.py`), reused rather than reimplemented,
+    so a `_pooled`/`_bma` combination is quality-controlled on identical
+    terms to the ensembles it was built from. Without the datum shift, raw
+    metres-above-sea-level `water_level` values run against the relative
+    `-2..20 m` bounds and fail falsely (the Plan 101 defect)."""
+    param = ensemble.parameter
+    datum = water_level_datum_masl if param == "water_level" else None
+    qc_ensemble = shift_ensemble_for_water_level_datum(ensemble, datum=datum)
+    skipped_rules = forecast_skipped_rules(param, datum)
+    flags = qc_checker.check(
+        qc_ensemble,
+        qc_rules,
+        qc_overrides,
+        baselines,
+        skipped_rule_ids=skipped_rules,
+    )
+    flags = add_forecast_datum_details(
+        flags,
+        raw_ensemble=ensemble,
+        shifted_ensemble=qc_ensemble,
+        datum=datum,
+    )
+    return worst_qc_status(flags), tuple(flags)
+
+
+def _contributor_input_quality(
+    combinable_results: dict[ModelId, StationForecastResult],
+    param: str,
+    *,
+    weights: dict[ModelId, float] | None,
+) -> tuple[InputQualityLevel, tuple[InputQualityFlag, ...]]:
+    """Plan 253 T2b — the aggregate input quality of the models that
+    actually contributed to THIS parameter, mirroring the eligibility
+    `combine_ensembles_pooled`/`combine_ensembles_bma` apply (MEMBERS
+    representation, and BMA's weight > 0) so a model excluded from a given
+    parameter (absent, quantile-represented, or zero-weighted) never
+    degrades a product it never fed."""
+    flags: list[InputQualityFlag] = []
+    for model_id, result in combinable_results.items():
+        ensemble = result.ensembles.get(param)
+        if (
+            ensemble is None
+            or ensemble.representation != EnsembleRepresentation.MEMBERS
+        ):
+            continue
+        if weights is not None and weights.get(model_id, 0.0) <= 0.0:
+            continue
+        contributor_forecast = next(
+            (fc for fc in result.forecasts if fc.ensemble.parameter == param), None
+        )
+        if contributor_forecast is not None:
+            flags.extend(contributor_forecast.input_quality_flags)
+    return aggregate_input_quality(flags), tuple(flags)
+
+
 def build_combined_forecasts(
     station_id: StationId,
     multi_result: MultiModelForecastResult,
@@ -300,6 +383,11 @@ def build_combined_forecasts(
     nwp_cycle_source: NwpCycleSource,
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
+    qc_checker: ForecastOutputQualityChecker,
+    qc_rules: ForecastQcRuleSet,
+    qc_overrides: list[StationForecastQcOverride],
+    baselines: list[ClimBaseline],
+    water_level_datum_masl: float | None = None,
     weights: dict[ModelId, float] | None = None,
 ) -> list[OperationalForecast]:
     if strategy == ModelCombinationStrategy.PRIMARY:
@@ -384,6 +472,55 @@ def build_combined_forecasts(
         # post-persistence reload agree.
         if derived_time_step != ensemble.time_step:
             ensemble = replace(ensemble, time_step=derived_time_step)
+        # Plan 253 review (fail closed) — QC rules are selected by EXACT
+        # `(parameter, time_step)` (`ForecastQcRuleSet.rules_for`), and
+        # production declares forecast QC rules at 3600 s and 86400 s ONLY
+        # (`config/forecast_qc_rules.py`). A combination rebuilt on a
+        # derived step no rule covers — the uniformly coarsened 2-hourly
+        # intersection the block above exists to relabel is exactly that —
+        # therefore selects zero rules, produces zero flags, and
+        # `worst_qc_status([])` returns `QC_PASSED`
+        # (`run_station_forecast.py`): an UNCHECKED combination published
+        # as one that was checked and passed. Skip it, on the same terms as
+        # the two floors above skip a grid that cannot be published
+        # honestly. Storing it as RAW instead would re-conflate "never
+        # checked" with "checked, nothing to report" — the very confusion
+        # this task removes. Member-model ensembles are unaffected: this
+        # floor sits at the COMBINATION persistence boundary only, and a
+        # member runs at its assignment's declared step.
+        if not qc_rules.rules_for(ensemble.parameter, ensemble.time_step):
+            log.warning(
+                "forecast_combination.no_qc_rules_for_step_not_persisted",
+                parameter=param,
+                station_id=str(station_id),
+                time_step_seconds=ensemble.time_step.total_seconds(),
+            )
+            continue
+
+        qc_status, qc_flags = _qc_combined_ensemble(
+            ensemble,
+            qc_checker=qc_checker,
+            qc_rules=qc_rules,
+            qc_overrides=qc_overrides,
+            baselines=baselines,
+            water_level_datum_masl=water_level_datum_masl,
+        )
+        input_quality, input_quality_flags = _contributor_input_quality(
+            combinable_results, param, weights=weights
+        )
+        if qc_status == QcStatus.QC_FAILED:
+            # OD-1: a combined forecast has no next candidate to fall
+            # through to (unlike a member model, which routes to
+            # fallback), so it is STORED marked failed rather than
+            # dropped -- the alternative forfeits the evidence of what was
+            # rejected and why.
+            log.warning(
+                "forecast_combination.combined_qc_failed",
+                station_id=str(station_id),
+                parameter=param,
+                strategy=combination_strategy_label,
+            )
+
         forecast = OperationalForecast(
             id=ForecastId(uuid_factory()),
             station_id=station_id,
@@ -401,10 +538,10 @@ def build_combined_forecasts(
             ensemble=ensemble,
             created_at=now,
             updated_at=now,
-            qc_status=QcStatus.RAW,
-            qc_flags=(),
-            input_quality=InputQualityLevel.FULL,
-            input_quality_flags=(),
+            qc_status=qc_status,
+            qc_flags=qc_flags,
+            input_quality=input_quality,
+            input_quality_flags=input_quality_flags,
             combination_strategy=combination_strategy_label,
             source_model_ids=source_model_ids,
         )

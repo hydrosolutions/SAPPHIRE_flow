@@ -396,6 +396,16 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   the first pair on readback regardless of what the rest of the grid looks
   like. `combine_ensembles_bma` is UNCHANGED (still unions; latent, not
   deployed).
+  **Plan 253 T2a adds a THIRD persistence floor**: a combination whose
+  `(parameter, time_step)` selects NO forecast QC rule is not persisted, logging
+  `forecast_combination.no_qc_rules_for_step_not_persisted`. Rules are selected by
+  EXACT `(parameter, time_step)` and production declares them at 3600 s and 86400 s
+  only, so a combination rebuilt on a coarsened derived step would otherwise select
+  zero rules, raise zero flags, and be stored `QC_PASSED` — an unchecked forecast
+  published as a checked one. ⛔ This floor applies to COMBINED station forecasts
+  ONLY: member and group forecasts run at their assignment's declared step and are
+  unaffected. A `QC_FAILED` combination IS persisted, marked failed (OD-1), and
+  excluded from the Forecast Lab (OD-1a) — that is a different case from this floor.
 - fan-out: Phase A `_fetch_nwp_task.submit` + Step 1.6
   `_fetch_obs_timestamps_task.submit` (the only concurrency in the flow)
 - drift guard: `_check_fallback_priority_drift`
