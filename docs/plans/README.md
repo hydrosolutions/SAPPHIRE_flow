@@ -199,7 +199,10 @@ exit criteria — Plan 212 owns that deeper screening.
   conditions could not be collected in scope (`short_lookback` is never emitted
   during onboarding and is now REMOVED; the invalid-geometry reason is discarded
   inside `eligible_meteoswiss_configs`, which T1 now fixes), and the `blocks: 256`
-  dependency ran backwards. Not re-reviewed yet.
+  dependency ran backwards. Round 2 added: outcomes must key on REQUESTED not
+  resolved stations or the report's Failed section can never populate; the report
+  destination is now decided in-plan; and both plans now share one reason-derivation
+  rule after they were found naming different reasons for the same stations.
 - **256** — Onboarding must not promote what it did not build — `DRAFT`,
   **high-risk** — closes the two paths to `operational` without the substance the
   status claims. (1) A station excluded from the MeteoSwiss binding for an invalid
@@ -218,8 +221,18 @@ exit criteria — Plan 212 owns that deeper screening.
   exact (143 QC'd all have baselines; the 5 un-QC'd have none). ⚠️ Codex returned 4
   blockers on the first draft — chiefly that T1 did not remediate Branson at all,
   since `update_station` never writes `station_status` and the hold branch only
-  `continue`s, so an already-operational station is untouched. Depends on 255 **T1
-  only**. Not re-reviewed yet.
+  `continue`s. 🔑 **Scope narrowed on owner decision 2026-09-08**: `station_status`
+  is overloaded — it gates forecasting AND ingest (`ingest_observations.py:604`
+  polls only `operational`), so NO status value means "keep collecting, don't
+  forecast", and demoting Branson would stop its observation collection
+  permanently. This plan therefore prevents the NEXT wrong promotion and does not
+  demote live stations. Depends on 255 **T1 only**; blocks 258.
+- **258** — Recover the three stations whose history QC never processed —
+  `BLOCKED` on 256 T3 — 2041, 2116 and 2615 hold 14 610 / 14 610 / 9 497 pre-2026
+  rows still in `raw`; the fleet partition is exact (all 143 QC'd stations have
+  baselines, none of the 5 un-QC'd do). Deliberately has no tasks until the cause
+  of the QC skip is known — writing them now would be guessing, and
+  `workflow.md:129` forbids a READY plan that defers its own inputs.
 - **257** — Combined-forecast coverage is unmonitored — `DRAFT` — `_pooled` writes
   stopped on staging at 2026-09-04 06:26Z and were found by hand four days later.
   Nothing reported it: `forecast_freshness` read `ok` throughout — correctly, since it
