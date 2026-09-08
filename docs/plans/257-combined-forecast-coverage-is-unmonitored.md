@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-08
 plan: 257
 title: A whole forecast product went dark for four days under a green light
-scope: ONE pipeline_health check type for combined-forecast coverage, emitted once per forecast cycle from the existing end-of-cycle accounting point, plus the decision of whether the watchdog pages on it. Explicitly NOT the combiner's behaviour (Plan 222 — correct as-is), NOT the anchoring that would refill the product (Plan 226), NOT a general per-product coverage ledger for every model, NOT new alert transport.
+scope: ONE pipeline_health check type for combined-forecast coverage, emitted once per forecast cycle at every site that already emits the freshness heartbeat, measured against a DECLARED station list (not the per-cycle contributor count) and counting only API-servable non-QC-failed discharge rows. Records evidence and a ready-made alarm condition; the watchdog probe is a named follow-up, not part of this plan. Explicitly NOT the combiner's behaviour (Plan 222 — correct as-is), NOT the anchoring that would refill the product (Plan 226), NOT a general per-product coverage ledger for every model, NOT new alert transport.
 depends_on: []
 blocks: []
 source: 2026-09-08 — read-only diagnosis of why `_pooled` writes stopped on the mac-mini staging host. The stoppage was found by hand four days later; nothing in the system had reported it.
@@ -120,54 +120,64 @@ operators to ignore it — which is the same failure this plan exists to fix, on
 
 ## Decisions
 
-- **D1 — record the `n_models` DISTRIBUTION, not an eligible/written pair.** ⭐ This supersedes the
-  original recommendation, which was wrong. Count stations by
-  `len(multi_result.combinable_results)` — the same property `build_combined_forecasts` gates on
-  (`services/forecast_combination.py:397`), read off `MultiModelForecastResult.combinable_results`
-  (`services/run_station_forecast.py:127-131`) — and record the histogram alongside how many got a
-  `_pooled` row.
+- **D1 — DECIDED (owner, 2026-09-08): measure against a DECLARED station list, not against what
+  happened to run.** ⭐ This supersedes two earlier recommendations, both wrong.
 
-  **Both simpler designs have a blind spot, in opposite directions**, which is why the histogram is
-  the only correct shape:
-  - Defining eligible as `>= 2` and reporting `eligible / written` makes the **101 invisible** —
-    they are simply "not eligible" and never appear.
-  - Counting `pooled_empty_intersection` events reports **34 and misses the 101** entirely.
+  The expectation is a **fixed, configured list of stations expected to carry a combined discharge
+  forecast**, held in deployment config. Status is derived from that list. The `n_models` histogram
+  is retained as **diagnostic detail only** and never drives status.
 
-  A distribution keeps both populations visible and distinguishable, costs one field, needs no new
-  plumbing, and — the property that matters most — **it does not require this plan to know WHY a
-  station has one model.** That keeps it a coverage plan and stops it drifting into model health,
-  which the Proportionality section forbids. Rejected alternative: counting from `model_assignments`,
-  which would call 148 stations eligible and never agree with what actually ran.
-- **D2 — what status, while Plan 226 is open?** Two candidates, and the plan must pick one before
-  T1 is written:
-  - **(a) Honest and loud.** `critical` when eligible > 0 and written == 0; `warning` when
-    0 < written < eligible; `ok` when written == eligible. Born red. Recommended for the *record*;
-    see D3 for whether it pages.
+  🔴 **Why the per-cycle count fails — this is the blocker that forced the change** (independent
+  review, 2026-09-08). `combinable_results` holds only *successful* non-fallback results, so the
+  denominator evaporates exactly when things break: if every three-model station falls to one model,
+  `expected == written == 0` and the check reports **`ok`** — reproducing the precise false-green
+  this plan exists to prevent. Worse, a station skipped before a `MultiModelForecastResult` exists
+  (no assignments, or input assembly failed — `flows/run_forecast_cycle.py:2791`, `:3090`) cannot
+  appear in any bucket at all, so the entire product can vanish upstream while the check stays green.
+  A declared list cannot evaporate.
 
-    🔴 **`written` is NOT `servable`, and after Plan 253 the difference is real.** 253 shipped
-    2026-09-08: a combined forecast that FAILS QC is deliberately **stored** marked `QC_FAILED`
-    (OD-1) and **excluded from the Forecast Lab** (OD-1a, `services/forecast_lab/db_sources.py`).
-    So every eligible station could have a written row, this check could report `ok`, and the
-    product could still be unavailable — which is the exact failure this plan exists to catch.
-    Either count only rows that are servable, or state plainly that this check covers persistence
-    only and name what covers availability. Do not let "written == eligible" stand unqualified.
+  Two rejected alternatives, and why:
+  - **`len(combinable_results) >= 2`** — evaporates, as above. It is also not real per-parameter
+    eligibility: the combiner separately drops missing and non-`MEMBERS` ensembles and applies the
+    floor *per parameter* (`services/forecast_combination.py:96`, `:106`), so two successful models
+    with disjoint parameters would be counted eligible while correctly producing no pool — a false
+    critical.
+  - **Counting `pooled_empty_intersection` events** — reports the 34 and misses the 101 entirely.
 
-    ⚠️ **T2's drop-reason list is also missing one that 253 introduced:**
-    `forecast_combination.no_qc_rules_for_step_not_persisted` — a combination for which no QC rule
-    exists is now deliberately not persisted at all. That is a third way to be absent, distinct from
-    the two this plan enumerates.
-  - **(b) Declared-baseline.** Config carries the currently-accepted dark count; status is relative
-    to it, so a *regression* is red and the known-dark state is `warning`. Honest but adds a config
-    knob that must be un-set when Plan 226 lands, and a stale knob is its own silent failure.
-  Recommendation: **(a)**, paired with D3's "record but do not page". It needs no new config and the
-  red state is exactly the pressure that should exist while a product is dark.
-- **D3 — does the watchdog page on it?** Recommend **no, not initially.** Record to
-  `pipeline_health` (visible in `/health/detail?check_type=…`) but do not add a watchdog probe until
-  Plan 226 has landed and the check has been observed green for at least one full day. Rationale: the
-  watchdog's Slack path is the shared alert channel; introducing a permanently-firing alert there
-  would degrade every other alert on it. The plan must record this as a **deliberate, time-boxed**
-  deferral with the trigger for revisiting it, not leave it unstated — an unpaged check is still a
-  check nobody reads.
+  ⚠️ Cost to accept openly: a configured list must be maintained, and a stale list is its own silent
+  failure. T1 mitigates by recording the list's size in `detail` every cycle, so drift is visible in
+  the same row rather than hidden in config.
+- **D2 — DECIDED: the numerator is what a user can actually be served, not what was written.**
+  🔴 Second blocker (independent review, 2026-09-08), and it is **new behaviour that landed after
+  this plan was drafted**: under Plan 253's OD-1 a QC-failed combination is deliberately **stored**
+  (`services/forecast_combination.py:511`), while the Forecast Lab explicitly **excludes** those rows
+  and reports `no_combined_forecast` (`services/forecast_lab/db_sources.py:206`). Counting stored
+  rows would therefore report full coverage while the API reports unavailable — again the exact
+  blind spot this plan claims to close.
+
+  So a station counts as covered only when it has a combined row that is **persisted, not
+  `QC_FAILED`, and for `discharge`** — the parameter the API actually fetches, where
+  `build_combined_forecasts` may return rows for several (`services/forecast_combination.py:434`).
+  Status: `ok` when covered == declared; `warning` when partially covered; `critical` when
+  declared > 0 and covered == 0.
+
+  **Tests must cover the QC-failed and failed-store cases explicitly** — a test that only exercises
+  the happy path would not have caught either blocker.
+- **D3 — DECIDED: record now, page later, with a trigger that does not depend on a halted plan.**
+  Write to `pipeline_health` and add **no** watchdog probe initially. The known-dark state means the
+  check is red from day one, and a permanently-firing alert on the shared Slack channel would
+  degrade every other alert on it.
+
+  **Trigger to revisit: the first time this check reports `ok` for a full day, add the watchdog
+  probe.** Deliberately *not* "when Plan 226 lands" — 226 is itself halted pending the timezone
+  consolidation, so tying the trigger to it would leave the deferral open-ended. This trigger fires
+  on observed reality instead.
+
+  ⚠️ State the outcome honestly, and do not overclaim: `/api/v1/health` does not inspect
+  `pipeline_health` rows and will keep returning `ok` (`api/routes/health.py:27`). Until the probe is
+  added, this plan delivers **durable evidence and a ready-made alarm condition — not an alert.**
+  The gap named in the title is only fully closed when the probe lands, and that follow-up is owned
+  here rather than left implicit.
 - **D4 — is one row per cycle, or one per station, the right cardinality?** Recommend **one per
   cycle**, subject `forecast_combination`, with counts in `detail`. Per-station rows would add ~34
   rows/cycle to a table that already carries 646 `alert_suppressed_fallback` warnings since 09-04,
@@ -202,9 +212,34 @@ operators to ignore it — which is the same failure this plan exists to fix, on
   ambiguous between "dark product" and "dead cycle" recreates the confusion this diagnosis cost four
   days to resolve.
 
+## Phase graph
+
+Single phase, single task. T2 is explicitly not scheduled (owner decision), so there is nothing to
+sequence against it.
+
+```json
+{"phases": [{"id": "P1", "tasks": ["T1"], "depends_on": []}]}
+```
+
 ## Tasks
 
 ### T1 — the check (the whole of the required work)
+
+**Outcome:** every scheduled forecast cycle writes one durable `pipeline_health` row stating how
+many stations were declared to need a combined discharge forecast and how many actually have a
+servable one — so the 2026-09-04 stoppage would have been visible in the database on the day it
+happened, not found by hand four days later.
+
+**Pre-change evidence (the failure this same evidence exposes):** on the current staging state,
+`SELECT check_type, status, max(checked_at) FROM pipeline_health GROUP BY 1,2` returns
+`forecast_freshness | ok` while zero `_pooled` rows have been written since 2026-09-04 06:26Z. After
+T1, the same query returns a `forecast_combination_coverage` row reporting `stations_covered: 0`.
+
+**In:** `PipelineCheckType`; one emitter beside `_emit_forecast_freshness_record` and its five call
+sites; the deployment-config declared-station list; the `detail` payload; the status precedence;
+tests; the check-type documentation in `docs/architecture-context.md`.
+**Out:** `combine_ensembles_pooled` / `build_combined_forecasts` behaviour of any kind; the watchdog
+probe (D3's follow-up); `drop_reasons` (T2, unscheduled); any other `model_id`'s coverage.
 
 Add `FORECAST_COMBINATION_COVERAGE = "forecast_combination_coverage"` to `PipelineCheckType`
 (`types/enums.py:193`) and a sibling emitter to `_emit_forecast_freshness_record`
@@ -216,9 +251,13 @@ following that function's existing conventions exactly:
   record and could mask or fake a live state.
 - `subject="forecast_combination"`, `cycle_time=resolved_cycle_time`.
 - `detail`: `{"strategy": <configured strategy value>, "cycle_completed": bool,
-  "stations_by_n_models": {"0": int, "1": int, "2": int, "3+": int}, "stations_written": int}`
-  (D1). `stations_eligible` is derivable as the sum of the `>= 2` buckets and is NOT stored
-  separately — one number that can disagree with the histogram is worse than none.
+  "stations_declared": int, "stations_covered": int,
+  "stations_by_n_models": {"0": int, "1": int, "2": int, "3+": int}}`.
+  `stations_declared` is the size of D1's configured list (recorded every cycle so config drift is
+  visible in the row, not hidden); `stations_covered` counts stations from that list holding a
+  persisted, non-`QC_FAILED`, `discharge` combined row for this cycle (D2). The histogram is
+  **diagnostic detail only and never drives status** — it is what keeps the 101 single-model
+  stations visible without this plan needing to know why they have one model.
 - Called from all five sites that already emit `FORECAST_FRESHNESS`, with `cycle_completed=False`
   at the **two** true no-work sites only (`:2677`, `:1764`) — see D5 for why the other two are not
   aborts.
@@ -235,43 +274,46 @@ following that function's existing conventions exactly:
   revision of this plan called it stale at five; **it is correct** — that helper is itself the fifth
   site, and "all four" names the four that predate it.
 
-**Verification:** unit tests over the status mapping at each boundary (eligible=0; eligible>0 and
-written=0; partial; full; PRIMARY; and `cycle_completed=False` with eligible>0 asserting it does
-**not** reach `critical`), plus one test asserting the record is **not** written for an
-explicit-`cycle_time` run, and one asserting every `_emit_forecast_freshness_record` call site has a
-paired coverage emit — so a sixth freshness site added later cannot silently skip coverage. A test
-that only asserts "a row was written" locks nothing; each test must distinguish its case from the
-adjacent one.
+**Verification:** `uv run pytest tests/unit/flows/test_run_forecast_cycle.py -k coverage` plus the
+full unit suite. Each test must distinguish its case from the adjacent one — a test that only
+asserts "a row was written" locks nothing. Required cases:
 
-### T2 — carry the reason (SECOND HALF, cut this first if the plan must shrink)
+- status mapping at each boundary: declared=0; declared>0 and covered=0; partial; full.
+- `PRIMARY` → `ok` even with `cycle_completed=False` (the precedence, which was ambiguous before).
+- `cycle_completed=False` with declared>0 → does **not** reach `critical`.
+- **a `QC_FAILED` combined row does NOT count as covered** (D2 — the blocker; store it, assert
+  `stations_covered` does not increment).
+- **a failed store does NOT count as covered** (D2).
+- **a cycle in which every station falls to one model reports `critical`, not `ok`** (D1 — proves
+  status follows the declared list and not the evaporating per-cycle count).
+- the record is **not** written for an explicit-`cycle_time` run.
+- every `_emit_forecast_freshness_record` call site has a paired coverage emit, so a sixth site
+  added later cannot silently skip coverage.
 
-T1's histogram says a station had 3 contributors and no row. It does not name the gate that dropped
-it — and the persistence-boundary gates (`pooled_single_timestamp_not_persisted` `:445`, `pooled_non_uniform_spacing_not_persisted` `:461`,
-and `no_qc_rules_for_step_not_persisted` `:493` — the last added by PR #264) are
-indistinguishable from the intersection gate in the histogram alone.
+### T2 — NOT SCHEDULED: revisit "why did it fail" after T1 ships (owner decision, 2026-09-08)
 
-⭐ **This is much smaller than first scoped.** The original T2 proposed changing
-`build_combined_forecasts`' return type to report the gate. That is unnecessary: **the events
-already exist and already carry what is needed** — `pooled_empty_intersection` fires per
-station/parameter at `:148`, its siblings at `:96`/`:106` and `:445`/`:461`/`:493`, and the flow's own
-`combined_forecast_skipped` carries `n_models`. Nothing aggregates them into a record that survives
-a redeploy; that is the entire gap.
+T1 says a declared station is uncovered. It does not name which gate dropped it, and the gates are
+not distinguishable from the record alone: the intersection gate (`:148`), the contributor floor
+(`:106`), and three persistence-boundary rejections
+(`pooled_single_timestamp_not_persisted` `:445`, `pooled_non_uniform_spacing_not_persisted` `:461`,
+`no_qc_rules_for_step_not_persisted` `:493` — the last added by PR #264).
 
-So T2 is: **count the warnings the combination path already emits within a cycle, and put the tally
-in T1's `detail`** as `{"drop_reasons": {"<reason>": <count>}}` — a counter threaded through the
-cycle, not a signature change. No return type moves, and **no change whatsoever to which rows are
-written** (Plan 222's contract, out of scope).
+⛔ **An earlier revision claimed this was cheap — "count the warnings already emitted". That was
+wrong**, and the independent review was right to reject it. The combination service writes to a
+module logger and returns only forecasts (`services/forecast_combination.py:57`); the flow receives
+no event or diagnostic object (`flows/run_forecast_cycle.py:2932`), and there is no cycle-local log
+collector. Aggregating those counts requires a signature or callback change on the shared
+combination path, or global logging instrumentation — not a counter threaded through the cycle.
 
-⚠️ Note the asymmetry T1's histogram already exposes and T2 must not paper over: the `<2` path
-emits **no service-level event at all** (`:397` returns before the combiner is entered), so
-`drop_reasons` will legitimately not account for the 101. The histogram is what covers them; the two
-fields are complementary and neither is sufficient alone.
+**Owner decision: ship T1 first, then judge from real use whether the missing reasons actually slow
+an investigation down.** Do not schedule the instrumentation now. If it is taken up later it needs
+its own plan, its own review, and an explicit authorisation to change the combination path's
+signature — which this plan's Proportionality section otherwise forbids.
 
-**Verification:** a test asserting that a station whose contributors have an empty `valid_time`
-intersection is tallied under `pooled_empty_intersection` and not merely as "not written"; a test
-asserting a `<2`-contributor station appears in the histogram but contributes **no** `drop_reasons`
-entry; and the existing Plan 222 combination tests passing unchanged, proving write behaviour did
-not move.
+⚠️ Note for whoever picks it up: even a complete `drop_reasons` tally would **not** account for the
+101 single-model stations, because that path emits no service-level event at all (`:397` returns
+before the combiner is entered). The histogram covers them; the two are complementary and neither
+is sufficient alone.
 
 ## Non-goals
 
@@ -287,7 +329,10 @@ not move.
 - A `forecast_combination_coverage` row is written by every scheduled forecast cycle, and by no
   backfill/replay run.
 - On the current staging state the check reproduces, automatically, the finding that took a manual
-  investigation on 2026-09-08: `stations_written: 0` against a histogram of
-  `{"0": 5, "1": 101, "3+": 34}` — both the 34 and the 101 visible and distinguishable in one row.
-- D3's paging decision is recorded in the plan with its revisit trigger, whichever way it goes.
+  investigation on 2026-09-08: `stations_covered: 0` against a non-zero `stations_declared`, with
+  the histogram showing `{"0": 5, "1": 101, "3+": 34}` — both the 34 and the 101 visible in one row.
+- A test proves a QC-failed combined row does **not** count as covered, and a test proves a failed
+  store does not either (D2). Without these two, neither blocker the review found is locked out.
+- A test proves the declared list, not the per-cycle contributor count, drives status — i.e. a cycle
+  in which every station falls to one model reports `critical`, not `ok` (D1's blocker).
 - Full test suite passes after the final code change.
