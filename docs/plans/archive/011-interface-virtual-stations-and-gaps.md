@@ -1,5 +1,5 @@
 ---
-status: ARCHIVED
+status: COMPLETE
 created: 2026-03-27
 scope: backlog — remaining items after splitting into plans 012–015
 depends_on: []

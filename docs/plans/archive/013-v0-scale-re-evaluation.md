@@ -1,5 +1,5 @@
 ---
-status: RESOLVED
+status: COMPLETE
 created: 2026-03-30
 revised: 2026-03-31
 reviewed: >

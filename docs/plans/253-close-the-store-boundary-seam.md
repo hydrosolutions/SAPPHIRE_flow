@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-03
 plan: 253
 title: Quality signals that are computed and then dropped at the store boundary
@@ -12,6 +12,9 @@ source: 2026-09-02/03 — a live audit of the mac-mini (0.1.833) against `docs/s
 # Plan 253 — closing the store-boundary seam
 
 ## Status
+
+✅ **COMPLETE — MERGED as #264 (2026-09-08).** Input quality persisted nullable, the pooled
+combination QC'd, and the fail-closed guard in place; migration `0055`.
 
 **READY — owner confirmed 2026-09-04.** Every defect below was measured against the running staging deployment
 (SAPPHIRE Flow 0.1.833) on 2026-09-02 and 2026-09-03, not inferred from reading code. The measured

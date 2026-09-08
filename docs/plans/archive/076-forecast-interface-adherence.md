@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-06-18
 completed: 2026-06-18
 supersedes: 014

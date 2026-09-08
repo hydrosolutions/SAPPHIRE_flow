@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-03-26
 scope: types + protocols + services + fakes + tests
 depends_on: [003]  # completed — multi-target return type already in place

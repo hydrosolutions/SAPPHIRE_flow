@@ -1,5 +1,5 @@
 ---
-status: MOSTLY-SUPERSEDED — T1 and T4 landed on main via a parallel session; only T2 remains
+status: PARTIAL
 created: 2026-08-19
 revised: 2026-08-19
 reviewed: independent Codex pass 2026-08-19 — AGREE-WITH-CHANGES on T4 (its corrections adopted verbatim)
@@ -11,6 +11,13 @@ blocks: []  # was: every merge to main — no longer true, T1+T4 are in
 source: observed CI failure on d532a130, 4ae7cf82, e74e3e1c (2026-08-18/19)
 ---
 
+
+> ⚠️ **Status normalised 2026-09-08.** The `status:` field previously held a whole sentence —
+> *"MOSTLY-SUPERSEDED — T1 and T4 landed on main via a parallel session; only T2 remains"* — which is
+> the only machine-readable status source (`docs/workflow.md` § Plan status vocabulary) and is not a
+> free-text field. The state it described is exactly `PARTIAL`: **T1 and T4 landed on main via a
+> parallel session; only T2 remains, and it needs renewed owner approval.** Nothing about the plan
+> changed; the sentence moved here.
 # Plan 190 — unpin the CI unit-step guard from flags it does not care about
 
 ## Status

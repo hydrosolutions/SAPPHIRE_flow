@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-03-26
 scope: docs + spec consistency fix
 ---

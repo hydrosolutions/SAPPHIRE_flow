@@ -1,5 +1,5 @@
 ---
-status: DEPRIORITISED
+status: DEFERRED
 created: 2026-08-17
 plan: 164
 title: Run the watchdog as a LaunchDaemon so it stops dying with the login session
@@ -9,6 +9,10 @@ blocks: []
 supersedes: []
 ---
 
+
+> ⚠️ **Status normalised 2026-09-08.** This read `DEPRIORITISED`, which is not in the canonical
+> vocabulary (`docs/workflow.md` § Plan status vocabulary). `DEFERRED` — *intentionally postponed to
+> a later version* — is what it meant. No change of intent.
 # Plan 164 — Watchdog as a LaunchDaemon
 
 ## ⬇️ DEPRIORITISED 2026-08-18 — the premise was falsified on the host

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-31
 plan: 221
 title: The 500-file NWP cap stops roughly half of all forecast cycles

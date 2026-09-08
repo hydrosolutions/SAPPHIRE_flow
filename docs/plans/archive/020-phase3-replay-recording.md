@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-04-08
 scope: Phase 3 / 3b — Station replay adapter + recording tool + reference dataset
 depends_on: ["019"]

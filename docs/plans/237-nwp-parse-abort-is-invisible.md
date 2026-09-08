@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-03
 revised: 2026-09-04
 plan: 237
@@ -14,7 +14,15 @@ source: Measured on the mac mini 2026-09-03/04 after 15 Slack alerts in one day;
 
 ## Status
 
-**READY.** Owner confirmed 2026-09-04, after four independent review rounds.
+✅ **COMPLETE — MERGED as #251.** All three tasks implemented. Owner confirmed 2026-09-04, after
+four independent review rounds.
+
+⚠️ **Implemented is not deployed, and this one deploys in TWO different ways.** T1 and T2 live in the
+image and reach the mini on a rebuild. **T3 is `src/sapphire_flow/ops/watchdog.py`, which the mini
+runs as a HOST process from a checkout** — it needs a `git pull` on the host, NOT a container
+rebuild, and a rebuild alone will silently leave the old watchdog running. Pair that pull with the
+stale `nwp_cycle_min_age_minutes=105` (real cycle latency measured at 160–168 min). Tracked here
+because marking a plan COMPLETE otherwise loses it.
 
 ## ⛔ Proportionality — two tasks
 

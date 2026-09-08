@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-31
 plan: 223
 title: The forecast-freshness alert says WHAT failed but never WHY

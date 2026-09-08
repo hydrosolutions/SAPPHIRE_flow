@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-04-13
 completed: 2026-04-13
 scope: implementation — observation-based alerting (Phase 6 completion)

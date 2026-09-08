@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-04-01
 scope: |
   Fix the per-module log level override env var convention to support module names

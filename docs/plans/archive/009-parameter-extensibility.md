@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-03-27
 scope: types (enum extension only)
 depends_on: []  # Independent — can land whenever

@@ -1,5 +1,5 @@
 ---
-status: SPLIT
+status: SUPERSEDED
 created: 2026-07-14
 plan: 115b
 parent: 115

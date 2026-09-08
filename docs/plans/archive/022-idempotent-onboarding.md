@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-04-08
 scope: bug-fix + hardening — make station onboarding idempotent and re-runnable
 depends_on: []

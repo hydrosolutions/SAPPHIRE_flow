@@ -1,5 +1,5 @@
 ---
-status: ARCHIVED
+status: COMPLETE
 created: 2026-03-26
 scope: source code alignment with spec field renames
 depends_on: [001, 006]

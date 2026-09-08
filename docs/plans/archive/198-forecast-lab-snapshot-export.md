@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-08-21
 plan: 198
 title: Forecast Lab snapshot — a versioned, read-only JSON export for SAPPHIRE-flow-map

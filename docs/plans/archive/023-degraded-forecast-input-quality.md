@@ -1,10 +1,26 @@
 ---
-status: READY
+status: SUPERSEDED
 created: 2026-04-10
 scope: Degraded forecast input quality flagging — types, assessment logic, pipeline integration, API exposure
 depends_on: []
 ---
 
+
+> ⛔ **SUPERSEDED by Plan 253 (2026-09-08) — and this file is the reason that plan exists.**
+> This plan was **archived by commit `33bdc640`, a pure file move containing no code, while still
+> carrying `status: READY`** — and its own text had deferred the database columns and API exposure
+> to later phases that nothing ever picked up. Because `docs/plans/**` at `READY` *or* archived both
+> read as authoritative (`CLAUDE.md` § Trust hierarchy), it went on reading as a live, satisfied
+> commitment for five months, which is how `docs/standards/wmo.md` came to claim the WMO-1072 /
+> QMF-H obligation was closed when it was not.
+>
+> **The deferred half was finally built by Plan 253** (PR #264): input quality persisted nullable,
+> exposed through the API, migration `0055`. The dashboard indicator remains unbuilt and is recorded
+> as *specified, not verified* in `wmo.md`.
+>
+> 🪤 The lesson, now a standing rule in `wmo.md`: a compliance row moves to *verified* only on a
+> named runnable command or a dated live query — **never** on a plan's `status`, and never on a
+> plan's own declared-but-unclaimed prerequisite.
 # 023 — Degraded Forecast Input Quality Flagging
 
 ## Problem

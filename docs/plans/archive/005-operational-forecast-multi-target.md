@@ -1,5 +1,5 @@
 ---
-status: ARCHIVED
+status: COMPLETE
 created: 2026-03-26
 implemented: 2026-03-27
 scope: db schema + store + docs (Phase 0/3 immediate) | services (Phase 1, deferred to Phase 8)

@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-03
 plan: 235
 title: A skill recompute must replace what it supersedes — generations, not collisions
@@ -24,7 +24,8 @@ implementer should read most carefully.
 
 ## Implementation status (2026-09-04)
 
-Implemented on `feat/plan-235-skill-generations`, held at PR. T1–T5 done; full design record in
+✅ **COMPLETE — MERGED as #261 (2026-09-07).** The line below read "held at PR" until 2026-09-08;
+the PR had already merged. T1–T5 done; full design record in
 `docs/decisions/plan-235-skill-generations.md`. Summary:
 
 - **T1** — `skill_generations` table (migration 0054) + nullable `generation_id` on

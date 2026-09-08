@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-19
 plan: 128
 title: RprelimD live-tail — fix the silent id-fetch defect so preliminary-precip rows get written

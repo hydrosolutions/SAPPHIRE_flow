@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-04-17
 scope: Phase 3/8 v0b — Wire gridded NWP path (Flow 1 steps 1.1–1.4) into forecast cycle
 depends_on: ["021"]

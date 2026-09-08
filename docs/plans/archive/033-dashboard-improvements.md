@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-04-14
 scope: api routes + templates + JSON endpoints
 depends_on: []

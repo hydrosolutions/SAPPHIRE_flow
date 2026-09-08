@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-09-04
 revised: 2026-09-05
 plan: 241
@@ -13,6 +13,10 @@ source: Measured 2026-09-04 against aquacast main (5460f898), the pinned revisio
 # Plan 241 — consume the horizon declaration (the adapter drops it today)
 
 ## Status
+
+✅ **COMPLETE — T1–T4 all landed (#258, plus #259 for three review findings that missed the merge),
+DEPLOYED in 0.1.889.** The `NOT NULL` tightening was deliberately deferred to **Plan 248**, which is
+that plan's whole reason for existing — it is not outstanding work here.
 
 **READY (T1-T3).** Owner confirmed 2026-09-04, after an independent cross-check found the adapter
 gap. T1-T3 are implemented and green.

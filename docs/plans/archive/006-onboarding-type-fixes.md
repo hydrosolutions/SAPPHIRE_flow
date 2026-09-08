@@ -1,5 +1,5 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-03-26
 revised: 2026-03-28
 scope: design doc + spec + architecture-context + conventions consistency fixes and design decisions

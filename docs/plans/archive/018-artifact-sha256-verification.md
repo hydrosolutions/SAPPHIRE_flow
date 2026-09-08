@@ -1,5 +1,5 @@
 ---
-status: DONE
+status: COMPLETE
 created: 2026-04-04
 completed: 2026-04-13
 scope: implementation — SHA-256 hash verification for model artifacts

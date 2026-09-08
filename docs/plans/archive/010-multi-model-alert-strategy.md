@@ -1,5 +1,5 @@
 ---
-status: ARCHIVED
+status: COMPLETE
 created: 2026-03-27
 scope: types + config + db schema + services + docs
 depends_on: []  # no blocking dependencies; plan 005 (ARCHIVED) already references this plan
