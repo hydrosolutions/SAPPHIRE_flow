@@ -111,6 +111,28 @@ exit criteria — Plan 212 owns that deeper screening.
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
+- **252** — A time grid is a step AND a phase — `DRAFT, unreviewed` — **conventions
+  and types only** after a review returned 26 findings (20 blockers) and forced a
+  split. Nepal Time is UTC+05:45, so hourly NPT and hourly UTC grids never share a
+  timestamp; converting to UTC relabels instants without moving them onto a grid and
+  makes the offset invisible. Adopts **CF `cell_methods`** as the temporal-support
+  type — `time: point` vs `time: sum` — which our upstream files already carry and our
+  adapters discard entirely. Narrows period-ending to interval data (a stage reading
+  is a point, not an interval). Declares `TimeGrid(step, phase)`, a per-deployment
+  boundary that no deployment may default into, and **supersedes Plan 228 D4** by owner
+  disposition. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
+  and, independently, by SnowMapper's UTC+6 solar day. ⛔ If DHM names a different
+  boundary we would disagree with SnowMapper, whose SWE and runoff feed our hydrology.
+- **254** — Phase-aware execution — `DRAFT, not fully scoped` — the behavioural half.
+  The resampler has **seven** call sites, not three, and `floor_to_time_step` /
+  `aligned_lookback_bounds` are separately phase-zero, so changing the bucketing alone
+  would lose Plan 228 D4's exactly-N-complete-buckets guarantee. Plan 253's
+  input-quality channel cannot carry resampling provenance (hindcasts were excluded
+  from it). Artifacts record no training grid, so a phase-mismatched artifact cannot
+  fail closed. Carries the Swiss retrain and cutover, which no plan currently owns —
+  226 is anchoring-only and 235 points at 228's recompute. Four open decisions first,
+  including whether phase belongs to the FI contract (which would need an upstream
+  issue, not a SAP3 workaround).
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
   alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).
