@@ -150,6 +150,49 @@ exit criteria — Plan 212 owns that deeper screening.
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 253 landing first.
+- **252** — A time grid is a step AND a phase — `DRAFT, unreviewed` — **conventions
+  and types only** after a review returned 26 findings (20 blockers) and forced a
+  split. Nepal Time is UTC+05:45, so hourly NPT and hourly UTC grids never share a
+  timestamp; converting to UTC relabels instants without moving them onto a grid and
+  makes the offset invisible. Adopts **CF `cell_methods`** as the temporal-support
+  type — `time: point` vs `time: sum` — which our upstream files already carry and our
+  adapters discard entirely. Narrows period-ending to interval data (a stage reading
+  is a point, not an interval). Declares `TimeGrid(step, phase)`, a per-deployment
+  boundary that no deployment may default into, and **supersedes Plan 228 D4** by owner
+  disposition. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
+  and, independently, by SnowMapper's UTC+6 solar day. ⛔ If DHM names a different
+  boundary we would disagree with SnowMapper, whose SWE and runoff feed our hydrology.
+- **254** — Phase-aware execution — `DRAFT, not fully scoped` — the behavioural half.
+  The resampler has **seven** call sites, not three, and `floor_to_time_step` /
+  `aligned_lookback_bounds` are separately phase-zero, so changing the bucketing alone
+  would lose Plan 228 D4's exactly-N-complete-buckets guarantee. Plan 253's
+  input-quality channel cannot carry resampling provenance (hindcasts were excluded
+  from it). Artifacts record no training grid, so a phase-mismatched artifact cannot
+  fail closed. Carries the Swiss retrain and cutover, which no plan currently owns —
+  226 is anchoring-only and 235 points at 228's recompute. Four open decisions first,
+  including whether phase belongs to the FI contract (which would need an upstream
+  issue, not a SAP3 workaround).
+- **255** — Onboarding reports what it actually did — `DRAFT` — a per-station
+  outcome record plus a human-readable end-of-run report naming every station as
+  complete, degraded, withheld or failed, with the reason. Additive and
+  observational only; no promotion behaviour changes. Exists because establishing
+  the real state of the 148-station staging fleet on 2026-09-08 required reading
+  `flow_run_state` messages, clustering `stations.updated_at` to the microsecond,
+  and extracting the `stations` table out of two 25 GB nightly `pg_dump` archives.
+  Every per-station shortfall is currently a `log.warning` in a run whose logs are
+  discarded the moment the worker container is recreated. Blocks 256.
+- **256** — Onboarding must not promote what it did not build — `DRAFT`,
+  **high-risk** — closes the two paths to `operational` without the substance the
+  status claims. (1) A station excluded from the MeteoSwiss binding for an invalid
+  basin polygon is not in `meteoswiss_eligible_ids`, so the Plan 115b2 §2C hold
+  (`eligible - backfilled`) cannot fire for it and it is promoted with whatever
+  forcing it has — on staging that is **2024 Branson**, self-intersecting ring, no
+  MeteoSwiss binding, `camels-ch` forcing ending 2020-12-31 while the other 147
+  carry six products to 2026-09-06. (2) `update_station_status` writes no audit
+  row, so the field that decides whether the forecast cycle touches a station at
+  all is unattributable — which is how **2041, 2116, 2392, 2615, 2623** came to be
+  `operational` with no `climatology_fallback` floor (four with no artifact of any
+  model, ever) via a direct database write on 2026-09-02. Depends on 255.
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
   alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).

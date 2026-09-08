@@ -3,7 +3,7 @@ status: READY
 created: 2026-09-01
 plan: 228
 title: Every skill score in the database is computed on the wrong comparison, and two models hindcast on 70 minutes of history
-scope: Two defects in how hindcast and skill scoring consume observations. Fix both. ⚠️ The recompute AND the marking (D3) belong to Plan 235 — see the D3 gate below; this plan executes neither. No change to any model's maths, no change to the operational forecast path, no anchoring work (that is Plan 226).
+scope: Two defects in how hindcast and skill scoring consume observations. Fix both. ⚠️ D3 is SATISFIED — the recompute ran on 2026-09-04 on fixed code. See D3 below; do not schedule it. No change to any model's maths, no change to the operational forecast path, no anchoring work (that is Plan 226).
 depends_on: []
 blocks: [226]
 source: 2026-09-01 — measured on the live mini during Plan 226's T-M task
@@ -15,12 +15,13 @@ source: 2026-09-01 — measured on the live mini during Plan 226's T-M task
 
 **READY — HIGH PRIORITY.** Owner confirmed 2026-09-01. Cleared for `/implement`.
 
-All three decisions are settled (D1 = C, D2 = B, D3 = mark superseded), both requested
+All three decisions are settled (D1 = C, D2 = B, D3 = **SATISFIED 2026-09-04, re-scoped 09-08**), both requested
 investigations are done (the FI contract finding under D1; training is clean, see Non-goals), and
 an independent Codex pass verified all nine load-bearing factual claims with no blockers.
 
 ⛔ **Do not implement against the mac-mini until its onboarding and hindcasting test finishes**
-(D3). The code fix can be built and merged meanwhile; only the marking and the recompute wait.
+(D3). ✅ **Superseded 2026-09-08**: the code shipped, and the recompute D3 describes ran on
+2026-09-04 on fixed code. Nothing about D3 is now pending — see D3 below.
 
 Both defects are **live on the mac-mini right now**. Skill scoring ran 1.5 hours before this plan
 was written. Nothing here is hypothetical or projected — every number below was measured.
@@ -162,19 +163,94 @@ against a daily-average forecast. The aggregation method must match the one the 
 against (`_V0_AGGREGATION_FALLBACK`, `services/training_data.py:69-73`) — mean for discharge — or
 the fix substitutes one mismatch for another.
 
-### D3 — what happens to the 106 910 existing scores?
+### D3 — ✅ SATISFIED 2026-09-04. Do not schedule it.
 
-They cannot be repaired in place; they must be recomputed after D1 and D2 land.
+**Re-scoped 2026-09-08 (owner-assigned). D3 has no population left: the recompute it describes has
+already run, on fixed code.**
 
-**Settled (owner, 2026-09-01): MARK them superseded, and only once the running process finishes.**
+Measured on the mac-mini `sapphire` database, 2026-09-08:
 
-⛔ **Do not interfere with the mac-mini.** A station-onboarding run and its hindcasting are in
-flight and are **a deliberate test**. They will keep producing scores that carry both defects; that
-is accepted. The test's value is in exercising the pipeline, not in the numbers it emits.
+| | |
+|---|---|
+| `skill_scores` rows | **139 712** |
+| at `computation_version = 2` | **139 712** |
+| below version 2 — D3's entire target population | **0** |
+| `computed_at` range | **2026-09-04 07:52 → 09:51 UTC** (a two-hour window) |
+| `hindcast_forecasts` rows | **715 103** |
+| their `created_at` range | **2026-09-04 07:52:24 → 09:51:46 UTC** — the SAME window |
 
-Sequence: let onboarding and hindcasting finish → mark every score predating the fix as superseded
-→ land D1 and D2 → recompute all hindcasts and scores. Marking is chosen over deletion so the test
-run's *existence* stays auditable while its *numbers* stop being trusted.
+**The HINDCASTS were regenerated too, not just the scores** *(added after independent review, which
+correctly objected that a score's version says nothing about which hindcast fed it)*. D3 required
+recomputing hindcasts **and** scores. There are no surviving pre-09-04 hindcasts: all 715 103 rows
+were written in the same two-hour window, starting nine seconds before the first score. That is a
+`run-hindcast` → `compute-skills` pipeline, not a scores-only rerun.
+
+**Why this is "already done" and not "the marker is broken".** Version 2 is causally downstream of
+the fix, not an arbitrary label: the bump `_COMPUTATION_VERSION = 1 → 2` is **this plan's own commit
+`8f87eb68`** ("resolve Plan 228 review findings"), landed on main via `46467336` (PR #246), in the
+same change that ships migrations 0050/0051 and the resampling correction. A row can therefore only
+carry version 2 if the code that wrote it contained the fix. Every surviving row does.
+
+**And the same image wrote both halves.** `_COMPUTATION_VERSION` lives in
+`services/skill/service.py`; the resampling correction lives in `services/hindcast.py` — the same
+distribution. A deployment cannot have one without the other, so v2 scores written nine seconds
+after their hindcasts establish that the hindcast half ran on fixed code as well. *(Image
+timestamps cannot show this: no image built between 228's merge and that window survives in
+`docker images`. The version constant is the durable evidence, not the image.)*
+
+So the original sequence — *mark every score predating the fix, then recompute* — describes work
+that was performed on 2026-09-04 by whoever ran that recompute. **Scheduling it now would be a
+no-op at best.**
+
+### 🪤 OPEN UNKNOWN — how the old v1 rows disappeared
+
+**Not established, and deliberately not smoothed over.** The population was 106 910 rows on
+2026-09-02 and 114 987 on 2026-09-04; it is now 139 712, all v2, all written in one two-hour window.
+The pre-fix v1 rows are simply gone.
+
+No migration removes them: `0001`, `0008`, `0051`, `0052` and `0054` were each checked and **none
+backfills or deletes `computation_version`**. So either whoever ran the 09-04 recompute deleted them
+by hand, or the table was rebuilt. Outcome verified; **mechanism unknown**.
+
+This matters because a plan that says "already done" without saying how is one rebuild away from
+being wrong. **Anyone re-establishing a baseline should confirm the version distribution first
+rather than trusting this section.**
+
+### ⚠️ D3's empty population is a SNAPSHOT PROPERTY, not an invariant
+
+*(Independent review, 2026-09-08.)* "No forward migration removes the rows" is true but narrower
+than it sounds. **D3 can become live again**, at least three ways:
+
+- Migration `0001`'s **downgrade drops both skill tables outright**
+  (`alembic/versions/0001_v0_schema.py:857`).
+- A **backup restore** can reinstate a pre-2026-09-04 population.
+- Migration `0052` **deliberately preserves compatibility with a previous image that can write new
+  v1 rows on the current schema** (`alembic/versions/0052_...py:76`) — so a rollback can create
+  sub-v2 rows without any restore at all.
+
+**Re-measure before concluding D3 is done.** One query settles it:
+`SELECT computation_version, count(*) FROM skill_scores GROUP BY 1;`
+
+### ⚠️ The constraint that OUTLIVES D3 — `publish_generation`, never `mark_stale`
+
+D3 is finished; this constraint is not, and it applies to **any future recompute** — including the
+one that follows a rollback or restore per the section above.
+
+*(Corrected after independent review: an earlier draft claimed "Plans 226 and 234 each end in a full
+recompute". They do not. Plan 226 is DRAFT and **explicitly excludes** recomputing stored forecasts
+or hindcasts (`docs/plans/226-...:216`); Plan 234 is DRAFT and has **no recompute task or exit
+gate** (`docs/plans/234-...:96`). The constraint stands on its own merits, not on a dependency that
+does not exist.)*
+
+`mark_stale` is a real `UPDATE` (`store/skill_store.py`), and `sapphire_worker` holds
+**`GRANT INSERT` only** (`docker/bootstrap-roles.sql:180-181`) — no `UPDATE` grant exists anywhere in
+the repo. It has zero production callers. *(Correction: an earlier draft said the gap "has never been
+exercised" — it now is, by a real `sapphire_worker` integration test,
+`tests/integration/db/test_role_bootstrap.py:766`. The permission conclusion is unchanged; the claim
+about test coverage was stale.)* The first real call would fail with a permission error.
+
+**Mark via `publish_generation` (Plan 235's append-only path). Never `mark_stale`. Do not add an
+UPDATE grant.**
 
 ## Tasks
 
@@ -277,8 +353,8 @@ to state UTC-calendar bucketing, homogeneous validation, and the correct affecte
 
 ### ⛔ Still forbidden
 
-Do not touch the mac-mini. D3's marking and recompute wait for a decision on its crashed onboarding
-run.
+Do not touch the mac-mini. *(2026-09-08: D3's marking and recompute are no longer pending — they
+happened on 09-04. This fence stood while they were.)*
 
 ## Implementation status (2026-09-02) — PER-RUN SCOPE round COMPLETE
 
