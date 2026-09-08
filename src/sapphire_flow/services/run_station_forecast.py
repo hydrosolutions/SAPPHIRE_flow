@@ -17,7 +17,10 @@ from sapphire_flow.services.ensemble_fanout import (
     reject_stateful_ensemble_states,
 )
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
-from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.input_quality import (
+    assess_input_quality,
+    past_forcing_flags,
+)
 from sapphire_flow.services.nwp_coverage import assess_future_coverage, member_indices
 from sapphire_flow.services.operational_inputs import (
     ModelRunContext,
@@ -34,6 +37,7 @@ from sapphire_flow.services.track_assembly import (
     ReadyContext,
     UnavailableTrackContext,
 )
+from sapphire_flow.types.domain import aggregate_input_quality
 from sapphire_flow.types.enums import EnsembleMode, ForecastStatus, QcStatus
 from sapphire_flow.types.forcing_track import FeatureName  # noqa: TC001
 from sapphire_flow.types.forecast import OperationalForecast
@@ -528,6 +532,30 @@ def _run_single_model(
         warmup_partial_hours=iq_config.warmup_snapshot_age_partial_hours,
         warmup_degraded_hours=iq_config.warmup_snapshot_age_degraded_hours,
     )
+
+    # Plan 239 T1b: gaps in the model's PAST forcing history become an input-
+    # quality flag — never a refusal (owner decision 2026-09-08). WHERE the gap
+    # sits decides severity: old gaps are PARTIAL, a gap inside the most recent
+    # `forcing_recent_steps` is DEGRADED, because the model leans on recent
+    # conditions. The forecast is still produced either way.
+    # The model's OWN declaration on BOTH routes: `ForcingContract` replaces
+    # `data_requirements` for FUTURE forcing only (`track_assembly.py:96-99`
+    # carries `future_dynamic_features` and no past equivalent). An earlier
+    # version read `forcing_contract.past_dynamic_features`, which does not
+    # exist — an existing per-track test caught it as an UNEXPECTED_EXCEPTION
+    # that failed the whole assignment.
+    input_quality_flags = (
+        *input_quality_flags,
+        *past_forcing_flags(
+            past_dynamic=context.inputs.data.past_dynamic,
+            features=model.data_requirements.past_dynamic_features,
+            anchor=context.inputs.issue_time,
+            time_step=context.inputs.time_step,
+            lookback_steps=model.data_requirements.lookback_steps,
+            recent_steps=iq_config.forcing_recent_steps,
+        ),
+    )
+    input_quality = aggregate_input_quality(list(input_quality_flags))
 
     forecasts: list[OperationalForecast] = []
     now = clock()

@@ -335,7 +335,52 @@ retracted — that claim is why this survived earlier review.
 **What T1a does NOT do:** a model with holes in its history still runs. It now
 runs on correctly-spaced data with holes in it. Refusing is T1b's job.
 
-#### T1b — the gate (NEXT CHANGE, not this one)
+#### T1b — REDESIGNED BY THE OWNER 2026-09-08: LABEL, do not refuse
+
+**The earlier T1b was a gate: `CANNOT SERVE` when an expected bucket is missing. The owner replaced
+that design.** Recorded verbatim because it changes the outcome, not just the wording:
+
+> "if the model asks for 210 days of rainfall and out of those we have 2 days of missing data, that
+> should not be a problem and we can either ignore those or apply gap filling. if however, we're
+> missing the latest 2 days for rainfall data, that might indeed be a problem for a reliable
+> forecast. we should however, still produce a forecast but lable it degraded because of missing
+> forecasts."
+
+Two consequences:
+
+1. **WHERE the gap sits decides severity.** 2 missing days out of 210, long ago, is not a problem.
+   The same 2 days at the END is, because the model leans on recent conditions.
+2. **NEVER refuse.** Always forecast; attach an honest label. A refusal loses information the
+   forecast still carries.
+
+**This uses machinery that already exists — no new component.** `services/input_quality.py`
+already produces `FULL / PARTIAL / DEGRADED` with per-category `InputQualityFlag`s, already covering
+observation staleness, NWP age and warm-up age. It has NO category for gaps in past forcing. T1b
+adds that category and nothing else.
+
+**Owner decisions, 2026-09-08:**
+- *"Recent" = a fixed number of most-recent steps*, one rule for every model (chosen over scaling
+  with lookback, and over a per-model declaration which no model makes today and which would
+  require an FI contract change first).
+- *Gap-filling is DEFERRED* — label first, measure how often gaps actually occur and where, then
+  decide whether filling is worth it with evidence. Filling invents values; labelling is honest
+  about what was there. Do not conflate them.
+
+**The rule:**
+
+| missing buckets among the expected past set | verdict |
+|---|---|
+| none | no flag — `FULL` unaffected |
+| some, ALL older than the recent window | `PARTIAL`, naming the series and the count |
+| any inside the recent window | `DEGRADED`, naming the series and which buckets |
+
+The expected set is `expected_past_buckets` and the comparison is `missing_buckets` — both landed
+in T1a, both already tested against the verdict table. T1b computes the set, splits it on the recent
+window, and emits a flag. **No new predicate.**
+
+**What T1b does NOT do:** refuse a forecast, fill a gap, change what a model receives, or judge
+values (that is `max_nan`'s job, per T0).
+
 
 
 All three bypass today. Correct the two in-code comments calling finer unresampled `past_dynamic`

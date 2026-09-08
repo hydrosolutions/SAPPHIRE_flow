@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from sapphire_flow.config.deployment import InputQualityConfig
-from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.input_quality import (
+    assess_input_quality,
+    assess_past_forcing_gaps,
+)
+from sapphire_flow.services.training_data import (
+    expected_past_buckets,
+    floor_to_time_step,
+)
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.domain import InputQualityFlag
 from sapphire_flow.types.enums import (
     InputQualityCategory,
     InputQualityLevel,
@@ -284,3 +295,76 @@ class TestWorstWinsAggregation:
         level, flags = assess_input_quality(**kwargs)
         assert level == InputQualityLevel.DEGRADED
         assert len(flags) == 3
+
+
+class TestPastForcingGapFlag:
+    """Plan 239 T1b: a gap in past forcing must be LABELLED, never a refusal.
+
+    Owner decision 2026-09-08: WHERE the gap sits decides severity. Two missing
+    days out of 210, long ago, is not a problem; the same two days at the END
+    is, because the model leans on recent conditions. The forecast is still
+    produced either way — a refusal loses information the forecast still
+    carries.
+    """
+
+    DAY = timedelta(days=1)
+    ANCHOR = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+
+    def _flag(self, missing_offsets: list[int], *, lookback: int = 210):
+        """`missing_offsets` are k in `T0 - k*step`, so 1 is the most recent
+        complete bucket."""
+        expected = expected_past_buckets(self.ANCHOR, self.DAY, lookback)
+        base = floor_to_time_step(self.ANCHOR, self.DAY)
+        missing = [ensure_utc(base - k * self.DAY) for k in missing_offsets]
+        assert set(missing) <= set(expected), "test bug: missing outside expected"
+        return assess_past_forcing_gaps(
+            series="precipitation",
+            expected=expected,
+            missing=missing,
+            anchor=self.ANCHOR,
+            time_step=self.DAY,
+            recent_steps=2,
+        )
+
+    def test_no_gaps_produces_no_flag(self) -> None:
+        assert self._flag([]) is None
+
+    def test_two_old_gaps_out_of_210_are_partial_not_degraded(self) -> None:
+        # The owner's own example: 2 of 210 missing, long ago -> not a problem.
+        flag = self._flag([100, 150])
+        assert flag is not None
+        assert flag.level is InputQualityLevel.PARTIAL
+        assert "precipitation" in flag.detail
+
+    def test_a_gap_in_the_most_recent_step_is_degraded(self) -> None:
+        flag = self._flag([1])
+        assert flag is not None
+        assert flag.level is InputQualityLevel.DEGRADED
+
+    def test_the_owners_case_latest_two_days_missing_is_degraded(self) -> None:
+        flag = self._flag([1, 2])
+        assert flag is not None
+        assert flag.level is InputQualityLevel.DEGRADED
+        assert "precipitation" in flag.detail
+
+    def test_the_boundary_step_just_outside_the_window_is_only_partial(self) -> None:
+        # recent_steps=2 covers k=1 and k=2. k=3 is outside.
+        assert self._flag([3]).level is InputQualityLevel.PARTIAL
+
+    def test_the_boundary_step_just_inside_the_window_is_degraded(self) -> None:
+        assert self._flag([2]).level is InputQualityLevel.DEGRADED
+
+    def test_one_recent_gap_outranks_many_old_ones(self) -> None:
+        # Severity is decided by WHERE, not HOW MANY.
+        assert self._flag([1, 50, 60, 70, 80]).level is InputQualityLevel.DEGRADED
+
+    def test_the_flag_is_categorised_as_forcing_not_observation(self) -> None:
+        flag = self._flag([1])
+        assert flag.category is InputQualityCategory.FORCING
+
+    def test_a_gap_never_refuses_it_only_labels(self) -> None:
+        # The whole point of the owner's redesign: this returns a flag, it does
+        # not raise and does not signal "cannot serve".
+        for offsets in ([], [1], [1, 2], [100, 150]):
+            result = self._flag(offsets)
+            assert result is None or isinstance(result, InputQualityFlag)

@@ -8,7 +8,10 @@ import structlog
 from sapphire_flow.exceptions import ModelOutputError, StoreError
 from sapphire_flow.services.hindcast import is_connection_fatal
 from sapphire_flow.services.horizon_semantics import resolve_required_steps
-from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.input_quality import (
+    assess_input_quality,
+    past_forcing_flags,
+)
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
     assemble_station_operational_inputs,
@@ -22,6 +25,7 @@ from sapphire_flow.services.run_station_forecast import (
     StationForecastResult,
     worst_qc_status,
 )
+from sapphire_flow.types.domain import aggregate_input_quality
 from sapphire_flow.types.enums import ArtifactScope, ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import ForecastId
@@ -57,7 +61,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import NwpCycleSource
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
-    from sapphire_flow.types.model import StationModelInputs
+    from sapphire_flow.types.model import ModelDataRequirements, StationModelInputs
     from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 
 log = structlog.get_logger(__name__)
@@ -258,6 +262,7 @@ def _build_station_result(
     artifact_id: ArtifactId,
     group_inputs: GroupModelInputs,
     input_metadata: OperationalInputMetadata,
+    data_requirements: ModelDataRequirements,
     ensembles: dict[str, ForecastEnsemble],
     new_state: bytes | None,
     qc_checker: ForecastOutputQualityChecker,
@@ -316,6 +321,22 @@ def _build_station_result(
         warmup_partial_hours=iq_config.warmup_snapshot_age_partial_hours,
         warmup_degraded_hours=iq_config.warmup_snapshot_age_degraded_hours,
     )
+
+    # Plan 239 T1b: past-forcing gaps become an input-quality flag, never a
+    # refusal (owner decision 2026-09-08). This function is already invoked
+    # PER STATION, so the flags describe THIS station only — a gap at one
+    # station of a group must never label its siblings.
+    forcing_flags = past_forcing_flags(
+        past_dynamic=group_inputs.for_station(station_id).past_dynamic,
+        features=data_requirements.past_dynamic_features,
+        anchor=group_inputs.issue_time,
+        time_step=group_inputs.time_step,
+        lookback_steps=data_requirements.lookback_steps,
+        recent_steps=iq_config.forcing_recent_steps,
+    )
+    if forcing_flags:
+        input_quality_flags = (*input_quality_flags, *forcing_flags)
+        input_quality = aggregate_input_quality(list(input_quality_flags))
 
     forecasts: list[OperationalForecast] = []
     now = clock()
@@ -507,6 +528,7 @@ def run_group_forecast(
             artifact_id=artifact_id,
             group_inputs=group_inputs,
             input_metadata=input_metadata,
+            data_requirements=model.data_requirements,
             ensembles=ensembles,
             new_state=new_state,
             qc_checker=qc_checker,

@@ -66,6 +66,10 @@ class InputQualityConfig(BaseModel):
     nwp_age_degraded_hours: float = 11.0
     warmup_snapshot_age_partial_hours: float = 24.0
     warmup_snapshot_age_degraded_hours: float = 42.0
+    # Plan 239 T1b: how many of the MOST RECENT past-forcing steps must be
+    # present before a gap counts as DEGRADED rather than PARTIAL. A fixed
+    # count, one rule for every model (owner decision 2026-09-08).
+    forcing_recent_steps: int = 2
 
 
 class DeploymentConfig(BaseModel):

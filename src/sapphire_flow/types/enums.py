@@ -398,6 +398,10 @@ class InputQualityCategory(Enum):
     OBSERVATION = "observation"
     NWP = "nwp"
     WARM_UP = "warm_up"
+    # Plan 239 T1b: gaps in a model's PAST forcing history. Distinct from
+    # OBSERVATION (river measurements) and NWP (the future forecast) — a gap
+    # here is in the weather the model looks BACK at.
+    FORCING = "forcing"
 
 
 class InterpolationMethod(Enum):
