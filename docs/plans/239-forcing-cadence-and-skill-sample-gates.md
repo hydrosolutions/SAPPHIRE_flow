@@ -1,5 +1,5 @@
 ---
-status: READY
+status: PARTIAL
 created: 2026-09-04
 plan: 239
 title: Deliver each model its declared resolution (specify first — 3 attempts refuted), and make skill scores state their basis
@@ -11,16 +11,71 @@ source: 2026-09-04 — a scoped onboarding trial (nwp_rainfall_runoff, 2020-2026
 
 # Plan 239 — two places where wrong numbers arrive silently
 
+## ⛔ HALTED — this plan is inside the timezone/time-alignment topic (owner decision, 2026-09-08)
+
+The owner halted all timezone / time-alignment work pending consolidation by the time-grid track, and
+named Plans 226 and 234. **This plan was not named, and it should have been — the owner extended the
+halt to it on 2026-09-08 once that was pointed out.** `T1b, T2, T3a and T3b do not proceed.`
+
+**Why it is inside the topic, by the halt's own boundary test.** The halt told Plan 234 that "if work
+there starts touching bucket boundaries or valid_time phase rather than aggregation method, it has
+crossed into the halted topic." T1b is a bucket-boundary gate by construction — its expected-set
+table (§ *The check*) is defined as `{T0 - k*S}` and `{T0 + k*S}` around
+`T0 := floor_to_time_step(T, S)`, and `floor_to_time_step` is one of the two helpers Plan 254 T2
+exists to make phase-aware. Building that gate now means specifying completeness against a phase-zero
+grid that Plan 252 proposes to replace, and then rebuilding it.
+
+**What is NOT unwound.** T0 and T1a are merged and DEPLOYED (see below). Halting new work does not
+unwind shipped work, and this plan's remaining tasks are held, not reverted. The reasons not to
+revert T1a are in the next section.
+
 ## Status
 
-**READY — T0 and T1a DONE and MERGED (#263, 2026-09-08). T1b, T2, T3a, T3b remain.**
+**HALTED — T0 and T1a DONE, MERGED (#263) and DEPLOYED (0.1.889). T1b, T2, T3a, T3b are HELD.**
 
 T1a shipped separately from T1b by an owner decision: T1a changes what models are FED (forecast
 values move), T1b changes whether they RUN AT ALL. Bundled, a surprise after deployment would have
 had two possible causes and no way to separate them.
 
-**NOT yet deployed to the mac mini.** The mini is at 0.1.884 (main as of `ceb6876f`); #263 landed
-after that. Its behaviour change reaches staging only on the next deploy.
+⚠️ **DEPLOYED 2026-09-08 06:52 UTC — this line is superseded.** It previously read "NOT yet deployed
+to the mac mini … reaches staging only on the next deploy." `57aac024` (T1a) **is** version
+`0.1.889`, which is the build the mini has been running since 06:52 UTC. Its behaviour change is
+live on staging now.
+
+### 🔴 T1a is live against artifacts that predate it — a train/serve skew, measured not assumed
+
+**Measured on staging 2026-09-08.** Every model artifact was trained on or before **2026-09-04**
+(newest: `nwp_rainfall_runoff`, 2026-09-04 09:51 UTC; `linear_regression_daily` 2026-08-31;
+`climatology_fallback` 2026-08-31). T1a changed how `past_dynamic` is prepared in **both** the
+training and the operational paths, and this plan's own status says T1a "changes what models are
+FED (forecast values move)". Nothing has been retrained since it went live. So every active artifact
+was trained on the old preparation and is now served the new one.
+
+**What bounds the damage on THIS deployment — measured, and a snapshot, not a property:**
+
+- Swiss `historical_forcing` is already **daily** — the only non-zero inter-sample gap in the last
+  10 days is `86400 s`. The daily models declare a daily step, so the resample has at most one
+  sample per bucket here; it is not a 24→1 aggregation. On a deployment with sub-daily forcing it
+  would be.
+- Output **labelling did not change**. Measured per cycle across the deploy boundary, each cycle
+  produces exactly ONE valid_time phase, both before and after, tracking the cycle start:
+  09-07 00:00Z→`8 s`, 06:00Z→`21602 s`, 12:00Z→`43202 s`, 18:00Z→`64802 s`, 09-08 00:00Z→`3 s`,
+  06:00Z→`21605 s`, 07:24Z→`26658 s`. `nwp_rainfall_runoff` sits at phase `0` throughout. So Plan
+  226's wall-clock anchoring defect is untouched by T1a — neither fixed nor worsened.
+- 🪤 **The magnitude of any value shift is NOT yet measurable.** Only one post-deploy cycle exists
+  (07:24Z, itself off the 00/06/12/18 schedule). Do not claim T1a is harmless from the absence of a
+  visible jump in one cycle; that is a well-formed answer to the wrong question.
+
+**⛔ Do NOT revert T1a, and do NOT retrain yet.** Reverting restores a known defect (models fed at
+the wrong resolution) to remove a skew that is bounded-small on this deployment and on a test system.
+Retraining *now* would be the genuine double retrain: Plan 254 T6 moves Switzerland's daily boundary
+to 23:00Z and requires a retrain anyway, so the correct sequence is **settle the boundary, then
+retrain once, onto the final grid.** Until then staging runs with a known, recorded skew.
+
+📌 **The double-retrain risk was real — it was attached to the wrong plan.** It was raised against
+Plan 226 and refuted there correctly (226 changes labelling, not training inputs, and contains the
+words "retrain" and "artifact" zero times). It belongs *here*: T1a is what changed training inputs,
+and it is already live.
 
 Three independent Codex rounds on T1a — 4 findings, then 2, then 1, every one real. Two were
 defects introduced by the fix for the previous round; the details are in § T1a and the commit

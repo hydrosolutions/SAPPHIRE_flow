@@ -55,9 +55,15 @@ SAP3 reads the declaration and trusts it: `adapters/forecast_interface.py` takes
 `int(forecast.ensemble.time_step.total_seconds())` into `forecasts.time_step_seconds`.
 
 A model that declares one cadence and emits another therefore produces a stored row whose recorded
-step **contradicts its own timestamps**, permanently and undetectably — the timestamps and the step
-are both in the database, agreeing with nothing. Nothing on either side of the boundary is positioned
-to notice: FI has the frame but does not check it, and SAP3 has only the declaration.
+step **contradicts its own timestamps** — the timestamps and the step are both in the database,
+agreeing with nothing, and nothing raises.
+
+To be accurate about where the gap sits: **SAP3 is not unable to notice this — it chooses not to.**
+The adapter holds the metadata and the frame at the same point (`adapters/forecast_interface.py`),
+so it could compare them. We are not asking for a capability we lack; we are asking for the check to
+live at the boundary that owns the declaration, so that it protects every FI consumer rather than
+only the one that wrote its own guard. That is a contract question, which is why it is filed here
+rather than fixed locally (see below).
 
 Today's models are well-behaved — SAP3 measured the per-model gap across all five real models on
 staging 2026-09-08 and it is exactly `1 day` for every one, matching what aquacast declares. So this
@@ -104,11 +110,31 @@ validate_temporal_columns(naive)   # accepted
 ```
 
 This is separable from the cadence gap and could be split into its own issue — we raise it here only
-because a fix touches the same six lines. It matters to us for a specific reason: SAP3 is extending
-to Nepal, where local time is **UTC+05:45**. A naive timestamp that is silently read as UTC is off by
-345 minutes, which is not a rounding error — it lands in the wrong day. SAP3 normalises to UTC at its
-own boundaries (`ensure_utc()`), so we are protected on the inbound path; a model receiving a naive
-frame from anywhere else is not.
+because a fix touches the same six lines.
+
+**It matters to us for a specific reason, and we are NOT currently protected against it.** SAP3 is
+extending to Nepal, where local time is **UTC+05:45**. A naive timestamp silently read as UTC is off
+by 345 minutes — not a rounding error; it lands in the wrong day.
+
+We have `ensure_utc()`, which *does* reject a naive datetime (`types/datetime.py:7-10`), but it
+guards the **issue time** only. A model's output valid times take a different path
+(`adapters/forecast_interface.py:367-376`), which casts the column to UTC, and the code comment there
+states the behaviour plainly:
+
+```python
+# FI datetimes are UTC by contract; tz-naive values are localized, not shifted.
+return frame.rename({"datetime": "valid_time"}).with_columns(
+    pl.col("valid_time").cast(pl.Datetime("us", "UTC"))
+)
+```
+
+"UTC by contract" is exactly the assumption this issue is about: the contract says it, and nothing
+checks it. A naive value arriving there is **localized as UTC, not rejected** — so a Nepali-local
+frame would be accepted and silently misdated by 5 h 45 m.
+
+*(An earlier draft of this issue claimed SAP3 was protected on the inbound path. That was wrong, and
+is corrected here rather than quietly removed: it was true of the issue time and not of the values,
+and the distinction is the whole point.)*
 
 Suggested resolution: require `pl.Datetime` with a non-null `time_zone`, on the same
 reject-or-deprecate question as above.

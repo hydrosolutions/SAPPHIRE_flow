@@ -160,8 +160,12 @@ exit criteria — Plan 212 owns that deeper screening.
   is a point, not an interval). Declares `TimeGrid(step, phase)`, a per-deployment
   boundary that no deployment may default into, and **supersedes Plan 228 D4** by owner
   disposition. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
-  and, independently, by SnowMapper's UTC+6 solar day. ⛔ If DHM names a different
-  boundary we would disagree with SnowMapper, whose SWE and runoff feed our hydrology.
+  and, independently, by SnowMapper's UTC+6 solar day. ⛔ **Correction (2026-09-08):** the
+  claim that a different DHM boundary would put us "at odds with SnowMapper" was
+  withdrawn inside Plan 252 itself — we receive SnowMapper in UTC and convert, so the
+  UTC+6 coincidence corroborates 18:00Z and constrains nothing. Whatever DHM names is
+  what we adopt. Four distinct boundary values are now tabulated in 252; do not quote
+  one without checking which.
 - **254** — Phase-aware execution — `DRAFT, not fully scoped` — the behavioural half.
   The resampler has **seven** call sites, not three, and `floor_to_time_step` /
   `aligned_lookback_bounds` are separately phase-zero, so changing the bucketing alone
@@ -208,7 +212,8 @@ exit criteria — Plan 212 owns that deeper screening.
   `warning` on aborts — otherwise an NWP abort reads as a combination failure; and the
   check is **born red and stays red until Plan 226**, so D2/D3 record it without paging
   yet. Does not touch the combiner: Plan 222's absence is correct behaviour and 226
-  (behind 252/254) is what refills the product. Scope note: 222 D7 priced this at 2
+  (**absorbed into 254 T8 on 2026-09-08 — Plan 226 is SUPERSEDED**) is what refills the
+  product. Scope note: 222 D7 priced this at 2
   stations; onboarding on 09-04 multiplied it to 34 in the same window the guard landed.
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no

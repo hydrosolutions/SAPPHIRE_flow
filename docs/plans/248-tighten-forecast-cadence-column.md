@@ -107,7 +107,7 @@ the gap — so their step genuinely IS 86400 s. Nothing 252/254 can decide chang
 
 The only rows whose cadence *looked* like it depended on what 252/254 decide are the 69 non-uniform
 ones, and **T1 leaves those NULL by construction.** That was T2's question — and T2 has since
-established that none of 252, 254 or 226 will answer it, and decided it here instead (quarantine).
+established that none of 252, 254 or 226 will answer it, and decided it here instead (discard).
 So the dependency binds nothing: **not T1, and no longer T2 or T3 either.**
 
 🪤 **The column records a STEP, not a GRID — and this is already true in staging, not a future
@@ -291,7 +291,8 @@ settle the 69 would wait forever. T2 should drop the dependency and decide: repa
 delete, on this plan's own authority. ✅ **Both follow-ups are done (2026-09-08):** the
 `⛔ Do not start before` gate above is amended, and the `docs/plans/README.md` line that read
 "disposition of the 69 non-uniform rows depends on 252/254" is corrected. T2 records the decision:
-**quarantine.**
+**discard** — superseding the quarantine decision taken earlier the same day, once the owner
+established that this is a test deployment and old forecasts may be deleted.
 
 📌 Precedent worth using in T2: phase is ALREADY persisted alongside step elsewhere — the skill store
 writes `(time_step, phase)` at `services/skill/service.py:110` (252 lines 326, 421). So "record the
@@ -580,9 +581,37 @@ COMMIT;
 
 
 ### T2 — decide what a truthful cadence is for a row that has none
-**Outcome:** a recorded decision for the 69 rows. ✅ **DECIDED 2026-09-08 — QUARANTINE. Do not
-repair, do not delete.** Recorded here on this plan's own authority, because no other plan will take
-it (see § 2 of the cross-check above).
+**Outcome:** a recorded decision for the 69 rows. ✅ **DECIDED 2026-09-08 — DISCARD them.**
+
+⚠️ **This SUPERSEDES the quarantine decision recorded here earlier the same day.** Quarantine was
+the right answer under the assumption that the rows carried irreplaceable evidence. The owner
+removed that assumption: *"we can discard old forecasts. this is a test deployment, not the final
+operational deployment."* On a test deployment the evidentiary value of 69 stale staging rows does
+not outweigh the cost of carrying a permanent exception through three plans — and carrying it was
+expensive, as the two findings below record.
+
+**What discarding buys, concretely — both were live defects in the quarantine design:**
+
+1. ⛔ **Quarantine would have FROZEN those rows against every future write.** A CHECK constraint is
+   re-evaluated on UPDATE against the whole updated row, so `NOT VALID` does not exempt them once
+   they are touched. `ForecastStore.transition_status` (`store/forecast_store.py:178-196`) issues
+   exactly such an UPDATE, so a quarantined forecast could never move `raw → reviewed → published`
+   again. Found by independent review 2026-09-08 and verified here.
+2. ⛔ **The reader claim made for quarantine was WRONG.** It said the fabricated-hour fallback must
+   survive because the 69 still read through it. They do not. The reader branches on
+   `len(valid_times) >= 2` (`store/forecast_store.py:388-405`): the 69 are multi-timestamp, so they
+   take the **gap-inference** path; the fabricated-hour path serves only single-timestamp NULL rows,
+   of which staging has **zero**. Correction recorded rather than silently fixed, because the error
+   was one of reasoning — the two NULL branches were treated as one.
+
+⛔ **Still do NOT mark them `QC_FAILED`.** That reasoning stands and is unaffected: QC never ran on
+these rows and rejected them; they were stored *unchecked* (`qc_status = RAW` hardcoded at the old
+`forecast_combination.py:404`, which is what Plan 253 fixed). Stamping a verdict that was never
+reached would be a fabrication whether the rows are kept or deleted.
+
+⛔ **Repair remains impossible** for the reason it always was: the 69 are multi-phase, so there is no
+single honest step to write, and the codebase already raises `ConfigurationError` on this shape in
+the skill path (`validate_homogeneous_time_step_and_phase`, Plan 228 D2).
 
 **The decision, and why the other two options are wrong:**
 
@@ -604,15 +633,26 @@ it (see § 2 of the cross-check above).
   hardcoded at the old `forecast_combination.py:404`, which is precisely what 253 fixed). Stamping a
   QC verdict that was never reached is the same class of error as fabricating a step.
 
-✅ **Quarantine, concretely:** the 69 keep `time_step_seconds = NULL`, permanently, and the NULL is
-made to *mean* "this ensemble does not sit on one grid" rather than "not yet backfilled". T3 supplies
-the mechanism that makes that distinction enforceable, so the NULL is a closed set rather than an
-open one.
+✅ **Discard, concretely:** delete the 69 forecast rows and their `forecast_values` children in one
+transaction, derive the target set in-transaction (`n_phase > 1`, never a pinned literal), and abort
+if the count is not what a fresh count says it is. After this the `time_step_seconds` NULL set
+contains only rows T1 backfills, which is what lets T3 use a plain `SET NOT NULL`.
 
-🔒 **The set is closed and cannot grow.** `_pooled` has produced nothing since 2026-09-04 and Plan
-226 changes how pooling anchors before it resumes, so no further multi-phase row can be written by
-that path. Re-measured 2026-09-08: still exactly 69, all `_pooled`, all NULL, while the total moved
-7793 → 8170.
+⛔ **Deletion is the one irreversible step in this plan.** Take a `pg_dump` of `forecasts` and
+`forecast_values` for the affected ids first, and record where it went. "It is a test deployment" is
+a reason the rows may go, not a reason to skip the backup.
+
+🔒 **The set is closed for the POOLED path — and that scoping matters.** `_pooled` has produced
+nothing since 2026-09-04, and the combiner now rejects mismatched contributors
+(`services/forecast_combination.py:433-465`), so no further multi-phase *pooled* row can be written.
+Re-measured 2026-09-08: still exactly 69, all `_pooled`, all NULL, while the total moved 7793 → 8170.
+
+⚠️ **But the guard counts non-uniform rows across the WHOLE table, while the guarantee covers only
+pooling.** A model writing directly gets no equivalent spacing validation — that is precisely the gap
+`docs/fi-issues/003` describes upstream. So the guard fails safe if the count moves, but its
+diagnosis ("pooled writes may have resumed") can be false: a direct-model row would trip it too.
+Scope the assertion to the `_pooled` cohort, and treat any new non-uniform direct-model row as a
+separate, louder problem.
 
 **In:** this plan document. **Out:** any code change (that is T3); the phase defect itself
 (252/254); backfilling or re-issuing the 69.
@@ -621,37 +661,38 @@ that path. Re-measured 2026-09-08: still exactly 69, all `_pooled`, all NULL, wh
 because, verified against `origin/main`, it has none.
 
 ### T3 — tighten the column, and retire the legacy branch
-**Outcome:** every NEW write must declare a step, while T2's 69 quarantined rows survive untouched.
+**Outcome:** `time_step_seconds` is `NOT NULL`, and the reader's single-timestamp fabricated-hour
+fallback is deleted.
 
-⛔ **`SET NOT NULL` is therefore the wrong instrument** — the original phrasing of this task assumed
-T2 would leave zero NULLs, and T2 decided otherwise. Use instead:
+✅ **`SET NOT NULL` is available again.** It was ruled out earlier today only because quarantine
+would have left 69 permanent NULLs; T2 now discards them, so after T1 + T2 there is no NULL row left
+and the plain constraint is both correct and simpler than the `NOT VALID` workaround it replaces.
+That workaround is withdrawn along with its two defects (the update-freeze and the wrong reader
+claim), both recorded in T2 rather than deleted.
 
-```sql
-ALTER TABLE forecasts
-  ADD CONSTRAINT ck_forecasts_time_step_seconds_declared
-  CHECK (time_step_seconds IS NOT NULL) NOT VALID;
-```
+⚠️ **Retire ONLY the fabricated-hour branch, not the gap-inference one.** The reader has two NULL
+paths (`store/forecast_store.py:388-405`), and the earlier text here conflated them:
 
-A `NOT VALID` CHECK **is enforced on every INSERT and UPDATE from the moment it is added**, and is
-simply not back-checked against existing rows. That is exactly the required semantics: new writes
-cannot omit a step; the 69 are grandfathered and stay visible as the anomaly they are. It is one
-statement, instantly reversible with `DROP CONSTRAINT`, and it takes no table rewrite. Never run
-`VALIDATE CONSTRAINT` on it while the 69 exist — that is the step that would fail, and failing is
-correct.
+| branch | serves | after this task |
+|---|---|---|
+| `len(valid_times) >= 2` → infer the gap | multi-timestamp NULL rows | unreachable — delete with the rest |
+| else → fabricate 1 hour | single-timestamp NULL rows, of which staging has **0** | unreachable — delete |
 
-⛔ **The reader's fabricated-hour branch still CANNOT be deleted**, because the 69 remain readable
-and NULL. Retiring it requires those rows to be gone, which T2 declined; so **the branch stays, and
-the Plan 241 regression guard `test_legacy_one_step_row_still_returns_the_fabricated_hour` stays with
-it.** Deleting either is a separate decision that must first dispose of the 69 — it is not this
-plan's, and it is not blocked on 252/254 either. Record it as an explicit, unowned follow-on rather
-than smuggling it in here.
+Both become unreachable once no NULL row exists, so both go, together with the Plan 241 regression
+guard `test_legacy_one_step_row_still_returns_the_fabricated_hour` that pins the second — deleted in
+the SAME change that deletes the branch, never before it.
 
-**In:** a new migration; `db/metadata.py`. **Out:** T1's backfill; T2's decision; deleting the
-fabricated-hour reader branch; `VALIDATE CONSTRAINT`.
+⛔ **The existing test builds its legacy row by UPDATE-ing a stored row's cadence to NULL**
+(`tests/integration/store/test_forecast_store_time_step.py:115-173`). That UPDATE will start failing
+the moment the constraint lands, so the test must be deleted in the same commit — not left to fail
+and be "fixed" afterwards by relaxing the constraint.
+
+**In:** a new migration; `db/metadata.py`; `store/forecast_store.py` (both reader branches).
+**Out:** T1's backfill; T2's deletion; the phase column (Plan 254 T7).
 **Pre-change:** an INSERT with `time_step_seconds = NULL` succeeds today; after the migration it must
 raise `IntegrityError`, and a red-first test must fail for *that* reason, not on a signature error.
-**Verification:** the constraint rejects a NULL insert; the 69 existing NULL rows are still present
-and still readable afterwards (assert the count, in-transaction, do not pin 69); no table rewrite.
+**Verification:** zero NULL rows before the migration runs (counted in-transaction, not assumed from
+T1/T2 having been run); the constraint rejects a NULL insert; neither reader branch remains.
 
 ## Exit gates
 
@@ -665,12 +706,11 @@ uv run ruff check src tests && uv run ruff format --check src tests
   measured in the SAME transaction (no hardcoded literal).
 - T1 received a fresh independent review — the 2026-09-07 approval does NOT carry over to the
   re-authored statement.
-- T2's decision is recorded here with its rationale. ✅ done — quarantine.
-- T3's `NOT VALID` CHECK rejects a NULL insert, and the 69 quarantined rows are still present and
-  still readable after the migration (count asserted in-transaction, not pinned).
-- ⛔ **NOT an exit gate any more:** "no NULL rows" and "no fabricated cadence in the reader". T2
-  decided to keep the 69, so both are now false by design. The fabricated-hour branch and its Plan
-  241 regression guard both survive this plan; retiring them is an unowned follow-on.
+- T2's decision is recorded here with its rationale. ✅ done — discard, superseding the quarantine
+  decision taken earlier the same day, with both of quarantine's defects recorded rather than erased.
+- T2 took a `pg_dump` of the deleted rows before deleting them, and recorded where it went.
+- T3 leaves no NULL rows and no fabricated cadence anywhere in the reader — both restored as gates
+  now that T2 discards rather than keeps.
 
 ## Dependency graph
 

@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: SUPERSEDED
 created: 2026-08-31
 plan: 226
 title: The daily models label calendar-day quantities with wall-clock instants — and two paths they depend on are already broken
@@ -11,7 +11,26 @@ source: 2026-08-31 — split out of Plan 222 after two review rounds showed the 
 
 # Plan 226 — anchoring, and the two defects underneath it
 
-## ⛔ HALTED — timezone work is owned elsewhere (owner decision, 2026-09-08)
+## ⛔ SUPERSEDED by Plan 254 T8 (owner decision, 2026-09-08) — do not implement from this file
+
+This plan's scope moved into **Plan 254 T8** intact. It was halted earlier the same day as timezone
+work; the owner then chose absorption over sequencing, because Plan 254's Swiss cutover (T6) cannot
+work without this anchoring and two halted plans that must land in lockstep are harder to carry than
+one plan with an extra task.
+
+**Read this file for its evidence, not for its instructions.** What travelled to 254 T8:
+
+- the anchoring scope, unchanged;
+- the **BINDING Proportionality constraint** — a finding that grows it is worse than one that
+  shrinks it, and absorption is not licence to expand it;
+- the **six open design questions**, unanswered, now part of 254 T1's decision set;
+- the **T-M measurements**, which are done and valid and must NOT be re-measured;
+- the consequence that the map consumer's re-based danger classification stands until T8 lands.
+
+⚠️ **Nothing is unwound.** Plan 228's D4 UTC-bucket machinery is merged and deployed; superseding a
+plan does not unwind shipped work.
+
+## ⛔ Superseded — the original halt notice, kept for the record
 
 **Do not implement, review, or re-scope this plan.** The owner has assigned **all timezone / time-
 alignment work to the QC session**, and this plan is squarely that: it anchors the daily models'

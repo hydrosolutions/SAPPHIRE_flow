@@ -30,16 +30,29 @@ correct, and a partial rollout is worse than none.
 
 ## What the review established
 
-**The resampler has seven production call sites, not three.** Plan 252's draft said three, and said
-T4 was "a parameter change":
+**The resampler has TWELVE production call sites.** Plan 252's draft said three and called T4 "a
+parameter change"; this plan's review said seven. Both are now wrong, and the count is *moving*:
+
+| when | sites | what changed |
+|---|---|---|
+| 2026-08-26 | 6 | baseline |
+| 2026-09-03 | 8 | Plan 228 landed |
+| **2026-09-08** | **12** | **Plan 239 T1a (`57aac024`, PR #263) — five new sites in one morning** |
+
+Re-inventoried against `origin/main` 2026-09-08 (⛔ re-run this before writing T4; it has moved twice
+in a fortnight):
 
 | Call site | |
 |---|---|
-| `services/training_data.py:478` | training (twice) |
-| `services/operational_inputs.py:144`, `:588` | operational assembly (twice) |
-| `services/track_assembly.py:260` | track assembly |
-| `services/hindcast.py:178` | hindcast |
-| `services/skill/service.py:278` | skill |
+| `services/training_data.py:546`, `:560`, `:600` | training (three) |
+| `services/operational_inputs.py:165`, `:591`, `:707` | operational assembly (three) |
+| `services/hindcast.py:238`, `:302`, `:320` | hindcast (three) |
+| `services/track_assembly.py:282`, `:372` | track assembly (two) |
+| `services/skill/service.py:293` | skill |
+
+🔴 **Every line number in the previous table was also stale**, because Plan 239 T1a edited all four
+assemblers. The inventory is not a fact to cite; it is a measurement to retake. **Plan 239 is now
+halted** (owner decision, 2026-09-08) partly so this list stops moving underneath this plan.
 
 **And the resampler is not the whole of it.** `floor_to_time_step` (`training_data.py:183`) and
 `aligned_lookback_bounds` (`:200`) are separately phase-zero. Changing only `group_by_dynamic`'s
@@ -183,6 +196,57 @@ since 226 is anchoring-only and states the UTC-midnight NWP grid remains authori
 
 **Verification:** N/A — deployment task. The sequence is written with a rollback, and the atomicity requirement (config and artifacts move together) is stated as a gate rather than a hope.
 
+### T8 — anchor the daily models to the calendar day they predict (ABSORBED from Plan 226)
+
+**Outcome:** a daily model's `valid_time` labels the calendar day it actually predicts, on the
+deployment's declared boundary, instead of the wall-clock instant the cycle happened to start.
+
+📌 **Absorbed by owner decision 2026-09-08.** Plan 226 is superseded and its scope moves here intact.
+Two reasons: 254's cutover (T6) cannot work without this — moving the declared boundary changes a
+setting the daily models do not read, because they build timestamps relative to the cycle start
+(`models/linear_regression_daily.py:164-166`) — and 226 was halted onto this track anyway, so
+carrying it as a second halted plan that must land in lockstep was strictly harder than carrying it
+as a task.
+
+🔴 **This is live and continuous on staging, measured 2026-09-08.** Each forecast cycle emits exactly
+one valid_time phase, and that phase is the cycle's start time: 09-07 00:00Z→`8 s`,
+06:00Z→`21602 s`, 12:00Z→`43202 s`, 18:00Z→`64802 s`, 09-08 00:00Z→`3 s`, 06:00Z→`21605 s`,
+07:24Z→`26658 s`. `nwp_rainfall_runoff` sits at `0` throughout — the defect is specific to the daily
+models. It is unaffected by Plan 239 T1a, which changed inputs, not labelling.
+
+⛔ **Plan 226's BINDING Proportionality constraint travels with it.** A finding that GROWS this task
+is worse than one that shrinks it. Absorbing 226 must not be read as licence to expand it: the scope
+is anchoring, and nothing else 226 excluded (pooling semantics, member-id collision, the alert-path
+union, BMA, backfill, recomputation, performance work) becomes in-scope by moving house.
+
+⛔ **226's six open design questions are NOT answered by absorption and must not be answered
+casually.** They are carried verbatim into T1's decision set: whether P1 is fixed in the hindcast
+path or in the model; whether the daily-vs-instantaneous comparison is acceptable; what step *k*
+predicts and how the anchor is computed (by truncation, never by reading a `past_targets` row);
+what happens when every step is backdated; whether the boundary is `<` or `<=` (it must agree with
+the NWP path's existing convention at `services/operational_inputs.py:225-236`); and how "the last
+observation" is defined for a multi-parameter fallback. 226's T-M measurements are **done and valid**
+— 604 s cadence, the ~70-minute hindcast lookback, the 6.4 % median skill-join error, zero
+observation staleness — and must not be re-measured.
+
+⚠️ **Consequence carried forward:** while this was halted, the map consumer re-based its national
+danger classification onto the primary individual model, because 34 stations have no combined
+forecast. This task is what restores the combined forecast Plan 222 takes dark; that re-basing
+stands until it lands.
+
+**In:** the daily models' valid_time construction and the anchor computation. **Out:** everything
+226 listed as a non-goal; the boundary VALUE itself (that is 252's declaration); the retrain (T6).
+Depends on T1, because five of the six questions above are its decisions.
+
+**Pre-change:** the per-cycle phase measurement above — a daily forecast issued at 07:24Z labels its
+first step at 07:24:18, not at the declared boundary. A red-first test must fail on the *label*, not
+on a signature.
+
+**Verification:** `uv run pytest tests/unit/models/ tests/unit/services/test_run_station_forecast.py`
+— a daily forecast issued at an arbitrary wall-clock instant labels its steps on the declared
+boundary. ⛔ **A test asserting only "all timestamps are midnight" locks nothing** (226's own
+warning): it passes for an issue-day-anchored forecast too. Assert which day each step names.
+
 ### T7 — record the phase on `forecasts`, not just the step
 
 **Outcome:** a stored forecast records the whole grid it sits on, so `forecasts` stops asserting half
@@ -204,8 +268,13 @@ day starts.
 **In:** `db/metadata.py` (`forecasts.phase_offset_seconds`, nullable, additive migration),
 `store/forecast_store.py` write and read paths, `types/forecast.py`. Mirror the existing precedent
 exactly — `skill_scores.phase_offset_seconds` / `skill_diagrams.phase_offset_seconds`
-(`db/metadata.py:1540`, `:1611`; written at `store/skill_store.py:520`) — including its nullability,
-so an ensemble with no `valid_time` stays representable. Depends on T4.
+(`db/metadata.py:1540`, `:1611`; written at `store/skill_store.py:520`) — including its nullability.
+
+⚠️ **Correct reason for nullability.** An earlier draft of this task justified it as "an ensemble
+with no `valid_time` stays representable" — that is false: `ForecastEnsemble.from_members` rejects an
+empty frame (`types/ensemble.py:54-63`), so such an ensemble cannot exist. The real reason is
+historical: rows written before this column exists have an unrecorded phase, and NULL is how an
+unknown is represented. Depends on T4.
 
 **Out:** backfilling historical rows (Plan 248 T2 decided: quarantine — do not repair, do not
 delete); `VALIDATE`-ing 248 T3's constraint; any change to `time_step_seconds` itself.
@@ -251,7 +320,8 @@ Five conditions hold in addition:
     {"id": "T3", "phase": 2, "depends_on": ["T1", "T2"]},
     {"id": "T4", "phase": 3, "depends_on": ["T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T3"]},
-    {"id": "T6", "phase": 4, "depends_on": ["T4", "T5"]},
+    {"id": "T8", "phase": 2, "depends_on": ["T1"]},
+    {"id": "T6", "phase": 4, "depends_on": ["T4", "T5", "T8"]},
     {"id": "T7", "phase": 4, "depends_on": ["T4"]}
   ]
 }

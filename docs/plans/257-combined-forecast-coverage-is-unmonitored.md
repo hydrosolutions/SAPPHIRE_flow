@@ -89,6 +89,19 @@ operators to ignore it — which is the same failure this plan exists to fix, on
   - **(a) Honest and loud.** `critical` when eligible > 0 and written == 0; `warning` when
     0 < written < eligible; `ok` when written == eligible. Born red. Recommended for the *record*;
     see D3 for whether it pages.
+
+    🔴 **`written` is NOT `servable`, and after Plan 253 the difference is real.** 253 shipped
+    2026-09-08: a combined forecast that FAILS QC is deliberately **stored** marked `QC_FAILED`
+    (OD-1) and **excluded from the Forecast Lab** (OD-1a, `services/forecast_lab/db_sources.py`).
+    So every eligible station could have a written row, this check could report `ok`, and the
+    product could still be unavailable — which is the exact failure this plan exists to catch.
+    Either count only rows that are servable, or state plainly that this check covers persistence
+    only and name what covers availability. Do not let "written == eligible" stand unqualified.
+
+    ⚠️ **T2's drop-reason list is also missing one that 253 introduced:**
+    `forecast_combination.no_qc_rules_for_step_not_persisted` — a combination for which no QC rule
+    exists is now deliberately not persisted at all. That is a third way to be absent, distinct from
+    the two this plan enumerates.
   - **(b) Declared-baseline.** Config carries the currently-accepted dark count; status is relative
     to it, so a *regression* is red and the known-dark state is `warning`. Honest but adds a config
     knob that must be un-set when Plan 226 lands, and a stale knob is its own silent failure.
@@ -176,7 +189,10 @@ existing Plan 222 combination tests still passing unchanged (proving write behav
 
 ## Non-goals
 
-- Fixing the dark product. That is **Plan 226**, which is itself sequenced behind Plans 252/254.
+- Fixing the dark product. That is now **Plan 254 T8** — Plan 226 was SUPERSEDED and absorbed into
+  it on 2026-09-08. ⚠️ The rest of this sentence claimed 226 was "sequenced behind" 252/254; that was
+  never true (226's `depends_on` was `[222, 228, 235]` and both 252 and 254 excluded it), and it is
+  moot now that 254 owns the work. Formerly read: **Plan 226**, which is itself sequenced behind Plans 252/254.
 - Making the combiner write more rows, or restoring the pre-Plan-222 union.
 - A per-product coverage ledger for every `model_id`.
 - New alert transport. Alerts remain webhook-only.

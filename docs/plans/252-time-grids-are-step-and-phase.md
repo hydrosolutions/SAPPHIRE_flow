@@ -293,6 +293,24 @@ recorded separately, never conflated into one "offset" field.
 `timedelta` in `[0, step)`. Hourly UTC is `(3600s, 0)`. Hourly NPT is `(3600s, 900s)`. Daily UTC is
 `(86400s, 0)`. Daily Nepali is `(86400s, 65700s)` — 18:15 UTC.
 
+⚠️ **`65700 s` is the CIVIL reference, not the boundary we operate on. Four different numbers appear
+in this plan and they are not alternatives — they are four distinct things.** Read this table before
+quoting any of them; it is what a deployment gets configured from.
+
+| # | Value | What it is | Status |
+|---|---|---|---|
+| 1 | `65700 s` (18:15Z) | Nepal's **exact civil** day boundary — NPT midnight, UTC+05:45 | Reference. Never operated on directly. |
+| 2 | `64800 s` (18:00Z) | Nepal's **provisional operating** boundary — civil midnight rounded down to the whole hour, corroborated (not caused) by SnowMapper's UTC+6 day | **What T4 configures**, pending DHM's answer (T7). Whatever DHM names replaces it. |
+| 3 | `0 s` (00:00Z) | Switzerland **today**, and what every deployment must keep declaring until the parity precondition in OD-9 holds | **Current.** OD-11 and T4 require it. |
+| 4 | `82800 s` (23:00Z) | Switzerland **after the cutover** — fixed UTC+1 year-round, so every day is exactly 24 h | **Target.** Requires the retrain; Plan 254 T6 owns the move. |
+
+⛔ **Rows 3 and 4 are the same deployment before and after a cutover, not a contradiction.** Where
+this plan says Switzerland "is" `82800 s` it means the target; where it says Switzerland must declare
+phase zero it means today. Both are true, in that order. Likewise rows 1 and 2: "anchor to Nepali
+midnight" states the intent, `64800 s` is what we can actually operate on until DHM answers, and the
+45-minute difference means a Nepali day so configured runs **00:45–23:45 local**, which is a known and
+accepted approximation, not an oversight.
+
 **Storage stays UTC**; `UtcDatetime` and `ensure_utc()` at boundaries are unchanged. Phase is
 recorded *alongside*, not instead.
 
@@ -381,7 +399,14 @@ fixed, because three of them were errors of *reasoning*, not typos:
 
 ## Owner decisions taken 2026-09-05, after the review
 
-**OD-9 — Plan 228 D4 is SUPERSEDED, not reinterpreted (owner allowed 2026-09-05).** D4 forbids
+⚠️ **Tense correction (2026-09-08).** OD-9 below is written as though D4 *has been* superseded. It
+has not. This plan is `DRAFT` — a proposal, not an instruction (`docs/workflow.md:64-89`) — and T8 is
+the future task that would amend Plan 228. **Plan 228 is READY, its D4 is the authoritative rule, and
+the code implements it** (`services/training_data.py:237-276`). Read OD-9 as *"D4 is proposed for
+supersession by T8"*: phase zero stays authoritative until the owner advances this plan and that
+amendment actually lands. The disposition is real; the past tense is not.
+
+**OD-9 — Plan 228 D4 is PROPOSED FOR SUPERSESSION, not reinterpretation (owner allowed 2026-09-05).** D4 forbids
 re-opening itself (`228:245`), so this is recorded as an explicit owner disposition. The supersession
 must amend D4's **complete** rationale, invariant, implementation record, the decision document, the
 touchpoint map and the locking tests — and must state that a fixed non-zero phase preserves D4 only
@@ -538,7 +563,9 @@ familiar convention rather than an unusual demand.
 ### T8 — supersede Plan 228 D4
 
 **Outcome:** D4 is superseded, not reinterpreted, with the owner's disposition recorded and the parity
-precondition stated.
+precondition stated. ⛔ **This task is the ONLY thing that makes the supersession real** — until it
+runs, D4 stands and phase zero is correct. Anything elsewhere in this plan written in the perfect
+tense is describing this task's intended effect, not a completed one.
 
 **In:** `docs/plans/228-hindcast-and-skill-on-wrong-data.md` § D4 (`:121-147`), its implementation
 record (`:294`), the decision document and `docs/touchpoint-maps.md`. Must preserve the

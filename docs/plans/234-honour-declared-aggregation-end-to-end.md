@@ -41,7 +41,16 @@ our code is fixed.** Filing an FI issue would be reporting our own omission as t
 
 ## What is wrong
 
-### A1 — declared aggregation is bypassed or flattened on every path
+⚠️ **NARROWED 2026-09-08 — A1's premise is partly OUT OF DATE.** Plan 239 T1a (`57aac024`, merged and
+deployed the same day) already threads the parameter-keyed declaration through all four assemblers,
+and the current code resolves declarations before resampling (`services/training_data.py:72-89`).
+"Every path" is no longer true, and Plan 254 declares a dependency on this plan, so an overstated
+premise here propagates. **What actually remains** — and what this plan should be re-scoped to — is:
+channel-keyed (as opposed to parameter-keyed) declarations, superset conflict detection, the skill
+path, and delivering the exact declared lookback. Re-verify each against `origin/main` before
+writing tasks; the citations below predate T1a.
+
+### A1 — declared aggregation is bypassed or flattened on most paths (see the narrowing note above)
 
 Skill scoring, operational NWP resampling, hindcast forcing, per-channel model declarations, and
 superset conflict detection all discard or flatten the declared method
