@@ -74,30 +74,84 @@ self-intersection that prompted this:
 Consumers decide which reasons mean what; this plan only makes them observable. Plan 256 T1 documents
 which of them withhold a station and for which station kinds.
 
-**In.** `src/sapphire_flow/services/reanalysis_backfill.py`; the new exclusion type;
-`docs/spec/types-and-protocols.md:3842` (adds the new function — the existing signature is unchanged);
-`docs/touchpoint-maps.md:194` (documents both MeteoSwiss binding paths).
+**The interface, named** — this is an interoperability boundary, so it is specified here rather than
+left to the implementer:
+
+```python
+class MeteoswissExclusionReason(Enum):        # in types/, not services/
+    NO_BASIN_ID = auto(); BASIN_NOT_FOUND = auto()
+    GEOMETRY_WRONG_TYPE = auto(); GEOMETRY_EMPTY = auto(); GEOMETRY_INVALID = auto()
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MeteoswissExclusion:
+    station_id: StationId
+    code: str
+    reason: MeteoswissExclusionReason
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MeteoswissEligibility:
+    eligible: tuple[StationWeatherSource, ...]
+    excluded: tuple[MeteoswissExclusion, ...]
+
+def partition_meteoswiss_eligibility(
+    stations: list[StationConfig], basin_store: BasinStore
+) -> MeteoswissEligibility: ...
+```
+
+`eligible_meteoswiss_configs` keeps its exact present signature and `list` return, delegating to the
+above.
+
+**In.** `src/sapphire_flow/services/reanalysis_backfill.py`;
+`src/sapphire_flow/types/reanalysis.py` (the two new types and the enum);
+`tests/unit/services/test_reanalysis_backfill.py` (new cases — the task must edit this file);
+`docs/spec/types-and-protocols.md:3842` (documents the new types and the exact return signature; the
+existing signature is unchanged); `docs/touchpoint-maps.md:194` (documents both MeteoSwiss binding
+paths).
 **Out.** No change to `_has_valid_geometry`'s predicate, to which stations are excluded, to any
 existing call site, or to `eligible_meteoswiss_configs`' return type. No geometry repair. No change to
 onboarding, promotion or reporting.
 
-**Verification.**
-`uv run pytest tests/unit/services/test_reanalysis_backfill.py` — the seven existing call sites pass
-**unmodified**; plus
-`uv run pytest tests/unit/services/test_reanalysis_backfill.py::TestPartitionMeteoswissEligibility`
-— a station rejected for each of the five reasons appears in the partition with that reason, and the
-eligible set returned by the partition is **equal** to what `eligible_meteoswiss_configs` returns for
-the same input.
+**Verification.** Three commands, all of which must pass:
 
-**Pre-change.** N/A — additive interface. A test against a function that does not exist fails on name
-resolution, which proves nothing about the defect.
+```
+uv run pytest tests/unit/services/test_reanalysis_backfill.py
+uv run pytest tests/unit/scripts/test_backfill_meteoswiss_history_script.py
+uv run pytest "tests/unit/services/test_onboarding.py::TestMeteoswissBindingAndBackfillOrHold::test_ineligible_station_no_geometry_gets_no_binding"
+```
 
-The discriminating evidence is instead the pair of invariants above: the seven existing call sites
-and `tests/unit/services/test_onboarding.py:1347`
-(`test_ineligible_station_no_geometry_gets_no_binding`) all pass **unchanged** afterwards, and the
-partition's eligible set equals the wrapper's output. Together those show the exclusion rule was
-untouched and only the reason became reachable — which is exactly the claim, and would fail if the
-implementation altered behaviour while adding the channel.
+The first two cover all eight existing test sites, which must pass **unmodified**. The third is the
+node that locks today's exclusion behaviour end-to-end.
+
+The new `TestPartitionMeteoswissEligibility` must assert, against an **independently written expected
+result** — not against the wrapper:
+
+| case | assertion |
+|---|---|
+| each of the five rejection reasons | the station appears in `excluded` with that exact reason |
+| a valid **`Polygon`** basin | appears in `eligible` |
+| a valid **`MultiPolygon`** basin | appears in `eligible` |
+
+⚠️ **The MultiPolygon case is load-bearing and is the reason wrapper-equality is not enough.**
+`_has_valid_geometry` accepts `(Polygon, MultiPolygon)`
+(`services/reanalysis_backfill.py:100`), but `MultiPolygon` appears **zero times** in the entire
+existing suite — every positive fixture builds a `Polygon`. An implementation that began rejecting
+valid `MultiPolygon`s would keep the partition and the wrapper in perfect agreement and pass every
+other assertion here. Asserting the partition equals the wrapper is circular: the wrapper delegates
+to the partition, so they cannot disagree. The expected eligible sequence must be stated
+independently.
+
+**Pre-change.** RED: a test asserting that a station rejected for a self-intersecting polygon can be
+retrieved **with its reason** fails today.
+
+An earlier draft marked this `N/A` on the grounds that a missing-function failure is a mere signature
+error. That was wrong, and it dodged the RED `docs/workflow.md:20` requires: here the **absence of
+the channel is precisely the defect**. There is no way to learn why a station was refused, and a test
+that cannot obtain the reason is failing for exactly that reason — not incidentally. The plan changes
+observable behaviour (a caller can now act on the reason), so `N/A`, which is reserved for
+mechanical and documentation work, does not apply.
+
+The preservation half is carried separately by the three commands above passing unmodified, plus the
+independent `Polygon` / `MultiPolygon` acceptance assertions.
 
 ```json
 {

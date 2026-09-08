@@ -47,7 +47,10 @@ histogram against a cancellation timestamp, and extracting `stations` from two 2
 
 ⭐ **Precedent to match, not duplicate.** `flows/run_forecast_cycle.py:846` already emits a
 per-station `FORECAST_STATION_DARK` record with a machine-readable reason — on staging it names
-exactly the stations this plan exists for, every cycle. Reuse its vocabulary. And note that
+exactly the stations this plan exists for, every cycle. ⚠️ Reuse its **record shape**, not its
+vocabulary: it emits the plain string `all_models_failed`
+(`flows/run_forecast_cycle.py:2850`), which is not one of the reason codes below and describes a
+forecast-time outcome rather than an onboarding one. And note that
 **persisting is not surfacing**: `ops/watchdog.py` probes only three check types and that is not one,
 so the system has been reporting those stations to nobody. The report must be handed to an operator,
 not filed where no one looks.
@@ -62,9 +65,15 @@ INVALID_BASIN_GEOMETRY → NO_OPERATIONAL_FORCING → NO_FORECAST_TARGETS
   → MISSING_WATER_LEVEL_DATUM → NO_CLIMATOLOGY_FLOOR → MODEL_TRAINING_INCOMPLETE
 ```
 
-`HELD_MISSING_BACKFILL` is a promotion *disposition*, recorded alongside the reason. Execution
-failures use a separate typed field (T1) and never a primary reason — a station that failed to be
-written has no condition to report.
+`HELD_MISSING_BACKFILL` is a promotion *disposition*, recorded alongside the reason — and it applies
+**only** to a station that received a binding and got zero rows, never to one excluded before a
+binding existed. Execution failures use a separate typed field (T1) and never a primary reason.
+
+⚠️ **The chain is not valid across station kinds, and must be qualified before implementation.**
+A weather station legitimately has no forecast targets — Step 5 skips it (`onboarding.py:777`) and
+Step 8 promotes it anyway (`:1189`) — so a universal precedence would label a perfectly healthy
+weather station `NO_FORECAST_TARGETS`. The applicability of each reason by `station_kind` is an open
+item this plan must resolve, with a parameterised test per reason and per kind.
 
 ⚠️ There is deliberately **no** `INSUFFICIENT_OBSERVATION_HISTORY` member: onboarding computes no
 history-depth threshold, so the reason would assert a check that does not exist. Under this rule
@@ -139,10 +148,19 @@ distinct figures. Counts appear alongside names, never instead of them.
 `/tmp/sapphire_nwp`. A new `/data/reports` path would fail in production **while every `tmp_path`
 test passed** — the failure mode this repository has been bitten by before.
 
+🔴 **And the cheap workaround does not work either.** A round-4 review found that
+`/data/artifacts` is not a general-purpose writable volume: `store/model_artifact_store.py:58`
+computes `self._artifact_dir / Path(str(model_id)).name`, so **every immediate child of
+`/data/artifacts` is a model-ID namespace**. An `onboarding-reports/` directory would sit in that
+namespace, could collide with a real model id, and would inherit the model-artifact volume's backup
+and lifecycle semantics (`docs/standards/cicd.md:31` documents it as "Trained model files", and four
+other services mount it `ro`). That recommendation is **withdrawn**.
+
 | | |
 |---|---|
-| **recommended** | `/data/artifacts/onboarding-reports/` — already mounted `rw`, no Compose, security or CI/CD change |
-| alternative | a new named volume `onboarding_reports:/data/reports:rw`, which additionally requires updates to `docker-compose.yml`, `docs/standards/cicd.md`, `docs/standards/security.md`, and a mount-contract test |
+| **required** | a dedicated named volume `onboarding_reports:/data/onboarding-reports:rw` — plus `docker/entrypoint.sh:37` ownership setup, `docker-compose.yml`, `docs/standards/cicd.md`, `docs/standards/security.md`, a mount-contract test, a retention policy and an operator retrieval procedure |
+| ⛔ rejected | `/data/artifacts/onboarding-reports/` — collides with the model-ID namespace |
+| ⛔ rejected | a new `/data/reports` path with no volume — unwritable under `read_only: true` |
 | filename | `onboarding-<clock() as %Y%m%dT%H%M%SZ>.txt` — the run's injected clock, so runs never collide and tests are deterministic |
 | collision | suffix `-2`, `-3`, … rather than overwrite |
 | retention | none; pruning is a deployment concern |
