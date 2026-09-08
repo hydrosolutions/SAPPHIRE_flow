@@ -373,10 +373,12 @@ This is deliberately the *convention and the type*, not the consumers:
   decision with its own cost.
 
   ✅ **Discharged 2026-09-08.** Plan 248 T2 took that separate decision for the one population it
-  affects — the 69 non-uniform `_pooled` rows in staging — and chose **quarantine**: they keep
-  `time_step_seconds = NULL` permanently, are neither repaired nor deleted, and Plan 248 T3 adds a
-  `NOT VALID` CHECK so new writes must declare a step while those rows are grandfathered. Nothing
-  here waits on that and nothing there waits on this.
+  affects — the 69 non-uniform `_pooled` rows in staging — and chose **discard**, once the owner
+  established that the mac-mini is a test deployment and old forecasts may be deleted. With no NULL
+  rows left, Plan 248 T3 uses a plain `SET NOT NULL`. *(An earlier note here recorded the
+  quarantine + `NOT VALID` design that this superseded the same day; it was withdrawn because a CHECK
+  is re-evaluated on UPDATE and would have frozen those rows.)* Nothing here waits on that and
+  nothing there waits on this.
 - Changing `UtcDatetime` or the storage timezone.
 
 ## Corrections forced by review (2026-09-05, 26 findings: 20 blockers)
@@ -429,8 +431,10 @@ alongside `units` and `long_name`, int16-packed with CF `scale_factor`.
 ⛔ **We currently discard this.** The recap adapter reads no CF attributes; `cell_methods` appears in
 this repo only as a comment (`adapters/era5_land_reanalysis.py:20`) and in an archived plan.
 `ParameterDefinition` (`types/domain.py:36`) carries `unit` and `aggregation_method` and nothing about
-temporal support. T3 reads it at ingest — the cheapest route to the typed distinction the review
-demanded, using a standard rather than an invention.
+temporal support. **T3a declares it; T3b later checks that declaration against the source's
+`cell_methods`.** Reading it at ingest was the original single task and is not currently buildable —
+the Gateway strips CF attributes before we see them (Plan 243, measured 2026-09-07), so the standard
+gives us the vocabulary now and the verification later.
 
 **OD-1 (NARROWED) — interval-valued data is period-ending; instantaneous data is not.** A river stage
 reading at 08:00 is a *point*, not an interval ending at 08:00. The original blanket rule was wrong
@@ -504,15 +508,56 @@ Threading it through call sites (Plan 254).
 
 **Verification:** `uv run pytest tests/unit/types/test_time_grid.py` — hourly UTC and hourly Nepali are both step 3600 and NOT alignable; a 15-minute grid on quarter-hour marks nests into BOTH; **a 10-minute phase-zero grid nests into hourly UTC and NOT into hourly Nepali** (the draft asserted neither, contradicting OD-6); phase >= step raises.
 
-### T3 — read CF attributes at ingest
+### T3 — SPLIT: declare temporal support now (T3a); verify it against the source later (T3b)
 
-**Outcome:** `cell_methods` and `units` survive from the source NetCDF into stored parameter
-metadata, so temporal support is a fact we hold rather than one we assume.
+⛔ **The original single task could not be built, and this is the correction.** It promised that
+`cell_methods` "survive from the source NetCDF into stored parameter metadata". They cannot: the
+Gateway strips them. Measured 2026-09-07 and recorded in the archived Plan 243 — every Gateway
+response, for every endpoint, returns exactly three columns (`g_123`, `source`, `source_run`) with an
+**empty `DataFrame.attrs`**, no units and no CF metadata. The snow modeller confirmed his source
+NetCDFs carry full CF metadata, so it exists at source and is lost in the Gateway's extraction to
+parquet. There is also nowhere to put it: `ParameterDefinition` (`types/domain.py:36-43`) and the
+`parameters` table (`db/metadata.py:27-51`) both carry `name / display_name / unit /
+parameter_domain / aggregation_method` and no temporal-support field.
 
-**In:** the recap extraction path and `ParameterDefinition` (`types/domain.py:36`). Depends on T2.
+📌 **What we already have, and why it is not the same thing.** `ParameterDefinition.aggregation_method`
+(SUM / MEAN / MAX) says **how to combine** values. CF `cell_methods` says **what a stored value already
+is** — `time: point` versus `time: sum`. They are correlated and not equivalent, and this plan's
+narrowing of period-ending to interval-valued data needs the second. Assuming one from the other is
+exactly the substitution this plan exists to forbid.
 
-**Out:** acting on the value — that is Plan 254. Changing `AggregationMethod`.
+#### T3a — declare temporal support as a first-class field (unblocked, and this plan's actual scope)
 
+**Outcome:** `TemporalSupport` (`POINT` | `INTERVAL`) exists as a type and is carried on
+`ParameterDefinition` and the `parameters` table, declared by us. **No default** — an undeclared
+parameter refuses, per this plan's own fail-closed rule. A stage reading is `POINT`; precipitation
+accumulated over an interval is `INTERVAL`.
+
+**In:** `types/enums.py`, `types/domain.py:36-43`, `db/metadata.py:27-51` plus an additive migration,
+and the parameter bootstrap. **Out:** acting on the value (Plan 254); changing `AggregationMethod`;
+reading anything from the source (T3b). Depends on T2.
+
+**Pre-change:** neither the domain type nor the table has any temporal-support field, so a consumer
+must infer support from `aggregation_method`. **Verification:** `uv run pytest tests/unit/types/
+tests/integration/db/` — a parameter declared `INTERVAL` round-trips by value; an undeclared one is
+rejected rather than defaulted.
+
+#### T3b — verify the declaration against the source (BLOCKED on the Gateway, do not start)
+
+**Outcome:** the CF `cell_methods` the source publishes is read at ingest and **checked against**
+T3a's declaration, so a mismatch is caught instead of assumed away.
+
+⛔ **Blocked, and the blocker is upstream and already half-asked.** Plan 243 asked the Gateway to
+preserve the source `units` attribute and that work is in progress on their side — but **it asked for
+`units` only, not `cell_methods`.** So the ask must be extended before this task is buildable.
+Extending it is cheap: same channel, same people, same pass-through work, and it should ride on 243's
+request rather than open a second one. **Until it lands, T3a's declaration is authoritative but
+unverified, and this plan must say so rather than imply the value is source-derived.**
+
+📌 Follow 243's own sequencing rule: if the pass-through lands before T3a ships, read the attribute
+and check it in the same change rather than building the declaration blind.
+
+**In:** the recap extraction path, once attributes arrive. **Out:** everything in T3a.
 **Pre-change:** `grep -rn "cell_methods\|\.attrs" src/sapphire_flow/adapters/` returns nothing; the attribute is present in every upstream file and discarded at our boundary.
 
 **Verification:** `uv run pytest tests/unit/adapters/` — a fixture carrying `cell_methods: time: sum` and `units: mm` round-trips into parameter metadata, and a source missing `cell_methods` is recorded as unknown rather than defaulted.
@@ -553,6 +598,14 @@ boundary in local time; a request for **15-minute data on `:00/:15/:30/:45`** (1
 Nepali targets, since 10 does not divide the 345-minute offset and 15 does); and confirmation of
 period convention per parameter. Cite the India 08:30 IST precedent — it makes the question read as a
 familiar convention rather than an unusual demand.
+
+⭐ **Fourth ask, to the Gateway rather than to DHM — and T3b is blocked until it is made.** Plan 243
+already asked the Gateway to preserve the source `units` attribute through extraction, and that work
+is in progress on their side. **It asked for `units` only.** Extend that same request to
+`cell_methods` (and, where present, the time `bounds`), so temporal support arrives as a fact rather
+than staying a local declaration. Same channel, same people, same pass-through work — it should ride
+on 243's request, not open a second one. Without this, T3b is unbuildable and T3a's declaration stays
+authoritative-but-unverified.
 
 **Out:** re-rendering the `.docx`; assuming an answer. Unanswered leaves OD-3 on its provisional value.
 
@@ -603,7 +656,8 @@ Four conditions hold in addition:
   "nodes": [
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 1, "depends_on": ["T1"]},
-    {"id": "T3", "phase": 2, "depends_on": ["T2"]},
+    {"id": "T3a", "phase": 2, "depends_on": ["T2"]},
+    {"id": "T3b", "phase": 3, "depends_on": ["T3a"], "blocked_on": "gateway CF attribute pass-through (extend the Plan 243 units ask to cell_methods)"},
     {"id": "T4", "phase": 2, "depends_on": ["T2"]},
     {"id": "T6", "phase": 1, "depends_on": ["T1"]},
     {"id": "T7", "phase": 1, "depends_on": []},
