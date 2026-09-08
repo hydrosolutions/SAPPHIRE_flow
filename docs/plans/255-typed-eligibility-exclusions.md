@@ -130,7 +130,7 @@ result** — not against the wrapper:
 | each of the five rejection reasons | the station appears in `excluded` with that exact reason |
 | valid `Polygon` × `RIVER` / `WEATHER` / `LAKE` | each appears in `eligible` |
 | valid `MultiPolygon` × `RIVER` / `WEATHER` / `LAKE` | each appears in `eligible` |
-| a valid basin on a station whose `station_status` is `ONBOARDING` | appears in `eligible` |
+| valid basin × **all four** `StationStatus` members | each appears in `eligible` |
 
 ⚠️ **Wrapper-equality is not a preservation oracle.** The wrapper delegates to the partition, so
 they cannot disagree; asserting equality proves nothing. The expected eligible sequence must be
@@ -148,9 +148,13 @@ broad and nothing else pins it:
   "every station with a valid basin polygon — no `station_kind` carve-out". Yet every positive test
   in that module uses `make_station_config`'s default `RIVER` (`tests/conftest.py:180`), and the
   onboarding node named above exercises a `WEATHER` station only with *invalid* geometry. So an
-  implementation could add a `RIVER`-only restriction, or a status-based one, and pass every command
-  listed here. That is why the positive cases are parameterised over all three kinds and a
-  non-operational status.
+  implementation could add a `RIVER`-only restriction and pass every command listed here.
+- **Station status.** `services/reanalysis_backfill.py` **never reads `station_status`** — eligibility
+  is status-blind today, and must stay so. `StationStatus` has four members
+  (`types/enums.py:226`): covering only `ONBOARDING` and `OPERATIONAL` would let a filter accepting
+  just those two pass while narrowing the rule, so all four are required. This is a **separate
+  parameterised test**, not a fourth axis of the geometry × kind product — six positive geometry/kind
+  cases plus four status cases, not twenty-four.
 
 **Pre-change.** RED: a test asserting that a station rejected for a self-intersecting polygon can be
 retrieved **with its reason** fails today.
