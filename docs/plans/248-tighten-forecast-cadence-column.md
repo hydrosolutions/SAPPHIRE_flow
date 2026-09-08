@@ -149,8 +149,8 @@ declare** — the backfill records what the model would have said, not a competi
 
 `build_combined_forecasts` refuses to persist a pooled forecast whose grid is non-uniform —
 `_derive_uniform_time_step()` returns `None` and the row is skipped with
-`forecast_combination.pooled_non_uniform_spacing_not_persisted` (Plan 222, commit `928b3093`,
-shipped in `v0.1.869`, deployed 2026-09-04). A single-timestamp pooled row is likewise refused by
+`forecast_combination.pooled_non_uniform_spacing_not_persisted` (line 461; Plan 222, commit
+`928b3093`, shipped in `v0.1.869`, deployed 2026-09-04). A single-timestamp pooled row is likewise refused by
 `_MIN_PERSISTED_TIMESTAMPS`. **No new non-uniform pooled row can be written**, so T1's one pinned
 count rests on an enforced invariant rather than on luck.
 
@@ -295,16 +295,26 @@ forecast_combination.pooled_empty_intersection:  34  (contributor_count=3)
 Both populations ARE logged at the FLOW level — `forecast_cycle.combined_forecast_skipped` fires for
 each, carrying `n_models`. They differ at the SERVICE level:
 
-- the **101** return early at `services/forecast_combination.py:308-310`
+- the **101** return early at `services/forecast_combination.py:397`
   (`if len(combinable_results) < 2: return []`) BEFORE `combine_ensembles_pooled` is entered, so no
   `forecast_combination.*` event exists for them at all;
-- the **34** get all the way in and emit `forecast_combination.pooled_empty_intersection` (line 130).
+- the **34** get all the way in and emit `forecast_combination.pooled_empty_intersection` (line 148).
 
 So: flow-visible, service-silent (sapphire-flow-f2's refinement — my earlier "invisible by
-construction" was half right). 📌 `pooled_insufficient_contributors` (:86-92) is therefore never seen
+construction" was half right). 📌 `pooled_insufficient_contributors` (:104) is therefore never seen
 for the 101, because the outer return fires first. It is NOT dead code, though: it sits inside
 `combine_ensembles_pooled`, which `services/skill/combined_skill.py:111` also calls WITHOUT that outer
 gate, and its own `eligible` filter can drop contributors below the floor even when 3 arrive.
+
+⚠️ **Line numbers re-verified against `4999c79c` (Plan 253, #264), which MODIFIED this file.** All
+three gates survive with their logic unchanged — only the line numbers moved, and the earlier
+citations (`:308-310`, `:130`, `:86-92`) are now stale. What #264 did change is `qc_status`: the
+combination is no longer hard-coded `RAW` but computed via `_qc_combined_ensemble`, and a QC-failed
+combination is still STORED as an approved exception (OD-1). So the persistence decision is untouched
+and this diagnosis holds.
+
+🪤 **But the 34/101 split was measured on `0.1.884`, which does NOT contain #264** — the mini is
+behind main again. Re-measure after the next deploy before treating those numbers as current.
 
 🔴 **Neither population survives a redeploy** — all of this lives in container logs, while the DB
 records only the ABSENCE of rows, which looks identical for all three gates. That, rather than "a
