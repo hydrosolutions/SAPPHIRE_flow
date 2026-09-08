@@ -179,6 +179,10 @@ GRANT INSERT, UPDATE ON hindcast_forecasts TO sapphire_worker;
 GRANT INSERT, DELETE ON hindcast_values TO sapphire_worker;
 GRANT INSERT ON skill_scores TO sapphire_worker;
 GRANT INSERT ON skill_diagrams TO sapphire_worker;
+-- Plan 235 D2c/D3: the append-only publication ledger. INSERT-only, same as
+-- the two tables above — publishing (including "marking stale" via an
+-- empty-count generation) never needs UPDATE.
+GRANT INSERT ON skill_generations TO sapphire_worker;
 GRANT INSERT ON pipeline_health TO sapphire_worker;
 GRANT INSERT, UPDATE ON basins TO sapphire_worker;
 GRANT INSERT, UPDATE ON basin_versions TO sapphire_worker;

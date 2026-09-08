@@ -158,6 +158,19 @@ class StoreError(SapphireError):
     """Store data retrieval failure (archive not found, corrupt data)."""
 
 
+class SkillGenerationIncompleteError(StoreError):
+    """Plan 235 fixer round (blocker, D1 retry stability): a skill-score
+    generation's persisted row count (``SkillStore.count_generation_rows``)
+    does not match what the current attempt's own scores/diagrams call for,
+    AFTER accounting for rows an earlier (crashed) attempt under the same
+    retry-stable ``generation_id`` already persisted. A genuine gap — never
+    produced by a benign retry, since a retry's rows collide harmlessly
+    against the earlier attempt's identical natural key — so this must
+    raise rather than silently skip publication and let the caller (a
+    Prefect task) report SUCCESS despite the generation being incomplete.
+    """
+
+
 class BasinPackageRejectedError(SapphireError):
     """A basin/static package (``docs/requirements/04-basin-static-artifact-
     contract.md``) fails a WHOLE-PACKAGE acceptance rule (contract §9 first

@@ -1,21 +1,27 @@
 """Plan 253 T1a — LOCKED upgrade/downgrade acceptance test for migration
-0054's ``forecasts.input_quality`` / ``input_quality_flags`` columns.
+0055's ``forecasts.input_quality`` / ``input_quality_flags`` columns.
 
 Real Alembic upgrade against a throwaway PostGIS container (mirrors
 ``tests/integration/db/test_migration_0052_partial_index.py``). A row
-inserted at the pre-0054 schema shape must survive the upgrade with `NULL`
+inserted at the pre-0055 schema shape must survive the upgrade with `NULL`
 in both new columns — not the `InputQualityLevel.FULL` default a server
 default would silently substitute (the exact failure this migration's
 docstring, and this plan's exit gate 2, forbid). Downgrade must remove both
 columns and leave the row otherwise intact.
 
-REVISION CHAIN (post-rebase). This migration was authored as `0053` while
-`origin/main` independently landed its own `0053_forecasts_time_step.py`
-(Plan 241 T4, `forecasts.time_step_seconds`); both chained onto `0052`. On
-merge ours was rebased to revision `0054`, down_revision `0053`. So the
-pre-input-quality schema shape is revision **0053**, not `0052`, and the
-downgrade target is **0053** — downgrading to `0052` would tear out main's
-independent migration and prove nothing about ours.
+REVISION CHAIN — rebased TWICE, and the number is not load-bearing. This
+migration was authored as `0053`; `origin/main` landed its own `0053`
+(Plan 241 T4, ``forecasts.time_step_seconds``) in parallel, so ours moved to
+`0054`. Main then landed its own `0054` (Plan 235, skill score generations)
+the same way, so ours moved again to `0055`. Two migrations sharing a
+``down_revision`` give alembic two heads and break every upgrade, so the
+number is assigned at MERGE time, not at authoring time.
+
+Consequently the pre-input-quality schema shape is ``_PRE_REVISION`` (0054),
+NOT `0052` or `0053`, and the downgrade target is the same — downgrading
+further would tear out another plan's independent migration and prove
+nothing about ours. Both revisions are constants below precisely so a third
+rebase is a two-line change.
 """
 
 from __future__ import annotations
@@ -42,20 +48,20 @@ _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 # `forecasts.time_step_seconds`. Seeding the legacy row here (not at 0052)
 # is what makes the row genuinely pre-input-quality without also unwinding
 # an unrelated migration.
-_PRE_REVISION = "0053"
-_REVISION = "0054"
+_PRE_REVISION = "0054"
+_REVISION = "0055"
 
 
 @pytest.fixture
 def migration_engine() -> Iterator[tuple[sa.Engine, str]]:
     """Throwaway PostGIS container so a real Alembic upgrade/downgrade can
-    run 0054 against a seeded legacy row without disturbing the shared
+    run 0055 against a seeded legacy row without disturbing the shared
     session engine (migrated to head once)."""
     with PostgresContainer(
         image="postgis/postgis:16-3.4",
         username="test",
         password="test",
-        dbname="sapphire_migration_0054_test",
+        dbname="sapphire_migration_0055_test",
     ) as postgres:
         url = postgres.get_connection_url().replace("+psycopg2", "+psycopg")
         prior = os.environ.get("DATABASE_URL")
@@ -97,7 +103,7 @@ def _seed_station(conn: sa.Connection) -> uuid.UUID:
     return station.id
 
 
-def _seed_model(conn: sa.Connection, model_id: str = "test_model_0054") -> str:
+def _seed_model(conn: sa.Connection, model_id: str = "test_model_0055") -> str:
     conn.execute(
         sa.text(
             "INSERT INTO models (id, display_name, artifact_scope, description) "
@@ -132,7 +138,7 @@ def _insert_legacy_forecast(
     return forecast_id
 
 
-class TestMigration0054InputQuality:
+class TestMigration0055InputQuality:
     def test_upgrade_leaves_legacy_row_null_not_full(
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
@@ -203,7 +209,7 @@ class TestMigration0054InputQuality:
                 f"{name} must have no server default, found {r.column_default!r}"
             )
 
-    def test_downgrade_to_0053_removes_both_columns_and_keeps_time_step(
+    def test_downgrade_to_0054_removes_both_columns_and_keeps_time_step(
         self, migration_engine: tuple[sa.Engine, str]
     ) -> None:
         from alembic import command

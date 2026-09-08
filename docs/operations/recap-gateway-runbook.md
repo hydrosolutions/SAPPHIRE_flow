@@ -4,8 +4,7 @@ Nepal v1 operational procedures for the recap Data Gateway integration
 (Plan 082). Scope: manual GeoPackage upload, historical back-extraction,
 coverage-manifest recording, live smoke execution, `NWP_DELIVERY` watchdog
 triage, API-key handling, and snow-variable status. Does **not** document the
-upstream `recap-dg-client` fixes as complete — see § Snow-variable status for
-what remains unconfirmed.
+upstream `recap-dg-client` fixes as complete — see § Snow-variable status.
 
 ## Manual GeoPackage upload
 
@@ -225,5 +224,9 @@ Flow-1 forecast-cycle storage path (Plan 145): `_fetch_nwp_task` fetches +
 stores snow rows under the SAME resolved IFS cycle for every station whose
 active model assignment(s) require a future snow variable, capability-gated
 via `SnowForecastSource` (Recap Gateway only). A model declaring a canonical unit on `swe`/`snow_depth`/`snowmelt` is now
-unblocked in code, but see the owner-supplied caveat above before relying on
-the magnitudes at a basin that actually has snow.
+unblocked in code. The magnitudes rest on the snow modeller's specification
+and on the Gateway's no-transformation contract, not on a measurement of our
+own — HRU 12300 cannot provide one (snow depth is flat 0.0000 there in every
+season, measured under Plan 219), so the first basin that actually has snow is
+still the first chance to see a magnitude error. The register that records each
+unit and its authority lives in `adapters/recap_gateway.py` (Plan 243).

@@ -65,6 +65,13 @@ def compute_roc_curve(
         "false_alarm_rate": false_alarm_rates.tolist(),
         "hit_rate": hit_rates.tolist(),
         "thresholds": prob_thresholds.tolist(),
+        # Fixer round (major): denominators, so a later merge of two ROC
+        # curves (`services.skill.combined_skill._merge_diagram_data`) can
+        # weight `hit_rate`/`false_alarm_rate` by how many events/
+        # non-events each curve was actually computed over, instead of
+        # averaging the two rates unweighted regardless of sample size.
+        "n_events": n_events,
+        "n_non_events": n_non_events,
     }
 
 

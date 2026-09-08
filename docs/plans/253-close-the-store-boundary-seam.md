@@ -226,19 +226,38 @@ interval before Plan 250 lands.
 - **Automated spatial consistency.** A recorded deferral; leave it recorded.
 - **Populating `wigos_id`.** D-D corrects the *claim*; filling the column is separate work.
 
-## Related, deliberately out of scope — but do not lose it
+## RETRACTED — a stale measurement carried as a live premise
 
-The same audit measured **0 rows in `skill_scores`, 0 in `hindcast_forecasts`, 0 in `skill_diagrams`**
-on the mini, against 619 `model_artifacts`. This contradicts the standing note behind Plan 228 ("all
-106,910 skill scores are wrong; mark and recompute"). The most likely explanation is that those rows
-predate a database rebuild around 2026-07-03 — `water_level`, `water_temperature` and `forecasts` all
-start on exactly that date, while historical discharge reaches back to 1981 — but **this is not
-confirmed**. Plan 228 should not be scheduled around recomputing a population that may no longer
-exist. **Merged Plan 228 hands this to Plan 235** (`228-hindcast-and-skill-on-wrong-data.md:685`), and that
-plan is `READY` and premised on replacing **114,987** scores
-(`235-skill-score-generations.md:80,355`). If the population is genuinely absent, its marking and
-recompute phases have nothing to act on. Settle it in Plan 235 — with a fresh live row count taken
-immediately before its recompute phase, and that phase made conditional on the count — not here.
+**This section previously claimed Plan 228/235's recompute had nothing to act on. That was wrong,
+and the retraction is kept rather than deleted because the mistake is instructive.**
+
+The 2026-09-02/03 audit measured **0 rows in `skill_scores`, `hindcast_forecasts` and
+`skill_diagrams`** against 619 `model_artifacts`, and this plan inferred that Plan 235's premise —
+replacing ~114,987 scores — rested on a population that no longer existed.
+
+**Re-measured 2026-09-08** on the same container (`sapphire_flow-postgres-1`) and database
+(`sapphire`), after a peer session challenged it:
+
+    SELECT count(*), min(computed_at)::date, max(computed_at)::date FROM skill_scores;
+    -- 139712 | 2026-09-04 | 2026-09-04
+
+**Every row was computed on 2026-09-04 — one day after the original measurement.** The table was
+genuinely empty when measured; a skill run then populated it. `model_artifacts` grew 619 → 902 over
+the same window, so the system was actively training throughout.
+
+**And the conclusion is still that Plan 228's recompute has nothing to act on — for the opposite
+reason to the one originally given.** Verified independently by two peer sessions on 2026-09-08:
+every one of the 139,712 rows carries `computation_version = 2`, with **zero rows below 2**. Plan
+228's recompute is scoped to exactly the sub-2 population. So the scores are not absent; they are
+already correct. The original instinct was right and its stated reason was wrong — which is why the
+reasoning is retained here rather than the conclusion alone.
+
+⛔ **The lesson, because it will recur.** The original measurement was correct and correctly dated.
+The error was quoting it six days later as if it were current, and building an argument on it. **A
+measurement of a live system has a shelf life.** This deployment changes daily: forecasts grew from
+~1,466 rows to 7,793 and artifacts by 283 in the same window. Any figure quoted from it must carry
+its date, and any decision resting on one must re-measure first. That obligation is on the person
+citing the number, not the person who took it.
 
 ## Owner decisions taken 2026-09-04
 

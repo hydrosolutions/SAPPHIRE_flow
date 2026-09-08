@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid5
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import timedelta
-    from uuid import UUID
 
 import numpy as np
 import polars as pl
 import structlog
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ConfigurationError, SkillGenerationIncompleteError
 from sapphire_flow.services.skill.diagrams import (
     compute_rank_histogram,
     compute_reliability_diagram,
@@ -160,7 +162,7 @@ def validate_homogeneous_time_step_and_phase(
 
 def partition_by_time_step_and_phase(
     hindcasts: list[HindcastForecast],
-) -> dict[tuple[timedelta, int | None], list[HindcastForecast]]:
+) -> tuple[dict[tuple[timedelta, int | None], list[HindcastForecast]], int]:
     """Split ``hindcasts`` into the homogeneous ``(time_step, phase)``
     cohorts ``validate_homogeneous_time_step_and_phase`` requires (Plan 228
     review fixer round, major).
@@ -185,10 +187,22 @@ def partition_by_time_step_and_phase(
     malformed hindcast is excluded and logged, not allowed to take down
     partitioning (and therefore scoring) for every other hindcast in the
     same fetch.
+
+    Plan 235 per-run scope (blocker #1): the second element of the
+    returned tuple is the count of hindcasts REJECTED here (internally
+    mixed-phase, per ``_valid_time_phase_us``) — every caller's own
+    completeness gate must fold this into its "did I score everything I
+    fetched" check. Before this, a rejected hindcast simply vanished:
+    ``cohorts_missing`` in ``flows.compute_skills`` only counted cohorts
+    that survived partitioning and came back empty, so a run that silently
+    dropped a malformed INPUT (never even reaching a cohort) still reported
+    ``cohorts_complete`` and published a generation that was a valid
+    SUBSET, not the whole thing.
     """
     groups: dict[tuple[timedelta, int | None], list[HindcastForecast]] = defaultdict(
         list
     )
+    rejected = 0
     for hc in hindcasts:
         time_step = hc.ensemble.time_step
         try:
@@ -200,9 +214,10 @@ def partition_by_time_step_and_phase(
                 station_id=str(hc.station_id),
                 model_id=str(hc.model_id),
             )
+            rejected += 1
             continue
         groups[(time_step, phase)].append(hc)
-    return dict(groups)
+    return dict(groups), rejected
 
 
 def observation_fetch_bounds(
@@ -395,6 +410,7 @@ def _compute_scores(
     uuid_factory: Callable[[], UUID],
     time_step_seconds: int,
     phase_offset_seconds: int | None,
+    generation_id: UUID | None,
 ) -> list[SkillScore]:
     from sapphire_flow.types.skill import SkillScore
 
@@ -429,6 +445,7 @@ def _compute_scores(
                 created_at=now,
                 time_step_seconds=time_step_seconds,
                 phase_offset_seconds=phase_offset_seconds,
+                generation_id=generation_id,
             )
         )
 
@@ -494,6 +511,7 @@ def _compute_diagrams(
     uuid_factory: Callable[[], UUID],
     time_step_seconds: int,
     phase_offset_seconds: int | None,
+    generation_id: UUID | None,
 ) -> list[SkillDiagram]:
     from sapphire_flow.types.skill import SkillDiagram
 
@@ -534,6 +552,7 @@ def _compute_diagrams(
                 created_at=now,
                 time_step_seconds=time_step_seconds,
                 phase_offset_seconds=phase_offset_seconds,
+                generation_id=generation_id,
             )
         )
 
@@ -571,6 +590,7 @@ def compute_skill_for_station(
     uuid_factory: Callable[[], UUID],
     *,
     parameter: str,
+    generation_id: UUID | None = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     if not hindcasts:
         # Plan 228 fixer round (major): distinguish "nothing to score
@@ -688,6 +708,7 @@ def compute_skill_for_station(
                 uuid_factory=uuid_factory,
                 time_step_seconds=time_step_seconds,
                 phase_offset_seconds=phase_offset_seconds,
+                generation_id=generation_id,
             )
         )
         all_diagrams.extend(
@@ -710,7 +731,189 @@ def compute_skill_for_station(
                 uuid_factory=uuid_factory,
                 time_step_seconds=time_step_seconds,
                 phase_offset_seconds=phase_offset_seconds,
+                generation_id=generation_id,
             )
         )
 
     return all_scores, all_diagrams
+
+
+def compute_generation_fingerprint(
+    scores: list[SkillScore], diagrams: list[SkillDiagram]
+) -> str:
+    """A stable content digest over computed score/diagram VALUES (Plan 235
+    per-run-scope, blocker #3) — never over their ``id``s (freshly minted
+    every call) or their ``computed_at``/``created_at`` timestamps (which
+    legitimately differ across a retry even when nothing else does). Two
+    calls that compute BIT-IDENTICAL results (the safe, ordinary retry
+    case) hash to the SAME digest; two calls whose underlying observations
+    changed between them (e.g. a correction landed mid-retry) hash
+    DIFFERENTLY.
+
+    Used by ``resolve_generation_id`` to give a changed retry input a
+    DIFFERENT generation identity instead of silently colliding with an
+    earlier attempt's now-stale rows under ``ON CONFLICT DO NOTHING``
+    (natural key + ``generation_id`` —
+    ``db.metadata.uq_skill_scores_natural_key_generation``).
+    """
+    # Independent-review fixer round (blocker): the fingerprint must cover
+    # every PERSISTED semantic field, not just the ones that happen to be
+    # scalar scores. `flow_regime_config_id` is provenance that changes
+    # what a row MEANS (which flow-regime thresholds produced it) without
+    # necessarily changing `repr(score)`; omitting it let a retry whose
+    # only difference was a reconfigured flow-regime boundary collide
+    # under `ON CONFLICT DO NOTHING` and publish the earlier, stale
+    # config's row as if it were current.
+    score_parts = sorted(
+        "|".join(
+            str(v)
+            for v in (
+                s.station_id,
+                s.model_id,
+                s.model_artifact_id,
+                s.parameter,
+                s.skill_source,
+                s.forcing_type,
+                s.computation_version,
+                s.lead_time_hours,
+                s.season,
+                s.flow_regime,
+                s.flow_regime_config_id,
+                s.metric,
+                s.time_step_seconds,
+                s.phase_offset_seconds,
+                s.eval_period_start.isoformat(),
+                s.eval_period_end.isoformat(),
+                repr(s.score),
+                s.sample_size,
+            )
+        )
+        for s in scores
+    )
+    # `d.data` (the diagram's own JSONB diagnostic blob) IS included — the
+    # previous "a score always covers it" reasoning was wrong: a diagram
+    # can change (e.g. a corrected reliability curve, or a config-id-only
+    # change to which flow-regime boundaries produced it) with every
+    # SCORE's `repr(score)` unchanged, since scores and diagrams are
+    # independent outputs of the same computation. Serialized with
+    # `sort_keys=True` so key order (never semantically meaningful in a
+    # dict built fresh each call) cannot perturb the digest.
+    diagram_parts = sorted(
+        "|".join(
+            str(v)
+            for v in (
+                d.station_id,
+                d.model_id,
+                d.model_artifact_id,
+                d.parameter,
+                d.skill_source,
+                d.computation_version,
+                d.lead_time_hours,
+                d.season,
+                d.flow_regime,
+                d.flow_regime_config_id,
+                d.diagram_type,
+                d.threshold_level,
+                d.time_step_seconds,
+                d.phase_offset_seconds,
+                d.eval_period_start.isoformat(),
+                d.eval_period_end.isoformat(),
+                json.dumps(
+                    cast("dict[str, object]", d.data),  # type: ignore[reportUnknownMemberType]
+                    sort_keys=True,
+                    default=str,
+                ),
+            )
+        )
+        for d in diagrams
+    )
+    digest_input = "\n".join(score_parts) + "\n--\n" + "\n".join(diagram_parts)
+    return hashlib.sha256(digest_input.encode()).hexdigest()
+
+
+def resolve_generation_id(
+    invocation_id: UUID,
+    scores: list[SkillScore],
+    diagrams: list[SkillDiagram],
+) -> UUID:
+    """Combine a flow-minted, Prefect-retry-stable ``invocation_id`` with a
+    content fingerprint of the actually-computed outputs into ONE
+    deterministic generation id (Plan 235 D1 + per-run-scope blocker #3).
+
+    Same invocation + unchanged inputs (an ordinary retry after a
+    transient crash) -> identical fingerprint -> the SAME generation id, so
+    a replayed ``ON CONFLICT DO NOTHING`` insert is a safe no-op against
+    bit-identical rows. Same invocation + CHANGED inputs (e.g. observations
+    corrected between an earlier attempt's crash and its retry) -> a
+    different fingerprint -> a DIFFERENT generation id, so the retry's rows
+    land under their own identity instead of silently losing to the
+    earlier attempt's stale, orphaned ones — the D2b input-identity
+    requirement this blocker exists to close.
+    """
+    return uuid5(invocation_id, compute_generation_fingerprint(scores, diagrams))
+
+
+def rebind_generation_id(
+    scores: list[SkillScore],
+    diagrams: list[SkillDiagram],
+    generation_id: UUID,
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    """Rewrites every score/diagram's ``generation_id`` to the FINAL,
+    content-derived id from ``resolve_generation_id``. Every score/diagram
+    is constructed against the caller's ``invocation_id`` placeholder
+    DURING computation — the fingerprint needs the computed VALUES, which
+    do not exist until computation is already done — so the real id can
+    only be applied afterward."""
+    from dataclasses import replace
+
+    return (
+        [replace(s, generation_id=generation_id) for s in scores],
+        [replace(d, generation_id=generation_id) for d in diagrams],
+    )
+
+
+def store_skill_results_or_raise(
+    skill_store: object,
+    generation_id: UUID,
+    scores: list[SkillScore],
+    diagrams: list[SkillDiagram],
+) -> None:
+    """Stores scores/diagrams, then reconciles against the generation's
+    TOTAL persisted row count — not each store call's own inserted-THIS-
+    call count (Plan 235 fixer round, blocker, D1 retry stability; shared
+    by ``flows.compute_skills`` and ``services.onboarding`` so both paths
+    apply the SAME whole-generation accounting). `generation_id` is
+    retry-stable (from ``resolve_generation_id``/an outer mint), so a
+    Prefect retry of the SAME task run replays this call with the
+    IDENTICAL id — its rows then collide against the earlier attempt's
+    identical natural key + generation_id, and ``store_skill_scores``/
+    ``store_skill_diagrams`` report 0 newly inserted THIS call, even though
+    the generation is, in fact, already fully persisted. Comparing against
+    ``count_generation_rows``'s total (which counts rows from EVERY
+    attempt, not just this one) tells that apart from a genuine gap.
+
+    A REAL mismatch — fewer rows persisted for ``generation_id`` than THIS
+    attempt's own scores/diagrams call for — is a genuine bug and must not
+    be swallowed into "skip publication, log an error, return normally":
+    the caller would look SUCCESSFUL despite the generation being
+    genuinely broken. Raises instead.
+    """
+    skill_store.store_skill_scores(scores)  # type: ignore[attr-defined]
+    skill_store.store_skill_diagrams(diagrams)  # type: ignore[attr-defined]
+    persisted_scores, persisted_diagrams = skill_store.count_generation_rows(  # type: ignore[attr-defined]
+        generation_id
+    )
+    if persisted_scores != len(scores) or persisted_diagrams != len(diagrams):
+        log.error(
+            "skill.store_skill_results.count_mismatch",
+            generation_id=str(generation_id),
+            scores_expected=len(scores),
+            scores_persisted=persisted_scores,
+            diagrams_expected=len(diagrams),
+            diagrams_persisted=persisted_diagrams,
+        )
+        raise SkillGenerationIncompleteError(
+            f"generation {generation_id} incomplete after store: expected "
+            f"{len(scores)} scores / {len(diagrams)} diagrams, found "
+            f"{persisted_scores} / {persisted_diagrams} persisted"
+        )

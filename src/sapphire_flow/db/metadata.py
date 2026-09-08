@@ -1405,6 +1405,82 @@ flow_regime_configs = sa.Table(
     ),
 )
 
+# Plan 235 D1/D2b/D3/D2c — the append-only PUBLICATION LEDGER for a logical
+# skill recompute ("generation"). A row here is the ONLY thing that makes a
+# generation's `skill_scores`/`skill_diagrams` rows visible to readers
+# (`store.skill_store`'s `_latest_generation_predicate`) — inserting score/
+# diagram rows tagged with a `generation_id` does NOT make them current on
+# its own. This is what lets publication be:
+#   * atomic — the publish is exactly ONE `INSERT`, so there is no partial
+#     state to observe (D3): either the row exists (published, and only
+#     after every expected score/diagram write for this generation already
+#     succeeded) or it does not (nothing changes for readers).
+#   * INSERT-only (D2c) — `sapphire_worker` never needs an `UPDATE` grant.
+#     "Marking stale" is the SAME mechanism: publish a generation with
+#     `score_count = diagram_count = 0` for a scope, which supersedes any
+#     older generation there without ever touching an existing row.
+#   * non-rejecting (D2d) — two overlapping publications for the same scope
+#     both insert successfully; `published_at` (tie-broken by
+#     `computation_version` then `id`) decides which one readers return.
+# Scope columns mirror what a single `compute_skills_task`/
+# `compute_combined_skills_task` call computes: one (station, model,
+# parameter, skill_source, forcing_type) domain, at one algorithm version —
+# see D2b#2 ("replacement scope is the recompute's own domain"). This is
+# deliberately narrower than the score/diagram natural key: `time_step`/
+# `phase`/`lead_time`/`season`/`flow_regime`/`metric`/`model_artifact_id`
+# distinguish ROWS WITHIN one generation, not separate generations.
+skill_generations = sa.Table(
+    "skill_generations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column("model_id", sa.Text, sa.ForeignKey("models.id"), nullable=False),
+    # Fixer round (blocker): mirrors `skill_scores.model_artifact_id` — NULL
+    # for POOLED/BMA combinations, a real artifact id otherwise. Without
+    # this in the ledger's own scope, a generation minted for a candidate
+    # artifact under evaluation could rank against (and supersede) the
+    # STILL-ACTIVE artifact's generation for the same (station, model,
+    # parameter, skill_source, forcing_type) — `model_id` alone does not
+    # distinguish artifacts of the same model. Not a foreign key, for the
+    # same reason `model_id`/`station_id` scope columns above are not
+    # meant to enforce artifact lifecycle — that lives on `model_artifacts`.
+    sa.Column("model_artifact_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("skill_source", sa.Text, nullable=False),
+    sa.Column("forcing_type", sa.Text, nullable=True),
+    # Algorithm/schema version (D2b#1: "read the highest eligible algorithm
+    # version, then its newest generation" — precedence is version FIRST).
+    sa.Column("computation_version", sa.Integer, nullable=False),
+    # Publication instant, clock-injected by the caller (never
+    # `datetime.now()` — CLAUDE.md testability rule). Second-level tiebreak
+    # for "newest" within one `computation_version`; `id` is the final
+    # tiebreak on an exact tie (`_latest_generation_predicate`).
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
+    # Diagnostic only — never used to decide visibility (an empty
+    # tombstone, D2c, legitimately has both at 0).
+    sa.Column("score_count", sa.Integer, nullable=False),
+    sa.Column("diagram_count", sa.Integer, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+)
+sa.Index(
+    "ix_skill_generations_scope",
+    skill_generations.c.station_id,
+    skill_generations.c.model_id,
+    sa.text("COALESCE(model_artifact_id::text, '')"),
+    skill_generations.c.parameter,
+    skill_generations.c.skill_source,
+    sa.text("COALESCE(forcing_type, '')"),
+    skill_generations.c.computation_version,
+    skill_generations.c.published_at,
+)
+
 skill_scores = sa.Table(
     "skill_scores",
     metadata,
@@ -1462,6 +1538,24 @@ skill_scores = sa.Table(
         server_default="86400",
     ),
     sa.Column("phase_offset_seconds", sa.Integer, nullable=True),
+    # Plan 235 D1/T1: NULLABLE under the one-release rollback rule
+    # (`docs/standards/cicd.md`) — a rolled-back pre-235 image writes NULL,
+    # never a real generation. NULL means "pre-generation baseline row";
+    # see `uq_skill_scores_natural_key`/`uq_skill_scores_natural_key_generation`
+    # below for how the two partial indexes keep that from bypassing
+    # uniqueness, and `store.skill_store.latest_generation_predicate` for
+    # how readers give NULL rows deterministic (lowest-precedence)
+    # semantics. Deliberately NOT a foreign key: a score/diagram row is
+    # written WHILE its generation is being computed, before the
+    # `skill_generations` publication row exists — D3's whole point is
+    # that the publish (INSERT into `skill_generations`) happens LAST,
+    # only once every expected write for this `generation_id` has already
+    # succeeded. An FK here would make that ordering impossible to write
+    # (or force publishing the ledger row first, defeating the
+    # completeness gate). An orphaned `generation_id` that never gets a
+    # ledger row is the INTENDED shape of an unpublished/partial
+    # generation (D3), not a data-integrity violation.
+    sa.Column("generation_id", UUID(as_uuid=True), nullable=True),
 )
 
 skill_diagrams = sa.Table(
@@ -1515,6 +1609,11 @@ skill_diagrams = sa.Table(
         server_default="86400",
     ),
     sa.Column("phase_offset_seconds", sa.Integer, nullable=True),
+    # Plan 235 D1/D3: see `skill_scores.generation_id` above — the SAME
+    # generation atomically covers both a recompute's scores AND its
+    # diagrams (D3: "supersession ... covers diagrams"). Also deliberately
+    # not a foreign key, for the same write-ordering reason.
+    sa.Column("generation_id", UUID(as_uuid=True), nullable=True),
 )
 
 # Indexes on skill_scores
@@ -1568,7 +1667,43 @@ sa.Index(
     skill_scores.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
     unique=True,
-    postgresql_where=sa.text("computation_version >= 2"),
+    # Plan 235 T1 (blocker avoided): `generation_id IS NULL` added to this
+    # predicate. Without it, a raw nullable `generation_id` NOT in the key
+    # columns would still let this index enforce ITS collision behavior
+    # across generations — silently colliding a genuinely new generation's
+    # row with an older generation's row at the same stratum, exactly the
+    # bug D1 exists to fix. Restricting this (unchanged-columns) index to
+    # `generation_id IS NULL` confines it to pre-235/rolled-back-image
+    # writes, which keep EXACTLY 0052's original collision behavior — no
+    # better, no worse. `uq_skill_scores_natural_key_generation` below
+    # covers `generation_id IS NOT NULL` with generation as part of the key.
+    postgresql_where=sa.text("computation_version >= 2 AND generation_id IS NULL"),
+)
+sa.Index(
+    "uq_skill_scores_natural_key_generation",
+    skill_scores.c.station_id,
+    skill_scores.c.model_id,
+    sa.text("COALESCE(model_artifact_id::text, '')"),
+    skill_scores.c.parameter,
+    skill_scores.c.skill_source,
+    sa.text("COALESCE(forcing_type, '')"),
+    skill_scores.c.computation_version,
+    skill_scores.c.lead_time_hours,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    skill_scores.c.metric,
+    skill_scores.c.time_step_seconds,
+    sa.text("COALESCE(phase_offset_seconds, -1)"),
+    # Plan 235 D1: the generation identity itself is part of the key. A
+    # recompute of an IDENTICAL stratum under a NEW generation is therefore
+    # a DIFFERENT row rather than a collision — the corrected result
+    # survives instead of being dropped by `ON CONFLICT DO NOTHING`. Not
+    # COALESCE'd: this partial index's predicate guarantees it is never
+    # NULL here (see `uq_skill_scores_natural_key` above for the NULL
+    # case).
+    skill_scores.c.generation_id,
+    unique=True,
+    postgresql_where=sa.text("computation_version >= 2 AND generation_id IS NOT NULL"),
 )
 sa.Index(
     "uq_skill_scores_natural_key_legacy",
@@ -1624,7 +1759,28 @@ sa.Index(
     skill_diagrams.c.time_step_seconds,
     sa.text("COALESCE(phase_offset_seconds, -1)"),
     unique=True,
-    postgresql_where=sa.text("computation_version >= 2"),
+    # Plan 235 T1: see `uq_skill_scores_natural_key` above — same
+    # NULL/generation partial-index split, same rationale.
+    postgresql_where=sa.text("computation_version >= 2 AND generation_id IS NULL"),
+)
+sa.Index(
+    "uq_skill_diagrams_natural_key_generation",
+    skill_diagrams.c.station_id,
+    skill_diagrams.c.model_id,
+    sa.text("COALESCE(model_artifact_id::text, '')"),
+    skill_diagrams.c.parameter,
+    skill_diagrams.c.skill_source,
+    skill_diagrams.c.computation_version,
+    skill_diagrams.c.lead_time_hours,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    skill_diagrams.c.diagram_type,
+    sa.text("COALESCE(threshold_level, '')"),
+    skill_diagrams.c.time_step_seconds,
+    sa.text("COALESCE(phase_offset_seconds, -1)"),
+    skill_diagrams.c.generation_id,
+    unique=True,
+    postgresql_where=sa.text("computation_version >= 2 AND generation_id IS NOT NULL"),
 )
 sa.Index(
     "uq_skill_diagrams_natural_key_legacy",

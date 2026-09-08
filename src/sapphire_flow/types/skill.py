@@ -47,6 +47,15 @@ class SkillScore:
     # through by `services.skill.service.compute_skill_for_station`.
     time_step_seconds: int = 86400
     phase_offset_seconds: int | None = None
+    # Plan 235 D1: the logical-recompute identity that lets a corrected
+    # recompute of an IDENTICAL stratum survive instead of colliding under
+    # `ON CONFLICT DO NOTHING` (`db.metadata.uq_skill_scores_natural_key_generation`)
+    # and lets readers select the newest generation per D2b. `None` marks a
+    # pre-Plan-235 baseline row (`store.skill_store.PgSkillStore` never
+    # writes `None` itself — every store call sets a real generation via
+    # `flows.compute_skills`). Defaults to `None` so every existing call
+    # site/test that predates generations still constructs a valid row.
+    generation_id: UUID | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -71,6 +80,8 @@ class SkillDiagram:
     # Plan 228 per-run scope (blocker): see `SkillScore.time_step_seconds`.
     time_step_seconds: int = 86400
     phase_offset_seconds: int | None = None
+    # Plan 235 D1: see `SkillScore.generation_id`.
+    generation_id: UUID | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

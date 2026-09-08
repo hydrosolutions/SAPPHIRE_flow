@@ -67,11 +67,17 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # `forecasts`) onto 0052 — the store inferred an ensemble's cadence from the
 # gap between valid_times and fabricated 1 hour when a forecast had only ONE
 # step, which Plan 241 made reachable by letting a model declare its horizon
-# is a ceiling. Plan 253 T1a then chained 0054 (forecasts.input_quality +
-# input_quality_flags, both nullable, no server default — Plan 023's
-# unfinished half) onto 0053 — advancing the pinned head to 0054. Both were
-# authored as 0053 in parallel branches; ours rebased onto main's on merge.
-_RELEASE_B_HEAD = "0054"
+# is a ceiling. Plan 235 then chained 0054 (skill score GENERATIONS — a
+# generation identity on `skill_scores`/`skill_diagrams`, plus a partial-index
+# split) onto 0053. Plan 253 T1a then chained 0055 (forecasts.input_quality +
+# input_quality_flags, both nullable, no server default — Plan 023's unfinished
+# half) onto 0054 — advancing the pinned head to 0055.
+#
+# Three of these were authored in parallel branches and renumbered on merge:
+# 241 T4, 235 and 253 T1a each first claimed a number another branch had taken.
+# Two migrations sharing a down_revision give alembic two heads and break every
+# upgrade, so the number is assigned at merge time, not at authoring time.
+_RELEASE_B_HEAD = "0055"
 
 
 def _down_revisions() -> dict[str, str | None]:

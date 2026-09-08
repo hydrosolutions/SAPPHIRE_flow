@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import pytest
 import sqlalchemy as sa
 
 from sapphire_flow.db.metadata import (
@@ -71,7 +72,11 @@ def _seed_model(conn: sa.Connection) -> ModelId:
 
 
 def _seed_artifact(
-    conn: sa.Connection, station_id: StationId, model_id: ModelId
+    conn: sa.Connection,
+    station_id: StationId,
+    model_id: ModelId,
+    *,
+    status: str = "active",
 ) -> ArtifactId:
     aid = ArtifactId(uuid.uuid4())
     conn.execute(
@@ -80,7 +85,7 @@ def _seed_artifact(
             model_id=model_id,
             station_id=station_id,
             group_id=None,
-            status="active",
+            status=status,
             artifact_path=f"artifacts/{aid}.bin",
             sha256_hash="",
             training_period_start=_T0,
@@ -114,6 +119,7 @@ def _make_score(
     eval_period_end: object = None,
     time_step_seconds: int = 86400,
     phase_offset_seconds: int | None = None,
+    generation_id: uuid.UUID | None = None,
 ) -> SkillScore:
     return SkillScore(
         id=uuid.uuid4(),
@@ -138,6 +144,7 @@ def _make_score(
         created_at=_NOW,
         time_step_seconds=time_step_seconds,
         phase_offset_seconds=phase_offset_seconds,
+        generation_id=generation_id,
     )
 
 
@@ -151,6 +158,7 @@ def _make_diagram(
     lead_time_hours: int = 24,
     diagram_type: str = "reliability",
     skill_source: SkillSource = SkillSource.HINDCAST_NWP_ARCHIVE,
+    generation_id: uuid.UUID | None = None,
 ) -> SkillDiagram:
     return SkillDiagram(
         id=uuid.uuid4(),
@@ -170,7 +178,22 @@ def _make_diagram(
         eval_period_start=_T0,
         eval_period_end=_T1,
         created_at=_NOW,
+        generation_id=generation_id,
     )
+
+
+class TestPgSkillStoreProtocolConformance:
+    """Plan 235 fixer round (major, structural-conformance coverage):
+    `tests/fakes/test_fakes.py` already locks `isinstance(FakeSkillStore(),
+    SkillStore)`; nothing locked the REAL implementation against the same
+    Protocol."""
+
+    def test_pg_skill_store_conforms_to_protocol(
+        self, db_connection: sa.Connection
+    ) -> None:
+        from sapphire_flow.protocols.stores import SkillStore
+
+        assert isinstance(PgSkillStore(db_connection), SkillStore)
 
 
 class TestPgSkillStore:
@@ -807,6 +830,80 @@ class TestPgSkillStore:
         )
         assert len(all_results) == 2
 
+    def test_fetch_scores_by_regime_reads_the_newest_generation(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 235 D2 reader #3 — opposing-generation coverage (fixer
+        round, minor): the plan's nine-reader audit named this as a
+        generation-unaware reader BEFORE 235; nothing exercised it against
+        two competing generations for the same scope."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        gen_old = uuid.uuid4()
+        gen_new = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    flow_regime=FlowRegime.HIGH,
+                    metric="nse",
+                    score=0.1,
+                    generation_id=gen_old,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_old,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=0,
+        )
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    flow_regime=FlowRegime.HIGH,
+                    metric="nse",
+                    score=0.9,
+                    generation_id=gen_new,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_new,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T3,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        results = store.fetch_scores_by_regime(sid, mid, FlowRegime.HIGH)
+        assert len(results) == 1
+        assert results[0].generation_id == gen_new
+        assert results[0].score == 0.9
+
     def test_mark_stale_filters_by_parameter(
         self, db_connection: sa.Connection
     ) -> None:
@@ -901,6 +998,78 @@ class TestPgSkillStore:
         results = store.fetch_skill_scores(mid, other_aid)
         assert results == ()
 
+    def test_fetch_skill_scores_reads_the_newest_generation(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Plan 235 D2 reader #4 — opposing-generation coverage (fixer
+        round, minor). Reader #5 (the promotion gate, `services/
+        model_onboarding.py`) reads through this same method, so this
+        also covers its generation-selection behavior."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        gen_old = uuid.uuid4()
+        gen_new = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    metric="crps",
+                    score=0.4,
+                    generation_id=gen_old,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_old,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=0,
+        )
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    metric="crps",
+                    score=0.9,
+                    generation_id=gen_new,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_new,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T3,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        results = store.fetch_skill_scores(mid, aid)
+        assert len(results) == 1
+        assert results[0].generation_id == gen_new
+        assert results[0].score == 0.9
+
     def test_store_diagrams_idempotent(self, db_connection: sa.Connection) -> None:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
@@ -923,3 +1092,723 @@ class TestPgSkillStore:
             )
         ).scalar()
         assert count == 2
+
+
+class TestSkillScoreGenerations:
+    """Plan 235 D1/D2b/D2d/D3 — LOCKED acceptance tests for the generation
+    identity and its publication ledger, against a real PostgreSQL unique
+    index and the real `latest_generation_predicate` join."""
+
+    def test_recompute_over_corrected_observations_survives_and_becomes_current(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """D1: a recompute of the IDENTICAL stratum (same station/model/
+        artifact/parameter/.../metric) after corrected observations arrive
+        must not collide with the row it corrects — both rows survive in
+        the table, and the corrected one is what readers return.
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        gen_a = uuid.uuid4()
+        corrupted = _make_score(
+            sid,
+            mid,
+            aid,
+            computation_version=2,
+            metric="mae",
+            lead_time_hours=24,
+            score=40.0,
+            generation_id=gen_a,
+        )
+        store.store_skill_scores([corrupted])
+        store.publish_generation(
+            generation_id=gen_a,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        # Recompute over corrected observations — SAME stratum, a NEW
+        # generation, published LATER.
+        gen_b = uuid.uuid4()
+        corrected = _make_score(
+            sid,
+            mid,
+            aid,
+            computation_version=2,
+            metric="mae",
+            lead_time_hours=24,
+            score=0.4,
+            generation_id=gen_b,
+        )
+        store.store_skill_scores([corrected])
+        store.publish_generation(
+            generation_id=gen_b,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T3,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        # Both rows physically survive — the recompute was never dropped by
+        # ON CONFLICT DO NOTHING.
+        total = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(skill_scores)
+            .where(skill_scores.c.station_id == sid, skill_scores.c.metric == "mae")
+        ).scalar_one()
+        assert total == 2, (
+            f"expected both the stale and the corrected row to survive, found {total}"
+        )
+
+        # Readers see only the corrected value.
+        results = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        mae_results = [r for r in results if r.metric == "mae"]
+        assert len(mae_results) == 1
+        assert mae_results[0].score == 0.4
+        assert mae_results[0].generation_id == gen_b
+
+    def test_overlapping_publications_both_persist_reader_returns_newer(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """D2d: two overlapping publications for the same scope are BOTH
+        accepted and stored — never rejected. Readers select the newer by
+        `published_at` (a slow run that started first but finishes later
+        still wins)."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        gen_early_publish = uuid.uuid4()
+        gen_late_publish = uuid.uuid4()
+
+        # gen_late_publish's SCORE is stored first (its compute started
+        # first) but its PUBLICATION lands after gen_early_publish's — a
+        # slow run overtaken by a quicker concurrent one.
+        slow_score = _make_score(
+            sid,
+            mid,
+            aid,
+            computation_version=2,
+            metric="nse",
+            score=0.1,
+            generation_id=gen_late_publish,
+        )
+        store.store_skill_scores([slow_score])
+
+        fast_score = _make_score(
+            sid,
+            mid,
+            aid,
+            computation_version=2,
+            metric="nse",
+            score=0.2,
+            generation_id=gen_early_publish,
+        )
+        store.store_skill_scores([fast_score])
+        store.publish_generation(
+            generation_id=gen_early_publish,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        # The slow run's publication lands AFTER — no rejection, it just
+        # also succeeds.
+        store.publish_generation(
+            generation_id=gen_late_publish,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T3,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        total = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(skill_scores)
+            .where(skill_scores.c.station_id == sid, skill_scores.c.metric == "nse")
+        ).scalar_one()
+        assert total == 2, "both overlapping publications' scores must persist"
+
+        results = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        nse_results = [r for r in results if r.metric == "nse"]
+        assert len(nse_results) == 1
+        assert nse_results[0].generation_id == gen_late_publish
+        assert nse_results[0].score == 0.1
+
+    def test_partial_generation_leaves_previous_publication_intact(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """D3: a generation-level completeness gate — a generation whose
+        scores/diagrams were written but whose publication never happened
+        (a crash mid-run) must leave the previous publication fully intact
+        and visible, never a half-replaced mix."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        gen_complete = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    metric="kge",
+                    score=0.7,
+                    generation_id=gen_complete,
+                )
+            ]
+        )
+        store.store_skill_diagrams(
+            [
+                _make_diagram(
+                    sid, mid, aid, diagram_type="roc", generation_id=gen_complete
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_complete,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=1,
+        )
+
+        # A recompute starts, writes SOME rows, then "crashes" — its
+        # publish_generation call never happens.
+        gen_partial = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    metric="kge",
+                    score=0.99,
+                    generation_id=gen_partial,
+                )
+            ]
+        )
+        # Diagrams for gen_partial were never written either — irrelevant
+        # to the assertion, since the whole generation is unpublished.
+
+        # The orphaned row physically exists ...
+        orphan_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(skill_scores)
+            .where(skill_scores.c.generation_id == gen_partial)
+        ).scalar_one()
+        assert orphan_count == 1
+
+        # ... but readers still see ONLY the previous, complete generation.
+        score_results = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        kge_results = [r for r in score_results if r.metric == "kge"]
+        assert len(kge_results) == 1
+        assert kge_results[0].generation_id == gen_complete
+        assert kge_results[0].score == 0.7
+
+        diagram_results = store.fetch_latest_diagrams(sid, mid)
+        assert len(diagram_results) == 1
+        assert diagram_results[0].generation_id == gen_complete
+
+
+class TestDiagramScopeForcingType:
+    """Plan 235 fixer round (blocker): `skill_diagrams` carries no
+    `forcing_type` column — diagrams are never forcing-scoped. The
+    previous `latest_generation_predicate` still compared a constant `''`
+    fallback for the diagram side against the GENERATION's real, non-null
+    `forcing_type` (production always publishes `REANALYSIS`), which could
+    never match — so a baseline diagram (`generation_id IS NULL`) stayed
+    "undisplaced" and visible FOREVER alongside its own real-forcing-type
+    replacement.
+    """
+
+    def test_real_forcing_type_generation_supersedes_baseline_diagram(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        # A pre-Plan-235 baseline diagram: no generation, ever.
+        baseline_diagram = _make_diagram(
+            sid, mid, aid, computation_version=2, diagram_type="roc"
+        )
+        store.store_skill_diagrams([baseline_diagram])
+
+        assert [d.id for d in store.fetch_latest_diagrams(sid, mid)] == [
+            baseline_diagram.id
+        ], "the baseline diagram must be visible before any generation exists"
+
+        # A REAL recompute publishes a generation with a non-null
+        # forcing_type — exactly what `compute_skills_task` always does in
+        # production (`ForcingType.REANALYSIS`).
+        gen_id = uuid.uuid4()
+        replacement_diagram = _make_diagram(
+            sid,
+            mid,
+            aid,
+            computation_version=2,
+            diagram_type="roc",
+            generation_id=gen_id,
+        )
+        store.store_skill_diagrams([replacement_diagram])
+        store.publish_generation(
+            generation_id=gen_id,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=ForcingType.REANALYSIS,
+            computation_version=2,
+            published_at=_T2,
+            score_count=0,
+            diagram_count=1,
+        )
+
+        results = store.fetch_latest_diagrams(sid, mid)
+        assert [d.id for d in results] == [replacement_diagram.id], (
+            "the baseline diagram must disappear once ANY generation is "
+            "published for its scope, regardless of that generation's "
+            "forcing_type — diagrams are never forcing-scoped"
+        )
+
+
+class TestPublishGenerationIdempotentReplay:
+    """Plan 235 fixer round (major, D1): `generation_id` is minted OUTSIDE
+    the retrying task and threaded in as a required argument, so a Prefect
+    retry of the SAME task run replays `publish_generation` with the
+    IDENTICAL id. That replay must succeed (not crash on a primary-key
+    violation) when the metadata matches, and must be REJECTED when it
+    doesn't — an id collision across two different recomputes is a bug,
+    not a replay.
+    """
+
+    def test_identical_replay_is_a_no_op(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        store = PgSkillStore(db_connection)
+        gen_id = uuid.uuid4()
+
+        kwargs = dict(
+            generation_id=gen_id,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=None,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=ForcingType.REANALYSIS,
+            computation_version=2,
+            published_at=_T2,
+            score_count=5,
+            diagram_count=1,
+        )
+        store.publish_generation(**kwargs)
+        # The "retry" — same id, same everything.
+        store.publish_generation(**kwargs)
+
+        from sapphire_flow.db.metadata import skill_generations
+
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(skill_generations)
+            .where(skill_generations.c.id == gen_id)
+        ).scalar_one()
+        assert count == 1, "a replay with identical metadata must not create a 2nd row"
+
+    def test_replay_with_conflicting_metadata_is_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        other_sid = _seed_station(db_connection)
+        store = PgSkillStore(db_connection)
+        gen_id = uuid.uuid4()
+
+        store.publish_generation(
+            generation_id=gen_id,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=None,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=ForcingType.REANALYSIS,
+            computation_version=2,
+            published_at=_T2,
+            score_count=5,
+            diagram_count=1,
+        )
+
+        with pytest.raises(ValueError, match=str(gen_id)):
+            store.publish_generation(
+                generation_id=gen_id,
+                station_id=other_sid,  # different scope, SAME id
+                model_id=mid,
+                model_artifact_id=None,
+                parameter="discharge",
+                skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+                forcing_type=ForcingType.REANALYSIS,
+                computation_version=2,
+                published_at=_T3,
+                score_count=5,
+                diagram_count=1,
+            )
+
+
+class TestStoreSkillResultsAccurateRowcount:
+    """Plan 235 fixer round (major): `store_skill_scores`/
+    `store_skill_diagrams` must return the number of rows ACTUALLY
+    inserted, not `len(...)` of what was submitted — `ON CONFLICT DO
+    NOTHING` can silently drop a natural-key collision, and a caller needs
+    the real count to decide whether it is safe to publish (D3's
+    completeness gate).
+    """
+
+    def test_colliding_score_natural_key_is_reflected_in_the_returned_count(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        gen_id = uuid.uuid4()
+
+        score_a = _make_score(
+            sid, mid, aid, computation_version=2, metric="kge", generation_id=gen_id
+        )
+        # Same natural key (same generation, same metric/lead_time/etc.) —
+        # a real collision, e.g. two CV folds computing the same
+        # diagnostic under one generation.
+        score_b = _make_score(
+            sid, mid, aid, computation_version=2, metric="kge", generation_id=gen_id
+        )
+
+        first = store.store_skill_scores([score_a])
+        assert first == 1
+
+        second = store.store_skill_scores([score_b])
+        assert second == 0, (
+            "the colliding row was dropped by ON CONFLICT DO NOTHING — the "
+            "returned count must reflect that, not the submitted length"
+        )
+
+
+class TestCountGenerationRows:
+    """Plan 235 fixer round (blocker, D1 retry stability): a caller needs
+    the TOTAL persisted count for a generation_id — not each individual
+    `store_skill_scores`/`store_skill_diagrams` call's own inserted-this-
+    call count — to tell "already fully persisted from an earlier attempt"
+    apart from a genuine gap. See `flows.compute_skills._store_skill_
+    results`.
+    """
+
+    def test_counts_rows_from_an_earlier_orphaned_attempt(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        gen_id = uuid.uuid4()
+
+        # Attempt 1 "crashes" after storing but before publishing.
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    metric="kge",
+                    generation_id=gen_id,
+                )
+            ]
+        )
+        store.store_skill_diagrams(
+            [_make_diagram(sid, mid, aid, diagram_type="roc", generation_id=gen_id)]
+        )
+
+        score_count, diagram_count = store.count_generation_rows(gen_id)
+        assert (score_count, diagram_count) == (1, 1), (
+            "count_generation_rows must see rows from an EARLIER attempt "
+            "under the same retry-stable generation_id"
+        )
+
+    def test_retry_with_identical_rows_reports_the_same_total(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """A retry re-submits the SAME (natural key, generation_id) rows
+        under new row `id`s — `ON CONFLICT DO NOTHING` drops them, so
+        `store_skill_scores` itself reports 0 newly inserted. The TOTAL via
+        `count_generation_rows` must still equal what was already
+        persisted, not silently drop to 0.
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+        gen_id = uuid.uuid4()
+
+        attempt_1 = _make_score(
+            sid, mid, aid, computation_version=2, metric="kge", generation_id=gen_id
+        )
+        first_inserted = store.store_skill_scores([attempt_1])
+        assert first_inserted == 1
+
+        # The "retry" — a NEW row id, same natural key + generation_id.
+        attempt_2 = _make_score(
+            sid, mid, aid, computation_version=2, metric="kge", generation_id=gen_id
+        )
+        retry_inserted = store.store_skill_scores([attempt_2])
+        assert retry_inserted == 0, "the retry's row collides and inserts nothing NEW"
+
+        score_count, _ = store.count_generation_rows(gen_id)
+        assert score_count == 1, (
+            "the generation's TOTAL persisted count must still be 1 — the "
+            "retry's own 0-inserted result must not be read as 'nothing "
+            "persisted at all'"
+        )
+
+
+class TestGenerationScopeIncludesArtifact:
+    """Plan 235 fixer round (blocker): `skill_generations` must include
+    `model_artifact_id` in its scope. Without it, a generation minted for a
+    candidate artifact (e.g. under retraining evaluation) can outrank and
+    hide the STILL-ACTIVE artifact's generation for the SAME model —
+    `model_id` alone does not distinguish artifacts of that model.
+    """
+
+    def test_candidate_artifact_generation_does_not_supersede_active_artifact(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        active_aid = _seed_artifact(db_connection, sid, mid)
+        # `status="training"` — the DB's own `ix_model_artifacts_station_
+        # model_active` partial unique index allows only ONE active
+        # artifact per (station, model); a candidate under evaluation is,
+        # by definition, not yet active.
+        candidate_aid = _seed_artifact(db_connection, sid, mid, status="training")
+        store = PgSkillStore(db_connection)
+
+        gen_active = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    active_aid,
+                    computation_version=2,
+                    metric="nse",
+                    score=0.8,
+                    generation_id=gen_active,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_active,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=active_aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        # A candidate artifact under retraining evaluation is scored and
+        # PUBLISHED LATER — but it names a DIFFERENT artifact.
+        gen_candidate = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    candidate_aid,
+                    computation_version=2,
+                    metric="nse",
+                    score=0.2,
+                    generation_id=gen_candidate,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_candidate,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=candidate_aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T3,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        active_results = store.fetch_skill_scores(mid, active_aid)
+        assert len(active_results) == 1, (
+            "the candidate artifact's LATER generation must never compete "
+            "for the active artifact's own scope"
+        )
+        assert active_results[0].score == 0.8
+        assert active_results[0].generation_id == gen_active
+
+        candidate_results = store.fetch_skill_scores(mid, candidate_aid)
+        assert len(candidate_results) == 1
+        assert candidate_results[0].score == 0.2
+
+
+class TestBaselineVersionFirstPrecedence:
+    """Plan 235 fixer round (blocker, D2b#1 "version first"): a generation
+    only ever displaces a baseline row at the SAME or a HIGHER
+    computation_version — never a lower one. The previous rule
+    (`no_generation_for_scope`) hid EVERY baseline the instant ANY
+    generation existed for the scope, regardless of version.
+    """
+
+    def test_v2_baseline_survives_a_published_v1_generation(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        gen_v1 = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=1,
+                    metric="nse",
+                    score=0.1,
+                    generation_id=gen_v1,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_v1,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=1,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        # A pre-Plan-235 baseline row at v2 — a HIGHER algorithm version,
+        # never published through a generation.
+        store.store_skill_scores(
+            [_make_score(sid, mid, aid, computation_version=2, metric="nse", score=0.9)]
+        )
+
+        results = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        nse_results = [r for r in results if r.metric == "nse"]
+        assert len(nse_results) == 1
+        assert nse_results[0].score == 0.9, (
+            "a v2 baseline must outrank a v1 generation — D2b#1 reads the "
+            "highest eligible algorithm version FIRST, generation ranking "
+            "only decides ties WITHIN that version"
+        )
+        assert nse_results[0].generation_id is None
+
+    def test_same_version_generation_still_displaces_baseline(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Regression guard: a generation at the SAME version as a
+        baseline must still displace it (unchanged from before this
+        fixer round)."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        store.store_skill_scores(
+            [_make_score(sid, mid, aid, computation_version=2, metric="nse", score=0.1)]
+        )
+
+        gen_v2 = uuid.uuid4()
+        store.store_skill_scores(
+            [
+                _make_score(
+                    sid,
+                    mid,
+                    aid,
+                    computation_version=2,
+                    metric="nse",
+                    score=0.9,
+                    generation_id=gen_v2,
+                )
+            ]
+        )
+        store.publish_generation(
+            generation_id=gen_v2,
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            parameter="discharge",
+            skill_source=SkillSource.HINDCAST_NWP_ARCHIVE,
+            forcing_type=None,
+            computation_version=2,
+            published_at=_T2,
+            score_count=1,
+            diagram_count=0,
+        )
+
+        results = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        nse_results = [r for r in results if r.metric == "nse"]
+        assert len(nse_results) == 1
+        assert nse_results[0].score == 0.9
+        assert nse_results[0].generation_id == gen_v2

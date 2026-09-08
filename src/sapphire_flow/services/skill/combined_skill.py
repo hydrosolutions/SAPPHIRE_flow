@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import structlog
 
@@ -17,7 +17,7 @@ from sapphire_flow.types.enums import ModelCombinationStrategy
 from sapphire_flow.types.ids import BMA_MODEL_ID, POOLED_MODEL_ID, ModelId
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
@@ -46,6 +46,7 @@ def compute_combined_skill(
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
     weights: dict[ModelId, float] | None = None,
+    generation_id: UUID | None = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     from sapphire_flow.types.forecast import HindcastForecast
 
@@ -142,6 +143,7 @@ def compute_combined_skill(
         clock=clock,
         uuid_factory=uuid_factory,
         parameter=parameter,
+        generation_id=generation_id,
     )
 
 
@@ -158,6 +160,7 @@ def compute_bma_skill_cross_validated(
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
     skill_store: object,
+    generation_id: UUID | None = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     # Compute intersection of steps across all models
     steps_by_model: dict[ModelId, set[UtcDatetime]] = {
@@ -252,6 +255,7 @@ def compute_bma_skill_cross_validated(
             clock=clock,
             uuid_factory=uuid_factory,
             weights=fold_weights,
+            generation_id=generation_id,
         )
 
     def _flatten(
@@ -276,10 +280,32 @@ def compute_bma_skill_cross_validated(
         eval_obs=_obs_for_hindcasts(_flatten(eval_hindcasts_half_1)),
     )
 
+    # Independent-review fixer round (blocker): a two-fold cross-validation
+    # average is only meaningful if BOTH folds actually produced output —
+    # `_scores_for_fold` can legitimately return `([], [])` on its own (no
+    # usable BMA weights from the training half, or too few evaluation
+    # steps), and `_average_skill_scores`/`_merge_fold_diagrams` silently
+    # fall back to whichever single fold survived, publishing ONE fold's
+    # unvalidated result as if it were the two-fold average this function
+    # promises. Explicit per-fold completeness status, checked BEFORE
+    # combining, so a single-fold result never reaches the publication
+    # gate as "combined" — the flow only counts a cohort once this
+    # function returns non-empty output (`compute_skills.
+    # compute_combined_skills_task`'s `cohorts_combined` increment).
+    fold1_complete = bool(fold1_scores or fold1_diagrams)
+    fold2_complete = bool(fold2_scores or fold2_diagrams)
+    if not (fold1_complete and fold2_complete):
+        log.warning(
+            "bma_cv.incomplete_fold",
+            fold1_complete=fold1_complete,
+            fold2_complete=fold2_complete,
+        )
+        return [], []
+
     averaged_scores = _average_skill_scores(
         fold1_scores, fold2_scores, uuid_factory, clock
     )
-    averaged_diagrams = fold1_diagrams + fold2_diagrams
+    averaged_diagrams = _merge_fold_diagrams(fold1_diagrams, fold2_diagrams)
 
     return averaged_scores, averaged_diagrams
 
@@ -324,3 +350,186 @@ def _average_skill_scores(
             averaged.append(replace(sb, computed_at=now))
 
     return averaged
+
+
+def _diagram_key(d: SkillDiagram) -> tuple[object, ...]:
+    """The diagram natural key (`uq_skill_diagrams_natural_key_generation`
+    in `db/metadata.py`), minus `station_id`/`generation_id`/`data`, which
+    are either constant across a single `compute_bma_skill_cross_validated`
+    call or not part of identity."""
+    return (
+        d.model_id,
+        d.model_artifact_id,
+        d.parameter,
+        d.skill_source,
+        d.computation_version,
+        d.lead_time_hours,
+        d.season,
+        d.flow_regime,
+        d.diagram_type,
+        d.threshold_level,
+        d.time_step_seconds,
+        d.phase_offset_seconds,
+    )
+
+
+def _weighted_mean_series(
+    series_list: list[Sequence[float]], weights: list[float]
+) -> list[float]:
+    """Fixer round (major): a per-threshold weighted mean across folds,
+    weighted by each fold's own denominator (event count for `hit_rate`,
+    non-event count for `false_alarm_rate`) — an UNWEIGHTED mean across
+    folds with very different event/non-event counts (e.g. one fold's
+    evaluation window has 3 flood events, the other has 30) gives the
+    small fold the SAME influence as the large one, which is not what a
+    combined ROC curve should show. A fold whose rate is NaN at a given
+    threshold (zero denominator for its whole curve, or excluded because
+    its weight is 0) is excluded from that threshold's weighted mean.
+    """
+    merged: list[float] = []
+    for vals in zip(*series_list, strict=True):
+        pairs = [(v, w) for v, w in zip(vals, weights, strict=True) if w > 0 and v == v]
+        total_weight = sum(w for _, w in pairs)
+        merged.append(
+            sum(v * w for v, w in pairs) / total_weight
+            if total_weight > 0
+            else float("nan")
+        )
+    return merged
+
+
+_DiagramData = dict[str, "Sequence[float]"]
+
+
+def _merge_diagram_data(
+    diagram_type: str, data_list: list[_DiagramData]
+) -> _DiagramData:
+    """Combine two CV folds' diagnostic data for the SAME natural key into
+    one diagram covering the full evaluated period — fold 1 evaluates
+    half_2 with weights fit on half_1, fold 2 evaluates half_1 with weights
+    fit on half_2, so together they cover every step exactly once. Falls
+    back to the first fold's data (rather than raising) if the two folds'
+    bin/threshold grids are not directly comparable — that should not
+    happen given both folds share the same ensemble member count and fixed
+    threshold grids, but a diagram is diagnostic, not authoritative, and
+    should never take down a recompute.
+    """
+    if len(data_list) == 1:
+        return data_list[0]
+
+    if diagram_type == "rank_histogram":
+        counts_lists: list[Sequence[float]] = [d["counts"] for d in data_list]
+        if len({len(c) for c in counts_lists}) != 1:
+            return data_list[0]
+        return {
+            "ranks": data_list[0]["ranks"],
+            "counts": [sum(vals) for vals in zip(*counts_lists, strict=True)],
+        }
+
+    if diagram_type == "reliability":
+        bins_lists: list[Sequence[float]] = [d["bins"] for d in data_list]
+        if len({len(b) for b in bins_lists}) != 1:
+            return data_list[0]
+        rel_counts_lists: list[Sequence[float]] = [
+            d["sample_counts"] for d in data_list
+        ]
+        freq_lists: list[Sequence[float]] = [d["observed_freq"] for d in data_list]
+        total_counts = [sum(vals) for vals in zip(*rel_counts_lists, strict=True)]
+        merged_freq: list[float] = []
+        for per_bin_counts, per_bin_freqs in zip(
+            zip(*rel_counts_lists, strict=True),
+            zip(*freq_lists, strict=True),
+            strict=True,
+        ):
+            weight = sum(
+                c for c, f in zip(per_bin_counts, per_bin_freqs, strict=True) if f == f
+            )
+            if weight == 0:
+                merged_freq.append(float("nan"))
+                continue
+            weighted = sum(
+                c * f
+                for c, f in zip(per_bin_counts, per_bin_freqs, strict=True)
+                if f == f
+            )
+            merged_freq.append(weighted / weight)
+        return {
+            "bins": data_list[0]["bins"],
+            "forecast_freq": data_list[0]["forecast_freq"],
+            "observed_freq": merged_freq,
+            "sample_counts": total_counts,
+        }
+
+    if diagram_type == "roc":
+        hit_lists: list[Sequence[float]] = [d["hit_rate"] for d in data_list]
+        far_lists: list[Sequence[float]] = [d["false_alarm_rate"] for d in data_list]
+        if len({len(h) for h in hit_lists}) != 1:
+            return data_list[0]
+        # Fixer round (major): weight each fold's `hit_rate`/
+        # `false_alarm_rate` by its OWN `n_events`/`n_non_events`
+        # (`services.skill.diagrams.compute_roc_curve`) rather than
+        # averaging the two folds' rates unweighted — an unweighted mean
+        # gives a fold with 3 events the same say as one with 300.
+        # `.get(..., 0)` is defensive only: every ROC dict this module
+        # produces carries both keys.
+        event_weights = [float(d.get("n_events", 0)) for d in data_list]  # type: ignore[arg-type]
+        non_event_weights = [float(d.get("n_non_events", 0)) for d in data_list]  # type: ignore[arg-type]
+        # `_DiagramData` is `dict[str, Sequence[float]]` — `n_events`/
+        # `n_non_events` are scalars, not series, so the literal dict below
+        # is built as `dict[str, object]` and cast back. The scalars are
+        # diagnostic only (mirroring `compute_roc_curve`'s own shape); no
+        # reader treats `SkillDiagram.data` as more than a JSONB blob.
+        merged_roc: dict[str, object] = {
+            "thresholds": data_list[0]["thresholds"],
+            "hit_rate": _weighted_mean_series(hit_lists, event_weights),
+            "false_alarm_rate": _weighted_mean_series(far_lists, non_event_weights),
+            "n_events": sum(event_weights),
+            "n_non_events": sum(non_event_weights),
+        }
+        return cast("_DiagramData", merged_roc)
+
+    return data_list[0]
+
+
+def _merge_fold_diagrams(
+    fold1_diagrams: list[SkillDiagram], fold2_diagrams: list[SkillDiagram]
+) -> list[SkillDiagram]:
+    """Fixer round (major): the previous `fold1_diagrams + fold2_diagrams`
+    concatenation left both folds' diagrams sharing the identical natural
+    key (same station/model/parameter/.../diagram_type/threshold_level,
+    same `generation_id`) — `store_skill_diagrams`'s `ON CONFLICT DO
+    NOTHING` silently dropped one of every pair while `diagram_count`
+    still counted both as published. Merge same-key diagrams into one
+    BEFORE storing, so what is stored is exactly what is counted.
+    """
+    from dataclasses import replace
+
+    by_key: dict[tuple[object, ...], list[SkillDiagram]] = {}
+    for d in fold1_diagrams + fold2_diagrams:
+        by_key.setdefault(_diagram_key(d), []).append(d)
+
+    merged: list[SkillDiagram] = []
+    for group in by_key.values():
+        first = group[0]
+        if len(group) == 1:
+            merged.append(first)
+            continue
+        merged_data = _merge_diagram_data(
+            first.diagram_type,
+            [cast("_DiagramData", g.data) for g in group],  # type: ignore[reportUnknownMemberType]
+        )
+        # Fixer round (major): `replace(first, data=...)` kept ONLY
+        # `first`'s (fold 1's) `eval_period_start`/`eval_period_end`, even
+        # though the merged data spans BOTH folds' evaluation windows
+        # (fold 1 evaluates half_2, fold 2 evaluates half_1) — a temporally
+        # incorrect bound on an otherwise correctly merged diagram. Union
+        # across the whole group instead.
+        merged.append(
+            replace(
+                first,
+                data=merged_data,
+                eval_period_start=min(g.eval_period_start for g in group),
+                eval_period_end=max(g.eval_period_end for g in group),
+            )
+        )
+    return merged

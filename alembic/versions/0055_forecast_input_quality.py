@@ -1,12 +1,14 @@
 """forecasts.input_quality + input_quality_flags columns (Plan 253 T1a)
 
-Revision ID: 0054
-Revises: 0053
+Revision ID: 0055
+Revises: 0054
 Create Date: 2026-09-04
 
 Rebased on merge: authored as 0053 chaining onto 0052, but origin/main landed its own
 0053 (forecasts.time_step_seconds, Plan 241 T4) onto 0052 in parallel. Two heads is a
-broken chain, so this moved to 0054 and now chains onto main's 0053.
+broken chain, so this moved to 0054. Main then landed its own 0054
+(skill score generations, Plan 235) the same way, so this moved again to
+0055 and now chains onto that. Second rebase; the number is not load-bearing.
 
 `services/input_quality.py` assesses, for every operational forecast,
 whether it ran on stale observations, an aged warm-up state, or an old NWP
@@ -47,8 +49,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from alembic import op
 
-revision: str = "0054"
-down_revision: str | None = "0053"
+revision: str = "0055"
+down_revision: str | None = "0054"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
