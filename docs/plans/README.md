@@ -187,52 +187,40 @@ exit criteria — Plan 212 owns that deeper screening.
   226 is anchoring-only and 235 points at 228's recompute. Four open decisions first,
   including whether phase belongs to the FI contract (which would need an upstream
   issue, not a SAP3 workaround).
-- **255** — Onboarding reports what it actually did — `DRAFT, revised after
-  independent review` — three layers: typed eligibility exclusions (T1, the shared
-  prerequisite Plan 256 T1 also needs), a per-station outcome record, then a
-  human-readable report naming every station complete / degraded / withheld /
-  failed with its reason. Additive and observational only. Exists because
-  establishing the real state of the 148-station staging fleet on 2026-09-08
-  required reading `flow_run_state` messages, clustering `stations.updated_at` to
-  the microsecond, and extracting the `stations` table out of two 25 GB nightly
-  `pg_dump` archives. ⚠️ Codex returned 5 blockers on the first draft: two promised
-  conditions could not be collected in scope (`short_lookback` is never emitted
-  during onboarding and is now REMOVED; the invalid-geometry reason is discarded
-  inside `eligible_meteoswiss_configs`, which T1 now fixes), and the `blocks: 256`
-  dependency ran backwards. Round 2 added: outcomes must key on REQUESTED not
-  resolved stations or the report's Failed section can never populate; the report
-  destination is now decided in-plan; and both plans now share one reason-derivation
-  rule after they were found naming different reasons for the same stations.
+- **255** — Eligibility exclusions become typed data — `DRAFT` — **small, self-contained,
+  and the thing that unblocks 256.** `eligible_meteoswiss_configs` logs why it refuses
+  a station a MeteoSwiss binding and then throws the reason away, so no caller can act
+  on it: that is why the Plan 115b2 §2C hold (`eligible - backfilled`) cannot fire for
+  an excluded station — being more broken puts it outside the guard. Adds a
+  partitioning function beside the existing one rather than changing a signature four
+  production call sites (two of them operator scripts), seven tests and the spec depend
+  on. Split out of the original 255 after three Codex rounds.
 - **256** — Onboarding must not promote what it did not build — `DRAFT`,
-  **high-risk** — closes the two paths to `operational` without the substance the
-  status claims. (1) A station excluded from the MeteoSwiss binding for an invalid
-  basin polygon is not in `meteoswiss_eligible_ids`, so the Plan 115b2 §2C hold
-  (`eligible - backfilled`) cannot fire for it and it is promoted with whatever
-  forcing it has — on staging that is **2024 Branson**, self-intersecting ring, no
-  MeteoSwiss binding and **zero `meteoswiss_*` rows**, while the other 147 carry six
-  products to 2026-09-06. 🔴 The first draft said Branson runs on stale `camels-ch`
-  forcing; that was WRONG — `hybrid_reanalysis_factories.py` retires the CAMELS-CH
-  tier, so those rows are never wired at all. (2) `update_station_status` writes no
-  audit row, so the field that decides whether the forecast cycle touches a station
-  is unattributable — which is how **2041, 2116, 2392, 2615, 2623** came to be
-  `operational` with no `climatology_fallback` floor (four with no artifact of any
-  model, ever) via a direct database write on 2026-09-02. Root cause since found:
-  QC never processed those five stations' pre-2026 history, and the partition is
-  exact (143 QC'd all have baselines; the 5 un-QC'd have none). ⚠️ Codex returned 4
-  blockers on the first draft — chiefly that T1 did not remediate Branson at all,
-  since `update_station` never writes `station_status` and the hold branch only
-  `continue`s. 🔑 **Scope narrowed on owner decision 2026-09-08**: `station_status`
-  is overloaded — it gates forecasting AND ingest (`ingest_observations.py:604`
-  polls only `operational`), so NO status value means "keep collecting, don't
-  forecast", and demoting Branson would stop its observation collection
-  permanently. This plan therefore prevents the NEXT wrong promotion and does not
-  demote live stations. Depends on 255 **T1 only**; blocks 258.
-- **258** — Recover the three stations whose history QC never processed —
-  `BLOCKED` on 256 T3 — 2041, 2116 and 2615 hold 14 610 / 14 610 / 9 497 pre-2026
-  rows still in `raw`; the fleet partition is exact (all 143 QC'd stations have
-  baselines, none of the 5 un-QC'd do). Deliberately has no tasks until the cause
-  of the QC skip is known — writing them now would be guessing, and
-  `workflow.md:129` forbids a READY plan that defers its own inputs.
+  **high-risk** — withholds a river/lake station excluded for one of four geometry
+  reasons from assignment, training and the promotion write, and audits the status
+  transitions onboarding writes via the existing `STATION_STATUS_CHANGE`. 🔑 **Scope
+  narrowed twice on evidence.** `station_status` is overloaded — it gates forecasting
+  AND ingest (`ingest_observations.py:604` polls only `operational`), so no status
+  means "keep collecting, don't forecast" and demoting Branson would stop its
+  observation record permanently; owner chose to leave it operational, so this plan
+  prevents the NEXT wrong promotion rather than repairing the existing one. And the
+  audit cannot capture the direct SQL write that caused the staging incident — that
+  would need a database trigger, deliberately not attempted. Depends on 255; blocks 258.
+- **258** — Recover the three stations whose history QC never processed — `BLOCKED`
+  on 256 T3 — 2041, 2116 and 2615 hold 14 610 / 14 610 / 9 497 pre-2026 rows still in
+  `raw`; the fleet partition is exact (all 143 QC'd stations have baselines, none of
+  the 5 un-QC'd do). Deliberately carries no tasks until the cause of the QC skip is
+  known — `workflow.md:129` forbids a READY plan that defers its own inputs — but
+  records the verification it will have to meet.
+- **259** — Onboarding reports what it actually did — `DRAFT` — one outcome per
+  station a run was asked to handle, and a delivered report naming every station
+  complete / degraded / withheld / failed. Split from the original 255 so its
+  unresolved destination question stopped blocking 256. 🪤 Carries a trap worth
+  reading: the worker root is `read_only: true` and only four `/data/*` paths are
+  writable, so the obvious `/data/reports` destination would fail in production while
+  every `tmp_path` test passed. Also keys outcomes on REQUESTED not resolved stations —
+  a failed *update* leaves the station in `station_map` (`onboarding.py:504` before
+  `:510`), so a naive implementation reports it as a success. Depends on 255.
 - **257** — Combined-forecast coverage is unmonitored — `DRAFT` — `_pooled` writes
   stopped on staging at 2026-09-04 06:26Z and were found by hand four days later.
   Nothing reported it: `forecast_freshness` read `ok` throughout — correctly, since it

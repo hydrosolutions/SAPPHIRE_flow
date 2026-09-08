@@ -3,7 +3,7 @@ status: BLOCKED
 created: 2026-09-08
 plan: 258
 title: Recover the three staging stations whose history QC never processed
-scope: Run QC over the untouched `raw` pre-2026 observations of 2041, 2116 and 2615 so the baselines, flow regime and climatology floor that follow can exist, making three nominally-operational stations genuinely operational. Explicitly NOT a change to the QC rules, NOT a re-QC of rows already carrying a non-`raw` status, NOT any change to the other 143 stations, NOT a status change for any station.
+scope: Run QC over the untouched `raw` pre-2026 observations of 2041, 2116 and 2615 so the baselines, flow regime and climatology floor that follow can exist, making three nominally-operational stations genuinely operational. Explicitly NOT a change to the QC rules, NOT a re-QC of rows already carrying a non-`raw` status, NOT any change to the other 145 stations, NOT a status change for any station.
 depends_on: [256]
 blocks: []
 source: 2026-09-08 — split out of Plan 256 after an independent Codex review found the remediation task unimplementable while its cause was unknown, and that a READY plan may not defer its own inputs (`docs/workflow.md:129`).
@@ -31,8 +31,19 @@ artifact. The cause is upstream of every symptom, and the partition across the f
 | no | **5** — 2041, 2116, 2392, 2615, 2623 | **0** |
 | yes | 143 | **143** |
 
-No QC-passed observations → no `clim_baselines` → no `flow_regime_configs` → no trainable target →
-no climatology floor → the gate at `services/onboarding.py:1205` correctly refuses promotion.
+Missing QC-passed observations has **three parallel consequences**, not a serial chain — baselines
+(`services/onboarding.py:843`), flow regimes (`:890`) and training data
+(`services/training_data.py:433`) each read QC-passed observations *independently*:
+
+```
+                      ┌─→ no clim_baselines
+no QC-passed rows  ───┼─→ no flow_regime_configs
+                      └─→ no trainable target → no climatology floor
+                                                → gate at onboarding.py:1205 refuses promotion
+```
+
+An earlier draft drew these as a chain, implying baselines and regimes are prerequisites for
+training. They are not.
 
 **Three of the five are recoverable from data already on disk:**
 
@@ -75,9 +86,15 @@ Recorded now so the eventual tasks are held to it:
 - **Station-specific, not aggregate.** For each of 2041, 2116, 2615: QC-passed rows > 0,
   `clim_baselines` rows > 0, a `flow_regime_configs` row, and an ACTIVE `climatology_fallback`
   artifact.
-- **Non-interference.** The other 143 stations' artifact and baseline counts are unchanged.
+- **Non-interference, over the right population.** Three targets out of 148 leave **145** other
+  stations, not 143. For all 145: QC-status distribution, `clim_baselines`, `flow_regime_configs`
+  and `model_artifacts` counts are unchanged.
+- **The targets' own non-`raw` rows are untouched** — the remediation processes `raw` rows only, so
+  any pre-existing `qc_passed` / `qc_failed` / `qc_suspect` row on 2041, 2116 or 2615 must survive
+  byte-identical.
 - ⛔ A bare *"`operational`-without-floor count drops from 5 to 2"* is **not** sufficient — it would
   pass if the wrong three stations acquired artifacts.
 
-**Pre-change evidence, already measured (2026-09-08):** that count is 5, and the 143-vs-5 partition
-above is the discriminating fact.
+**Pre-change evidence, already measured (2026-09-08):** that count is 5, and the 143-QC'd-vs-5-un-QC'd
+partition above is the discriminating fact. (143 + 5 = 148; the non-interference population is 145,
+since three of the five are the targets.)

@@ -2,8 +2,8 @@
 status: DRAFT
 created: 2026-09-08
 plan: 256
-title: Onboarding must not promote what it did not build — hold excluded stations at promotion, and audit every status change
-scope: Stop onboarding PROMOTING a station whose operational forcing it withheld, and make every status transition attributable. Narrowed on owner decision 2026-09-08 — this plan does NOT demote stations already operational, because every non-operational status stops observation ingest and BAFU history cannot be back-fetched. Explicitly NOT a demotion of Branson or any live station, NOT the QC remediation (Plan 258), NOT the catchment-outside-Switzerland question, NOT geometry repair, NOT model-onboarding promotion.
+title: Onboarding must not promote what it did not build — hold excluded stations at promotion, and audit the status transitions onboarding writes
+scope: Stop onboarding PROMOTING a station whose operational forcing it withheld, and make the status transitions ONBOARDING WRITES attributable. Narrowed on owner decision 2026-09-08 — this plan does NOT demote stations already operational, because every non-operational status stops observation ingest and BAFU history cannot be back-fetched. Explicitly NOT a demotion of Branson or any live station, NOT the QC remediation (Plan 258), NOT geometry repair, NOT model-onboarding promotion, NOT an audit boundary that captures direct SQL writes (see the limit stated below).
 depends_on: [255]
 blocks: [258]
 source: 2026-09-08 — a read-only diagnosis of the mac-mini staging host. Five stations carry `operational` although the promotion gate could not have passed them; one station was excluded from operational forcing by an invalid polygon and promoted anyway. Revised twice after independent Codex passes (4 blockers, then 6 further blockers including that the first revision still promised a demotion it could not deliver).
@@ -17,7 +17,8 @@ source: 2026-09-08 — a read-only diagnosis of the mac-mini staging host. Five 
 
 ⚠️ **High-risk.** T1 changes production promotion behaviour. No task in this plan writes to staging.
 
-⚠️ **Depends on Plan 255 T1 only** — the typed eligibility exclusions.
+⚠️ **Depends on Plan 255** — now scoped to exactly the typed eligibility exclusions this plan
+consumes. The reporting half became **Plan 259**.
 
 ### Scope narrowed by owner decision, 2026-09-08
 
@@ -37,7 +38,7 @@ collecting, don't forecast". Decoupling them is a separate change and is **not**
 
 **Owner decision:** leave already-operational excluded stations operational, and report them. So this
 plan prevents the **next** wrong promotion; it does not repair the existing one. Branson stays
-operational and keeps collecting, with Plan 255's report and the existing `FORECAST_STATION_DARK`
+operational and keeps collecting, with Plan 259's report and the existing `FORECAST_STATION_DARK`
 record carrying the truth. The title is narrowed accordingly.
 
 ## Why this exists
@@ -66,6 +67,15 @@ The real condition is **no wired operational reanalysis forcing at all**. The ea
 "a climatology floor trained on stale forcing" was false twice over:
 `models/climatology_fallback.py:45` declares empty dynamic features and trains only from targets
 (`:62`).
+
+### ⛔ A limit this plan does NOT overcome
+
+The staging incident was a **direct database write**. No service-layer helper can observe one, and
+this plan does not add a database-level trigger. T2 therefore makes *onboarding-written* transitions
+attributable — which is what turns a future onboarding promotion into evidence — and leaves
+`store/station_store.py:320` an unaudited primitive. A direct `UPDATE` would still be invisible.
+Closing that would mean an audit trigger on `stations`, a much larger commitment than this plan, and
+it is deliberately not attempted. The title and scope are narrowed to match.
 
 ### Defect 2 — a status change leaves no audit trail
 
@@ -102,16 +112,17 @@ owns the remediation, blocked on T3 below.
 
 ### T1 — an excluded station is not promoted
 
-**Outcome.** A station excluded from the MeteoSwiss binding by Plan 255 T1's typed exclusion is
+**Outcome.** A **river or lake** station excluded from the MeteoSwiss binding for one of four
+holding reasons (`GEOMETRY_INVALID`, `GEOMETRY_EMPTY`, `GEOMETRY_WRONG_TYPE`, `BASIN_NOT_FOUND`) is
 withheld from model assignment, training and the promotion write — so it is never *newly* promoted
-without operational forcing. A station already `operational` is left alone and reported (owner
-decision above).
+without operational forcing. `NO_BASIN_ID` does not hold, and weather stations are never held. A
+station already `operational` is left alone and reported (owner decision above).
 
 **The four decisions, locked:**
 
 | decision | resolved |
 |---|---|
-| already-`operational` excluded station | **left operational**, recorded with `INVALID_BASIN_GEOMETRY` in its Plan 255 outcome. No status write. |
+| already-`operational` excluded station | **left operational**, recorded with `INVALID_BASIN_GEOMETRY` in its Plan 259 outcome. No status write. |
 | its existing assignments and ACTIVE artifacts | **untouched** — removing them would silently stop forecasts for a station the owner chose to leave running |
 | gated on `require_meteoswiss_backfill`? | **yes** — the exclusion hold joins the existing block at `onboarding.py:764`. The production path sets the flag `True` (`flows/onboard.py`); fake-store unit tests that leave it `False` keep today's behaviour exactly, so no existing test changes meaning |
 | which reasons hold, for which station kinds | river/lake stations: `GEOMETRY_INVALID`, `GEOMETRY_EMPTY`, `GEOMETRY_WRONG_TYPE`, `BASIN_NOT_FOUND`. **`NO_BASIN_ID` does not hold** — a station legitimately without a basin is not a forcing failure. **Weather stations are never held**: they are forcing sources, not forecast targets, and the hold runs before the weather branch at `onboarding.py:1189` |
@@ -122,21 +133,32 @@ excluded station no binding exists. Same for the event at `:768`.
 
 **In.** `src/sapphire_flow/services/onboarding.py` (hold-set construction, Step 8 branch, both
 messages); `docs/touchpoint-maps.md:194`; `docs/v0-scope.md:70`.
-**Out.** No change to `_has_valid_geometry`, to the climatology-floor gate condition, or to any
-station's status. No geometry repair. No demotion of any live station.
+**Out.** No change to `_has_valid_geometry` or to the climatology-floor gate condition. No geometry
+repair. **No explicit demotion or status write** — the behavioural change is that a newly-excluded
+station never *reaches* the promotion write, not that any station's status is rewritten. No live
+station is demoted.
 
 **Verification.**
 `uv run pytest tests/unit/services/test_onboarding.py::TestExcludedStationHold` — with
 `require_meteoswiss_backfill=True`, a **new** river station with a self-intersecting polygon ends
-`ONBOARDING`, absent from `model_assignments`, carrying `INVALID_BASIN_GEOMETRY`; a **weather**
+`ONBOARDING`, absent from `model_assignments`, carrying `INVALID_BASIN_GEOMETRY` (Plan 259's record); a **weather**
 station with the same polygon is still promoted; and a station with `NO_BASIN_ID` is unaffected.
 `tests/unit/services/test_onboarding.py:1347` passes unmodified.
 
 **Pre-change.** RED: the new-river-station case ends `OPERATIONAL` today, because the exclusion
-removes it from `meteoswiss_eligible_ids` and therefore from `held_out_ids`. That failure is the
-set-arithmetic defect exactly. Do **not** assert anything about CAMELS-CH training — that claim was
-false. Do not use an already-operational station as the RED: it would pass for the wrong reason,
-since this plan deliberately no longer demotes.
+removes it from `meteoswiss_eligible_ids` and therefore from `held_out_ids`.
+
+⚠️ **The fixture must pin three prerequisites or the RED fails for the wrong reason.** Step 8 promotes
+a river only when `artifact_store is not None` (`onboarding.py:1199`) **and** an ACTIVE
+climatology floor exists (`:1205`); Steps 6 and 7 are skipped entirely unless their optional model
+infrastructure is wired (`:911`, `:1014`). So the fixture must supply the artifact store, seed the
+active floor, and wire the model stores — otherwise the station fails to be promoted for want of a
+floor, which is *today's correct behaviour*, not the defect. Assert assignment/training skipping with
+a training spy rather than by absence, for the same reason.
+
+Do **not** assert anything about CAMELS-CH training — that claim was false. Do not use an
+already-operational station as the RED: it would pass for the wrong reason, since this plan
+deliberately no longer demotes.
 
 ### T2 — every status transition is audited, at the right layer
 
@@ -161,7 +183,8 @@ as the assignment path is at `onboarding.py:981`.
   over an already-operational station would otherwise emit a false "status change" every time.
 
 **In.** `src/sapphire_flow/services/onboarding.py`, `scripts/onboard.py`,
-`docs/spec/types-and-protocols.md`, `docs/standards/logging.md`.
+`tests/unit/scripts/test_onboard_script.py`, `docs/spec/types-and-protocols.md`,
+`docs/standards/logging.md`.
 **Out.** No change to `store/station_store.py` or the `StationStore` Protocol. No retroactive audit
 rows — that history is unknown and inventing it would be worse than the gap. No change to the
 `audit_log` append-only triggers.
@@ -173,6 +196,12 @@ station writes **none**; and
 `uv run pytest tests/integration/db/test_slice_e_audit_atomicity.py::TestStatusChangeRollback`
 against real PostgreSQL — an audit-insert failure leaves `station_status` unchanged. A unit store
 test cannot prove rollback through a real `AuditedWriter`.
+
+And the CLI wiring is verified, not merely required:
+`uv run pytest tests/unit/scripts/test_onboard_script.py::TestAuditWiring` — the call to
+`onboard_from_camelsch` receives a principal, an audit log store and an audited writer. Today it
+passes none of them (`scripts/onboard.py:339`), so a requirement with no test would silently not
+happen.
 
 ⚠️ An earlier draft cited `tests/unit/store/test_station_store.py`, which **does not exist** (it is
 `tests/integration/store/`). That command would have errored rather than failed — indistinguishable
@@ -196,15 +225,27 @@ live write. **Plan 258** owns the remediation and is blocked on this.
 **In.** A finding appended to this plan.
 **Out.** No write of any kind. No status change. No QC re-run.
 
-**Verification.** The finding names the mechanism and cites its queries, or states that it could not
-be determined. Either is a complete outcome; a task that cannot fail is not a gate.
+**Verification.** A bounded checklist, each with its query and result recorded in the finding:
+(a) do the three stations' pre-2026 rows carry a `parameter` matching their `forecast_targets`?
+(b) do their timestamps fall inside the run's `start_utc`/`end_utc` window?
+(c) does `errors` in any surviving run record name them?
+(d) do they differ from a QC-processed control station (2009) in `station_kind`, `gauging_status`,
+`water_level_datum_masl` or `measured_parameters`?
+
+An inconclusive result is acceptable **only** if it records every query, its result, and the
+hypotheses thereby eliminated. "Could not be determined" with no evidence is not an outcome — an
+earlier draft admitted this task could not fail, which `docs/workflow.md:20` forbids.
 
 **Pre-change.** N/A — investigation task.
 
 ### T4 — Branson's geometry (read-only)
 
-**Outcome.** A written finding: whether the invalid ring is present in the CAMELS-CH source geometry
-or was introduced by our import, and whether Branson is one of the deferred cross-border cases.
+**Outcome.** A written finding on **provenance only**: whether the invalid ring is present in the
+CAMELS-CH source geometry or was introduced by our import.
+
+⛔ **Whether Branson is a cross-border catchment is explicitly out of scope** — an earlier draft had
+this task investigating the very question the plan's scope excludes. That belongs to the deferred
+outside-Switzerland investigation.
 
 **In.** A finding appended to this plan.
 **Out.** No `ST_MakeValid`, no geometry edit, no re-import — repairing a catchment boundary changes
@@ -229,7 +270,7 @@ station per cycle, naming these stations `critical` / `all_models_failed` — 20
 silence-looks-like-health shape as the July outage. Surfacing `FORECAST_STATION_DARK` belongs with
 Plan 257's watchdog-coverage question; 257 covers a dark *product*, this is a dark *station*.
 
-Under Plan 255's derivation rule both stations report `NO_CLIMATOLOGY_FLOOR`.
+Under Plan 259's derivation rule both stations report `NO_CLIMATOLOGY_FLOOR`.
 
 ```json
 {
