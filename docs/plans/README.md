@@ -187,27 +187,39 @@ exit criteria — Plan 212 owns that deeper screening.
   226 is anchoring-only and 235 points at 228's recompute. Four open decisions first,
   including whether phase belongs to the FI contract (which would need an upstream
   issue, not a SAP3 workaround).
-- **255** — Onboarding reports what it actually did — `DRAFT` — a per-station
-  outcome record plus a human-readable end-of-run report naming every station as
-  complete, degraded, withheld or failed, with the reason. Additive and
-  observational only; no promotion behaviour changes. Exists because establishing
-  the real state of the 148-station staging fleet on 2026-09-08 required reading
-  `flow_run_state` messages, clustering `stations.updated_at` to the microsecond,
-  and extracting the `stations` table out of two 25 GB nightly `pg_dump` archives.
-  Every per-station shortfall is currently a `log.warning` in a run whose logs are
-  discarded the moment the worker container is recreated. Blocks 256.
+- **255** — Onboarding reports what it actually did — `DRAFT, revised after
+  independent review` — three layers: typed eligibility exclusions (T1, the shared
+  prerequisite Plan 256 T1 also needs), a per-station outcome record, then a
+  human-readable report naming every station complete / degraded / withheld /
+  failed with its reason. Additive and observational only. Exists because
+  establishing the real state of the 148-station staging fleet on 2026-09-08
+  required reading `flow_run_state` messages, clustering `stations.updated_at` to
+  the microsecond, and extracting the `stations` table out of two 25 GB nightly
+  `pg_dump` archives. ⚠️ Codex returned 5 blockers on the first draft: two promised
+  conditions could not be collected in scope (`short_lookback` is never emitted
+  during onboarding and is now REMOVED; the invalid-geometry reason is discarded
+  inside `eligible_meteoswiss_configs`, which T1 now fixes), and the `blocks: 256`
+  dependency ran backwards. Not re-reviewed yet.
 - **256** — Onboarding must not promote what it did not build — `DRAFT`,
   **high-risk** — closes the two paths to `operational` without the substance the
   status claims. (1) A station excluded from the MeteoSwiss binding for an invalid
   basin polygon is not in `meteoswiss_eligible_ids`, so the Plan 115b2 §2C hold
   (`eligible - backfilled`) cannot fire for it and it is promoted with whatever
   forcing it has — on staging that is **2024 Branson**, self-intersecting ring, no
-  MeteoSwiss binding, `camels-ch` forcing ending 2020-12-31 while the other 147
-  carry six products to 2026-09-06. (2) `update_station_status` writes no audit
-  row, so the field that decides whether the forecast cycle touches a station at
-  all is unattributable — which is how **2041, 2116, 2392, 2615, 2623** came to be
+  MeteoSwiss binding and **zero `meteoswiss_*` rows**, while the other 147 carry six
+  products to 2026-09-06. 🔴 The first draft said Branson runs on stale `camels-ch`
+  forcing; that was WRONG — `hybrid_reanalysis_factories.py` retires the CAMELS-CH
+  tier, so those rows are never wired at all. (2) `update_station_status` writes no
+  audit row, so the field that decides whether the forecast cycle touches a station
+  is unattributable — which is how **2041, 2116, 2392, 2615, 2623** came to be
   `operational` with no `climatology_fallback` floor (four with no artifact of any
-  model, ever) via a direct database write on 2026-09-02. Depends on 255.
+  model, ever) via a direct database write on 2026-09-02. Root cause since found:
+  QC never processed those five stations' pre-2026 history, and the partition is
+  exact (143 QC'd all have baselines; the 5 un-QC'd have none). ⚠️ Codex returned 4
+  blockers on the first draft — chiefly that T1 did not remediate Branson at all,
+  since `update_station` never writes `station_status` and the hold branch only
+  `continue`s, so an already-operational station is untouched. Depends on 255 **T1
+  only**. Not re-reviewed yet.
 - **257** — Combined-forecast coverage is unmonitored — `DRAFT` — `_pooled` writes
   stopped on staging at 2026-09-04 06:26Z and were found by hand four days later.
   Nothing reported it: `forecast_freshness` read `ok` throughout — correctly, since it
