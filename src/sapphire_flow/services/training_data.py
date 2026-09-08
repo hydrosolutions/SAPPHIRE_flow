@@ -17,6 +17,8 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AggregationMethod, QcStatus, StaticNaming
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
@@ -146,10 +148,12 @@ def validate_time_step_cadence(
     resampling omission (a new caller, a refactor) fail loudly instead of
     silently, at the one point both paths already call through.
 
-    Deliberately scoped to ``past_targets`` callers only — ``past_dynamic``
-    legitimately carries a finer, unresampled cadence than the model's
-    ``time_step`` in the operational path (e.g. hourly reanalysis feeding a
-    daily model), so a blanket check would misfire there.
+    Scoped to ``past_targets`` callers. It once read that ``past_dynamic``
+    "legitimately carries a finer, unresampled cadence" — that was the DEFECT
+    being described, not an exemption (Plan 239 T1): a daily model fed hourly
+    reanalysis silently read 24x its declared resolution. Every assembler now
+    resamples ``past_dynamic`` too; this backstop stays on ``past_targets``
+    only because that is where both paths already call through.
 
     Checks **every** adjacent gap, not the median (Plan 228 review fixer
     round): a median-of-N check passes an isolated missing bucket (e.g.
@@ -178,6 +182,56 @@ def validate_time_step_cadence(
             f"does not match the declared time_step {time_step} "
             f"({bad_gaps.len()} of {diffs_us.len()} gaps out of tolerance)"
         )
+
+
+def expected_past_buckets(
+    anchor: UtcDatetime, time_step: timedelta, lookback: int
+) -> list[UtcDatetime]:
+    """The `lookback` complete buckets BEFORE `anchor`.
+
+    Buckets are left-labelled, so `floor(anchor)` is the bucket currently IN
+    PROGRESS — demanding it refuses perfectly good data. Matches the existing
+    complete-lookback bounds, which cover ``[T0 - lookback*S, T0)``.
+    """
+    base = floor_to_time_step(anchor, time_step)
+    return [ensure_utc(base - k * time_step) for k in range(lookback, 0, -1)]
+
+
+def expected_future_buckets(
+    anchor: UtcDatetime, time_step: timedelta, horizon: int
+) -> list[UtcDatetime]:
+    """The `horizon` buckets AFTER `anchor`.
+
+    When `anchor` sits exactly on a bucket boundary the whole `T0` bucket is
+    future data — existing aggregation retains it — so the set starts AT `T0`.
+    Off a boundary, `T0` is partly past and the set starts at `T0 + S`.
+    """
+    base = floor_to_time_step(anchor, time_step)
+    first = 0 if ensure_utc(anchor) == base else 1
+    return [ensure_utc(base + k * time_step) for k in range(first, first + horizon)]
+
+
+def missing_buckets(
+    df: pl.DataFrame, column: str, expected: Sequence[UtcDatetime]
+) -> list[UtcDatetime]:
+    """Which of `expected` are absent for `column` — the whole resolution check.
+
+    Membership only. A slot is PRESENT if its timestamp appears; whether the
+    value is usable is `max_nan`'s job, already gated per variable per frame by
+    the FI adapter (which counts nulls and NaNs alike). Judging values here
+    would both duplicate that gate and make null and NaN behave differently.
+
+    `expected` is passed in rather than derived, because the three callers build
+    it differently: past uses `expected_past_buckets`, future
+    `expected_future_buckets`, and TRAINING has no issue time at all — it joins
+    forcing onto whatever target timestamps exist, so it passes those directly.
+    """
+    if not expected:
+        return []
+    present: set[UtcDatetime] = set()
+    if column in df.columns:
+        present = {ensure_utc(cast("datetime", ts)) for ts in df["timestamp"].to_list()}
+    return [slot for slot in expected if slot not in present]
 
 
 def floor_to_time_step(instant: UtcDatetime, time_step: timedelta) -> UtcDatetime:
@@ -290,7 +344,19 @@ def resample_to_time_step(
             )
             method = AggregationMethod.MEAN
         if method == AggregationMethod.SUM:
-            agg_exprs.append(pl.col(col).sum())
+            # Plan 239 T1a review (major): polars `sum()` of an ALL-NULL group
+            # returns 0.0, not null. Forcing frames pivot several variables
+            # onto shared timestamps, so a day carrying temperature rows but
+            # no precipitation rows would resample to `precipitation = 0.0` —
+            # indistinguishable from "it did not rain", and invisible to the
+            # FI `max_nan` gate, which counts nulls and NaNs and sees neither.
+            # A bucket with no observed value must stay ABSENT, not become dry.
+            agg_exprs.append(
+                pl.when(pl.col(col).is_not_null().any())
+                .then(pl.col(col).sum())
+                .otherwise(None)
+                .alias(col)
+            )
         elif method == AggregationMethod.MAX:
             agg_exprs.append(pl.col(col).max())
         else:
@@ -485,6 +551,15 @@ def assemble_station_training_data(
     # future-known forcing (e.g. NWP precip/temp) is delivered into future_dynamic,
     # timestamp-aligned to past_targets. The discharge target stays in past_targets.
     past_dynamic_df = _select_feature_columns(forcing_df, past_features)
+    # Plan 239 T1: resample past forcing to the model's DECLARED step. The
+    # future half below has always been resampled (`_future_dynamic_from_
+    # forcing`); the past half was handed through raw, so a daily model
+    # trained on hourly reanalysis learned from 24x the rows it declared —
+    # and then met daily data in production. Same call, same declared
+    # per-variable aggregation, as `past_targets` immediately above.
+    past_dynamic_df = resample_to_time_step(
+        past_dynamic_df, time_step, aggregation_methods=aggregation_methods
+    )
     future_dynamic_df = _future_dynamic_from_forcing(
         forcing_df=forcing_df,
         future_features=future_features,
