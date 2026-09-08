@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-04
 plan: 252
 title: A time grid is a step AND a phase
-scope: CONVENTIONS AND TYPES ONLY, and GRIDS ONLY. Define `TimeGrid(step, phase)`, declare the operational day boundary per deployment, audit the input adapters against it, and propose the supersession of Plan 228 D4. Explicitly NOT temporal support (point vs interval), CF `cell_methods`, or the period-ending convention — all Plan 258, split out 2026-09-08. Explicitly NOT the phase-aware execution across the resampler call sites (TWELVE as of 2026-09-08, not seven — re-inventory, do not cite a count), the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT the daily-model anchoring (Plan 254 T8, absorbed from the superseded Plan 226), NOT Plan 234's aggregation threading.
+scope: CONVENTIONS AND TYPES ONLY, and GRIDS ONLY. Define `TimeGrid(step, phase)`, declare the operational day boundary per deployment, audit the input adapters against it, and propose the supersession of Plan 228 D4. Explicitly NOT temporal support (point vs interval), CF `cell_methods`, or the period-ending convention — all Plan 258, split out 2026-09-08. Explicitly NOT the phase-aware execution across the resampler call sites (Plan 254 holds the inventory; re-measure it, never cite a count from prose), the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT the daily-model anchoring (Plan 254 T8, absorbed from the superseded Plan 226), NOT Plan 234's aggregation threading.
 depends_on: []
 blocks: [254, 258]
 source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 253; investigation showed the codebase treats a time step as a scalar throughout
@@ -238,23 +238,22 @@ or an interval, which is Plan 258's subject. The previous text here labelled for
 period-ending *without qualification*, which an independent review correctly flagged as contradicting
 this plan's own later narrowing. Plan 258 states it once, by support.
 
-**OD-5 — published data carries explicit interval bounds, not just a stamp.** A consumer receiving
-`2026-09-05 18:00Z` alone must know our rounding rule, our period convention and our timezone
-reasoning to interpret it. The same value carrying `period_start` and `period_end` requires them to
-know nothing. This follows CF conventions and netCDF, which attach `bounds` to every value for
-exactly this reason, and it makes OD-3's 15-minute displacement self-describing. It also
-future-proofs OD-3: moving to exact civil days later would need no consumer change.
+**OD-5 — MOVED to Plan 258.** Interval bounds only exist for values that ARE intervals, so publishing
+`period_start`/`period_end` is downstream of the point/interval decision. Plan 258 owns it.
 
 **OD-6 — resampling: coarsen freely, interpolate with a per-parameter method, never upsample.**
 
 | Case | Rule |
 |---|---|
 | Target coarser than source | Aggregate with the parameter's declared `AggregationMethod` (SUM for accumulations, MEAN for state variables) |
-| Instantaneous variable onto off-phase marks | Linear interpolation between bracketing observations, subject to a maximum gap — beyond it emit nothing, never a straight line across a two-day hole |
-| Accumulation onto a straddling boundary | Apportion by overlap fraction; flag as degraded when the split interval exceeds **15 minutes** |
+| Instantaneous variable onto off-phase marks | **Plan 258** — the method depends on temporal support. Linear interpolation between bracketing observations, subject to a maximum gap — beyond it emit nothing, never a straight line across a two-day hole |
+| Accumulation onto a straddling boundary | **Plan 258** — support-dependent. Apportion by overlap fraction; flag as degraded when the split interval exceeds **15 minutes** |
 | Target finer than the source's median spacing | **Refuse.** Three readings a day cannot become 24 hourly values; that is invention, not interpolation |
 
-The method is determined by the parameter, never by the caller. Degradation is reported through the
+⛔ **The two support-dependent rows above are Plan 258's, not this plan's** — they are listed here only
+so the table reads whole. What THIS plan owns is the grid part: coarsen freely, never upsample, and
+refuse a target finer than the source's median spacing. The method is determined by the series, never
+by the caller. Degradation is reported through the
 existing `InputQualityFlag` channel, which Plan 253 made persistent and API-visible — no second
 mechanism.
 
@@ -319,10 +318,20 @@ means one thing in config would mean another in the resampler.
 **Rule:** the declared boundary is a time-of-day and is therefore **midnight-referenced**; the
 implementation must convert to whatever reference the resampler uses rather than assume they match.
 **Constraint:** a step that does not divide 24 h is **rejected at config load** until someone needs
-one, at which point the reference must be settled deliberately rather than discovered. `0 < phase <
-step` remains required; a phase finer than the step's own resolution (e.g. seconds on a daily grid)
-is rejected — "finer than the step's resolution" means a phase that is not an exact multiple of the
-smallest unit the step is expressed in.
+one, at which point the reference must be settled deliberately rather than discovered. Examples that
+are rejected: 7 h (1440 / 420 is not an integer) and 50 min. ⚠️ **90 min is NOT such an example** — it
+divides 24 h exactly 16 times; an earlier revision of this paragraph used it wrongly.
+
+**Bounds: `0 <= phase < step`.** Zero is a legal, required phase — Switzerland declares exactly that
+(OD-11), so a rule excluding it would forbid the only deployment we run. *(An earlier revision here
+wrote `0 < phase < step`, contradicting T2 and OD-11.)*
+
+**Precision: phase is a whole number of MINUTES.** ⛔ The earlier formulation — "not an exact multiple
+of the smallest unit the step is expressed in" — is not implementable: a `timedelta` does not preserve
+how it was written, and `timedelta(days=1) == timedelta(hours=24) == timedelta(seconds=86400)`. Minute
+precision is implementable, is what the config format expresses (`daily_grid_origin = "18:00"`), and
+covers every case we have: NPT's 45-minute offset needs it, and nothing we ingest is anchored to a
+sub-minute boundary. A phase with a non-zero seconds component is rejected at config load.
 
 ⛔ **Corollary — a stored step alone is HALF a grid, and a half grid reads as a false whole.** Any
 store that records a step without its phase records something true and incomplete, and the incomplete
@@ -367,9 +376,14 @@ the Nepali calendar day, not the UTC one.
 
 This is deliberately the *convention and the type*, not the consumers:
 
-- **Plan 254 T8** (absorbed from Plan 226 on 2026-09-08; 226 is now `SUPERSEDED` and must not be
-  cited as a live owner) anchors the daily models' `valid_time` to the calendar day they predict. That is the
-  same defect family — a grid whose phase was never declared — but 226 owns the daily-model fix.
+- **Plan 254 T8** anchors the daily models' `valid_time` to the calendar day they predict. That is the
+  same defect family — a grid whose phase was never declared — and **254 T8 owns it.** *(It was
+  absorbed from Plan 226 on 2026-09-08; 226 is `SUPERSEDED` and must not be cited as a live owner. An
+  earlier revision of this bullet named 254 T8 and then said "226 owns the daily-model fix" two lines
+  later.)*
+- **Plan 258** owns temporal support — whether a value is a point or an interval — and therefore the
+  period-ending convention, interval bounds, and the support-dependent resampling methods. This plan
+  is buildable without it and must not re-absorb it.
 - **Plan 234** threads each channel's declared aggregation method end to end. This plan supplies the
   rule that says *when* a resample is required; 234 supplies *how* it is performed.
 - **Plan 253** found the fail-closed hole in QC rule lookup. The principle is identical and should be
@@ -465,6 +479,17 @@ OD-2's sub-daily-on-UTC decision matches what is actually delivered. NPT is pres
 A known gap on their side: point meteograms are published in UTC and should be NPT — display-layer,
 not ours.
 
+### Temporal support — moved out on 2026-09-08 (not a task here)
+
+Temporal support — declaring it, and later verifying it against the source's CF `cell_methods` — is
+**Plan 258 T1–T4**. It left this plan on 2026-09-08 because an independent review returned three
+blockers against it and none of them were about grids: the value was assigned at the wrong
+cardinality, the fail-closed migration violated the repo's additive-only rule, and "unknown" was not
+representable. Those are now Plan 258's open decisions D1–D3.
+
+⛔ **Do not re-absorb it.** This plan is buildable without it: a grid is a step and a phase whether or
+not we have recorded what the values mean over that step.
+
 ## Tasks
 
 Every code task carries the Task Exit Gate (`docs/workflow.md:378-390`).
@@ -504,17 +529,6 @@ Threading it through call sites (Plan 254).
 
 **Verification:** `uv run pytest tests/unit/types/test_time_grid.py` — hourly UTC and hourly Nepali are both step 3600 and NOT alignable; a 15-minute grid on quarter-hour marks nests into BOTH; **a 10-minute phase-zero grid nests into hourly UTC and NOT into hourly Nepali** (the draft asserted neither, contradicting OD-6); phase >= step raises.
 
-### T3 — MOVED to Plan 258
-
-Temporal support — declaring it, and later verifying it against the source's CF `cell_methods` — is
-**Plan 258 T1–T4**. It left this plan on 2026-09-08 because an independent review returned three
-blockers against it and none of them were about grids: the value was assigned at the wrong
-cardinality, the fail-closed migration violated the repo's additive-only rule, and "unknown" was not
-representable. Those are now Plan 258's open decisions D1–D3.
-
-⛔ **Do not re-absorb it.** This plan is buildable without it: a grid is a step and a phase whether or
-not we have recorded what the values mean over that step.
-
 ### T4 — declare the operational grid boundary per deployment
 
 **Outcome:** every deployment declares its boundary explicitly, including Switzerland's zero.
@@ -524,21 +538,30 @@ repository-root `config.toml`**, which is the active Swiss base and is loaded se
 overlays (`config/deployment.py:452`, `docs/v0-scope.md:490`). ⛔ **The root file was missing from
 this task's scope, which would have made the requirement unsatisfiable for the one deployment we
 actually run**: if the field has no default, the base config must declare it or Switzerland refuses to
-start. Written as a readable time-of-day (`daily_grid_origin = "18:00"`) parsed once into a phase.
-Depends on T2.
+start. Written as a readable time-of-day (`daily_grid_origin = "18:00"`) parsed once into a phase. **Also
+`docs/spec/config-reference.toml`**, which states that it documents every config field — a new field
+that does not appear there breaks that promise, and the workflow requires affected docs in every code
+change. Depends on T2.
 
 **Out:** deriving it from `stations.timezone`, which stays descriptive. Any per-station override.
 
 **Pre-change:** `grep -rn "grid_origin\|grid_phase" config/ src/sapphire_flow/config/` returns nothing; no deployment declares a boundary.
 
 **Verification:** `uv run pytest tests/unit/config/` — Nepal parses `"18:00"` to 64800 s; Switzerland's
-root `config.toml` declares `"00:00"` → 0 s and the deployment starts; a deployment with NO
+root `config.toml` declares `"00:00"` → **0 s and is ACCEPTED** (phase zero is legal and required, not
+an omission); a step that does not divide 24 h is **REJECTED at load**; a phase with a non-zero
+seconds component is **REJECTED**; and a deployment with NO
 declaration is **REJECTED** rather than defaulting to zero (OD-11); a value finer than the step's resolution is rejected.
 
 ### T6 — audit every input adapter against the conventions
 
-**Outcome:** each adapter's **native grid phase** is recorded — confirmed, converted, or flagged
-unresolved. *(Temporal support gets its own audit in Plan 258 T4; keep the two tables adjacent in
+**Outcome:** each adapter's **native grid phase** is recorded — confirmed, converted, flagged
+unresolved, or **`NOT A GRID`**.
+
+⛔ **The fourth outcome is required, and its absence contradicted OD-0.** OD-0 says a source is not
+assumed to be a grid at all; a manually-read gauge or an event-triggered series has **no phase**, and
+recording that as "unresolved" would misfile a known fact as an open question. `NOT A GRID` is a
+terminal, correct answer. *(Temporal support gets its own audit in Plan 258 T4; keep the two tables adjacent in
 `docs/conventions.md` but do not merge them — they are independent facts and merging them is how one
 silently stands in for the other.)*
 
@@ -550,12 +573,22 @@ silently stands in for the other.)*
 
 **Verification:** N/A — audit task. Every adapter appears with a cited source, or is marked unresolved.
 
-### T7 — put the boundary question to DHM and to the snow modeller
+### T7 — make the DHM day-boundary questions EXACT
 
-**Outcome:** the conventional observation-day boundary is asked of DHM, so the provisional 18:00Z
-default can be replaced by their actual reference.
+⚠️ **Corrected 2026-09-08: the questionnaire already asks this, and the earlier framing here was
+wrong.** It claimed the questions were absent and cited a grep that returns nothing only because it is
+case-sensitive and uses our vocabulary rather than the document's. `docs/requirements/dhm-data-formats-questions.md`
+already asks **Q3.3** ("How is daily flow defined? Daily mean / instantaneous / max? … day boundary")
+and **Q8.3** ("Time precision: exact timestamp format, the UTC offset (NPT = +05:45), seconds
+precision, and the definition of a day"). The task is therefore to make existing questions precise
+enough to settle OD-3 — not to add a missing one. The snow modeller is also **not** in scope here
+despite the old title; the Gateway ask moved to Plan 258.
 
-**In:** `docs/requirements/dhm-data-formats-questions.md`. Three questions: the conventional day
+**Outcome:** Q3.3 and Q8.3 are sharpened so that DHM's answer resolves the day boundary to a specific
+whole hour, so the provisional 18:00Z default can be replaced by their actual reference.
+
+**In:** `docs/requirements/dhm-data-formats-questions.md`, amending Q3.3 and Q8.3 and adding what is
+genuinely missing. Three things must be answerable afterwards: the conventional day
 boundary in local time; a request for **15-minute data on `:00/:15/:30/:45`** (10-minute is worse for
 Nepali targets, since 10 does not divide the 345-minute offset and 15 does); and confirmation of
 period convention per parameter. Cite the India 08:30 IST precedent — it makes the question read as a
@@ -566,9 +599,9 @@ serves. It is not this plan's, and this plan is not blocked on it.
 
 **Out:** re-rendering the `.docx`; assuming an answer. Unanswered leaves OD-3 on its provisional value.
 
-**Pre-change:** N/A — requirements task. `grep -n "rainfall day\|observation day\|day boundary" docs/requirements/dhm-data-formats-questions.md` returns nothing.
+**Pre-change:** N/A — requirements task. Q3.3 and Q8.3 exist but neither forces an answer naming a specific hour, so DHM could answer both fully and leave OD-3 unresolved. `grep -in "day boundary\|definition of a day" docs/requirements/dhm-data-formats-questions.md` returns nothing.
 
-**Verification:** N/A — requirements task. All three questions appear with the precedent cited.
+**Verification:** N/A — requirements task. Q3.3 and Q8.3 each demand a specific hour, the 15-minute grid request appears, and the India 08:30 IST precedent is cited.
 
 ### T8 — supersede Plan 228 D4
 

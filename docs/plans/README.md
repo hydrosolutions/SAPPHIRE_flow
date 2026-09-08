@@ -168,8 +168,9 @@ exit criteria — Plan 212 owns that deeper screening.
   timestamp; converting to UTC relabels instants without moving them onto a grid and
   makes the offset invisible. ⚠️ **CF `cell_methods` and period-ending left this plan
   on 2026-09-08 for Plan 258** — it is now grids only. Declares `TimeGrid(step, phase)`, a per-deployment
-  boundary that no deployment may default into, and **supersedes Plan 228 D4** by owner
-  disposition. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
+  boundary that no deployment may default into, and **PROPOSES the supersession of Plan
+  228 D4** by owner disposition — proposed, not done: 228 is READY and its rule is what
+  the code implements until 252 T8 actually lands. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
   and, independently, by SnowMapper's UTC+6 solar day. ⛔ **Correction (2026-09-08):** the
   claim that a different DHM boundary would put us "at odds with SnowMapper" was
   withdrawn inside Plan 252 itself — we receive SnowMapper in UTC and convert, so the

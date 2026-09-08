@@ -2,9 +2,9 @@
 status: DRAFT
 created: 2026-09-05
 plan: 254
-title: Phase-aware execution — seven call sites, the fetch-bound helpers, and the Swiss rollout
-scope: Make every assembly path honour a declared `TimeGrid` rather than assuming phase zero, carry resampling provenance so degradation is reportable, record each artifact's training grid so a mismatch fails closed, and sequence the Swiss retrain and cutover. Explicitly NOT the conventions or types (Plan 252), NOT Plan 226's anchoring, NOT Plan 234's aggregation declaration, NOT the Forecast Lab v3 format (Plan 251).
-depends_on: [252, 234]
+title: Phase-aware execution — the resampler call sites, the fetch-bound helpers, the daily-model anchoring, and the Swiss rollout
+scope: Make every assembly path honour a declared `TimeGrid` rather than assuming phase zero, carry resampling provenance so degradation is reportable, record each artifact's training grid so a mismatch fails closed, sequence the Swiss retrain and cutover, and anchor the daily models (T8, ABSORBED from Plan 226 on 2026-09-08 — 226 is SUPERSEDED). Explicitly NOT the conventions or types (Plan 252), NOT temporal support / CF `cell_methods` (Plan 258), NOT Plan 234's aggregation declaration, NOT the Forecast Lab v3 format (Plan 251).
+depends_on: [252, 234, 258]
 blocks: []
 source: 2026-09-05 — split from Plan 252 after a review returned 20 blockers, most of them integration and contract failures rather than defects in the time-zone reasoning
 ---
@@ -96,7 +96,9 @@ period-ending labels (`services/operational_inputs.py:225`).
 
 ## Non-goals
 
-- Plan 252's conventions, types and CF ingest.
+- Plan 252's grid conventions and types, and **Plan 258's temporal support / CF ingest** — this plan
+  CONSUMES both and now declares 258 as a dependency; it must not proceed past T3 without the
+  temporal-support contract T3 reads.
 - Plan 226's daily-model anchoring, and Plan 234's aggregation declaration — this plan **consumes**
   both.
 - The Forecast Lab v3 format change, which Plan 251 already owns; interval bounds must fold into
@@ -137,7 +139,7 @@ exactly-N-complete-buckets at a non-zero phase.
 ### T3 — make the resampler phase-aware and provenance-carrying
 
 **Outcome:** the resampler honours a declared `TimeGrid`, applies the OD-6 method for the channel's
-CF temporal support, refuses upsampling, and returns provenance alongside the data.
+CF temporal support (**supplied by Plan 258, not by this plan or 252**), refuses upsampling, and returns provenance alongside the data.
 
 **In:** `services/training_data.py:225`, including `closed` and `label` for period-ending —
 polars defaults label bucket starts, which skill's completeness check assumes (`skill/service.py:261`),
@@ -149,7 +151,7 @@ so both change together. The return type changes per D2. Depends on T1, T2.
 
 **Verification:** `uv run pytest tests/unit/services/test_training_data.py` — a 15-minute source on quarter-hour marks maps onto both a UTC-hourly and a Nepali-hourly target with zero apportionment; an instantaneous (`time: point`) channel is interpolated and NOT treated as period-ending; an accumulation straddling a boundary is apportioned and flagged above 15 minutes; and an upsample is **REFUSED**, with the refusal locked by a test.
 
-### T4 — thread the declared grid through all seven call sites
+### T4 — thread the declared grid through EVERY resampler call site (re-inventory first — 12 as of 2026-09-08, and it has moved twice in a fortnight)
 
 **Outcome:** every assembly path resolves its target grid from the deployment declaration rather than
 assuming phase zero, and the downstream UTC-day assumptions are corrected.

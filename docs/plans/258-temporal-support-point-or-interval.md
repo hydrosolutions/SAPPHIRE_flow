@@ -5,7 +5,7 @@ plan: 258
 title: A value is a point or an interval, and nothing in the system records which
 scope: The temporal-support half of the time-grid family, split out of Plan 252 on 2026-09-08 after an independent review returned three blockers all belonging to this one concern. Adopt CF `cell_methods` as the vocabulary, settle at WHAT CARDINALITY temporal support is recorded, narrow period-ending labelling to interval-valued data, and verify a declaration against the source once the Gateway passes CF attributes through. Explicitly NOT `TimeGrid(step, phase)` or the day boundary (Plan 252), NOT the phase-aware execution (Plan 254), NOT the aggregation METHOD declaration (Plan 234).
 depends_on: [252]
-blocks: []
+blocks: [254]
 source: 2026-09-08 — split out of Plan 252 by owner decision, after a Codex review returned 8 blockers of which 3 (wrong cardinality, unsafe migration, unrepresentable unknown state) were all about temporal support and none about grids
 ---
 
@@ -68,7 +68,10 @@ The rule now lives here, in one place, and binds only interval data:
 - **An adapter for a source that publishes period-BEGINNING must convert at the boundary and record
   that it did** — never pass the timestamps through and leave a one-hour bias to be found downstream.
 - **A source whose convention is unknown is not ingested on an assumption.** Resolve it with the
-  provider, or mark the series as carrying an unresolved ±1 step phase uncertainty.
+  provider, or mark the series as carrying an **unresolved ±1 step LABELLING uncertainty** — the value
+  may belong to the interval before or after its stamp. ⚠️ It is NOT a *phase* uncertainty: shifting a
+  series by a whole step leaves its phase modulo the step unchanged, which is precisely why the two
+  concepts are independent, as the next paragraph says.
 
 ⛔ **Period convention and timezone phase are INDEPENDENT.** Getting the 45 minutes right and the
 labelling convention wrong yields a silent one-hour error stacked on the offset. Record them
