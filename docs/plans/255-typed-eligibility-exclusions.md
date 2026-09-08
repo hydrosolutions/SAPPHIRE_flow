@@ -78,24 +78,24 @@ which of them withhold a station and for which station kinds.
 left to the implementer:
 
 ```python
-class MeteoswissExclusionReason(Enum):        # in types/, not services/
+class MeteoSwissExclusionReason(Enum):        # in types/, not services/
     NO_BASIN_ID = auto(); BASIN_NOT_FOUND = auto()
     GEOMETRY_WRONG_TYPE = auto(); GEOMETRY_EMPTY = auto(); GEOMETRY_INVALID = auto()
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class MeteoswissExclusion:
+class MeteoSwissExclusion:
     station_id: StationId
     code: str
-    reason: MeteoswissExclusionReason
+    reason: MeteoSwissExclusionReason
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class MeteoswissEligibility:
+class MeteoSwissEligibility:
     eligible: tuple[StationWeatherSource, ...]
-    excluded: tuple[MeteoswissExclusion, ...]
+    excluded: tuple[MeteoSwissExclusion, ...]
 
 def partition_meteoswiss_eligibility(
     stations: list[StationConfig], basin_store: BasinStore
-) -> MeteoswissEligibility: ...
+) -> MeteoSwissEligibility: ...
 ```
 
 `eligible_meteoswiss_configs` keeps its exact present signature and `list` return, delegating to the
@@ -122,23 +122,35 @@ uv run pytest "tests/unit/services/test_onboarding.py::TestMeteoswissBindingAndB
 The first two cover all eight existing test sites, which must pass **unmodified**. The third is the
 node that locks today's exclusion behaviour end-to-end.
 
-The new `TestPartitionMeteoswissEligibility` must assert, against an **independently written expected
+The new `TestPartitionMeteoSwissEligibility` must assert, against an **independently written expected
 result** — not against the wrapper:
 
 | case | assertion |
 |---|---|
 | each of the five rejection reasons | the station appears in `excluded` with that exact reason |
-| a valid **`Polygon`** basin | appears in `eligible` |
-| a valid **`MultiPolygon`** basin | appears in `eligible` |
+| valid `Polygon` × `RIVER` / `WEATHER` / `LAKE` | each appears in `eligible` |
+| valid `MultiPolygon` × `RIVER` / `WEATHER` / `LAKE` | each appears in `eligible` |
+| a valid basin on a station whose `station_status` is `ONBOARDING` | appears in `eligible` |
 
-⚠️ **The MultiPolygon case is load-bearing and is the reason wrapper-equality is not enough.**
-`_has_valid_geometry` accepts `(Polygon, MultiPolygon)`
-(`services/reanalysis_backfill.py:100`), but `MultiPolygon` appears **zero times** in the entire
-existing suite — every positive fixture builds a `Polygon`. An implementation that began rejecting
-valid `MultiPolygon`s would keep the partition and the wrapper in perfect agreement and pass every
-other assertion here. Asserting the partition equals the wrapper is circular: the wrapper delegates
-to the partition, so they cannot disagree. The expected eligible sequence must be stated
-independently.
+⚠️ **Wrapper-equality is not a preservation oracle.** The wrapper delegates to the partition, so
+they cannot disagree; asserting equality proves nothing. The expected eligible sequence must be
+written out independently.
+
+⚠️ **Two specific drifts the positive cases exist to catch**, because eligibility is deliberately
+broad and nothing else pins it:
+
+- **Geometry type.** `_has_valid_geometry` accepts `(Polygon, MultiPolygon)`
+  (`services/reanalysis_backfill.py:100`), but **`test_reanalysis_backfill.py` contains no
+  `MultiPolygon` case at all** — every positive fixture there builds a `Polygon` via `box(...)`.
+  (`MultiPolygon` does appear elsewhere in `tests/`, in 11 files; an earlier draft of this plan
+  wrongly said the whole suite lacked it. The eligibility suite is what matters, and it does.)
+- **Station kind.** `services/reanalysis_backfill.py:18` states the rule explicitly — eligibility is
+  "every station with a valid basin polygon — no `station_kind` carve-out". Yet every positive test
+  in that module uses `make_station_config`'s default `RIVER` (`tests/conftest.py:180`), and the
+  onboarding node named above exercises a `WEATHER` station only with *invalid* geometry. So an
+  implementation could add a `RIVER`-only restriction, or a status-based one, and pass every command
+  listed here. That is why the positive cases are parameterised over all three kinds and a
+  non-operational status.
 
 **Pre-change.** RED: a test asserting that a station rejected for a self-intersecting polygon can be
 retrieved **with its reason** fails today.
