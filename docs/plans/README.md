@@ -193,6 +193,23 @@ exit criteria — Plan 212 owns that deeper screening.
   all is unattributable — which is how **2041, 2116, 2392, 2615, 2623** came to be
   `operational` with no `climatology_fallback` floor (four with no artifact of any
   model, ever) via a direct database write on 2026-09-02. Depends on 255.
+- **257** — Combined-forecast coverage is unmonitored — `DRAFT` — `_pooled` writes
+  stopped on staging at 2026-09-04 06:26Z and were found by hand four days later.
+  Nothing reported it: `forecast_freshness` read `ok` throughout — correctly, since it
+  answers "did the cycle store ANY forecast" and ~1336/day kept arriving from the other
+  five `model_id`s while a product 34 stations depend on produced nothing. The gap is
+  already written down: `_emit_forecast_freshness_record` says "No partial-coverage
+  state is tracked here (that is the explicitly out-of-scope per-product coverage
+  ledger)" — Plan 116 named it and deferred it. One `PipelineCheckType`, one emitter,
+  counts in `detail`, tests; T2 (carry the drop reason) is the half to cut first. Two
+  traps it must face: there are **five** `_emit_forecast_freshness_record` call sites,
+  not one (normal completion plus four abort/fatal paths, so a dark cycle never
+  silences its own heartbeat), hence a `cycle_completed` flag with status floored at
+  `warning` on aborts — otherwise an NWP abort reads as a combination failure; and the
+  check is **born red and stays red until Plan 226**, so D2/D3 record it without paging
+  yet. Does not touch the combiner: Plan 222's absence is correct behaviour and 226
+  (behind 252/254) is what refills the product. Scope note: 222 D7 priced this at 2
+  stations; onboarding on 09-04 multiplied it to 34 in the same window the guard landed.
 - **163** — Watchdog dead-man's switch + HTTP hardening — `READY, implemented
   (hold-at-PR)` — the mac-mini watchdog went silent ~03:54 2026-08-16 with no
   alert (the exact silence-looks-like-health shape of the 29-July 14-day outage).
