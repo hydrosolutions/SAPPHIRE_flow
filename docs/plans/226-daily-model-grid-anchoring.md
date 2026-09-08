@@ -11,6 +11,32 @@ source: 2026-08-31 — split out of Plan 222 after two review rounds showed the 
 
 # Plan 226 — anchoring, and the two defects underneath it
 
+## ⛔ HALTED — timezone work is owned elsewhere (owner decision, 2026-09-08)
+
+**Do not implement, review, or re-scope this plan.** The owner has assigned **all timezone / time-
+alignment work to the QC session**, and this plan is squarely that: it anchors the daily models'
+`valid_time` to UTC calendar days instead of the wall-clock instant a cycle happened to start
+(`06:00:01.850009` and similar).
+
+**Halt until the QC session has consolidated the work plans on this topic.** Whoever picks that up
+owns the consolidation; this plan should be folded into their view rather than advanced
+independently — advancing it separately is precisely how this family produced four divergent
+statements of one fact before.
+
+**What is NOT halted**, because it is already merged and deployed: Plan 228's D4 UTC-calendar-bucket
+machinery. Halting new work does not unwind shipped work.
+
+**Consequence to be aware of** (stated once, not an argument against the decision): the map consumer
+re-based its national danger classification onto the primary individual model because 34 stations
+have no combined forecast, and said it would reconsider once pooled points have a stable contributor
+set. This plan is what would deliver that. While it is halted, that re-basing stands.
+
+**Carried forward for whoever resumes it**: the T-M measurements below are done and valid — cadence
+604 s, the ~70-minute hindcast lookback, the 6.4 % median skill-join error, and zero observation
+staleness. They do not need re-measuring.
+
+
+
 ## Status
 
 **DRAFT** — not reviewed. Split from Plan 222 (owner, 2026-08-31) after round 2 of that plan's

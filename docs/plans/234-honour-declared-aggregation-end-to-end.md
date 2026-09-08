@@ -84,6 +84,17 @@ Artifact/run attribution was originally recorded here. The family review (2026-0
 (`flows/compute_skills.py:85-116`, `:226`, `services/onboarding.py:157`). One defect, one owner —
 two plans specifying it invited two different implementations.
 
+## ⚠️ Adjacent to halted timezone work (owner decision, 2026-09-08)
+
+All timezone / time-alignment work is owned by the QC session, and **Plan 226 is halted** pending
+their consolidation. This plan is **not** halted — its subject is which aggregation METHOD each
+channel declares (`SUM`/`MEAN`/`MAX`), not calendar alignment.
+
+But it is adjacent: it inherits Plan 228's UTC complete-bucket machinery, which it preserves
+unchanged (see A1). **If work here starts to touch bucket boundaries or `valid_time` phase rather
+than aggregation method, it has crossed into the halted topic — stop and hand it to the QC
+session.**
+
 ## Non-goals
 
 - Any change to the ForecastInterface package. See the section above.
