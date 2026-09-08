@@ -273,6 +273,29 @@ recorded separately, never conflated into one "offset" field.
 **Storage stays UTC**; `UtcDatetime` and `ensure_utc()` at boundaries are unchanged. Phase is
 recorded *alongside*, not instead.
 
+⛔ **Corollary — a stored step alone is HALF a grid, and a half grid reads as a false whole.** Any
+store that records a step without its phase records something true and incomplete, and the incomplete
+form is not inert: a bare `86400` invites every later reader to conclude "this sits on the daily grid
+at midnight", which is a claim the value does not make. **Recording a step therefore obliges
+recording a phase.** Where a store records only one, the omission is a defect to be named in that
+store, not a convention to be worked around by inference at read time — inferring the phase back from
+the timestamps is how a value that was never asserted becomes one that appears to have been.
+
+📌 **This is an established pattern here, not a new design.** `skill_scores.phase_offset_seconds` and
+`skill_diagrams.phase_offset_seconds` already exist (`db/metadata.py:1540`, `:1611`) and are written
+(`store/skill_store.py:520`), gated to `computation_version >= 2`; the skill service refuses an
+internally mixed-phase ensemble outright (`validate_homogeneous_time_step_and_phase`, Plan 228 D2).
+The skill path records the whole grid. The forecast path does not.
+
+🔴 **Measured on staging 2026-09-08, after `0.1.889` deployed Plan 241's write path:** of the 377
+`forecasts` rows the system has populated `time_step_seconds` on so far, every one stores `86400`,
+and **209 of them — 55% — sit on a non-zero, clock-derived phase** (139 `climatology_fallback` rows
+at 26658 s = 07:24:18 UTC, among others). Only 168 are genuinely at phase 0. So the half-grid is
+already the majority case in the live column, and it will stay that way until it is fixed: **the
+store-side remedy — a phase column on `forecasts` mirroring the skill tables — is Plan 254's**, and
+the disposition of the pre-existing NULL rows is Plan 248's (decided: quarantine). This plan owns
+only the statement that a step without a phase is not a grid.
+
 **Alignment is permitted only between identical grids.** Anything else requires an explicit,
 declared resample using the aggregation method the parameter already carries
 (`AggregationMethod`, `types/enums.py:178` — SUM for precipitation and reference ET, MEAN for state
@@ -307,6 +330,12 @@ This is deliberately the *convention and the type*, not the consumers:
 - Building any DHM or Nepali adapter.
 - Retrofitting phase onto historical stored rows. New writes declare it; a backfill is a separate
   decision with its own cost.
+
+  ✅ **Discharged 2026-09-08.** Plan 248 T2 took that separate decision for the one population it
+  affects — the 69 non-uniform `_pooled` rows in staging — and chose **quarantine**: they keep
+  `time_step_seconds = NULL` permanently, are neither repaired nor deleted, and Plan 248 T3 adds a
+  `NOT VALID` CHECK so new writes must declare a step while those rows are grandfathered. Nothing
+  here waits on that and nothing there waits on this.
 - Changing `UtcDatetime` or the storage timezone.
 
 ## Corrections forced by review (2026-09-05, 26 findings: 20 blockers)

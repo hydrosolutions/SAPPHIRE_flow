@@ -183,6 +183,43 @@ since 226 is anchoring-only and states the UTC-midnight NWP grid remains authori
 
 **Verification:** N/A — deployment task. The sequence is written with a rollback, and the atomicity requirement (config and artifacts move together) is stated as a gate rather than a hope.
 
+### T7 — record the phase on `forecasts`, not just the step
+
+**Outcome:** a stored forecast records the whole grid it sits on, so `forecasts` stops asserting half
+of one. Assigned here 2026-09-08 by the time-grid track owner; Plan 252 states the convention (a step
+without a phase is not a grid) and Plan 248 owns the pre-existing rows — neither owns the column.
+
+**Why it belongs in this plan and not in 248:** 248 tightens the column that exists and has decided
+to quarantine, not repair, the rows that predate it. Writing a *correct* phase requires the declared
+grid that T4 threads through the call sites; inferring it back from the timestamps at write time is
+precisely the read-time inference Plan 252's corollary forbids. So the column cannot be written
+honestly before T4, which puts it here.
+
+🔴 **This is live, not anticipated.** Measured on staging 2026-09-08 after `0.1.889`: of the 377
+`forecasts` rows the system has populated `time_step_seconds` on, all store `86400` and **209 (55%)
+sit on a non-zero clock-derived phase** — 139 `climatology_fallback` rows at 26658 s (07:24:18 UTC)
+among them. Every one of those rows currently reads as "daily grid" and none of them says where the
+day starts.
+
+**In:** `db/metadata.py` (`forecasts.phase_offset_seconds`, nullable, additive migration),
+`store/forecast_store.py` write and read paths, `types/forecast.py`. Mirror the existing precedent
+exactly — `skill_scores.phase_offset_seconds` / `skill_diagrams.phase_offset_seconds`
+(`db/metadata.py:1540`, `:1611`; written at `store/skill_store.py:520`) — including its nullability,
+so an ensemble with no `valid_time` stays representable. Depends on T4.
+
+**Out:** backfilling historical rows (Plan 248 T2 decided: quarantine — do not repair, do not
+delete); `VALIDATE`-ing 248 T3's constraint; any change to `time_step_seconds` itself.
+
+**Pre-change:** insert a forecast whose `valid_time`s sit at a non-zero offset, read it back, and show
+that nothing distinguishes it from a midnight-anchored one. The red-first test must fail because the
+phase is *absent*, not because a signature changed.
+
+**Verification:** `uv run pytest tests/integration/store/test_forecast_store.py tests/unit/store/` —
+a forecast written on a non-zero-phase grid reads back carrying that phase by value, not by
+dataclass default; a NULL stays NULL rather than defaulting to 0. ⛔ **0 must never be the default
+for an unknown phase** — that is the same false-`FULL` failure Plan 253 had to undo on
+`input_quality`, and it is worse here because 0 is a legitimate value.
+
 ## Exit gates
 
 ```bash
@@ -201,6 +238,8 @@ Five conditions hold in addition:
 3. **No silent upsampling.** The refusal is locked by a test, not only the success path.
 4. **A grid-mismatched artifact is refused**, not used.
 5. **Plan 252 has landed**, and Plan 234's declaration is available to consume.
+6. **A forecast stored on a non-zero-phase grid reads back carrying that phase**, and an unknown
+   phase reads back NULL — never 0.
 
 ## Dependency graph
 
@@ -212,7 +251,8 @@ Five conditions hold in addition:
     {"id": "T3", "phase": 2, "depends_on": ["T1", "T2"]},
     {"id": "T4", "phase": 3, "depends_on": ["T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T3"]},
-    {"id": "T6", "phase": 4, "depends_on": ["T4", "T5"]}
+    {"id": "T6", "phase": 4, "depends_on": ["T4", "T5"]},
+    {"id": "T7", "phase": 4, "depends_on": ["T4"]}
   ]
 }
 ```

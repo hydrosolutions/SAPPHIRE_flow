@@ -492,9 +492,20 @@ exit criteria — Plan 212 owns that deeper screening.
   dropped a model's `AT_MOST`/`min_future_steps` declaration, so the resolver
   could never see it; T4 then persists a forecast's cadence, which T2/T3 make
   reachable. PR #258.
-- **248** — Backfill and tighten `forecasts.time_step_seconds` — `DRAFT` —
-  BLOCKED: the column does not exist in staging until 241 deploys, and the
-  disposition of the 69 non-uniform rows depends on 252/254.
+- **248** — Backfill and tighten `forecasts.time_step_seconds` — `DRAFT`, **no
+  longer blocked** — 241 is merged AND deployed (staging on `0.1.889`), so the
+  column exists and the running system now populates it. The earlier note that
+  "the disposition of the 69 non-uniform rows depends on 252/254" was **wrong**:
+  verified against main 2026-09-08, 252 hands that decision off in its own
+  Non-goals, 254 never mentions stored rows, and 226 excludes backfill twice, so
+  T2 was waiting on nobody. T2 has now DECIDED on this plan's own authority —
+  **quarantine**: the 69 keep `time_step_seconds = NULL` permanently, are neither
+  repaired (they are multi-phase, so no honest step exists) nor deleted (they are
+  the only surviving record of what `_pooled` wrote before Plan 222's guard took
+  it dark, which is Plan 257's whole argument), and T3 grandfathers them with a
+  `NOT VALID` CHECK instead of `SET NOT NULL`. ⛔ Still awaiting owner READY, and
+  T1 still needs one Claude and one Codex review — the 2026-09-07 approval was
+  for a statement that no longer exists.
 
 ## Deferred
 
