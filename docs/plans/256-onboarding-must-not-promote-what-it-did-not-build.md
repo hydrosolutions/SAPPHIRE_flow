@@ -78,6 +78,19 @@ cancelled mid-training, with **no Prefect flow running at that instant** and **z
 on 09-02 or 09-03**. 110 of them share the identical `updated_at`
 `2026-09-02 15:15:51.638536+00` — one transaction.
 
+⭐ **A third, independent witness pins the same minute.** The observation-ingest health check records
+how many stations it polled, every five minutes:
+
+| checked_at | status | stations_polled |
+|---|---|---|
+| 2026-09-02 15:15:00 | ok | **37** |
+| 2026-09-02 15:20:00 | warning | **148** |
+
+The fleet the ingest flow sees jumped from 37 to 148 in the interval containing
+`15:15:51.638536`, and `observation_ingest_fetch` has been `warning` for 1631 consecutive runs since
+— one of the newly-added stations returns `no_data`. That check has minute resolution and no
+dependence on the dumps, the audit log or `updated_at`.
+
 For 106 of the 111 that write was benign; they would have passed the gate. For five it asserted
 something untrue.
 
@@ -238,20 +251,37 @@ BAFU LINDAS serves **real-time only** — historical series cannot be back-fetch
 of data they will ever have, and the resulting gap is **permanent and unrecoverable**. The honest
 label would be bought with the very history they need to become viable.
 
-The options, for the owner:
-1. **Leave `operational`**, accept the label is wrong for now, and let Plan 255's report carry the
-   truth until they have accumulated enough record to onboard properly. Costs nothing; the two
-   produce no forecasts either way.
-2. **Decouple ingest from `station_status`** so an `onboarding` station is still polled, then demote.
-   The correct fix, and a prerequisite for demotion ever being safe — but it is a behaviour change to
-   the ingest path and belongs in its own task or plan.
-3. **Decommission** them, if they are not viable BAFU targets. Ends the question, loses the stations.
+✅ **DECIDED 2026-09-08 — leave them `operational` so observation collection continues.** The owner's
+words: *"we want to keep collecting station observations. leave operational if it costs nothing so we
+can collect data."* Accumulating the record is worth more than a correct label on two stations that
+produce no forecasts either way. Revisit once ingest is decoupled from `station_status`, or once they
+have enough history to onboard properly — whichever comes first.
 
-**In.** A written decision recorded here.
-**Out.** No database write under this task until option 2 lands or the owner picks 1 or 3.
+**The "costs nothing" premise was checked, not assumed.** The forecast cycle already emits a
+`FORECAST_STATION_DARK` record per station per cycle
+(`flows/run_forecast_cycle.py:846`), and on staging it names exactly these stations,
+`status = critical`, `reason = all_models_failed`, 20 cycles running:
 
-**Verification.** N/A — decision task. Whatever is chosen, the resulting state must be reflected in
-the Plan 255 report rather than left implicit.
+| station | dark records | |
+|---|---|---|
+| 2116, 2392, 2615, 2623 | 20 each | every cycle |
+| 2041 | 8 | the 00Z cycles, where its single model also fails |
+
+So the cost of leaving them operational is 4–5 `critical` rows per cycle. **Nothing pages on them** —
+`ops/watchdog.py` probes only `bafu_forecast_freshness`, `bafu_observation_freshness` and
+`forecast_freshness`. The premise holds, and the decision stands.
+
+⚠️ But note what that means: **the system detects this precisely, every six hours, and no one sees
+it.** That is the same silence-looks-like-health shape as the July outage. Surfacing
+`FORECAST_STATION_DARK` is small and belongs with Plan 257's watchdog-coverage question rather than
+here — 257 covers a dark *product*, this is a dark *station*, and the two should not collide.
+
+**In.** A written decision recorded here. Nothing else.
+**Out.** No database write. No status change to 2392 or 2623.
+
+**Verification.** N/A — decision task, recorded above. The Plan 255 report must still place both
+stations under **Degraded** with `INSUFFICIENT_OBSERVATION_HISTORY`, so the label being deliberately
+wrong stays visible rather than becoming folklore.
 
 **Pre-change.** N/A.
 

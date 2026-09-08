@@ -36,6 +36,20 @@ container is recreated:
 
 An operator finishing an onboarding run has no artefact that answers "is this fleet ready?".
 
+⭐ **There is one precedent worth building on rather than duplicating.** The forecast cycle already
+emits a per-station, per-cycle `FORECAST_STATION_DARK` record
+(`flows/run_forecast_cycle.py:846`) carrying a machine-readable `reason` and the station's assigned
+models — on staging it names exactly the five stations this plan exists for, `critical`,
+`all_models_failed`, every cycle. That is the right shape: per-station, reasoned, persisted, not a
+log line. Two lessons for this plan:
+
+1. **Match its vocabulary** — the outcome reasons in T1 should sit alongside
+   `FORECAST_STATION_DARK`'s, not invent a parallel scheme for the same conditions.
+2. **Persisting is not surfacing.** `ops/watchdog.py` probes only three check types and that is not
+   one of them, so the system has been correctly reporting these five stations every six hours to
+   nobody. A report that is written and unread fails in the same way — hence T2's requirement that
+   it be a run artefact an operator is handed, not another row to go looking for.
+
 **This is not hypothetical.** On 2026-09-08 establishing the state of a 148-station fleet required
 reading `flow_run_state` messages, clustering `stations.updated_at` to the microsecond, correlating
 `model_artifacts.promoted_at` against a cancellation timestamp, and extracting the `stations` table
