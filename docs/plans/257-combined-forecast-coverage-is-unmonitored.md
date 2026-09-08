@@ -97,7 +97,7 @@ The 34 matches the database measurement exactly. The 101 arise because
 stoppage.** Different defects, different fixes, and this plan monitors rather than fixes either.
 
 🪤 **`pooled_insufficient_contributors` never fires for the 101**, because
-`build_combined_forecasts` returns at `:308-310` before `combine_ensembles_pooled` is entered. They
+`build_combined_forecasts` returns at `:397` before `combine_ensembles_pooled` is entered. They
 are **flow-visible, service-silent**. That event is not dead code, though:
 `services/skill/combined_skill.py:111` calls the combiner without the outer gate, and the
 per-parameter `eligible` filter can drop below the floor even when three contributors arrive.
@@ -123,7 +123,7 @@ operators to ignore it — which is the same failure this plan exists to fix, on
 - **D1 — record the `n_models` DISTRIBUTION, not an eligible/written pair.** ⭐ This supersedes the
   original recommendation, which was wrong. Count stations by
   `len(multi_result.combinable_results)` — the same property `build_combined_forecasts` gates on
-  (`services/forecast_combination.py:308-310`), read off `MultiModelForecastResult.combinable_results`
+  (`services/forecast_combination.py:397`), read off `MultiModelForecastResult.combinable_results`
   (`services/run_station_forecast.py:127-131`) — and record the histogram alongside how many got a
   `_pooled` row.
 
@@ -175,11 +175,23 @@ operators to ignore it — which is the same failure this plan exists to fix, on
   is already available from the `forecasts` table.
 - **D5 — how does an aborted cycle report coverage?** ⚠️ This is the trap in T1.
   `_emit_forecast_freshness_record` has **five** call sites, not one
-  (`flows/run_forecast_cycle.py:1764, 2387, 2677, 3515, 3615`): normal completion, no-operational-
+  (`flows/run_forecast_cycle.py:1764, 2387, 2677, 3525, 3625`): normal completion, no-operational-
   stations early return, NWP-fetch abort, the group-store fatal, and the fatal-exit helper — by
-  design, so "a dark cycle never silences its own heartbeat" (`:1754-1761`; note that docstring says
-  "all four", which is now stale). A coverage check that emits only at `:3615` goes silent on exactly
-  the cycles that most need explaining. But an aborted cycle has **no meaningful eligibility count**
+  design, so "a dark cycle never silences its own heartbeat" (`emit_freshness_on_fatal_exit`,
+  `:1743`). A coverage check that emits only at `:3625` goes silent on exactly the cycles that most
+  need explaining.
+
+  ⚠️ **Not all four non-completion sites are alike, and one blanket rule is wrong** (independent
+  review, 2026-09-08):
+  - **No operational stations** (`:2387`) is NOT an aborted cycle — it returns normally with
+    `ForecastCycleHealth.HEALTHY`. Marking it `cycle_completed=false` would be simply false; it is a
+    completed cycle with nothing to do, and belongs with the `PRIMARY` case below.
+  - **The group-store fatal** (`:3525`) occurs AFTER the whole station-combination loop, so its
+    counts are real and measured. Capping it at `warning` would downgrade a genuine zero-of-34
+    outage. It should carry its counts and its true status.
+  - Only the **NWP-fetch abort** (`:2677`) and the **fatal-exit helper** (`:1764`) are true
+    "no station work ran" cases where the counts are meaningless.
+  The `warning` floor therefore applies to those last two only. But an aborted cycle has **no meaningful eligibility count**
   — no station work ran — and reporting an all-zero histogram would read as "no pool was
   possible", which is a different and misleading claim from "the cycle never got that far".
   Recommend: emit at all five sites, with `detail` carrying an explicit
@@ -196,7 +208,8 @@ operators to ignore it — which is the same failure this plan exists to fix, on
 
 Add `FORECAST_COMBINATION_COVERAGE = "forecast_combination_coverage"` to `PipelineCheckType`
 (`types/enums.py:193`) and a sibling emitter to `_emit_forecast_freshness_record`
-(`flows/run_forecast_cycle.py:720-787`), following that function's existing conventions exactly:
+(`flows/run_forecast_cycle.py:720-787`; its five call sites at `:1764, 2387, 2677, 3525, 3625`),
+following that function's existing conventions exactly:
 
 - **Skip records for explicit-`cycle_time` runs** (backfill/replay) for the reason already documented
   there: `fetch_recent` orders by `checked_at`, so a backfill written "now" would become the latest
@@ -206,13 +219,21 @@ Add `FORECAST_COMBINATION_COVERAGE = "forecast_combination_coverage"` to `Pipeli
   "stations_by_n_models": {"0": int, "1": int, "2": int, "3+": int}, "stations_written": int}`
   (D1). `stations_eligible` is derivable as the sum of the `>= 2` buckets and is NOT stored
   separately — one number that can disagree with the histogram is worse than none.
-- Called from all five sites that already emit `FORECAST_FRESHNESS` (D5), with
-  `cycle_completed=False` at the four abort/fatal sites.
-- Status per D2, floored at `warning` when `cycle_completed` is false (D5).
-- When the configured strategy is `PRIMARY`, emit **`ok` with an all-zero histogram** — under
-  PRIMARY no combined product is expected and a red light would be a false alarm. Do not skip the
-  record entirely; a missing row is indistinguishable from a dead flow.
-- Fix the now-stale "all four" count in the `:1754-1761` docstring while touching these call sites.
+- Called from all five sites that already emit `FORECAST_FRESHNESS`, with `cycle_completed=False`
+  at the **two** true no-work sites only (`:2677`, `:1764`) — see D5 for why the other two are not
+  aborts.
+- **Status precedence, evaluated in this order** — the rules are not independent and an earlier
+  revision left `PRIMARY` + `cycle_completed=false` ambiguous (independent review, 2026-09-08):
+  1. `PRIMARY` configured → **`ok`**, all-zero histogram, whatever else is true. No combined
+     product is expected, so no other rule can make it red. Do not skip the record entirely; a
+     missing row is indistinguishable from a dead flow.
+  2. `cycle_completed=false` → floor at **`warning`** (never `critical`): the counts are meaningless
+     because no station work ran, and the cycle's own abort is already `critical` on
+     `forecast_freshness`.
+  3. Otherwise → status per D2 on the measured counts.
+- 🪤 Do NOT "fix" the `emit_freshness_on_fatal_exit` docstring's "all four" (`:1743`). An earlier
+  revision of this plan called it stale at five; **it is correct** — that helper is itself the fifth
+  site, and "all four" names the four that predate it.
 
 **Verification:** unit tests over the status mapping at each boundary (eligible=0; eligible>0 and
 written=0; partial; full; PRIMARY; and `cycle_completed=False` with eligible>0 asserting it does
@@ -225,14 +246,14 @@ adjacent one.
 ### T2 — carry the reason (SECOND HALF, cut this first if the plan must shrink)
 
 T1's histogram says a station had 3 contributors and no row. It does not name the gate that dropped
-it — and the persistence-boundary gates (`pooled_single_timestamp_not_persisted`,
-`pooled_non_uniform_spacing_not_persisted`, `services/forecast_combination.py:355-376`) are
+it — and the persistence-boundary gates (`pooled_single_timestamp_not_persisted` `:445`, `pooled_non_uniform_spacing_not_persisted` `:461`,
+and `no_qc_rules_for_step_not_persisted` `:493` — the last added by PR #264) are
 indistinguishable from the intersection gate in the histogram alone.
 
 ⭐ **This is much smaller than first scoped.** The original T2 proposed changing
 `build_combined_forecasts`' return type to report the gate. That is unnecessary: **the events
 already exist and already carry what is needed** — `pooled_empty_intersection` fires per
-station/parameter at `:129-133`, its siblings at `:87-91` and `:356-376`, and the flow's own
+station/parameter at `:148`, its siblings at `:96`/`:106` and `:445`/`:461`/`:493`, and the flow's own
 `combined_forecast_skipped` carries `n_models`. Nothing aggregates them into a record that survives
 a redeploy; that is the entire gap.
 
@@ -242,7 +263,7 @@ cycle, not a signature change. No return type moves, and **no change whatsoever 
 written** (Plan 222's contract, out of scope).
 
 ⚠️ Note the asymmetry T1's histogram already exposes and T2 must not paper over: the `<2` path
-emits **no service-level event at all** (`:308-310` returns before the combiner is entered), so
+emits **no service-level event at all** (`:397` returns before the combiner is entered), so
 `drop_reasons` will legitimately not account for the 101. The histogram is what covers them; the two
 fields are complementary and neither is sufficient alone.
 
