@@ -196,8 +196,29 @@ taken while implementing Plan 241. The two plans are already in sync with Plan 2
 record that `store/forecast_store.py` no longer derives `native_step_seconds` for a row with a
 persisted non-NULL cadence.
 
-Plan **226** ("The daily models label calendar-day quantities with wall-clock instants", DRAFT,
-`depends_on: [222, 228, 235]`) owns the anchoring, and is sequenced behind 252/254.
+Plan **226** ("The daily models label calendar-day quantities with wall-clock instants", DRAFT)
+owns the anchoring.
+
+🔴 **CORRECTION — 226 is NOT sequenced behind 252/254, and nobody owns the interaction.** Its
+`depends_on` is `[222, 228, 235]`; it does not reference 252 or 254. And BOTH of those exclude it —
+252's and 254's scope lines each say *"NOT Plan 226's anchoring"*. The "sequenced behind" claim comes
+from `257:179` and is wrong; an earlier revision of this section repeated it. Verified against the
+frontmatter, not the prose.
+
+⚠️ **The gap bites immediately (sapphire-flow-f2, verified here): a DOUBLE RETRAIN.** 226 is written
+throughout in terms of MIDNIGHT buckets, while 252 sets the Swiss daily grid to `(86400 s, 82800 s)`
+— 23:00Z→23:00Z, explicitly NOT UTC midnight (`252:119`) — and states that changing the boundary
+**requires retraining**, owner-confirmed (`252:128`). Land 226 first and the models are anchored to
+midnight and retrained, then moved to 23:00Z and retrained AGAIN.
+
+🔴 **And the two plans CONTRADICT each other on who owns that retrain:** `252:135` says *"Sequencing
+the retrain belongs with Plan 226, which already owns"* it, while `254:182` says *"No plan currently
+owns this: `226:216` excludes recomputation ... so the Swiss retrain has no home until this task
+creates one."* Both cannot be true. Whoever owns the time-grid family must settle it.
+
+**Suggested order (f2's, and it avoids the double retrain):** file the FI issue (longest lead time,
+external) → review and READY 252 → 226 anchors ONCE, to the settled boundary → 254 execution plus the
+Swiss retrain.
 
 ### 2. ⛔ T2's DEPENDENCY IS VACUOUS — verified against all three plans, not inferred
 
@@ -259,6 +280,50 @@ combination contributors — `MultiModelForecastResult.combinable_results`
 are real but irrelevant to pooling. **The contributor set is three models, and
 `linear_regression_daily` alone sits off-phase from the midnight-anchored NWP pair** — max overlap
 across the three is 2, so the intersection is empty. The conclusion is unchanged; the cast is smaller.
+
+#### Measured live 2026-09-08 07:49Z — TWO populations, and only one of them changed
+
+```
+forecast_cycle.combined_forecast_skipped:
+    5  n_models=0
+  101  n_models=1     <- never reach the combiner: insufficient-lookback population
+   34  n_models=3     <- reach it with 3 contributors, dropped on empty intersection
+
+forecast_combination.pooled_empty_intersection:  34  (contributor_count=3)
+```
+
+Both populations ARE logged at the FLOW level — `forecast_cycle.combined_forecast_skipped` fires for
+each, carrying `n_models`. They differ at the SERVICE level:
+
+- the **101** return early at `services/forecast_combination.py:308-310`
+  (`if len(combinable_results) < 2: return []`) BEFORE `combine_ensembles_pooled` is entered, so no
+  `forecast_combination.*` event exists for them at all;
+- the **34** get all the way in and emit `forecast_combination.pooled_empty_intersection` (line 130).
+
+So: flow-visible, service-silent (sapphire-flow-f2's refinement — my earlier "invisible by
+construction" was half right). 📌 `pooled_insufficient_contributors` (:86-92) is therefore never seen
+for the 101, because the outer return fires first. It is NOT dead code, though: it sits inside
+`combine_ensembles_pooled`, which `services/skill/combined_skill.py:111` also calls WITHOUT that outer
+gate, and its own `eligible` filter can drop contributors below the floor even when 3 arrive.
+
+🔴 **Neither population survives a redeploy** — all of this lives in container logs, while the DB
+records only the ABSENCE of rows, which looks identical for all three gates. That, rather than "a
+product went dark", is the real argument for Plan 257 existing, and it is why this was re-derived
+twice.
+
+🔴 **Do NOT call the lookback shortfall a cause of the STOPPAGE** (sapphire-flow-f2's correction,
+accepted). Those 101 stations were never pooling — before 09-04 only 2-3 stations pooled at all,
+because `linear_regression_daily`/`nwp_regression` were already failing there with
+`Insufficient lookback: need 7 rows, got 6` / `INPUT_DATA: insufficient lag history: got 6, need 7`.
+That is the pre-existing and CORRECT `<2 contributors` gate. What changed on 09-04 is only the 34:
+the morning's onboarding gave them working artifacts (`lr_daily` 3→37, `nwp_regression` 3→36 at the
+06:00 cycle, so pooled jumped 3→36) and the guard landed hours later and took exactly that new
+population dark. **The lookback bug explains the small denominator; the guard explains the stoppage.
+Different defects, different fixes.**
+
+⛔ **This also kills the original dead end for good:** "no `forecast_combination.*` events appear, so
+combination is not running" — they appear **34x per cycle**. That conclusion came from logs a
+redeploy had already destroyed. It has now been re-derived twice; do not do it a third time.
 
 ⚠️ **Scope is 34 stations, not the 2 Plan 222 D7 priced.** Station onboarding on 2026-09-04 multiplied
 the accepted cost ~17x in the same window the guard landed, and `forecast_freshness` reads `ok`
