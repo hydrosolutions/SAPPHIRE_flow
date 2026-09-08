@@ -176,12 +176,27 @@ Measured on the mac-mini `sapphire` database, 2026-09-08:
 | at `computation_version = 2` | **139 712** |
 | below version 2 — D3's entire target population | **0** |
 | `computed_at` range | **2026-09-04 07:52 → 09:51 UTC** (a two-hour window) |
+| `hindcast_forecasts` rows | **715 103** |
+| their `created_at` range | **2026-09-04 07:52:24 → 09:51:46 UTC** — the SAME window |
+
+**The HINDCASTS were regenerated too, not just the scores** *(added after independent review, which
+correctly objected that a score's version says nothing about which hindcast fed it)*. D3 required
+recomputing hindcasts **and** scores. There are no surviving pre-09-04 hindcasts: all 715 103 rows
+were written in the same two-hour window, starting nine seconds before the first score. That is a
+`run-hindcast` → `compute-skills` pipeline, not a scores-only rerun.
 
 **Why this is "already done" and not "the marker is broken".** Version 2 is causally downstream of
 the fix, not an arbitrary label: the bump `_COMPUTATION_VERSION = 1 → 2` is **this plan's own commit
 `8f87eb68`** ("resolve Plan 228 review findings"), landed on main via `46467336` (PR #246), in the
 same change that ships migrations 0050/0051 and the resampling correction. A row can therefore only
 carry version 2 if the code that wrote it contained the fix. Every surviving row does.
+
+**And the same image wrote both halves.** `_COMPUTATION_VERSION` lives in
+`services/skill/service.py`; the resampling correction lives in `services/hindcast.py` — the same
+distribution. A deployment cannot have one without the other, so v2 scores written nine seconds
+after their hindcasts establish that the hindcast half ran on fixed code as well. *(Image
+timestamps cannot show this: no image built between 228's merge and that window survives in
+`docker images`. The version constant is the durable evidence, not the image.)*
 
 So the original sequence — *mark every score predating the fix, then recompute* — describes work
 that was performed on 2026-09-04 by whoever ran that recompute. **Scheduling it now would be a
@@ -201,15 +216,38 @@ This matters because a plan that says "already done" without saying how is one r
 being wrong. **Anyone re-establishing a baseline should confirm the version distribution first
 rather than trusting this section.**
 
+### ⚠️ D3's empty population is a SNAPSHOT PROPERTY, not an invariant
+
+*(Independent review, 2026-09-08.)* "No forward migration removes the rows" is true but narrower
+than it sounds. **D3 can become live again**, at least three ways:
+
+- Migration `0001`'s **downgrade drops both skill tables outright**
+  (`alembic/versions/0001_v0_schema.py:857`).
+- A **backup restore** can reinstate a pre-2026-09-04 population.
+- Migration `0052` **deliberately preserves compatibility with a previous image that can write new
+  v1 rows on the current schema** (`alembic/versions/0052_...py:76`) — so a rollback can create
+  sub-v2 rows without any restore at all.
+
+**Re-measure before concluding D3 is done.** One query settles it:
+`SELECT computation_version, count(*) FROM skill_scores GROUP BY 1;`
+
 ### ⚠️ The constraint that OUTLIVES D3 — `publish_generation`, never `mark_stale`
 
-D3 is finished; this is not. **Plans 226 and 234 each end in a full recompute**, and the same trap
-waits for both:
+D3 is finished; this constraint is not, and it applies to **any future recompute** — including the
+one that follows a rollback or restore per the section above.
+
+*(Corrected after independent review: an earlier draft claimed "Plans 226 and 234 each end in a full
+recompute". They do not. Plan 226 is DRAFT and **explicitly excludes** recomputing stored forecasts
+or hindcasts (`docs/plans/226-...:216`); Plan 234 is DRAFT and has **no recompute task or exit
+gate** (`docs/plans/234-...:96`). The constraint stands on its own merits, not on a dependency that
+does not exist.)*
 
 `mark_stale` is a real `UPDATE` (`store/skill_store.py`), and `sapphire_worker` holds
 **`GRANT INSERT` only** (`docker/bootstrap-roles.sql:180-181`) — no `UPDATE` grant exists anywhere in
-the repo. It has zero production callers, and its tests run as the testcontainer superuser, so the
-gap has never been exercised. The first real call fails with a permission error.
+the repo. It has zero production callers. *(Correction: an earlier draft said the gap "has never been
+exercised" — it now is, by a real `sapphire_worker` integration test,
+`tests/integration/db/test_role_bootstrap.py:766`. The permission conclusion is unchanged; the claim
+about test coverage was stale.)* The first real call would fail with a permission error.
 
 **Mark via `publish_generation` (Plan 235's append-only path). Never `mark_stale`. Do not add an
 UPDATE grant.**
