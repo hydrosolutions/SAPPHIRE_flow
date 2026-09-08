@@ -150,14 +150,24 @@ exit criteria — Plan 212 owns that deeper screening.
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 253 landing first.
-- **252** — A time grid is a step AND a phase — `DRAFT, unreviewed` — **conventions
+- **258** — A value is a point or an interval — `DRAFT` — **split out of 252 on
+  2026-09-08**, after an independent review returned eight blockers of which three
+  belonged to this one concern and none to grids. Owns CF `cell_methods` as the
+  temporal-support vocabulary, the period-ending convention (which binds interval
+  data only — the blanket form was wrong for every instantaneous channel), and the
+  verification of a declaration against the source. ⛔ Four open decisions first,
+  the blocking one being **at what cardinality** support is recorded: the same
+  canonical parameter has different support per product — MeteoSwiss `TabsD` is a
+  daily mean while ECMWF `2t` is instantaneous, and both map to `temperature`, so
+  one value per parameter cannot express both. Its verification task is blocked
+  upstream: the Gateway strips CF attributes, and Plan 243's in-flight ask covers
+  `units` only.
+- **252** — A time grid is a step AND a phase — `DRAFT, reviewed twice` — **conventions
   and types only** after a review returned 26 findings (20 blockers) and forced a
   split. Nepal Time is UTC+05:45, so hourly NPT and hourly UTC grids never share a
   timestamp; converting to UTC relabels instants without moving them onto a grid and
-  makes the offset invisible. Adopts **CF `cell_methods`** as the temporal-support
-  type — `time: point` vs `time: sum` — which our upstream files already carry and our
-  adapters discard entirely. Narrows period-ending to interval data (a stage reading
-  is a point, not an interval). Declares `TimeGrid(step, phase)`, a per-deployment
+  makes the offset invisible. ⚠️ **CF `cell_methods` and period-ending left this plan
+  on 2026-09-08 for Plan 258** — it is now grids only. Declares `TimeGrid(step, phase)`, a per-deployment
   boundary that no deployment may default into, and **supersedes Plan 228 D4** by owner
   disposition. Nepal is provisionally 18:00Z — reached both by rounding civil midnight
   and, independently, by SnowMapper's UTC+6 solar day. ⛔ **Correction (2026-09-08):** the

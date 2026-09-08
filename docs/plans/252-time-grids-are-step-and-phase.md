@@ -2,10 +2,10 @@
 status: DRAFT
 created: 2026-09-04
 plan: 252
-title: A time grid is a step AND a phase — and interval data is period-ending
-scope: CONVENTIONS AND TYPES ONLY. Adopt CF `cell_methods` as the temporal-support type, narrow period-ending to interval-valued data, define `TimeGrid(step, phase)`, declare the operational boundary per deployment, read CF attributes at ingest, and supersede Plan 228 D4. Explicitly NOT the phase-aware execution across the resampler call sites (TWELVE as of 2026-09-08, not seven — re-inventory, do not cite a count), the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT the daily-model anchoring (Plan 254 T8, absorbed from the superseded Plan 226), NOT Plan 234's aggregation threading.
+title: A time grid is a step AND a phase
+scope: CONVENTIONS AND TYPES ONLY, and GRIDS ONLY. Define `TimeGrid(step, phase)`, declare the operational day boundary per deployment, audit the input adapters against it, and propose the supersession of Plan 228 D4. Explicitly NOT temporal support (point vs interval), CF `cell_methods`, or the period-ending convention — all Plan 258, split out 2026-09-08. Explicitly NOT the phase-aware execution across the resampler call sites (TWELVE as of 2026-09-08, not seven — re-inventory, do not cite a count), the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT the daily-model anchoring (Plan 254 T8, absorbed from the superseded Plan 226), NOT Plan 234's aggregation threading.
 depends_on: []
-blocks: [254]
+blocks: [254, 258]
 source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 253; investigation showed the codebase treats a time step as a scalar throughout
 ---
 
@@ -233,11 +233,10 @@ zones for display. That is the same fixed-offset-for-data, DST-for-display split
 independently. *Confidence: from knowledge of FEWS, not verified against its documentation; treat as
 a starting point, not a citation.*
 
-**OD-4 — forecast `valid_time` is period-ending**, consistent with OD-1. The daily bucket above is
-stamped `18:00Z` on its closing day. The tempting alternative — stamping "the date it is about",
-e.g. `2026-09-05 00:00Z` — is rejected: that instant is *inside* the window it labels and corresponds
-to no boundary, which is precisely the defect **Plan 254 T8** exists to correct (absorbed from
-Plan 226, which is now `SUPERSEDED`).
+**OD-4 — MOVED to Plan 258.** Forecast `valid_time` labelling depends on whether the value is a point
+or an interval, which is Plan 258's subject. The previous text here labelled forecast `valid_time`
+period-ending *without qualification*, which an independent review correctly flagged as contradicting
+this plan's own later narrowing. Plan 258 states it once, by support.
 
 **OD-5 — published data carries explicit interval bounds, not just a stamp.** A consumer receiving
 `2026-09-05 18:00Z` alone must know our rounding rule, our period convention and our timezone
@@ -274,21 +273,14 @@ the 345-minute NPT offset exactly (23 × 15). A 10-minute source does not, even 
 marks, because 10 does not. **This is what to request from DHM: 15-minute data on `:00/:15/:30/:45`.**
 Not "sub-hourly", and specifically not 10-minute, which is worse than 15 in a way no one would guess.
 
-**OD-1 — every input series is expected in the PERIOD-ENDING scheme.** A value stamped `16:00` is the
-quantity for `15:00 → 16:00`. This is now the repo-wide convention for ingested data, not a
-per-dataset finding. It matches what M-D3 already established for DHM and ERA5-Land, so it ratifies
-existing practice rather than changing it.
+**OD-1 — MOVED to Plan 258.** The period-ending convention binds interval-valued data only, and the
+point/interval distinction is Plan 258's subject. The blanket form of this rule, and the narrowing
+that later contradicted it, both live there now — stated once.
 
-Two consequences, and they are the point of writing it down:
-- An adapter for a source that publishes **period-beginning** must convert at the boundary and
-  record that it did. It must not pass the timestamps through and leave the discrepancy to be
-  discovered downstream as a one-hour bias.
-- A source whose convention is **unknown** is not ingested on an assumption. It is either resolved
-  with the provider or the series is marked as carrying an unresolved ±1 step phase uncertainty.
-
-⛔ **Period convention and timezone phase are INDEPENDENT.** Getting the 45 minutes right and the
-labelling convention wrong yields a silent one-hour error stacked on the offset. They must be
-recorded separately, never conflated into one "offset" field.
+⛔ **Period convention and timezone phase are INDEPENDENT, and only the phase is this plan's.** Getting
+the 45 minutes right and the labelling convention wrong yields a silent one-hour error stacked on the
+offset. They must be recorded separately, never conflated into one "offset" field. This plan owns the
+phase; Plan 258 owns the convention.
 
 ## Design
 
@@ -316,6 +308,21 @@ accepted approximation, not an oversight.
 
 **Storage stays UTC**; `UtcDatetime` and `ensure_utc()` at boundaries are unchanged. Phase is
 recorded *alongside*, not instead.
+
+📐 **Phase is measured from UTC midnight, and that is a CHOICE this plan makes explicit.** The existing
+code derives phase by modulo against the **Unix epoch** (`services/training_data.py:237`,
+`services/skill/service.py`). For any step that divides 24 hours the two agree, because the epoch
+began at a UTC midnight — and every step we run today (hourly, 3-hourly, 6-hourly, daily) does divide
+it. For a step that does **not** divide 24 h (say 7 h, or 90 minutes) they diverge, and a value that
+means one thing in config would mean another in the resampler.
+
+**Rule:** the declared boundary is a time-of-day and is therefore **midnight-referenced**; the
+implementation must convert to whatever reference the resampler uses rather than assume they match.
+**Constraint:** a step that does not divide 24 h is **rejected at config load** until someone needs
+one, at which point the reference must be settled deliberately rather than discovered. `0 < phase <
+step` remains required; a phase finer than the step's own resolution (e.g. seconds on a daily grid)
+is rejected — "finer than the step's resolution" means a phase that is not an exact multiple of the
+smallest unit the step is expressed in.
 
 ⛔ **Corollary — a stored step alone is HALF a grid, and a half grid reads as a false whole.** Any
 store that records a step without its phase records something true and incomplete, and the incomplete
@@ -420,34 +427,13 @@ once training, operational assembly, scoring, NWP handling, fetch bounds **and a
 same declared grid. Until that parity holds, phase-zero remains correct. The execution half is
 Plan 254.
 
-**OD-10 — CF `cell_methods` is the temporal-support type (2026-09-05).** The review's blocker was that
-nothing distinguishes instantaneous from interval data, so the interpolation rules were not
-representable. CF already supplies the vocabulary, and **our upstream data already carries it** —
-confirmed by the SnowMapper modeller: `time: point` for SWE and snow depth, `time: sum` for runoff,
-alongside `units` and `long_name`, int16-packed with CF `scale_factor`.
+**OD-10 — MOVED to Plan 258.** Adopting CF `cell_methods` as the temporal-support vocabulary, the
+support table, and the fact that we currently discard all of it are Plan 258's, together with the
+three blockers an independent review raised against them on 2026-09-08: the wrong cardinality (the
+same canonical parameter has different support per product), an unsafe fail-closed migration, and an
+unrepresentable "unknown" state.
 
-| `cell_methods` | Temporal support | Period-ending? | Cross-grid method |
-|---|---|---|---|
-| `time: point` | instantaneous | **No — a point is not an interval** | linear interpolation, bounded by a maximum gap |
-| `time: sum` | interval accumulation | Yes | overlap apportionment |
-| `time: mean` / `time: maximum` | interval statistic | Yes | the declared `AggregationMethod` |
-
-⚠️ **The CF token is `maximum`, not `max`** — an earlier revision of this table used the invalid
-token. `max` is our `AggregationMethod` member; `maximum` is the CF cell method. They are not
-interchangeable, and writing the wrong one into a contract would not round-trip.
-
-⛔ **We currently discard this.** The recap adapter reads no CF attributes; `cell_methods` appears in
-this repo only as a comment (`adapters/era5_land_reanalysis.py:20`) and in an archived plan.
-`ParameterDefinition` (`types/domain.py:36`) carries `unit` and `aggregation_method` and nothing about
-temporal support. **T3a declares it; T3b later checks that declaration against the source's
-`cell_methods`.** Reading it at ingest was the original single task and is not currently buildable —
-the Gateway strips CF attributes before we see them (Plan 243, measured 2026-09-07), so the standard
-gives us the vocabulary now and the verification later.
-
-**OD-1 (NARROWED) — interval-valued data is period-ending; instantaneous data is not.** A river stage
-reading at 08:00 is a *point*, not an interval ending at 08:00. The original blanket rule was wrong
-for every `time: point` channel. The convention now binds only `time: sum` and `time: mean`/`max`
-data, and the distinction is carried by OD-10 rather than assumed.
+**OD-1 (NARROWED) — MOVED to Plan 258**, with OD-1 and OD-4.
 
 **OD-3 (REVISED) — the Nepal daily boundary is PROVISIONALLY 18:00Z, pending DHM (T7).** The draft
 held three different values at once; this is the single value used throughout until DHM answers.
@@ -485,20 +471,22 @@ Every code task carries the Task Exit Gate (`docs/workflow.md:378-390`).
 
 ### T1 — declare the conventions where an adapter author will find them
 
-**Outcome:** period-ending is stated for interval-valued data only; CF `cell_methods` is named as the
-temporal-support type; phase is defined as a grid property; and the DST limitation is recorded as a
-limitation.
+**Outcome:** phase is defined as a grid property, the NPT worked example is written down, and the DST
+limitation is recorded as a limitation rather than left to be rediscovered.
 
 **In:** `docs/conventions.md` (primary home), cross-referenced from `docs/architecture-context.md`
-and `docs/spec/types-and-protocols.md`. Must carry the OD-10 table, the NPT worked example, the
-statement that period convention and phase are independent, and that a DST-observing zone has no
-uniform civil-day grid.
+and `docs/spec/types-and-protocols.md`. Must carry the NPT worked example, the statement that period
+convention and grid phase are **independent** (with the convention itself pointed at Plan 258), and
+that a DST-observing zone has no uniform civil-day grid at all.
+
+⛔ **Not the period-ending convention or the CF table** — Plan 258. Name the split here so an adapter
+author reading `conventions.md` finds both halves.
 
 **Out:** any code change; the adapter audit (T6); anything in Plan 254.
 
-**Pre-change:** N/A — documentation task. `grep -rn "period-ending\|cell_methods" docs/conventions.md` returns nothing; the convention lives only in `docs/design/dhm-precipitation-milestones.md:119` and a code comment.
+**Pre-change:** N/A — documentation task. `grep -rn "grid phase\|TimeGrid" docs/conventions.md` returns nothing; the convention lives only in `docs/design/dhm-precipitation-milestones.md:119` and a code comment.
 
-**Verification:** N/A — documentation task. The OD-10 table and the instantaneous exception both appear.
+**Verification:** N/A — documentation task. Phase is defined, the NPT example appears, the DST limitation is stated, and Plan 258 is named as the home of temporal support.
 
 ### T2 — a typed `TimeGrid`, reusing what already exists
 
@@ -516,77 +504,43 @@ Threading it through call sites (Plan 254).
 
 **Verification:** `uv run pytest tests/unit/types/test_time_grid.py` — hourly UTC and hourly Nepali are both step 3600 and NOT alignable; a 15-minute grid on quarter-hour marks nests into BOTH; **a 10-minute phase-zero grid nests into hourly UTC and NOT into hourly Nepali** (the draft asserted neither, contradicting OD-6); phase >= step raises.
 
-### T3 — SPLIT: declare temporal support now (T3a); verify it against the source later (T3b)
+### T3 — MOVED to Plan 258
 
-⛔ **The original single task could not be built, and this is the correction.** It promised that
-`cell_methods` "survive from the source NetCDF into stored parameter metadata". They cannot: the
-Gateway strips them. Measured 2026-09-07 and recorded in the archived Plan 243 — every Gateway
-response, for every endpoint, returns exactly three columns (`g_123`, `source`, `source_run`) with an
-**empty `DataFrame.attrs`**, no units and no CF metadata. The snow modeller confirmed his source
-NetCDFs carry full CF metadata, so it exists at source and is lost in the Gateway's extraction to
-parquet. There is also nowhere to put it: `ParameterDefinition` (`types/domain.py:36-43`) and the
-`parameters` table (`db/metadata.py:27-51`) both carry `name / display_name / unit /
-parameter_domain / aggregation_method` and no temporal-support field.
+Temporal support — declaring it, and later verifying it against the source's CF `cell_methods` — is
+**Plan 258 T1–T4**. It left this plan on 2026-09-08 because an independent review returned three
+blockers against it and none of them were about grids: the value was assigned at the wrong
+cardinality, the fail-closed migration violated the repo's additive-only rule, and "unknown" was not
+representable. Those are now Plan 258's open decisions D1–D3.
 
-📌 **What we already have, and why it is not the same thing.** `ParameterDefinition.aggregation_method`
-(SUM / MEAN / MAX) says **how to combine** values. CF `cell_methods` says **what a stored value already
-is** — `time: point` versus `time: sum`. They are correlated and not equivalent, and this plan's
-narrowing of period-ending to interval-valued data needs the second. Assuming one from the other is
-exactly the substitution this plan exists to forbid.
-
-#### T3a — declare temporal support as a first-class field (unblocked, and this plan's actual scope)
-
-**Outcome:** `TemporalSupport` (`POINT` | `INTERVAL`) exists as a type and is carried on
-`ParameterDefinition` and the `parameters` table, declared by us. **No default** — an undeclared
-parameter refuses, per this plan's own fail-closed rule. A stage reading is `POINT`; precipitation
-accumulated over an interval is `INTERVAL`.
-
-**In:** `types/enums.py`, `types/domain.py:36-43`, `db/metadata.py:27-51` plus an additive migration,
-and the parameter bootstrap. **Out:** acting on the value (Plan 254); changing `AggregationMethod`;
-reading anything from the source (T3b). Depends on T2.
-
-**Pre-change:** neither the domain type nor the table has any temporal-support field, so a consumer
-must infer support from `aggregation_method`. **Verification:** `uv run pytest tests/unit/types/
-tests/integration/db/` — a parameter declared `INTERVAL` round-trips by value; an undeclared one is
-rejected rather than defaulted.
-
-#### T3b — verify the declaration against the source (BLOCKED on the Gateway, do not start)
-
-**Outcome:** the CF `cell_methods` the source publishes is read at ingest and **checked against**
-T3a's declaration, so a mismatch is caught instead of assumed away.
-
-⛔ **Blocked, and the blocker is upstream and already half-asked.** Plan 243 asked the Gateway to
-preserve the source `units` attribute and that work is in progress on their side — but **it asked for
-`units` only, not `cell_methods`.** So the ask must be extended before this task is buildable.
-Extending it is cheap: same channel, same people, same pass-through work, and it should ride on 243's
-request rather than open a second one. **Until it lands, T3a's declaration is authoritative but
-unverified, and this plan must say so rather than imply the value is source-derived.**
-
-📌 Follow 243's own sequencing rule: if the pass-through lands before T3a ships, read the attribute
-and check it in the same change rather than building the declaration blind.
-
-**In:** the recap extraction path, once attributes arrive. **Out:** everything in T3a.
-**Pre-change:** `grep -rn "cell_methods\|\.attrs" src/sapphire_flow/adapters/` returns nothing; the attribute is present in every upstream file and discarded at our boundary.
-
-**Verification:** `uv run pytest tests/unit/adapters/` — a fixture carrying `cell_methods: time: sum` and `units: mm` round-trips into parameter metadata, and a source missing `cell_methods` is recorded as unknown rather than defaulted.
+⛔ **Do not re-absorb it.** This plan is buildable without it: a grid is a step and a phase whether or
+not we have recorded what the values mean over that step.
 
 ### T4 — declare the operational grid boundary per deployment
 
 **Outcome:** every deployment declares its boundary explicitly, including Switzerland's zero.
 
-**In:** `config/overlays/` and the deployment config model, written as a readable time-of-day
-(`daily_grid_origin = "18:00"`) parsed once into a phase. Depends on T2.
+**In:** the deployment config model, plus **both** config layers — `config/overlays/` **and the
+repository-root `config.toml`**, which is the active Swiss base and is loaded separately from the
+overlays (`config/deployment.py:452`, `docs/v0-scope.md:490`). ⛔ **The root file was missing from
+this task's scope, which would have made the requirement unsatisfiable for the one deployment we
+actually run**: if the field has no default, the base config must declare it or Switzerland refuses to
+start. Written as a readable time-of-day (`daily_grid_origin = "18:00"`) parsed once into a phase.
+Depends on T2.
 
 **Out:** deriving it from `stations.timezone`, which stays descriptive. Any per-station override.
 
 **Pre-change:** `grep -rn "grid_origin\|grid_phase" config/ src/sapphire_flow/config/` returns nothing; no deployment declares a boundary.
 
-**Verification:** `uv run pytest tests/unit/config/` — Nepal parses `"18:00"` to 64800 s; a deployment with NO declaration is **REJECTED** rather than defaulting to zero (OD-11); a value finer than the step's resolution is rejected.
+**Verification:** `uv run pytest tests/unit/config/` — Nepal parses `"18:00"` to 64800 s; Switzerland's
+root `config.toml` declares `"00:00"` → 0 s and the deployment starts; a deployment with NO
+declaration is **REJECTED** rather than defaulting to zero (OD-11); a value finer than the step's resolution is rejected.
 
 ### T6 — audit every input adapter against the conventions
 
-**Outcome:** each adapter's period convention, temporal support and native phase are recorded —
-confirmed, converted, or flagged unresolved.
+**Outcome:** each adapter's **native grid phase** is recorded — confirmed, converted, or flagged
+unresolved. *(Temporal support gets its own audit in Plan 258 T4; keep the two tables adjacent in
+`docs/conventions.md` but do not merge them — they are independent facts and merging them is how one
+silently stands in for the other.)*
 
 **In:** `src/sapphire_flow/adapters/`, recorded as a table in `docs/conventions.md`. Depends on T1.
 
@@ -607,13 +561,8 @@ Nepali targets, since 10 does not divide the 345-minute offset and 15 does); and
 period convention per parameter. Cite the India 08:30 IST precedent — it makes the question read as a
 familiar convention rather than an unusual demand.
 
-⭐ **Fourth ask, to the Gateway rather than to DHM — and T3b is blocked until it is made.** Plan 243
-already asked the Gateway to preserve the source `units` attribute through extraction, and that work
-is in progress on their side. **It asked for `units` only.** Extend that same request to
-`cell_methods` (and, where present, the time `bounds`), so temporal support arrives as a fact rather
-than staying a local declaration. Same channel, same people, same pass-through work — it should ride
-on 243's request, not open a second one. Without this, T3b is unbuildable and T3a's declaration stays
-authoritative-but-unverified.
+⛔ **The Gateway CF-metadata ask MOVED to Plan 258** together with the temporal-support work it
+serves. It is not this plan's, and this plan is not blocked on it.
 
 **Out:** re-rendering the `.docx`; assuming an answer. Unanswered leaves OD-3 on its provisional value.
 
@@ -652,10 +601,16 @@ uv run python scripts/check_readiness.py docs/plans/252-time-grids-are-step-and-
 
 Four conditions hold in addition:
 
-1. **One Nepal boundary value appears throughout** — the draft held three at once.
-2. **No deployment defaults to phase zero by omission** (OD-11).
-3. **Temporal support comes from CF `cell_methods`, never inferred** from a parameter name.
-4. **D4 is superseded with the parity precondition stated**, not reinterpreted.
+1. **One Nepal OPERATING boundary value appears throughout** — `64800 s` (18:00Z) until DHM answers.
+   ⚠️ Not "one value": the plan deliberately distinguishes four (civil reference `65700`, operating
+   `64800`, Switzerland today `0`, Switzerland after cutover `82800`) and that table is correct. The
+   gate is that no *second operating* value for Nepal appears, which is the defect the draft had.
+2. **No deployment defaults to phase zero by omission** (OD-11), including the repository-root
+   `config.toml` that the Swiss deployment actually loads — not only `config/overlays/`.
+3. **D4's supersession is PROPOSED with the parity precondition stated**, not asserted as done —
+   Plan 228 stays authoritative until T8 lands.
+4. ⛔ **Removed: "temporal support comes from CF `cell_methods`, never inferred".** That moved to
+   Plan 258, and it could not have passed here anyway while the source metadata is stripped upstream.
 
 ## Dependency graph
 
@@ -664,8 +619,6 @@ Four conditions hold in addition:
   "nodes": [
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 1, "depends_on": ["T1"]},
-    {"id": "T3a", "phase": 2, "depends_on": ["T2"]},
-    {"id": "T3b", "phase": 3, "depends_on": ["T3a"], "blocked_on": "gateway CF attribute pass-through (extend the Plan 243 units ask to cell_methods)"},
     {"id": "T4", "phase": 2, "depends_on": ["T2"]},
     {"id": "T6", "phase": 1, "depends_on": ["T1"]},
     {"id": "T7", "phase": 1, "depends_on": []},
