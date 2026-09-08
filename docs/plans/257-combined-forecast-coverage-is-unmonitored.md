@@ -64,11 +64,54 @@ Cycle `2026-09-08 06:00:05.032956Z`:
 | stations with exactly 1 combinable model (legitimately no pool) | 101 |
 | `valid_time`s shared by all three contributors | **0** — max overlap is 2 models |
 
-The cause is Plan 222's union→intersection change reaching the host on 2026-09-04; the three-way
+The cause is Plan 222's union→intersection change reaching the host on 2026-09-04 (it shipped in
+`v0.1.869`; `git merge-base --is-ancestor 928b3093 <0.1.869 bump>` → true); the three-way
 `valid_time` intersection is empty because `linear_regression_daily` sits on issue-time phase and
 the NWP pair sit on midnight. **That behaviour is correct and stays** (Plan 222 §D7: "Absence is the
 accepted, honest outcome"). Plan 226 is the fix that refills the product. This plan only makes the
 absence *visible*.
+
+### ⭐ Confirmed from live logs — and there are THREE gates, not one
+
+`docker logs sapphire_flow-prefect-worker-1`, cycle 07:49Z 2026-09-08, current code:
+
+```
+forecast_cycle.combined_forecast_skipped:      forecast_combination.pooled_empty_intersection:
+    5  n_models=0                                 34  (contributor_count=3, parameter=discharge)
+  101  n_models=1
+   34  n_models=3
+```
+
+| gate | stations | where it is visible |
+|---|---|---|
+| empty `valid_time` intersection | **34** | `pooled_empty_intersection`, **service** level |
+| `<2` contributors | **101** | `combined_forecast_skipped n_models=1`, **flow** level only |
+| no contributors | **5** | flow level only |
+
+The 34 matches the database measurement exactly. The 101 arise because
+`linear_regression_daily`/`nwp_regression` fail an off-by-one antecedent check
+(`Insufficient lookback: need 7 rows, got 6`).
+
+⚠️ **The 101 are not a third reason the writes stopped.** Those stations were never pooling — only
+2-3 stations pooled at all before 09-04. **Lookback explains the denominator; the guard explains the
+stoppage.** Different defects, different fixes, and this plan monitors rather than fixes either.
+
+🪤 **`pooled_insufficient_contributors` never fires for the 101**, because
+`build_combined_forecasts` returns at `:308-310` before `combine_ensembles_pooled` is entered. They
+are **flow-visible, service-silent**. That event is not dead code, though:
+`services/skill/combined_skill.py:111` calls the combiner without the outer gate, and the
+per-parameter `eligible` filter can drop below the floor even when three contributors arrive.
+
+⛔ **This kills a dead end that has now been re-derived twice**: "no `forecast_combination.*` events
+appear, so combination is not running" is FALSE — they fire **34× per cycle**. Both sessions that
+concluded otherwise were reading logs a redeploy had already destroyed.
+
+### The real argument for this plan
+
+Not "a product went dark" — that is the symptom. It is that **every piece of evidence above lives in
+container logs that a redeploy destroys, while the database retains only the *absence* of rows,
+which is identical across all three gates.** That is precisely why the diagnosis was re-derived
+twice, and why a durable per-cycle record is worth more than the outage itself.
 
 ⚠️ Consequence to face squarely: **the check this plan adds will be non-OK from the moment it ships,
 and will stay non-OK until Plan 226 lands.** That is the correct reading of reality. D2 decides what
@@ -77,13 +120,24 @@ operators to ignore it — which is the same failure this plan exists to fix, on
 
 ## Decisions
 
-- **D1 — what counts as "eligible"?** Recommend: a station is eligible for a combined forecast this
-  cycle when `len(multi_result.combinable_results) >= 2` — the same predicate
-  `build_combined_forecasts` already uses (`services/forecast_combination.py:308-310`), read off
-  `MultiModelForecastResult.combinable_results`
-  (`services/run_station_forecast.py:127-131`). This needs **no change to the combiner** and cannot
-  drift from it, because it is the same property. Rejected alternative: counting from
-  `model_assignments`, which would call 148 stations eligible and never agree with what actually ran.
+- **D1 — record the `n_models` DISTRIBUTION, not an eligible/written pair.** ⭐ This supersedes the
+  original recommendation, which was wrong. Count stations by
+  `len(multi_result.combinable_results)` — the same property `build_combined_forecasts` gates on
+  (`services/forecast_combination.py:308-310`), read off `MultiModelForecastResult.combinable_results`
+  (`services/run_station_forecast.py:127-131`) — and record the histogram alongside how many got a
+  `_pooled` row.
+
+  **Both simpler designs have a blind spot, in opposite directions**, which is why the histogram is
+  the only correct shape:
+  - Defining eligible as `>= 2` and reporting `eligible / written` makes the **101 invisible** —
+    they are simply "not eligible" and never appear.
+  - Counting `pooled_empty_intersection` events reports **34 and misses the 101** entirely.
+
+  A distribution keeps both populations visible and distinguishable, costs one field, needs no new
+  plumbing, and — the property that matters most — **it does not require this plan to know WHY a
+  station has one model.** That keeps it a coverage plan and stops it drifting into model health,
+  which the Proportionality section forbids. Rejected alternative: counting from `model_assignments`,
+  which would call 148 stations eligible and never agree with what actually ran.
 - **D2 — what status, while Plan 226 is open?** Two candidates, and the plan must pick one before
   T1 is written:
   - **(a) Honest and loud.** `critical` when eligible > 0 and written == 0; `warning` when
@@ -126,7 +180,7 @@ operators to ignore it — which is the same failure this plan exists to fix, on
   design, so "a dark cycle never silences its own heartbeat" (`:1754-1761`; note that docstring says
   "all four", which is now stale). A coverage check that emits only at `:3615` goes silent on exactly
   the cycles that most need explaining. But an aborted cycle has **no meaningful eligibility count**
-  — no station work ran — and reporting it as `stations_eligible: 0` would read as "no pool was
+  — no station work ran — and reporting an all-zero histogram would read as "no pool was
   possible", which is a different and misleading claim from "the cycle never got that far".
   Recommend: emit at all five sites, with `detail` carrying an explicit
   `"cycle_completed": true|false`, and status forced to **`warning`, never `critical`, when
@@ -149,11 +203,13 @@ Add `FORECAST_COMBINATION_COVERAGE = "forecast_combination_coverage"` to `Pipeli
   record and could mask or fake a live state.
 - `subject="forecast_combination"`, `cycle_time=resolved_cycle_time`.
 - `detail`: `{"strategy": <configured strategy value>, "cycle_completed": bool,
-  "stations_eligible": int, "stations_written": int}`.
+  "stations_by_n_models": {"0": int, "1": int, "2": int, "3+": int}, "stations_written": int}`
+  (D1). `stations_eligible` is derivable as the sum of the `>= 2` buckets and is NOT stored
+  separately — one number that can disagree with the histogram is worse than none.
 - Called from all five sites that already emit `FORECAST_FRESHNESS` (D5), with
   `cycle_completed=False` at the four abort/fatal sites.
 - Status per D2, floored at `warning` when `cycle_completed` is false (D5).
-- When the configured strategy is `PRIMARY`, emit **`ok` with `stations_eligible: 0`** — under
+- When the configured strategy is `PRIMARY`, emit **`ok` with an all-zero histogram** — under
   PRIMARY no combined product is expected and a red light would be a false alarm. Do not skip the
   record entirely; a missing row is indistinguishable from a dead flow.
 - Fix the now-stale "all four" count in the `:1754-1761` docstring while touching these call sites.
@@ -168,31 +224,39 @@ adjacent one.
 
 ### T2 — carry the reason (SECOND HALF, cut this first if the plan must shrink)
 
-T1 says *that* the product is dark. It does not say *why*, and the four `continue` branches in
-`combine_ensembles_pooled` are distinguishable only from WARNING logs on stdout — which every
-redeploy destroys, and which is precisely why this diagnosis took as long as it did.
+T1's histogram says a station had 3 contributors and no row. It does not name the gate that dropped
+it — and the persistence-boundary gates (`pooled_single_timestamp_not_persisted`,
+`pooled_non_uniform_spacing_not_persisted`, `services/forecast_combination.py:355-376`) are
+indistinguishable from the intersection gate in the histogram alone.
 
-Have `build_combined_forecasts` report, per station/parameter, which gate dropped it
-(`pooled_insufficient_contributors`, `pooled_empty_intersection`,
-`pooled_single_timestamp_not_persisted`, `pooled_non_uniform_spacing_not_persisted` —
-`services/forecast_combination.py:86-134`, `:355-376`), and aggregate the counts into T1's `detail`
-as `{"drop_reasons": {"<reason>": <count>}}`.
+⭐ **This is much smaller than first scoped.** The original T2 proposed changing
+`build_combined_forecasts`' return type to report the gate. That is unnecessary: **the events
+already exist and already carry what is needed** — `pooled_empty_intersection` fires per
+station/parameter at `:129-133`, its siblings at `:87-91` and `:356-376`, and the flow's own
+`combined_forecast_skipped` carries `n_models`. Nothing aggregates them into a record that survives
+a redeploy; that is the entire gap.
 
-⚠️ This changes a return type on the combination path. It must not change **which rows are written**
-— that is Plan 222's contract and out of scope here. If the review finds the return-type change
-cannot be made without touching write behaviour, **drop T2** and record why; T1 alone closes the
-blindness this plan is about.
+So T2 is: **count the warnings the combination path already emits within a cycle, and put the tally
+in T1's `detail`** as `{"drop_reasons": {"<reason>": <count>}}` — a counter threaded through the
+cycle, not a signature change. No return type moves, and **no change whatsoever to which rows are
+written** (Plan 222's contract, out of scope).
+
+⚠️ Note the asymmetry T1's histogram already exposes and T2 must not paper over: the `<2` path
+emits **no service-level event at all** (`:308-310` returns before the combiner is entered), so
+`drop_reasons` will legitimately not account for the 101. The histogram is what covers them; the two
+fields are complementary and neither is sufficient alone.
 
 **Verification:** a test asserting that a station whose contributors have an empty `valid_time`
-intersection is reported under `pooled_empty_intersection` and not merely as "not written", plus the
-existing Plan 222 combination tests still passing unchanged (proving write behaviour did not move).
+intersection is tallied under `pooled_empty_intersection` and not merely as "not written"; a test
+asserting a `<2`-contributor station appears in the histogram but contributes **no** `drop_reasons`
+entry; and the existing Plan 222 combination tests passing unchanged, proving write behaviour did
+not move.
 
 ## Non-goals
 
-- Fixing the dark product. That is now **Plan 254 T8** — Plan 226 was SUPERSEDED and absorbed into
-  it on 2026-09-08. ⚠️ The rest of this sentence claimed 226 was "sequenced behind" 252/254; that was
-  never true (226's `depends_on` was `[222, 228, 235]` and both 252 and 254 excluded it), and it is
-  moot now that 254 owns the work. Formerly read: **Plan 226**, which is itself sequenced behind Plans 252/254.
+- Fixing the dark product. That is **Plan 254 T8**, which absorbed Plan 226's anchoring scope
+  intact on 2026-09-08 (owner decision); Plan 226 is `SUPERSEDED` and is to be read for its
+  evidence, not its instructions. This plan reports the outage; it does not repair it.
 - Making the combiner write more rows, or restoring the pre-Plan-222 union.
 - A per-product coverage ledger for every `model_id`.
 - New alert transport. Alerts remain webhook-only.
@@ -201,8 +265,8 @@ existing Plan 222 combination tests still passing unchanged (proving write behav
 
 - A `forecast_combination_coverage` row is written by every scheduled forecast cycle, and by no
   backfill/replay run.
-- On the current staging state the check reports the dark product with `stations_eligible: 34` and
-  `stations_written: 0` — i.e. it reproduces, automatically, the finding that took a manual
-  investigation on 2026-09-08.
+- On the current staging state the check reproduces, automatically, the finding that took a manual
+  investigation on 2026-09-08: `stations_written: 0` against a histogram of
+  `{"0": 5, "1": 101, "3+": 34}` — both the 34 and the 101 visible and distinguishable in one row.
 - D3's paging decision is recorded in the plan with its revisit trigger, whichever way it goes.
 - Full test suite passes after the final code change.
