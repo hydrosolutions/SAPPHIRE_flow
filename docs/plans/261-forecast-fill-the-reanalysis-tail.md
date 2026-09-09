@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-09-08
 revised: 2026-09-09
 plan: 261
@@ -14,8 +14,8 @@ source: 2026-09-08 — measured while validating Plan 239 T1b. Reframed 2026-09-
 
 ## Status
 
-**DRAFT — rewritten 2026-09-09 after the owner corrected the framing.** Not for
-implementation until the owner sets READY.
+**READY — set by the owner 2026-09-09**, after the framing correction and two independent
+review passes (Claude + Codex) whose findings are folded below.
 
 ### What the rewrite changed, and why
 
