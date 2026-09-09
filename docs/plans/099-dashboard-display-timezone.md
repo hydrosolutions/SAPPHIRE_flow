@@ -1,29 +1,38 @@
-# Plan 099 — dashboard display timezone (label axes + UTC↔Europe/Zurich toggle)
-
-**Status**: DRAFT
-**Priority**: low-medium — UX; the unlabeled UTC axis caused a real
-UTC-vs-CEST misread during the 2026-07-03 Mac-mini obs investigation (a ~20 min
-BAFU delay looked like ~1 h once the +2 h offset was misattributed).
-**Phase**: v0b — review dashboard
-**Parent**: Plan 096 (dashboard forecast graph); the developer dashboard
-**Related**: `api/templates/stations/detail.html` (obs + baseline charts, x-axis
-labeled only "Date" — `:272`), `api/templates/forecasts/detail.html` (forecast
-chart, x-axis "Valid time (UTC)" — `:88`), `config/deployment.py`
-`default_display_timezone` (`"Europe/Zurich"`, defined but **not applied
-anywhere** in `api/`), the API which stores + returns everything in **UTC**
-**Created**: 2026-07-03
-
+---
+status: DRAFT
+created: 2026-07-03
+plan: 099
+title: Dashboard display timezone — P1 shipped; P2 (the toggle) needs three decisions it never took
+scope: DISPLAY ONLY. Axis timezone labelling (P1, SHIPPED) and an optional UTC/local toggle (P2). Explicitly NOT storage, NOT the API's timestamps, and NOT the operational day boundary — that is Plan 252 (a grid is a step and a phase) and Plan 254 (execution). Display timezone and grid phase are independent; conflating them is how a one-hour error hides behind a 45-minute one.
+depends_on: [252]
+blocks: []
+source: 2026-07-03 — an unlabeled UTC axis caused a real UTC-vs-CEST misread during a Mac-mini observation investigation
 ---
 
-## Problem
+# Plan 099 — dashboard display timezone
 
-The dashboard displays **UTC** (all timestamps are stored + returned in UTC), but
-the **observations chart's x-axis is labeled only "Date"** with no timezone
-(`stations/detail.html:272`), so an operator on CEST (UTC+2) reads a UTC time as
-local and perceives a ~2 h error. (The newer forecast chart labels its axis
-"Valid time (UTC)" — this plan makes the rest consistent.) Separately,
-`default_display_timezone = "Europe/Zurich"` exists in `DeploymentConfig` but is
-**never wired** to the dashboard — a dangling config.
+## Status
+
+**DRAFT — and its problem statement was STALE. Re-measured 2026-09-09.**
+
+⚠️ **P1 HAS SHIPPED** (`docs/plans/README.md:491`, PR #59). Every claim in the original problem
+statement about unlabeled axes is now refuted:
+
+| Original claim | Measured 2026-09-09 |
+|---|---|
+| Observations axis is labelled only "Date" (`stations/detail.html:272`) | **REFUTED** — it reads `"Date (UTC)"` at `:282` |
+| Forecast axis reads "Valid time (UTC)" at `forecasts/detail.html:88` | **STALE** — correct text, at `:95` |
+| `default_display_timezone` is `"Europe/Zurich"` | **PARTLY REFUTED** — the model default is `"UTC"` (`config/deployment.py:217`); the active Swiss `config.toml:60` overrides it to `"Europe/Zurich"` |
+| `default_display_timezone` is never applied | **CONFIRMED** — still a dangling config, read nowhere |
+
+**What is left is P2 only**, and P2's scope was also wrong:
+
+- ⛔ **The climatological baseline chart must NOT get a timezone toggle.** Its x-axis is
+  `"Day of year"` (`stations/detail.html:304`) — not a time axis at all. The original P2 named it.
+- ⭐ **Two timestamp-bearing charts were MISSED**: forcing (`:339`) and hindcasts-vs-observed
+  (`:383`), both on `"Date (UTC)"` axes. They belong in P2 and were never listed.
+
+## Goal
 
 ## Goal
 
@@ -44,22 +53,35 @@ local and perceives a ~2 h error. (The newer forecast chart labels its axis
 
 ## Open design questions (grill-me before READY)
 
-1. **DST correctness (the sharp one).** Europe/Zurich is **UTC+1 (CET, winter)
-   and UTC+2 (CEST, summer)** — a naive fixed `+2 h` shift would be wrong half the
-   year. The toggle must convert with a real tz mechanism (browser `Intl`
-   / `toLocaleString('…', {timeZone:'Europe/Zurich'})`, or a small tz lib), not a
-   constant offset. Confirm the approach.
-2. **Client-side vs server-side conversion.** (a) Keep the API UTC-only and
-   convert in the browser on toggle (simplest, no API change); (b) API applies
-   `default_display_timezone` and returns localized strings + offset. Prefer (a).
-3. **Default view.** UTC (explicit, unambiguous) vs the configured
-   `default_display_timezone`. Recommend defaulting to **UTC** with the toggle
-   opting into local — an ops dashboard benefits from an unambiguous default.
-4. **Scope.** Which charts get the toggle (obs, baseline, forecast) and does the
-   observations *table* / any raw timestamp text also get relabeled, or only the
-   charts?
-5. **Wire `default_display_timezone`?** Either use it as the toggle's "local"
-   option (so it's no longer a dangling config) or explicitly drop it. Decide.
+⛔ **Three are blocking. None has been answered.**
+
+**Q1 — what does "local" MEAN?** Hard-coded `Europe/Zurich`, the deployment's
+`default_display_timezone`, or the station's own IANA zone? ⚠️ **Plan 252 OD-12 makes this sharper
+than it was in 2026-07:** the operational day boundary is now declared per deployment with an optional
+**per-station** override, so a deployment-wide display zone can disagree with the grid a given
+station's data actually sits on. Recommend: the toggle offers UTC and the deployment's
+`default_display_timezone`, which also un-dangles that config — and the axis label always names the
+zone, so the two can never be confused silently.
+
+**Q2 — DST correctness (the sharp one).** `Europe/Zurich` is UTC+1 in winter and UTC+2 in summer, so a
+naive fixed offset is wrong half the year. The toggle must convert with a real mechanism (browser
+`Intl` / `toLocaleString(..., {timeZone})`), never a constant. ⭐ **Note the asymmetry with Plan 252:**
+display converts with a DST-aware zone; the data grid uses a fixed offset precisely because DST has no
+uniform day. Both are correct, for opposite reasons, and the plan must say so or someone will
+"harmonise" them.
+
+**Q3 — how does a picked local date become a UTC query bound?** The station dashboard builds naive
+date bounds (`stations/detail.html:244-245`) while the API parses naive timestamps as UTC
+(`api/routes/api_stations.py:132-141`). Today those agree because the display is UTC. **Under a
+toggle they stop agreeing**, and a user picking "yesterday" in local time silently queries a
+UTC-shifted window — worst across a DST transition. This is the finding that makes P2 more than a
+cosmetic change, and it was not in the original plan at all.
+
+**Q4 — scope.** Charts confirmed in scope: observations, forecast, forcing, hindcasts. Out: the
+baseline chart (not a time axis). **Undecided:** the observations table and any raw timestamp text.
+
+**Q5 — default view.** Recommend **UTC** — an ops dashboard benefits from an unambiguous default —
+with the toggle opting into local, persisted in `localStorage`.
 
 ## Non-goals
 

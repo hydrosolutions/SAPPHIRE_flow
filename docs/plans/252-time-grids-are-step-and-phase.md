@@ -219,10 +219,15 @@ store, not a convention to be worked around by inference at read time — inferr
 the timestamps is how a value that was never asserted becomes one that appears to have been.
 
 This is an established pattern here, not a new design: the skill tables already do it (see § What the
-code does today). The forecast table does not — verified 2026-09-09, `forecasts` carries
-`time_step_seconds` and no phase column. **The store-side remedy is Plan 254 T7**; the disposition of
-the pre-existing rows is Plan 248's. This plan owns only the statement that a step without a phase is
-not a grid.
+code does today). **TWO tables record a step and no phase**, verified 2026-09-09:
+
+| table | step | phase | owner of the remedy |
+|---|---|---|---|
+| `forecasts` | `time_step_seconds` | — | **Plan 254 T7** |
+| `hindcast_forecasts` (`db/metadata.py:1281-1294`) | `time_step_seconds`, `NOT NULL` with a positive check | — | ⛔ **NOBODY — see OQ-5** |
+
+The disposition of the pre-existing `forecasts` rows is Plan 248's. This plan owns only the statement
+that a step without a phase is not a grid.
 
 ### Alignment, resampling and failure
 
@@ -474,6 +479,14 @@ warm-up; only `OperationalForecast` persists the pair; `HindcastForecast` has no
 OD-6's "no second mechanism" is a *preference*, not a settled contract. **The decision is Plan 254 D2,
 and it is open.** Until it closes, treat OD-6's reporting clause as an intent.
 
+**OQ-5 — who adds the phase column to `hindcast_forecasts`?** The corollary above says recording a
+step obliges recording a phase, and `hindcast_forecasts` records a step (`NOT NULL`, positive-checked)
+and no phase. Plan 254 T7 covers `forecasts` only, and no task in any plan of this family owns the
+hindcast table. It matters more than it looks: hindcasts are what skill is computed from, and skill is
+the one path that already partitions by phase — so a phase-blind hindcast store feeds a phase-aware
+scorer. **Recommend folding it into Plan 254 T7 rather than opening a task**, but that is the owner's
+call.
+
 **OQ-4 — OD-3 needs owner confirmation.** The single whole-hour rule in OD-3 is a reconciliation of
 two contradictory statements in earlier revisions, not a decision the owner took in that form. See the
 Changelog.
@@ -649,7 +662,13 @@ ForecastInterface code, rate limiting, status adapters, factories, readers and h
 out. **In scope:** any adapter that yields timestamped observation, forcing or forecast values into
 the system. **Row key: `(adapter, product/series)`, not `(adapter)`** — one adapter can expose several
 products at different cadences, and one row per adapter would let one product's phase silently stand
-for another's. Same grain as Plan 258 T4 and Plan 243's unit register.
+for another's.
+
+⚠️ **This key is the GRID audit's, and it does not settle Plan 258's cardinality question.** An
+earlier revision of this task claimed it was the "same grain as Plan 258 T4", which pre-empts 258's
+D1 — still open between `(source, parameter)` and the adapter channel. Grid phase and temporal
+support are independent facts (OD-6) and may well be recorded at different grains; if 258 settles on
+a different key, that is not a conflict with this table.
 
 **Out:** fixing a non-conforming adapter — each is its own change.
 

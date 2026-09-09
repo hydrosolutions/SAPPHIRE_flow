@@ -15,7 +15,11 @@ source: 2026-09-08 — split out of Plan 252 by owner decision, after a Codex re
 
 **DRAFT.** Split out of Plan 252 on 2026-09-08. Two of its four open decisions are genuine design
 questions that were never asked, which is why bundling this with the grid convention kept failing
-review: the grid half is settled and this half is not.
+review: the grid half is *substantially* settled and this half is not.
+
+⚠️ **Corrected 2026-09-09: "the grid half is settled" was too strong.** Plan 252 carries five open
+questions of its own (OQ-1 … OQ-5), two of which — the operational target-grid step field, and the
+interval-bounds orphan below — block this plan and Plan 254 rather than 252 itself.
 
 ## Why this is a separate plan
 
@@ -47,8 +51,11 @@ modeller: `time: point` for SWE and snow depth, `time: sum` for runoff, alongsid
 ⚠️ **The CF token is `maximum`, not `max`.** `max` is our `AggregationMethod` member; `maximum` is the
 CF cell method. They are not interchangeable and the wrong one would not round-trip.
 
-⛔ **We currently discard all of it.** The recap adapter reads no CF attributes; `cell_methods` appears
-in this repo only as a comment (`adapters/era5_land_reanalysis.py:20`) and in an archived plan.
+⛔ **We currently discard all of it.** The recap adapter reads no CF attributes — that is the claim
+that matters and it is CONFIRMED. ⚠️ The narrower claim that `cell_methods` "appears only as a comment
+at `adapters/era5_land_reanalysis.py:20` and in an archived plan" is REFUTED (2026-09-09): further
+active comments exist at `adapters/recap_gateway.py:140`, `:151`, and several active docs mention it.
+**Nothing READS it at runtime**; the string is not rare.
 
 ## Period-ending, stated once and correctly
 
@@ -87,7 +94,7 @@ support depending on which product it came from:
 
 | canonical parameter | MeteoSwiss | Gateway / ECMWF |
 |---|---|---|
-| `temperature` | `TabsD` — a **daily mean** → interval (`adapters/meteoswiss_open_data_reanalysis.py:208`) | `2t` / `2m_temperature` — **instantaneous** → point (`adapters/recap_gateway.py:118`) |
+| `temperature` | `TabsD` — a **daily mean** → interval (mapped at `adapters/meteoswiss_open_data_reanalysis.py:208-212`; the daily-mean meaning is stated at `:10`) | `2t` / `2m_temperature` — mapped at `adapters/recap_gateway.py:118-126`. ⚠️ **The "instantaneous" classification is NOT established anywhere in this repo** — it is the expected ECMWF semantic, and confirming it is exactly what T3/T4 exist to do. Do not cite it as measured. |
 
 One row per canonical parameter cannot hold both. There are **11 canonical parameters** today
 (`discharge`, `humidity`, `precipitation`, `radiation`, `reference_et`,
@@ -131,12 +138,36 @@ and `INTERVAL`. Unknown must either be a third state or be NULL with a documente
 against source CF metadata*. Two independent facts, two fields — do not encode them in one enum, which
 is how a "declared" value silently acquires the authority of a measured one.
 
+### D5 — does a model OUTPUT declare its temporal support? (blocking Plan 254 T8)
+
+This plan covers **input** sources and adapters throughout. Nothing here declares the support of a
+value the system *produces*. But the period-ending rule above binds forecast `valid_time` "by support
+and not blanket" — so Plan 254 T8, which anchors a daily forecast's label, cannot tell whether that
+bucket is stamped on its closing boundary without knowing whether the model emits a point or an
+interval. **No plan owns this.** Added 2026-09-09.
+
+### D6 — who asks DHM about period convention?
+
+Plan 252 T7 explicitly REMOVED the period-convention question from the DHM questionnaire and assigned
+it here (`252` T7). This plan has an audit task (T4) but **no task that asks or amends a provider
+question**, so the evidence T4 would audit against has no route to being obtained. Either this plan
+gains a questionnaire task or 252 T7 takes it back. Added 2026-09-09.
+
 ### D4 — who compares, and where does the comparison live?
 
 Even once the Gateway passes `cell_methods` through, nothing is specified about where it travels or
 who checks it. The Gateway result construction retains values, not source metadata
 (`adapters/recap_gateway.py:806`), and the parameter store contract is **read-only**
 (`protocols/stores.py:914`). A verification step needs a write path that does not exist.
+
+## ⛔ Interval bounds are assigned here and carried by nothing
+
+Plan 252 assigns `period_start` / `period_end` to this plan (its OD-5). Plan 254 assigned them to
+Plan 251. **Verified 2026-09-09: this plan's T0–T4 contain no bounds task, and Plan 251 contains no
+`period_start`, `period_end` or interval-bound work at all.** They are an orphan, tracked as Plan 252
+OQ-2, and they are genuinely this plan's shape of problem — bounds only exist for values that ARE
+intervals. ⛔ **Do not resolve this by pointing at a third plan**; it needs an owner decision and then
+a task, here or in 251.
 
 ## ⛔ Upstream dependency — real, and only half-asked
 
@@ -151,11 +182,11 @@ gated on someone else's release.
 
 ## Tasks
 
-⚠️ **All four decisions above must be settled before T1 is written as a contract.** The Plan 252
+⚠️ **All six decisions above must be settled before T1 is written as a contract.** The Plan 252
 review showed exactly what happens otherwise: tasks that cannot be implemented as specified.
 
-### T0 — settle D1–D4
-**Outcome:** four recorded owner decisions. **In:** this document. **Out:** any code.
+### T0 — settle D1–D6
+**Outcome:** six recorded owner decisions. **In:** this document. **Out:** any code.
 **Verification:** each decision is recorded with its rationale and the option it rejected.
 
 ### T1 — declare temporal support at the settled cardinality
@@ -192,7 +223,8 @@ uv run pytest tests/unit && uv run pytest tests/integration
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
-1. **All four decisions are recorded** before any task ships.
+1. **All decisions D1–D6 are recorded** before any task ships (D5 and D6 added 2026-09-09), and the
+   interval-bounds orphan above has an owner.
 2. **The migration is additive and reversible-by-redeploy** — nullable, no tightening in this release.
 3. **A declared-but-unverified value is distinguishable from a verified one** — never conflated.
 4. ⛔ **Not a gate: "temporal support comes from CF metadata, never inference".** It cannot be, while

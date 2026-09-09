@@ -50,16 +50,21 @@ in a fortnight):
 | `services/track_assembly.py:282`, `:372` | track assembly (two) |
 | `services/skill/service.py:293` | skill |
 
-🔴 **Every line number in the previous table was also stale**, because Plan 239 T1a edited all four
-assemblers. The inventory is not a fact to cite; it is a measurement to retake. **Plan 239 is now
-halted** (owner decision, 2026-09-08) partly so this list stops moving underneath this plan.
+🔴 **Line numbers move; the inventory is not a fact to cite but a measurement to retake.**
+Re-measured 2026-09-09 against `origin/main` `071b62e3`: the **count of twelve is CONFIRMED**, and so
+are nine of the twelve locations — but the three `training_data.py` sites moved again, and every
+helper line number this plan cited was stale (corrected in T2/T3 below).
 
-**And the resampler is not the whole of it.** `floor_to_time_step` (`training_data.py:183`) and
-`aligned_lookback_bounds` (`:200`) are separately phase-zero. Changing only `group_by_dynamic`'s
+⚠️ **"Plan 239 is now halted" no longer describes the baseline.** Plan 239 T1b merged as PR #268 on
+2026-09-09 and is in `origin/main`, which is what shifted the training call sites and helpers. Re-run
+the inventory against the current tip before writing T4, not against this table.
+
+**And the resampler is not the whole of it.** `floor_to_time_step` (`training_data.py:244`) and
+`aligned_lookback_bounds` (`:261`) are separately phase-zero. Changing only `group_by_dynamic`'s
 `offset` would lose Plan 228 D4's exactly-N-complete-buckets guarantee — the thing D4 exists to
-protect. Polars also labels bucket **starts** by default (`training_data.py:299`) while skill's
-completeness check assumes start labels by adding one step (`skill/service.py:261`), so
-period-ending labelling is a behavioural change to both.
+protect. Polars also labels bucket **starts** by default (the call is at `training_data.py:374`) while skill's
+completeness path assumes start labels (`skill/service.py:305`), so period-ending labelling is a
+behavioural change to both.
 
 **The degradation channel does not reach.** Plan 252 assumed Plan 253's `InputQualityFlag` could
 carry resampling provenance. It cannot as it stands: `assess_input_quality` emits only observation
@@ -83,31 +88,50 @@ period-ending labels (`services/operational_inputs.py:225`).
   If a model must be able to *declare* a phase, that is an FI change and
   `CLAUDE.md` § ForecastInterface Adherence requires an upstream issue, **not** a SAP3-side
   workaround. If phase is purely our preprocessing concern, the adapter stays as it is and we
-  guarantee the grid before `predict()`. **This decision gates T1 and T4.**
+  guarantee the grid before `predict()`. **This decision gates T4.** ⚠️ It does NOT gate T1 — T1 is
+  the task that TAKES it. An earlier revision said D1 gates T1, which is circular and contradicted
+  the dependency graph, where T1 has no dependencies.
 - **D2 — what carries resampling provenance?** A typed resampling result (data plus quality) is the
   obvious shape, but training, hindcast and skill cannot reuse operational persistence without new
   contracts. Decide per consumer whether degradation is persisted, logged, or gates the run.
-- **D3 — does the no-imputation contract stand?** `docs/touchpoint-maps.md:228` says missing
-  operational values are **gated, never interpolated**. Plan 252 OD-6 interpolates. One of them must
+- **D3 — does the no-imputation contract stand?** `docs/touchpoint-maps.md:247-248` says missing
+  operational-input values are gated via `max_nan`, "never imputed / interpolated / filled". Plan 252 OD-6 interpolates. One of them must
   formally supersede the other; today they contradict.
 - **D4 — Swiss cutover shape.** Atomic flip, or per-station migration? Artifacts, hindcasts and skill
   generations must move together, and a config flip alone would feed 23:00Z days to midnight-trained
   artifacts.
+- **D5 — how does a half-open fetch window meet closing-boundary stamps?** Plan 258 defines
+  interval-valued data as stamped on its CLOSING boundary, while `fetch_observations` filters
+  `timestamp >= start AND timestamp < end` (`store/observation_store.py:173-174`, verified
+  2026-09-09). A window meant to cover N complete intervals therefore excludes the stamp of its last
+  one. Either the fetch bounds become `(start, end]` for interval-valued series, or T2/T3 specify the
+  equivalent `closed`/`label` behaviour. **This gates T2 and T3**, and it is a live off-by-one-interval
+  risk at every window edge, not a theoretical one.
+- **D6 — does a model OUTPUT declare its temporal support?** Plan 258 covers input sources and
+  adapters only. Forecast `valid_time` labelling is support-dependent (`258:64-67`), so T8 cannot
+  decide whether a daily forecast bucket is stamped on its closing boundary without knowing whether
+  the model emits a point or an interval. No plan owns this.
 
 ## Non-goals
 
 - Plan 252's grid conventions and types, and **Plan 258's temporal support / CF ingest** — this plan
   CONSUMES both and now declares 258 as a dependency; it must not proceed past T3 without the
   temporal-support contract T3 reads.
-- Plan 226's daily-model anchoring, and Plan 234's aggregation declaration — this plan **consumes**
-  both.
-- The Forecast Lab v3 format change, which Plan 251 already owns; interval bounds must fold into
-  that single version transition rather than opening a second one.
+- Plan 234's aggregation declaration — this plan **consumes** it.
+  ⛔ **Plan 226 is NOT consumed: it is SUPERSEDED and its scope was ABSORBED into T8** (2026-09-08).
+  It must not be cited as a live plan anywhere. An earlier revision said "consumes", contradicting
+  this plan's own frontmatter and T8.
+- The Forecast Lab v3 format change, which Plan 251 already owns.
+  ⛔ **Interval bounds (`period_start`/`period_end`) are an ORPHAN, not Plan 251's.** Verified
+  2026-09-09: Plan 252 assigns them to Plan 258, this plan previously assigned them to Plan 251,
+  Plan 258's task ledger (T0–T4) contains no bounds task, and Plan 251 contains no `period_start`,
+  `period_end` or interval-bound work at all. Tracked as Plan 252 OQ-2 and **owned by nobody** — an
+  owner decision, not a cross-reference to be repaired by pointing at a third plan.
 - Re-opening Plan 228 D1-D3 or its shipped P1/P2 fix.
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:378-390`).
+Every code task carries the Task Exit Gate (`docs/workflow.md:198-210`).
 
 ### T1 — settle the four open decisions
 
@@ -128,7 +152,9 @@ an implementation diff.
 **Outcome:** `floor_to_time_step` and `aligned_lookback_bounds` take a `TimeGrid` and preserve
 exactly-N-complete-buckets at a non-zero phase.
 
-**In:** `services/training_data.py:183`, `:200`. Depends on T1.
+**In:** `services/training_data.py:244` (`floor_to_time_step`), `:261` (`aligned_lookback_bounds`) —
+locations re-measured 2026-09-09 against `origin/main` `071b62e3`; the previously cited `:183`/`:200`
+were stale. Depends on T1.
 
 **Out:** the resampler itself (T3); any call-site change (T4).
 
@@ -141,9 +167,10 @@ exactly-N-complete-buckets at a non-zero phase.
 **Outcome:** the resampler honours a declared `TimeGrid`, applies the OD-6 method for the channel's
 CF temporal support (**supplied by Plan 258, not by this plan or 252**), refuses upsampling, and returns provenance alongside the data.
 
-**In:** `services/training_data.py:225`, including `closed` and `label` for period-ending —
-polars defaults label bucket starts, which skill's completeness check assumes (`skill/service.py:261`),
-so both change together. The return type changes per D2. Depends on T1, T2.
+**In:** `services/training_data.py:286` (`resample_to_time_step`), including `closed` and `label` for
+period-ending — the call at `:374` supplies only `every=`, and installed polars 1.43.2 defaults to
+`closed='left'`, `label='left'`, which skill's completeness path assumes (`skill/service.py:305`), so
+both change together. Locations re-measured 2026-09-09; `:225`/`:299`/`:261` were stale. The return type changes per D2. Depends on T1, T2.
 
 **Out:** call sites (T4). Changing `AggregationMethod`.
 
@@ -156,14 +183,21 @@ so both change together. The return type changes per D2. Depends on T1, T2.
 **Outcome:** every assembly path resolves its target grid from the deployment declaration rather than
 assuming phase zero, and the downstream UTC-day assumptions are corrected.
 
-**In:** the seven call sites listed above, plus the four downstream assumptions:
+**In (also):** the group-phase invariant Plan 252 OD-12 assigns to this task.
+`services/run_group_forecast.py:95-107` (`_assert_consistent_station_inputs`) already asserts that a
+group's stations share `issue_time`, `forecast_horizon_steps` and `time_step` — **extend it to the
+phase.** Without that, two stations on different phases stack into one timestamp column
+(`:92`) and the group artifact trains on two interleaved grids. ⚠️ An earlier revision of Plan 252
+said this was "listed in T4's scope" when it was not; it is now.
+
+**In:** the **twelve** call sites listed above, plus the four downstream assumptions:
 `services/forecast_lab/snapshot.py:551`, `:856`; `models/nwp_regression.py:598`; and the issue-time
 filter at `services/operational_inputs.py:225` whose meaning changes under period-ending labels.
 Depends on T3.
 
 **Out:** the Forecast Lab format change (Plan 251). The Swiss cutover (T6).
 
-**Pre-change:** each call site passes a bare `time_step`; `grep -n "resample_to_time_step" -r src/` shows seven sites and no grid is threaded to any of them.
+**Pre-change:** each call site passes a bare `time_step`; `grep -rn "resample_to_time_step(" src/` shows **twelve** invocation sites (verified 2026-09-09) and no grid is threaded to any of them.
 
 **Verification:** `uv run pytest` — no call site constructs a grid implicitly, a phase-zero deployment is unchanged end to end, and the NWP antecedent window and issue-time filter are tested under a non-zero phase.
 
@@ -186,11 +220,17 @@ and the activation and prediction gates. Depends on T3.
 **Outcome:** Switzerland moves from phase 0 to 23:00Z with artifacts, hindcasts, skill generations and
 configuration moving together, and a rollback.
 
+⛔ **This outcome is not writable until D4 is answered.** D4 (atomic flip vs per-station migration) is
+still open, and "moving together" means different things under each: an atomic flip needs one
+coordinated switch with a single rollback point; a per-station migration needs a per-station grid
+record and a mixed-phase interval during which two cuts coexist. Do not draft the sequence before D4.
+
 **In:** the rollout sequence — persist training grids (T5), retrain, rerun phase-correct hindcasts,
 publish a new skill generation via Plan 235's mechanism, promote, flip configuration. Coordinates with
-Plan 226 (anchoring) and Plan 235 (generations); both plans' text and dependencies need amending,
-since 226 is anchoring-only and states the UTC-midnight NWP grid remains authoritative (`226:91`) and
-235's post-plan action is Plan 228's recompute (`235:355`). Depends on T4, T5.
+**T8** (anchoring, absorbed from the superseded Plan 226) and Plan 235 (generations); 235's text and
+dependencies need amending, since its post-plan action is Plan 228's recompute (`235:435-436`).
+⚠️ Plan 226 needs no amendment — it is superseded. Depends on T4, T5 **and T8** (matching the
+dependency graph, which an earlier revision's prose omitted).
 
 **Out:** Nepal, which has no artifacts to retrain and no cutover.
 
@@ -236,7 +276,16 @@ danger classification onto the primary individual model, because 34 stations hav
 forecast. This task is what restores the combined forecast Plan 222 takes dark; that re-basing
 stands until it lands.
 
-**In:** the daily models' valid_time construction and the anchor computation. **Out:** everything
+**In:** the valid_time construction and anchor computation of **all three** clock-anchored models.
+
+🔴 **T8's scope was incomplete, corrected 2026-09-09.** An earlier revision named only
+`models/linear_regression_daily.py:165`. The identical `issue_time + (step + 1) * time_step`
+construction is also in `models/persistence_fallback.py:92` and
+`models/climatology_fallback.py:145` — and **this plan's own census proves they dominate it**:
+`climatology_fallback` contributed 2637 of the 4182 off-phase rows and `persistence_fallback` 961,
+against `linear_regression_daily`'s 515. Fixing only the daily model would leave 86% of the measured
+defect in place. `nwp_regression` is NOT affected — it uses the delivered `future_times`
+(`models/nwp_regression.py:469-473`), which is why it sits at phase 0 throughout. **Out:** everything
 226 listed as a non-goal; the boundary VALUE itself (that is 252's declaration); the retrain (T6).
 Depends on T1, because five of the six questions above are its decisions.
 
@@ -256,7 +305,7 @@ of one. Assigned here 2026-09-08 by the time-grid track owner; Plan 252 states t
 without a phase is not a grid) and Plan 248 owns the pre-existing rows — neither owns the column.
 
 **Why it belongs in this plan and not in 248:** 248 tightens the column that exists and has decided
-to quarantine, not repair, the rows that predate it. Writing a *correct* phase requires the declared
+to DISCARD the rows that predate it (not quarantine — see T7's Out below). Writing a *correct* phase requires the declared
 grid that T4 threads through the call sites; inferring it back from the timestamps at write time is
 precisely the read-time inference Plan 252's corollary forbids. So the column cannot be written
 honestly before T4, which puts it here.
@@ -267,8 +316,15 @@ sit on a non-zero clock-derived phase** — 139 `climatology_fallback` rows at 2
 among them. Every one of those rows currently reads as "daily grid" and none of them says where the
 day starts.
 
-**In:** `db/metadata.py` (`forecasts.phase_offset_seconds`, nullable, additive migration),
-`store/forecast_store.py` write and read paths, `types/forecast.py`. Mirror the existing precedent
+**In:** `db/metadata.py` (`forecasts.phase_offset_seconds`, nullable, additive migration)
+**and `hindcast_forecasts.phase_offset_seconds` on the same terms**,
+`store/forecast_store.py` write and read paths, `types/forecast.py`.
+
+⚠️ **`hindcast_forecasts` added 2026-09-09** (Plan 252 OQ-5). It stores `time_step_seconds` `NOT NULL`
+with a positive check and no phase (`db/metadata.py:1281-1294`) — the same half-grid, and it was
+unowned by every plan in this family. It matters more than `forecasts`: hindcasts are what skill is
+computed from, and skill is the one path that already partitions by phase, so a phase-blind hindcast
+store feeds a phase-aware scorer. Mirror the existing precedent
 exactly — `skill_scores.phase_offset_seconds` / `skill_diagrams.phase_offset_seconds`
 (`db/metadata.py:1540`, `:1611`; written at `store/skill_store.py:520`) — including its nullability.
 
@@ -278,8 +334,11 @@ empty frame (`types/ensemble.py:54-63`), so such an ensemble cannot exist. The r
 historical: rows written before this column exists have an unrecorded phase, and NULL is how an
 unknown is represented. Depends on T4.
 
-**Out:** backfilling historical rows (Plan 248 T2 decided: quarantine — do not repair, do not
-delete); `VALIDATE`-ing 248 T3's constraint; any change to `time_step_seconds` itself.
+**Out:** backfilling historical rows. ⚠️ **Plan 248 T2 decided DISCARD, not quarantine** — corrected
+2026-09-09 against `248:584-590`, `:637-640`; the quarantine design was superseded the same day it was
+written, because a CHECK constraint is re-evaluated on UPDATE and would have frozen those rows. With
+no NULL rows left, 248 T3 uses a plain `SET NOT NULL`, so there is no `NOT VALID` constraint to
+`VALIDATE`. Also out: any change to `time_step_seconds` itself.
 
 **Pre-change:** insert a forecast whose `valid_time`s sit at a non-zero offset, read it back, and show
 that nothing distinguishes it from a midnight-anchored one. The red-first test must fail because the
