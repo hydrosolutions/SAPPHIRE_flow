@@ -1,25 +1,47 @@
 ---
 status: DRAFT
 created: 2026-09-09
+revised: 2026-09-09
 plan: 262
 title: Onboard cmal_small on a two-station Swiss group — the first deep-learning model in the pipeline
-scope: Make the externally-trained `cmal_small` artifact run inside the ordinary forecast cycle on the mac-mini staging host, against a deliberately small station group. Five rails, all missing today: the shim subclass + vendored config, the `config_hash` the import path requires and no aquacast model exposes, an image built with the `aquacast` extra, an operator route to create a station group and assign a group model, and the artifact import itself. Explicitly NOT: fleet-wide onboarding, the 2020-2026 observation hole, the reanalysis tail gap (Plan 261 owns it), `cmal_pool_pt` promotion, retraining, skill scoring, or any change to `run_group_forecast`'s all-or-nothing behaviour.
+scope: Make the externally-trained `cmal_small` artifact run inside the ordinary forecast cycle on the mac-mini staging host, against a deliberately small station group. Five rails, all missing today: the shim subclass + vendored config, the `config_hash` the import path requires and no aquacast model exposes, an aquacast-enabled image for the forecast worker alone, an operator route to create a station group, and the artifact import itself. Explicitly NOT: fleet-wide onboarding, the 2020-2026 observation hole, the reanalysis tail gap (Plan 261 owns it), `cmal_pool_pt` promotion, retraining, skill scoring, or any change to `run_group_forecast`'s all-or-nothing behaviour.
 depends_on: []
 blocks: []
-source: 2026-09-09 — read-only measurement of the repo, the owner's model tree (`2025-01-BARHKH/models/global/cmal_small`, dated 2026-08-31), the pinned aquacast revision, and the live mac-mini staging database at v0.1.889.
+source: 2026-09-09 — read-only measurement of the repo, the owner's model tree (`2025-01-BARHKH/models/global/cmal_small`, dated 2026-08-31), the aquacast revision pinned in `pyproject.toml`, and the live mac-mini staging database at v0.1.889.
 ---
 
 # Plan 262 — onboard `cmal_small` on a two-station Swiss group
 
 ## Status
 
-**DRAFT — not reviewed.**
+**DRAFT — reviewed once (Claude + Codex, 2026-09-09); all findings folded.**
 
 Owner decision, 2026-09-09: **start now with the small group.** Of the three ways to
 handle the history gate — wait for the fleet to reach 30 days in early October, start
 now with the stations that already qualify, or backfill 2020-2026 from a non-LINDAS
 source — the owner chose to start now. This plan implements that choice and nothing
 else.
+
+Owner decision, 2026-09-09: the pilot declares **`ModelTier.SKILL` +
+`AlertEligibility.NO_EVENT_INFORMATION`** — ranked with the real forecasting models, but
+barred from raising alerts until it has been seen to work on Swiss rivers.
+
+### Review round 1 — what it changed
+
+Both passes were repository-grounded and complementary; every finding was verified
+against the code before folding. The design survived — all four claims the plan rests on
+are confirmed true at the *pinned* aquacast revision — but three tasks were wrong in
+shape:
+
+- **T4's provenance was materially false** (Codex blocker) and is rewritten below.
+- **T2 would have put torch into all five application images**, not the forecast worker
+  alone; it now builds a distinct image.
+- **T3 assigned a model that did not yet exist**; group creation and assignment are now
+  separate tasks either side of the import.
+- **The `_pooled` watch item was simply wrong** — GROUP dispatch never combines, a point
+  Plan 241 had already established and this plan re-derived incorrectly.
+
+Two gaps are flagged rather than closed; see **Flagged gaps** below.
 
 ## Why `cmal_small` and not `cmal_pool_pt`
 
@@ -34,27 +56,30 @@ vendored `cmal_pool_pt.yaml` already in this repo:
 | forcing | precipitation + mean temperature | same |
 | head / backbone | CMAL (3 components) / 1-layer LSTM, hidden 256 | CMAL / LSTM, hidden 512 |
 | checkpoint | `checkpoints/best.pt`, **1.8 MB** | — |
-| train split | 1985-01-01 → 2016-12-31 (val 1981-1984, test 2017-2020) | 1985-01-01 → 2011-12-31 |
 
 **The 30-day lookback is the entire reason this model is reachable and 210 is not.**
 Nothing on the staging host has 210 gap-free days of recent discharge, and nothing will
 before Nepal. Two stations have 29 today.
 
-Both models are **GROUP-scoped**. `aquacast/operational/model.py:698` returns
-`ArtifactScope.STATION` only when the config names exactly one gauge; `cmal_small` names
-15,489 training basins and carries no `gauge_ids` key. Plan 241's note calling
-`cmal_small` "the immediate STATION-scoped relaxable candidate"
-(`241-adopt-declared-horizon-semantics.md:363`) is **wrong on that point**, and the
-follow-on it hands to "whichever plan first onboards a STATION-scoped relaxable model"
-is therefore *not* inherited here. This plan does not touch the one-timestamp cadence
-question.
+Both models are **GROUP-scoped**. `_scope` returns `ArtifactScope.STATION` only when the
+config names exactly one gauge (`aquacast/operational/model.py:671-677` **at the pinned
+revision `5460f898`**); `cmal_small` names 15,489 training basins and carries no
+`gauge_ids` key. Plan 241's note calling `cmal_small` "the immediate STATION-scoped
+relaxable candidate" (`241-adopt-declared-horizon-semantics.md:363`) is **wrong on that
+point**, and the follow-on it hands to "whichever plan first onboards a STATION-scoped
+relaxable model" is therefore *not* inherited here. This plan does not touch the
+one-timestamp cadence question.
 
-Its horizon **is** relaxable: `horizon_is_relaxable` returns True for a composed,
-non-standalone, daily-only config with a non-attention head, so the requirement declares
+Its horizon **is** relaxable: at the pin the predicate is
+`horizon_fixed_reason(cfg, cfg.model) is None`, and the requirement declares
 `horizon_semantics=AT_MOST` with `min_future_steps=1`
-(`aquacast/operational/requirement.py:198-211`). Plan 241 landed the propagation and is
-deployed on the mini in 0.1.889, so `resolve_required_steps` returns
+(`aquacast/operational/requirement.py:214-231` at `5460f898`). Plan 241 landed the
+propagation and is deployed on the mini in 0.1.889, so `resolve_required_steps` returns
 `min(1, 10) = 1` and our 5-day ICON feed clears the coverage gate.
+
+⚠️ Every aquacast citation in this plan is given **at the pinned revision**, not at a
+local checkout's HEAD. The two differ by roughly 27 lines and the horizon predicate was
+renamed between them; the first revision of this plan cited the wrong one.
 
 ## ⛔ Proportionality — BINDING on this plan and on its review
 
@@ -62,8 +87,8 @@ This plan builds the smallest set of rails that lets one externally-trained arti
 in the existing cycle on two stations. It must stay that size.
 
 - **In:** one vendored config, one shim subclass, one `config_hash` property, one
-  compose build argument, one operator script for group creation/assignment, one
-  artifact import, and one observed cycle.
+  aquacast-enabled worker image, one operator script for group creation, one assignment,
+  one artifact import, and one observed cycle.
 - **Out:** onboarding the other 146 stations; changing `run_group_forecast`'s
   all-or-nothing `return {}`; the 2020-2026 observation hole (Plan 260); the reanalysis
   tail gap (Plan 261); promoting `cmal_pool_pt`; any retraining, hindcast or skill run;
@@ -82,10 +107,12 @@ is an aquacast model. No `docker-compose*.yml` passes `WITH_AQUACAST` or the bui
 secret, so a normal deploy cannot produce that image. `secrets/aquacast_token` **is**
 present on the host.
 
-**There is no group.** `station_groups` = 0, `group_model_assignments` = 0. Outside
-tests, nothing in `src/` or `scripts/` calls `store_group` or `add_station_to_group`;
-`create_group_assignment` (`services/model_onboarding.py:1023`) exists but has no
-operator caller.
+**There is no group, and group *creation* is unrouted.** `station_groups` = 0,
+`group_model_assignments` = 0. Outside tests, nothing in `src/` or `scripts/` calls
+`store_group` or `add_station_to_group`. Assignment is *not* in the same position:
+`create_group_assignment` (`services/model_onboarding.py:1023`) has two production
+callers (`flows/onboard_model.py:600`, `services/model_onboarding.py:1818`) behind the
+registered `onboard-model` deployment. It is group creation that has no route.
 
 **No aquacast model can be imported today.** `import_external_artifact` requires a
 non-`None` `config_hash` off the model (`services/model_import.py:386-393`); the FI
@@ -95,19 +122,24 @@ does aquacast. Every import refuses before any write. This is **not** an FI gap:
 `config_hash` is absent from `forecast_interface/interface/protocol.py` and is a SAP3
 import-provenance concept, so the fix belongs on our side of the boundary.
 
-**Two stations qualify on discharge depth.** Longest run of consecutive `qc_passed`
-daily discharge ending 2026-09-09:
+**Two stations qualify on discharge depth, and both are eligible to run.** Longest run
+of consecutive `qc_passed` daily discharge ending 2026-09-09:
 
-| code | name | consecutive days | run |
-|---|---|---|---|
-| 2009 | Porte du Scex | **29** | 2026-08-12 → 2026-09-09 |
-| 2091 | Rheinfelden-Messstation | **29** | 2026-08-12 → 2026-09-09 |
+| code | name | consecutive days | run | status / kind / basin |
+|---|---|---|---|---|
+| 2009 | Porte du Scex | **29** | 2026-08-12 → 2026-09-09 | `operational` / river / gauged / has basin |
+| 2091 | Rheinfelden-Messstation | **29** | 2026-08-12 → 2026-09-09 | `operational` / river / gauged / has basin |
 
-Every other station has 13 or fewer (34 stations at 12, 101 at 8) because live BAFU
-ingest starts 2026-07-03 and only broadened to 138 stations on 2026-09-02. Both
-qualifying stations cross 30 on **2026-09-10**. Discharge in this database also has a
-hole from 2020 to 2026 — CAMELS-CH history ends 2020, LINDAS is real-time only — which
-is Plan 260's subject, not this plan's.
+Status is recorded because the group loop keeps only `OPERATIONAL` members and skips the
+group entirely if none remain (`flows/run_forecast_cycle.py:3371-3390`) — a
+non-operational member would be a hard block, and T3a's Out forbids writing
+`station_status` to fix one.
+
+Every other station has 13 or fewer consecutive days (34 stations at 12, 101 at 8)
+because live BAFU ingest starts 2026-07-03 and only broadened to 138 stations on
+2026-09-02. Both qualifying stations cross 30 on **2026-09-10**. Discharge in this
+database also has a hole from 2020 to 2026 — CAMELS-CH history ends 2020, LINDAS is
+real-time only — which is Plan 260's subject, not this plan's.
 
 **Their forcing and NWP are in place, with one gap.** Both carry basin-average daily
 `precipitation` (`meteoswiss_rprelimd`) and `temperature` (`meteoswiss_tabsd`), 32
@@ -116,9 +148,10 @@ temperature from the 2026-09-09 00Z ICON cycle, out to 2026-09-14. All 148 basin
 216 `caravan:` attributes, and `cmal_small`'s 78 declared statics resolve **78/78**
 (`docs/reference/cmal-small-static-features.md`, aliases merged in #252).
 
-**The two are a useful contrast, and the plan must not blur it.** `caravan_camels_ch_2091`
-is **in** `cmal_small`'s training basin list; `caravan_camels_ch_2009` is in none of
-train/val/test. Any skill statement about 2091 is in-sample.
+**The two are a useful contrast, and the plan must not blur it.**
+`caravan_camels_ch_2091` is **in** `cmal_small`'s training basin list
+(`train_basins.txt:2850`); `caravan_camels_ch_2009` is in none of train/val/test. Any
+skill statement about 2091 is in-sample.
 
 ## 🔴 The one blocker this plan does not remove
 
@@ -126,11 +159,11 @@ Past forcing is **two days behind**: the latest `historical_forcing.valid_time` 
 stations is 2026-09-07 00:00Z. The past window is the aligned lookback ending at the
 issue bucket (`services/operational_inputs.py:569-576`, Plan 239 T1), and a missing tail
 produces **fewer rows, not nulls** — so the `max_nan=0` gate passes untouched
-(`adapters/forecast_interface.py:1029-1037` counts nulls and NaNs in the frame it was
+(`adapters/forecast_interface.py:1029-1038` counts nulls and NaNs in the frame it was
 given) and the model receives ~28 of the 30 daily steps it declares. Per CLAUDE.md,
 `max_nan` is a pre-`predict` NaN gate only; **shape shortfalls are the model's
-responsibility**, so aquacast will return `ModelFailure`, exactly the live
-`short_forcing_window` / `predict_failed` signature Plan 239 T1b is about.
+responsibility**, so aquacast returns `ModelFailure` — which the adapter then translates
+(see T5).
 
 **Plan 261 (forecast-fill the reanalysis tail) is what makes the first green forecast
 possible.** It is DRAFT on main awaiting owner READY. This plan is deliberately
@@ -154,11 +187,14 @@ the cycle will store a forecast on day one.
   `94ebec0fe4e000cecfd33ee8d50def9b8428b8f2e2ab7dbfeb77e2d04e580e45`; a test pins that
   value, so a hand-edit or a re-export cannot pass silently.
 - `src/sapphire_flow/models/aquacast/_shim.py` — a `CmalSmall(AquacastShim)` beside
-  `CmalPoolPT` (`CONFIG_FILENAME`, `model_tier`, `alert_eligibility`), plus a
-  `config_hash` property **on the base class**: the SHA-256 hex digest of the vendored
-  config file's bytes. Basing it on the file the shim already binds is what keeps the
-  digest and the bound config from drifting — the same discipline Plan 157 D1 assumed
-  when it made the config package data.
+  `CmalPoolPT` declaring `model_tier = ModelTier.SKILL` and
+  `alert_eligibility = AlertEligibility.NO_EVENT_INFORMATION` (owner decision above;
+  `ModelTier` admits only `SKILL`/`FALLBACK`, and `discover_models` raises if either
+  classification is absent — `services/model_registry.py:34`). Plus a `config_hash`
+  property **on the base class**: the SHA-256 hex digest of the vendored config file's
+  bytes. Basing it on the file the shim already binds is what keeps the digest and the
+  bound config from drifting — the discipline Plan 157 D1 assumed when it made the
+  config package data.
 - `src/sapphire_flow/models/aquacast/__init__.py` — export `CmalSmall`.
 - `pyproject.toml` — a `cmal_small` entry point; patch version bump.
 - `docs/reference/cmal-small-static-features.md` — record that the config is now
@@ -181,88 +217,141 @@ uv run pytest tests/unit/services/test_model_import.py
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
 Plus a test asserting `CmalSmall().input_requirement` carries
-`horizon_semantics=AT_MOST` and `min_future_steps=1` on both future-known variables, and
-that the vendored config's digest equals the pinned constant. Note the real-package
-tests skip without the extra (`pytest.importorskip`), so the digest and declaration
-tests must live where they run **without** it wherever possible, per the Plan 181 fixer
-finding recorded at the top of `test_aquacast_shim.py`.
+`horizon_semantics=AT_MOST` and `min_future_steps=1` on both future-known variables.
+
+⚠️ **Only the digest test can run without the `aquacast` extra.** Constructing any shim
+imports `aquacast.operational.config`/`.model` in `AquacastShim.__init__`, and CI's
+required unit job syncs without the extra, so every declaration test skips there
+(`tests/unit/models/test_aquacast_shim.py:1-28`). Put the digest assertion in the
+extra-free module and accept that the declaration assertions are locally-verified only —
+do not claim CI coverage for them.
 
 **Pre-change.** RED, and it must fail for the missing provenance rather than a missing
 symbol: call `import_external_artifact` with a constructed aquacast shim and assert
 today's `ConfigurationError` naming `config_hash`. A test that fails with
 `AttributeError: CmalSmall` proves only that the class is unwritten.
 
-### T2 — let a deploy actually build the aquacast image
+### T2 — an aquacast-enabled image for the forecast worker alone
 
-**Outcome.** `WITH_AQUACAST=1 docker compose build` produces an image in which
-`import aquacast` and `import torch` succeed; the default build is byte-identical to
-today's.
+**Outcome.** The `prefect-worker` service — which runs both the forecast cycle and the
+`import-model-artifact` deployment, since that deployment declares no pool and so lands
+on `default` (`cli/register_deployments.py:193-198`) — runs an image containing aquacast
+and torch. Every other service's image is unchanged.
 
-**In.** `docker-compose.yml` only — the `x-app-build` anchor gains
-`args: {WITH_AQUACAST: "${WITH_AQUACAST:-0}"}` and the `aquacast_token` build secret,
-with the matching top-level `secrets:` entry. The Dockerfile already accepts both
-(`Dockerfile:39-45`, `required=false`), so it needs no change.
+**In.** `docker-compose.yml`: `prefect-worker` gets its **own** `build:` block and its
+**own** image tag rather than the shared `x-app-build` anchor, built with
+`WITH_AQUACAST=1` and the `aquacast_token` build secret in the **`environment:`** form
+that `recap_dg_client_token` already uses (`docker-compose.yml:488-491`) — never a
+`file:` entry, which would break `docker compose build` and `config` wherever that file
+is absent. `docs/standards/cicd.md` gains a row for the new image and build argument.
 
-**Out.** `docker-compose.macmini.yml` and every other overlay. Making the extra the
-default anywhere. Any change to `mem_limit`.
+**Out.** The shared anchor and its four other consumers (`prefect-worker-ingest`,
+`prefect-worker-backup`, `api`, `init` — `docker-compose.yml:81,149,208,263,365`), which
+must keep building the default, torch-free image. Making the extra a default anywhere.
+Any change to `mem_limit`. The Dockerfile, which already accepts both inputs
+(`Dockerfile:39-45`, `required=false`).
 
-**Verification.** `docker compose config` shows the build arg defaulting to `0`; a
-default `docker compose build` still yields an image without `torch`; a
-`WITH_AQUACAST=1` build on the mini yields one with it. Record the built image size
-delta and the build duration in this plan — an ML stack on an arm64 host is the one
-place this plan could turn out disproportionate, and a number settles it.
+The Dockerfile states the requirement this task must honour: "only the forecast-cycle
+worker image installs it, because it pulls torch and the whole ML stack"
+(`Dockerfile:30-33`). Putting the argument on the shared anchor would have violated
+that, and all five services share one image tag today, so it would have shipped torch
+everywhere.
 
-**Pre-change.** N/A — configuration wiring. The measured `find_spec("aquacast") is None`
-in the running worker is the evidence that it is missing.
+**Verification.** `docker compose config` shows the four anchor consumers unchanged and
+`prefect-worker` on its own tag; a default build still yields an image without `torch`;
+the worker's build yields one where `import aquacast` and `import torch` both succeed.
+Record the built image size delta and the build duration here — an ML stack on an arm64
+host is the one place this plan could turn out disproportionate, and a number settles
+it.
 
-**Risks to state in the task record.** arm64 wheel availability for the pinned torch;
-image size; the `rich>=15` `override-dependencies` already in `pyproject.toml`; and
-`docs/standards/cicd.md` must gain a row describing the new build argument.
+**Pre-change.** RED: with today's compose, export `WITH_AQUACAST=1` and build; the
+resulting worker image still has no `aquacast` and no `torch`. That discriminates
+between "the argument is unwired" and "the argument is wired but the build failed" —
+the measured `find_spec("aquacast") is None` alone does not.
 
-### T3 — an operator route to create a station group and assign a group model
+**Risks to record with the size number.** arm64 wheel availability for the pinned torch;
+the `rich>=15` `override-dependencies` already in `pyproject.toml`.
+
+### T3a — an operator route to create a station group
 
 **Outcome.** One idempotent, dry-run-by-default operator script creates a named station
-group from station **codes**, adds members, and assigns a group-scoped model — the
-capability that has no non-test caller today.
+group from station **codes** and adds members — the capability that has no non-test
+caller today. It does **not** assign a model; that is T3b, and it cannot run yet.
 
 **In.** `scripts/create_station_group.py`, its entry in the Dockerfile's curated
-operator-script list (`Dockerfile:144-147`, Plan 218), unit tests, and one integration
-test against real Postgres. It threads a real `WritePrincipal` and `AuditLogStore` and
-uses `create_group_assignment` rather than reimplementing the assignment invariants.
+operator-script list (`Dockerfile:144-150`, Plan 218), the test that **locks** that list
+(`tests/unit/deploy/test_dockerfile_operator_scripts.py` — adding a script is a
+deliberate edit in three places, not an automatic pickup), the two documents that carry
+literal copies of the list (`docs/deployment/mac-mini-staging.md:746`,
+`docs/touchpoint-maps.md:777`), unit tests, and one integration test against real
+Postgres. It threads a real `WritePrincipal` and `AuditLogStore`.
 
 **Out.** A generalised fleet-onboarding flow. Any station-status change — the script
 must never write `station_status`, given how `operational` was already applied to 111
-stations by direct DB write. Removing stations from a group.
+stations by direct DB write. Removing stations from a group. Model assignment.
 
 **Verification.**
 ```bash
 uv run pytest tests/unit/scripts/test_create_station_group.py
 uv run pytest tests/integration/scripts/test_create_station_group.py
 ```
-Then, on the mini, a dry run followed by a real run creating one group of **2009** and
-**2091** and assigning `cmal_small` at a daily `time_step`; verified by reading back
-`station_groups`, its members and `group_model_assignments`.
+Then, on the mini, a dry run followed by a real run creating one group holding **2009**
+and **2091**, verified by reading back `station_groups` and its members. Both
+script-list documents match the Dockerfile.
 
-**Pre-change.** RED: an integration test asserting that a group created by the script is
-returned by `fetch_groups_for_model` for the assigned model — the exact lookup
-`discover_group_runs` performs (`services/run_group_forecast.py:231`). Without that the
-script could write rows the cycle never sees.
+**Pre-change.** N/A — new capability. The script does not exist, so any test written
+against it fails on the missing module, which is not discriminating RED evidence. The
+`fetch_groups_for_model` assertion in T3b is the real acceptance criterion and is
+recorded there.
+
+### T3b — assign the model to the group (after the import)
+
+**Outcome.** `cmal_small` is assigned to the pilot group at a daily `time_step`, and
+`discover_group_runs` yields the pair.
+
+**In.** The assignment path only — `create_group_assignment`, invoked through the
+operator script extended with an `--assign-model` step, or through the existing
+`onboard-model` route if that proves the smaller change.
+
+**Out.** Everything in T3a.
+
+⛔ **This cannot run before T4.** `group_model_assignments.model_id` is a foreign key to
+`models.id` (`db/metadata.py:1035`), model *discovery* does not create that row, and the
+`models` row for a fresh external model is created by the import itself
+(`services/model_import.py:228-287`). The measured database has no aquacast model row,
+so an assignment attempted in phase 1 would violate the FK. This ordering is the whole
+reason T3 is split.
+
+**Verification.** An integration test asserting that the assigned model is returned by
+`fetch_groups_for_model` — the exact lookup `discover_group_runs` performs
+(`services/run_group_forecast.py:231`). Without that, the assignment could write rows
+the cycle never sees. Then, on the mini, the same assertion against the real group.
+
+**Pre-change.** RED: the `fetch_groups_for_model` assertion, run before the assignment
+exists, fails because the lookup returns nothing — not because a symbol is missing.
 
 ### T4 — import the trained artifact
 
 **Outcome.** `cmal_small` has an ACTIVE `model_artifacts` row against the pilot group,
-with honest provenance, imported through the existing `import-model-artifact`
+with **honest** provenance, imported through the existing `import-model-artifact`
 deployment — no new import machinery.
 
-**In.** A runbook section in this plan and the provenance values themselves:
-`expected_config_hash` = the digest pinned in T1; `training_period_start/end` =
-**1985-01-01 → 2016-12-31** (the config's train split); `trained_at` = the checkpoint's
-own completion time, read from the bundle's `BundleMeta.created_at` and cross-checked
-against the file's 2026-08-31 timestamp; `source_repository`/`source_commit` = the
-aquacast repository and the revision pinned in `pyproject.toml`. The artifact bytes are
-`checkpoints/best.pt` (1.8 MB) — already exactly the `ModelBundle` that
-`deserialize_artifact` expects (`aquacast/operational/artifact.py`,
-`aquacast/serialization.py:70-77`), so no conversion step exists or is needed.
+**In.** A runbook section in this plan and the provenance values themselves. The
+artifact bytes are `checkpoints/best.pt` (1,814,653 bytes) — already exactly the
+`ModelBundle` that `deserialize_artifact` expects (`aquacast/operational/artifact.py`,
+`aquacast/serialization.py`), so no conversion step exists or is needed.
+
+**The provenance, corrected.** The first revision of this plan proposed three values that
+are false. `import_external_artifact` requires these to describe the *real* external
+training (`services/model_import.py:13-30`), and they are written into an immutable
+record:
+
+| field | value | why |
+|---|---|---|
+| `training_period_start` / `_end` | **1985-01-01 → 2020-12-31** | `1985-01-01 → 2016-12-31` is only the config's *global* split. 18 regions carry overrides and two of them (`camelsh`, `caravan_camels_cz`) train through 2020-12-31. The artifact was trained on the pooled union, so the covering range is what describes it. |
+| `trained_at` | **the training-completion time, 2026-08-31 13:41:55** (`logs/train.log:632`) | **Not** `BundleMeta.created_at`: the bundle is stamped whenever a checkpoint snapshot is built, and the best checkpoint is from **epoch 5**, so its stamp long predates completion. **Not** the file's 14:05 mtime either. Three different numbers; only one is the training completion. |
+| `expected_config_hash` | computed **at import time from `config.yaml` in the owner's model tree** | Copying the constant T1 pins into the repo would compare the repo file against itself — a check that can never fail. The owner's tree is the only independent source; the bundle carries no config digest. |
+| `source_commit` | **left null** unless the training checkout revision is recovered | The artifact records aquacast **`0.1.346`**; the pinned revision is **`0.1.356`**, four days later. The pin cannot be the training source. |
 
 **Out.** Writing a new importer. Importing `cmal_pool_pt`. Importing against a station.
 
@@ -275,6 +364,11 @@ run with a wrong `expected_config_hash` is refused **before any write** — the 
 **Pre-change.** N/A — this task runs existing, tested code against real data. Its
 evidence is the resulting rows.
 
+**Risk to record.** `import_model_artifact_flow` takes the artifact as a base64 `str`
+parameter (`flows/import_model_artifact.py:116-129`); 1.8 MB encodes to ~2.42 MB
+crossing the Prefect parameter boundary. "No new import machinery" is true, but this is
+by far the largest artifact to cross it.
+
 ### T5 — one observed forecast cycle
 
 **Outcome.** The cycle reaches `run_group_forecast` for the pilot group and the outcome
@@ -282,22 +376,30 @@ is recorded here with its cause, whatever it is.
 
 **In.** One cycle run on the mini and a written result: whether `discover_group_runs`
 yielded the group, whether the future-coverage gate passed (it should: required steps
-resolves to 1), whether `predict_batch` returned a `ModelFailure`, and — if so — that
-`_group_forcing_gap_details` (`services/run_group_forecast.py:382`) attributes it to the
-past-forcing tail rather than to something unexplained.
+resolves to 1), and what the failure — if any — actually says.
 
-**Out.** Changing anything to make it pass. Adjusting the model's declaration. Touching
-`_pooled`.
+**Out.** Changing anything to make it pass. Adjusting the model's declaration.
 
 **Verification.** Worker logs for the cycle plus the `forecasts` rows for stations 2009
 and 2091, quoted into this plan.
 
 **Pre-change.** N/A — an observation task.
 
-**Expected result, stated in advance so a surprise is legible:** a `ModelFailure` with
-`FailureCause.INPUT_DATA` naming a short past window, because forcing ends two days
-before the issue time. A *stored forecast* at this point would mean the tail gap
-resolved itself and must be explained, not celebrated.
+**Expected result, stated in advance so a surprise is legible.** aquacast returns
+`ModelFailure` with `FailureCause.INPUT_DATA` for a short past window — but **that is
+the raw-FI expectation, not what is observable here.** `predict_batch` cannot return a
+`ModelFailure` across the SAP3 boundary: `_output_from_result` converts it to
+`ModelOutputError` (`adapters/forecast_interface.py:394-398`), and `run_group_forecast`
+logs **`run_group_forecast.predict_batch_failed`** with `forcing_gaps` and returns `{}`
+(`services/run_group_forecast.py:504-515`). Verify *that* event, that its message
+preserves the `INPUT_DATA` cause, and that `_group_forcing_gap_details`
+(`services/run_group_forecast.py:382`) attributes it to the past-forcing tail rather
+than to something unexplained. `short_forcing_window` and `predict_failed` are
+station-path events (`models/nwp_regression.py:406`,
+`services/run_station_forecast.py:509`) and will **not** appear.
+
+A *stored forecast* at this point would mean the tail gap resolved itself and must be
+explained, not celebrated.
 
 ### T6 — the remaining gate (not implemented here)
 
@@ -310,29 +412,48 @@ forecast.
 
 **Out.** Implementing any part of 261.
 
+**Verification.** Bounded inspection: this plan carries the statement, and Plan 261
+carries the reciprocal reference naming plan 262.
+
+**Pre-change.** N/A — documentation only.
+
+## Flagged gaps — needed from the modeller, not derivable here
+
+1. **The artifact's training source commit.** The bundle records aquacast package version
+   `0.1.346`, not a commit hash, so the exact training revision cannot be recovered from
+   the artifact. `source_commit` stays null until the modeller supplies it.
+2. **The timezone of `trained_at`.** `logs/train.log` timestamps carry no offset. The
+   value must be confirmed as UTC or local before it is written, since
+   `import_external_artifact` takes a `UtcDatetime`.
+
+Related and worth the modeller's eye: we would run a **`0.1.346` bundle under a
+`0.1.356` runtime**. `ModelLoader.model_from_bundle` rebuilds from `bundle.config` and
+enforces a strict `load_state_dict`, so a weight-shaping mismatch would fail loudly
+rather than silently — but nothing has exercised that combination yet, and T5 is the
+first thing that would.
+
 ## Watch items, not tasks
 
-- **`_pooled` may change on these two stations.** Pooling needs ≥2 contributors sharing
-  `valid_time`s (`services/forecast_combination.py:104`, `_MIN_POOLED_CONTRIBUTORS`).
-  A new daily model on midnight phase could give 2009/2091 a pooled product they do not
-  have today. That would be a *change in a live product* arriving as a side effect, so
-  T5 must report the pooled row count for those two stations before and after. It is not
-  a reason to hold the plan.
+- **`_pooled` cannot change on these two stations — confirmed, not assumed.** GROUP
+  dispatch never combines: `build_combined_forecasts` is called only from the Phase B
+  per-station loop (`flows/run_forecast_cycle.py:2932`, `:3262`), both *before* the
+  Phase B2 group loop opens at `:3341`, and it takes an in-memory
+  `MultiModelForecastResult` rather than reading the store, so a group forecast cannot
+  re-enter combination on a later cycle either. `docs/touchpoint-maps.md:381` states it,
+  and Plan 241 dropped its own T5 on exactly this ground
+  (`241-adopt-declared-horizon-semantics.md:339-345`). A GROUP-scoped `cmal_small` is
+  not a pooled contributor. *The first revision of this plan claimed the opposite and
+  was wrong.*
 - **The group's all-or-nothing failure mode is unchanged and load-bearing.** Any member
   station with inadequate future coverage returns `{}` for the whole group
-  (`services/run_group_forecast.py:414-460`). With two members this is a real risk, and
-  it is the main argument for keeping the pilot group small rather than "helpfully"
-  adding stations.
+  (`services/run_group_forecast.py:470`). With two members this is a real risk, and it
+  is the main argument for keeping the pilot group small rather than "helpfully" adding
+  stations.
 - **2091 is in the training set.** Do not quote its scores as out-of-sample skill.
 
-## Owner decisions still open
+## Owner decisions
 
-1. **`model_tier` and `alert_eligibility` for `cmal_small`.** `CmalPoolPT` declares
-   `SKILL` / `SKILL_FORECAST`. The same pair makes the pilot's output alert-eligible on
-   two live stations from its first successful cycle. The alternative is
-   `NO_EVENT_INFORMATION` while it is under evaluation, promoted later by a one-line
-   change. **Recommendation: `NO_EVENT_INFORMATION` for the pilot** — the deployment is
-   explicitly a test, and nothing about it has been validated against Swiss discharge.
+1. ✅ **Resolved 2026-09-09** — `ModelTier.SKILL` + `AlertEligibility.NO_EVENT_INFORMATION`.
 2. **The pilot group's name and tenant.** Suggested: `swiss-cmal-small-pilot` under the
    default tenant.
 3. **Whether T5 runs before Plan 261 is READY.** Recommendation: yes — the failure it
@@ -350,23 +471,25 @@ uv run pyright src
 
 - Every task's own verification has run, and T2's image-size and build-duration numbers
   are recorded here.
-- The vendored config's SHA-256 equals the pinned constant, and that constant equals the
-  digest of the file in the owner's model tree.
+- The vendored config's SHA-256 equals the pinned constant, **and** that constant equals
+  a digest computed independently from the owner's model tree.
 - `uv run pyright` no worse than the recorded ratchet baseline.
-- The default (no-`WITH_AQUACAST`) image build is unchanged.
-- `docs/standards/cicd.md` documents the new build argument;
+- The four shared-anchor services still build the default, torch-free image.
+- `docs/standards/cicd.md` documents the new image and build argument;
   `docs/reference/cmal-small-static-features.md` records the vendored config;
-  `docs/touchpoint-maps.md` is checked for the model-onboarding and forecast-cycle rows.
-- T5's observed outcome is written into this plan with its cause, including the `_pooled`
-  before/after counts for stations 2009 and 2091.
+  `docs/deployment/mac-mini-staging.md` and `docs/touchpoint-maps.md` script lists match
+  the Dockerfile.
+- T5's observed outcome is written into this plan with its cause.
 - No `station_status` was written by anything in this plan.
+- No provenance field was filled with a value this plan could not source; the two
+  flagged gaps are either closed by the modeller or still recorded as open.
 
 ```json
 {
   "phases": [
     {
       "id": "phase-1",
-      "tasks": ["T1", "T2", "T3"],
+      "tasks": ["T1", "T2", "T3a"],
       "parallel": true
     },
     {
@@ -376,8 +499,13 @@ uv run pyright src
     },
     {
       "id": "phase-3",
-      "tasks": ["T5", "T6"],
+      "tasks": ["T3b"],
       "depends_on": ["phase-2"]
+    },
+    {
+      "id": "phase-4",
+      "tasks": ["T5", "T6"],
+      "depends_on": ["phase-3"]
     }
   ]
 }
