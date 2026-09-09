@@ -408,10 +408,32 @@ before 261 is deployed — that was the earlier plan and is superseded.
 **Verification.** Worker logs for the cycle plus the `forecasts` rows for stations 2009
 and 2091, quoted into this plan.
 
-**Expected result, stated in advance so a surprise is legible.** A stored forecast for
-both stations. The pilot's two members are the *only* two stations with enough discharge
-depth, so the all-or-nothing group behaviour has nothing to trip over; the statics resolve
-78/78; the future window is 5 days against a required 1.
+**Expected result, stated in advance so a surprise is legible — and it is DATED.**
+
+Measured 2026-09-09, both pilot stations, precipitation and temperature, every source: the
+30-day window (2026-08-10 → 09-08) holds **28 of 30 days**. Two are missing —
+**2026-08-18**, which is INTERIOR, and **2026-09-08**, the tail. Plan 261 fills the tail
+and deliberately excludes interior holes (owner decision, 2026-09-09), so on today's data
+the window would still be 29/30 and the model would refuse.
+
+⭐ **The interior hole ages out on its own.** The window start passes 2026-08-18 on
+**2026-09-18**, and there are **zero** holes from 2026-08-19 onward (measured). So with
+261's tail fill deployed, the first complete 30-day window — and the first stored forecast
+— is available from **2026-09-18**, with no additional work and no interior-fill decision.
+
+Run T5 on or after that date and the expected result is a stored forecast for both
+stations: the pilot's two members are the *only* two with enough discharge depth, so the
+all-or-nothing group behaviour has nothing to trip over; the statics resolve 78/78; the
+future window is 5 days against a required 1.
+
+⚠️ **The model does NOT tolerate a short or holed window — verified against the pinned
+aquacast 0.1.356, not assumed.** A window needs `lookback_days` daily steps before the
+issue (`aquacast/operational/model.py:786`), a coverage shortfall returns
+`fi.ModelFailure(cause=fi.FailureCause.INPUT_DATA)` (`model.py:548-551`), and an interior
+hole additionally trips the cadence check, which requires delivered spacing to equal the
+declared step and names the first disagreement (`aquacast/operational/datasource.py:538-553`).
+Running before 2026-09-18 therefore produces a typed, well-attributed refusal — not a
+forecast, and not a crash.
 
 ⚠️ **What a failure would look like, and where to read it.** A group failure does **not**
 surface as `ModelFailure`: `_output_from_result` converts it to `ModelOutputError`
@@ -543,7 +565,7 @@ uv run pyright src
     {
       "id": "phase-4",
       "tasks": ["T5", "T6"],
-      "depends_on": ["phase-3", "plan-261-T1"]
+      "depends_on": ["phase-3"]
     }
   ]
 }
