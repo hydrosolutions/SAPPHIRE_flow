@@ -4,8 +4,8 @@ created: 2026-09-09
 revised: 2026-09-09
 plan: 262
 title: Onboard cmal_small on a two-station Swiss group — the first deep-learning model in the pipeline
-scope: Make the externally-trained `cmal_small` artifact run inside the ordinary forecast cycle on the mac-mini staging host, against a deliberately small station group. Five rails, all missing today: the shim subclass + vendored config, the `config_hash` the import path requires and no aquacast model exposes, an aquacast-enabled image for the forecast worker alone, an operator route to create a station group, and the artifact import itself. Explicitly NOT: fleet-wide onboarding, the 2020-2026 observation hole, the reanalysis tail gap (Plan 261 owns it), `cmal_pool_pt` promotion, retraining, skill scoring, or any change to `run_group_forecast`'s all-or-nothing behaviour.
-depends_on: []
+scope: Make the externally-trained `cmal_small` artifact run inside the ordinary forecast cycle on the mac-mini staging host, against a deliberately small station group. Five rails, all missing today: the shim subclass + vendored config, the `config_hash` the import path requires and no aquacast model exposes, an aquacast-enabled image for the forecast worker alone, an operator route to create a station group, and the artifact import itself. Explicitly NOT: fleet-wide onboarding, the 2020-2026 observation hole, the reanalysis tail gap (Plan 261 owns it), `cmal_pool_pt` promotion, retraining, skill scoring, or any change to `run_group_forecast`'s all-or-nothing behaviour. The operational forcing series itself is Plan 261's subject and is now a PREREQUISITE, not an accepted shortfall.
+depends_on: [261]
 blocks: []
 source: 2026-09-09 — read-only measurement of the repo, the owner's model tree (`2025-01-BARHKH/models/global/cmal_small`, dated 2026-08-31), the aquacast revision pinned in `pyproject.toml`, and the live mac-mini staging database at v0.1.889.
 ---
@@ -25,6 +25,15 @@ else.
 Owner decision, 2026-09-09: the pilot declares **`ModelTier.SKILL` +
 `AlertEligibility.NO_EVENT_INFORMATION`** — ranked with the real forecasting models, but
 barred from raising alerts until it has been seen to work on Swiss rivers.
+
+### Owner reframe, 2026-09-09 — what it changed
+
+The owner read the draft and identified that it "gets hung up on the past data": it
+treated the incomplete past forcing series as an external blocker to route around, rather
+than as a tier of ordinary operational assembly this system has simply never built. That
+is now Plan 261's subject, 261 is a **prerequisite** of this plan, and the section that
+declared the blocker is replaced by the one below. The pilot's first live run is a real
+forecast, not a predicted failure.
 
 ### Review round 1 — what it changed
 
@@ -153,24 +162,38 @@ temperature from the 2026-09-09 00Z ICON cycle, out to 2026-09-14. All 148 basin
 (`train_basins.txt:2850`); `caravan_camels_ch_2009` is in none of train/val/test. Any
 skill statement about 2091 is in-sample.
 
-## 🔴 The one blocker this plan does not remove
+## The forcing series is a prerequisite, not a blocker to route around
 
-Past forcing is **two days behind**: the latest `historical_forcing.valid_time` for both
-stations is 2026-09-07 00:00Z. The past window is the aligned lookback ending at the
-issue bucket (`services/operational_inputs.py:569-576`, Plan 239 T1), and a missing tail
-produces **fewer rows, not nulls** — so the `max_nan=0` gate passes untouched
-(`adapters/forecast_interface.py:1029-1038` counts nulls and NaNs in the frame it was
-given) and the model receives ~28 of the 30 daily steps it declares. Per CLAUDE.md,
-`max_nan` is a pre-`predict` NaN gate only; **shape shortfalls are the model's
-responsibility**, so aquacast returns `ModelFailure` — which the adapter then translates
-(see T5).
+**Superseded 2026-09-09 by the owner.** The first revision of this plan called the short
+past-forcing window "the one blocker this plan does not remove", treated it as an external
+fact of the world, and planned a *predicted failure* as the pilot's first deliverable. The
+owner rejected that framing:
 
-**Plan 261 (forecast-fill the reanalysis tail) is what makes the first green forecast
-possible.** It is DRAFT on main awaiting owner READY. This plan is deliberately
-structured so T1-T5 do not wait for it: every rail can be built, deployed and verified
-against a *typed, correctly-attributed failure*, and 261 flips the last step green
-without changing anything built here. T6 states that explicitly rather than pretending
-the cycle will store a forecast on day one.
+> "what we typically do for operational forecasting is, we concatenate reanalysis data
+> with stale forecasts and with operational forecasts to get a complete time series of
+> past to future forcing for the model. It seems to me like this plan may not take this
+> into account. it gets hung up on the past data."
+
+That is correct, and it is the right call. The shortfall is not a property of the data —
+it is a tier this system has never built. Measured 2026-09-09: **169 NWP cycles are
+retained** (2026-07-03 → today, 6-hourly, 148 stations, 5-day horizon each), every day in
+the gap is covered by **21-22 cycles**, and the freshest covering cycle for each was
+issued **on that day** — lead time ≈ 0. The values are not merely available; they are the
+best estimate of what happened that exists.
+
+**Plan 261, rewritten the same day, owns that assembly and now `blocks: [262]`.** What
+remains true and worth keeping from the original analysis is the failure *mechanism*,
+because it is what makes the shortfall invisible: a missing tail produces **fewer rows,
+not nulls**, so the `max_nan=0` gate passes untouched
+(`adapters/forecast_interface.py:1029-1038`) and the shortfall reaches the model as a
+SHAPE failure. Per CLAUDE.md, `max_nan` is a pre-`predict` NaN gate only and shape
+shortfalls are the model's responsibility.
+
+**Sequencing (owner, 2026-09-09).** T1, T2 and T3a have no code dependency on 261 and are
+built in parallel with it. **T5 — the first observed cycle — runs after 261 is deployed**,
+so the pilot's first live run is a real forecast rather than a documented failure. This
+supersedes the earlier answer to run T5 ahead of the forcing work; nothing else is
+delayed by it.
 
 ## Tasks
 
@@ -369,48 +392,58 @@ parameter (`flows/import_model_artifact.py:116-129`); 1.8 MB encodes to ~2.42 MB
 crossing the Prefect parameter boundary. "No new import machinery" is true, but this is
 by far the largest artifact to cross it.
 
-### T5 — one observed forecast cycle
+### T5 — the first forecast, after Plan 261 is deployed
 
-**Outcome.** The cycle reaches `run_group_forecast` for the pilot group and the outcome
-is recorded here with its cause, whatever it is.
+**Outcome.** The cycle reaches `run_group_forecast` for the pilot group with a complete
+past forcing series, and the outcome is recorded here with its cause, whatever it is.
 
-**In.** One cycle run on the mini and a written result: whether `discover_group_runs`
-yielded the group, whether the future-coverage gate passed (it should: required steps
-resolves to 1), and what the failure — if any — actually says.
+**In.** One cycle run on the mini **after Plan 261's T1 is deployed**, and a written
+result: whether `discover_group_runs` yielded the group, whether the future-coverage gate
+passed (it should — required steps resolves to 1), whether the past leg reached the issue
+time, and what the model returned.
 
-**Out.** Changing anything to make it pass. Adjusting the model's declaration.
+**Out.** Changing anything to make it pass. Adjusting the model's declaration. Running
+before 261 is deployed — that was the earlier plan and is superseded.
 
 **Verification.** Worker logs for the cycle plus the `forecasts` rows for stations 2009
 and 2091, quoted into this plan.
 
+**Expected result, stated in advance so a surprise is legible.** A stored forecast for
+both stations. The pilot's two members are the *only* two stations with enough discharge
+depth, so the all-or-nothing group behaviour has nothing to trip over; the statics resolve
+78/78; the future window is 5 days against a required 1.
+
+⚠️ **What a failure would look like, and where to read it.** A group failure does **not**
+surface as `ModelFailure`: `_output_from_result` converts it to `ModelOutputError`
+(`adapters/forecast_interface.py:394-398`) and `run_group_forecast` logs
+**`run_group_forecast.predict_batch_failed`** with `forcing_gaps`, returning `{}`
+(`services/run_group_forecast.py:504-515`). `short_forcing_window` and `predict_failed`
+are station-path events (`models/nwp_regression.py:406`,
+`services/run_station_forecast.py:509`) and will **not** appear. If it does fail, check
+`_group_forcing_gap_details` (`services/run_group_forecast.py:382`) before assuming the
+cause.
+
+⚠️ **The untested combination is the runtime pairing, not the data.** We run a
+**`0.1.346` bundle under a `0.1.356` runtime** (see Flagged gaps). `ModelLoader.model_from_bundle`
+rebuilds from `bundle.config` under a strict `load_state_dict`, so a weight-shaping
+mismatch fails loudly rather than silently — but T5 is the first thing to exercise it, and
+a load failure here is a *provenance* finding, not a forcing one. Do not conflate them.
+
 **Pre-change.** N/A — an observation task.
 
-**Expected result, stated in advance so a surprise is legible.** aquacast returns
-`ModelFailure` with `FailureCause.INPUT_DATA` for a short past window — but **that is
-the raw-FI expectation, not what is observable here.** `predict_batch` cannot return a
-`ModelFailure` across the SAP3 boundary: `_output_from_result` converts it to
-`ModelOutputError` (`adapters/forecast_interface.py:394-398`), and `run_group_forecast`
-logs **`run_group_forecast.predict_batch_failed`** with `forcing_gaps` and returns `{}`
-(`services/run_group_forecast.py:504-515`). Verify *that* event, that its message
-preserves the `INPUT_DATA` cause, and that `_group_forcing_gap_details`
-(`services/run_group_forecast.py:382`) attributes it to the past-forcing tail rather
-than to something unexplained. `short_forcing_window` and `predict_failed` are
-station-path events (`models/nwp_regression.py:406`,
-`services/run_station_forecast.py:509`) and will **not** appear.
+### T6 — record what the pilot proved, and what it did not
 
-A *stored forecast* at this point would mean the tail gap resolved itself and must be
-explained, not celebrated.
+**Outcome.** This plan records, in one place, what the first `cmal_small` forecast
+demonstrated: that the rails hold end to end, and — separately — that nothing about its
+*quality* has been established.
 
-### T6 — the remaining gate (not implemented here)
+**In.** A status line in this plan, and the two standing caveats restated where a reader
+of the result will meet them: **2091 is in the training basin list**, so its numbers are
+in-sample and are never skill; and the pilot declares
+`AlertEligibility.NO_EVENT_INFORMATION`, so it raises nothing.
 
-**Outcome.** This plan records, in one place, that the first green `cmal_small` forecast
-needs **Plan 261** (or an equivalent decision about the reanalysis tail), and that
-nothing else measured on 2026-09-09 stands between the pilot group and a stored
-forecast.
-
-**In.** A status line in this plan and a cross-reference from Plan 261.
-
-**Out.** Implementing any part of 261.
+**Out.** Any skill computation, hindcast, or scoring. Promoting the model. Adding
+stations.
 
 **Verification.** Bounded inspection: this plan carries the statement, and Plan 261
 carries the reciprocal reference naming plan 262.
@@ -453,11 +486,14 @@ first thing that would.
 
 ## Owner decisions
 
-1. ✅ **Resolved 2026-09-09** — `ModelTier.SKILL` + `AlertEligibility.NO_EVENT_INFORMATION`.
-2. **The pilot group's name and tenant.** Suggested: `swiss-cmal-small-pilot` under the
-   default tenant.
-3. **Whether T5 runs before Plan 261 is READY.** Recommendation: yes — the failure it
-   produces is informative and the rails are what take time.
+**All three are resolved. None is open.**
+
+1. ✅ **2026-09-09** — `ModelTier.SKILL` + `AlertEligibility.NO_EVENT_INFORMATION`.
+2. ✅ **2026-09-09** — the pilot group is **`swiss-cmal-small-pilot`** under the **default
+   tenant**.
+3. ✅ **2026-09-09, superseding an earlier answer** — Plan 261 is a prerequisite. T1/T2/T3a
+   build in parallel with it; **T5 runs after 261 is deployed**, so the first live run is a
+   real forecast rather than a documented failure.
 
 ## Exit gates
 
@@ -479,7 +515,9 @@ uv run pyright src
   `docs/reference/cmal-small-static-features.md` records the vendored config;
   `docs/deployment/mac-mini-staging.md` and `docs/touchpoint-maps.md` script lists match
   the Dockerfile.
-- T5's observed outcome is written into this plan with its cause.
+- Plan 261's T1 is deployed on the mini before T5 runs.
+- T5's observed outcome is written into this plan with its cause, including whether the
+  past forcing leg reached the issue time.
 - No `station_status` was written by anything in this plan.
 - No provenance field was filled with a value this plan could not source; the two
   flagged gaps are either closed by the modeller or still recorded as open.
@@ -505,7 +543,7 @@ uv run pyright src
     {
       "id": "phase-4",
       "tasks": ["T5", "T6"],
-      "depends_on": ["phase-3"]
+      "depends_on": ["phase-3", "plan-261-T1"]
     }
   ]
 }
