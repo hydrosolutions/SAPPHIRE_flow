@@ -83,6 +83,52 @@ no duplicate `(forecast, valid_time, member)` rows, no multi-parameter forecasts
 07:24:18 UTC, among others). Only 168 are genuinely at phase 0. The half-grid is the majority case in
 the live column, not an anticipated one.
 
+## 🔴 The strongest evidence for this plan is a live Swiss product — and OUR OWN INPUTS DISAGREE
+
+Established 2026-09-09 by reading MeteoSwiss's own grid-product documentation, not by inference.
+⭐ **This supersedes the clock-derived-timestamp argument below as this plan's primary evidence.**
+That argument was about phases OUR code produces; this is a phased daily grid arriving from a national
+weather service, in production, since 1961.
+
+| Product we ingest | What "day D" covers, per the provider | As a grid |
+|---|---|---|
+| `meteoswiss_rhiresd` (definitive precipitation) | **06:00 UTC on D → 06:00 UTC on D+1** | `(86400 s, 21600 s)` |
+| `meteoswiss_rprelimd` (preliminary precipitation) | **06:00 UTC on D → 06:00 UTC on D+1** | `(86400 s, 21600 s)` |
+| `meteoswiss_tabsd` / `tmind` / `tmaxd` (temperature) | **midnight → midnight UTC** | `(86400 s, 0)` |
+| `meteoswiss_sreld` (relative sunshine duration) | ⚠️ **UNRESOLVED** — product doc not yet read | — |
+| `camels-ch` | ⚠️ **UNRESOLVED** — research dataset, needs its documentation | — |
+
+Verbatim, from *"Documentation of MeteoSwiss Grid-Data Products — Daily Precipitation (final
+analysis): RhiresD"*: *"Daily precipitation on day D, corresponding to rainfall and snowfall water
+equivalent accumulated from 06:00 UTC of day D to 06:00 UTC of day D+1."* The preliminary product's
+documentation carries the identical sentence. TabsD's reads: *"representative of the average, the
+minimum and the maximum from midnight to midnight UTC."*
+
+⛔ **These are the GRID products, not the station data behind them.** The 06:00 window originates in
+the manual rain-gauge network, which is read at 06:00 UTC — but the gridded analysis inherits it and
+states it as its own `Variable` definition. Checked specifically, because "that is only the station
+convention" is the obvious and wrong way to dismiss this.
+
+**We store all of them stamped `00:00` and treat all of them as midnight-to-midnight**, verified on
+staging 2026-09-09: one distinct time-of-day across all eight sources.
+
+🔴 **Three consequences, in increasing order of importance:**
+
+1. **Precipitation is displaced +6 h.** The value we label day D actually covers 06:00 on D to 06:00
+   on D+1. Overnight rain falling between midnight and 06:00 is attributed to the PREVIOUS day in our
+   data.
+2. ⛔ **Our own inputs disagree with each other by six hours.** Every Swiss model is trained and served
+   on a precipitation day and a temperature day that are not the same day. This is not a
+   we-versus-provider mismatch; it is internal.
+3. ⭐ **A source is a grid with a phase, and different sources feeding ONE model can carry DIFFERENT
+   phases.** The plan's design assumed the difficulty was between a source and a target. It is also
+   BETWEEN SOURCES, and nothing in the system can currently express that, let alone reconcile it.
+
+📌 **Not urgent, but it must ride the retrain.** The misalignment has been consistent since 1961, so
+models learned the same skew they are served — this is a wrong question modelled consistently, not a
+live corruption. Correcting it invalidates every Swiss artifact, so it goes into **Plan 254 T6's
+cutover** with the boundary move and Plan 262's stamping change. Owner decision 2026-09-09.
+
 ## What the code does today
 
 - **A time step is a scalar on every path but one.** (The exception is skill scoring, below — an
@@ -518,6 +564,17 @@ Either T4 gains a target-grid step field, or the rejection moves to wherever tha
 declared (per model, per parameter, or per channel). **T4 cannot be implemented as written until this
 is answered.**
 
+**OQ-6 — how do two sources with DIFFERENT day boundaries feed ONE model?** Measured above:
+precipitation arrives on a 06:00 day, temperature on a midnight day. Same step, different phase, so
+by this plan's own alignable rule they are NOT alignable — yet today we combine them silently.
+⛔ **We cannot fix this by shifting either one:** re-cutting a daily total to a different boundary
+means splitting it, which OD-13 forbids. The real options are to declare the model's target grid and
+accept one source as off-grid with the mismatch recorded, to re-derive the 06:00 products from
+sub-daily station data (expensive, and outside this system), or to adopt 06:00 as the Swiss
+operational day so precipitation is native and temperature is the off-grid one. ⚠️ **This interacts
+with OD-2's 23:00Z target** — a third candidate boundary — and it must be settled before Plan 254 T6
+retrains anything, because the retrain bakes in whichever answer we choose.
+
 **OQ-2 — who owns interval bounds (`period_start` / `period_end`)?** This plan assigns them to Plan
 258 with OD-5; Plan 254's Non-goals assign them to Plan 251's Forecast Lab v3 format transition; and
 **neither plan carries a task for them** — 258's task ledger (T0–T4) does not mention them. They are
@@ -706,6 +763,13 @@ deployment work and is **out of scope here**.
 
 **Outcome:** each adapter's **native grid phase** is recorded — confirmed, converted, flagged
 unresolved, or **`NOT A GRID`**.
+
+⭐ **This task has already produced its most important finding, and the method is the point.** Reading
+the provider's own product documentation established that MeteoSwiss precipitation runs 06:00→06:00
+while its temperature runs midnight→midnight (see the evidence section above). **No automated check
+would have found that** — the metadata is not in the files, and the gateway strips what little there
+is. ⛔ **The audit is a DOCUMENTATION-READING task, not a data-inspection one.** Three of eight Swiss
+sources are answered; `meteoswiss_sreld` and `camels-ch` are still open.
 
 ⛔ **The fourth outcome is required by OD-0.** A source is not assumed to be a grid at all; a
 manually-read gauge or an event-triggered series has **no phase**, and recording that as "unresolved"

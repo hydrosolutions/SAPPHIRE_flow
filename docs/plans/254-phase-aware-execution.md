@@ -240,7 +240,21 @@ and the activation and prediction gates. Depends on T3.
 
 **Verification:** `uv run pytest tests/unit/services/test_model_registry.py tests/integration/db/` — an artifact whose recorded grid differs from the deployment's is refused at activation with a typed error, and the refusal is locked by a test.
 
-### T6 — sequence the Swiss retrain and cutover
+### T6 — sequence the Swiss retrain and cutover (THREE corrections ride it, not one)
+
+⭐ **Scope widened 2026-09-09 by owner decision.** One retrain, carrying everything that changes what
+a stored daily value means:
+
+| # | Correction | Owner |
+|---|---|---|
+| 1 | Swiss day boundary moves from phase 0 to 23:00Z | this task |
+| 2 | End-period stamping adopted; our bucket labelling changes to match | **Plan 262** |
+| 3 | **MeteoSwiss precipitation is a 06:00→06:00 day, not midnight→midnight** — measured from the provider's own grid-product documentation; our temperature is midnight→midnight, so our two inputs disagree by six hours | **Plan 252** declares it; corrected here |
+
+⛔ **All three invalidate every Swiss artifact, so they must land together.** Doing them separately
+means three retrains and three cutovers. ⚠️ **Correction 3 is not yet decided, only measured** — Plan
+252 **OQ-6** asks how two differently-phased sources feed one model, and its answer changes what this
+retrain bakes in. **Do not start T6 before OQ-6 is settled.**
 
 **Outcome:** Switzerland moves from phase 0 to 23:00Z with artifacts, hindcasts, skill generations and
 configuration moving together, and a rollback.

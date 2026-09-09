@@ -57,13 +57,13 @@ down, not a fire burning now.
 and daily. That is precisely the path that triggers this. **Fix it before the feed arrives, not
 after.**
 
-⚠️ A second, sharper unknown was surfaced by the same measurement and is NOT this plan's — it goes to
-Plan 252 T6, the adapter audit: **nothing records what day a MeteoSwiss daily product actually
-covers.** National services commonly define a precipitation day morning-to-morning rather than
-midnight-to-midnight. If ours does and we read the `00:00` stamp as midnight-to-midnight, every
-definitive Swiss daily rainfall value is displaced by hours — a much larger error than this plan's,
-on the product feeding every Swiss model. **Not claimed, not measured — but nothing in the adapter or
-`docs/conventions.md` answers it, and it must be answered before this plan converts anything.**
+🔴 **CONFIRMED 2026-09-09, and it is larger than this plan's own defect.** The same investigation
+established from MeteoSwiss's grid-product documentation that **both precipitation products run
+06:00 UTC → 06:00 UTC** while **temperature runs midnight → midnight**. We store all of them stamped
+`00:00` and treat all of them as midnight-to-midnight. So Swiss precipitation is displaced +6 h, and
+our own two inputs disagree with each other by six hours. **That is Plan 252's to declare** (its
+evidence section, and **OQ-6** on how differently-phased sources feed one model) and Plan 254 T6's to
+correct — in the same retrain this plan rides.
 
 ## What changes, measured
 
@@ -130,9 +130,13 @@ T4.
 convention must be established from its documentation rather than assumed. If it is period-beginning
 it needs converting; if the documentation does not say, it cannot be silently assumed either way.
 
-**D3 — is the MeteoSwiss daily-day question a blocker for this plan or only for the audit?**
-See the warning above. Recommend: **blocker.** Converting a stamp whose covering window we have not
-established would move a value we do not understand.
+**D3 — ANSWERED 2026-09-09: the MeteoSwiss daily-day question is RESOLVED for three of eight
+sources, and the answer is worse than the question.** Read from the provider's grid-product
+documentation: both precipitation products run **06:00 UTC → 06:00 UTC**, while the temperature
+products run **midnight → midnight**. So this plan is not converting a single unknown convention — it
+is converting sources that **disagree with each other by six hours**. The declaration belongs to
+Plan 252 (see its evidence section and **OQ-6**); the correction rides Plan 254 T6 with this plan's
+change. ⚠️ `meteoswiss_sreld` and `camels-ch` remain unread and still block T2 for those two sources.
 
 ## Non-goals
 
