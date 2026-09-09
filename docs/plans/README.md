@@ -150,6 +150,13 @@ exit criteria — Plan 212 owns that deeper screening.
   change does not ride on a persistence fix. Three open owner decisions: whether v3
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 253 landing first.
+- **261** — The reanalysis tail is never filled, though the values are already here — `DRAFT`
+  — measured while validating Plan 239 T1b: past forcing runs permanently ~2.5 days
+  short of the issue time, and the FORECAST values that would cover that span are
+  already stored. Concatenates them onto past forcing **in memory**, in the two
+  operational assemblers only. **Nothing is stored** — not a new source, not a change
+  to what is ingested, not a new column, not interior gap-filling. Renumbered off a
+  three-way 258 collision on 2026-09-09. Depends on 239.
 - **258** — A value is a point or an interval — `DRAFT` — **split out of 252 on
   2026-09-08**, after an independent review returned eight blockers of which three
   belonged to this one concern and none to grids. Owns CF `cell_methods` as the
