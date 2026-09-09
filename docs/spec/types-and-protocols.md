@@ -1583,9 +1583,20 @@ class ModelDataRequirements:
     spatial_input_type: SpatialRepresentation
     ensemble_mode: EnsembleMode = EnsembleMode.SINGLE   # SINGLE: model emits one trajectory; ENSEMBLE: forcing carries member-suffixed columns, fanned out per member
     declared_aggregations: frozenset[tuple[str, AggregationMethod]] = frozenset()  # per-parameter FI-declared aggregation, e.g. frozenset({("discharge", AggregationMethod.MAX)})
+    declared_lookbacks: frozenset[tuple[str, int]] = frozenset()  # per-parameter FI-declared lookback, e.g. frozenset({("precipitation", 45), ("temperature", 14)})
 ```
 
 `ensemble_mode` (`EnsembleMode` enum: `SINGLE` | `ENSEMBLE`, mirrors the ForecastInterface `FutureKnownVariable.ensemble_mode` values) marks a model whose future-known forcing is delivered as member-suffixed columns (`precipitation_0`, `precipitation_1`, …). The FI adapter projects `ENSEMBLE` when any `future_known` variable declares it; the operational and conformance paths then fan such a model out over the members (see `services/ensemble_fanout.py`), assembling one N-member ensemble from N single-trajectory predictions. Defaulted to `SINGLE` so native single-trajectory models are unaffected. The hindcast path never fans out (reanalysis is a single teacher-forced trajectory).
+
+`declared_lookbacks` (Plan 239 T1b review) carries each past variable's OWN declared
+`PastKnownVariable.lookback`. `lookback_steps` above is the MAXIMUM across every declared past
+variable, because input assembly fetches one frame wide enough for all of them — judging gap
+severity on that maximum reported a hole in a bucket the model never reads (a model declaring
+precipitation=45 and temperature=14 flagged a 30-day-old temperature gap). Per name this is a MAX
+across branches, NOT a conflict check: one variable legitimately carries different lookbacks in
+different (product, time_step) branches. A declared lookback may never exceed `lookback_steps`;
+`ModelDataRequirements.__post_init__` rejects that, since the assembled frame would be too narrow
+to judge it. Empty means nothing was declared and consumers fall back to `lookback_steps`.
 
 `declared_aggregations` (Plan 228 review fixer round) carries a model's per-variable FI-declared
 aggregation (`PastKnownVariable.aggregation` / `FutureKnownVariable.aggregation`) into SAP3, keyed
@@ -4191,6 +4202,11 @@ class InputQualityConfig(BaseModel):
     warmup_snapshot_age_degraded_hours: float = 42.0
         # warm-up snapshot age → DEGRADED (must be <= warm_up_snapshot_max_age_hours;
         # for monsoon deployments, must be <= warm_up_snapshot_max_age_monsoon_hours)
+    forcing_recent_steps: int = Field(default=2, ge=0)
+        # Plan 239 T1b: how many of the MOST RECENT past-forcing buckets must be present
+        # before a gap counts as DEGRADED rather than PARTIAL. A fixed count, one rule for
+        # every model. Must be >= 0 — a negative value put the cutoff in the FUTURE and
+        # inverted the rule. 0 means "no recent window", so every gap is PARTIAL.
 ```
 
 Cross-validators (enforced at `DeploymentConfig` load time):

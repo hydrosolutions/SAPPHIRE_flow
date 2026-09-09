@@ -414,6 +414,33 @@ discriminating — each new test was verified RED against the specific mutant it
 ships at **2**. Past forcing measured **2.29 days** behind on staging, so DEGRADED fires on
 essentially every forecast until Plan 261 lands. The owner was shown this and chose to ship.
 
+#### T1b — folded from the Codex CROSS-CHECK of the fix, 2026-09-09
+
+The fix was re-reviewed by an independent Codex pass. Five findings verified CLOSED; two were only
+PARTIALLY closed, and the cross-check found one new defect. All verified against the code before
+folding.
+
+- 🟠 **MAJOR (new, introduced by the fix) — a diagnostic could mask the real failure.**
+  `missing_buckets` indexed `df["timestamp"]` whenever the declared feature column existed, so a
+  malformed frame carrying the feature but no `timestamp` raised `ColumnNotFoundError`. On the
+  group path that call now sits INSIDE the `except ModelOutputError` handler, so the new exception
+  escaped and replaced a handled `return {}`. Fixed at the root: a frame with no `timestamp`
+  column shows nothing present, so everything expected is missing. **A gap detector that throws is
+  worse than one that over-reports.**
+- 🔴 **Finding 1 was only PARTIALLY closed.** The group batch can come back EMPTY or PARTIAL
+  rather than failing — the FI adapter skips a station whose variables all report `FAILURE` and
+  returns its successful siblings — and those two paths recorded no diagnosis. Both now carry it,
+  scoped to the stations that actually vanished.
+- 📄 **Finding 7 was only PARTIALLY closed.** `FORCING` reached the enum prose but the
+  authoritative `InputQualityConfig` block still lacked `forcing_recent_steps`, and
+  `ModelDataRequirements` lacked `declared_lookbacks`. Both blocks updated. 🪤 Documenting a
+  setting in adjacent prose is not the same as updating the schema.
+- 🧪 **Three coverage gaps.** The adapter's `declared_lookbacks` PROJECTION was untested (the
+  per-series test injected the mapping directly, so deleting the projection stayed green); the
+  group `forcing_gaps` calls were unprotected by any assertion; and the "one flag per series"
+  assertion still permitted one combined flag plus one unnamed flag, because it counted total
+  flags and flattened substrings. All three closed and verified RED against their mutants.
+
 
 
 All three bypass today. Correct the two in-code comments calling finer unresampled `past_dynamic`

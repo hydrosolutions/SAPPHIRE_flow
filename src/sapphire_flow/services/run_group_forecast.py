@@ -545,15 +545,35 @@ def run_group_forecast(
             "run_group_forecast.batch_empty",
             group_id=str(group.id),
             model_id=str(assignment.model_id),
+            forcing_gaps=_group_forcing_gap_details(
+                group_inputs=group_inputs,
+                data_requirements=model.data_requirements,
+                iq_config=config.input_quality,
+            ),
         )
 
     missing_station_ids = sorted(expected_station_ids - set(batch_result), key=str)
     if missing_station_ids:
+        # Cross-check review 2026-09-09: a batch can come back PARTIAL rather
+        # than failing — the FI adapter skips a station whose variables all
+        # report FAILURE and returns its successful siblings. That station gets
+        # no per-station result, so the forcing flags built in the result
+        # builder never exist for it. Diagnose exactly the ones that vanished.
+        gaps = _group_forcing_gap_details(
+            group_inputs=group_inputs,
+            data_requirements=model.data_requirements,
+            iq_config=config.input_quality,
+        )
         log.warning(
             "run_group_forecast.batch_missing_station_outputs",
             group_id=str(group.id),
             model_id=str(assignment.model_id),
             station_ids=[str(station_id) for station_id in missing_station_ids],
+            forcing_gaps={
+                str(sid): gaps[str(sid)]
+                for sid in missing_station_ids
+                if str(sid) in gaps
+            },
         )
 
     results: dict[StationId, StationForecastResult] = {}

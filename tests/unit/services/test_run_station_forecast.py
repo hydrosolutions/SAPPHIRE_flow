@@ -2520,11 +2520,16 @@ class TestForcingGapReachesTheForecast:
         assert forecast.input_quality is InputQualityLevel.DEGRADED
         # One flag per declared series, named so an operator can act on it.
         # Same review: comparing only the SET of names present also passed for
-        # one combined flag, or for duplicates. Pin the count and the pairing.
-        assert len(flags) == 2, [f.detail for f in flags]
-        assert sorted(
-            s for f in flags for s in ("precipitation", "temperature") if s in f.detail
-        ) == ["precipitation", "temperature"]
+        # one combined flag, or for duplicates. Cross-check review 2026-09-09:
+        # counting total flags and FLATTENED substrings still permitted one
+        # combined precipitation+temperature flag plus one unnamed flag. Assert
+        # that each flag names EXACTLY ONE series, and that the two differ.
+        named = [
+            [s for s in ("precipitation", "temperature") if s in flag.detail]
+            for flag in flags
+        ]
+        assert all(len(names) == 1 for names in named), [f.detail for f in flags]
+        assert sorted(names[0] for names in named) == ["precipitation", "temperature"]
 
     def test_a_refusing_model_still_reports_why_the_forcing_was_short(
         self,
