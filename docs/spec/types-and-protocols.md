@@ -532,7 +532,15 @@ class InputQualityCategory(Enum):
     OBSERVATION = "observation"
     NWP = "nwp"
     WARM_UP = "warm_up"
+    FORCING = "forcing"        # Plan 239 T1b: gaps in the model's PAST forcing history
 ```
+
+`FORCING` labels a gap in the past-forcing series a model declares. It is a
+LABEL, never a refusal (owner decision 2026-09-08): the forecast is still
+produced. WHERE the gap sits decides severity — a gap inside the most recent
+`input_quality.forcing_recent_steps` buckets is `DEGRADED`, because the model
+leans on recent conditions; an older gap is `PARTIAL`. Each declared series is
+judged on its OWN declared lookback, not on the collapsed maximum.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)

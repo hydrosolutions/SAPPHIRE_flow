@@ -6,7 +6,7 @@ from datetime import date, timedelta  # noqa: TC003
 from pathlib import Path  # noqa: TC003
 from typing import Any, Literal, Self, cast
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sapphire_flow.types.domain import (
     DangerLevelDefinition,
@@ -69,7 +69,13 @@ class InputQualityConfig(BaseModel):
     # Plan 239 T1b: how many of the MOST RECENT past-forcing steps must be
     # present before a gap counts as DEGRADED rather than PARTIAL. A fixed
     # count, one rule for every model (owner decision 2026-09-08).
-    forcing_recent_steps: int = 2
+    #
+    # Bounded below at 0 (independent review, 2026-09-09 — minor): a negative
+    # value put the cutoff in the FUTURE, so every gap — including one in the
+    # most recent bucket — was labelled PARTIAL, silently inverting the rule
+    # this setting exists to express. 0 is legitimate and means "no recent
+    # window": every gap is old, therefore every gap is PARTIAL.
+    forcing_recent_steps: int = Field(default=2, ge=0)
 
 
 class DeploymentConfig(BaseModel):

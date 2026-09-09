@@ -119,6 +119,7 @@ nwp_age_partial_hours = 9.0                    # NWP cycle age → PARTIAL
 nwp_age_degraded_hours = 11.0                  # NWP cycle age → DEGRADED (must be <= nwp_max_fallback_age_hours)
 warmup_snapshot_age_partial_hours = 24.0       # warm-up snapshot age → PARTIAL (default; caller may override per season)
 warmup_snapshot_age_degraded_hours = 42.0      # warm-up snapshot age → DEGRADED (must be <= warm_up_snapshot_max_age_hours; for monsoon deployments, caller must cap at warm_up_snapshot_max_age_monsoon_hours)
+forcing_recent_steps = 2                       # Plan 239 T1b: how many of the MOST RECENT past-forcing buckets must be present before a gap counts as DEGRADED rather than PARTIAL. Must be >= 0; 0 means "no recent window", so every gap is PARTIAL. A fixed count, one rule for every model.
 
 # --- Model assignment priority (Plan 089) ---
 # Source: docs/conventions.md § Model assignment priority

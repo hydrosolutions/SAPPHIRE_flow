@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
     from uuid import UUID
 
-    from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.config.deployment import DeploymentConfig, InputQualityConfig
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import GroupForecastModel
     from sapphire_flow.protocols.stores import (
@@ -333,6 +333,7 @@ def _build_station_result(
         time_step=group_inputs.time_step,
         lookback_steps=data_requirements.lookback_steps,
         recent_steps=iq_config.forcing_recent_steps,
+        declared_lookbacks=dict(data_requirements.declared_lookbacks),
     )
     if forcing_flags:
         input_quality_flags = (*input_quality_flags, *forcing_flags)
@@ -376,6 +377,40 @@ def _build_station_result(
         new_state=new_state,
         ensembles=dict(ensembles),
     )
+
+
+def _group_forcing_gap_details(
+    *,
+    group_inputs: GroupModelInputs,
+    data_requirements: ModelDataRequirements,
+    iq_config: InputQualityConfig,
+) -> dict[str, list[str]]:
+    """Per-station past-forcing gaps, for a batch that already failed.
+
+    Plan 239 T1b review (blocker, 2026-09-09): `predict_batch` failing returns
+    ``{}`` for the WHOLE group, so no per-station result is ever built and the
+    forcing flags computed in that builder never exist. The gap analysis is
+    what explains a short-window refusal, so it is recomputed here — only on
+    the failure path, so the happy path pays nothing.
+
+    Stations with no gaps are omitted; an empty dict means forcing was intact
+    and the batch failed for some other reason.
+    """
+    details: dict[str, list[str]] = {}
+    declared = dict(data_requirements.declared_lookbacks)
+    for station_id in group_inputs.station_ids:
+        flags = past_forcing_flags(
+            past_dynamic=group_inputs.for_station(station_id).past_dynamic,
+            features=data_requirements.past_dynamic_features,
+            anchor=group_inputs.issue_time,
+            time_step=group_inputs.time_step,
+            lookback_steps=data_requirements.lookback_steps,
+            recent_steps=iq_config.forcing_recent_steps,
+            declared_lookbacks=declared,
+        )
+        if flags:
+            details[str(station_id)] = [flag.detail for flag in flags]
+    return details
 
 
 def run_group_forecast(
@@ -475,6 +510,11 @@ def run_group_forecast(
             group_id=str(group.id),
             model_id=str(assignment.model_id),
             error=str(exc),
+            forcing_gaps=_group_forcing_gap_details(
+                group_inputs=group_inputs,
+                data_requirements=model.data_requirements,
+                iq_config=config.input_quality,
+            ),
         )
         return {}
     except StoreError:
@@ -491,6 +531,11 @@ def run_group_forecast(
             group_id=str(group.id),
             model_id=str(assignment.model_id),
             error=str(exc),
+            forcing_gaps=_group_forcing_gap_details(
+                group_inputs=group_inputs,
+                data_requirements=model.data_requirements,
+                iq_config=config.input_quality,
+            ),
         )
         return {}
 

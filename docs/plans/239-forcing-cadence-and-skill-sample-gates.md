@@ -381,6 +381,39 @@ window, and emits a flag. **No new predicate.**
 **What T1b does NOT do:** refuse a forecast, fill a gap, change what a model receives, or judge
 values (that is `max_nan`'s job, per T0).
 
+#### T1b — folded from the independent Codex review, 2026-09-09
+
+Seven findings, all verified against the code before folding. Two mattered:
+
+- 🔴 **BLOCKER — the flags were computed only on the success path.** `past_forcing_flags` ran
+  AFTER `predict`, so a model that refuses its own short window produced no forecast AND no
+  forcing diagnosis. The seasonal model does exactly that: it correctly RETURNS `ModelFailure`
+  (FI-compliant), the adapter re-raises it as `ModelOutputError`, and the runner returns
+  `PREDICT_FAILED` before the flags were ever built. **Measured live on staging 2026-09-09: 136
+  `short_forcing_window` events and 604 `predict_failed` in 30 hours** — the exact population this
+  task exists to explain. The analysis now runs BEFORE `predict` and travels with the failure.
+  ⚠️ **This records the reason; it does not make a refusing model forecast.** A model whose own
+  contract rejects an incomplete window still fails. Filling that window is **Plan 261**.
+- 🟠 **MAJOR — every series was judged on the collapsed maximum lookback.** `lookback_steps` is a
+  MAX across declared variables; the seasonal model declares precipitation=45 and temperature=14,
+  so a 30-day-old temperature hole — a bucket the model never reads — was reported as a gap. The
+  FI adapter now preserves each variable's own declared lookback
+  (`ModelDataRequirements.declared_lookbacks`, same tuple-of-pairs shape as
+  `declared_aggregations`), and each series is judged on its own window. 🪤 Per name this is a MAX
+  across branches, NOT a conflict check: one variable legitimately carries different lookbacks in
+  different (product, time_step) branches, and an early revision that raised on that broke 14
+  adapter tests.
+
+Also folded: `forcing_recent_steps` is now bounded `ge=0` (a negative value put the cutoff in the
+future and inverted the rule); three tests that passed against a wrong implementation were made
+discriminating — each new test was verified RED against the specific mutant it targets; and
+`FORCING` / `forcing_recent_steps` are documented in `docs/spec/types-and-protocols.md` and
+`docs/spec/config-reference.toml`.
+
+⚖️ **Unchanged by this review, on the owner's decision (2026-09-09):** `forcing_recent_steps`
+ships at **2**. Past forcing measured **2.29 days** behind on staging, so DEGRADED fires on
+essentially every forecast until Plan 261 lands. The owner was shown this and chose to ship.
+
 
 
 All three bypass today. Correct the two in-code comments calling finer unresampled `past_dynamic`

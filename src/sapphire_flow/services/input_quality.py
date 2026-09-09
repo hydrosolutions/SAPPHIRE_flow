@@ -11,7 +11,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import InputQualityFlag, aggregate_input_quality
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from datetime import timedelta
 
     import polars as pl
@@ -228,21 +228,40 @@ def past_forcing_flags(
     time_step: timedelta,
     lookback_steps: int,
     recent_steps: int,
+    declared_lookbacks: Mapping[str, int] | None = None,
 ) -> list[InputQualityFlag]:
     """One flag per declared past-forcing series that has gaps (Plan 239 T1b).
 
     Per-SERIES, not per-frame: the T0 specification is explicit that a model
     declaring unequal lookbacks (7-day target, 45-day precipitation, 14-day
     temperature) must be judged on each series' own window, never on a
-    collapsed maximum. Here every declared feature shares `lookback_steps`
-    because that is what the model declares today; the loop is per-series so
-    that stays true when it does not.
+    collapsed maximum.
+
+    `lookback_steps` IS that collapsed maximum — input assembly fetches one
+    frame wide enough for every declared variable. An earlier revision judged
+    every series against it, which reported a 30-day-old temperature hole for a
+    model that only reads 14 days of temperature (independent review,
+    2026-09-09). `declared_lookbacks` carries each variable's own declaration
+    from `ModelDataRequirements`; a series absent from it falls back to the
+    maximum, which is the correct conservative default for a model that
+    declares one window for everything.
     """
     if lookback_steps <= 0:
         return []
-    expected = expected_past_buckets(anchor, time_step, lookback_steps)
+    declared = declared_lookbacks or {}
+    # One `expected` set per DISTINCT window, not per series — a model with 20
+    # features on one window should not rebuild the same bucket list 20 times.
+    expected_by_window: dict[int, Sequence[UtcDatetime]] = {}
     flags: list[InputQualityFlag] = []
     for series in sorted(features):
+        window = min(declared.get(series, lookback_steps), lookback_steps)
+        if window <= 0:
+            continue
+        if window not in expected_by_window:
+            expected_by_window[window] = expected_past_buckets(
+                anchor, time_step, window
+            )
+        expected = expected_by_window[window]
         flag = assess_past_forcing_gaps(
             series=series,
             expected=expected,

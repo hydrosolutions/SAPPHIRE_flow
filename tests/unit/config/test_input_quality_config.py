@@ -118,3 +118,22 @@ class TestInputQualityCrossConfigValidation:
                 observation_staleness_warning_hours=6.0,
                 input_quality=InputQualityConfig(obs_degraded_hours=6.0),
             )
+
+
+class TestForcingRecentStepsBounds:
+    """Independent review 2026-09-09 (minor): `forcing_recent_steps` was an
+    unbounded `int`. A negative value put the recent-window cutoff in the
+    FUTURE, so every gap — including one in the most recent bucket — was
+    labelled PARTIAL, silently inverting the rule the setting expresses.
+    """
+
+    def test_negative_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="forcing_recent_steps"):
+            InputQualityConfig(forcing_recent_steps=-1)
+
+    def test_zero_is_accepted_as_an_empty_recent_window(self) -> None:
+        # Legitimate: "no recent window", so every gap is old and PARTIAL.
+        assert InputQualityConfig(forcing_recent_steps=0).forcing_recent_steps == 0
+
+    def test_the_default_is_two(self) -> None:
+        assert InputQualityConfig().forcing_recent_steps == 2
