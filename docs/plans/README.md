@@ -151,6 +151,7 @@ exit criteria — Plan 212 owns that deeper screening.
   replaces or coexists with v2, whether the new fields are required, and what
   `available` should mean for a rejected forecast. Depends on 253 landing first.
 - **261** — The reanalysis tail is never filled, though the values are already here — `DRAFT`
+- **262** — Our own aggregation stamps the start of a period; every source we ingest stamps the end — `DRAFT`
   — measured while validating Plan 239 T1b: past forcing runs permanently ~2.5 days
   short of the issue time, and the FORECAST values that would cover that span are
   already stored. Concatenates them onto past forcing **in memory**, in the two

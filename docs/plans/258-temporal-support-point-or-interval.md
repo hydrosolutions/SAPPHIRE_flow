@@ -86,15 +86,42 @@ separately; never conflate them into one "offset" field.
 
 ## 🔴 Open decisions — these are why the plan is DRAFT
 
-### D1 — AT WHAT CARDINALITY is temporal support recorded? (blocking; no task can be written first)
+### D1 — ANSWERED 2026-09-09: **per (source, parameter)**
+
+⚖️ **Owner decision.** Support is recorded against the combination of source and measurement, because
+that is where the fact lives — a provider computed it that way. `ForcingSource` already keys this
+granularity and `historical_forcing` carries both in its natural key (`db/metadata.py:824-877`), so
+the slot fits what exists. Rejected: one row per canonical parameter (refuted below); the adapter
+channel (a runtime notion, while this is a property of the data).
+
+⚠️ **Still open within D1:** whether a series WE transformed carries the support of its input or of
+the transform. A daily mean we computed from hourly points is an interval, and nothing records that we
+made it one.
+
+### D1 (evidence) — why per-parameter was refuted
 
 The Plan 252 draft put a single `POINT | INTERVAL` value on `ParameterDefinition` and the
 `parameters` row. **That is wrong, and demonstrably so.** The same canonical parameter has different
 support depending on which product it came from:
 
-| canonical parameter | MeteoSwiss | Gateway / ECMWF |
+🔴 **The original worked example was WRONG and is replaced (owner correction, 2026-09-09).** It
+claimed gateway temperature is instantaneous. It is not: the gateway delivers temperature **averaged
+over a time span** and precipitation **summed over one**, then averages both over an **area**. The
+code corroborates — `era5_land_reanalysis.py:10-16` documents `temperature_2m_mean` and a
+`cell_methods: time: sum` accumulation, and `recap_gateway.py:71`, `:195` document basin-average-only
+delivery. Both sides of that example are intervals, so it proved nothing.
+
+**The example that does hold:**
+
+| canonical parameter | gauge / weather station | any gridded product |
 |---|---|---|
-| `temperature` | `TabsD` — a **daily mean** → interval (mapped at `adapters/meteoswiss_open_data_reanalysis.py:208-212`; the daily-mean meaning is stated at `:10`) | `2t` / `2m_temperature` — mapped at `adapters/recap_gateway.py:118-126`. ⚠️ **The "instantaneous" classification is NOT established anywhere in this repo** — it is the expected ECMWF semantic, and confirming it is exactly what T3/T4 exist to do. Do not cite it as measured. |
+| `temperature` | a thermometer read at 09:00 — **a point** | `TabsD` daily mean (`adapters/meteoswiss_open_data_reanalysis.py:208-212`), ECMWF hourly mean — **an interval** |
+
+One row per canonical parameter cannot hold both, which is what D1 answers.
+
+⭐ **A THIRD kind of support was surfaced by the same correction and is NOT this plan's:** gateway
+values are averaged over an **area**, not measured at a point in space. Nothing records spatial
+support either. Noted here so it is not lost; it needs its own owner.
 
 One row per canonical parameter cannot hold both. There are **11 canonical parameters** today
 (`discharge`, `humidity`, `precipitation`, `radiation`, `reference_et`,
@@ -211,6 +238,26 @@ declaration, so a mismatch is caught rather than assumed away.
 **Verification:** a fixture whose `cell_methods` contradicts the declaration fails; agreement records
 the verification, and the recorded state distinguishes *declared* from *verified*.
 
+### T5 — publish the window an interval value covers
+
+⚖️ **Owner decision 2026-09-09: this plan owns it**, as a real task rather than a cross-reference.
+Previously it was assigned here by Plan 252, to Plan 251 by Plan 254, and carried by neither.
+
+**Outcome:** an interval-valued value is published with the start and end of the window it covers, so
+a consumer never has to infer our convention from a single stamp. **⛔ Only for values that ARE
+intervals** — giving a point reading a start and end would invent a span it does not have, which is
+why this task sits behind T1.
+
+**In:** the published API and export shapes. **Out:** internal storage (the stamp plus the declared
+support is sufficient internally); points. Depends on T1.
+
+📌 **Ride the next format version, do not open a second one.** Plan 251 already carries a v2→v3
+transition of the Forecast Lab snapshot; if that lands first, these fields go with it.
+
+**Verification:** an interval value carries bounds matching its declared support and stamp; a point
+value carries none; and a consumer reading only the bounds gets the same window as one applying the
+convention to the stamp.
+
 ### T4 — audit every input adapter's temporal support
 **Outcome:** each adapter's series is declared, with the source document that settles it — the same
 shape as Plan 243's unit register, which is the worked precedent for this exact problem.
@@ -241,6 +288,7 @@ uv run ruff check src tests && uv run ruff format --check src tests
     {"id": "T1", "phase": 2, "depends_on": ["T0"]},
     {"id": "T2", "phase": 3, "depends_on": ["T1"]},
     {"id": "T4", "phase": 3, "depends_on": ["T1"]},
+    {"id": "T5", "phase": 3, "depends_on": ["T1"]},
     {"id": "T3", "phase": 4, "depends_on": ["T1"], "blocked_on": "Gateway CF attribute pass-through — extend the Plan 243 units-only request to cell_methods"}
   ]
 }

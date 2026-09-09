@@ -83,7 +83,15 @@ period-ending labels (`services/operational_inputs.py:225`).
 
 ## Open decisions — needed before the tasks below can be written as contracts
 
-- **D1 — is phase part of the ForecastInterface contract, or SAP3 preprocessing provenance?** The FI
+- ✅ **D1 — ANSWERED 2026-09-09: SAP3 preprocessing. No contract change, no upstream issue.**
+  The model states its interval; **we** guarantee the data sits on the declared grid before
+  `predict()`. Models are deliberately timezone-agnostic (Plan 252 OD-7) and cannot know a
+  deployment's day boundary, so declaring a phase would ask them to know a deployment-specific fact.
+  A mismatch is caught on our side by T5, which records each artifact's training grid and refuses a
+  differing one. The FI adapter stays as it is.
+
+  *(Original framing:)* is phase part of the ForecastInterface contract, or SAP3 preprocessing
+  provenance? The FI
   adapter selects requirements solely by `timedelta` (`adapters/forecast_interface.py:496`, `:1310`).
   If a model must be able to *declare* a phase, that is an FI change and
   `CLAUDE.md` § ForecastInterface Adherence requires an upstream issue, **not** a SAP3-side
@@ -94,13 +102,28 @@ period-ending labels (`services/operational_inputs.py:225`).
 - **D2 — what carries resampling provenance?** A typed resampling result (data plus quality) is the
   obvious shape, but training, hindcast and skill cannot reuse operational persistence without new
   contracts. Decide per consumer whether degradation is persisted, logged, or gates the run.
-- **D3 — does the no-imputation contract stand?** `docs/touchpoint-maps.md:247-248` says missing
-  operational-input values are gated via `max_nan`, "never imputed / interpolated / filled". Plan 252 OD-6 interpolates. One of them must
-  formally supersede the other; today they contradict.
-- **D4 — Swiss cutover shape.** Atomic flip, or per-station migration? Artifacts, hindcasts and skill
-  generations must move together, and a config flip alone would feed 23:00Z days to midnight-trained
-  artifacts.
-- **D5 — how does a half-open fetch window meet closing-boundary stamps?** Plan 258 defines
+- ✅ **D3 — ANSWERED 2026-09-09: the no-imputation contract STANDS.** `docs/touchpoint-maps.md:247-248`
+  wins; Plan 252's interpolation and apportionment rows are withdrawn (now Plan 252 **OD-13**). We
+  never invent a value. Where readings do not fit a grid we combine onto a coarser one, and the bucket
+  EDGE moves to the nearest reading while the readings themselves never move (Plan 252 **OD-14**),
+  bounded by a configurable limit beyond which the bucket is refused. **T3 now has authoritative
+  behaviour**, and it is simpler than the original design: there is no interpolation path to build.
+- ✅ **D4 — ANSWERED 2026-09-09: move Switzerland, bundled with the retrain already owed.** The
+  boundary move rides the retrain required to clear the live train/serve skew, so it costs one retrain
+  rather than two, and it proves the declared-boundary mechanism on a deployment we control before
+  Nepal depends on it. Switzerland stays at phase 0 until that retrain is ready.
+  ⭐ **Plan 262's end-period-stamping change rides the SAME cutover** — identical shape (it changes
+  what a stored interval value means, invalidates every artifact, needs a coordinated switch). Three
+  migrations collapse into one. ⚠️ Atomic-versus-per-station stays a T6 detail, but the group-phase
+  invariant (Plan 252 OD-12) makes a mixed-phase interval hazardous for any cross-station product,
+  which points hard at atomic.
+- ✅ **D5 — ANSWERED 2026-09-09: end-period stamping is the house convention, and Plan 262 owns
+  adopting it.** Adapters convert at ingest; our own bucket labelling changes to match, in one step
+  with skill's completeness path. ⛔ **This plan must not change either independently** — Plan 262
+  sequences them and rides T6's cutover.
+
+  *(The measurement that produced it:)* how does a half-open fetch window meet closing-boundary
+  stamps? Plan 258 defines
   interval-valued data as stamped on its CLOSING boundary, while `fetch_observations` filters
   `timestamp >= start AND timestamp < end` (`store/observation_store.py:173-174`, verified
   2026-09-09). A window meant to cover N complete intervals therefore excludes the stamp of its last

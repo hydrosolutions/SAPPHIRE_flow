@@ -304,9 +304,16 @@ for Nepal and something broken for Switzerland.
 **OD-3 — a daily bucket is a whole number of UTC hours; Nepal's is PROVISIONALLY 18:00Z, pending
 DHM (T7).**
 
-The operating rule, stated once: **we adopt whatever boundary DHM names as their conventional
-observation day, expressed as the whole UTC hour at or before it, and we record any displacement that
-rounding introduces.** The whole-hour requirement is not a preference we might trade away against
+The operating rule, stated once (owner, 2026-09-09): **we adopt whatever boundary DHM names as
+their conventional observation day, expressed as the CLOSEST whole UTC hour, and we record the
+displacement that rounding introduces.**
+
+⚙️ **The rounding RULE is itself configurable, not just the value.** Nearest is what we use now; if
+DHM tells us they round down, we adopt that without a code change. A deployment declares the civil
+boundary, the rounding rule, and the resulting operating boundary — the last DERIVED from the first
+two, never hand-entered independently of them.
+
+📌 **The owner has already asked DHM about the time shift; no answer as of 2026-09-09.** The whole-hour requirement is not a preference we might trade away against
 DHM's answer — it is forced by the forcing. Hourly forcing cannot be cut mid-hour without apportioning
 one hourly precipitation accumulation across the boundary every single day, under an assumption of
 uniform rainfall within that hour, which is the least safe assumption available for convective rain.
@@ -340,18 +347,12 @@ coincidence corroborates 18:00Z and nothing more. The same holds for any UTC-del
 **The requirement is configurability, not a particular value (owner, 2026-09-07).** The design must
 not hard-code 18:00Z anywhere; T4's rejection of an undeclared deployment is what keeps that honest.
 
-**OD-6 — resampling: coarsen freely, interpolate with a per-parameter method, never upsample.**
-
-| Case | Rule | Owner |
-|---|---|---|
-| Target coarser than source | Aggregate with the parameter's declared `AggregationMethod` (SUM for accumulations, MEAN for state variables) | this plan |
-| Target finer than the source's median spacing | **Refuse.** Three readings a day cannot become 24 hourly values; that is invention, not interpolation | this plan |
-| Instantaneous variable onto off-phase marks | Linear interpolation between bracketing observations, subject to a maximum gap — beyond it emit nothing, never a straight line across a two-day hole | **Plan 258** (support-dependent) |
-| Accumulation onto a straddling boundary | Apportion by overlap fraction; flag as degraded when the split interval exceeds **15 minutes** | **Plan 258** (support-dependent) |
-
-The last two rows are listed only so the table reads whole. What THIS plan owns is the grid part:
-coarsen freely, never upsample, refuse a target finer than the source's median spacing. The method is
-determined by the series, never by the caller. Degradation is **intended** to be reported through the
+**OD-6 (REPLACED by OD-13 on 2026-09-09) — resampling.** The original table permitted linear
+interpolation for instantaneous values and proportional apportionment for accumulations straddling a
+boundary. **Both are withdrawn.** See OD-13. What survives: coarsen freely with the parameter's
+declared `AggregationMethod` (SUM for accumulations, MEAN for state variables); **refuse** a target
+finer than the source's median spacing, because three readings a day cannot become 24 hourly values.
+The method is determined by the series, never by the caller. Degradation is **intended** to be reported through the
 existing `InputQualityFlag` channel, which Plan 253 made persistent and API-visible — no second
 mechanism. ⚠️ **That is an intent, not a settled contract: see OQ-3.** The channel does not reach the
 resampler, training or hindcast today, and closing the gap is Plan 254 D2.
@@ -378,6 +379,47 @@ because 10 does not. **This is what to request from DHM: 15-minute data on `:00/
 ⛔ **Period convention and grid phase are INDEPENDENT.** Getting the 45 minutes right and the labelling
 convention wrong yields a silent one-hour error stacked on the offset. They are recorded separately
 and never conflated into one "offset" field. This plan owns the phase; Plan 258 owns the convention.
+
+**OD-13 — WE NEVER INVENT A NUMBER (owner, 2026-09-09).** This supersedes OD-6's interpolation and
+apportionment rows and settles the standing contradiction with the repo's no-imputation rule
+(`docs/touchpoint-maps.md:247-248`: missing operational-input values are gated via `max_nan`, "never
+imputed / interpolated / filled"). The rule wins; the exception is withdrawn.
+
+| Operation | Allowed? | Why |
+|---|---|---|
+| Estimating a value between two readings | ⛔ **NO** | Invents a measurement. On the path that raises flood alerts. |
+| Splitting a total across a boundary | ⛔ **NO** | Invents a division, under an assumption of uniform rainfall — the least safe assumption available for convective rain, and the very thing OD-3's whole-hour rounding exists to avoid. |
+| Combining onto a coarser grid | ✅ YES | Uses every value as delivered. |
+| Refusing when neither is possible | ✅ YES | Fail closed. |
+
+📌 **Verified 2026-09-09: nothing in `services/` interpolates or fills today** — no `interpolate`,
+`fill_null` or `forward_fill`. The rule describes what the code already does; the withdrawn exception
+would have been the change.
+
+⭐ **This is why the 15-minute data request matters.** Quarter-hourly readings nest exactly into both
+UTC and Nepali grids, because 15 divides the 345-minute offset (23 × 15). Ten-minute readings do not.
+**Asking for the right data is what makes Nepal work without inventing anything** — it is a
+requirement, not a nicety.
+
+**OD-14 — TIMESTAMPS ARE AUTHORITATIVE; THE BUCKET EDGE MOVES, NOT THE READING (owner, 2026-09-09).**
+
+The problem OD-13 leaves open: how do we build a 3-hourly average from readings that arrive at 00:03,
+00:13, 00:23 …, on a grid the weather data defines? Not by relabelling them — a reading's timestamp is
+what it is.
+
+**Rule: a bucket runs from the reading closest to its nominal start boundary up to the reading closest
+to its nominal end boundary.** The readings never move; the edges are chosen from what actually
+exists. The same rule applies at daily scale, cut at the declared day boundary, and **the same
+treatment is applied to the weather data**, so both sides of a comparison are cut the same way.
+
+⚙️ **A configurable limit bounds it.** If the nearest reading to a boundary sits further away than the
+declared limit, **no value is produced for that bucket** and the refusal says why. Without it, a
+thinned gauge record silently yields a confident-looking average over the wrong span. Recommend the
+limit default to half the source's reading interval; it is declared per deployment, and how far the
+chosen edge actually sat is recorded on the value.
+
+⛔ **Aggregate only when a model actually needs a coarser interval** (owner: *"if, and only if we have
+to aggregate"*). Aggregation is never done speculatively.
 
 **OD-7 — models are timezone-agnostic, which is precisely why the CUT must match.** Models consume
 time steps and know nothing about zones; the modeller supplies steps. That is not a reason the
@@ -455,8 +497,18 @@ not ours.
 
 These are unresolved. They are listed here rather than left implicit in a task.
 
-**OQ-1 — which config field carries the OPERATIONAL TARGET-GRID step, and therefore where the
-non-dividing-step rejection acts?** T4 declares a *phase* (`daily_grid_origin = "18:00"`) and its
+**OQ-1 — ANSWERED 2026-09-09, by measurement rather than decision.** ⭐ The operational step is **not
+in a config file at all**: it is declared per station-and-model pairing in the database
+(`model_assignments.time_step`, `INTERVAL NOT NULL`). That is why no config field could be found — the
+question presupposed the wrong home. So the rejection cannot happen "at config load".
+
+⚖️ **Owner decision: reject at STATION ONBOARDING**, where the pairing is created and a human is
+present to fix it. A non-dividing step never reaches the database and the error names the station and
+the model. ⛔ Not at forecast time — that fails nightly and unattended.
+
+*(The superseded question is kept below, because the search it prompted is what produced the answer.)*
+
+**OQ-1 (superseded) — which config field carries the OPERATIONAL TARGET-GRID step?** T4 declares a *phase* (`daily_grid_origin = "18:00"`) and its
 verification requires that a step not dividing 24 h is rejected at config load — but no field
 declaring the *operational target grid's* step exists. ⚠️ **Narrowed 2026-09-09:** an earlier wording
 said no step-bearing config field exists at all, which is REFUTED —
@@ -471,7 +523,12 @@ is answered.**
 **neither plan carries a task for them** — 258's task ledger (T0–T4) does not mention them. They are
 an orphan. Resolving it is a prerequisite for 258 or 254 being implementable, not for this plan.
 
-**OQ-3 — what channel carries resampling degradation?** OD-6 says the existing `InputQualityFlag`
+**OQ-3 — NARROWED 2026-09-09.** OD-13's no-invention rule removes interpolation and apportionment
+entirely, so the only degradation left to report is a bucket edge that had to reach further than the
+declared limit — a far smaller signal than the original design assumed. Which channel carries it is
+still Plan 254 D2, still open.
+
+*(Original framing, still accurate about the channel:)* OD-6 said the existing `InputQualityFlag`
 channel reports it. ⛔ **That is not implementable as stated, and this plan cannot settle it.**
 Plan 254 measured the channel: `assess_input_quality` emits only observation staleness, NWP age and
 warm-up; only `OperationalForecast` persists the pair; `HindcastForecast` has no such fields and Plan
@@ -631,8 +688,11 @@ returns nothing (verified 2026-09-09); no deployment declares a boundary.
 **Verification:** `uv run pytest tests/unit/config/` — Nepal parses `"18:00"` to 64800 s;
 Switzerland's root `config.toml` declares `"00:00"` → **0 s and is ACCEPTED** (phase zero is legal and
 required, not an omission); a phase with a non-zero seconds component is **REJECTED**; a deployment
-with **NO** declaration is **REJECTED** rather than defaulting to zero (OD-11); and — once OQ-1 names
-the field — a step that does not divide 24 h is **REJECTED at load**.
+with **NO** declaration is **REJECTED** rather than defaulting to zero (OD-11).
+
+⛔ **The non-dividing-step rejection is NOT in this task.** The step lives on the station-and-model
+pairing, not in config (OQ-1), so that check belongs to **station onboarding**. T4 validates the
+PHASE; onboarding validates the STEP.
 
 ⛔ **Removed: "a value finer than the step's resolution is rejected."** It is not implementable — a
 `timedelta` does not retain how it was written, which is the same reason the precision rule is stated
