@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-09-04
 plan: 252
 title: A time grid is a step AND a phase
-scope: CONVENTIONS AND TYPES ONLY, and GRIDS ONLY. Define `TimeGrid(step, phase)`, declare the operational day boundary per deployment, audit the input adapters against it, and propose the supersession of Plan 228 D4. Explicitly NOT temporal support (point vs interval), CF `cell_methods`, or the period-ending convention — all Plan 258, split out 2026-09-08. Explicitly NOT the phase-aware execution across the resampler call sites (Plan 254 holds the inventory; re-measure it, never cite a count from prose), the Swiss retrain, artifact grid provenance or the Forecast Lab bounds — all Plan 254. NOT the daily-model anchoring (Plan 254 T8, absorbed from the superseded Plan 226), NOT Plan 234's aggregation threading.
+scope: CONVENTIONS AND TYPES ONLY, and GRIDS ONLY. Define `TimeGrid(step, phase)`, declare the operational day boundary per deployment with an optional per-station override, audit the input adapters against it, and propose the supersession of BOTH Plan 228 D4 (T8) and the architecture's per-station-IANA day-boundary decision (T9). NOT temporal support (point vs interval), CF `cell_methods`, or the period-ending convention — Plan 258. NOT the phase-aware execution across the resampler call sites, the Swiss retrain, artifact grid provenance, the daily-model anchoring or the Forecast Lab bounds — Plan 254 (which holds the call-site inventory; ALWAYS re-measure it, never cite a count from prose). NOT Plan 234's aggregation threading.
 depends_on: []
 blocks: [254, 258]
 source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 253; investigation showed the codebase treats a time step as a scalar throughout
@@ -13,7 +13,13 @@ source: 2026-09-04 — owner raised NPT (UTC+5:45) while reviewing Plan 253; inv
 
 ## Status
 
-**DRAFT — not reviewed.**
+**DRAFT.** Consolidating rewrite 2026-09-09 — see the Changelog. Three independent review rounds
+(8 → 7 → 6 blockers) were failed not on the reasoning but on the document: each round patched the
+text and left the superseded sentence in place, so corrections accumulated as contradictions. This
+revision states every decision once, in its settled form, and confines the history to one Changelog
+section. What remains genuinely unsettled is in § Open decisions (OQ-1 … OQ-4), named rather than
+buried. ⛔ **Those four are blocking:** OQ-1 blocks T4, OQ-3 blocks OD-6's reporting clause, OQ-4 is an
+owner confirmation, and OQ-2 blocks Plans 254 and 258 rather than this one.
 
 ## The problem in one number
 
@@ -23,36 +29,35 @@ timestamp**: Nepali `HH:00` falls on UTC `:15` past the hour. A Nepali calendar 
 
 Forcing arrives hourly in UTC. Some Nepali observations will arrive hourly in NPT. Both are "hourly".
 Neither can be compared to the other without an explicit conversion, and nothing in the codebase
-currently records enough to know that.
+records enough to know that.
 
 **Converting to UTC does not solve this**, which is the trap worth naming up front. Conversion
 relabels instants; it does not move them onto a grid. After conversion one series still sits on `:00`
 and the other on `:15` — and the offset is now *invisible*, because everything is nominally UTC.
 
-## ⭐ It is not a Nepal problem in waiting — phased grids are already in the Swiss STAGING data
+## Phased grids are already in the Swiss data — this is not a Nepal problem in waiting
 
 Measured read-only against the **staging** database (the mac-mini deployment) on 2026-09-07, while
 implementing Plan 241. ⚠️ Staging, not a production system — but it runs the real Swiss pipeline on
-real feeds, so the grids it produces are the ones the code produces. The argument above is made from
-NPT arithmetic; this is the same defect already present, with no Nepal involvement.
+real feeds, so the grids it produces are the ones the code produces. The NPT argument above is
+arithmetic; this is the same defect already present, with no Nepal involvement.
 
 | | |
 |---|---|
 | forecasts stored | 6457 |
 | carrying a sub-second `valid_time` component | 4182 (65%) |
 | — of those, **uniformly** spaced (one constant phase) | **4113** |
-| — of those, **non-uniform** (multiple interleaved phases) | **69 — every `_pooled` row ever stored** |
+| — of those, **non-uniform** (multiple interleaved phases) | **69 — every `_pooled` row then stored** |
 
 The offsets come from four models — `climatology_fallback` (2637), `persistence_fallback` (961),
 `linear_regression_daily` (515) and `_pooled` (69). They *look* clock-derived rather than
-grid-aligned; stated as an inference, not a measurement, though the mechanism is visible in the
-code — the cycle resolves an omitted reference time from an unrounded wall clock
+grid-aligned; stated as an inference, not a measurement, though the mechanism is visible in the code
+— the cycle resolves an omitted reference time from an unrounded wall clock
 (`flows/run_forecast_cycle.py`).
 
-**The 4113 uniform ones are this plan's thesis with evidence attached.** A constant offset preserves
+**The 4113 uniform rows are this plan's thesis with evidence attached.** A constant offset preserves
 the gap between consecutive timestamps, so each reports a clean 86400-second step and passes any
-check that inspects only the step. The phase is invisible — until two differently-phased series
-meet.
+check that inspects only the step. The phase is invisible — until two differently-phased series meet.
 
 **The 69 are what happens when they do.** A sampled pooled forecast is not one grid with a blemish
 but two interleaved daily series:
@@ -64,7 +69,7 @@ but two interleaved daily series:
 2026-09-06 06:00:02.858976+00          <- 21602 s, then 64798 s, repeating
 ```
 
-⛔ These 69 do **not** have "a phase" in this plan's sense — phase is a property of ONE uniform grid,
+⛔ These 69 do **not** have "a phase" in this plan's sense — phase is a property of ONE uniform grid
 and these carry two. They are the failure mode, not an instance of the pattern. Because their stored
 cadence is NULL (every measured row predates alembic `0053`) the legacy reader takes the FIRST gap,
 so they read back at roughly six hours rather than daily.
@@ -72,113 +77,238 @@ so they read back at roughly six hours rather than daily.
 Sanity checks run alongside the census: no forecast headers without values, no NULL `valid_time`s,
 no duplicate `(forecast, valid_time, member)` rows, no multi-parameter forecasts.
 
-## What the code actually does today
+🔴 **Re-measured on staging 2026-09-08, after `0.1.889` deployed Plan 241's write path.** Of the 377
+`forecasts` rows the system has populated `time_step_seconds` on, every one stores `86400` and
+**209 — 55% — sit on a non-zero, clock-derived phase** (139 `climatology_fallback` rows at 26658 s =
+07:24:18 UTC, among others). Only 168 are genuinely at phase 0. The half-grid is the majority case in
+the live column, not an anticipated one.
 
-- **A time step is a scalar everywhere.** `QcRuleSet.rules_for` matches `time_step` by equality
+## What the code does today
+
+- **A time step is a scalar on every path but one.** (The exception is skill scoring, below — an
+  earlier revision said "everywhere", which its own next bullet refutes.) `QcRuleSet.rules_for`
+  matches `time_step` by equality
   (`types/domain.py:160-166`); `services/forecast_combination.py:458` derives one uniform step. Two
   series can both report `3600` and share no instant.
-  📌 **Updated 2026-09-07 by Plan 241 (#258):** `store/forecast_store.py` no longer derives
+  Plan 241 (#258) changed one half of this: `store/forecast_store.py` no longer derives
   `native_step_seconds` from the first pair **for a row with a persisted, non-NULL cadence** — new
-  writes store `ensemble.time_step` directly. Note `0053` is nullable-first with no backfill, so a
-  row written AFTER the migration by an older image is still NULL; the criterion is the stored
-  value, not the migration date. That fixes the step, **not the phase**, and the derivation survives
-  for every NULL row, which is every row measured above. The scalar-step critique stands in full.
-- **`stations.timezone` is inert.** It is declared as an IANA zone (`Asia/Kathmandu`,
-  `Europe/Zurich`), carried faithfully from `config/onboarding.py:131` to `store/station_store.py:136`
-  to `api/routes/api_stations.py:220` — and **never read to make a decision**. The metadata slot
-  exists and does nothing.
+  writes store `ensemble.time_step` directly. Migration `0053` is nullable-first with no backfill, so
+  a row written after the migration by an older image is still NULL; the criterion is the stored
+  value, not the migration date. That fixes the step, **not the phase**, and the first-pair
+  derivation survives for every NULL row. The scalar-step critique stands in full.
+- **`stations.timezone` is inert.** Declared as an IANA zone (`Asia/Kathmandu`, `Europe/Zurich`) and
+  carried faithfully from `config/onboarding.py:131` through `store/station_store.py:136` to
+  `api/routes/api_stations.py:220` — and **never read to make a decision**. Verified 2026-09-09:
+  every read site is a field copy — into a row, a domain object (`store/station_store.py:355`), a
+  response model, or a calculated-station construction. ⛔ The claim is about DECISIONS, not read
+  count; an earlier revision said "only three read sites", which undercounts the copies. No site
+  branches on it, and `zoneinfo`/`pytz` appear nowhere in `src/`. The metadata slot exists and does
+  nothing.
+- **Phase is not absent — it exists in exactly one subsystem.** Skill scoring already derives,
+  validates and persists a phase: `_valid_time_phase_us` (`services/skill/service.py:76`) takes
+  `vt.timestamp() % step`, `validate_homogeneous_time_step_and_phase` (`:112`) refuses an internally
+  mixed-phase ensemble (Plan 228 D2), and `skill_scores.phase_offset_seconds` /
+  `skill_diagrams.phase_offset_seconds` persist it (`db/metadata.py:1540`, `:1611`, written at
+  `store/skill_store.py:520` for scores, `:545` for diagrams), gated to `computation_version >= 2`. **The skill path records the whole
+  grid; the forecast path records half of one.** T2 must reuse or explicitly replace this
+  representation, never duplicate it.
 - **The period convention is settled per-dataset, not repo-wide.** M-D3 established the DHM
-  precipitation workbook as period-ending, aligning directly with ERA5-Land
-  (`docs/design/dhm-precipitation-milestones.md:119`). But Pyramid AWS precipitation is **NPT**
+  precipitation workbook as period-ending, aligning with ERA5-Land
+  (`docs/design/dhm-precipitation-milestones.md:119`), while Pyramid AWS precipitation is **NPT**
   (`docs/design/dhm-precipitation-vision.md:354`). Both timebases are already in the building, and
-  the convention is recorded in a research design doc rather than anywhere an adapter author would
-  look.
+  the convention is recorded in a research design doc rather than anywhere an adapter author looks.
+
+## ⛔ The architecture document says something different, in six places, and no code implements either
+
+Measured 2026-09-09 against `origin/main` at `dc442d57`. This was not known to any previous revision
+of this plan, and it is the largest single obstacle to consistent timezone behaviour: **three trusted
+repo documents assert a per-station, IANA-derived day boundary — the mechanism this plan forbids.**
+
+| Site | What it asserts |
+|---|---|
+| `docs/architecture-context.md:3287` | **A LOCKED DECISION:** "IANA timezone per station \| UTC storage, local display. Daily aggregation uses local day boundaries." |
+| `docs/architecture-context.md:2933` | "Daily aggregation: uses the station's local timezone to define day boundaries." |
+| `docs/architecture-context.md:2982` | "Daily aggregates … aggregated using local timezone day boundaries." |
+| `docs/conventions.md:299-300` | "Per-station IANA timezones (from station metadata) are used for daily aggregation day boundaries." |
+| `docs/design/v0-flow2-observation-pipeline.md:435`, `:446`, `:620` | Builds on the same premise, and `:620` cites the architecture as its authority. |
+| `docs/plans/106-v1-critical-path-roadmap.md:148` | Records the gap as an undrafted v1.0 item: daily NWP aggregation is "UTC-bucketed … but arch requires station-local day boundaries". |
+
+**Nothing implements it.** `zoneinfo`, `pytz` and any per-station timezone arithmetic appear **nowhere**
+in `src/` — the only `astimezone` calls convert *to* UTC (`types/datetime.py:10`,
+`api/forecast_lab_schemas.py:35`). `stations.timezone` is written and served and never read to make a
+decision. So there are three positions, not two:
+
+| | Boundary | Status |
+|---|---|---|
+| The architecture documents | per station, derived from its IANA zone | Documented as locked. Never built. |
+| This plan | per deployment, declared as a fixed offset, overridable per station (OD-12) | Proposed. |
+| The running code | UTC midnight, phase 0, everywhere | What actually happens. |
+
+⛔ **A plan that contradicts a locked decision without superseding it is how the contradiction survives
+review.** T9 supersedes it explicitly.
+
+**What survives and what does not.** The architecture's *intent* is right and is kept: a daily
+aggregate should mean the local hydrological day, and a Nepali day is not a UTC day
+(`architecture-context.md:2933` says exactly that). Its *mechanism* — derive the boundary from each
+station's IANA zone — is refuted, on the measured ground that a DST-observing zone has no uniform
+civil-day grid at all (OD-2: Zurich civil days run 23, 24 or 25 hours). For Nepal the two mechanisms
+give an identical answer, because `Asia/Kathmandu` has no DST. **This is a supersession of mechanism,
+not of intent.**
+
+## Design
+
+**A grid is `(step, phase)`.** Phase is the offset of the grid's marks from UTC midnight, as a
+`timedelta` in `[0, step)`. Hourly UTC is `(3600 s, 0)`. Hourly NPT is `(3600 s, 900 s)`. Daily UTC is
+`(86400 s, 0)`. Daily Nepali civil is `(86400 s, 65700 s)` — 18:15 UTC.
+
+**Storage stays UTC.** `UtcDatetime` and `ensure_utc()` at boundaries are unchanged. Phase is recorded
+*alongside*, never instead.
+
+### The four boundary values, and why they are not alternatives
+
+⚠️ Four distinct numbers appear in this plan. Read this table before quoting any of them; it is what a
+deployment is configured from.
+
+| # | Value | What it is | Status |
+|---|---|---|---|
+| 1 | `65700 s` (18:15Z) | Nepal's **exact civil** day boundary — NPT midnight, UTC+05:45 | Reference. Never operated on directly. |
+| 2 | `64800 s` (18:00Z) | Nepal's **provisional operating** boundary — civil midnight rounded down to the whole hour, corroborated (not caused) by SnowMapper's UTC+6 day | **What T4 configures**, pending DHM's answer (T7). |
+| 3 | `0 s` (00:00Z) | Switzerland **today**, and what SWITZERLAND keeps declaring until OD-9's parity precondition holds and Plan 254 T6 cuts over. Not a value other deployments inherit — Nepal declares row 2. | **Current for Switzerland.** Declared, never defaulted (OD-11). |
+| 4 | `82800 s` (23:00Z) | Switzerland **after the cutover** — fixed UTC+1 year-round, so every day is exactly 24 h | **Target.** Requires the retrain; Plan 254 T6 owns the move. |
+
+Rows 3 and 4 are one deployment before and after a cutover. Rows 1 and 2 are the intent and what we
+can operate on: a Nepali day configured at `64800 s` runs **00:45–23:45 local**, a known and accepted
+approximation.
+
+### Phase is measured from UTC midnight — and that is a choice
+
+📐 The existing code derives phase by modulo against the **Unix epoch**
+(`services/training_data.py:237` `floor_to_time_step`, `services/skill/service.py:101`). For any step
+that divides 24 hours the two references agree, because the epoch began at a UTC midnight — and every
+step we run today (hourly, 3-hourly, 6-hourly, daily) divides it. For a step that does **not** divide
+24 h they diverge, and a value meaning one thing in config would mean another in the resampler.
+
+**Rule:** the declared boundary is a time-of-day and is therefore **midnight-referenced**; the
+implementation converts to whatever reference the resampler uses rather than assuming they match.
+
+**Constraint:** a step that does not divide 24 h is **rejected at config load**, until someone needs
+one and the reference is settled deliberately rather than discovered. Rejected examples: 7 h
+(1440 / 420 is not an integer) and 50 min. **90 minutes is not such an example** — it divides 24 h
+exactly 16 times. ⚠️ Which config field carries a step, and therefore where this rejection acts, is
+**OQ-1** below; T4 cannot be implemented until it is answered.
+
+### Bounds and precision
+
+**`0 <= phase < step`.** Zero is a legal and required phase — Switzerland declares exactly that
+(OD-11), so a rule excluding it would forbid the only deployment we run.
+
+**Phase is a whole number of MINUTES.** A phase with a non-zero seconds component is rejected at
+config load. Minute precision is implementable, is what the config format expresses
+(`daily_grid_origin = "18:00"`), and covers every case we have: NPT's 45-minute offset needs it, and
+nothing we ingest is anchored to a sub-minute boundary. ⛔ Do not express this as "not an exact
+multiple of the smallest unit the step is expressed in" — a `timedelta` does not preserve how it was
+written, and `timedelta(days=1) == timedelta(hours=24) == timedelta(seconds=86400)`.
+
+### A stored step alone is HALF a grid, and a half grid reads as a false whole
+
+⛔ Any store that records a step without its phase records something true and incomplete, and the
+incomplete form is not inert: a bare `86400` invites every later reader to conclude "this sits on the
+daily grid at midnight", a claim the value does not make. **Recording a step therefore obliges
+recording a phase.** Where a store records only one, the omission is a defect to be named in that
+store, not a convention to be worked around by inference at read time — inferring the phase back from
+the timestamps is how a value that was never asserted becomes one that appears to have been.
+
+This is an established pattern here, not a new design: the skill tables already do it (see § What the
+code does today). The forecast table does not — verified 2026-09-09, `forecasts` carries
+`time_step_seconds` and no phase column. **The store-side remedy is Plan 254 T7**; the disposition of
+the pre-existing rows is Plan 248's. This plan owns only the statement that a step without a phase is
+not a grid.
+
+### Alignment, resampling and failure
+
+**Alignment is permitted only between identical grids.** Anything else requires an explicit, declared
+resample using the aggregation method the parameter already carries (`AggregationMethod`,
+`types/enums.py:178` — SUM for precipitation and reference ET, MEAN for state variables). Shifting a
+series to make it fit is forbidden: a 15-minute nudge silently redistributes accumulated
+precipitation.
+
+**Fail closed.** An undeclared phase, or a grid mismatch with no declared conversion, refuses. It does
+not guess, and it does not fall back to matching on step alone — the nearest-match trap Plan 253's
+review identified as *dimensionally wrong*: a rate-of-change threshold per 10 minutes is not that
+threshold per day.
 
 ## Owner decisions
 
-*Taken in a grill-me session on 2026-09-04. Every number below was computed, not asserted;
-the commands are in the task verifications.*
+*Taken in a grill-me session 2026-09-04 and extended 2026-09-05 and 2026-09-07, and OD-12 on
+2026-09-09. Every number below was computed, not asserted.*
+
+⚠️ **The staging queries were NOT preserved, and that is a real gap.** An earlier revision claimed
+"the commands are in the task verifications"; they are not. Every staging census in this plan — the
+6457/4182/4113/69 breakdown, the per-model counts, the sanity checks, the 377/209/168 re-measurement,
+the Swiss `:05`/`:55` observation marks — is unreproducible from this document and unverifiable
+without a staging connection. **Re-measure before acting on any of them**; treat them as dated
+observations, not as standing facts.
 
 **OD-0 — the target grid is `(step, phase)`; the SOURCE is not assumed to be a grid at all.**
 Observations arrive at whatever cadence and phase the provider sends — 10-minute on `:02` marks,
 15-minute, hourly, or three manual readings a day at 08:00/12:00/16:00 with 4 h/4 h/16 h spacing.
 Ingest stores native instants in UTC and grids nothing. The store already behaves this way (Swiss
-observations today carry `:05` and `:55` marks alongside the `:00/:10/:20` majority), so this
-ratifies existing behaviour rather than changing it. All grid difficulty belongs to ONE component:
-the preparation step that maps an arbitrary series onto a declared target grid.
+observations carry `:05` and `:55` marks alongside the `:00/:10/:20` majority), so this ratifies
+existing behaviour. All grid difficulty belongs to ONE component: the preparation step that maps an
+arbitrary series onto a declared target grid.
+
+**OD-1, OD-4, OD-5, OD-10 — MOVED to Plan 258.** The period-ending convention, forecast `valid_time`
+labelling, interval bounds and the CF `cell_methods` vocabulary all depend on whether a value is a
+point or an interval. Plan 258 states each once, by support. ⚠️ Interval bounds are **OQ-2** below —
+258 was given them but has no task carrying them.
 
 **OD-2 — sub-daily runs on UTC phase; daily runs on a local-anchored phase.** These are different
 products, not an inconsistency: a daily forecast *means* a civil day, an hourly one does not. Keeping
 sub-daily on UTC means the hourly forcing is consumed exactly as delivered and only instantaneous
-observations are interpolated — the benign direction. Concretely:
+observations are interpolated — the benign direction.
 
 | Product | Grid | As UTC |
 |---|---|---|
-| Nepal daily | `(86400 s, phase from OD-3)` | see OD-3 — pending DHM's answer |
+| Nepal daily | `(86400 s, OD-3)` | provisionally 18:00Z, pending DHM |
 | Nepal sub-daily | `(3600 s, 0)` | UTC hours, matching forcing exactly |
-| Swiss daily | `(86400 s, 82800 s)` | 23:00Z → 23:00Z — a fixed UTC+1 day, NOT UTC midnight |
+| Swiss daily (target) | `(86400 s, 82800 s)` | 23:00Z → 23:00Z, a fixed UTC+1 day |
 
-**Every deployment declares a fixed offset; there is no "UTC default" special case.** Switzerland's
-is UTC+1 year-round (23:00Z), not DST-following and not UTC midnight — every day is exactly 24 h, the
-boundary never moves, and it sits within an hour of civil midnight all year. This is common practice
-among European hydrological services precisely to avoid the 23/25-hour problem. The honest cost: in
-summer the Swiss "day" ends at 01:00 local rather than midnight, a documented one-hour displacement
-that introduces no assumption and fabricates no data.
+**Every deployment declares a fixed offset; there is no "UTC default" special case.** A station may
+override it (OD-12), but the deployment-level declaration is always required. Switzerland's target is
+UTC+1 year-round (23:00Z), not DST-following and not UTC midnight — every day is exactly
+24 h, the boundary never moves, and it sits within an hour of civil midnight all year. This is common
+practice among European hydrological services precisely to avoid the 23/25-hour problem. The honest
+cost: in summer the Swiss "day" ends at 01:00 local rather than midnight, a documented one-hour
+displacement that introduces no assumption and fabricates no data.
 
-⚠️ **Changing Switzerland's boundary from UTC midnight to 23:00Z requires retraining, and the owner
-has accepted that (2026-09-05).** The existing Swiss artifacts were trained on UTC calendar days;
-under OD-7 an artifact is only valid for the cut it was trained on, so every Swiss daily artifact
-must be retrained against 23:00Z days before the new boundary goes live. Three consequences follow,
-and none of them belong to this plan:
-
-- **Retraining is a deployment activity, not a task here.** This plan makes the boundary declarable;
-  it does not retrain anything.
-
-  🔴 **CORRECTED 2026-09-08 by the time-grid track owner — the retrain belongs to Plan 254 T6, NOT
-  to Plan 226.** *(Plan 226 was subsequently SUPERSEDED and absorbed into Plan 254 T8, so the
-  question is moot as well as answered; the reasoning is kept because the check that settled it is
-  worth repeating.)* The original claim here (that 226 "already owns" the sequencing) was an assumption
-  never checked against 226 itself, and it contradicted `254:182`, which says no plan owns the
-  retrain until T6 creates the home. 254 is right. Verified against Plan 226's frontmatter and body,
-  not its prose reputation: its `scope` reads *"ANCHORING ONLY"*, its `depends_on` is `[222, 228,
-  235]` with no reference to 252 or 254, it excludes *"Backfill, recomputation, or migration of
-  stored forecasts or hindcasts"* twice, and **the words "retrain" and "artifact" do not appear in
-  it at all.** 226 cannot own a retrain it never mentions. What 226 does own, and keeps, is
-  daily-model anchoring.
-- **Skill scores computed against UTC-day observations become invalid for the retrained artifacts**,
-  since the scored quantity changes. That intersects Plan 235's generation model — a recompute, not a
-  silent overwrite.
-- **Until the retrain lands, Switzerland stays at phase 0.** The declaration and the retrain must go
-  live together; a config flip alone would feed 23:00Z days to artifacts trained on midnight days,
-  which is exactly the substitution OD-7 says the model cannot detect.
-
-✅ **The feared DOUBLE RETRAIN does not exist — refuted 2026-09-08, same check.** The concern raised
-against this plan was: land 226 first, the models get anchored to midnight and retrained, then move
-to 23:00Z and retrain *again*. It rests on 226 causing a retrain, and **226 causes none** — it
-contains neither the word "retrain" nor "artifact", because it changes how daily output is *labelled*,
-not what the models are trained on. There is therefore exactly one retrain in the whole family:
-Plan 254 T6's, when the boundary actually moves.
-
-That also means **226 needs no change and no re-scoping**, which matters because 226 carries a binding
-Proportionality section — a finding that grows it is worse than one that shrinks it. 226 anchors to
-UTC midnight, and per the bullet above midnight *is* Switzerland's boundary until T6 flips it, so 226
-is anchoring to the grid actually in force and stays correct until then. Ordering 226 before or after
-this plan does not create a second retrain. Sequence them on other grounds if you like; not on this
-one.
+⚠️ **Moving Switzerland from UTC midnight to 23:00Z requires a retrain, and the owner accepted that
+(2026-09-05).** Existing Swiss artifacts were trained on UTC calendar days; under OD-7 an artifact is
+valid only for the cut it was trained on. **Plan 254 T6 owns the retrain and the cutover.** Until it
+lands, **Switzerland stays at phase 0** — a config flip alone would feed 23:00Z days to
+midnight-trained artifacts, exactly the substitution OD-7 says the model cannot detect. Skill scores
+computed against UTC-day observations become invalid for the retrained artifacts, which is a
+recompute through Plan 235's generation mechanism, not a silent overwrite.
 
 ⛔ **A DST-observing zone has no uniform civil-day grid at all.** Measured: Zurich civil days run 23,
 24 or 25 hours (29 Mar 2026 is 23:00Z→22:00Z = 23 h; 25 Oct is 22:00Z→23:00Z = 25 h). A "day" that is
 not 86400 s is not a step, so no amount of phase bookkeeping rescues it. Nepal has **no DST** —
-`Asia/Kathmandu` is UTC+05:45 for all twelve months — so its civil day *is* a uniform grid. This is
-why the phase is declared per deployment and never derived from a timezone: derivation would give
-18:15 for Nepal (ignoring OD-3) and something broken for Switzerland.
+`Asia/Kathmandu` is UTC+05:45 in all twelve months — so its civil day *is* a uniform grid. This is why
+the phase is declared per deployment and never derived from a timezone: derivation would give 18:15
+for Nepal and something broken for Switzerland.
 
-**OD-3 — a daily bucket is whole UTC hours. WHICH whole hour is an open question for DHM, and the
-answer may remove the compromise entirely.**
+**OD-3 — a daily bucket is a whole number of UTC hours; Nepal's is PROVISIONALLY 18:00Z, pending
+DHM (T7).**
 
-The original reasoning assumed the boundary is local midnight, which lands at 18:15Z and forces a
-15-minute rounding. **That assumption may be wrong.** In Nepal, any local clock time at `:45` past
-the hour maps to an *exact* whole UTC hour:
+The operating rule, stated once: **we adopt whatever boundary DHM names as their conventional
+observation day, expressed as the whole UTC hour at or before it, and we record any displacement that
+rounding introduces.** The whole-hour requirement is not a preference we might trade away against
+DHM's answer — it is forced by the forcing. Hourly forcing cannot be cut mid-hour without apportioning
+one hourly precipitation accumulation across the boundary every single day, under an assumption of
+uniform rainfall within that hour, which is the least safe assumption available for convective rain.
+A whole-hour bucket introduces **no assumption at all**: every value is used as delivered.
+
+There is a good chance no rounding is needed. In Nepal any local clock time at `:45` past the hour
+maps to an *exact* whole UTC hour:
 
 | Local | UTC |
 |---|---|
@@ -187,78 +317,46 @@ the hour maps to an *exact* whole UTC hour:
 | **08:45 NPT** | **03:00Z** |
 | 09:45 NPT | 04:00Z |
 
-So if DHM's conventional observation or rainfall day begins at a `:45` local time, we get an exact
-whole-hour bucket with **no rounding, no displacement and no compromise**. Precedent makes this
-likely: **India's Met Department defines its rainfall day as 08:30–08:30 IST**, and IST is UTC+5:30 —
-also a non-whole-hour zone — which maps to exactly 03:00Z. A national service with the same class of
-problem already solved it by anchoring to a local clock time that lands cleanly. South Asian services
-commonly use an 08:30 or 08:45 observation day.
+Precedent makes a `:45` boundary likely: **India's Met Department defines its rainfall day as
+08:30–08:30 IST**, and IST is UTC+5:30 — also a non-whole-hour zone — which maps to exactly 03:00Z. A
+national service with the same class of problem solved it by anchoring to a local clock time that
+lands cleanly, and South Asian services commonly use an 08:30 or 08:45 observation day.
 
-**Therefore: ask DHM what their conventional observation/rainfall day boundary is (T7), and adopt it
-if it maps to a whole UTC hour.** The rounding below is the FALLBACK, used only if their boundary is
-local midnight or otherwise lands mid-hour.
+Until DHM answers, the provisional value is **64800 s (18:00Z)**, reached by two independent routes:
+rounding civil midnight (18:15Z) down to the whole hour, **and** SnowMapper's own daily aggregation,
+which uses a solar offset of `round(centroid_lon / 15)` = UTC+6 for Nepal, whose midnight is exactly
+18:00Z. The residual displacement is 15 minutes — 0.6% of the day, uniform, so consecutive days
+partition the timeline exactly: no gaps, no overlaps, no drift, no value counted twice.
 
-**Fallback if the boundary is local midnight: 18:00Z→18:00Z, not the exact civil 18:15Z.** The forcing
-is hourly, so an exact civil day would require apportioning one hourly precipitation accumulation
-across the boundary **every single day**, under an assumption of uniform rainfall within that hour —
-the least safe assumption available for convective rain. The whole-hour bucket introduces **no
-assumption at all**: every value is used as delivered. The cost is a documented 15-minute
-displacement (a Nepali "day" runs 00:45–23:45 local), which is 0.6% of the day and is stated on the
-label rather than discovered. The shift is uniform, so consecutive days partition the timeline
-exactly — no gaps, no overlaps, no drift, no value counted twice.
+**No cross-system conflict.** We receive SnowMapper data as hourly UTC on the top of the hour and
+aggregate it ourselves; their UTC+6 solar shift is a dashboard presentation layer, not our input. The
+coincidence corroborates 18:00Z and nothing more. The same holds for any UTC-delivered source.
 
-**OD-7 — models are timezone-agnostic, which is precisely why the CUT must match.** Models consume
-time steps and know nothing about zones; the modeller supplies steps. That is not a reason the
-boundary is unimportant — it is the reason it is dangerous. Training data cut at midnight UTC and
-operational data cut at 18:00Z are both "daily totals" to the model, but they are **different
-physical quantities**, and nothing in the model can detect the substitution. The responsibility sits
-entirely with us.
-
-This is also how Plan 228 D4 reconciles. D4 says *"every path aggregates onto UTC calendar buckets;
-nothing aligns to a forecast's own timestamp"*, and its reasoning is entirely about a **moving**
-anchor — the first implementation lined buckets up with `issue_time`, so a 06:00 hindcast consumed
-rolling 06:00–06:00 means while training used calendar days. A fixed, declared, deployment-wide
-boundary does not reintroduce that: it is the same instant every day, forever. **D4's invariant
-survives; only the word "UTC" narrows.** T8 amends it to "one fixed declared boundary per deployment,
-never the forecast's own clock", which preserves every reason D4 gives.
-
-⛔ **The binding constraint is that training and operation must use the SAME cut.** Changing a
-deployment's boundary after its artifacts are trained invalidates them. For Nepal this is free today
-(no artifacts trained). For Switzerland it is not — see the warning in OD-2.
-
-**OD-8 — Delft-FEWS reaches the same split, which is mild evidence we are on a trodden path.** FEWS
-stores internally in GMT, attaches a time-zone attribute per series, and — for *equidistant* series —
-configures **fixed offsets** (`GMT+1`) rather than DST-observing zone names, reserving DST-aware
-zones for display. That is the same fixed-offset-for-data, DST-for-display split arrived at here
-independently. *Confidence: from knowledge of FEWS, not verified against its documentation; treat as
-a starting point, not a citation.*
-
-**OD-4 — MOVED to Plan 258.** Forecast `valid_time` labelling depends on whether the value is a point
-or an interval, which is Plan 258's subject. The previous text here labelled forecast `valid_time`
-period-ending *without qualification*, which an independent review correctly flagged as contradicting
-this plan's own later narrowing. Plan 258 states it once, by support.
-
-**OD-5 — MOVED to Plan 258.** Interval bounds only exist for values that ARE intervals, so publishing
-`period_start`/`period_end` is downstream of the point/interval decision. Plan 258 owns it.
+**The requirement is configurability, not a particular value (owner, 2026-09-07).** The design must
+not hard-code 18:00Z anywhere; T4's rejection of an undeclared deployment is what keeps that honest.
 
 **OD-6 — resampling: coarsen freely, interpolate with a per-parameter method, never upsample.**
 
-| Case | Rule |
-|---|---|
-| Target coarser than source | Aggregate with the parameter's declared `AggregationMethod` (SUM for accumulations, MEAN for state variables) |
-| Instantaneous variable onto off-phase marks | **Plan 258** — the method depends on temporal support. Linear interpolation between bracketing observations, subject to a maximum gap — beyond it emit nothing, never a straight line across a two-day hole |
-| Accumulation onto a straddling boundary | **Plan 258** — support-dependent. Apportion by overlap fraction; flag as degraded when the split interval exceeds **15 minutes** |
-| Target finer than the source's median spacing | **Refuse.** Three readings a day cannot become 24 hourly values; that is invention, not interpolation |
+| Case | Rule | Owner |
+|---|---|---|
+| Target coarser than source | Aggregate with the parameter's declared `AggregationMethod` (SUM for accumulations, MEAN for state variables) | this plan |
+| Target finer than the source's median spacing | **Refuse.** Three readings a day cannot become 24 hourly values; that is invention, not interpolation | this plan |
+| Instantaneous variable onto off-phase marks | Linear interpolation between bracketing observations, subject to a maximum gap — beyond it emit nothing, never a straight line across a two-day hole | **Plan 258** (support-dependent) |
+| Accumulation onto a straddling boundary | Apportion by overlap fraction; flag as degraded when the split interval exceeds **15 minutes** | **Plan 258** (support-dependent) |
 
-⛔ **The two support-dependent rows above are Plan 258's, not this plan's** — they are listed here only
-so the table reads whole. What THIS plan owns is the grid part: coarsen freely, never upsample, and
-refuse a target finer than the source's median spacing. The method is determined by the series, never
-by the caller. Degradation is reported through the
+The last two rows are listed only so the table reads whole. What THIS plan owns is the grid part:
+coarsen freely, never upsample, refuse a target finer than the source's median spacing. The method is
+determined by the series, never by the caller. Degradation is **intended** to be reported through the
 existing `InputQualityFlag` channel, which Plan 253 made persistent and API-visible — no second
-mechanism.
+mechanism. ⚠️ **That is an intent, not a settled contract: see OQ-3.** The channel does not reach the
+resampler, training or hindcast today, and closing the gap is Plan 254 D2.
 
-**Why 15 minutes is the threshold, and why phase matters more than length.** Measured straddling
-rates per day:
+⚠️ **This decision is in live contradiction with the repo's no-imputation rule**
+(`docs/touchpoint-maps.md:247-248`: missing operational-input values are gated via `max_nan`, "never
+imputed / interpolated / filled"). One must formally supersede the other. That is **Plan 254 D3**, and
+it is unresolved.
+
+**Why 15 minutes, and why phase matters more than length.** Measured straddling rates per day:
 
 | Source | vs UTC hours | vs Nepali hours |
 |---|---|---|
@@ -268,360 +366,390 @@ rates per day:
 | hourly on `:00` | 0 / 24 | all |
 
 A 15-minute source on quarter-hour marks splits **nothing**, against either grid — because 15 divides
-the 345-minute NPT offset exactly (23 × 15). A 10-minute source does not, even on perfect `:00`
-marks, because 10 does not. **This is what to request from DHM: 15-minute data on `:00/:15/:30/:45`.**
-Not "sub-hourly", and specifically not 10-minute, which is worse than 15 in a way no one would guess.
+the 345-minute NPT offset exactly (23 × 15). A 10-minute source does not, even on perfect `:00` marks,
+because 10 does not. **This is what to request from DHM: 15-minute data on `:00/:15/:30/:45`.** Not
+"sub-hourly", and specifically not 10-minute, which is worse than 15 in a way no one would guess.
 
-**OD-1 — MOVED to Plan 258.** The period-ending convention binds interval-valued data only, and the
-point/interval distinction is Plan 258's subject. The blanket form of this rule, and the narrowing
-that later contradicted it, both live there now — stated once.
+⛔ **Period convention and grid phase are INDEPENDENT.** Getting the 45 minutes right and the labelling
+convention wrong yields a silent one-hour error stacked on the offset. They are recorded separately
+and never conflated into one "offset" field. This plan owns the phase; Plan 258 owns the convention.
 
-⛔ **Period convention and timezone phase are INDEPENDENT, and only the phase is this plan's.** Getting
-the 45 minutes right and the labelling convention wrong yields a silent one-hour error stacked on the
-offset. They must be recorded separately, never conflated into one "offset" field. This plan owns the
-phase; Plan 258 owns the convention.
+**OD-7 — models are timezone-agnostic, which is precisely why the CUT must match.** Models consume
+time steps and know nothing about zones; the modeller supplies steps. That is not a reason the
+boundary is unimportant — it is the reason it is dangerous. Training data cut at midnight UTC and
+operational data cut at 18:00Z are both "daily totals" to the model, but they are **different physical
+quantities**, and nothing in the model can detect the substitution. **The binding constraint is that
+training and operation use the SAME cut.** Changing a deployment's boundary after its artifacts are
+trained invalidates them: free for Nepal today (no artifacts trained), not free for Switzerland.
 
-## Design
+**OD-8 — Delft-FEWS reaches the same split**, which is mild evidence we are on a trodden path. FEWS
+stores internally in GMT, attaches a time-zone attribute per series, and — for *equidistant* series —
+configures **fixed offsets** (`GMT+1`) rather than DST-observing zone names, reserving DST-aware zones
+for display. That is the same fixed-offset-for-data, DST-for-display split arrived at here
+independently. *Confidence: from knowledge of FEWS, not verified against its documentation; a
+starting point, not a citation.*
 
-**A grid is `(step, phase)`.** Phase is the offset of the grid's marks from UTC midnight, as a
-`timedelta` in `[0, step)`. Hourly UTC is `(3600s, 0)`. Hourly NPT is `(3600s, 900s)`. Daily UTC is
-`(86400s, 0)`. Daily Nepali is `(86400s, 65700s)` — 18:15 UTC.
+**OD-9 — Plan 228 D4 is PROPOSED FOR SUPERSESSION, not reinterpretation (owner allowed 2026-09-05).**
 
-⚠️ **`65700 s` is the CIVIL reference, not the boundary we operate on. Four different numbers appear
-in this plan and they are not alternatives — they are four distinct things.** Read this table before
-quoting any of them; it is what a deployment gets configured from.
+⛔ **Read this in the future tense.** Plan 228 is `READY`, its D4 is the authoritative rule, and the
+code implements it (`services/training_data.py:237-276`). This plan is `DRAFT` — a proposal, not an
+instruction (`docs/workflow.md:64-89`). **T8 is the task that would make the supersession real; until
+it runs, phase zero is correct.**
 
-| # | Value | What it is | Status |
-|---|---|---|---|
-| 1 | `65700 s` (18:15Z) | Nepal's **exact civil** day boundary — NPT midnight, UTC+05:45 | Reference. Never operated on directly. |
-| 2 | `64800 s` (18:00Z) | Nepal's **provisional operating** boundary — civil midnight rounded down to the whole hour, corroborated (not caused) by SnowMapper's UTC+6 day | **What T4 configures**, pending DHM's answer (T7). Whatever DHM names replaces it. |
-| 3 | `0 s` (00:00Z) | Switzerland **today**, and what every deployment must keep declaring until the parity precondition in OD-9 holds | **Current.** OD-11 and T4 require it. |
-| 4 | `82800 s` (23:00Z) | Switzerland **after the cutover** — fixed UTC+1 year-round, so every day is exactly 24 h | **Target.** Requires the retrain; Plan 254 T6 owns the move. |
+D4 says *"every path aggregates onto UTC calendar buckets … nothing aligns to a forecast's own
+timestamp"* (`228:124-125`). Its reasoning is **not** solely about a moving anchor — it also rests on
+the repo already committing to calendar days across NWP, training and existing artifacts (`228:133`),
+and its invariant is implemented in shipped code (`aligned_lookback_bounds`, `floor_to_time_step`,
+both phase-zero; implementation record at `228:359-387`). That is why this is a supersession and not a
+one-word narrowing. Plan 228 forbids re-opening D1–D4 (`228:321-323`), so this is recorded as an
+explicit owner disposition.
 
-⛔ **Rows 3 and 4 are the same deployment before and after a cutover, not a contradiction.** Where
-this plan says Switzerland "is" `82800 s` it means the target; where it says Switzerland must declare
-phase zero it means today. Both are true, in that order. Likewise rows 1 and 2: "anchor to Nepali
-midnight" states the intent, `64800 s` is what we can actually operate on until DHM answers, and the
-45-minute difference means a Nepali day so configured runs **00:45–23:45 local**, which is a known and
-accepted approximation, not an oversight.
+What a fixed, declared, deployment-wide boundary preserves: it is the same instant every day, forever,
+so the moving-anchor prohibition D4 exists to protect is untouched. What T8 must state: a fixed
+non-zero phase preserves D4 **only once training, operational assembly, scoring, NWP handling, fetch
+bounds and artifacts all use the same declared grid.** Until that parity holds, phase zero remains
+correct. The execution half is Plan 254.
 
-**Storage stays UTC**; `UtcDatetime` and `ensure_utc()` at boundaries are unchanged. Phase is
-recorded *alongside*, not instead.
+**OD-11 — Switzerland must DECLARE phase zero; absence is not a default.** An undeclared deployment
+currently defaults to 0 silently, which contradicts this plan's fail-closed rule. Every deployment
+declares, including the one whose answer is zero. A station override (OD-12) is optional; the
+deployment declaration it falls back to is not.
 
-📐 **Phase is measured from UTC midnight, and that is a CHOICE this plan makes explicit.** The existing
-code derives phase by modulo against the **Unix epoch** (`services/training_data.py:237`,
-`services/skill/service.py`). For any step that divides 24 hours the two agree, because the epoch
-began at a UTC midnight — and every step we run today (hourly, 3-hourly, 6-hourly, daily) does divide
-it. For a step that does **not** divide 24 h (say 7 h, or 90 minutes) they diverge, and a value that
-means one thing in config would mean another in the resampler.
+**OD-12 — the boundary is DECLARED, never DERIVED; declared per deployment, overridable per station
+(owner, 2026-09-09).** This supersedes the architecture's per-station-IANA mechanism — see the section
+above — and it is what makes a country spanning several fixed offsets representable.
 
-**Rule:** the declared boundary is a time-of-day and is therefore **midnight-referenced**; the
-implementation must convert to whatever reference the resampler uses rather than assume they match.
-**Constraint:** a step that does not divide 24 h is **rejected at config load** until someone needs
-one, at which point the reference must be settled deliberately rather than discovered. Examples that
-are rejected: 7 h (1440 / 420 is not an integer) and 50 min. ⚠️ **90 min is NOT such an example** — it
-divides 24 h exactly 16 times; an earlier revision of this paragraph used it wrongly.
+| | |
+|---|---|
+| **Where it is declared** | The deployment declares a required default. A station MAY carry an override. |
+| **What is declared** | A fixed offset from UTC midnight, in whole minutes. Never an IANA zone name. |
+| **Why not derived** | A DST-observing zone has no uniform civil-day grid at all — see OD-2. Derivation gives 18:15 for Nepal and something unrepresentable for Switzerland. |
+| **Invariant** | Every station in a `StationGroup` must resolve to the SAME phase. |
 
-**Bounds: `0 <= phase < step`.** Zero is a legal, required phase — Switzerland declares exactly that
-(OD-11), so a rule excluding it would forbid the only deployment we run. *(An earlier revision here
-wrote `0 < phase < step`, contradicting T2 and OD-11.)*
+⭐ **The override is nearly free, which is why it is in scope now rather than deferred.** Plan 254 T4
+resolves a grid at call sites that are **already per-station**, so a per-station lookup is the same
+threading work a deployment constant would need — and a deployment constant would hard-code a global
+into a per-station path, which is a false simplification, not a real one.
 
-**Precision: phase is a whole number of MINUTES.** ⛔ The earlier formulation — "not an exact multiple
-of the smallest unit the step is expressed in" — is not implementable: a `timedelta` does not preserve
-how it was written, and `timedelta(days=1) == timedelta(hours=24) == timedelta(seconds=86400)`. Minute
-precision is implementable, is what the config format expresses (`daily_grid_origin = "18:00"`), and
-covers every case we have: NPT's 45-minute offset needs it, and nothing we ingest is anchored to a
-sub-minute boundary. A phase with a non-zero seconds component is rejected at config load.
+⛔ **The group invariant is not optional and is one clause from existing.**
+`services/run_group_forecast.py:95-107` (`_assert_consistent_station_inputs`) already asserts that
+every station in a group shares `issue_time`, `forecast_horizon_steps` and **`time_step`** — and the
+frames are then stacked row-wise onto one timestamp column (`:92`). It checks the step and not the
+phase: the half-grid defect again. **Extending that assertion to the phase is Plan 254's**, listed in
+its T4 scope; this plan owns only the rule. Two stations on different phases cannot share a
+group artifact, because the stacked frame would carry two interleaved grids in one timestamp column —
+the exact shape of the 69 rows in the census above.
 
-⛔ **Corollary — a stored step alone is HALF a grid, and a half grid reads as a false whole.** Any
-store that records a step without its phase records something true and incomplete, and the incomplete
-form is not inert: a bare `86400` invites every later reader to conclude "this sits on the daily grid
-at midnight", which is a claim the value does not make. **Recording a step therefore obliges
-recording a phase.** Where a store records only one, the omission is a defect to be named in that
-store, not a convention to be worked around by inference at read time — inferring the phase back from
-the timestamps is how a value that was never asserted becomes one that appears to have been.
+**Supply-side confirmation (SnowMapper modeller, 2026-09-05):** forcing is hourly on the top of the
+UTC hour with no `:45` timestamps — ECMWF native 3/6-hourly UTC interpolated to 1-hourly UTC — so
+OD-2's sub-daily-on-UTC decision matches what is delivered. NPT is presentation-layer only on their
+side. A known gap of theirs: point meteograms are published in UTC and should be NPT — display-layer,
+not ours.
 
-📌 **This is an established pattern here, not a new design.** `skill_scores.phase_offset_seconds` and
-`skill_diagrams.phase_offset_seconds` already exist (`db/metadata.py:1540`, `:1611`) and are written
-(`store/skill_store.py:520`), gated to `computation_version >= 2`; the skill service refuses an
-internally mixed-phase ensemble outright (`validate_homogeneous_time_step_and_phase`, Plan 228 D2).
-The skill path records the whole grid. The forecast path does not.
+## Open decisions
 
-🔴 **Measured on staging 2026-09-08, after `0.1.889` deployed Plan 241's write path:** of the 377
-`forecasts` rows the system has populated `time_step_seconds` on so far, every one stores `86400`,
-and **209 of them — 55% — sit on a non-zero, clock-derived phase** (139 `climatology_fallback` rows
-at 26658 s = 07:24:18 UTC, among others). Only 168 are genuinely at phase 0. So the half-grid is
-already the majority case in the live column, and it will stay that way until it is fixed: **the
-store-side remedy — a phase column on `forecasts` mirroring the skill tables — is Plan 254's**, and
-the disposition of the pre-existing NULL rows is Plan 248's (decided: quarantine). This plan owns
-only the statement that a step without a phase is not a grid.
+These are unresolved. They are listed here rather than left implicit in a task.
 
-**Alignment is permitted only between identical grids.** Anything else requires an explicit,
-declared resample using the aggregation method the parameter already carries
-(`AggregationMethod`, `types/enums.py:178` — SUM for precipitation and reference ET, MEAN for state
-variables). Shifting a series to make it fit is forbidden: a 15-minute nudge silently redistributes
-accumulated precipitation.
+**OQ-1 — which config field carries the OPERATIONAL TARGET-GRID step, and therefore where the
+non-dividing-step rejection acts?** T4 declares a *phase* (`daily_grid_origin = "18:00"`) and its
+verification requires that a step not dividing 24 h is rejected at config load — but no field
+declaring the *operational target grid's* step exists. ⚠️ **Narrowed 2026-09-09:** an earlier wording
+said no step-bearing config field exists at all, which is REFUTED —
+`skill_interpretation[].time_step_hours` (`config/deployment.py:57`) is one. It configures skill
+interpretation bands, not the assembly target grid, so it is the wrong place for this rejection.
+Either T4 gains a target-grid step field, or the rejection moves to wherever that step is actually
+declared (per model, per parameter, or per channel). **T4 cannot be implemented as written until this
+is answered.**
 
-**Fail closed.** An undeclared phase, or a grid mismatch with no declared conversion, refuses. It does
-not guess, and it does not fall back to matching on step alone — which would be exactly the
-nearest-match trap Plan 253's review identified as *dimensionally wrong*: a rate-of-change threshold
-per 10 minutes is not that threshold per day.
+**OQ-2 — who owns interval bounds (`period_start` / `period_end`)?** This plan assigns them to Plan
+258 with OD-5; Plan 254's Non-goals assign them to Plan 251's Forecast Lab v3 format transition; and
+**neither plan carries a task for them** — 258's task ledger (T0–T4) does not mention them. They are
+an orphan. Resolving it is a prerequisite for 258 or 254 being implementable, not for this plan.
 
-**For Nepal specifically:** forcing stays hourly UTC as delivered. NPT-hourly observations keep phase
-`900s` and are resampled onto whatever grid a consumer needs, never shifted. **Daily products and
-skill evaluation anchor to Nepali midnight**, because a forecast DHM publishes for a given date means
-the Nepali calendar day, not the UTC one.
+**OQ-3 — what channel carries resampling degradation?** OD-6 says the existing `InputQualityFlag`
+channel reports it. ⛔ **That is not implementable as stated, and this plan cannot settle it.**
+Plan 254 measured the channel: `assess_input_quality` emits only observation staleness, NWP age and
+warm-up; only `OperationalForecast` persists the pair; `HindcastForecast` has no such fields and Plan
+253 excluded hindcasts; and the resampler returns a bare DataFrame with nowhere to put provenance. So
+OD-6's "no second mechanism" is a *preference*, not a settled contract. **The decision is Plan 254 D2,
+and it is open.** Until it closes, treat OD-6's reporting clause as an intent.
+
+**OQ-4 — OD-3 needs owner confirmation.** The single whole-hour rule in OD-3 is a reconciliation of
+two contradictory statements in earlier revisions, not a decision the owner took in that form. See the
+Changelog.
 
 ## Relationship to plans already in flight
 
-This is deliberately the *convention and the type*, not the consumers:
+This is deliberately the convention and the type, not the consumers.
 
-- **Plan 254 T8** anchors the daily models' `valid_time` to the calendar day they predict. That is the
-  same defect family — a grid whose phase was never declared — and **254 T8 owns it.** *(It was
-  absorbed from Plan 226 on 2026-09-08; 226 is `SUPERSEDED` and must not be cited as a live owner. An
-  earlier revision of this bullet named 254 T8 and then said "226 owns the daily-model fix" two lines
-  later.)*
-- **Plan 258** owns temporal support — whether a value is a point or an interval — and therefore the
-  period-ending convention, interval bounds, and the support-dependent resampling methods. This plan
-  is buildable without it and must not re-absorb it.
+- **Plan 254** owns all execution: threading the declared grid through the resampler call sites
+  (⛔ **re-measure that inventory before using it; never cite a count from prose** — it moved from 6 to
+  8 to 12 sites in a fortnight, and 254's own text still contradicts itself between seven and twelve),
+  the fetch-bound helpers, artifact grid provenance, the `forecasts` phase column (T7), the Swiss retrain
+  and cutover (T6), and the daily-model anchoring (T8, absorbed from Plan 226).
+- **Plan 226 is `SUPERSEDED`** — absorbed into Plan 254 T8 on 2026-09-08. It must not be cited as a
+  live owner of anything.
+- **Plan 258** owns temporal support — point or interval — and therefore the period-ending
+  convention, the CF `cell_methods` vocabulary and the support-dependent resampling methods. ⛔ This
+  plan is buildable without it and must not re-absorb it: a grid is a step and a phase whether or not
+  we have recorded what the values mean over that step.
 - **Plan 234** threads each channel's declared aggregation method end to end. This plan supplies the
   rule that says *when* a resample is required; 234 supplies *how* it is performed.
-- **Plan 253** found the fail-closed hole in QC rule lookup. The principle is identical and should be
-  stated once, here, rather than rediscovered per subsystem.
+- **Plan 248** owns the pre-existing `forecasts.time_step_seconds` rows. Its T2 decided **discard**
+  for the 69 non-uniform `_pooled` rows, once the owner established that the mac-mini is a test
+  deployment, which restored a plain `SET NOT NULL` in its T3. Nothing here waits on that and nothing
+  there waits on this.
+- **Plan 106** records a `to-draft` v1.0 gap — "timezone / local-day aggregation audit" (`106:148`) —
+  whose evidence is exactly the mismatch T9 documents. T9 marks it owned by this plan and Plan 254;
+  it must not be drafted a second time.
+- **Plan 253** found the fail-closed hole in QC rule lookup. The principle is identical and is stated
+  once, here, rather than rediscovered per subsystem.
 
 ## Non-goals
 
-- The daily-model anchoring fix (**Plan 254 T8**, absorbed from the superseded Plan 226).
-- Threading declared aggregation through the assembly paths (Plan 234).
+- All execution and rollout — Plan 254.
+- Temporal support, period-ending, CF `cell_methods` — Plan 258.
+- Threading declared aggregation through the assembly paths — Plan 234.
 - Building any DHM or Nepali adapter.
-- Retrofitting phase onto historical stored rows. New writes declare it; a backfill is a separate
-  decision with its own cost.
-
-  ✅ **Discharged 2026-09-08.** Plan 248 T2 took that separate decision for the one population it
-  affects — the 69 non-uniform `_pooled` rows in staging — and chose **discard**, once the owner
-  established that the mac-mini is a test deployment and old forecasts may be deleted. With no NULL
-  rows left, Plan 248 T3 uses a plain `SET NOT NULL`. *(An earlier note here recorded the
-  quarantine + `NOT VALID` design that this superseded the same day; it was withdrawn because a CHECK
-  is re-evaluated on UPDATE and would have frozen those rows.)* Nothing here waits on that and
-  nothing there waits on this.
+- Retrofitting phase onto historical stored rows. ⚠️ **No write declares a phase today** — the
+  `forecasts` table has no phase column at all, and adding one is Plan 254 T7, not this plan. The
+  pre-existing stored population is Plan 248's, already decided.
 - Changing `UtcDatetime` or the storage timezone.
-
-## Corrections forced by review (2026-09-05, 26 findings: 20 blockers)
-
-This plan was rewritten after an independent review. Four errors are recorded rather than quietly
-fixed, because three of them were errors of *reasoning*, not typos:
-
-1. **The D4 argument was wrong.** The first draft claimed Plan 228 D4's reasoning is "entirely about
-   a moving anchor". It is not: D4 also rests on NWP, training and existing artifacts all
-   representing UTC calendar days (`228:132`), and its invariant is implemented in shipped code —
-   `aligned_lookback_bounds` and `floor_to_time_step`, both phase-zero (`228:294`). This is a
-   **supersession**, not a one-word narrowing. See OD-9.
-2. **A test contradicted this plan's own table.** The draft's `TimeGrid` test asserted a 10-minute
-   grid nests into "neither" hourly grid. The OD-6 table in the same document shows 10-minute on
-   `:00` straddling **0 of 144** intervals against UTC hours — it nests exactly. Corrected in T2.
-3. **"Phase is absent everywhere" is false.** Skill scoring already validates, partitions and
-   persists `(time_step, phase)` (`services/skill/service.py:110`). T2 must reuse or replace that
-   representation, not pretend it is new.
-4. **"Every input is period-ending" is invalid for instantaneous data** — see OD-1, now narrowed.
-
-## Owner decisions taken 2026-09-05, after the review
-
-⚠️ **Tense correction (2026-09-08).** OD-9 below is written as though D4 *has been* superseded. It
-has not. This plan is `DRAFT` — a proposal, not an instruction (`docs/workflow.md:64-89`) — and T8 is
-the future task that would amend Plan 228. **Plan 228 is READY, its D4 is the authoritative rule, and
-the code implements it** (`services/training_data.py:237-276`). Read OD-9 as *"D4 is proposed for
-supersession by T8"*: phase zero stays authoritative until the owner advances this plan and that
-amendment actually lands. The disposition is real; the past tense is not.
-
-**OD-9 — Plan 228 D4 is PROPOSED FOR SUPERSESSION, not reinterpretation (owner allowed 2026-09-05).** D4 forbids
-re-opening itself (`228:245`), so this is recorded as an explicit owner disposition. The supersession
-must amend D4's **complete** rationale, invariant, implementation record, the decision document, the
-touchpoint map and the locking tests — and must state that a fixed non-zero phase preserves D4 only
-once training, operational assembly, scoring, NWP handling, fetch bounds **and artifacts** all use the
-same declared grid. Until that parity holds, phase-zero remains correct. The execution half is
-Plan 254.
-
-**OD-10 — MOVED to Plan 258.** Adopting CF `cell_methods` as the temporal-support vocabulary, the
-support table, and the fact that we currently discard all of it are Plan 258's, together with the
-three blockers an independent review raised against them on 2026-09-08: the wrong cardinality (the
-same canonical parameter has different support per product), an unsafe fail-closed migration, and an
-unrepresentable "unknown" state.
-
-**OD-1 (NARROWED) — MOVED to Plan 258**, with OD-1 and OD-4.
-
-**OD-3 (REVISED) — the Nepal daily boundary is PROVISIONALLY 18:00Z, pending DHM (T7).** The draft
-held three different values at once; this is the single value used throughout until DHM answers.
-
-Two independent routes reach it, which is why it is a defensible provisional rather than a guess:
-rounding civil midnight (18:15Z) down to the whole hour, **and** SnowMapper's own daily aggregation,
-which uses a solar offset of `round(centroid_lon/15)` = **UTC+6 for Nepal — whose midnight is exactly
-18:00Z**.
-
-**No cross-system conflict — corrected 2026-09-07.** An earlier draft warned that adopting a DHM
-boundary other than 18:00Z would put us at odds with SnowMapper. That was wrong. **We receive
-SnowMapper data as hourly UTC on the top of the hour and aggregate it ourselves**; the UTC+6 solar
-shift is their *dashboard's* presentation layer, not our input. So there is no boundary to reconcile
-with them — the UTC+6 coincidence remains an interesting corroboration of 18:00Z and nothing more.
-The same holds for any UTC-delivered source.
-
-**The requirement is therefore configurability, not a particular value (owner, 2026-09-07).**
-Whatever DHM names as their reference is what we adopt. 18:00Z is the default until they answer; the
-design must not hard-code it anywhere, and T4's rejection of an undeclared deployment is what keeps
-that honest.
-
-**OD-11 — Switzerland must DECLARE phase zero; absence is not a default.** The draft verified that an
-undeclared deployment silently defaults to 0, which contradicts this plan's own fail-closed rule.
-Every deployment declares, including the one whose answer is zero.
-
-**Supply-side confirmations (SnowMapper modeller, 2026-09-05):** forcing is hourly on the top of the
-UTC hour with no `:45` timestamps — ECMWF native 3/6-hourly UTC interpolated to 1-hourly UTC — so
-OD-2's sub-daily-on-UTC decision matches what is actually delivered. NPT is presentation-layer only.
-A known gap on their side: point meteograms are published in UTC and should be NPT — display-layer,
-not ours.
-
-### Temporal support — moved out on 2026-09-08 (not a task here)
-
-Temporal support — declaring it, and later verifying it against the source's CF `cell_methods` — is
-**Plan 258 T1–T4**. It left this plan on 2026-09-08 because an independent review returned three
-blockers against it and none of them were about grids: the value was assigned at the wrong
-cardinality, the fail-closed migration violated the repo's additive-only rule, and "unknown" was not
-representable. Those are now Plan 258's open decisions D1–D3.
-
-⛔ **Do not re-absorb it.** This plan is buildable without it: a grid is a step and a phase whether or
-not we have recorded what the values mean over that step.
 
 ## Tasks
 
-Every code task carries the Task Exit Gate (`docs/workflow.md:378-390`).
+Every code task carries the Task Exit Gate (`docs/workflow.md:198`).
+
+⚠️ Task IDs are non-contiguous (T1, T2, T4, T6, T7, T8, T9). The gaps are from the 2026-09-05 and
+2026-09-08 splits into Plans 254 and 258. **The IDs are stable and referenced by those plans — do not
+renumber them.** T9 was added 2026-09-09 and takes the next free number rather than filling a gap.
 
 ### T1 — declare the conventions where an adapter author will find them
 
 **Outcome:** phase is defined as a grid property, the NPT worked example is written down, and the DST
 limitation is recorded as a limitation rather than left to be rediscovered.
 
-**In:** `docs/conventions.md` (primary home), cross-referenced from `docs/architecture-context.md`
-and `docs/spec/types-and-protocols.md`. Must carry the NPT worked example, the statement that period
-convention and grid phase are **independent** (with the convention itself pointed at Plan 258), and
-that a DST-observing zone has no uniform civil-day grid at all.
+**In:** `docs/conventions.md` (primary home), cross-referenced from `docs/architecture-context.md` and
+`docs/spec/types-and-protocols.md`. Must carry the NPT worked example, the statement that period
+convention and grid phase are **independent** (with the convention itself pointed at Plan 258), that a
+DST-observing zone has no uniform civil-day grid at all, and **the three OD-6 rules this plan owns as
+conventions**: coarsen with the parameter's declared `AggregationMethod`, never upsample, and refuse a
+target finer than the source's median spacing. ⛔ Those three are conventions here and *behaviour* in
+Plan 254 — recording them is this task's job; enforcing them is not.
 
 ⛔ **Not the period-ending convention or the CF table** — Plan 258. Name the split here so an adapter
 author reading `conventions.md` finds both halves.
 
 **Out:** any code change; the adapter audit (T6); anything in Plan 254.
 
-**Pre-change:** N/A — documentation task. `grep -rn "grid phase\|TimeGrid" docs/conventions.md` returns nothing; the convention lives only in `docs/design/dhm-precipitation-milestones.md:119` and a code comment.
+**Pre-change:** N/A — documentation task. `grep -rn "grid phase\|TimeGrid" docs/conventions.md`
+returns nothing; the convention lives only in `docs/design/dhm-precipitation-milestones.md:119` and a
+code comment.
 
-**Verification:** N/A — documentation task. Phase is defined, the NPT example appears, the DST limitation is stated, and Plan 258 is named as the home of temporal support.
+**Verification:** N/A — documentation task. Phase is defined, the NPT example appears, the DST
+limitation is stated, the three OD-6 grid rules appear as conventions, and Plan 258 is named as the
+home of temporal support.
 
 ### T2 — a typed `TimeGrid`, reusing what already exists
 
 **Outcome:** `TimeGrid(step, phase)` exists with `0 <= phase < step`, an alignable predicate and a
-nesting predicate — and it either reuses or explicitly replaces skill's existing `(time_step, phase)`
-representation rather than duplicating it.
+nesting predicate, and it **REPLACES** skill's ad-hoc `(time_step, phase_us)` pair as the single
+representation. ⛔ **"Reuse or replace" is settled here, not left to the implementer** — leaving it
+open is what made the previous revision unimplementable.
+
+**The two predicates, stated as formulas so the implementer makes no choice:**
+
+- `a.alignable(b)` ⟺ `a.step == b.step and a.phase == b.phase`. Nothing weaker: equal steps with
+  unequal phases is exactly the hourly-UTC-vs-hourly-NPT case that shares no instant.
+- `fine.nests_into(coarse)` ⟺ `coarse.step % fine.step == 0` **and** `(coarse.phase - fine.phase) %
+  fine.step == 0`. Both clauses are load-bearing: 10-minute-on-`:00` satisfies the first against
+  hourly NPT and fails the second (`900 % 600 = 300`), which is the OD-6 table's 24/144 straddles.
+
+⚠️ **Skill's stored phase is LOSSY, and the replacement must not inherit that.** Phase is derived in
+microseconds (`services/skill/service.py:101`) and persisted floor-divided to whole seconds
+(`:642`, `phase_us // 1_000_000`), so two cohorts whose phases differ sub-second collapse to one
+stored value — and the census above contains exactly such phases (`06:00:02.858976`). Declared phases
+are whole minutes (§ Bounds and precision) so this cannot bite a *declared* grid; it bites the
+*observed* phase of existing data. Record the limitation; do not widen the declared type to carry
+microseconds.
 
 **In:** `src/sapphire_flow/types/`, `docs/spec/types-and-protocols.md`, and
-`services/skill/service.py:110` where phase is already validated and persisted. Depends on T1.
+`services/skill/service.py:76-112`, where phase is already derived, validated and persisted. Depends
+on T1.
 
 **Out:** deriving phase from an IANA timezone — never offered, since derivation reintroduces DST.
 Threading it through call sites (Plan 254).
 
-**Pre-change:** `uv run python -c "from sapphire_flow.types.domain import TimeGrid"` fails with ImportError, while `grep -n "phase" services/skill/service.py` shows a second, incompatible representation already in use.
+**Pre-change:** `uv run python -c "from sapphire_flow.types.domain import TimeGrid"` fails with
+ImportError, while `grep -n "phase" services/skill/service.py` shows a second, incompatible
+representation already in use — a nullable integer of microseconds, persisted as seconds.
 
-**Verification:** `uv run pytest tests/unit/types/test_time_grid.py` — hourly UTC and hourly Nepali are both step 3600 and NOT alignable; a 15-minute grid on quarter-hour marks nests into BOTH; **a 10-minute phase-zero grid nests into hourly UTC and NOT into hourly Nepali** (the draft asserted neither, contradicting OD-6); phase >= step raises.
+**Verification:** `uv run pytest tests/unit/types/test_time_grid.py` — hourly UTC and hourly Nepali
+are both step 3600 and NOT alignable; a 15-minute grid on quarter-hour marks nests into BOTH; **a
+10-minute phase-zero grid nests into hourly UTC and NOT into hourly Nepali** (consistent with the OD-6
+straddling table, which shows 0/144 against UTC and 24/144 against NPT); `phase >= step` raises;
+`phase == 0` is accepted.
 
 ### T4 — declare the operational grid boundary per deployment
+
+⚠️ **Blocked on OQ-1** for the step half of its verification. The phase half is implementable today.
 
 **Outcome:** every deployment declares its boundary explicitly, including Switzerland's zero.
 
 **In:** the deployment config model, plus **both** config layers — `config/overlays/` **and the
 repository-root `config.toml`**, which is the active Swiss base and is loaded separately from the
-overlays (`config/deployment.py:452`, `docs/v0-scope.md:490`). ⛔ **The root file was missing from
-this task's scope, which would have made the requirement unsatisfiable for the one deployment we
-actually run**: if the field has no default, the base config must declare it or Switzerland refuses to
-start. Written as a readable time-of-day (`daily_grid_origin = "18:00"`) parsed once into a phase. **Also
+overlays (`config/deployment.py:468`, where `load_merged_toml` merges the base with the overlays; `docs/v0-scope.md:492-495`). ⛔ **The root file must be in scope**:
+if the field has no default, the base config must declare it or Switzerland refuses to start. Written
+as a readable time-of-day (`daily_grid_origin = "18:00"`) parsed once into a phase. **Also
 `docs/spec/config-reference.toml`**, which states that it documents every config field — a new field
-that does not appear there breaks that promise, and the workflow requires affected docs in every code
-change. Depends on T2.
+absent from it breaks that promise. Depends on T2.
 
-**Out:** deriving it from `stations.timezone`, which stays descriptive. Any per-station override.
+**In (also):** the optional per-station override of OD-12 — a nullable field alongside the existing
+station metadata, validated to the same rules as the deployment value (whole minutes, `0 <= phase <
+step`). Absent means "use the deployment declaration", which is the only defaulting this plan permits,
+because the deployment value is itself required.
 
-**Pre-change:** `grep -rn "grid_origin\|grid_phase" config/ src/sapphire_flow/config/` returns nothing; no deployment declares a boundary.
+**Out:** deriving it from `stations.timezone`, which stays descriptive metadata and is never read to
+make a decision. Enforcing the group-uniformity invariant (Plan 254 T4).
 
-**Verification:** `uv run pytest tests/unit/config/` — Nepal parses `"18:00"` to 64800 s; Switzerland's
-root `config.toml` declares `"00:00"` → **0 s and is ACCEPTED** (phase zero is legal and required, not
-an omission); a step that does not divide 24 h is **REJECTED at load**; a phase with a non-zero
-seconds component is **REJECTED**; and a deployment with NO
-declaration is **REJECTED** rather than defaulting to zero (OD-11); a value finer than the step's resolution is rejected.
+**Pre-change:** `grep -rn "grid_origin\|grid_phase\|daily_grid" config/ config.toml src/sapphire_flow/config/`
+returns nothing (verified 2026-09-09); no deployment declares a boundary.
+
+**Verification:** `uv run pytest tests/unit/config/` — Nepal parses `"18:00"` to 64800 s;
+Switzerland's root `config.toml` declares `"00:00"` → **0 s and is ACCEPTED** (phase zero is legal and
+required, not an omission); a phase with a non-zero seconds component is **REJECTED**; a deployment
+with **NO** declaration is **REJECTED** rather than defaulting to zero (OD-11); and — once OQ-1 names
+the field — a step that does not divide 24 h is **REJECTED at load**.
+
+⛔ **Removed: "a value finer than the step's resolution is rejected."** It is not implementable — a
+`timedelta` does not retain how it was written, which is the same reason the precision rule is stated
+as whole minutes. The whole-minutes check is the whole of it.
+
+⚠️ **No Nepal deployment profile exists** under `config/` or `config/overlays/` (verified 2026-09-09),
+so "Nepal parses `18:00`" must be exercised against a test fixture. Creating a real Nepal profile is
+deployment work and is **out of scope here**.
 
 ### T6 — audit every input adapter against the conventions
 
 **Outcome:** each adapter's **native grid phase** is recorded — confirmed, converted, flagged
 unresolved, or **`NOT A GRID`**.
 
-⛔ **The fourth outcome is required, and its absence contradicted OD-0.** OD-0 says a source is not
-assumed to be a grid at all; a manually-read gauge or an event-triggered series has **no phase**, and
-recording that as "unresolved" would misfile a known fact as an open question. `NOT A GRID` is a
-terminal, correct answer. *(Temporal support gets its own audit in Plan 258 T4; keep the two tables adjacent in
-`docs/conventions.md` but do not merge them — they are independent facts and merging them is how one
+⛔ **The fourth outcome is required by OD-0.** A source is not assumed to be a grid at all; a
+manually-read gauge or an event-triggered series has **no phase**, and recording that as "unresolved"
+would misfile a known fact as an open question. `NOT A GRID` is a terminal, correct answer.
+
+*(Temporal support gets its own audit in Plan 258 T4. Keep the two tables adjacent in
+`docs/conventions.md` but do not merge them — they are independent facts, and merging them is how one
 silently stands in for the other.)*
 
 **In:** `src/sapphire_flow/adapters/`, recorded as a table in `docs/conventions.md`. Depends on T1.
 
+⛔ **Inclusion rule and row key, so "every adapter appears" is checkable.** `adapters/` also holds
+ForecastInterface code, rate limiting, status adapters, factories, readers and helpers — those are
+out. **In scope:** any adapter that yields timestamped observation, forcing or forecast values into
+the system. **Row key: `(adapter, product/series)`, not `(adapter)`** — one adapter can expose several
+products at different cadences, and one row per adapter would let one product's phase silently stand
+for another's. Same grain as Plan 258 T4 and Plan 243's unit register.
+
 **Out:** fixing a non-conforming adapter — each is its own change.
 
-**Pre-change:** N/A — audit task. No such record exists, and both timebases are already in the building undocumented: the DHM workbook is UTC period-ending (`docs/design/dhm-precipitation-milestones.md:119`) while Pyramid AWS is NPT (`docs/design/dhm-precipitation-vision.md:354`).
+**Pre-change:** N/A — audit task. No such record exists, and both timebases are already in the
+building undocumented: the DHM workbook is UTC period-ending
+(`docs/design/dhm-precipitation-milestones.md:119`) while Pyramid AWS is NPT
+(`docs/design/dhm-precipitation-vision.md:354`).
 
-**Verification:** N/A — audit task. Every adapter appears with a cited source, or is marked unresolved.
+**Verification:** N/A — audit task. Every adapter appears with a cited source, or is marked
+unresolved.
 
 ### T7 — make the DHM day-boundary questions EXACT
 
-⚠️ **Corrected 2026-09-08: the questionnaire already asks this, and the earlier framing here was
-wrong.** It claimed the questions were absent and cited a grep that returns nothing only because it is
-case-sensitive and uses our vocabulary rather than the document's. `docs/requirements/dhm-data-formats-questions.md`
-already asks **Q3.3** ("How is daily flow defined? Daily mean / instantaneous / max? … day boundary")
-and **Q8.3** ("Time precision: exact timestamp format, the UTC offset (NPT = +05:45), seconds
-precision, and the definition of a day"). The task is therefore to make existing questions precise
-enough to settle OD-3 — not to add a missing one. The snow modeller is also **not** in scope here
-despite the old title; the Gateway ask moved to Plan 258.
-
 **Outcome:** Q3.3 and Q8.3 are sharpened so that DHM's answer resolves the day boundary to a specific
-whole hour, so the provisional 18:00Z default can be replaced by their actual reference.
+whole hour, letting the provisional 18:00Z be replaced by their actual reference.
 
-**In:** `docs/requirements/dhm-data-formats-questions.md`, amending Q3.3 and Q8.3 and adding what is
-genuinely missing. Three things must be answerable afterwards: the conventional day
-boundary in local time; a request for **15-minute data on `:00/:15/:30/:45`** (10-minute is worse for
-Nepali targets, since 10 does not divide the 345-minute offset and 15 does); and confirmation of
-period convention per parameter. Cite the India 08:30 IST precedent — it makes the question read as a
-familiar convention rather than an unusual demand.
+⚠️ **The questionnaire already asks this.** `docs/requirements/dhm-data-formats-questions.md` asks
+**Q3.3** ("How is daily flow defined? Daily mean / instantaneous / max? … day boundary") and **Q8.3**
+("Time precision: exact timestamp format, the UTC offset (NPT = +05:45), seconds precision, and the
+definition of a day"). The task is to make existing questions precise enough to settle OD-3, not to
+add a missing one.
 
-⛔ **The Gateway CF-metadata ask MOVED to Plan 258** together with the temporal-support work it
-serves. It is not this plan's, and this plan is not blocked on it.
+**In:** `docs/requirements/dhm-data-formats-questions.md`, amending Q3.3 and Q8.3. **Two** things must
+be answerable afterwards: the conventional day boundary in local time, resolved to a specific hour;
+and a request for **15-minute data on `:00/:15/:30/:45`** (10-minute is worse for Nepali targets, since
+10 does not divide the 345-minute offset and 15 does). Cite the India 08:30 IST precedent — it makes
+the question read as a familiar convention rather than an unusual demand.
 
-**Out:** re-rendering the `.docx`; assuming an answer. Unanswered leaves OD-3 on its provisional value.
+⛔ **Period convention per parameter is NOT asked here.** An earlier revision listed it as a third
+item, contradicting this plan's own frontmatter and the sentence below. It is Plan 258's, and it will
+need its own question.
 
-**Pre-change:** N/A — requirements task. Q3.3 and Q8.3 exist but neither forces an answer naming a specific hour, so DHM could answer both fully and leave OD-3 unresolved. `grep -in "day boundary\|definition of a day" docs/requirements/dhm-data-formats-questions.md` returns nothing.
+⛔ **The Gateway CF-metadata ask belongs to Plan 258**, with the temporal-support work it serves. It is
+not this plan's, and this plan is not blocked on it. The snow modeller is likewise out of scope here.
 
-**Verification:** N/A — requirements task. Q3.3 and Q8.3 each demand a specific hour, the 15-minute grid request appears, and the India 08:30 IST precedent is cited.
+**Out:** re-rendering the `.docx`; assuming an answer; the period-convention question (Plan 258).
+Unanswered leaves OD-3 on its provisional value.
+
+**Pre-change:** N/A — requirements task. Q3.3 and Q8.3 exist (`docs/requirements/dhm-data-formats-questions.md:158`
+for Q8.3) but neither forces an answer naming a specific hour, so DHM could answer both fully and
+leave OD-3 unresolved.
+
+**Verification:** N/A — requirements task. Q3.3 and Q8.3 each demand a specific hour, the 15-minute
+grid request appears, and the India 08:30 IST precedent is cited.
 
 ### T8 — supersede Plan 228 D4
 
 **Outcome:** D4 is superseded, not reinterpreted, with the owner's disposition recorded and the parity
-precondition stated. ⛔ **This task is the ONLY thing that makes the supersession real** — until it
-runs, D4 stands and phase zero is correct. Anything elsewhere in this plan written in the perfect
-tense is describing this task's intended effect, not a completed one.
+precondition stated.
 
-**In:** `docs/plans/228-hindcast-and-skill-on-wrong-data.md` § D4 (`:121-147`), its implementation
-record (`:294`), the decision document and `docs/touchpoint-maps.md`. Must preserve the
-moving-anchor prohibition, exactly-N-complete-buckets, and align-and-extend; must state that phase
-zero remains correct until training, assembly, scoring, NWP, fetch bounds and artifacts all share a
-declared grid. Depends on T1.
+⛔ **This task is the ONLY thing that makes the supersession real.** Until it runs, D4 stands and phase
+zero is correct.
 
-**Out:** re-opening D1-D3, the shipped P1/P2 fix, or anything 228 assigns to Plan 234/235. Changing
+**In:** `docs/plans/228-hindcast-and-skill-on-wrong-data.md` § D4 (`:122-149`), its implementation
+record (`:359-387`), the decision document, `docs/touchpoint-maps.md` **and D4's locking tests** —
+amending the rule without amending the tests that pin it leaves the old rule enforced in CI. Must preserve the moving-anchor
+prohibition, exactly-N-complete-buckets, and align-and-extend; must state that phase zero remains
+correct until training, assembly, scoring, NWP, fetch bounds and artifacts all share a declared grid.
+Depends on T1.
+
+**Out:** re-opening D1–D3, the shipped P1/P2 fix, or anything 228 assigns to Plan 234/235. Changing
 any phase-zero behaviour — that is Plan 254.
 
-**Pre-change:** N/A — documentation task superseding a settled decision. `228:123` reads "Every path aggregates onto UTC calendar buckets", which forbids daily forecasts for any region not on UTC.
+**Pre-change:** N/A — documentation task superseding a settled decision. `228:124-125` reads "Every
+path aggregates onto UTC calendar buckets … Nothing aligns to a forecast's own timestamp", which
+forbids daily forecasts for any region not on UTC.
 
-**Verification:** N/A — documentation task. D4 still forbids a moving anchor; the owner disposition and the parity precondition are both recorded.
+**Verification:** N/A — documentation task. D4 still forbids a moving anchor; the owner disposition
+and the parity precondition are both recorded.
+
+### T9 — supersede the per-station IANA day-boundary decision across the architecture docs
+
+**Outcome:** the six sites listed above state OD-12's mechanism, the locked decision carries the
+owner's disposition, and the undrafted roadmap gap is closed rather than left to be redrafted.
+
+⛔ **This task is the only thing that makes OD-12 authoritative.** Until it runs, the architecture's
+per-station-IANA mechanism is the documented rule and this plan contradicts it. It follows the same
+pattern as T8 (which supersedes Plan 228 D4): an owner disposition recorded in the document it
+amends, never a silent edit.
+
+**In:** `docs/architecture-context.md:3287` (the locked-decision row), `:2933` and `:2982`;
+`docs/conventions.md:299-300`; `docs/design/v0-flow2-observation-pipeline.md:435`, `:446`, `:620`;
+and `docs/plans/106-v1-critical-path-roadmap.md:148`, whose "v1.0 timezone / local-day aggregation
+audit" gap this plan and Plan 254 together close — mark it owned, do not leave it *to-draft*.
+
+Each site must state: the boundary is **declared**, not derived; declared per deployment with an
+optional per-station override; always a fixed offset, never an IANA zone name; and every station in a
+station group resolves to one phase. **Keep the intent** — a daily aggregate still means the local
+hydrological day — and record *why* the mechanism changed, so the DST reasoning is not rediscovered.
+
+**Out:** changing any behaviour (Plan 254); `stations.timezone` itself, which stays descriptive;
+re-opening any other locked decision.
+
+**Pre-change:** the six sites above, verified 2026-09-09, assert a per-station IANA-derived boundary
+while `grep -rn "zoneinfo\|pytz" src/` returns nothing — a documented architecture with no
+implementation, now contradicted by this plan.
+
+**Verification:** N/A — documentation task. No site still derives the boundary from a station's IANA
+zone; the locked-decision row carries the owner disposition and the DST rationale; the roadmap gap
+names its owning plans.
 
 ## Exit gates
 
@@ -635,27 +763,125 @@ uv run python scripts/check_readiness.py docs/plans/252-time-grids-are-step-and-
 Four conditions hold in addition:
 
 1. **One Nepal OPERATING boundary value appears throughout** — `64800 s` (18:00Z) until DHM answers.
-   ⚠️ Not "one value": the plan deliberately distinguishes four (civil reference `65700`, operating
-   `64800`, Switzerland today `0`, Switzerland after cutover `82800`) and that table is correct. The
-   gate is that no *second operating* value for Nepal appears, which is the defect the draft had.
+   The plan deliberately distinguishes four values (civil reference `65700`, Nepal operating `64800`,
+   Switzerland today `0`, Switzerland after cutover `82800`); the gate is that no *second operating*
+   value for Nepal appears.
 2. **No deployment defaults to phase zero by omission** (OD-11), including the repository-root
    `config.toml` that the Swiss deployment actually loads — not only `config/overlays/`.
 3. **D4's supersession is PROPOSED with the parity precondition stated**, not asserted as done —
    Plan 228 stays authoritative until T8 lands.
-4. ⛔ **Removed: "temporal support comes from CF `cell_methods`, never inferred".** That moved to
-   Plan 258, and it could not have passed here anyway while the source metadata is stripped upstream.
+4. **OQ-1 is answered before T4 ships**, and OQ-2 is answered before Plan 254 or 258 proceeds past the
+   tasks that need interval bounds.
+5. **No document still derives the day boundary from a station's IANA timezone** (T9), and no
+   document still presents the per-station-IANA mechanism as locked.
 
 ## Dependency graph
 
 ```json
 {
+  "plan": 252,
   "nodes": [
     {"id": "T1", "phase": 1, "depends_on": []},
     {"id": "T2", "phase": 1, "depends_on": ["T1"]},
-    {"id": "T4", "phase": 2, "depends_on": ["T2"]},
     {"id": "T6", "phase": 1, "depends_on": ["T1"]},
     {"id": "T7", "phase": 1, "depends_on": []},
-    {"id": "T8", "phase": 2, "depends_on": ["T1"]}
+    {"id": "T4", "phase": 2, "depends_on": ["T2"], "blocked_on": "OQ-1 — no step-bearing config field is named"},
+    {"id": "T8", "phase": 2, "depends_on": ["T1"]},
+    {"id": "T9", "phase": 2, "depends_on": ["T1"]}
   ]
 }
 ```
+
+## Changelog
+
+⛔ **This section replaces the inline correction notes.** A correction note that leaves the wrong text
+in place does not fix a contradiction — it documents one. Every entry below is already applied above;
+nothing here needs reconciling against the body.
+
+**2026-09-09 — the architecture contradiction, folded (owner, same day).** A measured sweep found
+that `docs/architecture-context.md` (three sites, one of them a **locked decision**),
+`docs/conventions.md` and `docs/design/v0-flow2-observation-pipeline.md` all assert a per-station,
+IANA-derived day boundary — the mechanism this plan forbids — while **no code implements it** and the
+running system is UTC throughout. Previous revisions of this plan never noticed. Added: the measuring
+section before § Design, **OD-12** (declared not derived; per deployment with an optional per-station
+override; group-uniform), and **T9** to supersede the six sites and close Plan 106's undrafted gap.
+⚖️ **Owner disposition:** support multi-timezone countries now if it is cheap, else keep one boundary
+per deployment. Measured cheap — Plan 254 T4 resolves a grid at call sites that are already
+per-station, and `_assert_consistent_station_inputs` already checks a group's shared `time_step` and
+is one clause from checking its phase. The override is therefore IN scope; T4 gained it and its
+enforcement is Plan 254's.
+
+**2026-09-09 — independent Codex review of the rewrite, folded.** 9 blockers, 5 majors. ⭐ **Three
+were losses the rewrite itself introduced**, which is the specific risk of rewriting and the reason
+the rewrite was reviewed rather than shipped: T8 had dropped "and the locking tests" from what the
+supersession must amend; the scope had dropped the prohibition on citing Plan 254's call-site count
+from prose; and this Changelog had dropped the "26 findings: 20 blockers" measurement from the
+2026-09-05 round. All three restored.
+
+Also folded: T2 now SETTLES reuse-vs-replace and states both predicates as formulas (it was
+unimplementable as an implementer's choice), and records that skill's stored phase is lossy —
+derived in microseconds at `services/skill/service.py:101`, persisted floor-divided to seconds at
+`:642`. T1 now carries the three OD-6 rules this plan owns. T6 gained an inclusion rule and the
+`(adapter, product)` row key. T7 regained its mandatory `Pre-change` and dropped a period-convention
+question that belongs to Plan 258. T4 dropped an unimplementable "finer than the step's resolution"
+check and notes that no Nepal profile exists. OQ-3 and OQ-4 were added — OD-6's reporting channel is
+an intent gated on Plan 254 D2, not a settled contract; OD-3 needs owner confirmation.
+
+⚖️ **Citations corrected after verification.** All four Plan 228 references were wrong and had been
+carried forward unchecked: D4 is `:122-149` not `:121-147`, the quoted rule `:124-125` not `:123`, the
+rationale `:133` not `:132`, the implementation record `:359-387` not `:294`, and the
+do-not-reopen prohibition `:321-323` not `:245`. Also corrected: `docs/v0-scope.md:492-495`,
+`config/deployment.py:468`, `store/skill_store.py:545`. Two of this plan's own claims were narrowed
+after being refuted — "a time step is a scalar everywhere" (skill is the exception, as the next bullet
+already said) and "only three timezone read sites" (there are more; the claim that holds is that none
+makes a decision). ⚠️ OQ-1's premise was REFUTED as written: `skill_interpretation[].time_step_hours`
+IS a step-bearing config field, so the question narrowed to the *operational target-grid* step.
+
+⚠️ **The staging censuses are unreproducible** — no queries were preserved. Recorded as a gap under
+§ Owner decisions rather than left as an implied guarantee.
+
+**2026-09-09 — consolidating rewrite.** Three review rounds (8 → 7 → 6 blockers) failed on layered
+corrections rather than on reasoning. Each decision is now stated once, in its settled form. Also
+applied in this pass:
+
+- **OD-3 stated as one rule.** The plan previously said both "adopt DHM's boundary if it maps to a
+  whole UTC hour" and "whatever DHM names is what we adopt", unconditionally. Reconciled: we adopt
+  DHM's boundary, expressed as the whole UTC hour at or before it, recording any displacement. The
+  whole-hour constraint is forced by hourly forcing, not a preference. **Flagged for owner
+  confirmation** — this is a reconciliation of two texts, not a new owner decision.
+- **`docs/workflow.md:378-390` corrected to `:198`** (measured 2026-09-09). The same stale citation
+  is still present in Plan 254.
+- **Two open questions promoted out of the prose.** OQ-1 (T4 rejects a non-dividing step with no
+  step-bearing config field) and OQ-2 (interval bounds assigned to 258 by this plan, to 251 by 254,
+  and carried by neither) were previously invisible.
+- **Citations re-verified 2026-09-09** against `origin/main` at `dc442d57`: `types/domain.py:160-166`,
+  `types/enums.py:178`, `db/metadata.py:1540`/`:1611`, `store/skill_store.py:520`,
+  `config/deployment.py:452`, `config/onboarding.py:131`, `store/station_store.py:136`,
+  `api/routes/api_stations.py:220`, `services/forecast_combination.py:458`,
+  `services/training_data.py:237` all CONFIRMED. Skill's phase machinery is at
+  `services/skill/service.py:76-112`, not `:110`. `forecasts` confirmed to carry no phase column;
+  `stations.timezone` confirmed to have no decision-making read site.
+
+**2026-09-08 — the three splits and the disposals.** Temporal support (OD-1, OD-4, OD-5, OD-10) moved
+to Plan 258 after a review returned three blockers all belonging to it: wrong cardinality, an unsafe
+fail-closed migration, and an unrepresentable "unknown". Plan 226 was SUPERSEDED into Plan 254 T8. The
+Swiss retrain was confirmed to belong to Plan 254 T6, not to Plan 226 — verified against 226's own
+frontmatter and body, in which the words "retrain" and "artifact" do not appear at all. The feared
+**double retrain does not exist**: it rested on 226 causing a retrain, and 226 causes none. Plan 248
+T2 chose **discard** for the 69 non-uniform rows, superseding an earlier quarantine design that would
+have frozen those rows, since a CHECK constraint is re-evaluated on UPDATE.
+
+**2026-09-05 — four errors of reasoning recorded rather than quietly fixed** (from an independent
+review returning **26 findings, 20 of them blockers**).
+
+1. **The D4 argument was wrong.** The first draft claimed D4's reasoning is "entirely about a moving
+   anchor". It is not: D4 also rests on NWP, training and artifacts all representing UTC calendar days
+   (`228:132`), and its invariant is implemented in shipped code (`228:294`). This is a supersession,
+   not a narrowing — see OD-9.
+2. **A test contradicted this plan's own table.** The draft's `TimeGrid` test asserted a 10-minute
+   grid nests into "neither" hourly grid; the OD-6 table shows it straddles 0 of 144 intervals against
+   UTC hours, so it nests exactly. Corrected in T2.
+3. **"Phase is absent everywhere" is false.** Skill scoring already validates, partitions and persists
+   `(time_step, phase)`. T2 must reuse or replace it, not pretend it is new.
+4. **"Every input is period-ending" is invalid for instantaneous data** — the narrowing now lives in
+   Plan 258.
