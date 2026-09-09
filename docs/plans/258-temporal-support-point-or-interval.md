@@ -19,7 +19,7 @@ review: the grid half is *substantially* settled and this half is not.
 
 ⚠️ **Corrected 2026-09-09: "the grid half is settled" was too strong.** Plan 252 carries five open
 questions of its own (OQ-1 … OQ-5), two of which — the operational target-grid step field, and the
-interval-bounds orphan below — block this plan and Plan 254 rather than 252 itself.
+operational target-grid step field — block this plan and Plan 254 rather than 252 itself.
 
 ## Why this is a separate plan
 
@@ -42,11 +42,16 @@ CF already supplies this, and **our upstream data already carries it** — confi
 modeller: `time: point` for SWE and snow depth, `time: sum` for runoff, alongside `units` and
 `long_name`, int16-packed with CF `scale_factor`.
 
-| `cell_methods` | Temporal support | Period-ending? | Cross-grid method |
+| `cell_methods` | Temporal support | Period-ending? | Which bucket it falls in |
 |---|---|---|---|
-| `time: point` | instantaneous | **No — a point is not an interval** | linear interpolation, bounded by a maximum gap |
-| `time: sum` | interval accumulation | Yes | overlap apportionment |
-| `time: mean` / `time: maximum` | interval statistic | Yes | the declared `AggregationMethod` |
+| `time: point` | instantaneous | **No — a point is not an interval** | by its own instant |
+| `time: sum` | interval accumulation | Yes | by the interval it closes |
+| `time: mean` / `time: maximum` | interval statistic | Yes | by the interval it closes; combine with the declared `AggregationMethod` |
+
+🔴 **Cross-grid METHODS removed 2026-09-09.** The last column previously read "linear interpolation"
+and "overlap apportionment" — **both are forbidden by Plan 252 OD-13.** Temporal support no longer
+selects a method; it says which bucket a value belongs to, and the bucket edges come from Plan 252
+OD-14. Nothing here invents a value.
 
 ⚠️ **The CF token is `maximum`, not `max`.** `max` is our `AggregationMethod` member; `maximum` is the
 CF cell method. They are not interchangeable and the wrong one would not round-trip.
@@ -187,14 +192,16 @@ who checks it. The Gateway result construction retains values, not source metada
 (`adapters/recap_gateway.py:806`), and the parameter store contract is **read-only**
 (`protocols/stores.py:914`). A verification step needs a write path that does not exist.
 
-## ⛔ Interval bounds are assigned here and carried by nothing
+## ✅ Interval bounds — assigned here, and now CARRIED here (T5)
 
 Plan 252 assigns `period_start` / `period_end` to this plan (its OD-5). Plan 254 assigned them to
 Plan 251. **Verified 2026-09-09: this plan's T0–T4 contain no bounds task, and Plan 251 contains no
-`period_start`, `period_end` or interval-bound work at all.** They are an orphan, tracked as Plan 252
-OQ-2, and they are genuinely this plan's shape of problem — bounds only exist for values that ARE
-intervals. ⛔ **Do not resolve this by pointing at a third plan**; it needs an owner decision and then
-a task, here or in 251.
+`period_start`, `period_end` or interval-bound work at all.**
+
+⚖️ **CLOSED 2026-09-09 by owner decision: this plan owns them, as T5.** They are this plan's shape of
+problem — bounds only exist for values that ARE intervals. ⛔ **They are no longer an orphan; do not
+describe them as one, here or in Plans 252 and 254.** The fix was to create an owner, not to re-point
+a reference at a third plan.
 
 ## ⛔ Upstream dependency — real, and only half-asked
 
@@ -217,8 +224,15 @@ review showed exactly what happens otherwise: tasks that cannot be implemented a
 **Verification:** each decision is recorded with its rationale and the option it rejected.
 
 ### T1 — declare temporal support at the settled cardinality
-**Outcome:** `TemporalSupport` exists as a type and is carried wherever D1 decided, added **nullable**
-per D2, with a deliberate backfill and a recorded justification per series.
+**Outcome:** `TemporalSupport` exists as a type and is carried at `(source, parameter)` per D1, added
+**nullable** per D2, with a deliberate backfill and a recorded justification per series.
+
+⚙️ **The concrete home, named 2026-09-09** — "wherever D1 decided" was not a contract an implementer
+could build: a **`parameter_support` registry keyed `(source, parameter)`**, additive and nullable,
+covering every source kind that carries timestamped values — observation feeds, forcing sources
+(`historical_forcing` already keys `(source, parameter)` in its natural key, `db/metadata.py:824-877`)
+and weather-forecast sources. ⛔ It is NOT a column on `parameters`; that is the per-parameter shape
+D1 refuted.
 **In:** `types/enums.py`, the type D1 selects, `db/metadata.py` plus an additive migration.
 **Out:** reading anything from the source (T3); the aggregation METHOD (Plan 234). Depends on T0.
 **Pre-change:** no temporal-support field exists anywhere; a consumer must infer support from
@@ -230,6 +244,18 @@ defaulted; the migration is additive and the previous image runs against the new
 **Outcome:** a consumer that needs temporal support and finds none refuses, rather than assuming.
 **In:** the read paths D1 implies. **Out:** the schema constraint (D2 keeps the column nullable).
 Depends on T1. **Verification:** the refusal is locked by a test, not only the success path.
+
+### T6 — ask the Gateway to pass `cell_methods` through
+
+**Outcome:** the request is actually MADE and tracked. ⛔ **T3 declares itself blocked on this and no
+task owned making the ask** — a dependency on someone else's work that nobody was assigned to
+request. Plan 243 asked for `units` only.
+
+**In:** the same channel and people as Plan 243's units request; extend it rather than opening a
+second one. Record where the request lives and how we will know it landed.
+**Out:** implementing the verification (T3). **Depends on T0.**
+**Verification:** N/A — external-request task. The request exists, is linked from this plan, and T3
+names it as its unblocking condition.
 
 ### T3 — verify the declaration against the source (⛔ BLOCKED — do not start)
 **Outcome:** the source's CF `cell_methods` is read at ingest and **checked against** T1's
@@ -271,7 +297,7 @@ uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
 1. **All decisions D1–D6 are recorded** before any task ships (D5 and D6 added 2026-09-09), and the
-   interval-bounds orphan above has an owner.
+   interval-bounds task (T5) exists and is not described anywhere as an orphan.
 2. **The migration is additive and reversible-by-redeploy** — nullable, no tightening in this release.
 3. **A declared-but-unverified value is distinguishable from a verified one** — never conflated.
 4. ⛔ **Not a gate: "temporal support comes from CF metadata, never inference".** It cannot be, while
@@ -289,6 +315,7 @@ uv run ruff check src tests && uv run ruff format --check src tests
     {"id": "T2", "phase": 3, "depends_on": ["T1"]},
     {"id": "T4", "phase": 3, "depends_on": ["T1"]},
     {"id": "T5", "phase": 3, "depends_on": ["T1"]},
+    {"id": "T6", "phase": 1, "depends_on": ["T0"], "note": "the external ask T3 is blocked on; nobody owned it before 2026-09-09"},
     {"id": "T3", "phase": 4, "depends_on": ["T1"], "blocked_on": "Gateway CF attribute pass-through — extend the Plan 243 units-only request to cell_methods"}
   ]
 }

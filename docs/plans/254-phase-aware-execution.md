@@ -44,7 +44,7 @@ in a fortnight):
 
 | Call site | |
 |---|---|
-| `services/training_data.py:546`, `:560`, `:600` | training (three) |
+| `services/training_data.py:553`, `:567`, `:607` | training (three) — re-measured after the `071b62e3` rebase |
 | `services/operational_inputs.py:165`, `:591`, `:707` | operational assembly (three) |
 | `services/hindcast.py:238`, `:302`, `:320` | hindcast (three) |
 | `services/track_assembly.py:282`, `:372` | track assembly (two) |
@@ -114,13 +114,27 @@ period-ending labels (`services/operational_inputs.py:225`).
   Nepal depends on it. Switzerland stays at phase 0 until that retrain is ready.
   ⭐ **Plan 262's end-period-stamping change rides the SAME cutover** — identical shape (it changes
   what a stored interval value means, invalidates every artifact, needs a coordinated switch). Three
-  migrations collapse into one. ⚠️ Atomic-versus-per-station stays a T6 detail, but the group-phase
-  invariant (Plan 252 OD-12) makes a mixed-phase interval hazardous for any cross-station product,
-  which points hard at atomic.
+  migrations collapse into one. ⚠️ **The atomicity question is now D7, not D4** — an earlier revision used D4 for two different
+  decisions, so the second had no name and no owner.
+
+- **D7 — atomic flip or per-station migration?** Open. The group-phase invariant (Plan 252 OD-12)
+  makes a mixed-phase interval hazardous for any cross-station product, which points hard at atomic;
+  per-station would need a per-station grid record and a period during which two cuts coexist.
+  **Gates T6.**
 - ✅ **D5 — ANSWERED 2026-09-09: end-period stamping is the house convention, and Plan 262 owns
   adopting it.** Adapters convert at ingest; our own bucket labelling changes to match, in one step
   with skill's completeness path. ⛔ **This plan must not change either independently** — Plan 262
   sequences them and rides T6's cutover.
+
+  ⚙️ **The read-side change is T2's, and it is now specified rather than left as a choice.** ⛔ The
+  earlier text cited `ObservationStore` as the example — **wrong**: observations are instantaneous and
+  Plan 262 leaves them untouched. The stores that actually carry interval values and are half-open,
+  measured 2026-09-09:
+  `historical_forcing_store.py:71-72` and `weather_forecast_store.py:79-80`, both
+  `valid_time >= start AND valid_time < end`.
+  **Decision: change the BOUNDS for interval-valued series to `(start, end]`**, not the resampler's
+  `closed` behaviour — the bounds are what decide which rows are fetched at all, and a resampler
+  cannot recover a row the query never returned. Instantaneous series keep `[start, end)`.
 
   *(The measurement that produced it:)* how does a half-open fetch window meet closing-boundary
   stamps? Plan 258 defines
@@ -160,8 +174,19 @@ Every code task carries the Task Exit Gate (`docs/workflow.md:198-210`).
 
 ### T1 — settle the four open decisions
 
-**Outcome:** D1-D4 are answered in this plan with rationale, and D1's answer states explicitly
-whether an upstream ForecastInterface issue is required.
+**Outcome:** every open decision in this plan is answered with rationale — **D2 and D7**, plus
+**the six anchoring questions absorbed with Plan 226**, which T8 says moved "verbatim into T1's
+decision set" and which an earlier revision never actually put here.
+
+⛔ **The six, carried in explicitly** (they are T8's prerequisites and had no owner): whether P1 is
+fixed in the hindcast path or in the model; whether the daily-vs-instantaneous comparison is
+acceptable; what step *k* predicts and how the anchor is computed (by truncation, never by reading a
+`past_targets` row); what happens when every step is backdated; whether the boundary is `<` or `<=`
+(it must agree with the NWP path's existing convention at
+`services/operational_inputs.py:225-236`); and how "the last observation" is defined for a
+multi-parameter fallback.
+
+D1, D3, D4 and D5 are already answered above.
 
 **In:** this plan; the FI protocol and `adapters/forecast_interface.py`; `docs/touchpoint-maps.md:228`.
 
@@ -177,9 +202,10 @@ an implementation diff.
 **Outcome:** `floor_to_time_step` and `aligned_lookback_bounds` take a `TimeGrid` and preserve
 exactly-N-complete-buckets at a non-zero phase.
 
-**In:** `services/training_data.py:244` (`floor_to_time_step`), `:261` (`aligned_lookback_bounds`) —
-locations re-measured 2026-09-09 against `origin/main` `071b62e3`; the previously cited `:183`/`:200`
-were stale. Depends on T1.
+**In:** `floor_to_time_step` (`services/training_data.py:244`), `aligned_lookback_bounds` (`:261`),
+**and the interval-valued read bounds** — `historical_forcing_store.py:71-72` and
+`weather_forecast_store.py:79-80` move to `(start, end]` per D5, while instantaneous reads stay
+`[start, end)`. ⛔ No plan previously inventoried those two stores. Depends on T1.
 
 **Out:** the resampler itself (T3); any call-site change (T4).
 
@@ -189,19 +215,49 @@ were stale. Depends on T1.
 
 ### T3 — make the resampler phase-aware and provenance-carrying
 
-**Outcome:** the resampler honours a declared `TimeGrid`, applies the OD-6 method for the channel's
-CF temporal support (**supplied by Plan 258, not by this plan or 252**), refuses upsampling, and returns provenance alongside the data.
+**Outcome:** the resampler honours a declared `TimeGrid`, **invents nothing**, refuses upsampling, and
+returns provenance alongside the data.
 
-**In:** `services/training_data.py:286` (`resample_to_time_step`), including `closed` and `label` for
-period-ending — the call at `:374` supplies only `every=`, and installed polars 1.43.2 defaults to
-`closed='left'`, `label='left'`, which skill's completeness path assumes (`skill/service.py:305`), so
-both change together. Locations re-measured 2026-09-09; `:225`/`:299`/`:261` were stale. The return type changes per D2. Depends on T1, T2.
+🔴 **Rewritten 2026-09-09 — this task previously required the two operations Plan 252 OD-13 now
+FORBIDS.** T3 is the only task that touches the resampler, so it carries all of OD-13 and OD-14; if it
+does not, nothing does. The contract:
+
+| Rule | Source |
+|---|---|
+| ⛔ **No interpolation** between readings, ever | 252 OD-13 |
+| ⛔ **No apportionment** of a total across a boundary, ever | 252 OD-13 |
+| Coarsen with the parameter's declared `AggregationMethod` | 252 OD-6 (surviving half) |
+| **Refuse** a target finer than the source's median spacing | 252 OD-6 (surviving half) |
+| A bucket runs from the reading **closest to its nominal start** to the reading closest to its nominal end — readings never move | 252 OD-14 |
+| A **configurable limit** bounds how far a chosen edge may sit from nominal; beyond it the bucket is **REFUSED**, not built | 252 OD-14 |
+| **Ties** (two readings equidistant from a boundary) resolve deterministically — take the EARLIER, and lock it by test | this task |
+| **How far the chosen edge actually sat** is recorded on the value | 252 OD-14 |
+
+⚠️ Temporal support (Plan 258) is still consumed — it says whether a value is a moment or a span, which
+determines which bucket it falls in. It no longer selects an interpolation or apportionment METHOD,
+because neither exists any more.
+
+**In:** `resample_to_time_step` (`services/training_data.py:286`) and its `group_by_dynamic` call
+(`:374`), which supplies only `every=`; installed polars 1.43.2 defaults to `closed='left'`,
+`label='left'`, which skill's completeness path assumes (`services/skill/service.py:305`), so both
+change together. ⚠️ **Period-ending labelling itself is Plan 262 T3, not this task** — T3 makes the
+resampler grid- and edge-aware; 262 changes which end it labels. They touch the same function and
+must be sequenced, not merged. The return type changes per D2. Depends on T1, T2.
+
+🔑 **Cite the SYMBOL, not the line.** These numbers were correct on `dc442d57`, wrong after rebasing
+onto `071b62e3`, and re-measured on 2026-09-09. They will drift again.
 
 **Out:** call sites (T4). Changing `AggregationMethod`.
 
 **Pre-change:** `grep -n "group_by_dynamic" services/training_data.py` shows `every=` with no `offset`, `closed` or `label`, so a declared-phase target is silently re-bucketed onto epoch marks — a shift presented as a resample.
 
-**Verification:** `uv run pytest tests/unit/services/test_training_data.py` — a 15-minute source on quarter-hour marks maps onto both a UTC-hourly and a Nepali-hourly target with zero apportionment; an instantaneous (`time: point`) channel is interpolated and NOT treated as period-ending; an accumulation straddling a boundary is apportioned and flagged above 15 minutes; and an upsample is **REFUSED**, with the refusal locked by a test.
+**Verification:** `uv run pytest tests/unit/services/test_training_data.py` — a 15-minute source on
+quarter-hour marks maps onto both a UTC-hourly and a Nepali-hourly target with **zero** apportionment;
+readings at `00:03`/`00:13`/`00:23` aggregate into a 3-hourly bucket whose edges are the readings
+nearest the nominal boundaries, with **every reading's own timestamp unchanged**; a boundary whose
+nearest reading exceeds the configured limit produces **NO value** and says why; two equidistant
+readings resolve to the earlier one; an upsample is **REFUSED**; and ⛔ **a test asserts that NO output
+value is absent from the input** — the lock that proves nothing was invented.
 
 ### T4 — thread the declared grid through EVERY resampler call site (re-inventory first — 12 as of 2026-09-08, and it has moved twice in a fortnight)
 
@@ -209,10 +265,10 @@ both change together. Locations re-measured 2026-09-09; `:225`/`:299`/`:261` wer
 assuming phase zero, and the downstream UTC-day assumptions are corrected.
 
 **In (also):** the group-phase invariant Plan 252 OD-12 assigns to this task.
-`services/run_group_forecast.py:95-107` (`_assert_consistent_station_inputs`) already asserts that a
+`_assert_consistent_station_inputs` (`services/run_group_forecast.py:99-112`) already asserts that a
 group's stations share `issue_time`, `forecast_horizon_steps` and `time_step` — **extend it to the
 phase.** Without that, two stations on different phases stack into one timestamp column
-(`:92`) and the group artifact trains on two interleaved grids. ⚠️ An earlier revision of Plan 252
+(`_stack_station_frames`, `:89-92`) and the group artifact trains on two interleaved grids. ⚠️ An earlier revision of Plan 252
 said this was "listed in T4's scope" when it was not; it is now.
 
 **In:** the **twelve** call sites listed above, plus the four downstream assumptions:
@@ -263,6 +319,17 @@ configuration moving together, and a rollback.
 still open, and "moving together" means different things under each: an atomic flip needs one
 coordinated switch with a single rollback point; a per-station migration needs a per-station grid
 record and a mixed-phase interval during which two cuts coexist. Do not draft the sequence before D4.
+
+⛔ **Blocked on three things the graph now names:** Plan 252 **T10** (which boundary Switzerland
+actually adopts — OQ-6), Plan 262 **T3** (the end-stamping change rides this cutover, so its code must
+land first), and **D7** (atomic versus per-station). None of these were declared as blockers before
+2026-09-09.
+
+⚠️ **Correction 3 needs an ADAPTER change and this sequence did not contain one.** The MeteoSwiss
+06:00 precipitation day is corrected where the data is read, not in the rollout: the adapter must
+record each product's native boundary and the assembly must stop treating them as identical. That work
+belongs to **Plan 252 T6** (the audit that establishes it) and to whichever task acts on OQ-6's answer
+— it is named here so the cutover does not silently assume someone else did it.
 
 **In:** the rollout sequence — persist training grids (T5), retrain, rerun phase-correct hindcasts,
 publish a new skill generation via Plan 235's mechanism, promote, flip configuration. Coordinates with
@@ -421,7 +488,7 @@ Five conditions hold in addition:
     {"id": "T4", "phase": 3, "depends_on": ["T3"]},
     {"id": "T5", "phase": 3, "depends_on": ["T3"]},
     {"id": "T8", "phase": 2, "depends_on": ["T1"]},
-    {"id": "T6", "phase": 4, "depends_on": ["T4", "T5", "T8"]},
+    {"id": "T6", "phase": 4, "depends_on": ["T4", "T5", "T8"], "blocked_on": "Plan 252 T10 (settles OQ-6, which boundary Switzerland adopts); Plan 262 T3 (end-stamping lands in the same cutover); D7 (atomic vs per-station)"},
     {"id": "T7", "phase": 4, "depends_on": ["T4"]}
   ]
 }

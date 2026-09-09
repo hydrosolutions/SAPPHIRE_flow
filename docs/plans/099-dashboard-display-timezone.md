@@ -37,8 +37,10 @@ statement about unlabeled axes is now refuted:
 ## Goal
 
 1. **Every dashboard time axis is unambiguously labeled with its timezone.**
-2. **A UI knob toggles the displayed timezone between UTC and Europe/Zurich**
-   (operator convenience for local reading), DST-correct.
+2. **A control toggles the displayed timezone**, DST-correct. ⚠️ **What "local" means is Q1 and is
+   NOT `Europe/Zurich`** — an earlier revision hard-coded it in this goal while leaving the question
+   open below. Owner direction 2026-09-09: default to **the viewer's own browser locale**, always
+   showing the zone on the axis.
 
 ## Phases (proposed)
 
@@ -48,8 +50,10 @@ statement about unlabeled axes is now refuted:
   immediately. No data change.
 - **P2 — timezone toggle (the nice-to-have).** A client-side control
   (dropdown/toggle: **UTC** / **Europe/Zurich**) that re-renders the Plotly
-  charts in the chosen zone. Persist the choice (localStorage). Applies across
-  the obs, baseline, and forecast charts.
+  charts in the chosen zone. Persist the choice (localStorage). Applies to the
+  **observation, forecast, forcing and hindcast** charts. ⛔ **NOT the baseline chart** — its x-axis is
+  `Day of year` (`stations/detail.html:304`), so a timezone on it is meaningless. An earlier revision
+  listed it here while excluding it above.
 
 ## Open design questions (grill-me before READY)
 
@@ -82,6 +86,22 @@ baseline chart (not a time axis). **Undecided:** the observations table and any 
 
 **Q5 — default view.** Recommend **UTC** — an ops dashboard benefits from an unambiguous default —
 with the toggle opting into local, persisted in `localStorage`.
+
+## ⛔ The part that IS ours — the API, not the dashboard
+
+**Owner, 2026-09-09:** *"We don't implement the dashboard though so that should not be our problem. We
+provide the api to fetch data."* That reframes this plan: the toggle is a consumer concern, but the
+**API contract is ours** and it is where the real defect sits.
+
+Measured: the station dashboard builds naive date bounds (`stations/detail.html:244-245`) while the
+API parses a naive timestamp as UTC (`api/routes/api_stations.py:132-141`). Today they agree only
+because the display is UTC. **Any consumer sending a local-time range silently queries a shifted
+window** — worst across a DST transition.
+
+**Requirement:** the API must accept an explicit timezone offset on a date range and must not silently
+reinterpret a naive one. Whether that means requiring an offset or documenting and enforcing a single
+rule is Q3. ⚠️ **This survives even if we never build the toggle**, and it should probably move to an
+API plan rather than a dashboard one.
 
 ## Non-goals
 

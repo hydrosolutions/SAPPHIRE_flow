@@ -19,8 +19,14 @@ implementation."*
 
 ## The problem, measured
 
-A value that covers a span can be stamped at either end of it. **Every source we ingest stamps the
-END. Our own aggregation stamps the START.** Nobody chose the second one.
+A value that covers a span can be stamped at either end of it. **Every source whose convention we have
+ESTABLISHED stamps the END. Our own aggregation stamps the START.** Nobody chose the second one.
+
+⚠️ **Narrowed 2026-09-09.** An earlier revision said "every source we ingest", which this plan's own
+open decisions refute: `camels-ch` and `meteoswiss_sreld` are unread (D2 and Plan 252 T6), and
+instantaneous observations have no period end to stamp at all. The claim holds for what has been
+checked — five of seven forcing sources — and it is a reason to finish the audit, not to generalise
+ahead of it.
 
 | | Convention | Evidence |
 |---|---|---|
@@ -47,9 +53,10 @@ Each of those rows, being END-stamped, covers the hour *ending* at its stamp. So
 contains another, displaced by one hour.
 
 ⛔ **It does not bite today, and the reason matters.** Measured on staging 2026-09-09: **all stored
-forcing is ALREADY DAILY**, stamped `00:00`, exactly one distinct time-of-day across all eight
+forcing is ALREADY DAILY**, stamped `00:00`, exactly one distinct time-of-day across all **seven** stored
 sources — `meteoswiss_rhiresd`, `meteoswiss_rprelimd`, `meteoswiss_tabsd`, `meteoswiss_tmind`,
-`meteoswiss_tmaxd`, `meteoswiss_sreld`, `camels-ch`. **There is no hourly forcing in the store**, so
+`meteoswiss_tmaxd`, `meteoswiss_sreld`, `camels-ch`. *(An earlier revision said eight while listing
+seven.)* **There is no hourly forcing in the store**, so
 the hourly→daily bucketing never runs on real data. The trap is on the path we are about to walk
 down, not a fire burning now.
 
