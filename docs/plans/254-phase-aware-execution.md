@@ -107,10 +107,12 @@ period-ending labels (`services/operational_inputs.py:225`).
   one. Either the fetch bounds become `(start, end]` for interval-valued series, or T2/T3 specify the
   equivalent `closed`/`label` behaviour. **This gates T2 and T3**, and it is a live off-by-one-interval
   risk at every window edge, not a theoretical one.
-- **D6 — does a model OUTPUT declare its temporal support?** Plan 258 covers input sources and
-  adapters only. Forecast `valid_time` labelling is support-dependent (`258:64-67`), so T8 cannot
-  decide whether a daily forecast bucket is stamped on its closing boundary without knowing whether
-  the model emits a point or an interval. No plan owns this.
+- ⛔ **NOT a decision here: whether a model OUTPUT declares its temporal support.** T8 needs the
+  answer — it cannot decide whether a daily forecast bucket is stamped on its closing boundary
+  without it — but the question belongs to Plan 258, which owns temporal support, and is recorded
+  there as **258 D5**. This plan CONSUMES that answer and must not take it. *(Stated once, here, after
+  a 2026-09-09 pass briefly recorded it in both plans — the duplication this reconciliation exists to
+  remove.)*
 
 ## Non-goals
 
